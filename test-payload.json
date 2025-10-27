@@ -1,0 +1,15 @@
+{
+  "httpMethod": "GET",
+  "resource": "/dental-staff/sync/opendental/status",
+  "headers": {
+    "Authorization": "Bearer test-token"
+  },
+  "requestContext": {
+    "authorizer": {
+      "claims": {
+        "email": "test@example.com",
+        "cognito:groups": "GLOBAL__SUPER_ADMIN"
+      }
+    }
+  }
+}

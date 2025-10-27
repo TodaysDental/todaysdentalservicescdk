@@ -1,0 +1,391 @@
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy } from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import * as path from 'path';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as apigw from 'aws-cdk-lib/aws-apigateway';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
+
+export interface SchedulesStackProps extends StackProps {
+  userPool: any;
+  templatesTableName: string;
+  queriesTableName: string;
+  clinicHoursTableName: string;
+  consolidatedTransferServerId: string;
+}
+
+export class SchedulesStack extends Stack {
+  public readonly schedulesTable: dynamodb.Table;
+  public readonly schedulesFn: lambdaNode.NodejsFunction;
+  public readonly schedulerWorkerFn: lambdaNode.NodejsFunction;
+  public readonly schedulerQueueProducerFn: lambdaNode.NodejsFunction;
+  public readonly schedulerQueueConsumerFn: lambdaNode.NodejsFunction;
+  public readonly schedulerQueue: sqs.Queue;
+  public readonly schedulerDLQ: sqs.Queue;
+  public readonly api: apigw.RestApi;
+  public readonly authorizer: apigw.CognitoUserPoolsAuthorizer;
+
+  constructor(scope: Construct, id: string, props: SchedulesStackProps) {
+    super(scope, id, props);
+
+    // ========================================
+    // DYNAMODB TABLE
+    // ========================================
+
+    this.schedulesTable = new dynamodb.Table(this, 'SchedulesTable', {
+      partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      tableName: 'todaysdentalinsights-SCHEDULER-V3',
+    });
+
+    // ========================================
+    // SQS QUEUES
+    // ========================================
+
+    // Dead Letter Queue for failed schedule processing
+    this.schedulerDLQ = new sqs.Queue(this, 'SchedulerDLQ', {
+      queueName: 'todaysdentalinsights-scheduler-dlq-v3',
+      retentionPeriod: Duration.days(14),
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    // Main queue for schedule processing tasks
+    this.schedulerQueue = new sqs.Queue(this, 'SchedulerQueue', {
+      queueName: 'todaysdentalinsights-scheduler-queue-v3',
+      visibilityTimeout: Duration.seconds(180), // 3x Lambda timeout
+      receiveMessageWaitTime: Duration.seconds(20), // Long polling
+      deadLetterQueue: {
+        queue: this.schedulerDLQ,
+        maxReceiveCount: 3, // Retry failed messages 3 times
+      },
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    // ========================================
+    // API GATEWAY SETUP
+    // ========================================
+
+    const corsConfig = getCdkCorsConfig();
+    
+    this.api = new apigw.RestApi(this, 'SchedulesApi', {
+      restApiName: 'SchedulesApi',
+      description: 'Schedules service API',
+      defaultCorsPreflightOptions: {
+        allowOrigins: corsConfig.allowOrigins,
+        allowHeaders: corsConfig.allowHeaders,
+        allowMethods: corsConfig.allowMethods,
+      },
+      deployOptions: {
+        stageName: 'prod',
+        metricsEnabled: true,
+        loggingLevel: apigw.MethodLoggingLevel.INFO,
+        dataTraceEnabled: false,
+      },
+    });
+
+    const corsErrorHeaders = getCorsErrorHeaders();
+    
+    new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
+      restApi: this.api,
+      type: apigw.ResponseType.DEFAULT_4XX,
+      responseHeaders: corsErrorHeaders,
+    });
+    
+    new apigw.GatewayResponse(this, 'GatewayResponseDefault5XX', {
+      restApi: this.api,
+      type: apigw.ResponseType.DEFAULT_5XX,
+      responseHeaders: corsErrorHeaders,
+    });
+    
+    new apigw.GatewayResponse(this, 'GatewayResponseUnauthorized', {
+      restApi: this.api,
+      type: apigw.ResponseType.UNAUTHORIZED,
+      responseHeaders: corsErrorHeaders,
+    });
+
+    this.authorizer = new apigw.CognitoUserPoolsAuthorizer(this, 'CognitoAuthorizer', {
+      cognitoUserPools: [props.userPool],
+    });
+
+    // ========================================
+    // LAMBDA FUNCTIONS
+    // ========================================
+
+    // Schedules Lambda
+    this.schedulesFn = new lambdaNode.NodejsFunction(this, 'SchedulesFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'schedules.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        SCHEDULER: this.schedulesTable.tableName,
+      },
+    });
+    this.schedulesTable.grantReadWriteData(this.schedulesFn);
+
+    // Scheduler worker Lambda (legacy - kept for compatibility)
+    this.schedulerWorkerFn = new lambdaNode.NodejsFunction(this, 'SchedulerWorkerFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'worker.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 512,
+      timeout: Duration.seconds(120),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        SCHEDULES_TABLE: this.schedulesTable.tableName,
+        TEMPLATES_TABLE: props.templatesTableName,
+        QUERIES_TABLE: props.queriesTableName,
+        CLINIC_HOURS_TABLE: props.clinicHoursTableName,
+        CONSOLIDATED_SFTP_HOST: props.consolidatedTransferServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',
+        CONSOLIDATED_SFTP_PASSWORD: 'Clinic@2020!',
+      },
+    });
+
+    // Queue Producer Lambda - scans schedules and enqueues due tasks
+    this.schedulerQueueProducerFn = new lambdaNode.NodejsFunction(this, 'SchedulerQueueProducerFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'queueProducer.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(60),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        SCHEDULES_TABLE: this.schedulesTable.tableName,
+        CLINIC_HOURS_TABLE: props.clinicHoursTableName,
+        SCHEDULER_QUEUE_URL: this.schedulerQueue.queueUrl,
+      },
+    });
+
+    // Queue Consumer Lambda - processes individual schedule tasks
+    this.schedulerQueueConsumerFn = new lambdaNode.NodejsFunction(this, 'SchedulerQueueConsumerFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'queueConsumer.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 512,
+      timeout: Duration.seconds(60),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        SCHEDULES_TABLE: this.schedulesTable.tableName,
+        TEMPLATES_TABLE: props.templatesTableName,
+        QUERIES_TABLE: props.queriesTableName,
+        CLINIC_HOURS_TABLE: props.clinicHoursTableName,
+        CONSOLIDATED_SFTP_HOST: props.consolidatedTransferServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',
+        CONSOLIDATED_SFTP_PASSWORD: 'Clinic@2020!',
+      },
+    });
+
+    // Grant permissions to scheduler worker (legacy)
+    this.schedulesTable.grantReadWriteData(this.schedulerWorkerFn);
+    
+    // Grant permissions to queue producer
+    this.schedulesTable.grantReadData(this.schedulerQueueProducerFn);
+    this.schedulerQueue.grantSendMessages(this.schedulerQueueProducerFn);
+    
+    // Grant permissions to queue consumer
+    this.schedulesTable.grantReadWriteData(this.schedulerQueueConsumerFn);
+    
+    // Grant read access to external tables
+    const templatesTable = dynamodb.Table.fromTableAttributes(this, 'TemplatesTable', {
+      tableName: props.templatesTableName,
+    });
+    const queriesTable = dynamodb.Table.fromTableAttributes(this, 'QueriesTable', {
+      tableName: props.queriesTableName,
+    });
+    const clinicHoursTable = dynamodb.Table.fromTableAttributes(this, 'SchedulesClinicHoursTable', {
+      tableName: props.clinicHoursTableName,
+    });
+    
+    // Legacy worker permissions
+    templatesTable.grantReadData(this.schedulerWorkerFn);
+    queriesTable.grantReadData(this.schedulerWorkerFn);
+    clinicHoursTable.grantReadData(this.schedulerWorkerFn);
+    
+    // Queue producer permissions
+    clinicHoursTable.grantReadData(this.schedulerQueueProducerFn);
+    
+    // Queue consumer permissions
+    templatesTable.grantReadData(this.schedulerQueueConsumerFn);
+    queriesTable.grantReadData(this.schedulerQueueConsumerFn);
+    clinicHoursTable.grantReadData(this.schedulerQueueConsumerFn);
+
+    // Add SQS event source for queue consumer
+    this.schedulerQueueConsumerFn.addEventSource(new lambdaEventSources.SqsEventSource(this.schedulerQueue, {
+      batchSize: 1, // Process one schedule task at a time for better isolation
+      maxBatchingWindow: Duration.seconds(5),
+      reportBatchItemFailures: true, // Enable partial batch failure handling
+    }));
+
+    // Grant SES and SMS permissions to legacy worker (kept for compatibility)
+    this.schedulerWorkerFn.addToRolePolicy(new iam.PolicyStatement({ 
+      actions: ['ses:SendEmail', 'ses:SendRawEmail'], 
+      resources: ['*'] 
+    }));
+    this.schedulerWorkerFn.addToRolePolicy(new iam.PolicyStatement({ 
+      actions: ['sms-voice:SendTextMessage'], 
+      resources: ['*'] 
+    }));
+
+    // Grant SES and SMS permissions to queue consumer
+    this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({ 
+      actions: ['ses:SendEmail', 'ses:SendRawEmail'], 
+      resources: ['*'] 
+    }));
+    this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({ 
+      actions: ['sms-voice:SendTextMessage'], 
+      resources: ['*'] 
+    }));
+
+    // Schedule the queue producer to run every 2 minutes (more frequent since it's lighter)
+    new events.Rule(this, 'SchedulerQueueProducerRule', {
+      description: 'Runs the schedule queue producer to enqueue due schedule tasks',
+      schedule: events.Schedule.rate(Duration.minutes(2)),
+      targets: [new targets.LambdaFunction(this.schedulerQueueProducerFn)],
+    });
+
+    // Legacy worker rule (kept for fallback - can be disabled by commenting out)
+    // new events.Rule(this, 'SchedulerWorkerRule', {
+    //   description: 'Legacy schedule worker - disabled in favor of SQS-based processing',
+    //   schedule: events.Schedule.rate(Duration.minutes(5)),
+    //   targets: [new targets.LambdaFunction(this.schedulerWorkerFn)],
+    // });
+
+    // ========================================
+    // API ROUTES
+    // ========================================
+
+    // Schedules API routes
+    const schedulesRes = this.api.root.addResource('schedules');
+    schedulesRes.addMethod('GET', new apigw.LambdaIntegration(this.schedulesFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.COGNITO,
+      methodResponses: [{ statusCode: '200' }],
+    });
+    schedulesRes.addMethod('POST', new apigw.LambdaIntegration(this.schedulesFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.COGNITO,
+      methodResponses: [{ statusCode: '201' }, { statusCode: '400' }, { statusCode: '403' }],
+    });
+
+    const scheduleIdRes = schedulesRes.addResource('{id}');
+    scheduleIdRes.addMethod('GET', new apigw.LambdaIntegration(this.schedulesFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.COGNITO,
+      methodResponses: [{ statusCode: '200' }, { statusCode: '404' }],
+    });
+    scheduleIdRes.addMethod('PUT', new apigw.LambdaIntegration(this.schedulesFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.COGNITO,
+      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
+    });
+    scheduleIdRes.addMethod('DELETE', new apigw.LambdaIntegration(this.schedulesFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.COGNITO,
+      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
+    });
+
+    // Additional compatibility endpoints
+    const createSchedulerRes = this.api.root.addResource('create-scheduler');
+    createSchedulerRes.addMethod('POST', new apigw.LambdaIntegration(this.schedulesFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.COGNITO,
+      methodResponses: [{ statusCode: '201' }, { statusCode: '400' }, { statusCode: '403' }],
+    });
+
+    const deleteSchedulesRes = this.api.root.addResource('delete-schedules');
+    deleteSchedulesRes.addMethod('POST', new apigw.LambdaIntegration(this.schedulesFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.COGNITO,
+      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
+    });
+
+    // ========================================
+    // DOMAIN MAPPING
+    // ========================================
+
+    // Map to custom domain with service-specific base path
+    new apigw.CfnBasePathMapping(this, 'SchedulesApiBasePathMapping', {
+      domainName: 'api.todaysdentalinsights.com',
+      basePath: 'schedules',
+      restApiId: this.api.restApiId,
+      stage: this.api.deploymentStage.stageName,
+    });
+
+    // ========================================
+    // CLOUDWATCH MONITORING
+    // ========================================
+
+    // Monitor main queue depth
+    new cloudwatch.Alarm(this, 'SchedulerQueueDepthAlarm', {
+      alarmName: 'SchedulerQueue-HighDepth',
+      alarmDescription: 'Scheduler queue has too many messages',
+      metric: new cloudwatch.Metric({
+        namespace: 'AWS/SQS',
+        metricName: 'ApproximateNumberOfVisibleMessages',
+        dimensionsMap: { QueueName: this.schedulerQueue.queueName },
+        statistic: 'Average',
+      }),
+      threshold: 50,
+      evaluationPeriods: 2,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    // Monitor DLQ for failed messages
+    new cloudwatch.Alarm(this, 'SchedulerDLQAlarm', {
+      alarmName: 'SchedulerDLQ-HasMessages',
+      alarmDescription: 'Failed schedule processing messages in DLQ',
+      metric: new cloudwatch.Metric({
+        namespace: 'AWS/SQS',
+        metricName: 'ApproximateNumberOfVisibleMessages',
+        dimensionsMap: { QueueName: this.schedulerDLQ.queueName },
+        statistic: 'Average',
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    // ========================================
+    // OUTPUTS
+    // ========================================
+
+    new CfnOutput(this, 'SchedulesTableName', {
+      value: this.schedulesTable.tableName,
+      description: 'Name of the Schedules DynamoDB table',
+      exportName: `${Stack.of(this).stackName}-SchedulesTableName`,
+    });
+
+    new CfnOutput(this, 'SchedulesApiUrl', {
+      value: 'https://api.todaysdentalinsights.com/schedules/',
+      description: 'Schedules API Gateway URL',
+      exportName: `${Stack.of(this).stackName}-SchedulesApiUrl`,
+    });
+
+    new CfnOutput(this, 'SchedulesApiId', {
+      value: this.api.restApiId,
+      description: 'Schedules API Gateway ID',
+      exportName: `${Stack.of(this).stackName}-SchedulesApiId`,
+    });
+
+    new CfnOutput(this, 'SchedulerQueueUrl', {
+      value: this.schedulerQueue.queueUrl,
+      description: 'Scheduler SQS Queue URL',
+      exportName: `${Stack.of(this).stackName}-SchedulerQueueUrl`,
+    });
+
+    new CfnOutput(this, 'SchedulerDLQUrl', {
+      value: this.schedulerDLQ.queueUrl,
+      description: 'Scheduler Dead Letter Queue URL',
+      exportName: `${Stack.of(this).stackName}-SchedulerDLQUrl`,
+    });
+  }
+}

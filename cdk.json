@@ -1,10 +1,11 @@
 {
-  "app": "npx ts-node --prefer-ts-exts bin/infra.ts",
+  "app": "npx ts-node --prefer-ts-exts src/infrastructure/infra.ts",
   "context": {
     "@aws-cdk/core:stackRelativeExports": true,
     "@aws-cdk/aws-apigateway:usagePlanKeyOrderInsensitiveId": true,
     "@aws-cdk/aws-lambda:recognizeVersionProps": true,
     "@aws-cdk/aws-logs:enableDualWritingToOds": true,
-    "@aws-cdk/core:bootstrapQualifier": "tdi3"
+    "@aws-cdk/core:bootstrapQualifier": "tdi3",
+    "connectInstanceId": "e265b644-3dad-4490-b7c4-27036090c5f1"
   }
 }

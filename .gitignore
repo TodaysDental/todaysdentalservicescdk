@@ -1,6 +1,32 @@
+# Dependencies
 node_modules/
-cdk.out/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
 dist/
-.env
+build/
+cdk.out/
 
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+
+# Configuration files that may contain sensitive data
+src/infrastructure/configs/clinics.json
