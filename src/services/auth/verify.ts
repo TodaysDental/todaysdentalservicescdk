@@ -1,6 +1,5 @@
 
 import { CognitoIdentityProviderClient, RespondToAuthChallengeCommand } from "@aws-sdk/client-cognito-identity-provider";
-import { ConnectClient } from "@aws-sdk/client-connect";
 import { APIGatewayProxyEvent } from "aws-lambda";
 import { buildCorsHeaders } from "../../shared/utils/cors";
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -10,35 +9,11 @@ type VerifyBody = { email?: string; otp?: string; session?: string };
 
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION || "us-east-1";
 const USER_POOL_CLIENT_ID = process.env.USER_POOL_CLIENT_ID || "";
-const CONNECT_INSTANCE_ID = process.env.CONNECT_INSTANCE_ID || "";
 const SAML_LOGS_TABLE = process.env.SAML_LOGS_TABLE || "";
 
 const idp = new CognitoIdentityProviderClient({ region: REGION });
-const connect = new ConnectClient({ region: REGION });
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
 
-async function logSamlAssertion(email: string, tokens: any) {
-  if (!SAML_LOGS_TABLE) return;
-  
-  try {
-    await ddb.send(new PutCommand({
-      TableName: SAML_LOGS_TABLE,
-      Item: {
-        email,
-        timestamp: new Date().toISOString(),
-        tokens: {
-          idToken: tokens.IdToken,
-          accessToken: tokens.AccessToken,
-          refreshToken: tokens.RefreshToken
-        },
-        instanceId: CONNECT_INSTANCE_ID,
-        ttl: Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60 // 7 days TTL
-      }
-    }));
-  } catch (error) {
-    console.error('Failed to log SAML assertion:', error);
-  }
-}
 
 export const handler = async (event: APIGatewayProxyEvent) => {
   try {
@@ -65,8 +40,6 @@ export const handler = async (event: APIGatewayProxyEvent) => {
       }, event);
     }
 
-    // Log SAML assertion for Amazon Connect
-    await logSamlAssertion(body.email, result);
 
     return httpOk({
       idToken: result.IdToken,

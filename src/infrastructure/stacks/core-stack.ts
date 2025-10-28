@@ -18,8 +18,6 @@ export class CoreStack extends Stack {
   public readonly userPoolClient: cognito.UserPoolClient;
   public readonly authApi: apigw.RestApi;
   public readonly staffClinicInfoTable: dynamodb.Table;
-  // Connect-native architecture - voice agents table no longer needed
-
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
@@ -27,11 +25,8 @@ export class CoreStack extends Stack {
     // DYNAMODB TABLES
     // ========================================
 
-    // Connect-native architecture - voice agents table no longer needed
-    // Voice agents are created directly in Amazon Connect, not stored in DynamoDB
 
     // Staff Clinic Info Table
-
     this.staffClinicInfoTable = new dynamodb.Table(this, 'StaffClinicInfoTable', {
       tableName: 'StaffClinicInfo',
       // The user's email is the partition key
@@ -278,7 +273,7 @@ export class CoreStack extends Stack {
     new CfnOutput(this, 'UserPoolArn', { value: this.userPool.userPoolArn });
     new CfnOutput(this, 'UserPoolClientId', { value: this.userPoolClient.userPoolClientId });
     new CfnOutput(this, 'AuthApiUrl', { value: 'https://api.todaysdentalinsights.com/auth/' });
-  new CfnOutput(this, 'StaffClinicInfoTableName', { value: this.staffClinicInfoTable.tableName });
+    new CfnOutput(this, 'StaffClinicInfoTableName', { value: this.staffClinicInfoTable.tableName });
     new CfnOutput(this, 'ApiDomainName', {
       value: 'api.todaysdentalinsights.com',
       exportName: `${Stack.of(this).stackName}-ApiDomainName`,

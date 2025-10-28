@@ -71,10 +71,6 @@ async function handlePreTokenGeneration(event: any) {
     claimsToAddOrOverride["x_od_username"] = String(userAttrs["custom:opendental_username"]);
   }
 
-  // Add Connect-native architecture metadata
-  claimsToAddOrOverride["x_connect_architecture"] = "native";
-  claimsToAddOrOverride["x_connect_naming_convention"] = `connect-${String(userAttrs.preferred_username || userAttrs.email || event.userName || "")}`;
-  claimsToAddOrOverride["x_connect_user_lookup"] = "hierarchy_based";
 
   if (!Array.isArray(groups) || groups.length === 0) {
     try {

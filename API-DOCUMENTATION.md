@@ -344,11 +344,6 @@ Authorization: Bearer session-uuid
     "clinic_dentistinnewbritain__ADMIN",
     "clinic_dentistingreenville__PROVIDER"
   ],
-  "voiceAgents": {
-    "enabled": true,
-    "agentsProcessed": 2,
-    "results": [...]
-  },
   "connectUser": {
     "success": true,
     "message": "Connect user created successfully",
@@ -526,11 +521,7 @@ Connect user creation is **automatic** for all non-super-admin users. The system
   "success": true,
   "username": "user@example.com",
   "deleted": true,
-  "voiceAgents": {
-    "enabled": true,
-    "agentsDeleted": 2,
-    "results": [...]
-  },
+
   "staffInfo": {
     "deleted": 1
   }

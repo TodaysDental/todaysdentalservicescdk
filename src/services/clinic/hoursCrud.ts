@@ -1,17 +1,14 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { ConnectClient, CreateHoursOfOperationCommand, UpdateHoursOfOperationCommand, DescribeHoursOfOperationCommand, DeleteHoursOfOperationCommand } from '@aws-sdk/client-connect';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
 import clinicsData from '../../infrastructure/configs/clinics.json';
 import { Clinic } from '../../infrastructure/configs/clinics';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const connect = new ConnectClient({ region: process.env.AWS_REGION || 'us-east-1' });
 
 const TABLE = process.env.CLINIC_HOURS_TABLE || 'ClinicHours';
-const CONNECT_INSTANCE_ID = process.env.CONNECT_INSTANCE_ID!;
 const USER_POOL_ID = process.env.USER_POOL_ID!;
 
 interface ClinicHoursData {
@@ -24,7 +21,6 @@ interface ClinicHoursData {
   saturday?: { open: string; close: string; closed?: boolean };
   sunday?: { open: string; close: string; closed?: boolean };
   timeZone?: string;
-  connectHoursOfOperationId?: string;
   updatedAt: number;
   updatedBy: string;
 }
@@ -120,18 +116,11 @@ async function createHours(event: APIGatewayProxyEvent, caller: any): Promise<AP
       return err(400, hoursData.message, event);
     }
 
-    // Create Connect Hours of Operation first
-    const connectHoursResult = await createConnectHoursOfOperation(clinicId, body, clinic.timeZone || 'America/New_York');
-    if (!connectHoursResult.success) {
-      return err(500, 'Failed to create Connect hours: ' + connectHoursResult.message, event);
-    }
-
     // Save to DynamoDB
     const item: ClinicHoursData = {
       clinicId,
       ...body,
       timeZone: clinic.timeZone || 'America/New_York',
-      connectHoursOfOperationId: connectHoursResult.hoursOfOperationId,
       updatedAt: Date.now(),
       updatedBy: caller.userId,
     };
@@ -140,7 +129,6 @@ async function createHours(event: APIGatewayProxyEvent, caller: any): Promise<AP
 
     return ok({
       clinicId,
-      connectHoursOfOperationId: connectHoursResult.hoursOfOperationId,
       message: 'Clinic hours created successfully'
     }, event);
   } catch (error: any) {
@@ -179,29 +167,11 @@ async function updateHours(event: APIGatewayProxyEvent, caller: any, clinicId: s
     const existingResp = await ddb.send(new GetCommand({ TableName: TABLE, Key: { clinicId } }));
     const existingItem = existingResp.Item as ClinicHoursData;
 
-    let connectHoursResult;
-    if (existingItem?.connectHoursOfOperationId) {
-      // Update existing Connect Hours of Operation
-      connectHoursResult = await updateConnectHoursOfOperation(
-        existingItem.connectHoursOfOperationId,
-        body,
-        clinic.timeZone || 'America/New_York'
-      );
-    } else {
-      // Create new Connect Hours of Operation
-      connectHoursResult = await createConnectHoursOfOperation(clinicId, body, clinic.timeZone || 'America/New_York');
-    }
-
-    if (!connectHoursResult.success) {
-      return err(500, 'Failed to update Connect hours: ' + connectHoursResult.message, event);
-    }
-
     // Update DynamoDB
     const item: ClinicHoursData = {
       clinicId,
       ...body,
       timeZone: clinic.timeZone || 'America/New_York',
-      connectHoursOfOperationId: connectHoursResult.hoursOfOperationId,
       updatedAt: Date.now(),
       updatedBy: caller.userId,
     };
@@ -210,7 +180,6 @@ async function updateHours(event: APIGatewayProxyEvent, caller: any, clinicId: s
 
     return ok({
       clinicId,
-      connectHoursOfOperationId: connectHoursResult.hoursOfOperationId,
       message: 'Clinic hours updated successfully'
     }, event);
   } catch (error: any) {
@@ -221,19 +190,6 @@ async function updateHours(event: APIGatewayProxyEvent, caller: any, clinicId: s
 
 async function deleteHours(event: APIGatewayProxyEvent, caller: any, clinicId: string): Promise<APIGatewayProxyResult> {
   try {
-    // Get existing hours to find Connect Hours of Operation ID
-    const existingResp = await ddb.send(new GetCommand({ TableName: TABLE, Key: { clinicId } }));
-    const existingItem = existingResp.Item as ClinicHoursData;
-
-    if (existingItem?.connectHoursOfOperationId) {
-      // Delete from Connect
-      const deleteResult = await deleteConnectHoursOfOperation(existingItem.connectHoursOfOperationId);
-      if (!deleteResult.success) {
-        console.warn('Failed to delete Connect hours:', deleteResult.message);
-        // Continue with DynamoDB deletion even if Connect deletion fails
-      }
-    }
-
     // Delete from DynamoDB
     await ddb.send(new DeleteCommand({ TableName: TABLE, Key: { clinicId } }));
 
@@ -244,104 +200,6 @@ async function deleteHours(event: APIGatewayProxyEvent, caller: any, clinicId: s
   }
 }
 
-async function createConnectHoursOfOperation(clinicId: string, hoursData: any, timeZone: string): Promise<{ success: boolean; hoursOfOperationId?: string; message: string }> {
-  try {
-    const connectHours = convertToConnectOperatingHours(hoursData);
-
-    const command = new CreateHoursOfOperationCommand({
-      InstanceId: CONNECT_INSTANCE_ID,
-      Name: `Clinic Hours - ${clinicId}`,
-      Description: `Operating hours for clinic ${clinicId}`,
-      TimeZone: timeZone,
-      Config: connectHours,
-    });
-
-    const result = await connect.send(command);
-
-    return {
-      success: true,
-      hoursOfOperationId: result.HoursOfOperationId,
-      message: 'Connect hours of operation created successfully'
-    };
-  } catch (error: any) {
-    console.error('Error creating Connect hours:', error);
-    return {
-      success: false,
-      message: error.message || 'Failed to create Connect hours of operation'
-    };
-  }
-}
-
-async function updateConnectHoursOfOperation(hoursOfOperationId: string, hoursData: any, timeZone: string): Promise<{ success: boolean; hoursOfOperationId?: string; message: string }> {
-  try {
-    const connectHours = convertToConnectOperatingHours(hoursData);
-
-    const command = new UpdateHoursOfOperationCommand({
-      InstanceId: CONNECT_INSTANCE_ID,
-      HoursOfOperationId: hoursOfOperationId,
-      Name: `Clinic Hours - Updated ${Date.now()}`,
-      Description: `Updated operating hours`,
-      TimeZone: timeZone,
-      Config: connectHours,
-    });
-
-    await connect.send(command);
-
-    return {
-      success: true,
-      hoursOfOperationId: hoursOfOperationId,
-      message: 'Connect hours of operation updated successfully'
-    };
-  } catch (error: any) {
-    console.error('Error updating Connect hours:', error);
-    return {
-      success: false,
-      message: error.message || 'Failed to update Connect hours of operation'
-    };
-  }
-}
-
-async function deleteConnectHoursOfOperation(hoursOfOperationId: string): Promise<{ success: boolean; message: string }> {
-  try {
-    const command = new DeleteHoursOfOperationCommand({
-      InstanceId: CONNECT_INSTANCE_ID,
-      HoursOfOperationId: hoursOfOperationId,
-    });
-
-    await connect.send(command);
-
-    return {
-      success: true,
-      message: 'Connect hours of operation deleted successfully'
-    };
-  } catch (error: any) {
-    console.error('Error deleting Connect hours:', error);
-    return {
-      success: false,
-      message: error.message || 'Failed to delete Connect hours of operation'
-    };
-  }
-}
-
-function convertToConnectOperatingHours(hoursData: any): any[] {
-  const dayNames = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
-  const connectDays = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
-
-  const operatingHours: any[] = [];
-
-  dayNames.forEach((day, index) => {
-    const dayData = hoursData[day];
-    if (dayData && !dayData.closed && dayData.open && dayData.close) {
-      operatingHours.push({
-        Day: connectDays[index],
-        StartTime: dayData.open,
-        EndTime: dayData.close,
-      });
-    }
-  });
-
-  return operatingHours;
-}
 
 function validateHoursData(body: any): { valid: boolean; message: string } {
   const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];

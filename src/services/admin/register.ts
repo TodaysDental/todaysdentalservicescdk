@@ -10,20 +10,12 @@ import {
   ListGroupsCommandOutput,
   GroupType,
 } from "@aws-sdk/client-cognito-identity-provider";
-// DynamoDB SDK for StaffClinicInfo and VoiceAgents table management
+// DynamoDB SDK for StaffClinicInfo table management
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand, UpdateCommand, DeleteCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
-// Connect SDK for Connect user management
-import {
-  ConnectClient,
-  CreateUserCommand,
-  UpdateUserProficienciesCommand
-} from '@aws-sdk/client-connect';
+import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+
 import { buildCorsHeaders } from "../../shared/utils/cors";
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from "jose";
-import { buildProficiencies } from '../../infrastructure/utils/clinicCombinations';
-import { CONNECT_CONFIG } from '../../infrastructure/configs/connect-config';
-
 type RegisterClinic = { clinicId: string | number; role: string };
 
 // Defines the detailed staff info structure for a single clinic
@@ -39,7 +31,7 @@ type StaffClinicDetail = {
   hourlyPay?: string | number; // This is now per-clinic
 };
 
-// RegisterBody - Connect user creation is automatic for non-super-admin users
+// RegisterBody - user registration with clinic role assignments
 type RegisterBody = {
   email: string;
   givenName?: string;
@@ -47,18 +39,13 @@ type RegisterBody = {
   clinics: RegisterClinic[]; // For Cognito Group role assignments
   makeGlobalSuperAdmin?: boolean;
   staffDetails?: StaffClinicDetail[]; // Array for detailed staff info
-  connectSecurityProfileIds?: string[]; // Security profiles for Connect user (optional, has defaults)
-  connectPhoneType?: 'SOFT_PHONE' | 'DESK_PHONE'; // Phone type for Connect user (optional, defaults to SOFT_PHONE)
 };
 
 const cognito = new CognitoIdentityProviderClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const connect = new ConnectClient({ region: process.env.AWS_REGION || 'us-east-1' });
 
-// Get table names from environment variables (Connect-native architecture)
+// Get table name from environment variables
 const STAFF_INFO_TABLE = process.env.STAFF_CLINIC_INFO_TABLE;
-const CONNECT_INSTANCE_ID = process.env.CONNECT_INSTANCE_ID || 'e265b644-3dad-4490-b7c4-27036090c5f1';
-const CONNECT_MASTER_ROUTING_PROFILE_ID = process.env.CONNECT_MASTER_ROUTING_PROFILE_ID || 'arn:aws:connect:us-east-1:851620242036:routing-profile/master-routing-profile-id';
 
 
 export const handler = async (event: any) => {
@@ -115,36 +102,9 @@ export const handler = async (event: any) => {
       await saveStaffInfoToDynamoDB(username, body.staffDetails);
     }
 
-    // Connect-native architecture - voice agents created in Amazon Connect
-    const voiceAgentResults = await createVoiceAgentInConnect({
-      username,
-      email: body.email,
-      givenName: body.givenName,
-      familyName: body.familyName,
-      clinics: body.clinics || [],
-      makeGlobalSuperAdmin: !!body.makeGlobalSuperAdmin,
-    });
-
-    // Create Connect user automatically for all non-super-admin users (Connect-native approach)
-    let connectUserResult = null;
-    if (!body.makeGlobalSuperAdmin) {
-      connectUserResult = await createConnectUserForRegisteredUser({
-        username,
-        email: body.email,
-        givenName: body.givenName,
-        familyName: body.familyName,
-        clinics: body.clinics || [],
-        securityProfileIds: body.connectSecurityProfileIds || getDefaultSecurityProfiles(),
-        phoneType: body.connectPhoneType || 'SOFT_PHONE',
-        makeGlobalSuperAdmin: false,
-      });
-    }
-
     return httpOk({
       username,
-      groupsAssigned: groupNames,
-      voiceAgents: voiceAgentResults,
-      connectUser: connectUserResult
+      groupsAssigned: groupNames
     });
   } catch (err: any) {
     return httpErr(500, err?.message || "registration failed");
@@ -171,13 +131,7 @@ function validateBody(body: RegisterBody) {
     }
   }
 
-  // Validate Connect user creation parameters (optional parameters for automatic Connect user creation)
-  if (body.connectSecurityProfileIds && (!Array.isArray(body.connectSecurityProfileIds) || body.connectSecurityProfileIds.length === 0)) {
-    throw new Error("connectSecurityProfileIds must be a non-empty array if provided");
-  }
-  if (body.connectPhoneType && !['SOFT_PHONE', 'DESK_PHONE'].includes(body.connectPhoneType)) {
-    throw new Error("connectPhoneType must be either 'SOFT_PHONE' or 'DESK_PHONE'");
-  }
+
 }
 
 function buildGroupNames(clinics: RegisterClinic[]): string[] {
@@ -253,252 +207,7 @@ function httpErr(code: number, message: string) {
   return { statusCode: code, headers: buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] }), body: JSON.stringify({ success: false, message }) };
 }
 
-// ========================================
-// VOICE AGENT MANAGEMENT HELPERS
-// ========================================
-
-// Voice Agent management helpers
-type VoiceAgentUpdateArgs = {
-  email: string;
-  givenName?: string;
-  familyName?: string;
-  clinics: RegisterClinic[];
-  makeGlobalSuperAdmin: boolean;
-};
-
-// Connect-native architecture - voice agents created in Amazon Connect
-async function createVoiceAgentInConnect({
-  username,
-  email,
-  givenName,
-  familyName,
-  clinics,
-  makeGlobalSuperAdmin,
-}: {
-  username: string;
-  email: string;
-  givenName?: string;
-  familyName?: string;
-  clinics: RegisterClinic[];
-  makeGlobalSuperAdmin: boolean;
-}): Promise<any> {
-  try {
-    // Only create voice agents if the user is not a global super admin
-    // (super admins don't need voice agent access)
-    if (makeGlobalSuperAdmin) {
-      return {
-        enabled: false,
-        reason: "Global super admins don't need voice agent access",
-        agentsProcessed: 0,
-        results: []
-      };
-    }
-
-    // Import Connect functionality directly
-    const {
-      ConnectClient,
-      CreateUserCommand,
-    } = await import('@aws-sdk/client-connect');
-
-    const connect = new ConnectClient({ region: process.env.AWS_REGION || 'us-east-1' });
-    const CONNECT_INSTANCE_ID = process.env.CONNECT_INSTANCE_ID || 'e265b644-3dad-4490-b7c4-27036090c5f1';
-
-    const results: any[] = [];
-    let agentsProcessed = 0;
-
-    // Create voice agent for each clinic the user has access to
-    for (const clinic of clinics) {
-      if (clinic.role === 'USER') {
-        try {
-          const createUserCommand = new CreateUserCommand({
-            InstanceId: CONNECT_INSTANCE_ID,
-            Username: `voice-${username.toLowerCase()}-${clinic.clinicId}`,
-            IdentityInfo: {
-              FirstName: givenName || '',
-              LastName: familyName || '',
-              Email: email,
-            },
-            PhoneConfig: {
-              PhoneType: 'SOFT_PHONE',
-              AutoAccept: true,
-              AfterContactWorkTimeLimit: 0,
-              DeskPhoneNumber: '',
-            },
-            SecurityProfileIds: [CONNECT_CONFIG.SECURITY_PROFILES.AGENT],
-            RoutingProfileId: CONNECT_CONFIG.ROUTING_PROFILES.BASIC,
-            Password: generateRandomPassword(),
-          });
-
-          const connectResult = await connect.send(createUserCommand);
-
-          results.push({
-            agentId: `${email}-${clinic.clinicId}`,
-            clinicId: clinic.clinicId,
-            action: 'created',
-            error: null,
-            connectUserId: connectResult.UserId,
-            connectUsername: `voice-${username.toLowerCase()}-${clinic.clinicId}`,
-          });
-
-          agentsProcessed++;
-
-        } catch (error: any) {
-          results.push({
-            agentId: `${email}-${clinic.clinicId}`,
-            clinicId: clinic.clinicId,
-            action: 'failed',
-            error: error.message,
-          });
-        }
-      }
-    }
-
-    return {
-      enabled: true,
-      agentsProcessed,
-      results,
-    };
-  } catch (error: any) {
-    console.error('Error creating voice agents in Connect:', error);
-    return {
-      enabled: false,
-      reason: error.message,
-      agentsProcessed: 0,
-      results: [{
-        action: 'failed',
-        error: error.message,
-      }],
-    };
-  }
-}
-
-function generateRandomPassword(): string {
-  const length = 12;
-  const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
-  let password = "";
-  for (let i = 0; i < length; i++) {
-    password += charset.charAt(Math.floor(Math.random() * charset.length));
-  }
-  return password;
-}
-
-function getDefaultSecurityProfiles(): string[] {
-  // Default security profile for Connect users - basic agent permissions
-  return [process.env.CONNECT_SECURITY_PROFILE_ID || 'arn:aws:connect:us-east-1:851620242036:security-profile/basic-agent-security-profile'];
-}
-
-// ========================================
-// CONNECT USER CREATION FOR REGISTRATION
-// ========================================
-
-export async function createConnectUserForRegisteredUser({
-  username,
-  email,
-  givenName,
-  familyName,
-  clinics,
-  securityProfileIds,
-  phoneType,
-  makeGlobalSuperAdmin,
-}: {
-  username: string;
-  email: string;
-  givenName?: string;
-  familyName?: string;
-  clinics: RegisterClinic[];
-  securityProfileIds: string[];
-  phoneType: 'SOFT_PHONE' | 'DESK_PHONE';
-  makeGlobalSuperAdmin: boolean;
-}): Promise<any> {
-  try {
-    // Check if Connect user already exists (Connect-native approach)
-    const { findConnectUserByUsername } = await import('../connect/connectUser');
-    const existingConnectUser = await findConnectUserByUsername(username);
-
-    if (existingConnectUser) {
-      return {
-        success: false,
-        message: 'Connect user already exists',
-        existing: true,
-        connectUserId: existingConnectUser.Id,
-        connectUserArn: existingConnectUser.Arn,
-      };
-    }
-
-    // Create Connect user
-    const connectUserId = `connect-${username}`;
-    const userEmail = email || `${username}@todaysdentalinsights.com`;
-
-    const createUserCommand = new CreateUserCommand({
-      InstanceId: CONNECT_INSTANCE_ID,
-      Username: connectUserId,
-      IdentityInfo: {
-        FirstName: givenName || 'Unknown',
-        LastName: familyName || 'User',
-        Email: userEmail,
-      },
-      PhoneConfig: {
-        PhoneType: phoneType,
-        AutoAccept: false,
-        AfterContactWorkTimeLimit: 0,
-        DeskPhoneNumber: '',
-      },
-      SecurityProfileIds: securityProfileIds || getDefaultSecurityProfiles(),
-      RoutingProfileId: CONNECT_MASTER_ROUTING_PROFILE_ID,
-    });
-
-    const connectResult = await connect.send(createUserCommand);
-
-    // Update proficiencies based on clinics (for Attribute-Based Routing)
-    const clinicIds = clinics.map(c => String(c.clinicId));
-    if (clinicIds.length > 0) {
-      await updateConnectUserProficiencies(connectResult.UserId!, clinicIds);
-    }
-
-    // Connect-native architecture - no additional storage needed
-    // User hierarchy groups and proficiencies are managed directly in Connect
-
-    return {
-      success: true,
-      message: 'Connect user created successfully (Connect-native)',
-      connectUserId: connectResult.UserId,
-      connectUserArn: connectResult.UserArn,
-      clinics: clinicIds,
-      hierarchyGroups: clinicIds.map(clinicId => `clinic-${clinicId}`),
-    };
-  } catch (error: any) {
-    console.error('Failed to create Connect user during registration:', error);
-    return {
-      success: false,
-      message: `Failed to create Connect user: ${error.message}`,
-      error: error.message,
-    };
-  }
-}
-
-
-// Connect-native architecture - user lookup handled by Connect APIs
-// No additional user record storage needed
-
-async function updateConnectUserProficiencies(connectUserId: string, clinics: string[]): Promise<void> {
-  try {
-    const proficiencies = buildProficiencies(clinics);
-
-    await connect.send(new UpdateUserProficienciesCommand({
-      InstanceId: CONNECT_INSTANCE_ID,
-      UserId: connectUserId,
-      UserProficiencies: proficiencies,
-    }));
-
-    console.log(`Updated proficiencies for user ${connectUserId} with clinics: ${clinics.join(', ')}`);
-  } catch (err: any) {
-    console.error('Error updating Connect user proficiencies:', err);
-    throw new Error(`Failed to update Connect user proficiencies: ${err.message}`);
-  }
-}
-
-
-// Auth helpers (no changes needed here)
+// Auth helpers
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
 const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;

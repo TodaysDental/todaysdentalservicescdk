@@ -14,13 +14,13 @@ export interface AdminStackProps extends StackProps {
   userPoolId: string;
   clinicHoursTableName: string;
   staffClinicInfoTableName?: string;
-  voiceAgentsTableName?: string; // Optional - not used in Connect-native architecture
 }
 
 export class AdminStack extends Stack {
   public readonly registerFn: lambdaNode.NodejsFunction;
   public readonly meFn: lambdaNode.NodejsFunction;
   public readonly usersFn: lambdaNode.NodejsFunction;
+  // ...existing code...
   public readonly api: apigw.RestApi;
   public readonly authorizer: apigw.CognitoUserPoolsAuthorizer;
 
@@ -73,7 +73,6 @@ export class AdminStack extends Stack {
       cognitoUserPools: [props.userPool],
     });
 
-    // Voice Agents table is now managed by Core Stack
 
     // ========================================
     // LAMBDA FUNCTIONS
@@ -92,10 +91,6 @@ export class AdminStack extends Stack {
         COGNITO_REGION: Stack.of(this).region,
         CORS_ORIGIN: 'https://todaysdentalinsights.com',
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName ?? '',
-        // Connect-native architecture - voice agents created directly in Connect, no DynamoDB needed
-        CONNECT_INSTANCE_ID: 'e265b644-3dad-4490-b7c4-27036090c5f1',
-        CONNECT_SECURITY_PROFILE_ID: process.env.CONNECT_SECURITY_PROFILE_ID || 'arn:aws:connect:us-east-1:851620242036:security-profile/basic-agent-security-profile',
-        CONNECT_MASTER_ROUTING_PROFILE_ID: process.env.CONNECT_MASTER_ROUTING_PROFILE_ID || 'arn:aws:connect:us-east-1:851620242036:routing-profile/master-routing-profile-id',
       },
     });
 
@@ -111,23 +106,6 @@ export class AdminStack extends Stack {
       resources: [props.userPoolArn],
     }));
 
-    // Connect permissions for voice agent creation
-    this.registerFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: [
-        'connect:CreateUser',
-        'connect:DescribeUser',
-        'connect:ListUsers',
-        'connect:UpdateUserIdentityInfo',
-        'connect:UpdateUserPhoneConfig',
-        'connect:UpdateUserRoutingProfile',
-        'connect:UpdateUserSecurityProfiles',
-        'connect:UpdateUserProficiencies',
-      ],
-      resources: [
-        `arn:aws:connect:us-east-1:851620242036:instance/e265b644-3dad-4490-b7c4-27036090c5f1`,
-        `arn:aws:connect:us-east-1:851620242036:instance/e265b644-3dad-4490-b7c4-27036090c5f1/*`,
-      ],
-    }));
 
 
     // Admin Users API Lambda
@@ -142,12 +120,10 @@ export class AdminStack extends Stack {
         USER_POOL_ID: props.userPoolId,
         COGNITO_REGION: Stack.of(this).region,
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName ?? '',
-        // Connect-native architecture - voice agents created directly in Connect, no DynamoDB needed
-        CONNECT_INSTANCE_ID: 'e265b644-3dad-4490-b7c4-27036090c5f1',
-        CONNECT_SECURITY_PROFILE_ID: process.env.CONNECT_SECURITY_PROFILE_ID || 'arn:aws:connect:us-east-1:851620242036:security-profile/basic-agent-security-profile',
-        CONNECT_MASTER_ROUTING_PROFILE_ID: process.env.CONNECT_MASTER_ROUTING_PROFILE_ID || 'arn:aws:connect:us-east-1:851620242036:routing-profile/master-routing-profile-id',
       },
     });
+
+    // ...existing code...
 
     // If StaffClinicInfo table is provided, grant the register lambda read/write permissions
     if (props.staffClinicInfoTableName) {
@@ -163,8 +139,9 @@ export class AdminStack extends Stack {
       }));
     }
 
-    // Connect-native architecture - no DynamoDB permissions needed for voice agents
-    // Voice agents are created directly in Amazon Connect, not stored in DynamoDB
+
+    // ...existing code...
+
 
 
 
@@ -251,6 +228,8 @@ export class AdminStack extends Stack {
       authorizationType: apigw.AuthorizationType.COGNITO,
     });
 
+    // ...existing code...
+
     // Me API routes
     const meRes = this.api.root.addResource('me');
     const meClinicsRes = meRes.addResource('clinics');
@@ -277,6 +256,5 @@ export class AdminStack extends Stack {
       exportName: `${Stack.of(this).stackName}-AdminApiId`,
     });
 
-    // Voice Agents table is now managed by Core Stack
   }
 }

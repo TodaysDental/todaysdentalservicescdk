@@ -44,7 +44,6 @@ export class AuthStack extends cdk.Stack {
       customAttributes: {
         'custom:clinicId': new cognito.StringAttribute({ mutable: true }),
         'custom:role': new cognito.StringAttribute({ mutable: true }),
-        'custom:connectArn': new cognito.StringAttribute({ mutable: true }),
       },
       passwordPolicy: {
         minLength: 12,
@@ -78,25 +77,12 @@ export class AuthStack extends cdk.Stack {
         FROM_EMAIL: 'noreply@todaysdentalinsights.com',
         APP_NAME: 'Today\'s Dental Insights',
         SAML_LOGS_TABLE: samlLogsTable.tableName,
-        CONNECT_INSTANCE_ID: process.env.CONNECT_INSTANCE_ID || 'e265b644-3dad-4490-b7c4-27036090c5f1',
       },
     });
 
     // Grant DynamoDB permissions to auth Lambda
     samlLogsTable.grantWriteData(authTriggerLambda);
 
-    // Grant Connect permissions to auth Lambda
-    authTriggerLambda.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        'connect:GetFederationToken',
-        'connect:CreateUser',
-        'connect:DescribeUser',
-        'connect:UpdateUserRoutingProfile',
-        'connect:UpdateUserSecurityProfiles'
-      ],
-      resources: [`arn:aws:connect:${this.region}:${this.account}:instance/*`]
-    }));
 
     // Create verify Lambda function
     const verifyLambda = new lambdaNodejs.NodejsFunction(this, 'VerifyFunction', {
@@ -107,24 +93,12 @@ export class AuthStack extends cdk.Stack {
         USER_POOL_ID: this.userPool.userPoolId,
         USER_POOL_CLIENT_ID: this.userPoolClient.userPoolClientId,
         SAML_LOGS_TABLE: samlLogsTable.tableName,
-        CONNECT_INSTANCE_ID: process.env.CONNECT_INSTANCE_ID || 'e265b644-3dad-4490-b7c4-27036090c5f1',
       },
     });
 
     // Grant DynamoDB permissions to verify Lambda
     samlLogsTable.grantWriteData(verifyLambda);
 
-    // Grant Connect permissions to verify Lambda
-    verifyLambda.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        'connect:GetFederationToken',
-        'connect:DescribeUser',
-        'connect:CreateUser',
-        'connect:UpdateUserIdentityInfo'
-      ],
-      resources: [`arn:aws:connect:${this.region}:${this.account}:instance/*`]
-    }));
 
     // Create API Gateway for verify endpoint
     const api = new apigw.RestApi(this, 'AuthApi', {
@@ -154,11 +128,32 @@ export class AuthStack extends cdk.Stack {
     );
 
 
+    // Create SAML Identity Provider (CDK-managed)
+    const samlMetadataUrl = this.node.tryGetContext('samlMetadataUrl') ||
+                           process.env.SAML_METADATA_URL ||
+                           'https://your-idp.com/saml/metadata';
+
+    const samlIdentityProvider = new cognito.UserPoolIdentityProviderSaml(this, 'SAMLIdentityProvider', {
+      userPool: this.userPool,
+      name: 'CognitoSAMLProvider',
+      metadata: {
+        metadataContent: samlMetadataUrl,
+        metadataType: cognito.UserPoolIdentityProviderSamlMetadataType.URL,
+      },
+      attributeMapping: {
+        email: cognito.ProviderAttribute.other('http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress'),
+        givenName: cognito.ProviderAttribute.other('http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname'),
+        familyName: cognito.ProviderAttribute.other('http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname'),
+        // Groups will be handled via custom claims in the auth trigger
+      },
+    });
+
     // Create User Pool Client
     this.userPoolClient = this.userPool.addClient('app-client', {
       userPoolClientName: `${this.stackName}-AppClient`,
       supportedIdentityProviders: [
-        cognito.UserPoolClientIdentityProvider.COGNITO
+        cognito.UserPoolClientIdentityProvider.COGNITO,
+        samlIdentityProvider.providerName as any, // SAML provider name from CDK construct
       ],
     });
 
@@ -172,6 +167,10 @@ export class AuthStack extends cdk.Stack {
           clientId: this.userPoolClient.userPoolClientId,
           providerName: this.userPool.userPoolProviderName,
         },
+      ],
+      samlProviderArns: [
+        // SAML provider will be added after creation
+        // This will be configured via the AWS Console or additional CDK resources
       ],
     });
 
@@ -203,18 +202,7 @@ export class AuthStack extends cdk.Stack {
       },
     });
 
-    // Grant necessary permissions to authenticated role
-    authenticatedRole.addToPolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          'connect:GetFederationToken',
-          'connect:GetFederationTokens',
-          'connect:CreateParticipantConnection',
-        ],
-        resources: ['*'],
-      })
-    );
+    // Note: Authenticated role permissions can be added here as needed for non-Connect features
 
     // Output important values
     new cdk.CfnOutput(this, 'UserPoolId', {

@@ -15,7 +15,6 @@ import { ClinicInsuranceStack } from './stacks/clinic-insurance-stack';
 import { AdminStack } from './stacks/admin-stack';
 import { OpenDentalStack } from './stacks/opendental-stack';
 import { NotificationsStack } from './stacks/notifications-stack';
-import { ConnectStack } from './stacks/connect-stack';
 
 const app = new cdk.App();
 
@@ -41,8 +40,6 @@ const queriesStack = new QueriesStack(app, 'TodaysDentalInsightsQueriesV3', {
   env,
   userPool: coreStack.userPool,
 });
-
-// Placeholder for Connect stack - will be created after chatbot stack
 
 // Clinic Pricing service
 const clinicPricingStack = new ClinicPricingStack(app, 'TodaysDentalInsightsClinicPricingV3', {
@@ -77,7 +74,7 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminV3', {
   userPoolId: coreStack.userPool.userPoolId,
   staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
   clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
-  // voiceAgentsTableName: coreStack.voiceAgentsTable.tableName, // Not needed in Connect-native architecture
+  // ...existing code...
 });
 
 
@@ -119,22 +116,10 @@ const chatbotStack = new ChatbotStack(app, 'TodaysDentalInsightsChatbotV2', {
   clinicInsuranceTableName: clinicInsuranceStack.clinicInsuranceTable.tableName,
 });
 
-// 9. Connect Stack - Amazon Connect integration for voice calls (depends on chatbot for after-hours routing)
-const connectStack = new ConnectStack(app, 'TodaysDentalInsightsConnectV1', {
-  env,
-  userPool: coreStack.userPool,
-  userPoolId: coreStack.userPool.userPoolId,
-  userPoolArn: coreStack.userPool.userPoolArn,
-  clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
-  chatbotApiUrl: 'https://api.todaysdentalinsights.com/chatbot',
-  // voiceAgentsTableName: coreStack.voiceAgentsTable.tableName, // Not needed in Connect-native architecture
-});
-
-// 10. Clinic Hours service (depends on Connect stack for instance ID)
+// Clinic Hours service
 const clinicHoursStack = new ClinicHoursStack(app, 'TodaysDentalInsightsClinicHoursV3', {
   env,
   userPool: coreStack.userPool,
-  connectInstanceId: connectStack.connectInstanceId,
 });
 
 // Add stack dependencies
@@ -157,10 +142,6 @@ schedulesStack.addDependency(templatesStack);
 schedulesStack.addDependency(queriesStack);
 schedulesStack.addDependency(openDentalStack);
 
-// Connect stack dependencies
-connectStack.addDependency(coreStack);
-connectStack.addDependency(chatbotStack);
-clinicHoursStack.addDependency(connectStack);
 
 
 // Other existing stack dependencies

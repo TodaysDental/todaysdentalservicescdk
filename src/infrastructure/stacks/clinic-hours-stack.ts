@@ -6,12 +6,10 @@ import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as connect from 'aws-cdk-lib/aws-connect';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface ClinicHoursStackProps extends StackProps {
   userPool: any;
-  connectInstanceId: string;
 }
 
 export class ClinicHoursStack extends Stack {
@@ -99,7 +97,6 @@ export class ClinicHoursStack extends Stack {
         nodeModules: [
           '@aws-sdk/client-dynamodb',
           '@aws-sdk/lib-dynamodb',
-          '@aws-sdk/client-connect',
           'jose',
         ],
       },
@@ -107,7 +104,6 @@ export class ClinicHoursStack extends Stack {
         NODE_OPTIONS: '--enable-source-maps',
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1',
         CLINIC_HOURS_TABLE: this.clinicHoursTable.tableName,
-        CONNECT_INSTANCE_ID: props.connectInstanceId,
         USER_POOL_ID: props.userPool.userPoolId,
       },
     });
@@ -125,17 +121,6 @@ export class ClinicHoursStack extends Stack {
       resources: [this.clinicHoursTable.tableArn, `${this.clinicHoursTable.tableArn}/*`],
     }));
 
-    // Connect permissions for Hours of Operation management
-    this.hoursCrudFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: [
-        'connect:CreateHoursOfOperation',
-        'connect:DeleteHoursOfOperation',
-        'connect:DescribeHoursOfOperation',
-        'connect:ListHoursOfOperations',
-        'connect:UpdateHoursOfOperation',
-      ],
-      resources: [`arn:aws:connect:${this.region}:${this.account}:instance/${props.connectInstanceId}/*`],
-    }));
 
     // Cognito permissions for token verification
     this.hoursCrudFn.addToRolePolicy(new iam.PolicyStatement({

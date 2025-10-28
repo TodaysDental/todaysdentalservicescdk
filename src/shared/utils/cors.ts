@@ -1,4 +1,4 @@
-import clinicsJson from '../../infrastructure/configs/clinics.json';
+import clinicsData from '../../infrastructure/configs/clinics.json';
 
 export type CorsOptions = {
   allowOrigin?: string;
@@ -10,7 +10,7 @@ export type CorsOptions = {
 export const ALLOWED_ORIGINS_LIST = [
   'https://todaysdentalinsights.com',
   'https://todaysdentalinsights.com/',
-  ...(clinicsJson as any[])
+  ...(clinicsData as any[])
     .map(c => String(c.websiteLink))
     .filter(Boolean)
 ];
