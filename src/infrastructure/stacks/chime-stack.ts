@@ -190,9 +190,8 @@ export class ChimeStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
       timeout: Duration.minutes(5),
-      // Do not set AWS_REGION: the Lambda runtime reserves this variable.
-      // If your function needs the region, read from process.env.AWS_REGION at runtime
-      // or pass a different custom variable name (e.g., COGNITO_REGION) instead.
+      environment: {
+      },
     });
 
     // Grant permissions to manage SIP rules
