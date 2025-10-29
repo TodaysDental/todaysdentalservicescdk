@@ -7,15 +7,9 @@ import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 
-// CORS headers for the API response
-const corsHeaders = {
-    'Access-Control-Allow-Origin': '*', // Replace with your specific origin in production
-    'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
-    'Access-Control-Allow-Methods': 'OPTIONS,POST',
-    'Access-Control-Allow-Credentials': true,
-};
-
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+    
+    const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] }, event.headers?.origin);
 
     try {
         if (!event.body) {

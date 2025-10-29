@@ -387,6 +387,91 @@ export class ChimeStack extends Stack {
         if (!(`${e}`.includes('There is already a Construct with name')))
           throw e;
       }
+
+      // POST /chime/call-accepted
+      const callAcceptedFn = new lambdaNode.NodejsFunction(this, 'CallAcceptedFn', {
+        functionName: `${this.stackName}-CallAccepted`,
+        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'call-accepted.ts'),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_18_X,
+        timeout: Duration.seconds(10),
+        environment: {
+          AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+          CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        },
+      });
+      this.agentPresenceTable.grantReadWriteData(callAcceptedFn);
+      this.callQueueTable.grantReadWriteData(callAcceptedFn);
+
+      const callAcceptedRes = chimeApiRoot.addResource('call-accepted');
+      callAcceptedRes.addMethod('POST', new apigw.LambdaIntegration(callAcceptedFn), {
+        authorizer: props.authorizer,
+        authorizationType: apigw.AuthorizationType.COGNITO,
+      });
+      try {
+        callAcceptedRes.addCorsPreflight(corsOptions);
+      } catch (e) {
+        if (!(`${e}`.includes('There is already a Construct with name')))
+          throw e;
+      }
+
+      // POST /chime/call-rejected
+      const callRejectedFn = new lambdaNode.NodejsFunction(this, 'CallRejectedFn', {
+        functionName: `${this.stackName}-CallRejected`,
+        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'call-rejected.ts'),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_18_X,
+        timeout: Duration.seconds(10),
+        environment: {
+          AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+          SMA_ID: sipMediaApp.sipMediaAppId,
+        },
+      });
+      this.agentPresenceTable.grantReadWriteData(callRejectedFn);
+      callRejectedFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['chime:UpdateSipMediaApplicationCall'],
+        resources: ['*'],
+      }));
+
+      const callRejectedRes = chimeApiRoot.addResource('call-rejected');
+      callRejectedRes.addMethod('POST', new apigw.LambdaIntegration(callRejectedFn), {
+        authorizer: props.authorizer,
+        authorizationType: apigw.AuthorizationType.COGNITO,
+      });
+      try {
+        callRejectedRes.addCorsPreflight(corsOptions);
+      } catch (e) {
+        if (!(`${e}`.includes('There is already a Construct with name')))
+          throw e;
+      }
+
+      // POST /chime/call-hungup
+      const callHungupFn = new lambdaNode.NodejsFunction(this, 'CallHungupFn', {
+        functionName: `${this.stackName}-CallHungup`,
+        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'call-hungup.ts'),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_18_X,
+        timeout: Duration.seconds(10),
+        environment: {
+          AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+          CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        },
+      });
+      this.agentPresenceTable.grantReadWriteData(callHungupFn);
+      this.callQueueTable.grantReadWriteData(callHungupFn);
+      callHungupFn.addToRolePolicy(chimeSdkPolicy);
+
+      const callHungupRes = chimeApiRoot.addResource('call-hungup');
+      callHungupRes.addMethod('POST', new apigw.LambdaIntegration(callHungupFn), {
+        authorizer: props.authorizer,
+        authorizationType: apigw.AuthorizationType.COGNITO,
+      });
+      try {
+        callHungupRes.addCorsPreflight(corsOptions);
+      } catch (e) {
+        if (!(`${e}`.includes('There is already a Construct with name')))
+          throw e;
+      }
     }
 
     // NOTE: The Agent presence API route is owned by the AdminStack to avoid
