@@ -15,6 +15,7 @@ import { ClinicInsuranceStack } from './stacks/clinic-insurance-stack';
 import { AdminStack } from './stacks/admin-stack';
 import { OpenDentalStack } from './stacks/opendental-stack';
 import { NotificationsStack } from './stacks/notifications-stack';
+import { ChimeStack } from './stacks/chime-stack';
 
 const app = new cdk.App();
 
@@ -76,6 +77,30 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminV3', {
   clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
   // ...existing code...
 });
+
+// Amazon Chime Voice Integration (temporarily removed)
+// Amazon Chime Voice Integration
+const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV3', {
+  env,
+  userPool: coreStack.userPool,
+});
+
+// Ensure ChimeStack is deployed after Core and Admin stacks (it augments the Admin API)
+// Ensure ChimeStack is deployed after Core (it augments the Admin API at runtime)
+chimeStack.addDependency(coreStack);
+
+// Configure Admin's MePresence function with the AgentPresence table name and minimal IAM
+// without creating a direct resource dependency (use predictable table name).
+const presenceTableName = `${chimeStack.stackName}-AgentPresence`;
+if ((adminStack as any).mePresenceFn) {
+  // Set env var so the admin lambda can know which table to query
+  (adminStack as any).mePresenceFn.addEnvironment('AGENT_PRESENCE_TABLE_NAME', presenceTableName);
+  // Attach least-privilege inline policy referencing the table ARN
+  (adminStack as any).mePresenceFn.addToRolePolicy(new cdk.aws_iam.PolicyStatement({
+    actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+    resources: [`arn:aws:dynamodb:${env.region}:${env.account}:table/${presenceTableName}`],
+  }));
+}
 
 
 // Schedules service (depends on other services for cross-table access)
@@ -152,4 +177,7 @@ chatbotStack.addDependency(coreStack);
 chatbotStack.addDependency(clinicPricingStack);
 chatbotStack.addDependency(clinicInsuranceStack);
 
+// Chime stack dependencies (temporarily removed)
+// chimeStack.addDependency(coreStack);
+// chimeStack.addDependency(adminStack);
 

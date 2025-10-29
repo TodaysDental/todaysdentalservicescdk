@@ -14,12 +14,14 @@ export interface AdminStackProps extends StackProps {
   userPoolId: string;
   clinicHoursTableName: string;
   staffClinicInfoTableName?: string;
+  agentPresenceTableName?: string;
 }
 
 export class AdminStack extends Stack {
   public readonly registerFn: lambdaNode.NodejsFunction;
   public readonly meFn: lambdaNode.NodejsFunction;
   public readonly usersFn: lambdaNode.NodejsFunction;
+  public readonly mePresenceFn?: lambdaNode.NodejsFunction;
   // ...existing code...
   public readonly api: apigw.RestApi;
   public readonly authorizer: apigw.CognitoUserPoolsAuthorizer;
@@ -162,6 +164,22 @@ export class AdminStack extends Stack {
       },
     });
 
+    // MePresence lambda owned by Admin stack. It will read AGENT_PRESENCE_TABLE_NAME
+    // from its environment. infra.ts will set this env var to the proper table name.
+    this.mePresenceFn = new lambdaNode.NodejsFunction(this, 'MePresenceFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'admin', 'presence.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 128,
+      timeout: Duration.seconds(10),
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node22' },
+      environment: {
+        AGENT_PRESENCE_TABLE_NAME: props.agentPresenceTableName ?? '',
+      },
+    });
+
+    // (Agent presence endpoint is wired from the Chime stack to avoid cross-stack cycles)
+
     // Allow MeFn to look up user groups if claims are missing
     this.meFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['cognito-idp:AdminListGroupsForUser'],
@@ -238,6 +256,16 @@ export class AdminStack extends Stack {
       authorizationType: apigw.AuthorizationType.COGNITO,
       methodResponses: [{ statusCode: '200' }],
     });
+
+    // GET /me/presence - returns AgentPresenceTable item for the authenticated agent
+    if (this.mePresenceFn) {
+      const mePresenceRes = meRes.addResource('presence');
+      mePresenceRes.addMethod('GET', new apigw.LambdaIntegration(this.mePresenceFn), {
+        authorizer: this.authorizer,
+        authorizationType: apigw.AuthorizationType.COGNITO,
+        methodResponses: [{ statusCode: '200' }],
+      });
+    }
 
 
     // ========================================

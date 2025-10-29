@@ -83,6 +83,9 @@ interface Patient {
     FName: string;
     LName: string;
     WirelessPhone?: string;
+    City?: string;
+    State?: string;
+    Zip?: string;
     [key: string]: any;
 }
 
@@ -855,14 +858,27 @@ async function getAppointmentSlots(queryParams: any, clinicConfig: ClinicConfig)
     }
 }
 
+// Enhanced getSchedules to support all Open Dental query params
 async function getSchedules(queryParams: any, clinicConfig: ClinicConfig) {
-    const { date } = queryParams;
-    if (!date) {
-        throw { status: 400, message: 'date parameter is required for schedules' };
+    // Supported params: date, dateStart, dateEnd, SchedType, BlockoutDefNum, ProvNum, EmployeeNum
+    const allowedParams = [
+        'date', 'dateStart', 'dateEnd', 'SchedType', 'BlockoutDefNum', 'ProvNum', 'EmployeeNum'
+    ];
+    const params: Record<string, string> = {};
+    for (const key of allowedParams) {
+        if (queryParams[key] !== undefined && queryParams[key] !== null && queryParams[key] !== '') {
+            params[key] = queryParams[key];
+        }
     }
-    
+    // Default to today's date if no date params provided
+    if (!params.date && !params.dateStart && !params.dateEnd) {
+        params.date = new Date().toISOString().slice(0, 10);
+    }
+    const search = Object.entries(params)
+        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+        .join('&');
     const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
-    const url = `${API_BASE_URL}/schedules?date=${encodeURIComponent(date)}`;
+    const url = `${API_BASE_URL}/schedules${search ? '?' + search : ''}`;
     try {
         const response = await axios.get(url, {
             headers: {
@@ -876,6 +892,33 @@ async function getSchedules(queryParams: any, clinicConfig: ClinicConfig) {
         throw {
             status: error.response?.status || 500,
             message: error.response?.data?.message || 'Error fetching schedules'
+        };
+    }
+}
+
+// Get a single schedule by ScheduleNum
+async function getScheduleByNum(scheduleNum: string, clinicConfig: ClinicConfig) {
+    if (!scheduleNum) {
+        throw { status: 400, message: 'ScheduleNum is required' };
+    }
+    const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
+    const url = `${API_BASE_URL}/schedules/${encodeURIComponent(scheduleNum)}`;
+    try {
+        const response = await axios.get(url, {
+            headers: {
+                'Authorization': AUTH_HEADER,
+                'Content-Type': 'application/json'
+            }
+        });
+        return response.data;
+    } catch (error: any) {
+        console.error(`Error fetching schedule ${scheduleNum}:`, error);
+        if (error.response?.status === 404) {
+            throw { status: 404, message: 'Schedule not found' };
+        }
+        throw {
+            status: error.response?.status || 500,
+            message: error.response?.data?.message || 'Error fetching schedule'
         };
     }
 }
@@ -1081,6 +1124,31 @@ async function findPatient(params: any, clinicConfig: ClinicConfig) {
 }
 
 async function createPatient(body: any, clinicConfig: ClinicConfig) {
+    // Validate required fields
+    const { FName, LName, Birthdate, WirelessPhone } = body;
+    const requiredFields = [
+        ['FName', FName],
+        ['LName', LName],
+        ['Birthdate', Birthdate],
+        ['WirelessPhone', WirelessPhone]
+    ];
+
+    const missingFields = requiredFields.filter(([field, value]) => !value);
+    if (missingFields.length > 0) {
+        throw {
+            status: 400,
+            message: `Missing required fields: ${missingFields.map(([field]) => field).join(', ')}`
+        };
+    }
+
+    // Validate birthdate format
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(Birthdate)) {
+        throw {
+            status: 400,
+            message: 'Birthdate must be in yyyy-mm-dd format'
+        };
+    }
+
     const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
     const url = `${API_BASE_URL}/patients`;
     try {
@@ -1544,8 +1612,15 @@ case normalizedResource === '/treatmentplans' && httpMethod === 'GET': {
                 break;
             }
             case normalizedResource === '/schedules' && httpMethod === 'GET': {
-                patient = await validateSession(event, clinicId);
+                // No session validation: open endpoint
                 response = await getSchedules(queryParams, clinicConfig);
+                break;
+            }
+            // GET /schedules/:ScheduleNum
+            case /^\/schedules\/(\d+)$/.test(normalizedResource) && httpMethod === 'GET': {
+                patient = await validateSession(event, clinicId);
+                const scheduleNum = normalizedResource.split('/')[2];
+                response = await getScheduleByNum(scheduleNum, clinicConfig);
                 break;
             }
             case /\/patientnotes\/.+/.test(normalizedResource) && httpMethod === 'GET': {
