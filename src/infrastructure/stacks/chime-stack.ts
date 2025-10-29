@@ -181,32 +181,60 @@ export class ChimeStack extends Stack {
       encryption: true,
     });
 
-    // Create SIP Rules for each clinic's phone number
-    // Track used phone numbers to avoid duplicates
-    const usedPhoneNumbers = new Set<string>();
+    // Create SIP Rules using reliable AWS SDK implementation
+    // This replaces the broken cdk-amazon-chime-resources library
     
-    clinicsData.forEach((clinic, index) => {
-      if (clinic.phoneNumber) {
-        // Only create SIP rule if phone number is unique
-        if (!usedPhoneNumbers.has(clinic.phoneNumber)) {
-          usedPhoneNumbers.add(clinic.phoneNumber);
-          
-          new chime.ChimeSipRule(this, `SipRule-${clinic.clinicId}`, {
-            name: `${this.stackName}-SipRule-${clinic.clinicId}`,
-            triggerType: chime.TriggerType.TO_PHONE_NUMBER,
-            triggerValue: clinic.phoneNumber,
-            targetApplications: [{
-              sipMediaApplicationId: sipMediaApp.sipMediaAppId,
-              priority: 1,
-              region: this.region,
-            }],
-          });
-          
-          console.log(`Created SIP rule for ${clinic.clinicId} with phone ${clinic.phoneNumber}`);
-        } else {
-          console.warn(`Skipping SIP rule for ${clinic.clinicId} - phone number ${clinic.phoneNumber} already used`);
-        }
+    const createSipRulesFn = new lambdaNode.NodejsFunction(this, 'CreateSipRulesFn', {
+      functionName: `${this.stackName}-CreateSipRules`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'create-sip-rules.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_18_X,
+      timeout: Duration.minutes(5),
+      // Do not set AWS_REGION: the Lambda runtime reserves this variable.
+      // If your function needs the region, read from process.env.AWS_REGION at runtime
+      // or pass a different custom variable name (e.g., COGNITO_REGION) instead.
+    });
+
+    // Grant permissions to manage SIP rules
+    createSipRulesFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'chime:CreateSipRule',
+        'chime:DeleteSipRule',
+        'chime:ListSipRules',
+        'chime:GetSipRule',
+        'chime:UpdateSipRule'
+      ],
+      resources: ['*']
+    }));
+
+    // Create custom resource to manage SIP rules
+    const sipRulesResource = new CustomResource(this, 'SipRulesManager', {
+      serviceToken: createSipRulesFn.functionArn,
+      properties: {
+        SipMediaApplicationId: sipMediaApp.sipMediaAppId,
+        StackName: this.stackName,
+        // Force update when clinics data changes
+        ClinicsDataHash: this.node.tryGetContext('clinicsDataHash') || Date.now().toString()
       }
+    });
+
+    // Ensure SIP rules are created after SMA
+    sipRulesResource.node.addDependency(sipMediaApp);
+
+    console.log('✅ SIP Rules will be created using reliable AWS SDK implementation');
+    console.log('🔧 Features: Conflict handling, retry logic, proper cleanup');
+    
+    // Output the number of unique phone numbers
+    const uniquePhoneNumbers = new Set<string>();
+    clinicsData.forEach((clinic) => {
+      if (clinic.phoneNumber) {
+        uniquePhoneNumbers.add(clinic.phoneNumber);
+      }
+    });
+    
+    new CfnOutput(this, 'UniquePhoneNumbers', {
+      value: uniquePhoneNumbers.size.toString(),
+      description: 'Number of unique phone numbers with SIP rules'
     });
 
     // Note: Phone numbers are configured in clinics.json and must be provisioned in the Chime SDK

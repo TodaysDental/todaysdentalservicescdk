@@ -80,7 +80,7 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminV3', {
 
 // Amazon Chime Voice Integration (temporarily removed)
 // Amazon Chime Voice Integration
-const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV3', {
+const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV5', {
   env,
   userPool: coreStack.userPool,
 });
