@@ -50,6 +50,21 @@ function getClinicsFromClaims(payload: JWTPayload): string[] {
      if (xRbc) {
       return xRbc.split(',').map((pair) => pair.split(':')[0]).filter(Boolean);
     }
+    
+    // Fallback: Extract clinic IDs from cognito:groups (e.g., clinic_dentistinperrysburg__ADMIN)
+    const groups = Array.isArray((payload as any)["cognito:groups"]) ? ((payload as any)["cognito:groups"] as string[]) : [];
+    if (groups.length > 0) {
+      const clinicIds = groups
+        .map((name) => {
+          const match = /^clinic_([^_][^\s]*)__[A-Z_]+$/.exec(String(name));
+          return match ? match[1] : '';
+        })
+        .filter(Boolean);
+      if (clinicIds.length > 0) {
+        return clinicIds;
+      }
+    }
+    
     return [];
 }
 // --- End Auth Helpers ---
