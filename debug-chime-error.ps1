@@ -133,3 +133,4 @@ Write-Host "2. If Lambda missing env vars -> Check stack outputs and redeploy" -
 Write-Host "3. If logs show specific errors -> Address those errors" -ForegroundColor White
 Write-Host "4. If JWT token expired -> Get new token from Cognito" -ForegroundColor White
 
+

@@ -296,10 +296,10 @@ export class AdminStack extends Stack {
       if (props.startSessionFnArn) {
         const importedStart = lambda.Function.fromFunctionArn(this, 'ImportedStartSessionFn', props.startSessionFnArn);
         
-        // Add API Gateway permission
+        // Add API Gateway permission - use wildcard to account for base path mapping
         importedStart.addPermission('ApiGatewayInvokeStartSession', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-          sourceArn: this.api.arnForExecuteApi('POST', '/chime/start-session')
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/start-session', '*')
         });
         
         const startSessionRes = chimeApiRoot.addResource('start-session');
@@ -312,10 +312,10 @@ export class AdminStack extends Stack {
       if (props.stopSessionFnArn) {
         const importedStop = lambda.Function.fromFunctionArn(this, 'ImportedStopSessionFn', props.stopSessionFnArn);
         
-        // Add API Gateway permission
+        // Add API Gateway permission - use wildcard to account for base path mapping
         importedStop.addPermission('ApiGatewayInvokeStopSession', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-          sourceArn: this.api.arnForExecuteApi('POST', '/chime/stop-session')
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/stop-session', '*')
         });
         
         const stopSessionRes = chimeApiRoot.addResource('stop-session');
@@ -328,10 +328,10 @@ export class AdminStack extends Stack {
       if (props.outboundCallFnArn) {
         const importedOutbound = lambda.Function.fromFunctionArn(this, 'ImportedOutboundCallFn', props.outboundCallFnArn);
         
-        // Add API Gateway permission
+        // Add API Gateway permission - use wildcard to account for base path mapping
         importedOutbound.addPermission('ApiGatewayInvokeOutboundCall', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-          sourceArn: this.api.arnForExecuteApi('POST', '/chime/outbound-call')
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/outbound-call', '*')
         });
         
         const outboundCallRes = chimeApiRoot.addResource('outbound-call');
@@ -344,10 +344,10 @@ export class AdminStack extends Stack {
       if (props.transferCallFnArn) {
         const importedTransfer = lambda.Function.fromFunctionArn(this, 'ImportedTransferCallFn', props.transferCallFnArn);
         
-        // Add API Gateway permission
+        // Add API Gateway permission - use wildcard to account for base path mapping
         importedTransfer.addPermission('ApiGatewayInvokeTransferCall', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-          sourceArn: this.api.arnForExecuteApi('POST', '/chime/transfer-call')
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/transfer-call', '*')
         });
         
         const transferCallRes = chimeApiRoot.addResource('transfer-call');
@@ -360,10 +360,10 @@ export class AdminStack extends Stack {
       if (props.callAcceptedFnArn) {
         const importedCallAccepted = lambda.Function.fromFunctionArn(this, 'ImportedCallAcceptedFn', props.callAcceptedFnArn);
         
-        // Add API Gateway permission
+        // Add API Gateway permission - use wildcard to account for base path mapping
         importedCallAccepted.addPermission('ApiGatewayInvokeCallAccepted', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-          sourceArn: this.api.arnForExecuteApi('POST', '/chime/call-accepted')
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/call-accepted', '*')
         });
         
         const callAcceptedRes = chimeApiRoot.addResource('call-accepted');
@@ -376,10 +376,10 @@ export class AdminStack extends Stack {
       if (props.callRejectedFnArn) {
         const importedCallRejected = lambda.Function.fromFunctionArn(this, 'ImportedCallRejectedFn', props.callRejectedFnArn);
         
-        // Add API Gateway permission
+        // Add API Gateway permission - use wildcard to account for base path mapping
         importedCallRejected.addPermission('ApiGatewayInvokeCallRejected', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-          sourceArn: this.api.arnForExecuteApi('POST', '/chime/call-rejected')
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/call-rejected', '*')
         });
         
         const callRejectedRes = chimeApiRoot.addResource('call-rejected');
@@ -392,10 +392,10 @@ export class AdminStack extends Stack {
       if (props.callHungupFnArn) {
         const importedCallHungup = lambda.Function.fromFunctionArn(this, 'ImportedCallHungupFn', props.callHungupFnArn);
         
-        // Add API Gateway permission
+        // Add API Gateway permission - use wildcard to account for base path mapping
         importedCallHungup.addPermission('ApiGatewayInvokeCallHungup', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-          sourceArn: this.api.arnForExecuteApi('POST', '/chime/call-hungup')
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/call-hungup', '*')
         });
         
         const callHungupRes = chimeApiRoot.addResource('call-hungup');

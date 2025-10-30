@@ -38,6 +38,7 @@ export class ChimeStack extends Stack {
       pointInTimeRecovery: true,
     });
 
+
     // Agent Presence table
     this.agentPresenceTable = new dynamodb.Table(this, 'AgentPresenceTable', {
       tableName: `${this.stackName}-AgentPresence`,
@@ -48,13 +49,13 @@ export class ChimeStack extends Stack {
     });
 
     // GSI for querying by clinic
-    /*
+
     this.agentPresenceTable.addGlobalSecondaryIndex({
       indexName: 'clinicId-index',
       partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
-    */
+
 
     // Call Queue table
     this.callQueueTable = new dynamodb.Table(this, 'CallQueueTable', {
@@ -102,8 +103,14 @@ export class ChimeStack extends Stack {
     smaHandler.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
+        // SIP Media Application actions
         'chime:CreateSipMediaApplicationCall',
         'chime:UpdateSipMediaApplicationCall',
+        // Include both old namespace and new namespace for meetings
+        'chime:CreateMeeting',
+        'chime:CreateAttendee',
+        'chime:DeleteMeeting',
+        // SDK meetings namespace
         'chime-sdk-meetings:CreateMeeting',
         'chime-sdk-meetings:CreateAttendee',
         'chime-sdk-meetings:DeleteMeeting',
@@ -156,6 +163,15 @@ export class ChimeStack extends Stack {
             'chime:DeleteSipMediaApplication',
           ],
           resources: ['*'],
+        }),
+        // Allow the custom resource to read/add the Lambda resource policy for the SMA handler
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'lambda:GetPolicy',
+            'lambda:AddPermission',
+          ],
+          resources: [smaHandler.functionArn],
         }),
       ]),
     });
@@ -245,6 +261,16 @@ export class ChimeStack extends Stack {
     const chimeSdkPolicy = new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
+        // Include both old namespace and new namespace for compatibility
+        'chime:CreateMeeting',
+        'chime:CreateAttendee',
+        'chime:DeleteMeeting',
+        'chime:GetMeeting',
+        'chime:ListAttendees',
+        'chime:DeleteAttendee',
+        'chime:StartMeetingTranscription',
+        'chime:StopMeetingTranscription',
+        // SDK meetings namespace
         'chime-sdk-meetings:CreateMeeting',
         'chime-sdk-meetings:CreateAttendee',
         'chime-sdk-meetings:DeleteMeeting',
@@ -311,6 +337,12 @@ export class ChimeStack extends Stack {
     });
     startSessionFn.addToRolePolicy(chimeSdkPolicy);
     this.agentPresenceTable.grantReadWriteData(startSessionFn);
+    
+    // Add API Gateway permission for Admin API to invoke this function
+    startSessionFn.addPermission('AdminApiInvokeStartSession', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
 
     // Lambda for POST /chime/stop-session
     const stopSessionFn = new lambdaNode.NodejsFunction(this, 'StopSessionFn', {
@@ -325,6 +357,12 @@ export class ChimeStack extends Stack {
     });
     stopSessionFn.addToRolePolicy(chimeSdkPolicy);
     this.agentPresenceTable.grantReadWriteData(stopSessionFn);
+    
+    // Add API Gateway permission for Admin API to invoke this function
+    stopSessionFn.addPermission('AdminApiInvokeStopSession', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
 
     // Lambda for POST /chime/outbound-call
     const outboundCallFn = new lambdaNode.NodejsFunction(this, 'OutboundCallFn', {
@@ -344,6 +382,12 @@ export class ChimeStack extends Stack {
     outboundCallFn.addToRolePolicy(cognitoPolicy);
     this.agentPresenceTable.grantReadWriteData(outboundCallFn);
     this.clinicsTable.grantReadData(outboundCallFn);
+    
+    // Add API Gateway permission for Admin API to invoke this function
+    outboundCallFn.addPermission('AdminApiInvokeOutboundCall', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
     
     // Grant permission to make outbound calls
     outboundCallFn.addToRolePolicy(new iam.PolicyStatement({
@@ -373,6 +417,12 @@ export class ChimeStack extends Stack {
         actions: ['chime:UpdateSipMediaApplicationCall'],
         resources: ['*'],
     }));
+    
+    // Add API Gateway permission for Admin API to invoke this function
+    transferCallFn.addPermission('AdminApiInvokeTransferCall', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
 
     // Lambda for POST /chime/call-accepted
     const callAcceptedFn = new lambdaNode.NodejsFunction(this, 'CallAcceptedFn', {
@@ -388,6 +438,12 @@ export class ChimeStack extends Stack {
     });
     this.agentPresenceTable.grantReadWriteData(callAcceptedFn);
     this.callQueueTable.grantReadWriteData(callAcceptedFn);
+    
+    // Add API Gateway permission for Admin API to invoke this function
+    callAcceptedFn.addPermission('AdminApiInvokeCallAccepted', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
 
     // Lambda for POST /chime/call-rejected
     const callRejectedFn = new lambdaNode.NodejsFunction(this, 'CallRejectedFn', {
@@ -409,6 +465,12 @@ export class ChimeStack extends Stack {
       actions: ['chime:UpdateSipMediaApplicationCall'],
       resources: [`arn:aws:chime:${this.region}:${this.account}:sma/${sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId')}`],
     }));
+    
+    // Add API Gateway permission for Admin API to invoke this function
+    callRejectedFn.addPermission('AdminApiInvokeCallRejected', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
 
     // Lambda for POST /chime/call-hungup
     const callHungupFn = new lambdaNode.NodejsFunction(this, 'CallHungupFn', {
@@ -424,6 +486,12 @@ export class ChimeStack extends Stack {
     });
     this.agentPresenceTable.grantReadWriteData(callHungupFn);
     this.callQueueTable.grantReadWriteData(callHungupFn);
+    
+    // Add API Gateway permission for Admin API to invoke this function
+    callHungupFn.addPermission('AdminApiInvokeCallHungup', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
 
     // ========================================
     // 4. API Gateway Routes (deprecated - now handled by AdminStack)

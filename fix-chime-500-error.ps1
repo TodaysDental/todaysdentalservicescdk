@@ -64,3 +64,4 @@ Write-Host "1. AdminStack not deployed" -ForegroundColor White
 Write-Host "2. API Gateway endpoints exist but Lambda integrations missing" -ForegroundColor White
 Write-Host "3. ChimeStack Lambda functions exist but not connected to API" -ForegroundColor White
 
+
