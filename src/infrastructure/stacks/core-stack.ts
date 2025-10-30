@@ -72,10 +72,10 @@ export class CoreStack extends Stack {
     const triggersFn = new lambdaNode.NodejsFunction(this, 'CognitoTriggersFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'auth', 'index.ts'),
       handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_22_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 256,
       timeout: Duration.seconds(30),
-      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node20' },
       environment: {
         APP_NAME: 'TodaysDentalInsights',
         FROM_EMAIL: 'no-reply@todaysdentalinsights.com',
@@ -186,10 +186,10 @@ export class CoreStack extends Stack {
     const initiateFn = new lambdaNode.NodejsFunction(this, 'AuthInitiateFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'auth', 'initiate.ts'),
       handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_22_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 256,
       timeout: Duration.seconds(30),
-      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node20' },
       environment: {
         USER_POOL_CLIENT_ID: this.userPoolClient.userPoolClientId,
         COGNITO_REGION: Stack.of(this).region,
@@ -204,10 +204,10 @@ export class CoreStack extends Stack {
     const verifyFn = new lambdaNode.NodejsFunction(this, 'AuthVerifyFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'auth', 'verify.ts'),
       handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_22_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 256,
       timeout: Duration.seconds(30),
-      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node20' },
       environment: {
         USER_POOL_CLIENT_ID: this.userPoolClient.userPoolClientId,
         COGNITO_REGION: Stack.of(this).region,

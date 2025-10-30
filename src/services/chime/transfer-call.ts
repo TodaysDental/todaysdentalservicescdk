@@ -1,11 +1,15 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const chimeVoice = new ChimeSDKVoiceClient({});
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
+const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
+const SMA_ID = process.env.SMA_ID;
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
     
@@ -41,10 +45,31 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // 2. Update call record with transfer status
+        // 2. Find the call record in the call queue table
+        const { Items: callRecords } = await ddb.send(new QueryCommand({
+            TableName: CALL_QUEUE_TABLE_NAME,
+            IndexName: 'callId-index',
+            KeyConditionExpression: 'callId = :callId',
+            ExpressionAttributeValues: {
+                ':callId': callId
+            }
+        }));
+
+        if (!callRecords || callRecords.length === 0) {
+            return {
+                statusCode: 404,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Call not found' })
+            };
+        }
+
+        const callRecord = callRecords[0];
+        const { clinicId, queuePosition } = callRecord;
+
+        // Update call record with transfer status
         await ddb.send(new UpdateCommand({
-            TableName: AGENT_PRESENCE_TABLE_NAME,
-            Key: { callId },
+            TableName: CALL_QUEUE_TABLE_NAME,
+            Key: { clinicId, queuePosition },
             UpdateExpression: 'SET transferStatus = :ts, transferToAgentId = :ta',
             ExpressionAttributeValues: {
                 ':ts': 'pending',
@@ -52,7 +77,25 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             }
         }));
 
-        // The SIP Media Application will handle the actual transfer in its next event cycle
+        // 3. Trigger the SMA to handle the transfer
+        if (SMA_ID) {
+            try {
+                await chimeVoice.send(new UpdateSipMediaApplicationCallCommand({
+                    SipMediaApplicationId: SMA_ID,
+                    TransactionId: callId,
+                    Arguments: {
+                        action: 'TRANSFER_INITIATED',
+                        fromAgentId,
+                        toAgentId
+                    }
+                }));
+            } catch (updateError) {
+                console.error('Error triggering SMA for transfer:', updateError);
+                // Continue even if SMA update fails - the transfer status is already recorded
+            }
+        } else {
+            console.warn('SMA_ID not configured - transfer will not be triggered automatically');
+        }
 
         return {
             statusCode: 200,

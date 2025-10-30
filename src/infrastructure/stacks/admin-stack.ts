@@ -15,6 +15,16 @@ export interface AdminStackProps extends StackProps {
   clinicHoursTableName: string;
   staffClinicInfoTableName?: string;
   agentPresenceTableName?: string;
+  // Optional ARNs for Chime lambdas (imported from Chime stack to avoid
+  // two-way construct references). When provided, Admin stack will add API
+  // routes that integrate with these functions.
+  startSessionFnArn?: string;
+  stopSessionFnArn?: string;
+  outboundCallFnArn?: string;
+  transferCallFnArn?: string;
+  callAcceptedFnArn?: string;
+  callRejectedFnArn?: string;
+  callHungupFnArn?: string;
 }
 
 export class AdminStack extends Stack {
@@ -84,10 +94,10 @@ export class AdminStack extends Stack {
     this.registerFn = new lambdaNode.NodejsFunction(this, 'AdminRegisterFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'admin', 'register.ts'),
       handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_22_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 256,
       timeout: Duration.seconds(30),
-      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node22' },
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
         USER_POOL_ID: props.userPoolId,
         COGNITO_REGION: Stack.of(this).region,
@@ -114,10 +124,10 @@ export class AdminStack extends Stack {
     this.usersFn = new lambdaNode.NodejsFunction(this, 'AdminUsersFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'admin', 'users.ts'),
       handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_22_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 256,
       timeout: Duration.seconds(30),
-      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node22' },
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
         USER_POOL_ID: props.userPoolId,
         COGNITO_REGION: Stack.of(this).region,
@@ -153,10 +163,10 @@ export class AdminStack extends Stack {
     this.meFn = new lambdaNode.NodejsFunction(this, 'MeFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'admin', 'me.ts'),
       handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_22_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 128,
       timeout: Duration.seconds(10),
-      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node22' },
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
         FRONTEND_DOMAIN: String(frontendDomain),
         USER_POOL_ID: props.userPoolId,
@@ -169,14 +179,22 @@ export class AdminStack extends Stack {
     this.mePresenceFn = new lambdaNode.NodejsFunction(this, 'MePresenceFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'admin', 'presence.ts'),
       handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_22_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 128,
       timeout: Duration.seconds(10),
-      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node22' },
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
         AGENT_PRESENCE_TABLE_NAME: props.agentPresenceTableName ?? '',
       },
     });
+
+    // Grant read permissions to the AgentPresence table if provided
+    if (props.agentPresenceTableName) {
+      this.mePresenceFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${props.agentPresenceTableName}`],
+      }));
+    }
 
     // (Agent presence endpoint is wired from the Chime stack to avoid cross-stack cycles)
 
@@ -265,6 +283,127 @@ export class AdminStack extends Stack {
         authorizationType: apigw.AuthorizationType.COGNITO,
         methodResponses: [{ statusCode: '200' }],
       });
+    }
+
+    // If Chime lambdas are provided by ARN (exported from Chime stack), import
+    // them here and wire API Gateway routes to the imported functions. This
+    // avoids passing the Admin API object into the Chime stack which would
+    // create a circular dependency.
+    if (props.startSessionFnArn || props.stopSessionFnArn || props.outboundCallFnArn || props.transferCallFnArn || 
+        props.callAcceptedFnArn || props.callRejectedFnArn || props.callHungupFnArn) {
+      const chimeApiRoot = this.api.root.getResource('chime') ?? this.api.root.addResource('chime');
+
+      if (props.startSessionFnArn) {
+        const importedStart = lambda.Function.fromFunctionArn(this, 'ImportedStartSessionFn', props.startSessionFnArn);
+        
+        // Add API Gateway permission
+        importedStart.addPermission('ApiGatewayInvokeStartSession', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('POST', '/chime/start-session')
+        });
+        
+        const startSessionRes = chimeApiRoot.addResource('start-session');
+        startSessionRes.addMethod('POST', new apigw.LambdaIntegration(importedStart, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.COGNITO,
+        });
+      }
+
+      if (props.stopSessionFnArn) {
+        const importedStop = lambda.Function.fromFunctionArn(this, 'ImportedStopSessionFn', props.stopSessionFnArn);
+        
+        // Add API Gateway permission
+        importedStop.addPermission('ApiGatewayInvokeStopSession', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('POST', '/chime/stop-session')
+        });
+        
+        const stopSessionRes = chimeApiRoot.addResource('stop-session');
+        stopSessionRes.addMethod('POST', new apigw.LambdaIntegration(importedStop, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.COGNITO,
+        });
+      }
+
+      if (props.outboundCallFnArn) {
+        const importedOutbound = lambda.Function.fromFunctionArn(this, 'ImportedOutboundCallFn', props.outboundCallFnArn);
+        
+        // Add API Gateway permission
+        importedOutbound.addPermission('ApiGatewayInvokeOutboundCall', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('POST', '/chime/outbound-call')
+        });
+        
+        const outboundCallRes = chimeApiRoot.addResource('outbound-call');
+        outboundCallRes.addMethod('POST', new apigw.LambdaIntegration(importedOutbound, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.COGNITO,
+        });
+      }
+
+      if (props.transferCallFnArn) {
+        const importedTransfer = lambda.Function.fromFunctionArn(this, 'ImportedTransferCallFn', props.transferCallFnArn);
+        
+        // Add API Gateway permission
+        importedTransfer.addPermission('ApiGatewayInvokeTransferCall', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('POST', '/chime/transfer-call')
+        });
+        
+        const transferCallRes = chimeApiRoot.addResource('transfer-call');
+        transferCallRes.addMethod('POST', new apigw.LambdaIntegration(importedTransfer, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.COGNITO,
+        });
+      }
+
+      if (props.callAcceptedFnArn) {
+        const importedCallAccepted = lambda.Function.fromFunctionArn(this, 'ImportedCallAcceptedFn', props.callAcceptedFnArn);
+        
+        // Add API Gateway permission
+        importedCallAccepted.addPermission('ApiGatewayInvokeCallAccepted', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('POST', '/chime/call-accepted')
+        });
+        
+        const callAcceptedRes = chimeApiRoot.addResource('call-accepted');
+        callAcceptedRes.addMethod('POST', new apigw.LambdaIntegration(importedCallAccepted, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.COGNITO,
+        });
+      }
+
+      if (props.callRejectedFnArn) {
+        const importedCallRejected = lambda.Function.fromFunctionArn(this, 'ImportedCallRejectedFn', props.callRejectedFnArn);
+        
+        // Add API Gateway permission
+        importedCallRejected.addPermission('ApiGatewayInvokeCallRejected', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('POST', '/chime/call-rejected')
+        });
+        
+        const callRejectedRes = chimeApiRoot.addResource('call-rejected');
+        callRejectedRes.addMethod('POST', new apigw.LambdaIntegration(importedCallRejected, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.COGNITO,
+        });
+      }
+
+      if (props.callHungupFnArn) {
+        const importedCallHungup = lambda.Function.fromFunctionArn(this, 'ImportedCallHungupFn', props.callHungupFnArn);
+        
+        // Add API Gateway permission
+        importedCallHungup.addPermission('ApiGatewayInvokeCallHungup', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('POST', '/chime/call-hungup')
+        });
+        
+        const callHungupRes = chimeApiRoot.addResource('call-hungup');
+        callHungupRes.addMethod('POST', new apigw.LambdaIntegration(importedCallHungup, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.COGNITO,
+        });
+      }
     }
 
 

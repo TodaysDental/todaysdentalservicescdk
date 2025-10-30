@@ -7,6 +7,7 @@ import { buildCorsHeaders } from '../../shared/utils/cors';
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const chimeVoice = new ChimeSDKVoiceClient({});
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
+const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 const SMA_ID = process.env.SMA_ID;
 
 /**
@@ -15,7 +16,16 @@ const SMA_ID = process.env.SMA_ID;
  * Updates the database and attempts to find another available agent
  */
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-    console.log('Call rejected event:', JSON.stringify(event, null, 2));
+    // Log function invocation with request metadata
+    console.log('[call-rejected] Function invoked', {
+      httpMethod: event.httpMethod,
+      path: event.path,
+      requestId: event.requestContext?.requestId,
+      sourceIp: (event.requestContext as any)?.identity?.sourceIp,
+      userAgent: (event.requestContext as any)?.identity?.userAgent,
+      hasBody: !!event.body,
+      bodyLength: event.body?.length || 0
+    });
     
     const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] }, event.headers?.origin);
 
@@ -30,8 +40,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         const body = JSON.parse(event.body);
         const { callId, agentId, reason } = body;
+        
+        console.log('[call-rejected] Parsed request body', {
+          callId,
+          agentId,
+          reason,
+          hasCallId: !!callId,
+          hasAgentId: !!agentId
+        });
 
         if (!callId || !agentId) {
+            console.error('[call-rejected] Missing required parameters', {
+              hasCallId: !!callId,
+              hasAgentId: !!agentId
+            });
             return { 
                 statusCode: 400, 
                 headers: corsHeaders, 
@@ -39,19 +61,35 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // 1. Get the current call details
-        const { Item: callRecord } = await ddb.send(new GetCommand({
-            TableName: AGENT_PRESENCE_TABLE_NAME,
-            Key: { callId }
+        // 1. Get the current call details from the call queue table
+        console.log('[call-rejected] Retrieving call details', { callId });
+        const { Items: callRecords } = await ddb.send(new QueryCommand({
+            TableName: CALL_QUEUE_TABLE_NAME,
+            IndexName: 'callId-index',
+            KeyConditionExpression: 'callId = :callId',
+            ExpressionAttributeValues: {
+                ':callId': callId
+            }
         }));
 
-        if (!callRecord) {
+        if (!callRecords || callRecords.length === 0) {
+            console.error('[call-rejected] Call not found', { callId });
             return {
                 statusCode: 404,
                 headers: corsHeaders,
                 body: JSON.stringify({ message: 'Call not found' })
             };
         }
+
+        const callRecord = callRecords[0];
+        const { clinicId, queuePosition } = callRecord;
+        
+        console.log('[call-rejected] Current call state', {
+          callId,
+          clinicId: callRecord.clinicId,
+          currentAgents: callRecord.agentIds?.length || 0,
+          callStatus: callRecord.callStatus
+        });
 
         // 2. Remove the rejecting agent from the list of available agents
         const remainingAgents = callRecord.agentIds?.filter((id: string) => id !== agentId) || [];
@@ -70,8 +108,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // 4. If there are remaining agents, update the call record
         if (remainingAgents.length > 0) {
             await ddb.send(new UpdateCommand({
-                TableName: AGENT_PRESENCE_TABLE_NAME,
-                Key: { callId },
+                TableName: CALL_QUEUE_TABLE_NAME,
+                Key: { clinicId, queuePosition },
                 UpdateExpression: 'SET agentIds = :agents, rejectedAgents = list_append(if_not_exists(rejectedAgents, :empty), :rejected)',
                 ExpressionAttributeValues: {
                     ':agents': remainingAgents,
@@ -120,8 +158,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 const newAgentIds = newAgents.map(a => a.agentId);
                 
                 await ddb.send(new UpdateCommand({
-                    TableName: AGENT_PRESENCE_TABLE_NAME,
-                    Key: { callId },
+                    TableName: CALL_QUEUE_TABLE_NAME,
+                    Key: { clinicId, queuePosition },
                     UpdateExpression: 'SET agentIds = :agents, retriedAt = :timestamp',
                     ExpressionAttributeValues: {
                         ':agents': newAgentIds,
@@ -158,9 +196,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             } else {
                 // No agents available - update call status
                 await ddb.send(new UpdateCommand({
-                    TableName: AGENT_PRESENCE_TABLE_NAME,
-                    Key: { callId },
-                    UpdateExpression: 'SET callStatus = :status, noAgentsAvailableAt = :timestamp',
+                    TableName: CALL_QUEUE_TABLE_NAME,
+                    Key: { clinicId, queuePosition },
+                    UpdateExpression: 'SET #status = :status, noAgentsAvailableAt = :timestamp',
+                    ExpressionAttributeNames: {
+                        '#status': 'status'
+                    },
                     ExpressionAttributeValues: {
                         ':status': 'no_agents_available',
                         ':timestamp': new Date().toISOString()

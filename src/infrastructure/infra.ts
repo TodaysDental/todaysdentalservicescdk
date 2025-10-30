@@ -67,7 +67,18 @@ const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNoti
   templatesTableName: templatesStack.templatesTable.tableName,
 });
 
-// Admin services
+// Amazon Chime Voice Integration - create Chime stack first and export
+// Lambda ARNs. We intentionally do NOT pass the Admin API object into the
+// Chime stack to avoid a two-way construct dependency which leads to
+// cyclic CloudFormation references.
+const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV5', {
+  env,
+  userPool: coreStack.userPool,
+});
+
+// Admin services (AdminStack will import Chime lambda ARNs and wire API
+// methods). Importing the ARNs makes Admin depend on Chime (one-way), which
+// avoids the cyclic dependency we were seeing.
 const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminV3', {
   env,
   userPool: coreStack.userPool,
@@ -75,32 +86,27 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminV3', {
   userPoolId: coreStack.userPool.userPoolId,
   staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
   clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
-  // ...existing code...
+  // Import ARNs exported by the Chime stack
+  startSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StartSessionArn`),
+  stopSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StopSessionArn`),
+  outboundCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-OutboundCallArn`),
+  transferCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-TransferCallArn`),
+  callAcceptedFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallAcceptedArn`),
+  callRejectedFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallRejectedArn`),
+  callHungupFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallHungupArn`),
+  agentPresenceTableName: cdk.Fn.importValue(`${chimeStack.stackName}-AgentPresenceTableName`),
 });
 
-// Amazon Chime Voice Integration (temporarily removed)
-// Amazon Chime Voice Integration
-const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV5', {
-  env,
-  userPool: coreStack.userPool,
-});
+// Ensure Admin is deployed after Chime (explicit dependency for clarity)
+adminStack.addDependency(chimeStack);
 
-// Ensure ChimeStack is deployed after Core and Admin stacks (it augments the Admin API)
 // Ensure ChimeStack is deployed after Core (it augments the Admin API at runtime)
+// Note: Don't add explicit dependency on AdminStack to avoid circular dependency
+// CDK will automatically determine the dependency based on the API resource usage
 chimeStack.addDependency(coreStack);
 
-// Configure Admin's MePresence function with the AgentPresence table name and minimal IAM
-// without creating a direct resource dependency (use predictable table name).
-const presenceTableName = `${chimeStack.stackName}-AgentPresence`;
-if ((adminStack as any).mePresenceFn) {
-  // Set env var so the admin lambda can know which table to query
-  (adminStack as any).mePresenceFn.addEnvironment('AGENT_PRESENCE_TABLE_NAME', presenceTableName);
-  // Attach least-privilege inline policy referencing the table ARN
-  (adminStack as any).mePresenceFn.addToRolePolicy(new cdk.aws_iam.PolicyStatement({
-    actions: ['dynamodb:GetItem', 'dynamodb:Query'],
-    resources: [`arn:aws:dynamodb:${env.region}:${env.account}:table/${presenceTableName}`],
-  }));
-}
+// The Admin stack now receives the agent presence table name via props,
+// so no additional configuration is needed here.
 
 
 // Schedules service (depends on other services for cross-table access)

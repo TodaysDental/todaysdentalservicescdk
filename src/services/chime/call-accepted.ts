@@ -13,12 +13,22 @@ const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
  * Updates the database to reflect that the call has been accepted and which agent accepted it
  */
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-    console.log('Call accepted event:', JSON.stringify(event, null, 2));
+    // Log function invocation with request metadata
+    console.log('[call-accepted] Function invoked', {
+      httpMethod: event.httpMethod,
+      path: event.path,
+      requestId: event.requestContext?.requestId,
+      sourceIp: (event.requestContext as any)?.identity?.sourceIp,
+      userAgent: (event.requestContext as any)?.identity?.userAgent,
+      hasBody: !!event.body,
+      bodyLength: event.body?.length || 0
+    });
     
     const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] }, event.headers?.origin);
 
     try {
         if (!event.body) {
+            console.error('[call-accepted] Missing request body');
             return { 
                 statusCode: 400, 
                 headers: corsHeaders, 
@@ -28,8 +38,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         const body = JSON.parse(event.body);
         const { callId, agentId, meetingId } = body;
+        
+        console.log('[call-accepted] Parsed request body', {
+          callId,
+          agentId,
+          meetingId,
+          hasCallId: !!callId,
+          hasAgentId: !!agentId,
+          hasMeetingId: !!meetingId
+        });
 
         if (!callId || !agentId) {
+            console.error('[call-accepted] Missing required parameters', {
+              hasCallId: !!callId,
+              hasAgentId: !!agentId
+            });
             return { 
                 statusCode: 400, 
                 headers: corsHeaders, 
@@ -37,19 +60,48 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // 1. Update the call status to 'connected' and assign the agent
+        // 1. Find the call record in the call queue table
+        console.log('[call-accepted] Finding call record', { callId });
+        const { Items: callRecords } = await ddb.send(new QueryCommand({
+            TableName: CALL_QUEUE_TABLE_NAME,
+            IndexName: 'callId-index',
+            KeyConditionExpression: 'callId = :callId',
+            ExpressionAttributeValues: {
+                ':callId': callId
+            }
+        }));
+
+        if (!callRecords || callRecords.length === 0) {
+            console.error('[call-accepted] Call not found', { callId });
+            return {
+                statusCode: 404,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Call not found' })
+            };
+        }
+
+        const callRecord = callRecords[0];
+        const { clinicId, queuePosition } = callRecord;
+
+        // Update the call status to 'connected' and assign the agent
+        console.log('[call-accepted] Updating call status to connected', { callId, agentId, clinicId });
         await ddb.send(new UpdateCommand({
-            TableName: AGENT_PRESENCE_TABLE_NAME,
-            Key: { callId },
-            UpdateExpression: 'SET callStatus = :status, assignedAgentId = :agentId, acceptedAt = :timestamp',
+            TableName: CALL_QUEUE_TABLE_NAME,
+            Key: { clinicId, queuePosition },
+            UpdateExpression: 'SET #status = :status, assignedAgentId = :agentId, acceptedAt = :timestamp',
+            ExpressionAttributeNames: {
+                '#status': 'status'
+            },
             ExpressionAttributeValues: {
                 ':status': 'connected',
                 ':agentId': agentId,
                 ':timestamp': new Date().toISOString()
             }
         }));
+        console.log('[call-accepted] Call status updated successfully');
 
         // 2. Update the agent's status to indicate they're on a call
+        console.log('[call-accepted] Updating agent status to OnCall', { agentId });
         await ddb.send(new UpdateCommand({
             TableName: AGENT_PRESENCE_TABLE_NAME,
             Key: { agentId },
@@ -63,20 +115,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 ':timestamp': new Date().toISOString()
             }
         }));
+        console.log('[call-accepted] Agent status updated to OnCall');
 
         // 3. Update all other agents who were ringing for this call to stop ringing
-        // First, get the list of agents who were notified
-        const { Items } = await ddb.send(new QueryCommand({
-            TableName: AGENT_PRESENCE_TABLE_NAME,
-            KeyConditionExpression: 'callId = :callId',
-            ExpressionAttributeValues: {
-                ':callId': callId
-            },
-            ProjectionExpression: 'agentIds'
-        }));
-
-        if (Items && Items[0] && Items[0].agentIds) {
-            const otherAgents = Items[0].agentIds.filter((id: string) => id !== agentId);
+        // Get the list of agents from the call record
+        if (callRecord.agentIds && callRecord.agentIds.length > 0) {
+            const otherAgents = callRecord.agentIds.filter((id: string) => id !== agentId);
             
             // Update each other agent's ringing status
             await Promise.all(otherAgents.map((otherAgentId: string) => 
@@ -91,46 +135,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             ));
         }
 
-        // 4. If the call was in a queue, remove it from the queue
-        if (CALL_QUEUE_TABLE_NAME) {
-            // Get the call's clinic ID
-            const { Item: callRecord } = await ddb.send(new GetCommand({
-                TableName: AGENT_PRESENCE_TABLE_NAME,
-                Key: { callId }
-            }));
+        // Note: We already updated the call status in the queue table above
 
-            if (callRecord?.clinicId) {
-                // Find and update the queue entry
-                const { Items: queueItems } = await ddb.send(new QueryCommand({
-                    TableName: CALL_QUEUE_TABLE_NAME,
-                    IndexName: 'callId-index',
-                    KeyConditionExpression: 'callId = :callId',
-                    ExpressionAttributeValues: {
-                        ':callId': callId
-                    }
-                }));
-
-                if (queueItems && queueItems[0]) {
-                    await ddb.send(new UpdateCommand({
-                        TableName: CALL_QUEUE_TABLE_NAME,
-                        Key: {
-                            clinicId: callRecord.clinicId,
-                            queuePosition: queueItems[0].queuePosition
-                        },
-                        UpdateExpression: 'SET #status = :status, connectedAt = :timestamp',
-                        ExpressionAttributeNames: {
-                            '#status': 'status'
-                        },
-                        ExpressionAttributeValues: {
-                            ':status': 'connected',
-                            ':timestamp': new Date().toISOString()
-                        }
-                    }));
-                }
-            }
-        }
-
-        console.log(`Call ${callId} accepted by agent ${agentId}`);
+        console.log('[call-accepted] Call acceptance processed successfully', {
+          callId,
+          agentId,
+          meetingId
+        });
 
         return {
             statusCode: 200,
@@ -143,12 +154,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             })
         };
 
-    } catch (error) {
-        console.error('Error processing call acceptance:', error);
+    } catch (error: any) {
+        const errorContext = {
+          message: error?.message,
+          code: error?.name || error?.code,
+          stack: error?.stack,
+          requestId: event.requestContext?.requestId
+        };
+        console.error('[call-accepted] Error processing call acceptance:', errorContext);
+        
         return {
             statusCode: 500,
             headers: corsHeaders,
-            body: JSON.stringify({ message: 'Internal server error' })
+            body: JSON.stringify({ 
+              message: 'Internal server error',
+              error: error?.message,
+              code: error?.name || error?.code
+            })
         };
     }
 };

@@ -6,10 +6,13 @@ import { ChimeSDKMeetingsClient, CreateMeetingCommand, CreateAttendeeCommand, De
 // It is NOT triggered by API Gateway. It is triggered by the Chime SDK SIP Media Application.
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const chime = new ChimeSDKMeetingsClient({});
+// Chime meetings must be created in a supported media region
+const CHIME_MEDIA_REGION = 'us-east-1';
+const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 const CLINICS_TABLE_NAME = process.env.CLINICS_TABLE_NAME;
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
+const HOLD_MUSIC_BUCKET = process.env.HOLD_MUSIC_BUCKET;
 
 // Default queue timeout in seconds (10 minutes)
 const QUEUE_TIMEOUT = 600;
@@ -210,23 +213,15 @@ const buildHangupAction = (message?: string) => {
 async function createIncomingCallMeeting(callId: string, clinicId: string) {
     const meetingResponse = await chime.send(new CreateMeetingCommand({
         ClientRequestToken: `incoming-${callId}`,
-        MediaRegion: process.env.AWS_REGION,
+        MediaRegion: CHIME_MEDIA_REGION,
         ExternalMeetingId: `incoming-${callId}-${clinicId}`,
     }));
 
     const meeting = meetingResponse.Meeting;
     if (!meeting) throw new Error('Failed to create meeting');
 
-    // Store meeting info in DynamoDB with TTL
-    await ddb.send(new UpdateCommand({
-        TableName: AGENT_PRESENCE_TABLE_NAME,
-        Key: { callId },
-        UpdateExpression: 'SET meetingInfo = :m, ttl = :ttl',
-        ExpressionAttributeValues: {
-            ':m': meeting,
-            ':ttl': Math.floor(Date.now() / 1000) + MEETING_TTL
-        }
-    }));
+    // Store meeting info in call queue table with TTL
+    // Note: We'll store this in the call queue table when we add the call to queue
 
     return meeting;
 }
@@ -341,19 +336,33 @@ export const handler = async (event: any): Promise<any> => {
                     const meeting = await createIncomingCallMeeting(callId, clinicId);
                     
                     // Keep the caller in a loop with periodic updates
-                    return buildActions([
-                        buildSpeakAndBridgeAction(message),
-                        {
-                            Type: 'Play',
+                    const actions: any[] = [];
+                    
+                    // First, speak the queue position message
+                    actions.push({
+                        Type: 'Speak',
+                        Parameters: {
+                            Text: message,
+                            Voice: 'Joanna',
+                            Engine: 'neural'
+                        }
+                    });
+                    
+                    // Then play hold music if bucket is configured
+                    if (HOLD_MUSIC_BUCKET) {
+                        actions.push({
+                            Type: 'PlayAudio',
                             Parameters: {
                                 AudioSource: {
                                     Type: 'S3',
-                                    BucketName: 'your-hold-music-bucket',
+                                    BucketName: HOLD_MUSIC_BUCKET,
                                     Key: 'hold-music.wav'
                                 }
                             }
-                        }
-                    ]);
+                        });
+                    }
+                    
+                    return buildActions(actions);
                 }
 
                 try {
@@ -371,16 +380,20 @@ export const handler = async (event: any): Promise<any> => {
                     
                     const attendees = await Promise.all(attendeePromises);
 
-                    // 5. Store the call information
-                    await ddb.send(new UpdateCommand({
-                        TableName: AGENT_PRESENCE_TABLE_NAME,
-                        Key: { callId },
-                        UpdateExpression: 'SET clinicId = :c, agentIds = :a, callStatus = :s, meetingId = :m',
-                        ExpressionAttributeValues: {
-                            ':c': clinicId,
-                            ':a': agents.filter(a => a.agentId).map(a => a.agentId),
-                            ':s': 'ringing',
-                            ':m': meeting.MeetingId
+                    // 5. Store the call information in the call queue table
+                    const fromNumber = parsePhoneNumber(event.CallDetails.SipHeaders.From) || 'Unknown';
+                    await ddb.send(new PutCommand({
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        Item: {
+                            clinicId,
+                            callId,
+                            queuePosition: 0, // Not queued, actively ringing
+                            queueEntryTime: Math.floor(Date.now() / 1000),
+                            phoneNumber: fromNumber,
+                            status: 'ringing',
+                            meetingInfo: meeting,
+                            agentIds: agents.filter(a => a.agentId).map(a => a.agentId),
+                            ttl: Math.floor(Date.now() / 1000) + MEETING_TTL
                         }
                     }));
 
@@ -441,123 +454,140 @@ export const handler = async (event: any): Promise<any> => {
             
             // Case 3: Transfer initiated
             case 'TRANSFER_INITIATED': {
-                const { fromAgentId, toAgentId } = args;
-                if (!fromAgentId || !toAgentId) {
-                    console.error('Missing agent IDs in transfer request');
-                    return buildActions([]);
-                }
-
-                // Get target agent's status
-                const { Item: targetAgent } = await ddb.send(new GetCommand({
-                    TableName: AGENT_PRESENCE_TABLE_NAME,
-                    Key: { agentId: toAgentId }
-                }));
-
-                if (!targetAgent || targetAgent.status !== 'Online') {
-                    return buildActions([
-                        buildSpeakAndBridgeAction('The requested agent is not available. Transfer cancelled.')
-                    ]);
-                }
-
-                // Create attendee for target agent
-                const { Item: callRecord } = await ddb.send(new GetCommand({
-                    TableName: AGENT_PRESENCE_TABLE_NAME,
-                    Key: { callId }
-                }));
-
-                if (!callRecord?.meetingInfo?.MeetingId) {
-                    console.error('No active meeting found for transfer');
-                    return buildActions([]);
-                }
-
-                const attendee = await createAttendeeForAgent(callRecord.meetingInfo.MeetingId, toAgentId);
-
-                // Update call record with transfer status
-                await ddb.send(new UpdateCommand({
-                    TableName: AGENT_PRESENCE_TABLE_NAME,
-                    Key: { callId },
-                    UpdateExpression: 'SET transferStatus = :ts, transferToAgentId = :ta',
-                    ExpressionAttributeValues: {
-                        ':ts': 'pending',
-                        ':ta': toAgentId
+                // When triggered by UpdateSipMediaApplicationCall, check for action
+                if (args.action === 'TRANSFER_INITIATED') {
+                    // This is triggered by the transfer-call.ts Lambda
+                    const { fromAgentId, toAgentId } = args;
+                    if (!fromAgentId || !toAgentId) {
+                        console.error('Missing agent IDs in transfer request');
+                        return buildActions([]);
                     }
-                }));
 
-                // Notify customer of transfer
-                return buildActions([
-                    buildSpeakAndBridgeAction('Please hold while we transfer you to another agent.')
-                ]);
-            }
-
-            // Case 4: Agent accepts the meeting
-            case 'MEETING_ACCEPTED': {
-                const { meetingId, agentId } = args;
-                if (!meetingId || !agentId) {
-                    console.error('Missing meetingId or agentId in MEETING_ACCEPTED event');
-                    return buildActions([]);
-                }
-
-                // Check if this is a transfer acceptance
-                const { Item: callRecord } = await ddb.send(new GetCommand({
-                    TableName: AGENT_PRESENCE_TABLE_NAME,
-                    Key: { callId }
-                }));
-
-                if (callRecord?.transferStatus === 'pending' && callRecord.transferToAgentId === agentId) {
-                    // This is a transfer acceptance
-                    await ddb.send(new UpdateCommand({
+                    // Get target agent's status
+                    const { Item: targetAgent } = await ddb.send(new GetCommand({
                         TableName: AGENT_PRESENCE_TABLE_NAME,
-                        Key: { callId },
-                        UpdateExpression: 'SET callStatus = :s, assignedAgentId = :a, transferStatus = :ts, previousAgentId = :pa',
+                        Key: { agentId: toAgentId }
+                    }));
+
+                    if (!targetAgent || targetAgent.status !== 'Online') {
+                        return buildActions([
+                            buildSpeakAndBridgeAction('The requested agent is not available. Transfer cancelled.')
+                        ]);
+                    }
+
+                    // Find the call record in the call queue table
+                    const { Items: callRecords } = await ddb.send(new QueryCommand({
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        IndexName: 'callId-index',
+                        KeyConditionExpression: 'callId = :callId',
                         ExpressionAttributeValues: {
-                            ':s': 'connected',
-                            ':a': agentId,
-                            ':ts': 'completed',
-                            ':pa': callRecord.assignedAgentId
+                            ':callId': callId
                         }
                     }));
 
-                    // Announce transfer completion to customer
+                    if (!callRecords || callRecords.length === 0 || !callRecords[0]?.meetingInfo?.MeetingId) {
+                        console.error('No active meeting found for transfer');
+                        return buildActions([]);
+                    }
+
+                    const callRecord = callRecords[0];
+                    const attendee = await createAttendeeForAgent(callRecord.meetingInfo.MeetingId, toAgentId);
+
+                    // Note: The transfer-call.ts API has already updated the transfer status in the database
+
+                    // Notify customer of transfer
                     return buildActions([
-                        buildSpeakAndBridgeAction('You have been transferred to another agent.')
+                        buildSpeakAndBridgeAction('Please hold while we transfer you to another agent.')
                     ]);
-                } else {
-                    // Normal call acceptance
-                    await ddb.send(new UpdateCommand({
-                        TableName: AGENT_PRESENCE_TABLE_NAME,
-                        Key: { callId },
-                        UpdateExpression: 'SET callStatus = :s, assignedAgentId = :a',
-                        ExpressionAttributeValues: {
-                            ':s': 'connected',
-                            ':a': agentId
-                        }
-                    }));
                 }
-
-                console.log(`Call ${callId} accepted by agent ${agentId}`);
+                
+                // Fallback for other TRANSFER_INITIATED scenarios
+                console.warn('TRANSFER_INITIATED event without proper action');
                 return buildActions([]);
             }
 
-            // Case 4: Call actions completed, or call ended
+            // Case 4: Ring new agents (from call-rejected.ts)
+            case 'RING_NEW_AGENTS': {
+                if (args.action === 'RING_NEW_AGENTS' && args.agentIds) {
+                    const agentIds = args.agentIds.split(',');
+                    console.log(`Ringing ${agentIds.length} new agents for call ${callId}`);
+                    
+                    // The call-rejected Lambda has already updated the database
+                    // We just need to notify the customer
+                    return buildActions([
+                        buildSpeakAndBridgeAction('We are connecting you with the next available agent. Please hold.')
+                    ]);
+                }
+                
+                console.warn('RING_NEW_AGENTS event without proper arguments');
+                return buildActions([]);
+            }
+
+            // Note: MEETING_ACCEPTED event removed - call acceptance is handled by the API (call-accepted.ts)
+
+            // Case 6: Call actions completed, or call ended
             case 'ACTION_SUCCESSFUL':
             case 'HANGUP':
             case 'CALL_ENDED': {
-                // Clean up the meeting if it exists
-                const { Items } = await ddb.send(new QueryCommand({
-                    TableName: AGENT_PRESENCE_TABLE_NAME,
+                // Find the call in the queue table
+                const { Items: callRecords } = await ddb.send(new QueryCommand({
+                    TableName: CALL_QUEUE_TABLE_NAME,
+                    IndexName: 'callId-index',
                     KeyConditionExpression: 'callId = :id',
-                    ExpressionAttributeValues: { ':id': callId },
-                    ProjectionExpression: 'meetingId, clinicId'
+                    ExpressionAttributeValues: { ':id': callId }
                 }));
 
-                if (Items && Items[0]) {
-                    if (Items[0].meetingId) {
-                        await cleanupMeeting(Items[0].meetingId);
+                if (callRecords && callRecords[0]) {
+                    const callRecord = callRecords[0];
+                    const { clinicId, queuePosition, meetingInfo, assignedAgentId } = callRecord;
+                    
+                    // Clean up the meeting if it exists
+                    if (meetingInfo?.MeetingId) {
+                        await cleanupMeeting(meetingInfo.MeetingId);
                     }
                     
-                    // Mark the call as abandoned in the queue if it exists
-                    if (Items[0].clinicId) {
-                        await removeFromQueue(Items[0].clinicId, callId, 'abandoned');
+                    // Update call status in the queue
+                    const finalStatus = callRecord.status === 'connected' ? 'completed' : 'abandoned';
+                    await ddb.send(new UpdateCommand({
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        Key: { clinicId, queuePosition },
+                        UpdateExpression: 'SET #status = :status, endedAt = :timestamp',
+                        ExpressionAttributeNames: { '#status': 'status' },
+                        ExpressionAttributeValues: {
+                            ':status': finalStatus,
+                            ':timestamp': Math.floor(Date.now() / 1000)
+                        }
+                    }));
+                    
+                    // Update agent status if they were on the call
+                    if (assignedAgentId) {
+                        await ddb.send(new UpdateCommand({
+                            TableName: AGENT_PRESENCE_TABLE_NAME,
+                            Key: { agentId: assignedAgentId },
+                            UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp REMOVE currentCallId',
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: {
+                                ':status': 'Online',
+                                ':timestamp': new Date().toISOString()
+                            }
+                        }));
+                    }
+                    
+                    // Clear ringing status for any agents who were being rung
+                    if (callRecord.agentIds && Array.isArray(callRecord.agentIds)) {
+                        await Promise.all(callRecord.agentIds.map((agentId: string) =>
+                            ddb.send(new UpdateCommand({
+                                TableName: AGENT_PRESENCE_TABLE_NAME,
+                                Key: { agentId },
+                                UpdateExpression: 'REMOVE ringingCallId SET lastActivityAt = :timestamp',
+                                ExpressionAttributeValues: {
+                                    ':timestamp': new Date().toISOString()
+                                },
+                                ConditionExpression: 'attribute_exists(agentId)'
+                            })).catch(() => {
+                                // Ignore if agent doesn't exist
+                            })
+                        ));
                     }
                 }
 

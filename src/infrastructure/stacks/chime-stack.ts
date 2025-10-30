@@ -1,24 +1,18 @@
-import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput, CustomResource } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
-import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as cr from 'aws-cdk-lib/custom-resources';
-// Use cdk-amazon-chime-resources for Chime SIP resources
-import * as chime from 'cdk-amazon-chime-resources';
-import { UserPool } from 'aws-cdk-lib/aws-cognito';
-// Assuming 'getCdkCorsConfig' is exported from your shared utils
-import { getCdkCorsConfig } from '../../shared/utils/cors';
-import clinicsData from '../configs/clinics.json';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as apigw from 'aws-cdk-lib/aws-apigateway';
+import * as customResources from 'aws-cdk-lib/custom-resources';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 
 export interface ChimeStackProps extends StackProps {
-  userPool: UserPool;
-  // Pass in the existing API and Authorizer from AdminStack (optional). If omitted,
-  // the Chime stack will not create API Gateway routes and the Admin stack should
-  // wire integrations separately.
+  userPool: any;
   api?: apigw.RestApi;
   authorizer?: apigw.CognitoUserPoolsAuthorizer;
 }
@@ -35,225 +29,242 @@ export class ChimeStack extends Stack {
     // 1. DynamoDB Tables
     // ========================================
 
-    // Table to map clinicId to its public Chime phone number
+    // Clinics table (holds Chime meeting info per clinic)
     this.clinicsTable = new dynamodb.Table(this, 'ClinicsTable', {
       tableName: `${this.stackName}-Clinics`,
       partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: RemovalPolicy.DESTROY, // Use RETAIN for production
+      removalPolicy: RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
     });
 
-    // GSI to look up a clinic by its phone number (for inbound calls)
-    this.clinicsTable.addGlobalSecondaryIndex({
-      indexName: 'phoneNumber-index',
-      partitionKey: { name: 'phoneNumber', type: dynamodb.AttributeType.STRING },
-    });
-
-    // Create a Lambda function to populate the table with initial data
-    const populateTableFn = new lambdaNode.NodejsFunction(this, 'PopulateTableFn', {
-      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'populate-clinics-table.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_18_X,
-      timeout: Duration.seconds(30),
-      environment: {
-        CLINICS_TABLE_NAME: this.clinicsTable.tableName,
-      },
-    });
-
-    // Grant the Lambda function permissions to write to the table
-    this.clinicsTable.grantWriteData(populateTableFn);
-
-    // Create a custom resource that will trigger the Lambda
-    new cr.AwsCustomResource(this, 'PopulateTableTrigger', {
-      onCreate: {
-        service: 'Lambda',
-        action: 'invoke',
-        parameters: {
-          FunctionName: populateTableFn.functionName,
-          InvocationType: 'Event',
-        },
-        physicalResourceId: cr.PhysicalResourceId.of('PopulateTableResource'),
-      },
-      policy: cr.AwsCustomResourcePolicy.fromStatements([
-        new iam.PolicyStatement({
-          actions: ['lambda:InvokeFunction'],
-          resources: [populateTableFn.functionArn],
-        }),
-      ]),
-    });
-
-    // Populate table with initial data from clinics.json using the Lambda function
-    new CustomResource(this, 'PopulateClinicsTable', {
-      serviceToken: populateTableFn.functionArn,
-      properties: {
-        // Add a timestamp to force the custom resource to run on every deployment
-        timestamp: new Date().toISOString()
-      }
-    });
-
-    // Table to track real-time agent status and their Chime meeting details
+    // Agent Presence table
     this.agentPresenceTable = new dynamodb.Table(this, 'AgentPresenceTable', {
       tableName: `${this.stackName}-AgentPresence`,
-      partitionKey: { name: 'agentId', type: dynamodb.AttributeType.STRING }, // Cognito 'sub'
+      partitionKey: { name: 'agentId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: RemovalPolicy.DESTROY, // Use RETAIN for production
-      timeToLiveAttribute: 'ttl', // Auto-clean up sessions
+      removalPolicy: RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
     });
 
-    // Table to manage the call queue for each clinic
+    // GSI for querying by clinic
+    /*
+    this.agentPresenceTable.addGlobalSecondaryIndex({
+      indexName: 'clinicId-index',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    */
+
+    // Call Queue table
     this.callQueueTable = new dynamodb.Table(this, 'CallQueueTable', {
       tableName: `${this.stackName}-CallQueue`,
       partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'queuePosition', type: dynamodb.AttributeType.NUMBER },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.DESTROY,
-      timeToLiveAttribute: 'ttl', // Auto-cleanup of abandoned calls
+      pointInTimeRecovery: true,
+      timeToLiveAttribute: 'ttl',
     });
 
-    // GSI for looking up queue items by callId
+    // GSI for querying by callId
     this.callQueueTable.addGlobalSecondaryIndex({
       indexName: 'callId-index',
       partitionKey: { name: 'callId', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL
-    });
-
-    // GSI for looking up calls by status
-    this.callQueueTable.addGlobalSecondaryIndex({
-      indexName: 'status-index',
-      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'queueEntryTime', type: dynamodb.AttributeType.NUMBER },
-      projectionType: dynamodb.ProjectionType.ALL
-    });
-
-    // GSI to find available agents for a specific clinic
-    this.agentPresenceTable.addGlobalSecondaryIndex({
-      indexName: 'status-index',
-      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING }, // 'Online', 'Offline'
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     // ========================================
-    // 2. Chime SDK PSTN Resources
+    // 2. Chime SIP Media Application
     // ========================================
 
-    // Lambda "brain" that handles all call routing logic
+    // Lambda for SIP Media Application
     const smaHandler = new lambdaNode.NodejsFunction(this, 'SmaHandler', {
       functionName: `${this.stackName}-SmaHandler`,
       entry: path.join(__dirname, '..', '..', 'services', 'chime', 'inbound-router.ts'),
       handler: 'handler',
-  runtime: lambda.Runtime.NODEJS_18_X,
-      timeout: Duration.seconds(10),
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
       environment: {
         CLINICS_TABLE_NAME: this.clinicsTable.tableName,
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        HOLD_MUSIC_BUCKET: '', // Will be updated after bucket creation
       },
     });
 
-    // The SIP Media Application that points to the Lambda "brain"
-    const sipMediaApp = new chime.ChimeSipMediaApp(this, 'SipMediaApplication', {
-      region: this.region,
-      name: `${this.stackName}-SipMediaApp`,
-      endpoint: smaHandler.functionArn,
-    });
-
-    // Grant the SMA handler permission to be invoked by Chime
-    smaHandler.addPermission('SmaHandlerInvokePermission', {
-      principal: new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com'),
-      // SourceArn must be a valid ARN string. The Chime SIP Media Application construct
-      // exposes the application id (sipMediaApp.sipMediaAppId) but Lambda Permission
-      // expects a full ARN. Construct the SIP Media Application ARN here so CloudFormation
-      // validation passes.
-      sourceArn: `arn:aws:chime:${this.region}:${this.account}:sip-media-application/${sipMediaApp.sipMediaAppId}`,
-    });
-    
-    // Grant SMA handler permissions to DDB tables and Chime
+    // Grant DynamoDB permissions
     this.clinicsTable.grantReadData(smaHandler);
     this.agentPresenceTable.grantReadWriteData(smaHandler);
+    this.callQueueTable.grantReadWriteData(smaHandler);
+
+    // Grant Chime SDK permissions
     smaHandler.addToRolePolicy(new iam.PolicyStatement({
-        actions: ['chime:UpdateSipMediaApplicationCall', 'chime:JoinChimeMeeting'],
-        resources: ['*'], // Scope down if needed
-    }));
-
-    // Voice Connector (bridge to PSTN)
-    const voiceConnector = new chime.ChimeVoiceConnector(this, 'VoiceConnector', {
-      region: this.region,
-      name: `${this.stackName}-VoiceConnector`,
-      encryption: true,
-    });
-
-    // Create SIP Rules using reliable AWS SDK implementation
-    // This replaces the broken cdk-amazon-chime-resources library
-    
-    const createSipRulesFn = new lambdaNode.NodejsFunction(this, 'CreateSipRulesFn', {
-      functionName: `${this.stackName}-CreateSipRules`,
-      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'create-sip-rules.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_18_X,
-      timeout: Duration.minutes(5),
-      environment: {
-      },
-    });
-
-    // Grant permissions to manage SIP rules
-    createSipRulesFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
       actions: [
-        'chime:CreateSipRule',
-        'chime:DeleteSipRule',
-        'chime:ListSipRules',
-        'chime:GetSipRule',
-        'chime:UpdateSipRule'
+        'chime:CreateSipMediaApplicationCall',
+        'chime:UpdateSipMediaApplicationCall',
+        'chime-sdk-meetings:CreateMeeting',
+        'chime-sdk-meetings:CreateAttendee',
+        'chime-sdk-meetings:DeleteMeeting',
       ],
-      resources: ['*']
+      resources: ['*'],
     }));
 
-    // Create custom resource to manage SIP rules
-    const sipRulesResource = new CustomResource(this, 'SipRulesManager', {
-      serviceToken: createSipRulesFn.functionArn,
-      properties: {
-        SipMediaApplicationId: sipMediaApp.sipMediaAppId,
-        StackName: this.stackName,
-        // Force update when clinics data changes
-        ClinicsDataHash: this.node.tryGetContext('clinicsDataHash') || Date.now().toString()
-      }
+    // Create S3 bucket for hold music
+    const holdMusicBucket = new s3.Bucket(this, 'HoldMusicBucket', {
+      bucketName: `${this.stackName.toLowerCase()}-hold-music-${this.account}-${this.region}`,
+      removalPolicy: RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      publicReadAccess: false,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
     });
 
-    // Ensure SIP rules are created after SMA
-    sipRulesResource.node.addDependency(sipMediaApp);
+    // Grant read access to the SMA handler
+    holdMusicBucket.grantRead(smaHandler);
 
-    console.log('✅ SIP Rules will be created using reliable AWS SDK implementation');
-    console.log('🔧 Features: Conflict handling, retry logic, proper cleanup');
-    
-    // Output the number of unique phone numbers
-    const uniquePhoneNumbers = new Set<string>();
-    clinicsData.forEach((clinic) => {
-      if (clinic.phoneNumber) {
-        uniquePhoneNumbers.add(clinic.phoneNumber);
-      }
-    });
-    
-    new CfnOutput(this, 'UniquePhoneNumbers', {
-      value: uniquePhoneNumbers.size.toString(),
-      description: 'Number of unique phone numbers with SIP rules'
+    // Update the environment variable
+    smaHandler.addEnvironment('HOLD_MUSIC_BUCKET', holdMusicBucket.bucketName);
+
+    // Create the SIP Media Application
+    const sipMediaApp = new customResources.AwsCustomResource(this, 'SipMediaApp', {
+      onCreate: {
+        service: 'ChimeSDKVoice',
+        action: 'createSipMediaApplication',
+        parameters: {
+          Name: `${this.stackName}-SMA`,
+          AwsRegion: this.region,
+          Endpoints: [{
+            LambdaArn: smaHandler.functionArn,
+          }],
+        },
+        physicalResourceId: customResources.PhysicalResourceId.fromResponse('SipMediaApplication.SipMediaApplicationId'),
+      },
+      onDelete: {
+        service: 'ChimeSDKVoice',
+        action: 'deleteSipMediaApplication',
+        parameters: {
+          SipMediaApplicationId: customResources.PhysicalResourceId.fromResponse('SipMediaApplication.SipMediaApplicationId'),
+        },
+      },
+      policy: customResources.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'chime:CreateSipMediaApplication',
+            'chime:DeleteSipMediaApplication',
+          ],
+          resources: ['*'],
+        }),
+      ]),
     });
 
-    // Note: Phone numbers are configured in clinics.json and must be provisioned in the Chime SDK
-    // console and associate them with this SIP Rule or Voice Connector.
-    // Then, update the 'triggerValue' of the SipRule or associate the VC.
-    // Finally, populate the `ClinicsTable` with the clinicId -> phoneNumber mapping.
+    // Grant Lambda permission for SMA to invoke
+    smaHandler.addPermission('AllowSMAInvoke', {
+      principal: new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com'),
+      sourceAccount: this.account,
+    });
+
+    // Create Voice Connector
+    const voiceConnector = new customResources.AwsCustomResource(this, 'VoiceConnector', {
+      onCreate: {
+        service: 'ChimeSDKVoice',
+        action: 'createVoiceConnector',
+        parameters: {
+          Name: `${this.stackName}-VC`,
+          RequireEncryption: true,
+          AwsRegion: this.region,
+        },
+        physicalResourceId: customResources.PhysicalResourceId.fromResponse('VoiceConnector.VoiceConnectorId'),
+      },
+      onDelete: {
+        service: 'ChimeSDKVoice',
+        action: 'deleteVoiceConnector',
+        parameters: {
+          VoiceConnectorId: customResources.PhysicalResourceId.fromResponse('VoiceConnector.VoiceConnectorId'),
+        },
+      },
+      policy: customResources.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'chime:CreateVoiceConnector',
+            'chime:DeleteVoiceConnector',
+          ],
+          resources: ['*'],
+        }),
+      ]),
+    });
+
+    // Create SIP Rule to connect Voice Connector to SMA
+    const sipRule = new customResources.AwsCustomResource(this, 'SipRule', {
+      onCreate: {
+        service: 'ChimeSDKVoice',
+        action: 'createSipRule',
+        parameters: {
+          Name: `${this.stackName}-SipRule`,
+          TriggerType: 'RequestUriHostname',
+          TriggerValue: voiceConnector.getResponseField('VoiceConnector.OutboundHostName'),
+          TargetApplications: [{
+            SipMediaApplicationId: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
+            Priority: 1,
+            AwsRegion: this.region,
+          }],
+        },
+        physicalResourceId: customResources.PhysicalResourceId.fromResponse('SipRule.SipRuleId'),
+      },
+      onDelete: {
+        service: 'ChimeSDKVoice',
+        action: 'deleteSipRule',
+        parameters: {
+          SipRuleId: customResources.PhysicalResourceId.fromResponse('SipRule.SipRuleId'),
+        },
+      },
+      policy: customResources.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'chime:CreateSipRule',
+            'chime:DeleteSipRule',
+          ],
+          resources: ['*'],
+        }),
+      ]),
+    });
+
+    // Make sure SIP Rule is created after both Voice Connector and SMA
+    sipRule.node.addDependency(voiceConnector);
+    sipRule.node.addDependency(sipMediaApp);
 
     // ========================================
-    // 3. Agent API Lambda Functions
+    // 3. Lambda Functions
     // ========================================
 
-    // Shared policy for API Lambdas to interact with Chime Meetings
+    // Shared Chime SDK policy for meeting operations
     const chimeSdkPolicy = new iam.PolicyStatement({
-        actions: [
-            'chime:CreateMeeting',
-            'chime:CreateAttendee',
-            'chime:DeleteMeeting',
-            'chime:CreateSipMediaApplicationCall',
-        ],
-        resources: ['*'],
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'chime-sdk-meetings:CreateMeeting',
+        'chime-sdk-meetings:CreateAttendee',
+        'chime-sdk-meetings:DeleteMeeting',
+        'chime-sdk-meetings:GetMeeting',
+        'chime-sdk-meetings:ListAttendees',
+        'chime-sdk-meetings:DeleteAttendee',
+        'chime-sdk-meetings:StartMeetingTranscription',
+        'chime-sdk-meetings:StopMeetingTranscription',
+      ],
+      resources: ['*'],
+    });
+
+    // Cognito policy for user lookup
+    const cognitoPolicy = new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'cognito-idp:AdminGetUser',
+        'cognito-idp:ListUsers',
+      ],
+      resources: [props.userPool.userPoolArn],
     });
 
     // Lambda for POST /chime/start-session
@@ -261,13 +272,42 @@ export class ChimeStack extends Stack {
       functionName: `${this.stackName}-StartSession`,
       entry: path.join(__dirname, '..', '..', 'services', 'chime', 'start-session.ts'),
       handler: 'handler',
-  runtime: lambda.Runtime.NODEJS_18_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(10),
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
       },
+    });
+    // Ensure a LogGroup exists for the Lambda so we can attach metric filters and retention
+    const startSessionLogGroup = new logs.LogGroup(this, 'StartSessionLogGroup', {
+      logGroupName: `/aws/lambda/${startSessionFn.functionName}`,
+      removalPolicy: RemovalPolicy.DESTROY,
+      retention: logs.RetentionDays.ONE_MONTH,
+    });
+
+    // Metric filter to count error lines in the Lambda logs
+    new logs.MetricFilter(this, 'StartSessionErrorMetricFilter', {
+      logGroup: startSessionLogGroup,
+      metricNamespace: 'Chime',
+      metricName: 'StartSessionErrors',
+      filterPattern: logs.FilterPattern.anyTerm('ERROR', 'Error', 'Exception'),
+      metricValue: '1',
+    });
+
+    // Alarm when there is at least 1 error in a 5-minute window
+    new cloudwatch.Alarm(this, 'StartSessionErrorAlarm', {
+      metric: new cloudwatch.Metric({
+        namespace: 'Chime',
+        metricName: 'StartSessionErrors',
+        statistic: 'Sum',
+        period: Duration.minutes(5),
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      alarmDescription: 'Alarm when StartSession Lambda emits errors',
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     startSessionFn.addToRolePolicy(chimeSdkPolicy);
     this.agentPresenceTable.grantReadWriteData(startSessionFn);
@@ -277,12 +317,10 @@ export class ChimeStack extends Stack {
       functionName: `${this.stackName}-StopSession`,
       entry: path.join(__dirname, '..', '..', 'services', 'chime', 'stop-session.ts'),
       handler: 'handler',
-  runtime: lambda.Runtime.NODEJS_18_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(10),
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
-        USER_POOL_ID: props.userPool.userPoolId,
-        COGNITO_REGION: this.region,
       },
     });
     stopSessionFn.addToRolePolicy(chimeSdkPolicy);
@@ -293,200 +331,110 @@ export class ChimeStack extends Stack {
       functionName: `${this.stackName}-OutboundCall`,
       entry: path.join(__dirname, '..', '..', 'services', 'chime', 'outbound-call.ts'),
       handler: 'handler',
-  runtime: lambda.Runtime.NODEJS_18_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(10),
       environment: {
-        CLINICS_TABLE_NAME: this.clinicsTable.tableName,
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
-        USER_POOL_ID: props.userPool.userPoolId,
-        COGNITO_REGION: this.region,
-  SMA_ID: sipMediaApp.sipMediaAppId, // Pass SMA ID to the Lambda
+        CLINICS_TABLE_NAME: this.clinicsTable.tableName,
+        SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
+        VOICE_CONNECTOR_ID: voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId'),
       },
     });
     outboundCallFn.addToRolePolicy(chimeSdkPolicy);
+    outboundCallFn.addToRolePolicy(cognitoPolicy);
+    this.agentPresenceTable.grantReadWriteData(outboundCallFn);
     this.clinicsTable.grantReadData(outboundCallFn);
-    this.agentPresenceTable.grantReadData(outboundCallFn);
-
-    // ========================================
-    // 4. API Gateway Routes
-    // ========================================
     
-    if (props.api) {
-      // Add a '/chime' resource to your *existing* Admin API
-      const chimeApiRoot = props.api.root.addResource('chime');
-      
-      const corsOptions = {
-        ...getCdkCorsConfig(),
-        allowMethods: ['POST', 'OPTIONS'],
-      };
+    // Grant permission to make outbound calls
+    outboundCallFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['chime:CreateSipMediaApplicationCall'],
+      resources: [`arn:aws:chime:${this.region}:${this.account}:sma/${sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId')}`],
+    }));
 
-      // POST /chime/start-session
-      const startSessionRes = chimeApiRoot.addResource('start-session');
-      startSessionRes.addMethod('POST', new apigw.LambdaIntegration(startSessionFn), {
-        authorizer: props.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
-      });
-      try {
-        startSessionRes.addCorsPreflight(corsOptions);
-      } catch (e) {
-        if (!(`${e}`.includes('There is already a Construct with name')))
-          throw e;
-      }
-
-      // POST /chime/stop-session
-      const stopSessionRes = chimeApiRoot.addResource('stop-session');
-      stopSessionRes.addMethod('POST', new apigw.LambdaIntegration(stopSessionFn), {
-        authorizer: props.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
-      });
-      try {
-        stopSessionRes.addCorsPreflight(corsOptions);
-      } catch (e) {
-        if (!(`${e}`.includes('There is already a Construct with name')))
-          throw e;
-      }
-    
-      // POST /chime/outbound-call
-      const outboundCallRes = chimeApiRoot.addResource('outbound-call');
-      outboundCallRes.addMethod('POST', new apigw.LambdaIntegration(outboundCallFn), {
-        authorizer: props.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
-      });
-      try {
-        outboundCallRes.addCorsPreflight(corsOptions);
-      } catch (e) {
-        if (!(`${e}`.includes('There is already a Construct with name')))
-          throw e;
-      }
-
-    // POST /chime/transfer-call
+    // Lambda for POST /chime/transfer-call
     const transferCallFn = new lambdaNode.NodejsFunction(this, 'TransferCallFn', {
       functionName: `${this.stackName}-TransferCall`,
       entry: path.join(__dirname, '..', '..', 'services', 'chime', 'transfer-call.ts'),
       handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_18_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(10),
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
-        USER_POOL_ID: props.userPool.userPoolId,
-        COGNITO_REGION: this.region,
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
       },
     });
-
-    // Grant DynamoDB permissions
     this.agentPresenceTable.grantReadWriteData(transferCallFn);
-
-      const transferCallRes = chimeApiRoot.addResource('transfer-call');
-      transferCallRes.addMethod('POST', new apigw.LambdaIntegration(transferCallFn), {
-        authorizer: props.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
-      });
-      try {
-        transferCallRes.addCorsPreflight(corsOptions);
-      } catch (e) {
-        if (!(`${e}`.includes('There is already a Construct with name')))
-          throw e;
-      }
-
-      // POST /chime/call-accepted
-      const callAcceptedFn = new lambdaNode.NodejsFunction(this, 'CallAcceptedFn', {
-        functionName: `${this.stackName}-CallAccepted`,
-        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'call-accepted.ts'),
-        handler: 'handler',
-        runtime: lambda.Runtime.NODEJS_18_X,
-        timeout: Duration.seconds(10),
-        environment: {
-          AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
-          CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-        },
-      });
-      this.agentPresenceTable.grantReadWriteData(callAcceptedFn);
-      this.callQueueTable.grantReadWriteData(callAcceptedFn);
-
-      const callAcceptedRes = chimeApiRoot.addResource('call-accepted');
-      callAcceptedRes.addMethod('POST', new apigw.LambdaIntegration(callAcceptedFn), {
-        authorizer: props.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
-      });
-      try {
-        callAcceptedRes.addCorsPreflight(corsOptions);
-      } catch (e) {
-        if (!(`${e}`.includes('There is already a Construct with name')))
-          throw e;
-      }
-
-      // POST /chime/call-rejected
-      const callRejectedFn = new lambdaNode.NodejsFunction(this, 'CallRejectedFn', {
-        functionName: `${this.stackName}-CallRejected`,
-        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'call-rejected.ts'),
-        handler: 'handler',
-        runtime: lambda.Runtime.NODEJS_18_X,
-        timeout: Duration.seconds(10),
-        environment: {
-          AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
-          SMA_ID: sipMediaApp.sipMediaAppId,
-        },
-      });
-      this.agentPresenceTable.grantReadWriteData(callRejectedFn);
-      callRejectedFn.addToRolePolicy(new iam.PolicyStatement({
+    this.callQueueTable.grantReadWriteData(transferCallFn);
+    
+    // Grant permission to update SIP Media Application calls
+    transferCallFn.addToRolePolicy(new iam.PolicyStatement({
         actions: ['chime:UpdateSipMediaApplicationCall'],
         resources: ['*'],
-      }));
+    }));
 
-      const callRejectedRes = chimeApiRoot.addResource('call-rejected');
-      callRejectedRes.addMethod('POST', new apigw.LambdaIntegration(callRejectedFn), {
-        authorizer: props.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
-      });
-      try {
-        callRejectedRes.addCorsPreflight(corsOptions);
-      } catch (e) {
-        if (!(`${e}`.includes('There is already a Construct with name')))
-          throw e;
-      }
+    // Lambda for POST /chime/call-accepted
+    const callAcceptedFn = new lambdaNode.NodejsFunction(this, 'CallAcceptedFn', {
+      functionName: `${this.stackName}-CallAccepted`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'call-accepted.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+      },
+    });
+    this.agentPresenceTable.grantReadWriteData(callAcceptedFn);
+    this.callQueueTable.grantReadWriteData(callAcceptedFn);
 
-      // POST /chime/call-hungup
-      const callHungupFn = new lambdaNode.NodejsFunction(this, 'CallHungupFn', {
-        functionName: `${this.stackName}-CallHungup`,
-        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'call-hungup.ts'),
-        handler: 'handler',
-        runtime: lambda.Runtime.NODEJS_18_X,
-        timeout: Duration.seconds(10),
-        environment: {
-          AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
-          CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-        },
-      });
-      this.agentPresenceTable.grantReadWriteData(callHungupFn);
-      this.callQueueTable.grantReadWriteData(callHungupFn);
-      callHungupFn.addToRolePolicy(chimeSdkPolicy);
+    // Lambda for POST /chime/call-rejected
+    const callRejectedFn = new lambdaNode.NodejsFunction(this, 'CallRejectedFn', {
+      functionName: `${this.stackName}-CallRejected`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'call-rejected.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
+      },
+    });
+    this.agentPresenceTable.grantReadWriteData(callRejectedFn);
+    this.callQueueTable.grantReadWriteData(callRejectedFn);
+    callRejectedFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['chime:UpdateSipMediaApplicationCall'],
+      resources: [`arn:aws:chime:${this.region}:${this.account}:sma/${sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId')}`],
+    }));
 
-      const callHungupRes = chimeApiRoot.addResource('call-hungup');
-      callHungupRes.addMethod('POST', new apigw.LambdaIntegration(callHungupFn), {
-        authorizer: props.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
-      });
-      try {
-        callHungupRes.addCorsPreflight(corsOptions);
-      } catch (e) {
-        if (!(`${e}`.includes('There is already a Construct with name')))
-          throw e;
-      }
-    }
+    // Lambda for POST /chime/call-hungup
+    const callHungupFn = new lambdaNode.NodejsFunction(this, 'CallHungupFn', {
+      functionName: `${this.stackName}-CallHungup`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'call-hungup.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+      },
+    });
+    this.agentPresenceTable.grantReadWriteData(callHungupFn);
+    this.callQueueTable.grantReadWriteData(callHungupFn);
 
-    // NOTE: The Agent presence API route is owned by the AdminStack to avoid
-    // circular cross-stack references. The Chime stack only creates the
-    // AgentPresence table and outputs its name.
+    // ========================================
+    // 4. API Gateway Routes (deprecated - now handled by AdminStack)
+    // ========================================
+    
+    // NOTE: API routes are now created in AdminStack to avoid circular dependencies.
+    // The Lambda functions are exported via CfnOutput and imported by AdminStack.
 
     // ========================================
     // 5. Outputs
     // ========================================
-    if (props.api) {
-      new CfnOutput(this, 'ChimeApiUrl', {
-        value: `${props.api.url}chime`,
-        description: 'Chime Contact Center API endpoint root',
-      });
-    }
     new CfnOutput(this, 'ClinicsTableName', {
       value: this.clinicsTable.tableName,
     });
@@ -494,7 +442,47 @@ export class ChimeStack extends Stack {
       value: this.agentPresenceTable.tableName,
     });
      new CfnOutput(this, 'SipMediaApplicationId', {
-      value: sipMediaApp.sipMediaAppId,
+      value: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
     });
+    
+    // Export Chime Lambda ARNs so other stacks (Admin) can import them and
+    // create API integrations without creating a two-way construct reference.
+    new CfnOutput(this, 'StartSessionFnArn', {
+      value: startSessionFn.functionArn,
+      exportName: `${this.stackName}-StartSessionArn`,
+    });
+    new CfnOutput(this, 'StopSessionFnArn', {
+      value: stopSessionFn.functionArn,
+      exportName: `${this.stackName}-StopSessionArn`,
+    });
+    new CfnOutput(this, 'OutboundCallFnArn', {
+      value: outboundCallFn.functionArn,
+      exportName: `${this.stackName}-OutboundCallArn`,
+    });
+    new CfnOutput(this, 'TransferCallFnArn', {
+      value: transferCallFn.functionArn,
+      exportName: `${this.stackName}-TransferCallArn`,
+    });
+    new CfnOutput(this, 'CallAcceptedFnArn', {
+      value: callAcceptedFn.functionArn,
+      exportName: `${this.stackName}-CallAcceptedArn`,
+    });
+    new CfnOutput(this, 'CallRejectedFnArn', {
+      value: callRejectedFn.functionArn,
+      exportName: `${this.stackName}-CallRejectedArn`,
+    });
+    new CfnOutput(this, 'CallHungupFnArn', {
+      value: callHungupFn.functionArn,
+      exportName: `${this.stackName}-CallHungupArn`,
+    });
+    new CfnOutput(this, 'AgentPresenceTableNameExport', {
+      value: this.agentPresenceTable.tableName,
+      exportName: `${this.stackName}-AgentPresenceTableName`,
+    });
+    new CfnOutput(this, 'HoldMusicBucketName', {
+      value: holdMusicBucket.bucketName,
+      description: 'S3 bucket for hold music. Upload a file named "hold-music.wav" to this bucket.',
+    });
+
     }
   }

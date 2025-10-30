@@ -70,59 +70,127 @@ function getClinicsFromClaims(payload: JWTPayload): string[] {
 // --- End Auth Helpers ---
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  // Log function invocation with request metadata
+  console.log('[outbound-call] Function invoked', {
+    httpMethod: event.httpMethod,
+    path: event.path,
+    requestId: event.requestContext?.requestId,
+    sourceIp: (event.requestContext as any)?.identity?.sourceIp,
+    userAgent: (event.requestContext as any)?.identity?.userAgent,
+    hasBody: !!event.body,
+    bodyLength: event.body?.length || 0
+  });
+
   const corsHeaders = buildCorsHeaders({ allowMethods: ['POST', 'OPTIONS'] });
   if (event.httpMethod === 'OPTIONS') {
+    console.log('[outbound-call] Handling OPTIONS preflight request');
     return { statusCode: 200, headers: corsHeaders, body: '' };
   }
 
   try {
     const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
+    console.log('[outbound-call] Verifying auth token', { hasToken: !!authz });
+    
     const verifyResult = await verifyIdToken(authz);
     if (!verifyResult.ok) {
+      console.warn('[outbound-call] Auth verification failed', { 
+        code: verifyResult.code, 
+        message: verifyResult.message 
+      });
       return { statusCode: verifyResult.code, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
     }
+    
+    console.log('[outbound-call] Auth verification successful');
 
     const agentId = verifyResult.payload.sub;
     if (!agentId) {
+      console.error('[outbound-call] Missing subject claim in token');
       return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'Invalid token: missing subject claim' }) };
     }
+    
     const authorizedClinics = getClinicsFromClaims(verifyResult.payload);
+    console.log('[outbound-call] Agent authorized for clinics', { 
+      agentId, 
+      authorizedClinicsCount: authorizedClinics.length,
+      isAdmin: authorizedClinics.includes('ALL')
+    });
+    
     const body = JSON.parse(event.body || '{}') as { toPhoneNumber: string, fromClinicId: string };
+    console.log('[outbound-call] Parsed request body', { 
+      toPhoneNumber: body.toPhoneNumber,
+      fromClinicId: body.fromClinicId
+    });
 
     if (!body.toPhoneNumber || !body.fromClinicId) {
+        console.error('[outbound-call] Missing required parameters', { 
+          hasToPhone: !!body.toPhoneNumber,
+          hasFromClinic: !!body.fromClinicId
+        });
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'toPhoneNumber and fromClinicId are required' }) };
     }
     if (!SMA_ID) {
+        console.error('[outbound-call] SMA_ID environment variable not configured');
         return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'SMA_ID environment variable is not set' }) };
     }
 
     // 1. Security Check: Validate clinicId against JWT claims
     if (authorizedClinics[0] !== "ALL" && !authorizedClinics.includes(body.fromClinicId)) {
+        console.warn('[outbound-call] Authorization failed for clinic', {
+          agentId,
+          requestedClinic: body.fromClinicId,
+          authorizedClinics
+        });
         return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ message: `Forbidden: not authorized for clinic ${body.fromClinicId}` }) };
     }
+    console.log('[outbound-call] Clinic authorization successful');
     
     // 2. Get Clinic's public phone number
+    console.log('[outbound-call] Looking up clinic phone number', { clinicId: body.fromClinicId });
     const { Item: clinic } = await ddb.send(new GetCommand({
         TableName: CLINICS_TABLE_NAME,
         Key: { clinicId: body.fromClinicId },
     }));
 
     if (!clinic || !clinic.phoneNumber) {
+        console.error('[outbound-call] Clinic phone number not found', {
+          clinicId: body.fromClinicId,
+          clinicExists: !!clinic,
+          hasPhoneNumber: !!(clinic?.phoneNumber)
+        });
         return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ message: 'Clinic phone number not found. Populate ClinicsTable.' }) };
     }
     const fromPhoneNumber = clinic.phoneNumber;
+    console.log('[outbound-call] Found clinic phone number:', fromPhoneNumber);
 
     // 3. Get Agent's current presence state (to get meeting info)
+    console.log('[outbound-call] Checking agent presence state', { agentId });
     const { Item: agent } = await ddb.send(new GetCommand({
         TableName: AGENT_PRESENCE_TABLE_NAME,
         Key: { agentId },
     }));
 
     if (!agent || agent.status !== 'Online' || !agent.meetingInfo?.MeetingId || !agent.attendeeInfo?.AttendeeId) {
+        console.error('[outbound-call] Agent not ready for outbound call', {
+          agentExists: !!agent,
+          status: agent?.status,
+          hasMeetingInfo: !!(agent?.meetingInfo?.MeetingId),
+          hasAttendeeInfo: !!(agent?.attendeeInfo?.AttendeeId)
+        });
          return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'Agent is not online. Call /chime/start-session first.' }) };
     }
+    console.log('[outbound-call] Agent ready for outbound call', {
+      status: agent.status,
+      meetingId: agent.meetingInfo.MeetingId
+    });
 
     // 4. Initiate the outbound call leg to the customer
+    console.log('[outbound-call] Initiating SIP media application call', {
+      fromPhoneNumber,
+      toPhoneNumber: body.toPhoneNumber,
+      smaId: SMA_ID,
+      meetingId: agent.meetingInfo.MeetingId
+    });
+    
     const callResponse = await chimeVoiceClient.send(new CreateSipMediaApplicationCallCommand({
         FromPhoneNumber: fromPhoneNumber,
         ToPhoneNumber: body.toPhoneNumber,
@@ -136,22 +204,41 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             "attendeeId": agent.attendeeInfo.AttendeeId,
         }
     }));
+    
+    console.log('[outbound-call] SIP call initiated successfully', {
+      transactionId: callResponse.SipMediaApplicationCall?.TransactionId,
+    });
 
+    const responseBody = {
+      success: true,
+      message: 'Outbound call initiated',
+      callId: callResponse.SipMediaApplicationCall?.TransactionId
+    };
+    
+    console.log('[outbound-call] Request completed successfully', responseBody);
+    
     return {
       statusCode: 200,
       headers: corsHeaders,
-      body: JSON.stringify({
-        success: true,
-        message: 'Outbound call initiated',
-        callId: callResponse.SipMediaApplicationCall?.TransactionId
-      }),
+      body: JSON.stringify(responseBody),
     };
   } catch (err: any) {
-    console.error("Error making outbound call:", err);
+    const errorContext = {
+      message: err?.message,
+      code: err?.name || err?.code,
+      stack: err?.stack,
+      requestId: event.requestContext?.requestId
+    };
+    console.error('[outbound-call] Error making outbound call:', errorContext);
+    
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ message: 'Failed to make outbound call', error: err.message }),
+      body: JSON.stringify({ 
+        message: 'Failed to make outbound call', 
+        error: err?.message,
+        code: err?.name || err?.code
+      }),
     };
   }
 };

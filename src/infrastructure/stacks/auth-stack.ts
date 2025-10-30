@@ -68,7 +68,7 @@ export class AuthStack extends cdk.Stack {
 
     // Create auth trigger Lambda
     const authTriggerLambda = new lambdaNodejs.NodejsFunction(this, 'AuthTriggerFunction', {
-      runtime: lambda.Runtime.NODEJS_22_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'handler',
       entry: path.join(__dirname, '..', '..', 'services', 'auth', 'index.ts'),
       environment: {
@@ -83,10 +83,38 @@ export class AuthStack extends cdk.Stack {
     // Grant DynamoDB permissions to auth Lambda
     samlLogsTable.grantWriteData(authTriggerLambda);
 
+    // Create SAML Identity Provider first (needed for User Pool Client)
+    const samlMetadataUrl = this.node.tryGetContext('samlMetadataUrl') ||
+                           process.env.SAML_METADATA_URL ||
+                           'https://your-idp.com/saml/metadata';
+
+    const samlIdentityProvider = new cognito.UserPoolIdentityProviderSaml(this, 'SAMLIdentityProvider', {
+      userPool: this.userPool,
+      name: 'CognitoSAMLProvider',
+      metadata: {
+        metadataContent: samlMetadataUrl,
+        metadataType: cognito.UserPoolIdentityProviderSamlMetadataType.URL,
+      },
+      attributeMapping: {
+        email: cognito.ProviderAttribute.other('http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress'),
+        givenName: cognito.ProviderAttribute.other('http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname'),
+        familyName: cognito.ProviderAttribute.other('http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname'),
+        // Groups will be handled via custom claims in the auth trigger
+      },
+    });
+
+    // Create User Pool Client (MUST be created before verify Lambda)
+    this.userPoolClient = this.userPool.addClient('app-client', {
+      userPoolClientName: `${this.stackName}-AppClient`,
+      supportedIdentityProviders: [
+        cognito.UserPoolClientIdentityProvider.COGNITO,
+        samlIdentityProvider.providerName as any, // SAML provider name from CDK construct
+      ],
+    });
 
     // Create verify Lambda function
     const verifyLambda = new lambdaNodejs.NodejsFunction(this, 'VerifyFunction', {
-      runtime: lambda.Runtime.NODEJS_22_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'handler',
       entry: path.join(__dirname, '..', '..', 'services', 'auth', 'verify.ts'),
       environment: {
@@ -126,36 +154,6 @@ export class AuthStack extends cdk.Stack {
       cognito.UserPoolOperation.CUSTOM_MESSAGE,
       authTriggerLambda
     );
-
-
-    // Create SAML Identity Provider (CDK-managed)
-    const samlMetadataUrl = this.node.tryGetContext('samlMetadataUrl') ||
-                           process.env.SAML_METADATA_URL ||
-                           'https://your-idp.com/saml/metadata';
-
-    const samlIdentityProvider = new cognito.UserPoolIdentityProviderSaml(this, 'SAMLIdentityProvider', {
-      userPool: this.userPool,
-      name: 'CognitoSAMLProvider',
-      metadata: {
-        metadataContent: samlMetadataUrl,
-        metadataType: cognito.UserPoolIdentityProviderSamlMetadataType.URL,
-      },
-      attributeMapping: {
-        email: cognito.ProviderAttribute.other('http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress'),
-        givenName: cognito.ProviderAttribute.other('http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname'),
-        familyName: cognito.ProviderAttribute.other('http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname'),
-        // Groups will be handled via custom claims in the auth trigger
-      },
-    });
-
-    // Create User Pool Client
-    this.userPoolClient = this.userPool.addClient('app-client', {
-      userPoolClientName: `${this.stackName}-AppClient`,
-      supportedIdentityProviders: [
-        cognito.UserPoolClientIdentityProvider.COGNITO,
-        samlIdentityProvider.providerName as any, // SAML provider name from CDK construct
-      ],
-    });
 
 
     // Create Identity Pool

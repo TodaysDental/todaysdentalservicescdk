@@ -5,13 +5,13 @@
   "description": "CDK app to deploy Cognito (custom auth triggers) and Admin API Gateway/Lambdas",
   "license": "MIT",
   "scripts": {
-    "build": "node -e \"const fs=require('fs'); const path=require('path'); try{fs.rmSync('dist',{recursive:true,force:true});}catch(e){console.log('Cleaned dist dir');};\" && tsc -p .",
+    "build": "node -e \"const fs=require('fs'); const path=require('path'); try{fs.rmSync('dist',{recursive:true,force:true});}catch(e){console.log('Cleaned dist dir');};\" && node --max-old-space-size=4096 ./node_modules/typescript/bin/tsc -p .",
     "typecheck": "tsc -p . --noEmit",
     "watch": "tsc -w -p .",
     "cdk": "cdk",
     "synth": "cdk synth",
     "predeploy": "powershell.exe -File ./deployment-scripts/set-environment.ps1",
-    "deploy": "cdk deploy",
+    "deploy": "node --max-old-space-size=4096 ./node_modules/.bin/cdk deploy",
     "diff": "cdk diff",
     "destroy": "cdk destroy --force",
     "provision-callback-tables": "npx ts-node scripts/provision-callback-tables.ts"
@@ -24,7 +24,7 @@
     "aws-cdk": "^2.151.0",
     "aws-cdk-lib": "^2.221.0",
     "constructs": "^10.3.0",
-    "esbuild": "^0.23.0",
+    "esbuild": "^0.19.12",
     "source-map-support": "^0.5.21",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.2"
