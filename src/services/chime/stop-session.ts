@@ -113,10 +113,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     await ddb.send(new UpdateCommand({
         TableName: AGENT_PRESENCE_TABLE_NAME,
         Key: { agentId },
-        UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt REMOVE activeClinicIds, meetingInfo, attendeeInfo, ttl',
+        UpdateExpression: 'SET #status = :status, #updatedAt = :updatedAt REMOVE activeClinicIds, meetingInfo, attendeeInfo, #ttl',
         ExpressionAttributeNames: {
             '#status': 'status',
             '#updatedAt': 'updatedAt',
+            '#ttl': 'ttl', // Added alias for reserved keyword 'ttl'
         },
         ExpressionAttributeValues: {
             ':status': 'Offline',
