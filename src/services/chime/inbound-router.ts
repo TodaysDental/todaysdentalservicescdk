@@ -457,11 +457,61 @@ export const handler = async (event: any): Promise<any> => {
             // --- ADDITION: Informational events that require no action ---
             // These events are informational and should return an empty action list
             // so Chime knows the event was received without taking any action.
-            case 'CALL_ANSWERED':
             case 'RINGING':
             case 'INVALID_LAMBDA_RESPONSE':
             case 'ACTION_FAILED': {
                 console.log(`Received informational event type: ${eventType}, returning empty actions.`);
+                return buildActions([]);
+            }
+            
+            // FIX: Handle CALL_ANSWERED for Outbound Calls (Customer Answered)
+            case 'CALL_ANSWERED': {
+                const { agentId, callType } = args;
+                const isOutbound = callType === 'Outbound';
+
+                console.log(`Received CALL_ANSWERED event for call ${callId}. Is Outbound: ${isOutbound}`);
+
+                if (isOutbound && agentId && callId) {
+                    // This is the customer answering the phone for an outbound call.
+                    
+                    // 1. Update Agent Status to OnCall
+                    await ddb.send(new UpdateCommand({
+                        TableName: AGENT_PRESENCE_TABLE_NAME,
+                        Key: { agentId },
+                        UpdateExpression: 'SET #status = :status, currentCallId = :callId, lastActivityAt = :timestamp',
+                        ExpressionAttributeNames: { '#status': 'status' },
+                        ExpressionAttributeValues: {
+                            ':status': 'OnCall',
+                            ':callId': callId,
+                            ':timestamp': new Date().toISOString(),
+                        },
+                    }));
+                    console.log(`[CALL_ANSWERED] Agent ${agentId} status updated to OnCall for outbound call ${callId}.`);
+
+                    // 2. Update Call Queue Status (Optional but helpful for logging)
+                    const { Items: callRecords } = await ddb.send(new QueryCommand({
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        IndexName: 'callId-index',
+                        KeyConditionExpression: 'callId = :id',
+                        ExpressionAttributeValues: { ':id': callId }
+                    }));
+                    
+                    if (callRecords && callRecords[0]) {
+                        const { clinicId, queuePosition } = callRecords[0];
+                        await ddb.send(new UpdateCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            Key: { clinicId, queuePosition },
+                            UpdateExpression: 'SET #status = :status, acceptedAt = :timestamp',
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: {
+                                ':status': 'connected',
+                                ':timestamp': new Date().toISOString()
+                            }
+                        }));
+                        console.log(`[CALL_ANSWERED] Call Queue status updated to connected for ${callId}.`);
+                    }
+                }
+                
                 return buildActions([]);
             }
 
@@ -619,4 +669,3 @@ export const handler = async (event: any): Promise<any> => {
         return buildActions([buildHangupAction('An internal error occurred. Please try again.')]);
     }
 };
-
