@@ -488,10 +488,19 @@ export class ChimeStack extends Stack {
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        // FIX 1: Pass the SIP Media Application ID (SMA_ID) to the Lambda
+        SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
       },
     });
     this.agentPresenceTable.grantReadWriteData(callHungupFn);
     this.callQueueTable.grantReadWriteData(callHungupFn);
+    
+    // FIX 2: Grant the Lambda permission to terminate the customer's call leg
+    callHungupFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['chime:UpdateSipMediaApplicationCall'],
+      resources: [`arn:aws:chime:${this.region}:${this.account}:sma/${sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId')}`],
+    }));
     
     // Add API Gateway permission for Admin API to invoke this function
     callHungupFn.addPermission('AdminApiInvokeCallHungup', {

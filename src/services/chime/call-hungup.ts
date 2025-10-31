@@ -10,7 +10,8 @@ const chimeVoiceClient = new ChimeSDKVoiceClient({});
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
-const SMA_ID = process.env.SMA_ID;
+// FIX: SMA_ID environment variable is REQUIRED for this function
+const SMA_ID = process.env.SMA_ID; 
 
 
 /**
@@ -43,6 +44,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
         
+        // FIX: Check for SMA_ID here before proceeding with the termination logic
         if (!SMA_ID) {
             console.error('SMA_ID environment variable is missing. Cannot hang up customer leg.');
         }
@@ -81,12 +83,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             console.log(`Attempting to force hangup on call transaction: ${callId}`);
             
             try {
-                // CORRECTED COMMAND: Use UpdateSipMediaApplicationCallCommand with Hangup action
+                // This signals the SMA to hang up the transaction, which triggers CALL_ENDED in inbound-router.ts
                 await chimeVoiceClient.send(new UpdateSipMediaApplicationCallCommand({
                     SipMediaApplicationId: SMA_ID,
                     TransactionId: callId,
                     Arguments: {
-                        Action: "Hangup" // This signals the SMA to hang up the transaction
+                        Action: "Hangup" 
                     }
                 }));
                  console.log(`Successfully sent Hangup action for TransactionId: ${callId}`);
