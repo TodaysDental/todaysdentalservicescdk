@@ -180,6 +180,26 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           };
       }
 
+      // Verify the meeting was created with proper media capabilities
+      if (!meetingResponse.Meeting.MediaPlacement?.AudioHostUrl) {
+          console.error('[start-session] Meeting created without AudioHostUrl', {
+              meetingId: meetingResponse.Meeting.MeetingId,
+              hasMediaPlacement: !!meetingResponse.Meeting.MediaPlacement
+          });
+          return {
+              statusCode: 500,
+              headers: corsHeaders,
+              body: JSON.stringify({ 
+                  message: 'Failed to create meeting with audio capabilities' 
+              })
+          };
+      }
+
+      console.log('[start-session] Meeting audio configuration validated', {
+          audioHostUrl: meetingResponse.Meeting.MediaPlacement.AudioHostUrl,
+          mediaRegion: meetingResponse.Meeting.MediaRegion
+      });
+
       console.log('[start-session] Chime meeting created successfully', {
         meetingId: meetingResponse.Meeting.MeetingId,
         mediaRegion: (meetingResponse.Meeting as any)?.MediaRegion

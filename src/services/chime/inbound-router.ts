@@ -438,20 +438,77 @@ export const handler = async (event: any): Promise<any> => {
             // Case 2: A new call *from* our system (agent outbound call)
             // This event is triggered by the CreateSipMediaApplicationCall in outbound-call.ts
             case 'NEW_OUTBOUND_CALL': {
-                const { agentId, meetingId, attendeeId } = args;
+                const { agentId, meetingId, attendeeId: agentAttendeeId } = args;
 
-                if (!agentId || !meetingId || !attendeeId) {
-                    console.error('Missing arguments for NEW_OUTBOUND_CALL', args);
-                     return buildActions([buildHangupAction()]);
+                if (!agentId || !meetingId) {
+                    console.error('[NEW_OUTBOUND_CALL] Missing required arguments', args);
+                    return buildActions([buildHangupAction()]);
                 }
 
-                console.log(`Joining outbound call leg to agent ${agentId}'s meeting ${meetingId}`);
+                console.log(`[NEW_OUTBOUND_CALL] Processing outbound call to customer`, {
+                    meetingId,
+                    agentId,
+                    callId
+                });
                 
-                // This joins the new outbound call (to the customer)
-                // into the agent's existing meeting.
-                return buildActions([
-                    buildJoinChimeMeetingActionOutbound(meetingId, attendeeId)
-                ]);
+                try {
+                    // CRITICAL: Create a NEW attendee for the customer leg
+                    // The agent already has their attendee from start-session
+                    const customerAttendeeResponse = await chime.send(new CreateAttendeeCommand({
+                        MeetingId: meetingId,
+                        ExternalUserId: `customer-${callId}` // Unique ID for this customer
+                    }));
+
+                    if (!customerAttendeeResponse.Attendee?.AttendeeId || 
+                        !customerAttendeeResponse.Attendee?.JoinToken) {
+                        throw new Error('Failed to create customer attendee');
+                    }
+
+                    const customerAttendee = customerAttendeeResponse.Attendee;
+                    console.log(`[NEW_OUTBOUND_CALL] Created customer attendee`, {
+                        attendeeId: customerAttendee.AttendeeId,
+                        meetingId
+                    });
+
+                    // Store customer attendee info in call queue for tracking
+                    try {
+                        const { Items: callRecords } = await ddb.send(new QueryCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            IndexName: 'callId-index',
+                            KeyConditionExpression: 'callId = :id',
+                            ExpressionAttributeValues: { ':id': callId }
+                        }));
+                        
+                        if (callRecords && callRecords[0]) {
+                            const { clinicId, queuePosition } = callRecords[0];
+                            await ddb.send(new UpdateCommand({
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                Key: { clinicId, queuePosition },
+                                UpdateExpression: 'SET customerAttendeeInfo = :att',
+                                ExpressionAttributeValues: {
+                                    ':att': customerAttendee
+                                }
+                            }));
+                        }
+                    } catch (updateErr) {
+                        console.warn('[NEW_OUTBOUND_CALL] Failed to store customer attendee:', updateErr);
+                        // Non-fatal
+                    }
+
+                    // Join the customer leg to the meeting using their own attendee + JoinToken
+                    return buildActions([
+                        buildJoinChimeMeetingAction(
+                            { MeetingId: meetingId }, 
+                            customerAttendee
+                        )
+                    ]);
+
+                } catch (err) {
+                    console.error('[NEW_OUTBOUND_CALL] Error creating customer attendee:', err);
+                    return buildActions([
+                        buildHangupAction('Unable to connect your call. Please try again.')
+                    ]);
+                }
             }
             
             // --- ADDITION: Informational events that require no action ---
@@ -464,52 +521,63 @@ export const handler = async (event: any): Promise<any> => {
                 return buildActions([]);
             }
             
-            // FIX: Handle CALL_ANSWERED for Outbound Calls (Customer Answered)
             case 'CALL_ANSWERED': {
                 const { agentId, callType } = args;
                 const isOutbound = callType === 'Outbound';
 
-                console.log(`Received CALL_ANSWERED event for call ${callId}. Is Outbound: ${isOutbound}`);
+                console.log(`[CALL_ANSWERED] Received for call ${callId}. Type: ${callType}`);
 
                 if (isOutbound && agentId && callId) {
-                    // This is the customer answering the phone for an outbound call.
+                    console.log(`[CALL_ANSWERED] Customer answered outbound call ${callId}`);
                     
                     // 1. Update Agent Status to OnCall
                     await ddb.send(new UpdateCommand({
                         TableName: AGENT_PRESENCE_TABLE_NAME,
                         Key: { agentId },
-                        UpdateExpression: 'SET #status = :status, currentCallId = :callId, lastActivityAt = :timestamp',
+                        UpdateExpression: 'SET #status = :status, currentCallId = :callId, callStatus = :callStatus, lastActivityAt = :timestamp',
                         ExpressionAttributeNames: { '#status': 'status' },
                         ExpressionAttributeValues: {
                             ':status': 'OnCall',
                             ':callId': callId,
+                            ':callStatus': 'connected', // IMPORTANT: Set this so polling detects it
                             ':timestamp': new Date().toISOString(),
                         },
                     }));
-                    console.log(`[CALL_ANSWERED] Agent ${agentId} status updated to OnCall for outbound call ${callId}.`);
+                    console.log(`[CALL_ANSWERED] Agent ${agentId} status updated to OnCall`);
 
-                    // 2. Update Call Queue Status (Optional but helpful for logging)
-                    const { Items: callRecords } = await ddb.send(new QueryCommand({
-                        TableName: CALL_QUEUE_TABLE_NAME,
-                        IndexName: 'callId-index',
-                        KeyConditionExpression: 'callId = :id',
-                        ExpressionAttributeValues: { ':id': callId }
-                    }));
-                    
-                    if (callRecords && callRecords[0]) {
-                        const { clinicId, queuePosition } = callRecords[0];
-                        await ddb.send(new UpdateCommand({
+                    // 2. Update Call Queue Status
+                    try {
+                        const { Items: callRecords } = await ddb.send(new QueryCommand({
                             TableName: CALL_QUEUE_TABLE_NAME,
-                            Key: { clinicId, queuePosition },
-                            UpdateExpression: 'SET #status = :status, acceptedAt = :timestamp',
-                            ExpressionAttributeNames: { '#status': 'status' },
-                            ExpressionAttributeValues: {
-                                ':status': 'connected',
-                                ':timestamp': new Date().toISOString()
-                            }
+                            IndexName: 'callId-index',
+                            KeyConditionExpression: 'callId = :id',
+                            ExpressionAttributeValues: { ':id': callId }
                         }));
-                        console.log(`[CALL_ANSWERED] Call Queue status updated to connected for ${callId}.`);
+                        
+                        if (callRecords && callRecords[0]) {
+                            const { clinicId, queuePosition } = callRecords[0];
+                            await ddb.send(new UpdateCommand({
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                Key: { clinicId, queuePosition },
+                                UpdateExpression: 'SET #status = :status, acceptedAt = :timestamp, assignedAgentId = :agentId',
+                                ExpressionAttributeNames: { '#status': 'status' },
+                                ExpressionAttributeValues: {
+                                    ':status': 'connected',
+                                    ':timestamp': new Date().toISOString(),
+                                    ':agentId': agentId
+                                }
+                            }));
+                            console.log(`[CALL_ANSWERED] Call queue updated for ${callId}`);
+                        }
+                    } catch (queueErr) {
+                        console.warn(`[CALL_ANSWERED] Failed to update call queue:`, queueErr);
+                        // Non-fatal - continue
                     }
+                    
+                    // 3. CRITICAL: Return empty actions to keep both legs connected
+                    // The customer leg is already in the meeting from NEW_OUTBOUND_CALL
+                    // We just need to confirm the connection is established
+                    console.log(`[CALL_ANSWERED] Both legs should now be in meeting. Returning empty actions.`);
                 }
                 
                 return buildActions([]);

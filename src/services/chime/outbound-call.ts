@@ -1,6 +1,6 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, CreateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
@@ -10,6 +10,7 @@ const chimeVoiceClient = new ChimeSDKVoiceClient({});
 
 const CLINICS_TABLE_NAME = process.env.CLINICS_TABLE_NAME;
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
+const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 const SMA_ID = process.env.SMA_ID;
 if (!SMA_ID) {
     throw new Error('SMA_ID environment variable is required');
@@ -202,17 +203,43 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             "agentId": agentId,
             "meetingId": agent.meetingInfo.MeetingId,
             "attendeeId": agent.attendeeInfo.AttendeeId,
+            "callStatus": "ringing", // Add this to track initial state
         }
     }));
     
+    const callId = callResponse.SipMediaApplicationCall?.TransactionId;
     console.log('[outbound-call] SIP call initiated successfully', {
-      transactionId: callResponse.SipMediaApplicationCall?.TransactionId,
+      transactionId: callId,
     });
+
+    // Store outbound call in queue table for tracking
+    if (callId) {
+        try {
+            await ddb.send(new PutCommand({
+                TableName: CALL_QUEUE_TABLE_NAME,
+                Item: {
+                    clinicId: body.fromClinicId,
+                    callId: callId,
+                    queuePosition: Date.now(), // Use timestamp as unique position for outbound calls
+                    queueEntryTime: Math.floor(Date.now() / 1000),
+                    phoneNumber: body.toPhoneNumber,
+                    status: 'ringing',
+                    direction: 'outbound',
+                    assignedAgentId: agentId,
+                    ttl: Math.floor(Date.now() / 1000) + (10 * 60) // 10 minute TTL
+                }
+            }));
+            console.log(`[outbound-call] Call ${callId} added to queue table`);
+        } catch (queueErr) {
+            console.warn(`[outbound-call] Failed to add call to queue:`, queueErr);
+            // Non-fatal
+        }
+    }
 
     const responseBody = {
       success: true,
       message: 'Outbound call initiated',
-      callId: callResponse.SipMediaApplicationCall?.TransactionId
+      callId: callId
     };
     
     console.log('[outbound-call] Request completed successfully', responseBody);
