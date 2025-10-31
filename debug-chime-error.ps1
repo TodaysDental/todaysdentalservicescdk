@@ -134,3 +134,4 @@ Write-Host "3. If logs show specific errors -> Address those errors" -Foreground
 Write-Host "4. If JWT token expired -> Get new token from Cognito" -ForegroundColor White
 
 
+

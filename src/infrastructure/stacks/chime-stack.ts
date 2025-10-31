@@ -353,6 +353,8 @@ export class ChimeStack extends Stack {
       timeout: Duration.seconds(10),
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        USER_POOL_ID: props.userPool.userPoolId,
+        COGNITO_REGION: this.region,
       },
     });
     stopSessionFn.addToRolePolicy(chimeSdkPolicy);
@@ -376,6 +378,10 @@ export class ChimeStack extends Stack {
         CLINICS_TABLE_NAME: this.clinicsTable.tableName,
         SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
         VOICE_CONNECTOR_ID: voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId'),
+
+        // Cognito configuration (needed for user lookup/auth in the Lambda)
+        USER_POOL_ID: props.userPool.userPoolId,
+        COGNITO_REGION: this.region,
       },
     });
     outboundCallFn.addToRolePolicy(chimeSdkPolicy);

@@ -272,8 +272,10 @@ export const handler = async (event: any): Promise<any> => {
     console.log('SMA Event:', JSON.stringify(event, null, 2));
 
     const eventType = event?.InvocationEventType;
-    const callId = event?.CallDetails?.CallId;
-    const args = event?.ActionData?.ArgumentsMap || event?.CallDetails?.ArgumentsMap || {};
+    // Use TransactionId as the stable call identifier for Chime SIP events
+    const callId = event?.CallDetails?.TransactionId;
+    // NEW_OUTBOUND_CALL places arguments at ActionData.Parameters.Arguments
+    const args = event?.ActionData?.Parameters?.Arguments || event?.ActionData?.ArgumentsMap || event?.CallDetails?.ArgumentsMap || {};
 
     try {
         switch (eventType) {
@@ -452,6 +454,17 @@ export const handler = async (event: any): Promise<any> => {
                 ]);
             }
             
+            // --- ADDITION: Informational events that require no action ---
+            // These events are informational and should return an empty action list
+            // so Chime knows the event was received without taking any action.
+            case 'CALL_ANSWERED':
+            case 'RINGING':
+            case 'INVALID_LAMBDA_RESPONSE':
+            case 'ACTION_FAILED': {
+                console.log(`Received informational event type: ${eventType}, returning empty actions.`);
+                return buildActions([]);
+            }
+
             // Case 3: Transfer initiated
             case 'TRANSFER_INITIATED': {
                 // When triggered by UpdateSipMediaApplicationCall, check for action

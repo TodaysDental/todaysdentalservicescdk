@@ -65,3 +65,4 @@ Write-Host "2. API Gateway endpoints exist but Lambda integrations missing" -For
 Write-Host "3. ChimeStack Lambda functions exist but not connected to API" -ForegroundColor White
 
 
+
