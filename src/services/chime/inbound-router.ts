@@ -1113,22 +1113,60 @@ export const handler = async (event: any): Promise<any> => {
                 return buildActions([]);
             }
             case 'INVALID_LAMBDA_RESPONSE':
-            case 'ACTION_FAILED': {
+            case 'ACTION_FAILED':
+            case 'ACTION_SUCCESSFUL': {
+                // ACTION_SUCCESSFUL is an informational acknowledgement from the
+                // SMA that a requested action completed successfully. Do not
+                // treat it as a hangup/termination — return empty actions.
                 console.log(`Received informational event type: ${eventType}, returning empty actions.`);
                 return buildActions([]);
             }
             
             case 'CALL_ANSWERED': {
-                const { agentId, callType, meetingId } = args;
-                const isOutbound = callType === 'Outbound';
+                // NOTE: CALL_ANSWERED events from the SMA often do not include the
+                // original Arguments passed at call creation. Query the call record
+                // in DynamoDB to resolve meetingId, agentId and direction.
+                console.log(`[CALL_ANSWERED] Received for call ${callId}. args: ${JSON.stringify(args)}`);
 
-                console.log(`[CALL_ANSWERED] Received for call ${callId}. Type: ${callType}`);
+                // Start with any values that might be present in args, then fill
+                // in from DynamoDB if missing.
+                let agentId = args?.agentId;
+                let callType = args?.callType;
+                let meetingId = args?.meetingId;
+
+                // Try to get the call record from the call queue table to resolve
+                // missing metadata (assignedAgentId, meetingInfo, direction)
+                let callRecord: any = undefined;
+                try {
+                    const { Items: callRecords } = await ddb.send(new QueryCommand({
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        IndexName: 'callId-index',
+                        KeyConditionExpression: 'callId = :id',
+                        ExpressionAttributeValues: { ':id': callId }
+                    }));
+
+                    if (callRecords && callRecords[0]) {
+                        callRecord = callRecords[0];
+                        // populate missing fields from the DB record
+                        agentId = agentId || callRecord.assignedAgentId || callRecord.assignedAgent;
+                        meetingId = meetingId || callRecord.meetingInfo?.MeetingId || callRecord.meetingInfo;
+                        callType = callType || (callRecord.direction ? String(callRecord.direction) : undefined);
+                    }
+                } catch (checkErr) {
+                    console.warn('[CALL_ANSWERED] Error fetching call record from DB:', checkErr);
+                }
+
+                const isOutbound = (typeof callType === 'string' && callType.toLowerCase() === 'outbound') ||
+                                   (callRecord?.direction && String(callRecord.direction).toLowerCase() === 'outbound');
+
+                console.log(`[CALL_ANSWERED] Resolved Type: ${callType || callRecord?.direction || 'N/A'}, agentId: ${agentId}, meetingId: ${meetingId}`);
 
                 // CRITICAL FIX: Add timeout handling for outbound calls
                 // If call has been in dialing state for too long, clean up
                 if (isOutbound && callId) {
                     try {
-                        const { Items: callRecords } = await ddb.send(new QueryCommand({
+                        // If we already fetched callRecord above, reuse it. Otherwise query.
+                        const { Items: callRecords } = callRecord ? { Items: [callRecord] } : await ddb.send(new QueryCommand({
                             TableName: CALL_QUEUE_TABLE_NAME,
                             IndexName: 'callId-index',
                             KeyConditionExpression: 'callId = :id',
@@ -1408,7 +1446,6 @@ export const handler = async (event: any): Promise<any> => {
             // Note: MEETING_ACCEPTED event removed - call acceptance is handled by the API (call-accepted.ts)
 
             // Case 6: Call actions completed, or call ended
-            case 'ACTION_SUCCESSFUL':
             case 'HANGUP':
             case 'CALL_ENDED': {
                 console.log(`[${eventType}] Call ${callId} ended. Cleaning up resources.`);

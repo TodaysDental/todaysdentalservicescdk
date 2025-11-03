@@ -80,3 +80,4 @@ Write-Host "✓ Outbound calls (via the CDK stack)" -ForegroundColor Green
 Write-Host "`nAll your phone numbers associated with the Voice Connector will now route to your SIP Media Application." -ForegroundColor Green
 
 
+

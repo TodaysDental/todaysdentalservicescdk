@@ -367,7 +367,7 @@ export class ChimeStack extends Stack {
             parameters: {
               VoiceConnectorId: voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId'),
               E164PhoneNumbers: phoneBatch,
-              ForceAssociate: false // Use false to avoid stealing numbers from other stacks
+              ForceAssociate: true // Use false to avoid stealing numbers from other stacks
             },
             // Use stable resource ID for this phone batch
             physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-associate-phones-batch-${index}`),
@@ -378,7 +378,7 @@ export class ChimeStack extends Stack {
             parameters: {
               VoiceConnectorId: voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId'),
               E164PhoneNumbers: phoneBatch,
-              ForceAssociate: false // Use false to avoid stealing numbers from other stacks
+              ForceAssociate: true // Use false to avoid stealing numbers from other stacks
             },
             physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-associate-phones-batch-${index}`),
           },
