@@ -1,15 +1,43 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
+import { ChimeSDKMeetingsClient, CreateAttendeeCommand, DeleteAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
+import { randomUUID } from 'crypto';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const chimeVoice = new ChimeSDKVoiceClient({});
+const chime = new ChimeSDKMeetingsClient({ region: process.env.CHIME_MEDIA_REGION || 'us-east-1' });
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 const SMA_ID = process.env.SMA_ID;
+const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
+const USER_POOL_ID = process.env.USER_POOL_ID;
+const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
+let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
+
+// Auth Helpers
+async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; payload: JWTPayload } | { ok: false; code: number; message: string }> {
+  if (!authorizationHeader || !authorizationHeader.toLowerCase().startsWith("bearer ")) {
+    return { ok: false, code: 401, message: "Missing Bearer token" };
+  }
+  if (!ISSUER) {
+    return { ok: false, code: 500, message: "Issuer not configured" };
+  }
+  const token = authorizationHeader.slice(7).trim();
+  try {
+    JWKS = JWKS || createRemoteJWKSet(new URL(`${ISSUER}/.well-known/jwks.json`));
+    const { payload } = await jwtVerify(token, JWKS, { issuer: ISSUER });
+    if ((payload as any).token_use !== "id") {
+      return { ok: false, code: 401, message: "ID token required" };
+    }
+    return { ok: true, payload };
+  } catch (err: any) {
+    return { ok: false, code: 401, message: `Invalid token: ${err.message}` };
+  }
+}
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
     
@@ -20,6 +48,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'Missing request body' }) };
         }
 
+        // CRITICAL FIX: Add JWT verification for security
+        const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
+        const verifyResult = await verifyIdToken(authz);
+        if (!verifyResult.ok) {
+            console.warn('[transfer-call] Auth verification failed', { 
+                code: verifyResult.code, 
+                message: verifyResult.message 
+            });
+            return { statusCode: verifyResult.code, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
+        }
+        
+        const requestingAgentId = verifyResult.payload.sub;
+        console.log('[transfer-call] Auth verification successful', { requestingAgentId });
+        
         const body = JSON.parse(event.body);
         const { callId, fromAgentId, toAgentId } = body;
 
@@ -28,6 +70,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 statusCode: 400, 
                 headers: corsHeaders, 
                 body: JSON.stringify({ message: 'Missing required parameters: callId, fromAgentId, toAgentId' }) 
+            };
+        }
+        
+        // CRITICAL FIX: Verify requesting agent is the fromAgent
+        if (requestingAgentId !== fromAgentId) {
+            console.warn('[transfer-call] Authorization failed - agent attempting to transfer call they are not on', {
+                requestingAgentId,
+                fromAgentId
+            });
+            return {
+                statusCode: 403,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Forbidden: You can only transfer calls you are currently on' })
             };
         }
 
@@ -65,36 +120,320 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         const callRecord = callRecords[0];
         const { clinicId, queuePosition } = callRecord;
+        
+        // CRITICAL FIX: Verify source agent is actually on this call
+        if (callRecord.assignedAgentId !== fromAgentId) {
+            console.warn('[transfer-call] Source agent not on this call', {
+                fromAgentId,
+                assignedAgentId: callRecord.assignedAgentId
+            });
+            return {
+                statusCode: 403,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'You are not currently on this call' })
+            };
+        }
+        
+        // CRITICAL FIX: Verify both agents have access to the same clinic
+        const sourceAgentClinics = verifyResult.payload['x_clinics'] || verifyResult.payload['cognito:groups'] || [];
+        const targetAgentClinics = targetAgent.activeClinicIds || [];
+        
+        // Check if target agent has access to the call's clinic
+        const hasAccess = targetAgent.activeClinicIds?.includes(clinicId) || 
+                         targetAgent.activeClinicIds?.includes('ALL');
+        
+        if (!hasAccess) {
+            console.warn('[transfer-call] Target agent does not have access to this clinic', {
+                toAgentId,
+                clinicId,
+                targetAgentClinics: targetAgent.activeClinicIds
+            });
+            return {
+                statusCode: 403,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Target agent does not have access to this clinic' })
+            };
+        }
 
-        // Update call record with transfer status
-        await ddb.send(new UpdateCommand({
-            TableName: CALL_QUEUE_TABLE_NAME,
-            Key: { clinicId, queuePosition },
-            UpdateExpression: 'SET transferStatus = :ts, transferToAgentId = :ta',
-            ExpressionAttributeValues: {
-                ':ts': 'pending',
-                ':ta': toAgentId
+        // CRITICAL FIX: Use a transaction to update everything atomically
+        // This prevents race conditions by ensuring all updates happen consistently
+        try {
+            // Step 1: Verify call status and meeting info before proceeding
+            if (!callRecord.meetingInfo?.MeetingId) {
+                return {
+                    statusCode: 400,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ message: 'No active meeting found for this call' })
+                };
             }
-        }));
-
-        // 3. Trigger the SMA to handle the transfer
-        if (SMA_ID) {
+            
+            const meetingInfo = callRecord.meetingInfo;
+            
+            // Step 2: Create a new attendee for the target agent in the existing meeting
+            console.log(`[transfer-call] Creating attendee for target agent ${toAgentId} in meeting ${meetingInfo.MeetingId}`);
+            let toAgentAttendee;
             try {
-                await chimeVoice.send(new UpdateSipMediaApplicationCallCommand({
-                    SipMediaApplicationId: SMA_ID,
-                    TransactionId: callId,
-                    Arguments: {
-                        action: 'TRANSFER_INITIATED',
-                        fromAgentId,
-                        toAgentId
-                    }
+                const toAgentAttendeeResponse = await chime.send(new CreateAttendeeCommand({
+                    MeetingId: meetingInfo.MeetingId,
+                    ExternalUserId: toAgentId
                 }));
-            } catch (updateError) {
-                console.error('Error triggering SMA for transfer:', updateError);
-                // Continue even if SMA update fails - the transfer status is already recorded
+                
+                if (!toAgentAttendeeResponse.Attendee) {
+                    throw new Error('Failed to create attendee for target agent');
+                }
+                
+                toAgentAttendee = toAgentAttendeeResponse.Attendee;
+                console.log(`[transfer-call] Created attendee ${toAgentAttendee.AttendeeId} for target agent`);
+            } catch (attendeeErr) {
+                console.error(`[transfer-call] Failed to create attendee:`, attendeeErr);
+                return {
+                    statusCode: 500,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ message: 'Failed to prepare meeting for transfer' })
+                };
             }
-        } else {
-            console.warn('SMA_ID not configured - transfer will not be triggered automatically');
+            
+            // Step 3: Now perform our three database updates using TransactWriteItems
+            // This ensures either ALL updates succeed or NONE do
+            const timestamp = new Date().toISOString();
+            
+            // Use the TransactWrite operation for atomic updates - already imported at the top of file
+            
+            await ddb.send(new TransactWriteCommand({
+                TransactItems: [
+                    // 1. Update call record
+                    {
+                        Update: {
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            Key: { clinicId, queuePosition },
+                            UpdateExpression: 'SET transferStatus = :ts, transferToAgentId = :ta, transferFromAgentId = :fa, transferInitiatedAt = :timestamp',
+                            ConditionExpression: '#status = :connectedStatus AND assignedAgentId = :fromAgent',
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: {
+                                ':ts': 'pending',
+                                ':ta': toAgentId,
+                                ':fa': fromAgentId,
+                                ':timestamp': timestamp,
+                                ':connectedStatus': 'connected',
+                                ':fromAgent': fromAgentId
+                            }
+                        }
+                    },
+                    // 2. Update target agent's record (set to ringing)
+                    {
+                        Update: {
+                            TableName: AGENT_PRESENCE_TABLE_NAME,
+                            Key: { agentId: toAgentId },
+                            UpdateExpression: 'SET ringingCallId = :callId, callStatus = :status, ' + 
+                                            'inboundMeetingInfo = :meeting, inboundAttendeeInfo = :attendee, ' +
+                                            'ringingCallTime = :time, lastActivityAt = :timestamp',
+                            ConditionExpression: '#status = :onlineStatus', // Only if agent is still online
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: {
+                                ':callId': callId,
+                                ':status': 'ringing',
+                                ':meeting': meetingInfo,
+                                ':attendee': toAgentAttendee,
+                                ':time': timestamp,
+                                ':timestamp': timestamp,
+                                ':onlineStatus': 'Online'
+                            }
+                        }
+                    },
+                    // 3. Update source agent's record (set to Online)
+                    {
+                        Update: {
+                            TableName: AGENT_PRESENCE_TABLE_NAME,
+                            Key: { agentId: fromAgentId },
+                            UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp, transferInitiatedAt = :timestamp REMOVE currentCallId, callStatus',
+                            ConditionExpression: 'currentCallId = :callId', // Only if still on this call
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: {
+                                ':status': 'Online',
+                                ':timestamp': timestamp,
+                                ':callId': callId
+                            }
+                        }
+                    }
+                ]
+            }));
+            
+            console.log(`[transfer-call] Transaction completed successfully - transfer initiated from ${fromAgentId} to ${toAgentId}`);
+            
+        } catch (err: any) {
+            // Check for transaction failures
+            if (err.name === 'TransactionCanceledException') {
+                const reasons = err.CancellationReasons || [];
+                
+                // Check which condition failed
+                if (reasons[0]?.Code === 'ConditionalCheckFailed') {
+                    console.warn('[transfer-call] Call state invalid for transfer', { callId });
+                    return {
+                        statusCode: 409,
+                        headers: corsHeaders,
+                        body: JSON.stringify({ message: 'Call is not in a valid state for transfer' })
+                    };
+                } else if (reasons[1]?.Code === 'ConditionalCheckFailed') {
+                    console.warn('[transfer-call] Target agent no longer available', { toAgentId });
+                    return {
+                        statusCode: 409,
+                        headers: corsHeaders,
+                        body: JSON.stringify({ message: 'Target agent is no longer available' })
+                    };
+                } else if (reasons[2]?.Code === 'ConditionalCheckFailed') {
+                    console.warn('[transfer-call] Source agent no longer on call', { fromAgentId });
+                    return {
+                        statusCode: 409, 
+                        headers: corsHeaders,
+                        body: JSON.stringify({ message: 'You are no longer on this call' })
+                    };
+                }
+                
+                // Generic transaction failure
+                return {
+                    statusCode: 409,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ message: 'Transfer failed due to conflicting state changes' })
+                };
+            }
+            
+            // Re-throw other errors
+            throw err;
+        }
+        
+        // Trigger the SMA to handle the transfer - this happens AFTER the transaction is complete
+        // so even if this fails, our database state is already updated consistently
+        if (!SMA_ID) {
+            console.error('[transfer-call] SMA_ID environment variable is missing');
+            return {
+                statusCode: 500,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Server configuration error: Missing SMA_ID' })
+            };
+        }
+        
+        try {
+            await chimeVoice.send(new UpdateSipMediaApplicationCallCommand({
+                SipMediaApplicationId: SMA_ID,
+                TransactionId: callId,
+                Arguments: {
+                    action: 'TRANSFER_INITIATED',
+                    fromAgentId,
+                    toAgentId
+                }
+            }));
+            
+            console.log(`[transfer-call] SMA notification sent successfully for transfer from ${fromAgentId} to ${toAgentId}`);
+        } catch (updateError) {
+            console.error('[transfer-call] Error triggering SMA for transfer, rolling back:', updateError);
+            
+            // CRITICAL FIX: Implement compensating transaction to roll back the database changes
+            // This ensures the system remains consistent even if the SMA notification fails
+            try {
+                // Get reference to the meeting info we verified earlier
+                const targetMeetingInfo = callRecord.meetingInfo; // already verified to exist earlier
+                
+                // Get a reference to the attendee we created earlier for this transfer
+                // Avoiding a variable name conflict by using a different name
+                const transferAttendee = callRecord.meetingInfo ? 
+                    { 
+                        AttendeeId: (callRecord.agentAttendeeInfo?.AttendeeId || ''), 
+                        JoinToken: '',
+                        ExternalUserId: toAgentId
+                    } : null;
+                
+                // Generate a unique operation ID for this rollback
+                const rollbackId = `rollback-${randomUUID()}`;
+                
+                console.log(`[transfer-call] Starting compensating transaction ${rollbackId}`);
+                
+                await ddb.send(new TransactWriteCommand({
+                    TransactItems: [
+                        // 1. Revert call record
+                        {
+                            Update: {
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                Key: { clinicId, queuePosition },
+                                UpdateExpression: 'REMOVE transferStatus, transferToAgentId, transferFromAgentId, transferInitiatedAt SET rollbackId = :rollbackId, lastRollbackAt = :timestamp',
+                                ConditionExpression: 'transferStatus = :pendingStatus AND transferToAgentId = :toAgent AND transferFromAgentId = :fromAgent',
+                                ExpressionAttributeValues: {
+                                    ':pendingStatus': 'pending',
+                                    ':toAgent': toAgentId,
+                                    ':fromAgent': fromAgentId,
+                                    ':rollbackId': rollbackId,
+                                    ':timestamp': new Date().toISOString()
+                                }
+                            }
+                        },
+                        // 2. Revert target agent
+                        {
+                            Update: {
+                                TableName: AGENT_PRESENCE_TABLE_NAME,
+                                Key: { agentId: toAgentId },
+                                UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp, rollbackId = :rollbackId REMOVE ringingCallId, inboundMeetingInfo, inboundAttendeeInfo, ringingCallTime',
+                                ExpressionAttributeNames: { '#status': 'status' },
+                                ConditionExpression: 'ringingCallId = :callId',
+                                ExpressionAttributeValues: {
+                                    ':status': 'Online',
+                                    ':timestamp': new Date().toISOString(),
+                                    ':callId': callId,
+                                    ':rollbackId': rollbackId
+                                }
+                            }
+                        },
+                        // 3. Restore source agent
+                        {
+                            Update: {
+                                TableName: AGENT_PRESENCE_TABLE_NAME,
+                                Key: { agentId: fromAgentId },
+                                UpdateExpression: 'SET currentCallId = :callId, #status = :status, lastActivityAt = :timestamp, rollbackId = :rollbackId REMOVE transferInitiatedAt',
+                                ExpressionAttributeNames: { '#status': 'status' },
+                                ExpressionAttributeValues: {
+                                    ':callId': callId,
+                                    ':status': 'OnCall',
+                                    ':timestamp': new Date().toISOString(),
+                                    ':rollbackId': rollbackId
+                                }
+                            }
+                        }
+                    ]
+                }));
+                
+                // Delete the newly created attendee to clean up completely
+                if (transferAttendee?.AttendeeId && targetMeetingInfo?.MeetingId) {
+                    try {
+                        await chime.send(new DeleteAttendeeCommand({
+                            MeetingId: targetMeetingInfo.MeetingId,
+                            AttendeeId: transferAttendee.AttendeeId
+                        }));
+                        console.log(`[transfer-call] Cleaned up target agent attendee ${transferAttendee.AttendeeId}`);
+                    } catch (deleteErr) {
+                        // Non-critical error, just log it
+                        console.warn(`[transfer-call] Failed to delete attendee:`, deleteErr);
+                    }
+                }
+                
+                console.log(`[transfer-call] Successfully rolled back transfer with ID ${rollbackId}`);
+                
+                return {
+                    statusCode: 500,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ 
+                        message: 'Transfer failed - SMA notification error',
+                        rollbackId: rollbackId
+                    })
+                };
+            } catch (rollbackErr) {
+                console.error(`[transfer-call] Failed to roll back transfer:`, rollbackErr);
+                return {
+                    statusCode: 500,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ 
+                        message: 'Transfer failed with unrecoverable error - manual intervention needed',
+                        callId
+                    })
+                };
+            }
         }
 
         return {
@@ -106,7 +445,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             })
         };
 
-    } catch (error) {
+    } catch (error: any) {
         console.error('Error processing transfer request:', error);
         return {
             statusCode: 500,
@@ -114,4 +453,4 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             body: JSON.stringify({ message: 'Internal server error' })
         };
     }
-};
+}

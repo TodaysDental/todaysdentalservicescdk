@@ -2,10 +2,12 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
+import { ChimeSDKMeetingsClient, DeleteMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const chimeVoice = new ChimeSDKVoiceClient({});
+const chime = new ChimeSDKMeetingsClient({});
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 const SMA_ID = process.env.SMA_ID;
@@ -91,36 +93,87 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           callStatus: callRecord.callStatus
         });
 
-        // 2. Remove the rejecting agent from the list of available agents
+        // 2. CRITICAL FIX: Verify the call hasn't already been accepted before processing rejection
+        // This prevents race conditions where one agent accepts while another rejects
+        if (callRecord.status === 'connected' || callRecord.assignedAgentId) {
+            console.warn('[call-rejected] Call already accepted by another agent', {
+                callId,
+                status: callRecord.status,
+                assignedAgent: callRecord.assignedAgentId
+            });
+            
+            // Clean up this agent's ringing status
+            await ddb.send(new UpdateCommand({
+                TableName: AGENT_PRESENCE_TABLE_NAME,
+                Key: { agentId },
+                UpdateExpression: 'REMOVE ringingCallId, inboundMeetingInfo, inboundAttendeeInfo SET lastActivityAt = :timestamp',
+                ExpressionAttributeValues: {
+                    ':timestamp': new Date().toISOString()
+                }
+            }));
+            
+            return {
+                statusCode: 200,
+                headers: corsHeaders,
+                body: JSON.stringify({ 
+                    message: 'Call already accepted by another agent',
+                    callId,
+                    agentId,
+                    action: 'already_connected'
+                })
+            };
+        }
+        
+        // 3. Remove the rejecting agent from the list of available agents
         const remainingAgents = callRecord.agentIds?.filter((id: string) => id !== agentId) || [];
         
-        // 3. Update the agent's status to remove the ringing call
+        // 4. Update the agent's status to remove the ringing call
         await ddb.send(new UpdateCommand({
             TableName: AGENT_PRESENCE_TABLE_NAME,
             Key: { agentId },
-            UpdateExpression: 'REMOVE ringingCallId SET lastActivityAt = :timestamp, lastRejectedCallId = :callId',
+            UpdateExpression: 'REMOVE ringingCallId, inboundMeetingInfo, inboundAttendeeInfo SET lastActivityAt = :timestamp, lastRejectedCallId = :callId',
             ExpressionAttributeValues: {
                 ':timestamp': new Date().toISOString(),
                 ':callId': callId
             }
         }));
 
-        // 4. If there are remaining agents, update the call record
+        // 5. If there are remaining agents, update the call record with conditional check
         if (remainingAgents.length > 0) {
-            await ddb.send(new UpdateCommand({
-                TableName: CALL_QUEUE_TABLE_NAME,
-                Key: { clinicId, queuePosition },
-                UpdateExpression: 'SET agentIds = :agents, rejectedAgents = list_append(if_not_exists(rejectedAgents, :empty), :rejected)',
-                ExpressionAttributeValues: {
-                    ':agents': remainingAgents,
-                    ':empty': [],
-                    ':rejected': [{
-                        agentId,
-                        reason: reason || 'manual_rejection',
-                        timestamp: new Date().toISOString()
-                    }]
+            try {
+                await ddb.send(new UpdateCommand({
+                    TableName: CALL_QUEUE_TABLE_NAME,
+                    Key: { clinicId, queuePosition },
+                    UpdateExpression: 'SET agentIds = :agents, rejectedAgents = list_append(if_not_exists(rejectedAgents, :empty), :rejected)',
+                    ConditionExpression: '#status = :ringingStatus AND attribute_not_exists(assignedAgentId)',
+                    ExpressionAttributeNames: { '#status': 'status' },
+                    ExpressionAttributeValues: {
+                        ':agents': remainingAgents,
+                        ':empty': [],
+                        ':rejected': [{
+                            agentId,
+                            reason: reason || 'manual_rejection',
+                            timestamp: new Date().toISOString()
+                        }],
+                        ':ringingStatus': 'ringing'
+                    }
+                }));
+            } catch (err: any) {
+                if (err.name === 'ConditionalCheckFailedException') {
+                    console.warn('[call-rejected] Call state changed during rejection processing', { callId });
+                    return {
+                        statusCode: 200,
+                        headers: corsHeaders,
+                        body: JSON.stringify({ 
+                            message: 'Call already handled by another agent',
+                            callId,
+                            agentId,
+                            action: 'already_handled'
+                        })
+                    };
                 }
-            }));
+                throw err;
+            }
 
             console.log(`Call ${callId} rejected by agent ${agentId}. ${remainingAgents.length} agents remaining.`);
 
@@ -136,7 +189,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 })
             };
         } else {
-            // 5. No more agents available - need to find new agents or queue the call
+            // 6. No more agents available - need to find new agents or queue the call
             console.log(`Call ${callId} rejected by last agent ${agentId}. Finding new agents...`);
 
             // Try to find new online agents for the clinic
@@ -168,19 +221,26 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 }));
 
                 // Notify the SMA to ring the new agents
-                if (SMA_ID) {
-                    try {
-                        await chimeVoice.send(new UpdateSipMediaApplicationCallCommand({
-                            SipMediaApplicationId: SMA_ID,
-                            TransactionId: callId,
-                            Arguments: {
-                                action: 'RING_NEW_AGENTS',
-                                agentIds: newAgentIds.join(',')
-                            }
-                        }));
-                    } catch (updateError) {
-                        console.error('Error updating SMA call:', updateError);
-                    }
+                if (!SMA_ID) {
+                    console.error('[call-rejected] SMA_ID environment variable is missing');
+                    return {
+                        statusCode: 500,
+                        headers: corsHeaders,
+                        body: JSON.stringify({ message: 'Server configuration error: Missing SMA_ID' })
+                    };
+                }
+                
+                try {
+                    await chimeVoice.send(new UpdateSipMediaApplicationCallCommand({
+                        SipMediaApplicationId: SMA_ID,
+                        TransactionId: callId,
+                        Arguments: {
+                            action: 'RING_NEW_AGENTS',
+                            agentIds: newAgentIds.join(',')
+                        }
+                    }));
+                } catch (updateError) {
+                    console.error('Error updating SMA call:', updateError);
                 }
 
                 return {
@@ -189,24 +249,67 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     body: JSON.stringify({ 
                         message: 'Found new agents',
                         callId,
-                        newAgentCount: newAgentIds.length,
+                        newAgentCount: newAgents.length,
                         action: 'ringing_new_agents'
                     })
                 };
             } else {
                 // No agents available - update call status
-                await ddb.send(new UpdateCommand({
-                    TableName: CALL_QUEUE_TABLE_NAME,
-                    Key: { clinicId, queuePosition },
-                    UpdateExpression: 'SET #status = :status, noAgentsAvailableAt = :timestamp',
-                    ExpressionAttributeNames: {
-                        '#status': 'status'
-                    },
-                    ExpressionAttributeValues: {
-                        ':status': 'no_agents_available',
-                        ':timestamp': new Date().toISOString()
+                // CRITICAL FIX: Clean up meeting if it exists
+                if (callRecord.meetingInfo?.MeetingId) {
+                    try {
+                        // Clean up the meeting since no agent will be joining
+                        await chime.send(new DeleteMeetingCommand({
+                            MeetingId: callRecord.meetingInfo.MeetingId
+                        }));
+                        console.log(`[call-rejected] Cleaned up meeting ${callRecord.meetingInfo.MeetingId} with no available agents`);
+                        
+                        // Update call record and remove meeting info
+                        await ddb.send(new UpdateCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            Key: { clinicId, queuePosition },
+                            UpdateExpression: 'SET #status = :status, noAgentsAvailableAt = :timestamp, cleanupReason = :reason REMOVE meetingInfo, customerAttendeeInfo',
+                            ExpressionAttributeNames: {
+                                '#status': 'status'
+                            },
+                            ExpressionAttributeValues: {
+                                ':status': 'no_agents_available',
+                                ':timestamp': new Date().toISOString(),
+                                ':reason': 'no_agents_available'
+                            }
+                        }));
+                    } catch (meetingErr) {
+                        console.error(`[call-rejected] Error cleaning up meeting:`, meetingErr);
+                        
+                        // Still update the call record even if meeting cleanup fails
+                        await ddb.send(new UpdateCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            Key: { clinicId, queuePosition },
+                            UpdateExpression: 'SET #status = :status, noAgentsAvailableAt = :timestamp',
+                            ExpressionAttributeNames: {
+                                '#status': 'status'
+                            },
+                            ExpressionAttributeValues: {
+                                ':status': 'no_agents_available',
+                                ':timestamp': new Date().toISOString()
+                            }
+                        }));
                     }
-                }));
+                } else {
+                    // No meeting to clean up, just update status
+                    await ddb.send(new UpdateCommand({
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        Key: { clinicId, queuePosition },
+                        UpdateExpression: 'SET #status = :status, noAgentsAvailableAt = :timestamp',
+                        ExpressionAttributeNames: {
+                            '#status': 'status'
+                        },
+                        ExpressionAttributeValues: {
+                            ':status': 'no_agents_available',
+                            ':timestamp': new Date().toISOString()
+                        }
+                    }));
+                }
 
                 return {
                     statusCode: 200,

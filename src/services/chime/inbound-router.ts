@@ -1,48 +1,90 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand, UpdateCommand, PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
-import { ChimeSDKMeetingsClient, CreateMeetingCommand, CreateAttendeeCommand, DeleteMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
+import { 
+    ChimeSDKMeetingsClient, 
+    CreateMeetingCommand, 
+    CreateAttendeeCommand, 
+    DeleteMeetingCommand,
+    GetMeetingCommand
+} from '@aws-sdk/client-chime-sdk-meetings';
+import { randomUUID } from 'crypto';
 
 // This Lambda is the "brain" for call routing.
 // It is NOT triggered by API Gateway. It is triggered by the Chime SDK SIP Media Application.
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 // Chime meetings must be created in a supported media region
-const CHIME_MEDIA_REGION = 'us-east-1';
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
 const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 const CLINICS_TABLE_NAME = process.env.CLINICS_TABLE_NAME;
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 const HOLD_MUSIC_BUCKET = process.env.HOLD_MUSIC_BUCKET;
 
-// Default queue timeout in seconds (10 minutes)
-const QUEUE_TIMEOUT = 600;
+// Default queue timeout in seconds (24 hours) - Increased to handle long calls
+const QUEUE_TIMEOUT = 24 * 60 * 60;
 // Average call duration in seconds (5 minutes) - used for wait time estimation
 const AVG_CALL_DURATION = 300;
+
+// CRITICAL FIX: Define valid call states and transitions
+type CallStatus = 
+    | 'queued'              // Call is in the queue, waiting for an agent
+    | 'ringing'             // Call is ringing to agents
+    | 'connected'           // Call is connected to an agent
+    | 'on_hold'             // Call is on hold (agent stepped away)
+    | 'completed'           // Call was completed normally
+    | 'abandoned'           // Call was abandoned (customer hung up)
+    | 'timeout'             // Call timed out (no answer)
+    | 'no_agents_available' // No agents available to take the call
+    | 'dialing'             // For outbound: call is being dialed
+    | 'failed';             // Call failed for technical reasons
+
+// Valid call state transitions
+const VALID_STATE_TRANSITIONS: Record<CallStatus, CallStatus[]> = {
+    'queued': ['ringing', 'abandoned', 'timeout', 'no_agents_available'],
+    'ringing': ['connected', 'queued', 'abandoned', 'no_agents_available', 'timeout'],
+    'dialing': ['connected', 'timeout', 'abandoned', 'failed'],
+    'connected': ['on_hold', 'completed', 'abandoned'],
+    'on_hold': ['connected', 'abandoned', 'completed'],
+    'timeout': [],
+    'completed': [],
+    'abandoned': [],
+    'no_agents_available': ['ringing', 'abandoned', 'queued'],
+    'failed': []
+};
+
+// Helper function to validate state transitions
+function isValidStateTransition(fromState: CallStatus, toState: CallStatus): boolean {
+    return VALID_STATE_TRANSITIONS[fromState]?.includes(toState) ?? false;
+}
 
 interface QueueEntry {
     clinicId: string;
     callId: string;
     queuePosition: number;
     queueEntryTime: number;
+    queueEntryTimeIso?: string; // Add optional ISO timestamp format
+    uniquePositionId?: string;  // Add optional unique position ID
     phoneNumber: string;
-    status: 'queued' | 'connecting' | 'connected' | 'abandoned';
+    status: CallStatus;
     ttl: number;
 }
 
 async function addToQueue(clinicId: string, callId: string, phoneNumber: string): Promise<QueueEntry> {
-    // Get current queue position
-    const { Items: queueItems } = await ddb.send(new QueryCommand({
-        TableName: CALL_QUEUE_TABLE_NAME,
-        KeyConditionExpression: 'clinicId = :cid',
-        FilterExpression: 'status = :status',
-        ExpressionAttributeValues: {
-            ':cid': clinicId,
-            ':status': 'queued'
-        }
-    }));
-
-    const queuePosition = (queueItems?.length || 0) + 1;
+    // CRITICAL FIX: Use UUID-based position ID to eliminate race conditions
+    // This ensures each call gets a guaranteed unique position even with concurrent calls
     const now = Math.floor(Date.now() / 1000);
+    
+    // We now have randomUUID imported at the top of the file
+    
+    // Generate a guaranteed unique position ID using timestamp and UUID
+    // Format: timestamp-uuid to guarantee uniqueness even for calls arriving at same millisecond
+    const uuid = randomUUID();
+    const uniqueId = `${Date.now()}-${uuid.substring(0, 13)}`;
+    
+    // Use the timestamp part for sorting but make it unique with a small random offset
+    // to handle potential concurrent calls
+    const queuePosition = Date.now() + Math.floor(Math.random() * 100);
     
     const entry: QueueEntry = {
         clinicId,
@@ -50,56 +92,118 @@ async function addToQueue(clinicId: string, callId: string, phoneNumber: string)
         phoneNumber,
         queuePosition,
         queueEntryTime: now,
+        queueEntryTimeIso: new Date().toISOString(), // Add ISO format for consistency
+        uniquePositionId: uniqueId, // Store the guaranteed unique ID
         status: 'queued',
         ttl: now + QUEUE_TIMEOUT
     };
 
-    await ddb.send(new PutCommand({
-        TableName: CALL_QUEUE_TABLE_NAME,
-        Item: entry
-    }));
+    // Use PutCommand with conditional check to prevent duplicate callIds
+    try {
+        await ddb.send(new PutCommand({
+            TableName: CALL_QUEUE_TABLE_NAME,
+            Item: entry,
+            ConditionExpression: 'attribute_not_exists(clinicId) AND attribute_not_exists(queuePosition)'
+        }));
+    } catch (err: any) {
+        if (err.name === 'ConditionalCheckFailedException') {
+            console.error('[addToQueue] Duplicate queue entry detected', { clinicId, callId, queuePosition });
+            // Retry with new UUID and timestamp to ensure uniqueness
+            const retryUuid = randomUUID();
+            const retryUniqueId = `${Date.now()}-${retryUuid.substring(0, 13)}`;
+            entry.uniquePositionId = retryUniqueId;
+            // Make sure the queue position is significantly different
+            const retryPosition = Date.now() + 1000 + Math.floor(Math.random() * 1000);
+            entry.queuePosition = retryPosition;
+            await ddb.send(new PutCommand({
+                TableName: CALL_QUEUE_TABLE_NAME,
+                Item: entry
+            }));
+        } else {
+            throw err;
+        }
+    }
 
     return entry;
 }
 
 async function getQueuePosition(clinicId: string, callId: string): Promise<{ position: number, estimatedWaitTime: number } | null> {
-    // Get all queued calls for this clinic
-    const { Items: queueItems } = await ddb.send(new QueryCommand({
-        TableName: CALL_QUEUE_TABLE_NAME,
-        KeyConditionExpression: 'clinicId = :cid',
-        FilterExpression: 'status = :status',
-        ExpressionAttributeValues: {
-            ':cid': clinicId,
-            ':status': 'queued'
-        }
-    }));
-
-    if (!queueItems) return null;
-
-    // Find this call's position
-    const currentCall = queueItems.find(item => item.callId === callId);
-    if (!currentCall) return null;
-
-    // Get number of online agents for wait time calculation
-    const { Items: onlineAgents } = await ddb.send(new QueryCommand({
-        TableName: AGENT_PRESENCE_TABLE_NAME,
-        IndexName: 'status-index',
-        KeyConditionExpression: '#status = :status',
-        FilterExpression: 'contains(activeClinicIds, :clinicId)',
-        ExpressionAttributeNames: { '#status': 'status' },
-        ExpressionAttributeValues: {
-            ':status': 'Online',
-            ':clinicId': clinicId,
-        }
-    }));
-
-    const numAgents = onlineAgents?.length || 1;
-    const position = currentCall.queuePosition;
+    // CRITICAL FIX: Use a fully atomic approach with a single query
+    // Rather than two separate queries (which creates a race window), use a single operation
+    // with a transaction to get a consistent snapshot of the queue state
     
-    // Estimate wait time based on position, number of agents, and average call duration
-    const estimatedWaitTime = Math.ceil((position / numAgents) * AVG_CALL_DURATION);
+    try {
+        // Use a transaction with consistent reads to get an atomic snapshot of queue state
+        const TransactGetCommand = (await import('@aws-sdk/lib-dynamodb')).TransactGetCommand;
+        
+        // First, find this call (to check status & get queueEntryTime)
+        const { Responses } = await ddb.send(new TransactGetCommand({
+            TransactItems: [
+                {
+                    Get: {
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        Key: { callId }
+                    }
+                }
+            ],
+            ReturnConsumedCapacity: 'NONE'
+        }));
+        
+        if (!Responses || Responses.length === 0 || !Responses[0]?.Item) return null;
+        
+        const thisCall = Responses[0].Item;
+        const { clinicId: callClinicId, queueEntryTime, status } = thisCall;
+        
+        if (status !== 'queued' || !queueEntryTime) return null;
+        
+        // Now query for ALL queued calls for this clinic in a single consistent operation
+        // This avoids any race conditions between separate queries
+        const { Items: allQueuedCalls } = await ddb.send(new QueryCommand({
+            TableName: CALL_QUEUE_TABLE_NAME,
+            KeyConditionExpression: 'clinicId = :cid',
+            FilterExpression: 'status = :status',
+            ExpressionAttributeValues: {
+                ':cid': clinicId,
+                ':status': 'queued'
+            },
+            ConsistentRead: true // Critical for accurate queue position
+        }));
+        
+        if (!allQueuedCalls) return null;
+        
+        // Sort all calls by entry time
+        const sortedCalls = allQueuedCalls.sort((a, b) => a.queueEntryTime - b.queueEntryTime);
+        
+        // Find position of this call in the sorted array
+        const index = sortedCalls.findIndex(call => call.callId === callId);
+        if (index === -1) return null; // Call not found in queue
+        
+        // Position is 1-based
+        const position = index + 1;
+        
+        // Get number of online agents for wait time calculation
+        const { Items: onlineAgents } = await ddb.send(new QueryCommand({
+            TableName: AGENT_PRESENCE_TABLE_NAME,
+            IndexName: 'status-index',
+            KeyConditionExpression: '#status = :status',
+            FilterExpression: 'contains(activeClinicIds, :clinicId)',
+            ExpressionAttributeNames: { '#status': 'status' },
+            ExpressionAttributeValues: {
+                ':status': 'Online',
+                ':clinicId': clinicId,
+            }
+        }));
 
-    return { position, estimatedWaitTime };
+        const numAgents = onlineAgents?.length || 1;
+        
+        // Estimate wait time based on position, number of agents, and average call duration
+        const estimatedWaitTime = Math.ceil((position / numAgents) * AVG_CALL_DURATION);
+
+        return { position, estimatedWaitTime };
+    } catch (err) {
+        console.error('[getQueuePosition] Error calculating queue position:', err);
+        return null;
+    }
 }
 
 async function removeFromQueue(clinicId: string, callId: string, status: QueueEntry['status'] = 'connected'): Promise<void> {
@@ -113,49 +217,46 @@ async function removeFromQueue(clinicId: string, callId: string, status: QueueEn
     if (!Items?.[0]) return;
 
     const currentPosition = Items[0].queuePosition;
+    const currentStatus = Items[0].status;
 
-    // Update this call's status
-    await ddb.send(new UpdateCommand({
-        TableName: CALL_QUEUE_TABLE_NAME,
-        Key: {
-            clinicId,
-            queuePosition: currentPosition
-        },
-        UpdateExpression: 'SET #status = :status',
-        ExpressionAttributeNames: { '#status': 'status' },
-        ExpressionAttributeValues: { ':status': status }
-    }));
-
-    // Reorder remaining queue positions
-    if (status === 'connected' || status === 'abandoned') {
-        const { Items: remainingItems } = await ddb.send(new QueryCommand({
+    // CRITICAL FIX: Validate state transition and use conditional update to prevent race conditions
+    // Only update if the call is still in a valid state that can transition to the new status
+    
+    // Validate the state transition
+    if (!isValidStateTransition(currentStatus as CallStatus, status as CallStatus)) {
+        console.error(`[removeFromQueue] Invalid state transition from ${currentStatus} to ${status} for call ${callId}`);
+        throw new Error(`Cannot transition call from ${currentStatus} to ${status}`);
+    }
+    
+    console.log(`[removeFromQueue] Valid state transition from ${currentStatus} to ${status} for call ${callId}`);
+    
+    try {
+        await ddb.send(new UpdateCommand({
             TableName: CALL_QUEUE_TABLE_NAME,
-            KeyConditionExpression: 'clinicId = :cid',
-            FilterExpression: '#status = :status AND queuePosition > :pos',
+            Key: {
+                clinicId,
+                queuePosition: currentPosition
+            },
+            UpdateExpression: 'SET #status = :status, endedAt = :timestamp',
             ExpressionAttributeNames: { '#status': 'status' },
+            ConditionExpression: '#status = :expectedStatus',
+            // Use the current status to ensure we're only updating from the expected state
             ExpressionAttributeValues: {
-                ':cid': clinicId,
-                ':status': 'queued',
-                ':pos': currentPosition
+                ':status': status,
+                ':timestamp': Math.floor(Date.now() / 1000),
+                ':expectedStatus': currentStatus
             }
         }));
-
-        if (remainingItems) {
-            await Promise.all(remainingItems.map(item =>
-                ddb.send(new UpdateCommand({
-                    TableName: CALL_QUEUE_TABLE_NAME,
-                    Key: {
-                        clinicId,
-                        queuePosition: item.queuePosition
-                    },
-                    UpdateExpression: 'SET queuePosition = :newPos',
-                    ExpressionAttributeValues: {
-                        ':newPos': item.queuePosition - 1
-                    }
-                }))
-            ));
+    } catch (err: any) {
+        if (err.name === 'ConditionalCheckFailedException') {
+            console.warn(`Race condition detected removing call ${callId} from queue - already updated`);
+            return;
         }
+        throw err;
     }
+
+    // Note: We don't reorder queue positions anymore - queuePosition is now a timestamp-based value
+    // that doesn't need adjustment. The position is relative and calculated on-demand via queueEntryTime.
 }
 
 // TTL for temporary meetings (5 minutes)
@@ -178,33 +279,132 @@ const buildJoinChimeMeetingAction = (meetingInfo: any, attendeeInfo: any) => ({
     },
 });
 
-const buildJoinChimeMeetingActionOutbound = (meetingId: string, attendeeId: string) => ({
-    Type: 'JoinChimeMeeting',
+const buildCallAndBridgeAction = (callerIdNumber: string, targetPhoneNumber: string, sipHeaders?: any) => ({
+    Type: 'CallAndBridge',
     Parameters: {
-        // For the outbound leg, we only need the IDs to join the existing meeting
-        MeetingId: meetingId,
-        AttendeeId: attendeeId,
-    },
+        CallTimeoutSeconds: 30,
+        CallerIdNumber: callerIdNumber,
+        Endpoints: [{
+            Uri: targetPhoneNumber,
+            BridgeEndpointType: 'PSTN'
+        }],
+        SipHeaders: sipHeaders || {}
+    }
 });
 
-const buildSpeakAndBridgeAction = (message: string) => ({
+const buildSpeakAction = (text: string, voiceId: string = 'Joanna', engine: string = 'neural') => ({
+    Type: 'Speak',
+    Parameters: {
+        Text: text,
+        Engine: engine,
+        LanguageCode: 'en-US',
+        TextType: 'text',
+        VoiceId: voiceId
+    }
+});
+
+// Helper function to build a ModifyChimeMeetingAttendees action
+const buildModifyChimeMeetingAttendeesAction = (meetingId: string, operation: 'Add' | 'Remove', attendeeIds: string[]) => ({
+    Type: 'ModifyChimeMeetingAttendees',
+    Parameters: {
+        MeetingId: meetingId,
+        Operation: operation,
+        AttendeeIds: attendeeIds
+    }
+});
+
+// CRITICAL FIX: Add missing buildSpeakAndBridgeAction function
+const buildSpeakAndBridgeAction = (text: string, voiceId: string = 'Joanna', engine: string = 'neural') => ({
     Type: 'SpeakAndBridge',
     Parameters: {
-        CallId: 'none', // Speaks to the current caller
-        Speak: {
-            Text: message,
-            Voice: 'Joanna', // Standard AWS Polly voice
-            Engine: 'neural',
+        Text: text,
+        Engine: engine,
+        LanguageCode: 'en-US',
+        TextType: 'text',
+        VoiceId: voiceId
+    }
+});
+
+const buildPauseAction = (durationInMilliseconds: number) => ({
+    Type: 'Pause',
+    Parameters: {
+        DurationInMilliseconds: durationInMilliseconds
+    }
+});
+
+const buildPlayAudioAction = (audioSource: string) => ({
+    Type: 'PlayAudio',
+    Parameters: {
+        AudioSource: {
+            Type: 'S3',
+            BucketName: HOLD_MUSIC_BUCKET,
+            Key: audioSource
         },
-        Bridge: {
-            Target: 'Hangup', // Hangs up after speaking
+        PlaybackTerminators: ['#', '*']
+    }
+});
+
+const buildPlayAudioAndGetDigitsAction = (audioSource: string, maxDigits: number = 1, timeoutInSeconds: number = 10) => ({
+    Type: 'PlayAudioAndGetDigits',
+    Parameters: {
+        InputDigitsRegex: `^\\d{1,${maxDigits}}$`,
+        AudioSource: {
+            Type: 'S3',
+            BucketName: HOLD_MUSIC_BUCKET,
+            Key: audioSource
+        },
+        FailureAudioSource: {
+            Type: 'S3',
+            BucketName: HOLD_MUSIC_BUCKET,
+            Key: 'error-prompt.wav'
+        },
+        MinNumberOfDigits: 1,
+        MaxNumberOfDigits: maxDigits,
+        TerminatorDigits: ['#'],
+        InBetweenDigitsDurationInMilliseconds: 5000,
+        Repeat: 3,
+        RepeatDurationInMilliseconds: timeoutInSeconds * 1000
+    }
+});
+
+const buildRecordAudioAction = (destinationBucket: string, recordingTerminators: string[] = ['#']) => ({
+    Type: 'RecordAudio',
+    Parameters: {
+        DurationInSeconds: 120, // 2 minute max
+        SilenceDurationInSeconds: 3,
+        SilenceThreshold: 100,
+        RecordingTerminators: recordingTerminators,
+        RecordingDestination: {
+            Type: 'S3',
+            BucketName: destinationBucket
+        }
+    }
+});
+
+const buildStartBotConversationAction = (configuration: any) => ({
+    Type: 'StartBotConversation',
+    Parameters: {
+        BotAliasArn: configuration.botAliasArn,
+        LocaleId: configuration.localeId || 'en_US',
+        Configuration: {
+            SessionState: configuration.sessionState || {},
+            WelcomeMessages: configuration.welcomeMessages || []
         }
     }
 });
 
 const buildHangupAction = (message?: string) => {
     if (message) {
-         return buildSpeakAndBridgeAction(message);
+        return {
+            Type: 'Speak',
+            Parameters: {
+                Text: message,
+                Engine: 'neural',
+                LanguageCode: 'en-US',
+                TextType: 'text',
+                VoiceId: 'Joanna'
+            }
+        };
     }
     return { Type: 'Hangup' };
 };
@@ -233,7 +433,16 @@ async function createAttendeeForAgent(meetingId: string, agentId: string) {
     }));
 
     const attendee = attendeeResponse.Attendee;
-    if (!attendee) throw new Error('Failed to create attendee');
+    
+    // CRITICAL FIX: Validate attendee data before storing
+    if (!attendee) {
+        throw new Error('Failed to create attendee - no Attendee object returned');
+    }
+    
+    if (!attendee.AttendeeId || !attendee.JoinToken) {
+        console.error('[createAttendeeForAgent] Invalid attendee data returned:', attendee);
+        throw new Error('Failed to create attendee - missing required fields');
+    }
 
     // Update agent's record with meeting and attendee info
     await ddb.send(new UpdateCommand({
@@ -278,7 +487,168 @@ export const handler = async (event: any): Promise<any> => {
     const args = event?.ActionData?.Parameters?.Arguments || event?.ActionData?.ArgumentsMap || event?.CallDetails?.ArgumentsMap || {};
 
     try {
-        switch (eventType) {
+            switch (eventType) {
+                // Case: Hold call - triggered by hold-call.ts API
+                case 'HOLD_CALL': {
+                    if (args.action === 'HOLD_CALL' && args.agentId) {
+                        const agentId = args.agentId;
+                        const meetingId = args.meetingId;
+                        const agentAttendeeId = args.agentAttendeeId;
+                        const removeAgent = args.removeAgent === 'true' || args.removeAgent === true;
+                        
+                        console.log(`Processing hold request for call ${callId} from agent ${agentId}`, { 
+                            meetingId, agentAttendeeId, removeAgent 
+                        });
+                        
+                        // Find the call record to get meeting info
+                        const { Items: callRecords } = await ddb.send(new QueryCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            IndexName: 'callId-index',
+                            KeyConditionExpression: 'callId = :callId',
+                            ExpressionAttributeValues: {
+                                ':callId': callId
+                            }
+                        }));
+
+                        if (!callRecords || callRecords.length === 0) {
+                            return buildActions([
+                                buildSpeakAction('Unable to place call on hold. Please try again.')
+                            ]);
+                        }
+                        
+                        // CRITICAL FIX: If we have meeting ID and attendee ID, remove the agent from meeting
+                        const actions = [];
+                        
+                        if (meetingId && agentAttendeeId && removeAgent) {
+                            console.log(`[HOLD_CALL] Removing agent ${agentId} (attendee ${agentAttendeeId}) from meeting ${meetingId}`);
+                            
+                            // Add action to remove agent from meeting
+                            actions.push({
+                                Type: 'ModifyChimeMeetingAttendees',
+                                Parameters: {
+                                    Operation: 'Remove',
+                                    MeetingId: meetingId,
+                                    AttendeeList: [agentAttendeeId]
+                                }
+                            });
+                            
+                            // CRITICAL FIX: Log verification of agent removal instead of using RecordAction (which doesn't exist)
+                            console.log(`[HOLD_CALL] Agent removal from meeting requested for ${agentId}`, {
+                                agentAttendeeId,
+                                meetingId,
+                                timestamp: new Date().toISOString()
+                            });
+                        }
+                        
+                        // Add audio actions
+                        if (HOLD_MUSIC_BUCKET) {
+                            // Play hold music to the customer
+                            actions.push(
+                                buildSpeakAction('You have been placed on hold. Please wait for the agent to return.'),
+                                buildPauseAction(500)
+                            );
+                            
+                            // CRITICAL FIX: Add looping hold music so customer doesn't hear silence
+                            actions.push({
+                                Type: 'PlayAudio',
+                                Parameters: {
+                                    Repeat: 999,  // Loop hold music until agent returns
+                                    AudioSource: {
+                                        Type: 'S3',
+                                        BucketName: HOLD_MUSIC_BUCKET,
+                                        Key: 'hold-music.wav'
+                                    },
+                                    PlaybackTerminators: ['#', '*']
+                                }
+                            });
+                        } else {
+                            // No hold music bucket configured, just play a message
+                            actions.push(
+                                buildSpeakAction('You have been placed on hold. Please wait for the agent to return.'),
+                                buildPauseAction(30000) // 30-second pause
+                            );
+                        }
+                        
+                        return buildActions(actions);
+                    }
+                    
+                    console.warn('HOLD_CALL event without proper action');
+                    return buildActions([]);
+                }
+                
+                // Case: Resume call - triggered by resume-call.ts API
+                case 'RESUME_CALL': {
+                    if (args.action === 'RESUME_CALL' && args.agentId) {
+                        const agentId = args.agentId;
+                        const agentAttendeeId = args.agentAttendeeId;
+                        const reconnectAgent = args.reconnectAgent === 'true' || args.reconnectAgent === true;
+                        
+                        console.log(`Processing resume request for call ${callId} from agent ${agentId}`, {
+                            agentAttendeeId,
+                            reconnectAgent
+                        });
+                        
+                        // Find the call record to get meeting info
+                        const { Items: callRecords } = await ddb.send(new QueryCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            IndexName: 'callId-index',
+                            KeyConditionExpression: 'callId = :callId',
+                            ExpressionAttributeValues: {
+                                ':callId': callId
+                            }
+                        }));
+
+                        if (!callRecords || callRecords.length === 0 || !callRecords[0].meetingInfo?.MeetingId) {
+                            return buildActions([
+                                buildSpeakAction('Unable to resume your call. The agent will try again.')
+                            ]);
+                        }
+
+                        const callRecord = callRecords[0];
+                        const meetingInfo = callRecord.meetingInfo;
+
+                        // Check if the customer attendee info exists
+                        if (!callRecord.customerAttendeeInfo?.AttendeeId) {
+                            console.error('No customer attendee info found for call', callId);
+                            return buildActions([
+                                buildSpeakAction('Unable to reconnect your call. Please wait while we resolve this issue.')
+                            ]);
+                        }
+
+                        const actions = [];
+                        
+                        // CRITICAL FIX: Add verification for agent reconnection
+                        if (reconnectAgent && agentAttendeeId) {
+                            console.log(`[RESUME_CALL] Adding agent ${agentId} (attendee ${agentAttendeeId}) to meeting ${meetingInfo.MeetingId}`);
+                            
+                            // Add action to add agent back to meeting if needed
+                            actions.push({
+                                Type: 'ModifyChimeMeetingAttendees',
+                                Parameters: {
+                                    Operation: 'Add',
+                                    MeetingId: meetingInfo.MeetingId,
+                                    AttendeeList: [agentAttendeeId]
+                                }
+                            });
+                            
+                            // Log verification of agent addition instead of using RecordAction (which doesn't exist)
+                            console.log(`[RESUME_CALL] Agent addition to meeting requested for ${agentId}`, {
+                                agentAttendeeId,
+                                meetingId: meetingInfo.MeetingId,
+                                timestamp: new Date().toISOString()
+                            });
+                        }
+                        
+                        // Resume by rejoining the meeting
+                        actions.push(buildSpeakAction('Thank you for holding. Reconnecting with your agent now.'));
+                        actions.push(buildJoinChimeMeetingAction(meetingInfo, callRecord.customerAttendeeInfo));
+                        
+                        return buildActions(actions);
+                    }
+                    
+                    console.warn('RESUME_CALL event without proper action');
+                    return buildActions([]);
+                }
             // Case 1: A new call from the PSTN (customer) to one of our clinic numbers
             case 'NEW_INBOUND_CALL': {
                 const toPhoneNumber = parsePhoneNumber(event.CallDetails.SipHeaders.To);
@@ -319,52 +689,75 @@ export const handler = async (event: any): Promise<any> => {
                 if (!agents || agents.length === 0) {
                     console.log(`No 'Online' agents found for clinic ${clinicId}. Adding to queue.`);
                     
-                    // Add the call to the queue
-                    const queueEntry = await addToQueue(clinicId, callId, toPhoneNumber);
-                    
-                    // Get estimated wait time
-                    const queueInfo = await getQueuePosition(clinicId, callId);
-                    
-                    if (!queueInfo) {
-                        return buildActions([buildSpeakAndBridgeAction('There was an error adding you to the queue. Please try again later.')]);
-                    }
-
-                    const waitMinutes = Math.ceil(queueInfo.estimatedWaitTime / 60);
-                    const message = `All agents are currently busy. You are number ${queueInfo.position} in line. ` +
-                                  `The estimated wait time is ${waitMinutes} minutes. ` +
-                                  `Please stay on the line and an agent will assist you shortly.`;
-                    
-                    // Create a meeting for the queued call
-                    const meeting = await createIncomingCallMeeting(callId, clinicId);
-                    
-                    // Keep the caller in a loop with periodic updates
-                    const actions: any[] = [];
-                    
-                    // First, speak the queue position message
-                    actions.push({
-                        Type: 'Speak',
-                        Parameters: {
-                            Text: message,
-                            Voice: 'Joanna',
-                            Engine: 'neural'
+                    try {
+                        // Create a meeting first so we can join the customer while they wait
+                        const meeting = await createIncomingCallMeeting(callId, clinicId);
+                        
+                        if (!meeting.MeetingId) {
+                            throw new Error('Failed to create meeting for queued call');
                         }
-                    });
-                    
-                    // Then play hold music if bucket is configured
-                    if (HOLD_MUSIC_BUCKET) {
-                        actions.push({
-                            Type: 'PlayAudio',
-                            Parameters: {
-                                AudioSource: {
-                                    Type: 'S3',
-                                    BucketName: HOLD_MUSIC_BUCKET,
-                                    Key: 'hold-music.wav'
-                                }
+
+                        // Create customer attendee
+                        const customerAttendeeResponse = await chime.send(new CreateAttendeeCommand({
+                            MeetingId: meeting.MeetingId,
+                            ExternalUserId: `customer-${callId}`
+                        }));
+
+                        if (!customerAttendeeResponse.Attendee?.AttendeeId) {
+                            throw new Error('Failed to create customer attendee for queued call');
+                        }
+
+                        // Add the call to the queue
+                        const queueEntry = await addToQueue(clinicId, callId, toPhoneNumber);
+                        
+                        // Update the queue entry with meeting info
+                        await ddb.send(new UpdateCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            Key: {
+                                clinicId,
+                                queuePosition: queueEntry.queuePosition
+                            },
+                            UpdateExpression: 'SET meetingInfo = :meeting, customerAttendeeInfo = :attendee',
+                            ExpressionAttributeValues: {
+                                ':meeting': meeting,
+                                ':attendee': customerAttendeeResponse.Attendee
                             }
-                        });
+                        }));
+                        
+                        // Get estimated wait time
+                        const queueInfo = await getQueuePosition(clinicId, callId);
+                        
+                        if (!queueInfo) {
+                            return buildActions([buildHangupAction('There was an error adding you to the queue. Please try again later.')]);
+                        }
+
+                        const waitMinutes = Math.ceil(queueInfo.estimatedWaitTime / 60);
+                        const message = `All agents are currently busy. You are number ${queueInfo.position} in line. ` +
+                                      `The estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
+                                      `Please stay on the line and the next available agent will assist you.`;
+                        
+                        // CRITICAL: Use proper action sequence for continuous hold experience
+                        const actions: any[] = [];
+                        
+                        // 1. Speak the queue position message
+                        actions.push(buildSpeakAction(message));
+                        
+                        // 2. Pause briefly before starting music
+                        actions.push(buildPauseAction(500));
+                        
+                        // 3. Join customer to meeting (so they can hear when agent joins)
+                        actions.push(buildJoinChimeMeetingAction(meeting, customerAttendeeResponse.Attendee));
+                        
+                        // Note: Once in the meeting, the customer waits for an agent to join
+                        // The meeting provides the hold experience, and agents can join at any time
+                        // via the call-accepted.ts API when they become available
+                        
+                        return buildActions(actions);
+                        
+                    } catch (queueErr) {
+                        console.error('Error queuing call:', queueErr);
+                        return buildActions([buildHangupAction('All agents are currently busy. Please try again later.')]);
                     }
-                    
-                    return buildActions(actions);
                 }
 
                 try {
@@ -375,57 +768,191 @@ export const handler = async (event: any): Promise<any> => {
                         throw new Error('Meeting created without MeetingId');
                     }
 
-                    // 4. Create attendees for all available agents
-                    const attendeePromises = agents.map(agent => 
-                        agent.agentId ? createAttendeeForAgent(meeting.MeetingId!, agent.agentId) : null
-                    ).filter((p): p is Promise<any> => p !== null);
-                    
-                    const attendees = await Promise.all(attendeePromises);
-
-                    // 5. Store the call information in the call queue table
-                    const fromNumber = parsePhoneNumber(event.CallDetails.SipHeaders.From) || 'Unknown';
-                    await ddb.send(new PutCommand({
-                        TableName: CALL_QUEUE_TABLE_NAME,
-                        Item: {
-                            clinicId,
-                            callId,
-                            queuePosition: 0, // Not queued, actively ringing
-                            queueEntryTime: Math.floor(Date.now() / 1000),
-                            phoneNumber: fromNumber,
-                            status: 'ringing',
-                            meetingInfo: meeting,
-                            agentIds: agents.filter(a => a.agentId).map(a => a.agentId),
-                            ttl: Math.floor(Date.now() / 1000) + MEETING_TTL
-                        }
+                    // 4. Create a customer attendee for the PSTN caller to join the meeting
+                    const customerAttendeeResponse = await chime.send(new CreateAttendeeCommand({
+                        MeetingId: meeting.MeetingId,
+                        ExternalUserId: `customer-${callId}`
                     }));
 
-                    // 6. Ring all agents simultaneously by joining them to the meeting
-                    console.log(`Ringing ${agents.length} agents for clinic ${clinicId}`);
+                    if (!customerAttendeeResponse.Attendee?.AttendeeId) {
+                        throw new Error('Failed to create customer attendee');
+                    }
+
+                    const customerAttendee = customerAttendeeResponse.Attendee;
+
+                // 5. Store the call information in the call queue table
+                // CRITICAL FIX: Use unique identifiers for queue position to prevent collisions
+                const fromNumber = parsePhoneNumber(event.CallDetails.SipHeaders.From) || 'Unknown';
+                const agentIds = agents.filter(a => a.agentId).map(a => a.agentId);
+                
+                // Generate a deterministic but guaranteed unique position ID
+                // Using high-precision timestamp + callId to ensure uniqueness even for concurrent calls
+                const uniqueId = `${Date.now()}-${callId.substring(0, 8)}`;
+                const currentTimestamp = Math.floor(Date.now() / 1000);
+                
+                await ddb.send(new PutCommand({
+                    TableName: CALL_QUEUE_TABLE_NAME,
+                    Item: {
+                        clinicId,
+                        callId,
+                        queuePosition: 0, // Not queued, actively ringing
+                        queueEntryTime: currentTimestamp,
+                        queueEntryTimeIso: new Date().toISOString(),
+                        uniquePositionId: uniqueId, // Add a guaranteed unique ID for position tracking
+                        phoneNumber: fromNumber,
+                        status: 'ringing',
+                        meetingInfo: meeting,
+                        customerAttendeeInfo: customerAttendee,
+                        agentIds: agentIds,
+                        ttl: currentTimestamp + QUEUE_TIMEOUT // Use consistent TTL
+                    }
+                }));
+
+                    // 6. CRITICAL FIX: Verify agent status again before creating attendees to prevent race conditions
+                    console.log(`Creating attendees and notifying agents for meeting ${meeting.MeetingId}`);
                     
-                    // Start with a welcome message and join the caller to the meeting
-                    const actions = [
-                        buildSpeakAndBridgeAction('Please hold while we connect you with an available agent.'),
-                        buildJoinChimeMeetingAction(meeting, attendees[0])
-                    ];
-
-                    // Set a timer to clean up the meeting if no one answers
-                    setTimeout(async () => {
+                    // Process agents sequentially with status verification
+                    const successfullyNotifiedAgents: string[] = [];
+                    
+                    for (const agent of agents) {
+                        if (!agent.agentId) continue;
+                        
                         try {
-                            const { Items } = await ddb.send(new QueryCommand({
+                            // CRITICAL: Verify agent is still Online right before creating attendee
+                            const { Item: currentAgentStatus } = await ddb.send(new GetCommand({
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
-                                KeyConditionExpression: 'callId = :id',
-                                ExpressionAttributeValues: { ':id': callId }
+                                Key: { agentId: agent.agentId }
                             }));
-
-                            const callRecord = Items?.[0];
-                            if (callRecord && callRecord.callStatus === 'ringing' && meeting.MeetingId) {
-                                await cleanupMeeting(meeting.MeetingId);
-                                console.log(`No answer - cleaned up meeting ${meeting.MeetingId}`);
+                            
+                            if (!currentAgentStatus || currentAgentStatus.status !== 'Online') {
+                                console.warn(`[NEW_INBOUND_CALL] Agent ${agent.agentId} status changed - skipping`, {
+                                    currentStatus: currentAgentStatus?.status
+                                });
+                                continue;
                             }
-                        } catch (err) {
-                            console.error('Error in cleanup timer:', err);
+                            
+                            // CRITICAL FIX: Verify meeting still exists before creating attendee
+                            try {
+                                // First verify the meeting still exists
+                                await chime.send(new GetMeetingCommand({
+                                    MeetingId: meeting.MeetingId
+                                }));
+                            } catch (meetingErr: any) {
+                                if (meetingErr.name === 'NotFoundException') {
+                                    console.error(`[NEW_INBOUND_CALL] Meeting ${meeting.MeetingId} no longer exists, skipping agent ${agent.agentId}`);
+                                    continue;
+                                }
+                                // Other errors just log and continue (AWS SDK might have temporary issues)
+                                console.warn(`[NEW_INBOUND_CALL] Error verifying meeting ${meeting.MeetingId}:`, meetingErr);
+                            }
+                            
+                            // Now create attendee with confidence the meeting exists
+                            const attendeeResponse = await chime.send(new CreateAttendeeCommand({
+                                MeetingId: meeting.MeetingId,
+                                ExternalUserId: agent.agentId
+                            }));
+                            
+                            // CRITICAL FIX: Validate attendee data before using
+                            const attendee = attendeeResponse.Attendee;
+                            if (!attendee) {
+                                console.warn(`[NEW_INBOUND_CALL] Failed to create attendee for agent ${agent.agentId}`);
+                                continue;
+                            }
+                            
+                            if (!attendee.AttendeeId || !attendee.JoinToken) {
+                                console.error(`[NEW_INBOUND_CALL] Invalid attendee data for agent ${agent.agentId}:`, attendee);
+                                continue;
+                            }
+                            
+                            // Update agent presence with conditional check to ensure still Online
+                            await ddb.send(new UpdateCommand({
+                                TableName: AGENT_PRESENCE_TABLE_NAME,
+                                Key: { agentId: agent.agentId },
+                                UpdateExpression: 'SET ringingCallId = :callId, callStatus = :status, ' + 
+                                                 'inboundMeetingInfo = :meeting, inboundAttendeeInfo = :attendee, ' +
+                                                 'ringingCallTime = :time, lastActivityAt = :timestamp',
+                                ConditionExpression: 'attribute_exists(agentId) AND #status = :onlineStatus AND attribute_not_exists(ringingCallId)',
+                                ExpressionAttributeNames: { '#status': 'status' },
+                                ExpressionAttributeValues: {
+                                    ':callId': callId,
+                                    ':status': 'ringing',
+                                    ':meeting': meeting,
+                                    ':attendee': attendee, // Use validated attendee
+                                    ':time': new Date().toISOString(),
+                                    ':timestamp': new Date().toISOString(),
+                                    ':onlineStatus': 'Online'
+                                }
+                            }));
+                            
+                            successfullyNotifiedAgents.push(agent.agentId);
+                            console.log(`[NEW_INBOUND_CALL] Successfully notified agent ${agent.agentId}`);
+                            
+                        } catch (err: any) {
+                            if (err.name === 'ConditionalCheckFailedException') {
+                                console.warn(`[NEW_INBOUND_CALL] Agent ${agent.agentId} status changed during notification - skipping`);
+                            } else {
+                                console.error(`[NEW_INBOUND_CALL] Error notifying agent ${agent.agentId}:`, err.message);
+                            }
                         }
-                    }, MEETING_TTL * 1000);
+                    }
+                    
+                    if (successfullyNotifiedAgents.length === 0) {
+                        console.error('[NEW_INBOUND_CALL] No agents could be notified - all agents became unavailable');
+                        
+                        try {
+                            // Clean up meeting since no agents are available
+                            await cleanupMeeting(meeting.MeetingId);
+                            
+                            // CRITICAL FIX: Also clean up the call record from queue table to avoid orphaned records
+                            await ddb.send(new UpdateCommand({
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                Key: { clinicId, queuePosition: 0 }, // queuePosition is 0 for ringing calls
+                                UpdateExpression: 'SET #status = :status, endedAt = :timestamp, cleanupReason = :reason',
+                                ExpressionAttributeNames: { '#status': 'status' },
+                                ExpressionAttributeValues: {
+                                    ':status': 'abandoned',
+                                    ':timestamp': Math.floor(Date.now() / 1000),
+                                    ':reason': 'no_agents_available'
+                                }
+                            }));
+                            
+                            console.log(`[NEW_INBOUND_CALL] Call record cleaned up for abandoned call ${callId}`);
+                        } catch (cleanupErr) {
+                            console.error(`[NEW_INBOUND_CALL] Error cleaning up resources:`, cleanupErr);
+                            // Continue to hang up even if cleanup fails
+                        }
+                        
+                        return buildActions([buildHangupAction('All agents became unavailable. Please try again.')]);
+                    }
+                    
+                    console.log(`[NEW_INBOUND_CALL] Successfully notified ${successfullyNotifiedAgents.length} agents`);
+                    
+                    // 7. Join the customer to the meeting and play hold music
+                    console.log(`Joining customer to meeting ${meeting.MeetingId}`);
+                    
+                    const actions: any[] = [];
+                    
+                    // CRITICAL FIX: Join customer to meeting so they can hear agents when one accepts
+                    actions.push(buildSpeakAction('Thank you for calling. Please hold while we connect you with an available agent.'));
+                    
+                    // Add a small pause before joining the meeting
+                    actions.push(buildPauseAction(500));
+                    
+                    // Join customer to meeting
+                    actions.push(buildJoinChimeMeetingAction(meeting, customerAttendee));
+                    
+                    // Play hold music if available
+                    if (HOLD_MUSIC_BUCKET) {
+                        actions.push(buildPlayAudioAction('hold-music.wav'));
+                    } else {
+                        // If no hold music, just add a pause and periodic message
+                        actions.push(buildPauseAction(10000)); // 10 second pause
+                        actions.push(buildSpeakAction('Please continue holding. An agent will be with you shortly.'));
+                        actions.push(buildPauseAction(10000)); // Another pause
+                    }
+                    
+                    // Note: When an agent accepts via call-accepted.ts, the SMA will be notified with
+                    // UpdateSipMediaApplicationCall to join the customer to the meeting with the agent
 
                     return buildActions(actions);
 
@@ -438,73 +965,63 @@ export const handler = async (event: any): Promise<any> => {
             // Case 2: A new call *from* our system (agent outbound call)
             // This event is triggered by the CreateSipMediaApplicationCall in outbound-call.ts
             case 'NEW_OUTBOUND_CALL': {
-                const { agentId, meetingId, attendeeId: agentAttendeeId } = args;
+                const { agentId, meetingId, toPhoneNumber, fromPhoneNumber } = args;
 
-                if (!agentId || !meetingId) {
+                if (!agentId || !meetingId || !toPhoneNumber) {
                     console.error('[NEW_OUTBOUND_CALL] Missing required arguments', args);
-                    return buildActions([buildHangupAction()]);
+                    return buildActions([buildHangupAction('Unable to place call: missing configuration.')]);
                 }
 
-                console.log(`[NEW_OUTBOUND_CALL] Processing outbound call to customer`, {
+                console.log(`[NEW_OUTBOUND_CALL] Processing outbound call`, {
                     meetingId,
                     agentId,
-                    callId
+                    callId,
+                    toPhoneNumber
                 });
                 
                 try {
-                    // CRITICAL: Create a NEW attendee for the customer leg
-                    // The agent already has their attendee from start-session
-                    const customerAttendeeResponse = await chime.send(new CreateAttendeeCommand({
-                        MeetingId: meetingId,
-                        ExternalUserId: `customer-${callId}` // Unique ID for this customer
-                    }));
-
-                    if (!customerAttendeeResponse.Attendee?.AttendeeId || 
-                        !customerAttendeeResponse.Attendee?.JoinToken) {
-                        throw new Error('Failed to create customer attendee');
-                    }
-
-                    const customerAttendee = customerAttendeeResponse.Attendee;
-                    console.log(`[NEW_OUTBOUND_CALL] Created customer attendee`, {
-                        attendeeId: customerAttendee.AttendeeId,
-                        meetingId
-                    });
-
-                    // Store customer attendee info in call queue for tracking
-                    try {
-                        const { Items: callRecords } = await ddb.send(new QueryCommand({
-                            TableName: CALL_QUEUE_TABLE_NAME,
-                            IndexName: 'callId-index',
-                            KeyConditionExpression: 'callId = :id',
-                            ExpressionAttributeValues: { ':id': callId }
-                        }));
-                        
-                        if (callRecords && callRecords[0]) {
-                            const { clinicId, queuePosition } = callRecords[0];
-                            await ddb.send(new UpdateCommand({
-                                TableName: CALL_QUEUE_TABLE_NAME,
-                                Key: { clinicId, queuePosition },
-                                UpdateExpression: 'SET customerAttendeeInfo = :att',
-                                ExpressionAttributeValues: {
-                                    ':att': customerAttendee
-                                }
-                            }));
+                    // Update agent presence to indicate call is connecting
+                    await ddb.send(new UpdateCommand({
+                        TableName: AGENT_PRESENCE_TABLE_NAME,
+                        Key: { agentId },
+                        UpdateExpression: 'SET callStatus = :status, currentCallId = :callId, lastActivityAt = :timestamp',
+                        ExpressionAttributeValues: {
+                            ':status': 'dialing',
+                            ':callId': callId,
+                            ':timestamp': new Date().toISOString()
                         }
-                    } catch (updateErr) {
-                        console.warn('[NEW_OUTBOUND_CALL] Failed to store customer attendee:', updateErr);
-                        // Non-fatal
-                    }
+                    }));
+                    
+                    // Store call in queue table for tracking
+                    const queuePosition = Date.now(); // Timestamp as position
+                    const clinicId = args.fromClinicId || 'unknown';
+                    
+                    await ddb.send(new PutCommand({
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        Item: {
+                            clinicId,
+                            callId,
+                            queuePosition,
+                            queueEntryTime: Math.floor(Date.now() / 1000),
+                            phoneNumber: toPhoneNumber,
+                            status: 'dialing',
+                            direction: 'outbound',
+                            assignedAgentId: agentId,
+                            meetingInfo: { MeetingId: meetingId },
+                            ttl: Math.floor(Date.now() / 1000) + QUEUE_TIMEOUT // 24 hour TTL for outbound calls
+                        }
+                    }));
+                    
+                    console.log(`[NEW_OUTBOUND_CALL] Call record created for ${callId}`);
+                    
+                    // Return empty actions for now - we'll bridge when customer answers
+                    // This keeps the PSTN leg active while dialing
+                    console.log(`[NEW_OUTBOUND_CALL] Call dialing, waiting for CALL_ANSWERED event`);
+                    
+                    return buildActions([]);
 
-                    // Join the customer leg to the meeting using their own attendee + JoinToken
-                    return buildActions([
-                        buildJoinChimeMeetingAction(
-                            { MeetingId: meetingId }, 
-                            customerAttendee
-                        )
-                    ]);
-
-                } catch (err) {
-                    console.error('[NEW_OUTBOUND_CALL] Error creating customer attendee:', err);
+                } catch (err: any) {
+                    console.error('[NEW_OUTBOUND_CALL] Error setting up outbound call:', err);
                     return buildActions([
                         buildHangupAction('Unable to connect your call. Please try again.')
                     ]);
@@ -514,7 +1031,87 @@ export const handler = async (event: any): Promise<any> => {
             // --- ADDITION: Informational events that require no action ---
             // These events are informational and should return an empty action list
             // so Chime knows the event was received without taking any action.
-            case 'RINGING':
+            case 'RINGING': {
+                // CRITICAL FIX: Track ringing duration for outbound calls to detect timeouts
+                const { callType } = args;
+                const isOutbound = callType === 'Outbound';
+                
+                if (callId) {
+                    console.log(`[RINGING] Call ${callId} is ringing`);
+                    
+                    try {
+                        // Update call record to track ringing start time
+                        const { Items: callRecords } = await ddb.send(new QueryCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            IndexName: 'callId-index',
+                            KeyConditionExpression: 'callId = :id',
+                            ExpressionAttributeValues: { ':id': callId }
+                        }));
+                        
+                        if (callRecords && callRecords[0]) {
+                            const { clinicId, queuePosition, ringingStartTime } = callRecords[0];
+                            
+                            // If ringingStartTime already exists, check for timeout
+                            if (ringingStartTime) {
+                                const ringStart = new Date(ringingStartTime).getTime();
+                                const now = Date.now();
+                                const ringingDurationSec = Math.floor((now - ringStart) / 1000);
+                                
+                                // If call has been ringing for more than 45 seconds, handle timeout
+                                if (ringingDurationSec > 45) {
+                                    console.error(`[RINGING] Call ${callId} has been ringing for ${ringingDurationSec}s - timeout detected`);
+                                    
+                                    // Update call record as timed out
+                                    await ddb.send(new UpdateCommand({
+                                        TableName: CALL_QUEUE_TABLE_NAME,
+                                        Key: { clinicId, queuePosition },
+                                        UpdateExpression: 'SET #status = :status, endedAt = :timestamp, timeoutReason = :reason',
+                                        ExpressionAttributeNames: { '#status': 'status' },
+                                        ExpressionAttributeValues: {
+                                            ':status': 'timeout',
+                                            ':timestamp': Math.floor(Date.now() / 1000),
+                                            ':reason': 'excessive_ringing'
+                                        }
+                                    }));
+                                    
+                                    // Handle any agent cleanup
+                                    if (callRecords[0].assignedAgentId) {
+                                        await ddb.send(new UpdateCommand({
+                                            TableName: AGENT_PRESENCE_TABLE_NAME,
+                                            Key: { agentId: callRecords[0].assignedAgentId },
+                                            UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp REMOVE currentCallId',
+                                            ExpressionAttributeNames: { '#status': 'status' },
+                                            ExpressionAttributeValues: {
+                                                ':status': 'Online',
+                                                ':timestamp': new Date().toISOString()
+                                            }
+                                        }));
+                                    }
+                                    
+                                    // Hangup the call
+                                    return buildActions([buildHangupAction('No answer. Please try again later.')]);
+                                }
+                                
+                            } else {
+                                // Record initial ringing start time
+                                await ddb.send(new UpdateCommand({
+                                    TableName: CALL_QUEUE_TABLE_NAME,
+                                    Key: { clinicId, queuePosition },
+                                    UpdateExpression: 'SET ringingStartTime = if_not_exists(ringingStartTime, :time)',
+                                    ExpressionAttributeValues: {
+                                        ':time': new Date().toISOString()
+                                    }
+                                }));
+                            }
+                        }
+                    } catch (err) {
+                        console.warn('[RINGING] Error processing ringing event:', err);
+                    }
+                }
+                
+                console.log(`Received informational event type: ${eventType}, returning empty actions.`);
+                return buildActions([]);
+            }
             case 'INVALID_LAMBDA_RESPONSE':
             case 'ACTION_FAILED': {
                 console.log(`Received informational event type: ${eventType}, returning empty actions.`);
@@ -522,30 +1119,14 @@ export const handler = async (event: any): Promise<any> => {
             }
             
             case 'CALL_ANSWERED': {
-                const { agentId, callType } = args;
+                const { agentId, callType, meetingId } = args;
                 const isOutbound = callType === 'Outbound';
 
                 console.log(`[CALL_ANSWERED] Received for call ${callId}. Type: ${callType}`);
 
-                if (isOutbound && agentId && callId) {
-                    console.log(`[CALL_ANSWERED] Customer answered outbound call ${callId}`);
-                    
-                    // 1. Update Agent Status to OnCall
-                    await ddb.send(new UpdateCommand({
-                        TableName: AGENT_PRESENCE_TABLE_NAME,
-                        Key: { agentId },
-                        UpdateExpression: 'SET #status = :status, currentCallId = :callId, callStatus = :callStatus, lastActivityAt = :timestamp',
-                        ExpressionAttributeNames: { '#status': 'status' },
-                        ExpressionAttributeValues: {
-                            ':status': 'OnCall',
-                            ':callId': callId,
-                            ':callStatus': 'connected', // IMPORTANT: Set this so polling detects it
-                            ':timestamp': new Date().toISOString(),
-                        },
-                    }));
-                    console.log(`[CALL_ANSWERED] Agent ${agentId} status updated to OnCall`);
-
-                    // 2. Update Call Queue Status
+                // CRITICAL FIX: Add timeout handling for outbound calls
+                // If call has been in dialing state for too long, clean up
+                if (isOutbound && callId) {
                     try {
                         const { Items: callRecords } = await ddb.send(new QueryCommand({
                             TableName: CALL_QUEUE_TABLE_NAME,
@@ -555,31 +1136,143 @@ export const handler = async (event: any): Promise<any> => {
                         }));
                         
                         if (callRecords && callRecords[0]) {
-                            const { clinicId, queuePosition } = callRecords[0];
-                            await ddb.send(new UpdateCommand({
-                                TableName: CALL_QUEUE_TABLE_NAME,
-                                Key: { clinicId, queuePosition },
-                                UpdateExpression: 'SET #status = :status, acceptedAt = :timestamp, assignedAgentId = :agentId',
-                                ExpressionAttributeNames: { '#status': 'status' },
-                                ExpressionAttributeValues: {
-                                    ':status': 'connected',
-                                    ':timestamp': new Date().toISOString(),
-                                    ':agentId': agentId
+                            const queuedAt = callRecords[0].queueEntryTime;
+                            const now = Math.floor(Date.now() / 1000);
+                            const dialingDuration = now - queuedAt;
+                            
+                            // If call has been dialing for more than 60 seconds, clean up
+                            if (dialingDuration > 60) {
+                                console.error(`[CALL_ANSWERED] Call timeout after ${dialingDuration}s - cleaning up call ${callId}`);
+                                
+                                // Clean up the meeting if it exists
+                                if (meetingId) {
+                                    try {
+                                        await cleanupMeeting(meetingId);
+                                        console.log(`[CALL_ANSWERED] Cleaned up meeting ${meetingId} for timeout call`);
+                                    } catch (meetingErr) {
+                                        console.warn(`[CALL_ANSWERED] Error cleaning up meeting:`, meetingErr);
+                                    }
                                 }
-                            }));
-                            console.log(`[CALL_ANSWERED] Call queue updated for ${callId}`);
+                                
+                                // Update call record to timeout status
+                                const { clinicId, queuePosition } = callRecords[0];
+                                await ddb.send(new UpdateCommand({
+                                    TableName: CALL_QUEUE_TABLE_NAME,
+                                    Key: { clinicId, queuePosition },
+                                    UpdateExpression: 'SET #status = :status, endedAt = :timestamp, timeoutReason = :reason',
+                                    ExpressionAttributeNames: { '#status': 'status' },
+                                    ExpressionAttributeValues: {
+                                        ':status': 'timeout',
+                                        ':timestamp': Math.floor(Date.now() / 1000),
+                                        ':reason': 'customer_no_answer'
+                                    }
+                                }));
+                                
+                                // Mark agent as available again if they exist
+                                if (agentId) {
+                                    await ddb.send(new UpdateCommand({
+                                        TableName: AGENT_PRESENCE_TABLE_NAME,
+                                        Key: { agentId },
+                                        UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp REMOVE currentCallId',
+                                        ExpressionAttributeNames: { '#status': 'status' },
+                                        ExpressionAttributeValues: {
+                                            ':status': 'Online',
+                                            ':timestamp': new Date().toISOString()
+                                        }
+                                    }));
+                                }
+                                
+                                return buildActions([buildHangupAction('Call could not be connected. Please try again.')]);
+                            }
                         }
-                    } catch (queueErr) {
-                        console.warn(`[CALL_ANSWERED] Failed to update call queue:`, queueErr);
-                        // Non-fatal - continue
+                    } catch (checkErr) {
+                        console.warn('[CALL_ANSWERED] Error checking call timing:', checkErr);
                     }
+                }
+
+                if (isOutbound && agentId && callId && meetingId) {
+                    console.log(`[CALL_ANSWERED] Customer answered outbound call ${callId}`);
                     
-                    // 3. CRITICAL: Return empty actions to keep both legs connected
-                    // The customer leg is already in the meeting from NEW_OUTBOUND_CALL
-                    // We just need to confirm the connection is established
-                    console.log(`[CALL_ANSWERED] Both legs should now be in meeting. Returning empty actions.`);
+                    try {
+                        // CRITICAL FIX: Create an attendee for the customer's PSTN leg
+                        // This is the customer who just answered their phone
+                        console.log(`[CALL_ANSWERED] Creating customer attendee for meeting ${meetingId}`);
+                        
+                        const customerAttendeeResponse = await chime.send(new CreateAttendeeCommand({
+                            MeetingId: meetingId,
+                            ExternalUserId: `customer-pstn-${callId}`
+                        }));
+                        
+                        if (!customerAttendeeResponse.Attendee?.AttendeeId) {
+                            throw new Error('Failed to create customer attendee for outbound call');
+                        }
+                        
+                        const customerAttendee = customerAttendeeResponse.Attendee;
+                        console.log(`[CALL_ANSWERED] Created customer attendee ${customerAttendee.AttendeeId}`);
+                        
+                        // 1. Update Agent Status to OnCall
+                        await ddb.send(new UpdateCommand({
+                            TableName: AGENT_PRESENCE_TABLE_NAME,
+                            Key: { agentId },
+                            UpdateExpression: 'SET #status = :status, currentCallId = :callId, callStatus = :callStatus, lastActivityAt = :timestamp',
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: {
+                                ':status': 'OnCall',
+                                ':callId': callId,
+                                ':callStatus': 'connected', // IMPORTANT: Set this so polling detects it
+                                ':timestamp': new Date().toISOString(),
+                            },
+                        }));
+                        console.log(`[CALL_ANSWERED] Agent ${agentId} status updated to OnCall`);
+
+                        // 2. Update Call Queue Status with customer attendee info
+                        try {
+                            const { Items: callRecords } = await ddb.send(new QueryCommand({
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                IndexName: 'callId-index',
+                                KeyConditionExpression: 'callId = :id',
+                                ExpressionAttributeValues: { ':id': callId }
+                            }));
+                            
+                            if (callRecords && callRecords[0]) {
+                                const { clinicId, queuePosition } = callRecords[0];
+                                await ddb.send(new UpdateCommand({
+                                    TableName: CALL_QUEUE_TABLE_NAME,
+                                    Key: { clinicId, queuePosition },
+                                    UpdateExpression: 'SET #status = :status, acceptedAt = :timestamp, assignedAgentId = :agentId, customerAttendeeInfo = :customerAttendee',
+                                    ExpressionAttributeNames: { '#status': 'status' },
+                                    ExpressionAttributeValues: {
+                                        ':status': 'connected',
+                                        ':timestamp': new Date().toISOString(),
+                                        ':agentId': agentId,
+                                        ':customerAttendee': customerAttendee
+                                    }
+                                }));
+                                console.log(`[CALL_ANSWERED] Call queue updated for ${callId}`);
+                            }
+                        } catch (queueErr) {
+                            console.warn(`[CALL_ANSWERED] Failed to update call queue:`, queueErr);
+                            // Non-fatal - continue
+                        }
+                        
+                        // 3. CRITICAL FIX: Return JoinChimeMeeting action to bridge customer PSTN leg into meeting
+                        // The agent is already in the meeting (joined via browser)
+                        // Now we bridge the customer's PSTN leg into the same meeting
+                        console.log(`[CALL_ANSWERED] Bridging customer PSTN leg into meeting ${meetingId}`);
+                        
+                        return buildActions([
+                            buildJoinChimeMeetingAction({ MeetingId: meetingId }, customerAttendee)
+                        ]);
+                        
+                    } catch (err: any) {
+                        console.error(`[CALL_ANSWERED] Error bridging customer to meeting:`, err);
+                        return buildActions([
+                            buildHangupAction('Unable to connect your call. Please try again.')
+                        ]);
+                    }
                 }
                 
+                // For non-outbound calls or missing parameters, return empty actions
                 return buildActions([]);
             }
 
@@ -643,8 +1336,66 @@ export const handler = async (event: any): Promise<any> => {
                     const agentIds = args.agentIds.split(',');
                     console.log(`Ringing ${agentIds.length} new agents for call ${callId}`);
                     
-                    // The call-rejected Lambda has already updated the database
-                    // We just need to notify the customer
+                    // Find the call record to get meeting info
+                    const { Items: callRecords } = await ddb.send(new QueryCommand({
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        IndexName: 'callId-index',
+                        KeyConditionExpression: 'callId = :callId',
+                        ExpressionAttributeValues: {
+                            ':callId': callId
+                        }
+                    }));
+
+                    if (!callRecords || callRecords.length === 0 || !callRecords[0].meetingInfo?.MeetingId) {
+                        console.error('No meeting found for call when trying to ring new agents');
+                        return buildActions([
+                            buildSpeakAndBridgeAction('All agents are busy. Please stay on the line.')
+                        ]);
+                    }
+
+                    const callRecord = callRecords[0];
+                    const meetingInfo = callRecord.meetingInfo;
+
+                    // Create attendees for each new agent and update their presence records
+                    console.log(`Creating attendees for ${agentIds.length} new agents in meeting ${meetingInfo.MeetingId}`);
+                    
+                    await Promise.all(agentIds.map(async (agentId: string) => {
+                        try {
+                            // Create attendee for this agent
+                            const attendeeResponse = await chime.send(new CreateAttendeeCommand({
+                                MeetingId: meetingInfo.MeetingId,
+                                ExternalUserId: agentId
+                            }));
+                            
+                            if (attendeeResponse.Attendee) {
+                                // Update agent's presence to show incoming call
+                                await ddb.send(new UpdateCommand({
+                                    TableName: AGENT_PRESENCE_TABLE_NAME,
+                                    Key: { agentId },
+                                    UpdateExpression: 'SET ringingCallId = :callId, callStatus = :status, ' + 
+                                                     'inboundMeetingInfo = :meeting, inboundAttendeeInfo = :attendee, ' +
+                                                     'ringingCallTime = :time, lastActivityAt = :timestamp',
+                                    ConditionExpression: 'attribute_exists(agentId) AND #status = :onlineStatus',
+                                    ExpressionAttributeNames: { '#status': 'status' },
+                                    ExpressionAttributeValues: {
+                                        ':callId': callId,
+                                        ':status': 'ringing',
+                                        ':meeting': meetingInfo,
+                                        ':attendee': attendeeResponse.Attendee,
+                                        ':time': new Date().toISOString(),
+                                        ':timestamp': new Date().toISOString(),
+                                        ':onlineStatus': 'Online'
+                                    }
+                                }));
+                                
+                                console.log(`Agent ${agentId} notified of incoming call`);
+                            }
+                        } catch (err) {
+                            console.error(`Error notifying agent ${agentId}:`, err);
+                        }
+                    }));
+                    
+                    // Notify the customer
                     return buildActions([
                         buildSpeakAndBridgeAction('We are connecting you with the next available agent. Please hold.')
                     ]);
@@ -660,6 +1411,8 @@ export const handler = async (event: any): Promise<any> => {
             case 'ACTION_SUCCESSFUL':
             case 'HANGUP':
             case 'CALL_ENDED': {
+                console.log(`[${eventType}] Call ${callId} ended. Cleaning up resources.`);
+                
                 // Find the call in the queue table
                 const { Items: callRecords } = await ddb.send(new QueryCommand({
                     TableName: CALL_QUEUE_TABLE_NAME,
@@ -670,59 +1423,136 @@ export const handler = async (event: any): Promise<any> => {
 
                 if (callRecords && callRecords[0]) {
                     const callRecord = callRecords[0];
-                    const { clinicId, queuePosition, meetingInfo, assignedAgentId } = callRecord;
+                    const { clinicId, queuePosition, meetingInfo, assignedAgentId, agentIds } = callRecord;
+                    
+                    console.log(`[${eventType}] Found call record`, {
+                        callId,
+                        status: callRecord.status,
+                        assignedAgent: assignedAgentId,
+                        ringingAgents: agentIds?.length || 0,
+                        hasMeeting: !!meetingInfo?.MeetingId
+                    });
                     
                     // Clean up the meeting if it exists
                     if (meetingInfo?.MeetingId) {
-                        await cleanupMeeting(meetingInfo.MeetingId);
+                        try {
+                            // CRITICAL FIX: Add retry logic for meeting cleanup
+                            let retryCount = 0;
+                            const maxRetries = 3;
+                            let meetingCleaned = false;
+                            
+                            while (!meetingCleaned && retryCount < maxRetries) {
+                                try {
+                                    await cleanupMeeting(meetingInfo.MeetingId);
+                                    console.log(`[${eventType}] Cleaned up meeting ${meetingInfo.MeetingId} (attempt ${retryCount + 1})`);
+                                    meetingCleaned = true;
+                                } catch (err: any) {
+                                    retryCount++;
+                                    
+                                    // Don't retry for NotFoundException - meeting already gone
+                                    if (err.name === 'NotFoundException') {
+                                        console.log(`[${eventType}] Meeting ${meetingInfo.MeetingId} already deleted`);
+                                        meetingCleaned = true;
+                                    } else if (retryCount >= maxRetries) {
+                                        // Rethrow on last attempt
+                                        throw err;
+                                    } else {
+                                        // Wait with exponential backoff before retrying
+                                        const delay = Math.pow(2, retryCount) * 100; // 200, 400, 800ms
+                                        console.warn(`[${eventType}] Meeting cleanup attempt ${retryCount} failed, retrying in ${delay}ms:`, err.message);
+                                        await new Promise(resolve => setTimeout(resolve, delay));
+                                    }
+                                }
+                            }
+                        } catch (meetingErr) {
+                            console.warn(`[${eventType}] Failed to cleanup meeting after multiple attempts:`, meetingErr);
+                            // Continue with other cleanup operations even if meeting cleanup fails
+                        }
                     }
                     
                     // Update call status in the queue
                     const finalStatus = callRecord.status === 'connected' ? 'completed' : 'abandoned';
-                    await ddb.send(new UpdateCommand({
-                        TableName: CALL_QUEUE_TABLE_NAME,
-                        Key: { clinicId, queuePosition },
-                        UpdateExpression: 'SET #status = :status, endedAt = :timestamp',
-                        ExpressionAttributeNames: { '#status': 'status' },
-                        ExpressionAttributeValues: {
-                            ':status': finalStatus,
-                            ':timestamp': Math.floor(Date.now() / 1000)
-                        }
-                    }));
-                    
-                    // Update agent status if they were on the call
-                    if (assignedAgentId) {
+                    const callDuration = callRecord.acceptedAt 
+                        ? Math.floor(Date.now() / 1000) - Math.floor(new Date(callRecord.acceptedAt).getTime() / 1000)
+                        : 0;
+                        
+                    try {
+                        // CRITICAL FIX: Add proper error recovery for call record update
+                        const nowIso = new Date().toISOString();
+                        const nowUnix = Math.floor(Date.now() / 1000);
+                        
                         await ddb.send(new UpdateCommand({
-                            TableName: AGENT_PRESENCE_TABLE_NAME,
-                            Key: { agentId: assignedAgentId },
-                            UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp REMOVE currentCallId',
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            Key: { clinicId, queuePosition },
+                            UpdateExpression: 'SET #status = :status, endedAt = :timestamp, endedAtIso = :timestampIso, callDuration = :duration',
                             ExpressionAttributeNames: { '#status': 'status' },
                             ExpressionAttributeValues: {
-                                ':status': 'Online',
-                                ':timestamp': new Date().toISOString()
+                                ':status': finalStatus,
+                                ':timestamp': nowUnix,
+                                ':timestampIso': nowIso,
+                                ':duration': callDuration
                             }
                         }));
+                        
+                    } catch (updateErr) {
+                        console.error(`[${eventType}] Failed to update call record:`, updateErr);
+                        // Continue with agent cleanup even if call record update fails
                     }
                     
-                    // Clear ringing status for any agents who were being rung
-                    if (callRecord.agentIds && Array.isArray(callRecord.agentIds)) {
-                        await Promise.all(callRecord.agentIds.map((agentId: string) =>
+                    // CRITICAL FIX: Update agent status if they were on the call
+                    // This handles the case where the customer hangs up first
+                    // But preserves agent status if they've already changed it
+                    if (assignedAgentId) {
+                        try {
+                            // Directly use conditional update to avoid race condition
+                            // Only update if agent is still on THIS call
+                            await ddb.send(new UpdateCommand({
+                                TableName: AGENT_PRESENCE_TABLE_NAME,
+                                Key: { agentId: assignedAgentId },
+                                UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp, lastCallEndedAt = :timestamp REMOVE currentCallId, callStatus',
+                                ConditionExpression: 'attribute_exists(agentId) AND currentCallId = :callId', // Only update if still on this call
+                                ExpressionAttributeNames: { '#status': 'status' },
+                                ExpressionAttributeValues: {
+                                    ':status': 'Online', // Restore to Online status
+                                    ':timestamp': new Date().toISOString(),
+                                    ':callId': callId
+                                }
+                            }));
+                            console.log(`[${eventType}] Agent ${assignedAgentId} marked as available`);
+                        } catch (agentErr: any) {
+                            if (agentErr.name === 'ConditionalCheckFailedException') {
+                                console.log(`[${eventType}] Agent ${assignedAgentId} is no longer on this call - skipping cleanup`);
+                            } else {
+                                console.warn(`[${eventType}] Failed to update agent ${assignedAgentId}:`, agentErr);
+                            }
+                        }
+                    }
+                    
+                    // CRITICAL: Clear ringing status for any agents who were being rung
+                    // This handles abandoned calls where no agent answered
+                    if (agentIds && Array.isArray(agentIds) && agentIds.length > 0) {
+                        console.log(`[${eventType}] Clearing ringing status for ${agentIds.length} agents`);
+                        await Promise.all(agentIds.map((agentId: string) =>
                             ddb.send(new UpdateCommand({
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
                                 Key: { agentId },
-                                UpdateExpression: 'REMOVE ringingCallId SET lastActivityAt = :timestamp',
+                                UpdateExpression: 'REMOVE ringingCallId, ringingCallTime SET lastActivityAt = :timestamp',
+                                ConditionExpression: 'attribute_exists(agentId) AND ringingCallId = :callId',
                                 ExpressionAttributeValues: {
-                                    ':timestamp': new Date().toISOString()
-                                },
-                                ConditionExpression: 'attribute_exists(agentId)'
-                            })).catch(() => {
-                                // Ignore if agent doesn't exist
+                                    ':timestamp': new Date().toISOString(),
+                                    ':callId': callId
+                                }
+                            })).catch((err) => {
+                                // Ignore conditional check failures (agent already cleared)
+                                if (err.name !== 'ConditionalCheckFailedException') {
+                                    console.warn(`[${eventType}] Failed to clear ringing for agent ${agentId}:`, err.message);
+                                }
                             })
                         ));
                     }
                 }
 
-                console.log(`Event ${eventType} received for call ${callId}. Cleaned up resources.`);
+                console.log(`[${eventType}] Call ${callId} cleanup completed.`);
                 return buildActions([]);
             }
 

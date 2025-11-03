@@ -1,7 +1,8 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
-import { ChimeSDKVoiceClient, CreateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
+import { ChimeSDKVoiceClient, CreateSipMediaApplicationCallCommand, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
+import { ChimeSDKMeetingsClient, CreateMeetingCommand, CreateAttendeeCommand, DeleteMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
 
@@ -129,6 +130,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         });
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'toPhoneNumber and fromClinicId are required' }) };
     }
+    
+    // CRITICAL FIX: Validate phone number is in E.164 format
+    const E164_REGEX = /^\+[1-9]\d{1,14}$/;
+    if (!E164_REGEX.test(body.toPhoneNumber)) {
+        console.error('[outbound-call] Invalid phone number format', {
+            toPhoneNumber: body.toPhoneNumber?.substring(0, 4) + "***",
+        });
+        return { 
+            statusCode: 400, 
+            headers: corsHeaders, 
+            body: JSON.stringify({ 
+                message: 'toPhoneNumber must be in E.164 format (e.g., +12065550100)' 
+            }) 
+        };
+    }
     if (!SMA_ID) {
         console.error('[outbound-call] SMA_ID environment variable not configured');
         return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'SMA_ID environment variable is not set' }) };
@@ -163,54 +179,88 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const fromPhoneNumber = clinic.phoneNumber;
     console.log('[outbound-call] Found clinic phone number:', fromPhoneNumber);
 
-    // 3. Get Agent's current presence state (to get meeting info)
-    console.log('[outbound-call] Checking agent presence state', { agentId });
-    const { Item: agent } = await ddb.send(new GetCommand({
-        TableName: AGENT_PRESENCE_TABLE_NAME,
-        Key: { agentId },
-    }));
+        // 3. Check Agent's current presence state
+        console.log('[outbound-call] Checking agent presence state', { agentId });
+        const { Item: agent } = await ddb.send(new GetCommand({
+            TableName: AGENT_PRESENCE_TABLE_NAME,
+            Key: { agentId },
+        }));
 
-    if (!agent || agent.status !== 'Online' || !agent.meetingInfo?.MeetingId || !agent.attendeeInfo?.AttendeeId) {
-        console.error('[outbound-call] Agent not ready for outbound call', {
-          agentExists: !!agent,
-          status: agent?.status,
-          hasMeetingInfo: !!(agent?.meetingInfo?.MeetingId),
-          hasAttendeeInfo: !!(agent?.attendeeInfo?.AttendeeId)
-        });
-         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'Agent is not online. Call /chime/start-session first.' }) };
-    }
-    console.log('[outbound-call] Agent ready for outbound call', {
-      status: agent.status,
-      meetingId: agent.meetingInfo.MeetingId
-    });
-
-    // 4. Initiate the outbound call leg to the customer
-    console.log('[outbound-call] Initiating SIP media application call', {
-      fromPhoneNumber,
-      toPhoneNumber: body.toPhoneNumber,
-      smaId: SMA_ID,
-      meetingId: agent.meetingInfo.MeetingId
-    });
-    
-    const callResponse = await chimeVoiceClient.send(new CreateSipMediaApplicationCallCommand({
-        FromPhoneNumber: fromPhoneNumber,
-        ToPhoneNumber: body.toPhoneNumber,
-        SipMediaApplicationId: SMA_ID,
-        ArgumentsMap: {
-            // Pass agent/meeting info to the SMA handler (inbound-router.ts)
-            // This is how it knows which meeting to join this call to.
-            "callType": "Outbound",
-            "agentId": agentId,
-            "meetingId": agent.meetingInfo.MeetingId,
-            "attendeeId": agent.attendeeInfo.AttendeeId,
-            "callStatus": "ringing", // Add this to track initial state
+        if (!agent || agent.status !== 'Online') {
+            console.error('[outbound-call] Agent not ready for outbound call', {
+              agentExists: !!agent,
+              status: agent?.status
+            });
+            return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'Agent is not online. Call /chime/start-session first.' }) };
         }
-    }));
-    
-    const callId = callResponse.SipMediaApplicationCall?.TransactionId;
-    console.log('[outbound-call] SIP call initiated successfully', {
-      transactionId: callId,
-    });
+        console.log('[outbound-call] Agent ready for outbound call', {
+          status: agent.status
+        });
+
+                // CRITICAL FIX: We need to create a meeting here for the agent
+                // Frontend needs to join the meeting right away to prepare for the call
+                console.log('[outbound-call] Creating meeting for outbound call');
+                
+                const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
+                const chimeClient = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
+                
+                // Create a new meeting specifically for this outbound call
+                const callMeeting = await chimeClient.send(new CreateMeetingCommand({
+                    ClientRequestToken: `outbound-${Date.now()}`,
+                    MediaRegion: CHIME_MEDIA_REGION,
+                    ExternalMeetingId: `outbound-${Date.now()}-${agentId}`,
+                }));
+                
+                if (!callMeeting.Meeting?.MeetingId) {
+                    console.error('[outbound-call] Failed to create outbound call meeting');
+                    return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'Failed to create meeting for outbound call' }) };
+                }
+                
+                // Create an attendee for the agent in this new meeting
+                const agentAttendee = await chimeClient.send(new CreateAttendeeCommand({
+                    MeetingId: callMeeting.Meeting.MeetingId,
+                    ExternalUserId: agentId
+                }));
+                
+                if (!agentAttendee.Attendee?.AttendeeId) {
+                    console.error('[outbound-call] Failed to create agent attendee for outbound call');
+                    return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'Failed to create attendee for outbound call' }) };
+                }
+                
+                // Create a unique call reference that will be used for customer identification
+                const callReference = `outbound-${Date.now()}-${agentId}`;
+
+        // 4. Initiate the outbound call leg to the customer
+        console.log('[outbound-call] Initiating SIP media application call', {
+          fromPhoneNumber,
+          toPhoneNumber: body.toPhoneNumber,
+          smaId: SMA_ID,
+          meetingId: callMeeting.Meeting.MeetingId
+        });
+        
+        const callResponse = await chimeVoiceClient.send(new CreateSipMediaApplicationCallCommand({
+            FromPhoneNumber: fromPhoneNumber,
+            ToPhoneNumber: body.toPhoneNumber,
+            SipMediaApplicationId: SMA_ID,
+            ArgumentsMap: {
+                // Pass meeting info to the SMA handler
+                "callType": "Outbound",
+                "agentId": agentId,
+                "meetingId": callMeeting.Meeting.MeetingId, // Pass the meeting ID
+                "attendeeId": agentAttendee.Attendee.AttendeeId,
+                "callReference": callReference, // Also send reference for additional tracking
+                "toPhoneNumber": body.toPhoneNumber,
+                "fromPhoneNumber": fromPhoneNumber,
+                "fromClinicId": body.fromClinicId,
+                "callStatus": "dialing", // Set status to dialing instead of ringing
+            }
+        }));
+        
+        const callId = callResponse.SipMediaApplicationCall?.TransactionId;
+        console.log('[outbound-call] SIP call initiated successfully', {
+          transactionId: callId,
+          callReference
+        });
 
     // Store outbound call in queue table for tracking
     if (callId) {
@@ -223,26 +273,80 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     queuePosition: Date.now(), // Use timestamp as unique position for outbound calls
                     queueEntryTime: Math.floor(Date.now() / 1000),
                     phoneNumber: body.toPhoneNumber,
-                    status: 'ringing',
+                    status: 'dialing', // Use dialing instead of ringing
                     direction: 'outbound',
                     assignedAgentId: agentId,
+                    callReference: callReference, // Store reference for SMA to use later
+                    meetingInfo: callMeeting.Meeting, // Store meeting info for the call
+                    agentAttendeeInfo: agentAttendee.Attendee, // Store agent attendee info
                     ttl: Math.floor(Date.now() / 1000) + (10 * 60) // 10 minute TTL
                 }
             }));
-            console.log(`[outbound-call] Call ${callId} added to queue table`);
-        } catch (queueErr) {
-            console.warn(`[outbound-call] Failed to add call to queue:`, queueErr);
-            // Non-fatal
+            console.log(`[outbound-call] Call ${callId} added to queue table with meeting info`);
+        } catch (error) {
+            const queueErr = error as Error;
+            console.error(`[outbound-call] Failed to add call to queue:`, queueErr);
+            
+            // CRITICAL FIX: Add proper cleanup for the meeting if queue insertion fails
+            try {
+                // Clean up the meeting since we can't track it
+                if (callMeeting?.Meeting?.MeetingId) {
+                    await chimeClient.send(new DeleteMeetingCommand({
+                        MeetingId: callMeeting.Meeting.MeetingId
+                    }));
+                    console.log(`[outbound-call] Cleaned up meeting ${callMeeting.Meeting.MeetingId} after queue insertion failure`);
+                }
+                
+                // Try to cancel the SIP call if possible
+                await chimeVoiceClient.send(new UpdateSipMediaApplicationCallCommand({
+                    SipMediaApplicationId: SMA_ID,
+                    TransactionId: callId,
+                    Arguments: {
+                        action: 'CANCEL_OUTBOUND_CALL',
+                        reason: 'database_error'
+                    }
+                })).catch(err => console.warn(`[outbound-call] Failed to cancel SIP call: ${err.message}`));
+                
+                return {
+                    statusCode: 500,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ 
+                        message: 'Failed to record call details',
+                        error: queueErr.message || 'Database error'
+                    })
+                };
+            } catch (cleanupError) {
+                const cleanupErr = cleanupError as Error;
+                console.error(`[outbound-call] Failed to clean up after queue insertion error:`, cleanupErr);
+                return {
+                    statusCode: 500,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ 
+                        message: 'Failed to record call details and clean up resources',
+                        error: queueErr.message || 'Database error'
+                    })
+                };
+            }
         }
     }
 
+    // Return call ID AND the meeting info that frontend needs to join
     const responseBody = {
       success: true,
-      message: 'Outbound call initiated',
-      callId: callId
+      message: 'Outbound call initiated - waiting for customer to answer',
+      callId: callId,
+      callReference: callReference,
+      // Include meeting and attendee info for frontend to join immediately
+      meeting: callMeeting.Meeting,
+      attendee: agentAttendee.Attendee
     };
     
-    console.log('[outbound-call] Request completed successfully', responseBody);
+    console.log('[outbound-call] Request completed successfully', {
+      callId,
+      callReference,
+      meetingId: callMeeting.Meeting.MeetingId,
+      attendeeId: agentAttendee.Attendee.AttendeeId
+    });
     
     return {
       statusCode: 200,

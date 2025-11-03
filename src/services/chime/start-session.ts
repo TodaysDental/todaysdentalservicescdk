@@ -1,6 +1,6 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKMeetingsClient, CreateMeetingCommand, CreateAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { randomUUID } from 'crypto';
 import { buildCorsHeaders } from '../../shared/utils/cors';
@@ -13,7 +13,16 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
 const chimeClient = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 
+// CRITICAL FIX: Add validation for required environment variables
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
+if (!AGENT_PRESENCE_TABLE_NAME) {
+    throw new Error('AGENT_PRESENCE_TABLE_NAME environment variable is required');
+}
+
+const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
+if (!CALL_QUEUE_TABLE_NAME) {
+    throw new Error('CALL_QUEUE_TABLE_NAME environment variable is required');
+}
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
 const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
@@ -252,6 +261,113 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       activeClinicIds: body.activeClinicIds,
       meetingId: meetingResponse.Meeting.MeetingId
     });
+    
+    // Check for queued calls that could be assigned to this agent
+    try {
+      // Get the clinics this agent is authorized for
+      const activeClinicIds = body.activeClinicIds;
+      if (!activeClinicIds || activeClinicIds.length === 0) {
+        console.log('[start-session] No active clinics to check for queued calls');
+        // Skip queue processing if no active clinics
+      } else {
+        console.log('[start-session] Checking for queued calls in clinics:', activeClinicIds);
+        
+        // For each clinic, look for the oldest queued call
+        for (const clinicId of activeClinicIds) {
+          const { Items: queuedCalls } = await ddb.send(new QueryCommand({
+            TableName: CALL_QUEUE_TABLE_NAME,
+            KeyConditionExpression: 'clinicId = :clinicId',
+            FilterExpression: '#status = :status',
+            ExpressionAttributeNames: { '#status': 'status' },
+            ExpressionAttributeValues: {
+              ':clinicId': clinicId,
+              ':status': 'queued'
+            },
+            // Sort by queuePosition (which is timestamp-based) to get oldest first
+            ScanIndexForward: true,
+            Limit: 1 // Just get the oldest call
+          }));
+          
+          if (queuedCalls && queuedCalls.length > 0) {
+            const oldestCall = queuedCalls[0];
+            console.log(`[start-session] Found queued call for clinic ${clinicId}:`, {
+              callId: oldestCall.callId,
+              queuedSince: oldestCall.queueEntryTime,
+              hasMeeting: !!oldestCall.meetingInfo?.MeetingId
+            });
+            
+            // Make sure the call has a valid meeting
+            if (oldestCall.meetingInfo?.MeetingId) {
+              // Create an attendee for this agent in the call's meeting
+              const attendeeResponse = await chimeClient.send(new CreateAttendeeCommand({
+                MeetingId: oldestCall.meetingInfo.MeetingId,
+                ExternalUserId: agentId
+              }));
+              
+              if (!attendeeResponse.Attendee) {
+                console.error('[start-session] Failed to create attendee for queued call');
+                continue;
+              }
+              
+              // CRITICAL FIX: Atomic claim operation - only assign if still queued and not already assigned
+              try {
+                await ddb.send(new UpdateCommand({
+                  TableName: CALL_QUEUE_TABLE_NAME,
+                  Key: { 
+                    clinicId: oldestCall.clinicId, 
+                    queuePosition: oldestCall.queuePosition 
+                  },
+                  UpdateExpression: 'SET #status = :status, agentIds = :agentIds, claimedAt = :timestamp',
+                  ConditionExpression: '#status = :queuedStatus AND (attribute_not_exists(agentIds) OR size(agentIds) = :emptyArray)',
+                  ExpressionAttributeNames: { '#status': 'status' },
+                  ExpressionAttributeValues: {
+                    ':status': 'ringing',
+                    ':agentIds': [agentId],
+                    ':queuedStatus': 'queued',
+                    ':timestamp': new Date().toISOString(),
+                    ':emptyArray': 0
+                  }
+                }));
+              } catch (claimErr: any) {
+                if (claimErr.name === 'ConditionalCheckFailedException') {
+                  console.warn(`[start-session] Race condition - queued call ${oldestCall.callId} already claimed by another agent`);
+                  continue; // Try next queued call
+                }
+                throw claimErr;
+              }
+              
+              // Update agent's presence to show the ringing call
+              await ddb.send(new UpdateCommand({
+                TableName: AGENT_PRESENCE_TABLE_NAME,
+                Key: { agentId },
+                UpdateExpression: 'SET ringingCallId = :callId, callStatus = :status, ' + 
+                                 'inboundMeetingInfo = :meeting, inboundAttendeeInfo = :attendee, ' +
+                                 'ringingCallTime = :time',
+                ExpressionAttributeValues: {
+                  ':callId': oldestCall.callId,
+                  ':status': 'ringing',
+                  ':meeting': oldestCall.meetingInfo,
+                  ':attendee': attendeeResponse.Attendee,
+                  ':time': new Date().toISOString()
+                }
+              }));
+              
+              console.log(`[start-session] Assigned queued call ${oldestCall.callId} to agent ${agentId}`);
+              
+              // Only assign one call, even if there are multiple queued calls
+              break;
+            } else {
+              console.error('[start-session] Queued call has no valid meeting info:', oldestCall);
+            }
+          } else {
+            console.log(`[start-session] No queued calls found for clinic ${clinicId}`);
+          }
+        }
+      }
+    } catch (queueError) {
+      // Non-fatal error - log but continue
+      console.error('[start-session] Error processing call queue:', queueError);
+    }
 
     // Return meeting details to the frontend softphone
     const responseBody = {

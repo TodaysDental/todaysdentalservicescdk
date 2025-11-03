@@ -71,7 +71,7 @@ const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNoti
 // Lambda ARNs. We intentionally do NOT pass the Admin API object into the
 // Chime stack to avoid a two-way construct dependency which leads to
 // cyclic CloudFormation references.
-const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV5', {
+const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV20', {
   env,
   userPool: coreStack.userPool,
 });
@@ -94,16 +94,23 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminV3', {
   callAcceptedFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallAcceptedArn`),
   callRejectedFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallRejectedArn`),
   callHungupFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallHungupArn`),
+  leaveCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-LeaveCallArn`),
+  heartbeatFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-HeartbeatArn`),
   agentPresenceTableName: cdk.Fn.importValue(`${chimeStack.stackName}-AgentPresenceTableName`),
 });
 
-// Ensure Admin is deployed after Chime (explicit dependency for clarity)
+// CRITICAL FIX: Avoid circular dependencies between adminStack and chimeStack
+// 1. Ensure Admin is deployed after Chime (explicit dependency for clarity)
+// This is needed because Admin imports exported values from Chime
 adminStack.addDependency(chimeStack);
 
-// Ensure ChimeStack is deployed after Core (it augments the Admin API at runtime)
-// Note: Don't add explicit dependency on AdminStack to avoid circular dependency
-// CDK will automatically determine the dependency based on the API resource usage
+// 2. ChimeStack depends only on Core, not on AdminStack
+// This avoids the circular dependency where ChimeStack -> AdminStack -> ChimeStack
 chimeStack.addDependency(coreStack);
+
+// 3. Add a warning comment to prevent future circular dependencies
+// DO NOT add a dependency from ChimeStack to AdminStack as this would create a circular reference:
+// ChimeStack -> AdminStack -> ChimeStack
 
 // The Admin stack now receives the agent presence table name via props,
 // so no additional configuration is needed here.
@@ -183,7 +190,10 @@ chatbotStack.addDependency(coreStack);
 chatbotStack.addDependency(clinicPricingStack);
 chatbotStack.addDependency(clinicInsuranceStack);
 
-// Chime stack dependencies (temporarily removed)
-// chimeStack.addDependency(coreStack);
-// chimeStack.addDependency(adminStack);
+// CRITICAL FIX: Remove commented-out code that could lead to circular dependencies
+// Note: The proper dependencies are already set above:
+// 1. adminStack.addDependency(chimeStack) - Admin depends on Chime
+// 2. chimeStack.addDependency(coreStack) - Chime depends on Core
+// Do not uncomment the following line as it would create a circular reference:
+// chimeStack.addDependency(adminStack)
 

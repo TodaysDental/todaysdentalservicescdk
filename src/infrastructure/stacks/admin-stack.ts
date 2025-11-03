@@ -25,6 +25,10 @@ export interface AdminStackProps extends StackProps {
   callAcceptedFnArn?: string;
   callRejectedFnArn?: string;
   callHungupFnArn?: string;
+  leaveCallFnArn?: string;
+  heartbeatFnArn?: string;
+  holdCallFnArn?: string;
+  resumeCallFnArn?: string;
 }
 
 export class AdminStack extends Stack {
@@ -290,7 +294,8 @@ export class AdminStack extends Stack {
     // avoids passing the Admin API object into the Chime stack which would
     // create a circular dependency.
     if (props.startSessionFnArn || props.stopSessionFnArn || props.outboundCallFnArn || props.transferCallFnArn || 
-        props.callAcceptedFnArn || props.callRejectedFnArn || props.callHungupFnArn) {
+        props.callAcceptedFnArn || props.callRejectedFnArn || props.callHungupFnArn || props.leaveCallFnArn || 
+        props.heartbeatFnArn || props.holdCallFnArn || props.resumeCallFnArn) {
       const chimeApiRoot = this.api.root.getResource('chime') ?? this.api.root.addResource('chime');
 
       if (props.startSessionFnArn) {
@@ -400,6 +405,70 @@ export class AdminStack extends Stack {
         
         const callHungupRes = chimeApiRoot.addResource('call-hungup');
         callHungupRes.addMethod('POST', new apigw.LambdaIntegration(importedCallHungup, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.COGNITO,
+        });
+      }
+
+      if (props.leaveCallFnArn) {
+        const importedLeaveCall = lambda.Function.fromFunctionArn(this, 'ImportedLeaveCallFn', props.leaveCallFnArn);
+        
+        // Add API Gateway permission - use wildcard to account for base path mapping
+        importedLeaveCall.addPermission('ApiGatewayInvokeLeaveCall', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/leave-call', '*')
+        });
+        
+        const leaveCallRes = chimeApiRoot.addResource('leave-call');
+        leaveCallRes.addMethod('POST', new apigw.LambdaIntegration(importedLeaveCall, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.COGNITO,
+        });
+      }
+
+      if (props.heartbeatFnArn) {
+        const importedHeartbeat = lambda.Function.fromFunctionArn(this, 'ImportedHeartbeatFn', props.heartbeatFnArn);
+        
+        // Add API Gateway permission - use wildcard to account for base path mapping
+        importedHeartbeat.addPermission('ApiGatewayInvokeHeartbeat', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/heartbeat', '*')
+        });
+        
+        const heartbeatRes = chimeApiRoot.addResource('heartbeat');
+        heartbeatRes.addMethod('POST', new apigw.LambdaIntegration(importedHeartbeat, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.COGNITO,
+        });
+      }
+
+      if (props.holdCallFnArn) {
+        const importedHoldCall = lambda.Function.fromFunctionArn(this, 'ImportedHoldCallFn', props.holdCallFnArn);
+        
+        // Add API Gateway permission - use wildcard to account for base path mapping
+        importedHoldCall.addPermission('ApiGatewayInvokeHoldCall', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/hold-call', '*')
+        });
+        
+        const holdCallRes = chimeApiRoot.addResource('hold-call');
+        holdCallRes.addMethod('POST', new apigw.LambdaIntegration(importedHoldCall, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.COGNITO,
+        });
+      }
+
+      if (props.resumeCallFnArn) {
+        const importedResumeCall = lambda.Function.fromFunctionArn(this, 'ImportedResumeCallFn', props.resumeCallFnArn);
+        
+        // Add API Gateway permission - use wildcard to account for base path mapping
+        importedResumeCall.addPermission('ApiGatewayInvokeResumeCall', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/resume-call', '*')
+        });
+        
+        const resumeCallRes = chimeApiRoot.addResource('resume-call');
+        resumeCallRes.addMethod('POST', new apigw.LambdaIntegration(importedResumeCall, { proxy: true }), {
           authorizer: this.authorizer,
           authorizationType: apigw.AuthorizationType.COGNITO,
         });
