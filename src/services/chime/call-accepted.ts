@@ -295,7 +295,11 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
-import { ChimeSDKMeetingsClient, CreateAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings'; // ✅ ADD THIS
+import { 
+    ChimeSDKMeetingsClient, 
+    CreateAttendeeCommand,
+    GetMeetingCommand 
+} from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { randomUUID } from 'crypto';
 
@@ -369,9 +373,26 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // ✅ CRITICAL FIX: Create attendee for agent BEFORE transaction
+        // ✅ CRITICAL FIX: Create attendee for agent BEFORE transaction AND verify meeting exists
         let agentAttendee;
         try {
+            // First verify the meeting still exists
+            try {
+                await chime.send(new GetMeetingCommand({
+                    MeetingId: callRecord.meetingInfo.MeetingId
+                }));
+            } catch (err: any) {
+                if (err.name === 'NotFoundException' || err.code === 'NotFoundException') {
+                    console.error('[call-accepted] Meeting no longer exists', { meetingId: callRecord.meetingInfo.MeetingId });
+                    return {
+                        statusCode: 404,
+                        headers: corsHeaders,
+                        body: JSON.stringify({ message: 'Meeting no longer exists' })
+                    };
+                }
+                throw err;
+            }
+
             console.log('[call-accepted] Creating attendee for agent', {
                 meetingId: callRecord.meetingInfo.MeetingId,
                 agentId

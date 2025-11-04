@@ -835,18 +835,26 @@ export const handler = async (event: any): Promise<any> => {
                         if (!agent.agentId) continue;
                         
                         try {
-                            // CRITICAL: Verify agent is still Online right before creating attendee
-                            const { Item: currentAgentStatus } = await ddb.send(new GetCommand({
+                            // CRITICAL FIX: Use atomic operation to claim agent - no need for separate status check
+                            // If agent is no longer available, the update will fail with ConditionalCheckFailedException
+                            const updateResult = await ddb.send(new UpdateCommand({
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
-                                Key: { agentId: agent.agentId }
+                                Key: { agentId: agent.agentId },
+                                UpdateExpression: 'SET ringingCallId = :callId, #status = :ringingStatus, inboundMeetingInfo = :meeting, ringingCallTime = :time, lastActivityAt = :timestamp',
+                                ConditionExpression: 'attribute_exists(agentId) AND #status = :onlineStatus AND attribute_not_exists(ringingCallId) AND attribute_not_exists(currentCallId)',
+                                ExpressionAttributeNames: { '#status': 'status' },
+                                ExpressionAttributeValues: {
+                                    ':callId': callId,
+                                    ':ringingStatus': 'ringing',
+                                    ':onlineStatus': 'Online',
+                                    ':meeting': meeting,
+                                    ':time': new Date().toISOString(),
+                                    ':timestamp': new Date().toISOString()
+                                }
                             }));
-                            
-                            if (!currentAgentStatus || currentAgentStatus.status !== 'Online') {
-                                console.warn(`[NEW_INBOUND_CALL] Agent ${agent.agentId} status changed - skipping`, {
-                                    currentStatus: currentAgentStatus?.status
-                                });
-                                continue;
-                            }
+
+                            successfullyNotifiedAgents.push(agent.agentId);
+                            continue;
                             
                             // CRITICAL FIX: Verify meeting still exists before notifying agent
                             try {
@@ -859,16 +867,16 @@ export const handler = async (event: any): Promise<any> => {
                                 console.warn(`[NEW_INBOUND_CALL] Error verifying meeting ${meeting.MeetingId}:`, meetingErr);
                             }
 
-                            // Atomically claim the agent for ringing without pre-creating an attendee.
+                            // CRITICAL FIX: Just store meeting info, don't create attendee until acceptance
                             await ddb.send(new UpdateCommand({
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
                                 Key: { agentId: agent.agentId },
-                                UpdateExpression: 'SET ringingCallId = :callId, callStatus = :status, inboundMeetingInfo = :meeting, ringingCallTime = :time, lastActivityAt = :timestamp',
+                                UpdateExpression: 'SET ringingCallId = :callId, #status = :ringingStatus, inboundMeetingInfo = :meeting, ringingCallTime = :time, lastActivityAt = :timestamp',
                                 ConditionExpression: 'attribute_exists(agentId) AND #status = :onlineStatus AND attribute_not_exists(ringingCallId)',
                                 ExpressionAttributeNames: { '#status': 'status' },
                                 ExpressionAttributeValues: {
                                     ':callId': callId,
-                                    ':status': 'ringing',
+                                    ':ringingStatus': 'ringing',
                                     ':meeting': meeting,
                                     ':time': new Date().toISOString(),
                                     ':timestamp': new Date().toISOString(),
@@ -930,15 +938,15 @@ export const handler = async (event: any): Promise<any> => {
                     // Add a small pause before joining the meeting
                     actions.push(buildPauseAction(500));
                     
-                    // Join customer to meeting
+                    // CRITICAL FIX: Put customer in meeting immediately but they'll hear hold music until agent joins
                     actions.push(buildJoinChimeMeetingAction(meeting, customerAttendee));
                     
-                    // Play hold music if available
+                    // Play hold music if available - customer will hear this until agent joins
                     if (HOLD_MUSIC_BUCKET) {
                         actions.push(buildPlayAudioAction('hold-music.wav'));
                     } else {
-                        // If no hold music, just add a pause and periodic message
-                        actions.push(buildPauseAction(10000)); // 10 second pause
+                        // If no hold music, just add periodic messages
+                        actions.push(buildPauseAction(10000));
                         actions.push(buildSpeakAction('Please continue holding. An agent will be with you shortly.'));
                         actions.push(buildPauseAction(10000)); // Another pause
                     }
@@ -1115,10 +1123,42 @@ export const handler = async (event: any): Promise<any> => {
             }
             
             case 'CALL_ANSWERED': {
-                // NOTE: CALL_ANSWERED events from the SMA often do not include the
-                // original Arguments passed at call creation. Query the call record
-                // in DynamoDB to resolve meetingId, agentId and direction.
+                // This can be triggered by:
+                // 1. Agent accepting an inbound call (AGENT_JOINED action from call-accepted.ts)
+                // 2. Customer answering an outbound call
                 console.log(`[CALL_ANSWERED] Received for call ${callId}. args: ${JSON.stringify(args)}`);
+                
+                // CRITICAL FIX: Handle agent joining for inbound call
+                if (args.action === 'AGENT_JOINED') {
+                    const { agentId, meetingId, agentAttendeeId } = args;
+                    
+                    console.log(`[CALL_ANSWERED] Agent ${agentId} joined call ${callId} in meeting ${meetingId}`);
+                    
+                    try {
+                        // The agent is ready - ensure customer is properly bridged into meeting
+                        const { Items: callRecords } = await ddb.send(new QueryCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            IndexName: 'callId-index',
+                            KeyConditionExpression: 'callId = :id',
+                            ExpressionAttributeValues: { ':id': callId }
+                        }));
+                        
+                        if (!callRecords?.[0]?.customerAttendeeInfo) {
+                            throw new Error('No customer attendee info found');
+                        }
+                        
+                        const callRecord = callRecords[0];
+                        console.log(`[CALL_ANSWERED] Re-bridging customer for agent join`);
+                        
+                        return buildActions([
+                            buildSpeakAction('An agent will assist you now.'),
+                            buildJoinChimeMeetingAction(callRecord.meetingInfo, callRecord.customerAttendeeInfo)
+                        ]);
+                    } catch (err) {
+                        console.error('[CALL_ANSWERED] Error processing agent join:', err);
+                        return buildActions([]);
+                    }
+                }
 
                 // Start with any values that might be present in args, then fill
                 // in from DynamoDB if missing.
