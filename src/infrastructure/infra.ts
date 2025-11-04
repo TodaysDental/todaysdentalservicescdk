@@ -7,6 +7,8 @@ import { PatientPortalStack } from './stacks/patient-portal-stack';
 import { ChatbotStack } from './stacks/chatbot-stack';
 // Granular service stacks
 import { TemplatesStack } from './stacks/templates-stack';
+// Import the new stack
+import { ConsentFormDataStack } from './stacks/consent-form-data-stack';
 import { SchedulesStack } from './stacks/schedules-stack';
 import { QueriesStack } from './stacks/queries-stack';
 import { ClinicHoursStack } from './stacks/clinic-hours-stack';
@@ -35,6 +37,14 @@ const templatesStack = new TemplatesStack(app, 'TodaysDentalInsightsTemplatesV3'
   env,
   userPool: coreStack.userPool,
 });
+
+// *** NEW STACK ***
+// Consent Form Data service
+const consentFormDataStack = new ConsentFormDataStack(app, 'TodaysDentalInsightsConsentFormDataV1', {
+  env,
+  userPool: coreStack.userPool,
+});
+// *** END NEW STACK ***
 
 // Queries service
 const queriesStack = new QueriesStack(app, 'TodaysDentalInsightsQueriesV3', {
@@ -165,6 +175,7 @@ const clinicHoursStack = new ClinicHoursStack(app, 'TodaysDentalInsightsClinicHo
 
 // Service stack dependencies (each service only depends on core for user pool)
 templatesStack.addDependency(coreStack);
+consentFormDataStack.addDependency(coreStack); // Add dependency for the new stack
 queriesStack.addDependency(coreStack);
 clinicHoursStack.addDependency(coreStack);
 clinicPricingStack.addDependency(coreStack);
@@ -196,4 +207,3 @@ chatbotStack.addDependency(clinicInsuranceStack);
 // 2. chimeStack.addDependency(coreStack) - Chime depends on Core
 // Do not uncomment the following line as it would create a circular reference:
 // chimeStack.addDependency(adminStack)
-
