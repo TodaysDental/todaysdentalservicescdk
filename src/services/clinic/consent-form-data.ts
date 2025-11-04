@@ -76,7 +76,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   try {
     // Check for ID in path parameters
     const consentFormId = event.pathParameters?.consentFormId;
-    const isRootPath = (path === '/consent-forms' || path.endsWith('/consent-forms'));
+    const isRootPath = (path === '/consent-forms' || path === '/consent-forms/');
 
     // Route to the correct function based on path and method
     if (isRootPath && httpMethod === 'GET') {

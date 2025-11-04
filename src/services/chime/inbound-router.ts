@@ -53,6 +53,7 @@ const VALID_STATE_TRANSITIONS: Record<CallStatus, CallStatus[]> = {
     'failed': []
 };
 
+
 // Helper function to validate state transitions
 function isValidStateTransition(fromState: CallStatus, toState: CallStatus): boolean {
     return VALID_STATE_TRANSITIONS[fromState]?.includes(toState) ?? false;
@@ -200,7 +201,7 @@ async function getQueuePosition(clinicId: string, callId: string): Promise<{ pos
         const estimatedWaitTime = Math.ceil((position / numAgents) * AVG_CALL_DURATION);
 
         return { position, estimatedWaitTime };
-    } catch (err) {
+    } catch (err: any) {
         console.error('[getQueuePosition] Error calculating queue position:', err);
         return null;
     }
@@ -460,7 +461,7 @@ async function createAttendeeForAgent(meetingId: string, agentId: string) {
 async function cleanupMeeting(meetingId: string) {
     try {
         await chime.send(new DeleteMeetingCommand({ MeetingId: meetingId }));
-    } catch (err) {
+    } catch (err: any) {
         console.warn('Error cleaning up meeting:', err);
     }
 }
@@ -654,8 +655,15 @@ export const handler = async (event: any): Promise<any> => {
                 const toPhoneNumber = parsePhoneNumber(event.CallDetails.SipHeaders.To);
                 const callId = event.CallDetails.CallId;
 
+                // Log inbound call details early for diagnostics
+                console.log('[NEW_INBOUND_CALL] Received inbound call', {
+                    callId,
+                    to: event.CallDetails?.SipHeaders?.To,
+                    from: event.CallDetails?.SipHeaders?.From,
+                });
+
                 if (!toPhoneNumber) {
-                    console.error("Could not parse 'To' phone number from SIP header");
+                    console.error("Could not parse 'To' phone number from SIP header", { rawTo: event.CallDetails?.SipHeaders?.To });
                     return buildActions([buildHangupAction('There was an error connecting your call.')]);
                 }
 
@@ -673,6 +681,8 @@ export const handler = async (event: any): Promise<any> => {
                 }
                 const clinicId = clinics[0].clinicId;
 
+                console.log('[NEW_INBOUND_CALL] Resolved clinic for inbound number', { toPhoneNumber, clinicId, clinicRecord: clinics[0] });
+
                 // 2. Find all "Online" agents for that clinic
                 const { Items: agents } = await ddb.send(new QueryCommand({
                     TableName: AGENT_PRESENCE_TABLE_NAME,
@@ -687,7 +697,7 @@ export const handler = async (event: any): Promise<any> => {
                 }));
 
                 if (!agents || agents.length === 0) {
-                    console.log(`No 'Online' agents found for clinic ${clinicId}. Adding to queue.`);
+                    console.log(`No 'Online' agents found for clinic ${clinicId}. Adding to queue.`, { clinicId });
                     
                     try {
                         // Create a meeting first so we can join the customer while they wait
@@ -709,6 +719,7 @@ export const handler = async (event: any): Promise<any> => {
 
                         // Add the call to the queue
                         const queueEntry = await addToQueue(clinicId, callId, toPhoneNumber);
+                        console.log('[NEW_INBOUND_CALL] Call added to queue', { clinicId, callId, queueEntry });
                         
                         // Update the queue entry with meeting info
                         await ddb.send(new UpdateCommand({
@@ -723,6 +734,8 @@ export const handler = async (event: any): Promise<any> => {
                                 ':attendee': customerAttendeeResponse.Attendee
                             }
                         }));
+
+                        console.log('[NEW_INBOUND_CALL] Queue entry updated with meeting and attendee info', { callId, meetingId: meeting.MeetingId, customerAttendeeId: customerAttendeeResponse.Attendee?.AttendeeId });
                         
                         // Get estimated wait time
                         const queueInfo = await getQueuePosition(clinicId, callId);
@@ -780,10 +793,12 @@ export const handler = async (event: any): Promise<any> => {
 
                     const customerAttendee = customerAttendeeResponse.Attendee;
 
-                // 5. Store the call information in the call queue table
+                    // 5. Store the call information in the call queue table
                 // CRITICAL FIX: Use unique identifiers for queue position to prevent collisions
                 const fromNumber = parsePhoneNumber(event.CallDetails.SipHeaders.From) || 'Unknown';
                 const agentIds = agents.filter(a => a.agentId).map(a => a.agentId);
+
+                console.log('[NEW_INBOUND_CALL] Preparing call record for ringing call', { callId, clinicId, meetingId: meeting.MeetingId, fromNumber, agentIds });
                 
                 // Generate a deterministic but guaranteed unique position ID
                 // Using high-precision timestamp + callId to ensure uniqueness even for concurrent calls
@@ -808,6 +823,8 @@ export const handler = async (event: any): Promise<any> => {
                     }
                 }));
 
+                console.log('[NEW_INBOUND_CALL] Stored call record for ringing call', { clinicId, callId, meetingId: meeting.MeetingId, customerAttendeeId: customerAttendee.AttendeeId });
+
                     // 6. CRITICAL FIX: Verify agent status again before creating attendees to prevent race conditions
                     console.log(`Creating attendees and notifying agents for meeting ${meeting.MeetingId}`);
                     
@@ -831,59 +848,34 @@ export const handler = async (event: any): Promise<any> => {
                                 continue;
                             }
                             
-                            // CRITICAL FIX: Verify meeting still exists before creating attendee
+                            // CRITICAL FIX: Verify meeting still exists before notifying agent
                             try {
-                                // First verify the meeting still exists
-                                await chime.send(new GetMeetingCommand({
-                                    MeetingId: meeting.MeetingId
-                                }));
+                                await chime.send(new GetMeetingCommand({ MeetingId: meeting.MeetingId }));
                             } catch (meetingErr: any) {
                                 if (meetingErr.name === 'NotFoundException') {
                                     console.error(`[NEW_INBOUND_CALL] Meeting ${meeting.MeetingId} no longer exists, skipping agent ${agent.agentId}`);
                                     continue;
                                 }
-                                // Other errors just log and continue (AWS SDK might have temporary issues)
                                 console.warn(`[NEW_INBOUND_CALL] Error verifying meeting ${meeting.MeetingId}:`, meetingErr);
                             }
-                            
-                            // Now create attendee with confidence the meeting exists
-                            const attendeeResponse = await chime.send(new CreateAttendeeCommand({
-                                MeetingId: meeting.MeetingId,
-                                ExternalUserId: agent.agentId
-                            }));
-                            
-                            // CRITICAL FIX: Validate attendee data before using
-                            const attendee = attendeeResponse.Attendee;
-                            if (!attendee) {
-                                console.warn(`[NEW_INBOUND_CALL] Failed to create attendee for agent ${agent.agentId}`);
-                                continue;
-                            }
-                            
-                            if (!attendee.AttendeeId || !attendee.JoinToken) {
-                                console.error(`[NEW_INBOUND_CALL] Invalid attendee data for agent ${agent.agentId}:`, attendee);
-                                continue;
-                            }
-                            
-                            // Update agent presence with conditional check to ensure still Online
+
+                            // Atomically claim the agent for ringing without pre-creating an attendee.
                             await ddb.send(new UpdateCommand({
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
                                 Key: { agentId: agent.agentId },
-                                UpdateExpression: 'SET ringingCallId = :callId, callStatus = :status, ' + 
-                                                 'inboundMeetingInfo = :meeting, inboundAttendeeInfo = :attendee, ' +
-                                                 'ringingCallTime = :time, lastActivityAt = :timestamp',
+                                UpdateExpression: 'SET ringingCallId = :callId, callStatus = :status, inboundMeetingInfo = :meeting, ringingCallTime = :time, lastActivityAt = :timestamp',
                                 ConditionExpression: 'attribute_exists(agentId) AND #status = :onlineStatus AND attribute_not_exists(ringingCallId)',
                                 ExpressionAttributeNames: { '#status': 'status' },
                                 ExpressionAttributeValues: {
                                     ':callId': callId,
                                     ':status': 'ringing',
                                     ':meeting': meeting,
-                                    ':attendee': attendee, // Use validated attendee
                                     ':time': new Date().toISOString(),
                                     ':timestamp': new Date().toISOString(),
                                     ':onlineStatus': 'Online'
                                 }
                             }));
-                            
+
                             successfullyNotifiedAgents.push(agent.agentId);
                             console.log(`[NEW_INBOUND_CALL] Successfully notified agent ${agent.agentId}`);
                             
@@ -956,7 +948,7 @@ export const handler = async (event: any): Promise<any> => {
 
                     return buildActions(actions);
 
-                } catch (err) {
+                } catch (err: any) {
                     console.error('Error setting up simultaneous ring:', err);
                     return buildActions([buildHangupAction('There was an error connecting your call. Please try again.')]);
                 }
@@ -1104,7 +1096,7 @@ export const handler = async (event: any): Promise<any> => {
                                 }));
                             }
                         }
-                    } catch (err) {
+                    } catch (err: any) {
                         console.warn('[RINGING] Error processing ringing event:', err);
                     }
                 }
@@ -1394,42 +1386,36 @@ export const handler = async (event: any): Promise<any> => {
                     const callRecord = callRecords[0];
                     const meetingInfo = callRecord.meetingInfo;
 
-                    // Create attendees for each new agent and update their presence records
-                    console.log(`Creating attendees for ${agentIds.length} new agents in meeting ${meetingInfo.MeetingId}`);
+                    // Atomically claim each agent and store meeting info so their frontend can show the incoming call.
+                    console.log(`Notifying ${agentIds.length} agents for meeting ${meetingInfo.MeetingId} (no pre-created attendees)`);
                     
                     await Promise.all(agentIds.map(async (agentId: string) => {
                         try {
-                            // Create attendee for this agent
-                            const attendeeResponse = await chime.send(new CreateAttendeeCommand({
-                                MeetingId: meetingInfo.MeetingId,
-                                ExternalUserId: agentId
+                            // Attempt to atomically set ringingCallId only if agent is still Online and not already ringing
+                            await ddb.send(new UpdateCommand({
+                                TableName: AGENT_PRESENCE_TABLE_NAME,
+                                Key: { agentId },
+                                UpdateExpression: 'SET ringingCallId = :callId, callStatus = :status, inboundMeetingInfo = :meeting, ringingCallTime = :time, lastActivityAt = :timestamp',
+                                ConditionExpression: 'attribute_exists(agentId) AND #status = :onlineStatus AND attribute_not_exists(ringingCallId)',
+                                ExpressionAttributeNames: { '#status': 'status' },
+                                ExpressionAttributeValues: {
+                                    ':callId': callId,
+                                    ':status': 'ringing',
+                                    ':meeting': meetingInfo,
+                                    ':time': new Date().toISOString(),
+                                    ':timestamp': new Date().toISOString(),
+                                    ':onlineStatus': 'Online'
+                                }
                             }));
-                            
-                            if (attendeeResponse.Attendee) {
-                                // Update agent's presence to show incoming call
-                                await ddb.send(new UpdateCommand({
-                                    TableName: AGENT_PRESENCE_TABLE_NAME,
-                                    Key: { agentId },
-                                    UpdateExpression: 'SET ringingCallId = :callId, callStatus = :status, ' + 
-                                                     'inboundMeetingInfo = :meeting, inboundAttendeeInfo = :attendee, ' +
-                                                     'ringingCallTime = :time, lastActivityAt = :timestamp',
-                                    ConditionExpression: 'attribute_exists(agentId) AND #status = :onlineStatus',
-                                    ExpressionAttributeNames: { '#status': 'status' },
-                                    ExpressionAttributeValues: {
-                                        ':callId': callId,
-                                        ':status': 'ringing',
-                                        ':meeting': meetingInfo,
-                                        ':attendee': attendeeResponse.Attendee,
-                                        ':time': new Date().toISOString(),
-                                        ':timestamp': new Date().toISOString(),
-                                        ':onlineStatus': 'Online'
-                                    }
-                                }));
-                                
-                                console.log(`Agent ${agentId} notified of incoming call`);
+
+                            console.log(`Agent ${agentId} notified of incoming call`);
+                        } catch (err: any) {
+                            // Ignore conditional failures (agent changed status) but log others
+                            if (err.name === 'ConditionalCheckFailedException') {
+                                console.warn(`Agent ${agentId} not available to notify - skipping`);
+                            } else {
+                                console.error(`Error notifying agent ${agentId}:`, err);
                             }
-                        } catch (err) {
-                            console.error(`Error notifying agent ${agentId}:`, err);
                         }
                     }));
                     

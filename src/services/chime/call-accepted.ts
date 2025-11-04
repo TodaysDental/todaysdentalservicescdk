@@ -504,6 +504,30 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         console.log('[call-accepted] Call acceptance processed successfully');
 
+        // CRITICAL FIX: Notify the SMA so it can bridge the PSTN leg into the meeting
+        if (SMA_ID) {
+            try {
+                console.log('[call-accepted] Notifying SMA that agent joined', { callId, agentId });
+                const chimeVoice = new ChimeSDKVoiceClient({});
+                await chimeVoice.send(new UpdateSipMediaApplicationCallCommand({
+                    SipMediaApplicationId: SMA_ID,
+                    TransactionId: callId,
+                    Arguments: {
+                        action: 'AGENT_JOINED',
+                        agentId: agentId,
+                        meetingId: callRecord.meetingInfo?.MeetingId || meetingId || '',
+                        agentAttendeeId: agentAttendee?.AttendeeId || ''
+                    }
+                }));
+                console.log('[call-accepted] SMA notified successfully');
+            } catch (smaErr) {
+                console.error('[call-accepted] Failed to notify SMA of agent acceptance:', smaErr);
+                // Continue - notification failure should not block acceptance flow
+            }
+        } else {
+            console.warn('[call-accepted] SMA_ID not configured, skipping SMA notification');
+        }
+
         // ✅ CRITICAL FIX: Return meeting and attendee info for frontend
         return {
             statusCode: 200,
