@@ -30,6 +30,7 @@
     "typescript": "^5.9.2"
   },
   "dependencies": {
+    "@aws-cdk/aws-s3-deployment": "^1.203.0",
     "@aws-sdk/client-apigatewaymanagementapi": "^3.882.0",
     "@aws-sdk/client-bedrock-runtime": "^3.882.0",
     "@aws-sdk/client-chime-sdk-meetings": "^3.864.0",

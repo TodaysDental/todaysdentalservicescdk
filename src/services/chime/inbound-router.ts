@@ -932,23 +932,32 @@ export const handler = async (event: any): Promise<any> => {
                     
                     const actions: any[] = [];
                     
-                    // CRITICAL FIX: Join customer to meeting so they can hear agents when one accepts
+                    // Start with welcome message
                     actions.push(buildSpeakAction('Thank you for calling. Please hold while we connect you with an available agent.'));
                     
-                    // Add a small pause before joining the meeting
+                    // Add a small pause before playing hold music
                     actions.push(buildPauseAction(500));
                     
-                    // CRITICAL FIX: Put customer in meeting immediately but they'll hear hold music until agent joins
-                    actions.push(buildJoinChimeMeetingAction(meeting, customerAttendee));
-                    
-                    // Play hold music if available - customer will hear this until agent joins
+                    // Play looping hold music if available
                     if (HOLD_MUSIC_BUCKET) {
-                        actions.push(buildPlayAudioAction('hold-music.wav'));
+                        actions.push({
+                            Type: 'PlayAudio',
+                            Parameters: {
+                                Repeat: 999, // Loop the hold music
+                                AudioSource: {
+                                    Type: 'S3',
+                                    BucketName: HOLD_MUSIC_BUCKET,
+                                    Key: 'hold-music.wav'
+                                },
+                                PlaybackTerminators: [] // No terminators
+                            }
+                        });
                     } else {
-                        // If no hold music, just add periodic messages
-                        actions.push(buildPauseAction(10000));
+                        // If no hold music, loop messages with pauses
                         actions.push(buildSpeakAction('Please continue holding. An agent will be with you shortly.'));
-                        actions.push(buildPauseAction(10000)); // Another pause
+                        actions.push(buildPauseAction(15000)); // Pause for 15 seconds
+                        actions.push(buildSpeakAction('An agent will be with you shortly.')); // Repeat message
+                        actions.push(buildPauseAction(15000));
                     }
                     
                     // Note: When an agent accepts via call-accepted.ts, the SMA will be notified with
