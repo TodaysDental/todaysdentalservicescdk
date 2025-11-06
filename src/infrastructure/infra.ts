@@ -81,7 +81,7 @@ const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNoti
 // Lambda ARNs. We intentionally do NOT pass the Admin API object into the
 // Chime stack to avoid a two-way construct dependency which leads to
 // cyclic CloudFormation references.
-const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV20', {
+const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV21', {
   env,
   userPool: coreStack.userPool,
 });

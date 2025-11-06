@@ -7,7 +7,7 @@ const path = require('path');
 
 // Configure these values
 const REGION = 'us-east-1'; // Replace with your region if different
-const TABLE_NAME = 'TodaysDentalInsightsChimeV20-Clinics'; // Replace if your table name is different
+const TABLE_NAME = 'TodaysDentalInsightsChimeV21-Clinics'; // Replace if your table name is different
 
 // Initialize DynamoDB client
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));

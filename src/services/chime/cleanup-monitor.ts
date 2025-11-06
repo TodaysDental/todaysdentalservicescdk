@@ -1,13 +1,7 @@
 import { ScheduledEvent } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, ScanCommand, UpdateCommand, DeleteCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, ScanCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKMeetingsClient, DeleteMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
-
-/**
- * Cleanup Monitor Lambda
- * Runs periodically to clean up orphaned meetings, stale agent presence, and abandoned calls
- * This prevents resource leaks and inconsistent state in the call handling system
- */
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const chime = new ChimeSDKMeetingsClient({ region: process.env.CHIME_MEDIA_REGION || 'us-east-1' });
@@ -16,9 +10,10 @@ const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 
 // Thresholds for cleanup
-const STALE_AGENT_PRESENCE_MINUTES = 30; // Agent hasn't been active for 30+ minutes
-const ORPHANED_CALL_MINUTES = 15; // Call has been in invalid state for 15+ minutes
-const ABANDONED_QUEUE_MINUTES = 10; // Call has been queued with no activity for 10+ minutes
+const STALE_HEARTBEAT_MINUTES = 15; // Agent hasn't sent a heartbeat
+const STALE_RINGING_DIALING_MINUTES = 5; // Agent stuck ringing or dialing
+const STALE_QUEUED_CALL_MINUTES = 30; // Call stuck in queue (with a meeting) for 30+ mins
+const ABANDONED_RINGING_CALL_MINUTES = 10; // Call stuck ringing (no answer) for 10+ mins
 
 export const handler = async (event: ScheduledEvent): Promise<void> => {
     console.log('[cleanup-monitor] Starting cleanup monitor run', {
@@ -37,10 +32,10 @@ export const handler = async (event: ScheduledEvent): Promise<void> => {
         // 1. Clean up stale agent presence records
         await cleanupStaleAgentPresence(cleanupStats);
         
-        // 2. Clean up orphaned meetings
+        // 2. Clean up orphaned QUEUE meetings (Safe for Agent-Centric model)
         await cleanupOrphanedMeetings(cleanupStats);
         
-        // 3. Clean up abandoned calls
+        // 3. Clean up abandoned calls (ringing/dialing, NO meeting delete)
         await cleanupAbandonedCalls(cleanupStats);
         
         console.log('[cleanup-monitor] Cleanup completed', cleanupStats);
@@ -60,22 +55,24 @@ async function cleanupStaleAgentPresence(stats: any): Promise<void> {
     }
 
     try {
-        // CRITICAL FIX: Use ISO string format consistently for agent timestamps
         const now = new Date();
-        const cutoffTime = new Date(now.getTime() - (STALE_AGENT_PRESENCE_MINUTES * 60 * 1000));
-        const cutoffISO = cutoffTime.toISOString();
+        const staleHeartbeatCutoff = new Date(now.getTime() - (STALE_HEARTBEAT_MINUTES * 60 * 1000)).toISOString();
+        const staleRingDialCutoff = new Date(now.getTime() - (STALE_RINGING_DIALING_MINUTES * 60 * 1000)).toISOString();
         
-        console.log(`[cleanup-monitor] Using agent cutoff time ${cutoffISO}`);
+        console.log(`[cleanup-monitor] Using cutoffs: Heartbeat < ${staleHeartbeatCutoff}, Ring/Dial < ${staleRingDialCutoff}`);
 
-        // CRITICAL FIX: Check for lastHeartbeatAt specifically instead of general lastActivityAt
-        // This prevents false cleanup of agents that are still active but haven't sent a heartbeat
         const { Items: staleAgents } = await ddb.send(new ScanCommand({
             TableName: AGENT_PRESENCE_TABLE_NAME,
-            FilterExpression: '#status = :onlineStatus AND (attribute_not_exists(lastHeartbeatAt) OR lastHeartbeatAt < :cutoff)',
-            ExpressionAttributeNames: { '#status': 'status' },
+            FilterExpression: '(#s = :online AND lastHeartbeatAt < :heartbeatCutoff) OR ' + 
+                              '(#s = :ringing AND ringingCallTime < :ringDialCutoff) OR ' +
+                              '(#s = :dialing AND lastActivityAt < :ringDialCutoff)',
+            ExpressionAttributeNames: { '#s': 'status' },
             ExpressionAttributeValues: {
-                ':onlineStatus': 'Online',
-                ':cutoff': cutoffISO
+                ':online': 'Online',
+                ':ringing': 'ringing',
+                ':dialing': 'dialing',
+                ':heartbeatCutoff': staleHeartbeatCutoff,
+                ':ringDialCutoff': staleRingDialCutoff
             }
         }));
 
@@ -84,21 +81,24 @@ async function cleanupStaleAgentPresence(stats: any): Promise<void> {
             
             for (const agent of staleAgents) {
                 try {
-                    // Mark agent as Offline and clean up call-related fields
+                    // Mark agent as Offline and clean up all call-related fields
                     await ddb.send(new UpdateCommand({
                         TableName: AGENT_PRESENCE_TABLE_NAME,
                         Key: { agentId: agent.agentId },
-                        UpdateExpression: 'SET #status = :offlineStatus, lastActivityAt = :timestamp, cleanupReason = :reason REMOVE ringingCallId, currentCallId, callStatus, inboundMeetingInfo, inboundAttendeeInfo',
-                        ExpressionAttributeNames: { '#status': 'status' },
+                        UpdateExpression: 'SET #s = :offline, lastActivityAt = :now, cleanupReason = :reason ' + 
+                                          'REMOVE ringingCallId, currentCallId, callStatus, inboundMeetingInfo, ' + 
+                                          'inboundAttendeeInfo, ringingCallTime, ringingCallFrom, ' + 
+                                          'currentMeetingAttendeeId, heldCallMeetingId, heldCallId, heldCallAttendeeId',
+                        ExpressionAttributeNames: { '#s': 'status' },
                         ExpressionAttributeValues: {
-                            ':offlineStatus': 'Offline',
-                            ':timestamp': new Date().toISOString(),
-                            ':reason': 'stale_presence_cleanup'
+                            ':offline': 'Offline',
+                            ':now': new Date().toISOString(),
+                            ':reason': `stale_${agent.status}_cleanup`
                         }
                     }));
                     
                     stats.staleAgents++;
-                    console.log(`[cleanup-monitor] Cleaned up stale agent: ${agent.agentId}`);
+                    console.log(`[cleanup-monitor] Cleaned up stale agent: ${agent.agentId} (was ${agent.status})`);
                 } catch (agentErr) {
                     console.error(`[cleanup-monitor] Error cleaning up agent ${agent.agentId}:`, agentErr);
                     stats.errors++;
@@ -114,7 +114,7 @@ async function cleanupStaleAgentPresence(stats: any): Promise<void> {
 }
 
 async function cleanupOrphanedMeetings(stats: any): Promise<void> {
-    console.log('[cleanup-monitor] Checking for orphaned meetings');
+    console.log('[cleanup-monitor] Checking for orphaned QUEUE meetings');
     
     if (!CALL_QUEUE_TABLE_NAME) {
         console.warn('[cleanup-monitor] CALL_QUEUE_TABLE_NAME not configured');
@@ -122,77 +122,65 @@ async function cleanupOrphanedMeetings(stats: any): Promise<void> {
     }
 
     try {
-        // CRITICAL FIX: Standardize timestamp formats by using ISO strings consistently
-        // Calculate cutoff time as ISO string
-        const cutoffDate = new Date();
-        cutoffDate.setMinutes(cutoffDate.getMinutes() - ORPHANED_CALL_MINUTES);
-        const cutoffISOString = cutoffDate.toISOString();
+        const cutoffISOString = new Date(Date.now() - (STALE_QUEUED_CALL_MINUTES * 60 * 1000)).toISOString();
         
-        // Also calculate as Unix timestamp for backward compatibility
-        const nowTimestamp = Math.floor(Date.now() / 1000);
-        const cutoffTimestamp = nowTimestamp - (ORPHANED_CALL_MINUTES * 60);
-        
-        console.log(`[cleanup-monitor] Using cutoff timestamp: ${cutoffISOString} (${cutoffTimestamp} in Unix time)`);
+        console.log(`[cleanup-monitor] Using queued call cutoff time: ${cutoffISOString}`);
 
-        // Find calls with meetings that are in terminal states but meetings weren't cleaned up
+        // **CRITICAL FIX**: Only find calls where status is 'queued'
+        // These are the only calls with temporary meetings that need cleanup.
         const { Items: callsWithMeetings } = await ddb.send(new ScanCommand({
             TableName: CALL_QUEUE_TABLE_NAME,
-            // Create more precise conditions to handle both ISO strings and Unix timestamps
-            // CRITICAL FIX: Replace invalid attribute_type with correct attribute_exists logic
-            FilterExpression: 'attribute_exists(meetingInfo) AND (#status IN (:completed, :abandoned, :failed) OR ' +
-                            '(attribute_exists(endedAt) AND ' +
-                            '((endedAt < :cutoffUnix) OR ' +  
-                            '(endedAt < :cutoffISO))))',
-            ExpressionAttributeNames: { '#status': 'status' },
+            FilterExpression: '#s = :queued AND queueEntryTimeIso < :cutoff AND attribute_exists(meetingInfo)',
+            ExpressionAttributeNames: { '#s': 'status' },
             ExpressionAttributeValues: {
-                ':completed': 'completed',
-                ':abandoned': 'abandoned',
-                ':failed': 'failed',
-                ':cutoffUnix': cutoffTimestamp,
-                ':cutoffISO': cutoffISOString
+                ':queued': 'queued',
+                ':cutoff': cutoffISOString
             }
         }));
 
         if (callsWithMeetings && callsWithMeetings.length > 0) {
-            console.log(`[cleanup-monitor] Found ${callsWithMeetings.length} calls with potentially orphaned meetings`);
+            console.log(`[cleanup-monitor] Found ${callsWithMeetings.length} calls with orphaned queue meetings`);
             
             for (const call of callsWithMeetings) {
                 if (call.meetingInfo?.MeetingId) {
                     try {
-                        // Attempt to delete the meeting
+                        // 1. Attempt to delete the meeting
                         await chime.send(new DeleteMeetingCommand({ 
                             MeetingId: call.meetingInfo.MeetingId 
                         }));
                         
-                        // Remove meeting info from call record
+                        // 2. Update call record to 'abandoned' and remove meeting info
                         await ddb.send(new UpdateCommand({
                             TableName: CALL_QUEUE_TABLE_NAME,
                             Key: { 
                                 clinicId: call.clinicId, 
                                 queuePosition: call.queuePosition 
                             },
-                            UpdateExpression: 'REMOVE meetingInfo, customerAttendeeInfo SET cleanupReason = :reason',
+                            UpdateExpression: 'SET #s = :abandoned, cleanupReason = :reason REMOVE meetingInfo, customerAttendeeInfo',
+                            ExpressionAttributeNames: { '#s': 'status' },
                             ExpressionAttributeValues: {
-                                ':reason': 'orphaned_meeting_cleanup'
+                                ':abandoned': 'abandoned',
+                                ':reason': 'orphaned_queue_meeting_cleanup'
                             }
                         }));
                         
                         stats.orphanedMeetings++;
-                        console.log(`[cleanup-monitor] Cleaned up orphaned meeting: ${call.meetingInfo.MeetingId} for call ${call.callId}`);
+                        console.log(`[cleanup-monitor] Cleaned up orphaned queue meeting: ${call.meetingInfo.MeetingId} for call ${call.callId}`);
                         
                     } catch (meetingErr: any) {
-                        // Meeting might not exist anymore, which is fine
                         if (meetingErr.name === 'NotFoundException') {
-                            // Just remove from DB
+                            // Meeting already gone, just update DB
                             await ddb.send(new UpdateCommand({
                                 TableName: CALL_QUEUE_TABLE_NAME,
                                 Key: { 
                                     clinicId: call.clinicId, 
                                     queuePosition: call.queuePosition 
                                 },
-                                UpdateExpression: 'REMOVE meetingInfo, customerAttendeeInfo SET cleanupReason = :reason',
+                                UpdateExpression: 'SET #s = :abandoned, cleanupReason = :reason REMOVE meetingInfo, customerAttendeeInfo',
+                                ExpressionAttributeNames: { '#s': 'status' },
                                 ExpressionAttributeValues: {
-                                    ':reason': 'nonexistent_meeting_cleanup'
+                                     ':abandoned': 'abandoned',
+                                    ':reason': 'orphaned_queue_meeting_cleanup (not_found)'
                                 }
                             }));
                             stats.orphanedMeetings++;
@@ -204,7 +192,7 @@ async function cleanupOrphanedMeetings(stats: any): Promise<void> {
                 }
             }
         } else {
-            console.log('[cleanup-monitor] No orphaned meetings found');
+            console.log('[cleanup-monitor] No orphaned queue meetings found');
         }
     } catch (error) {
         console.error('[cleanup-monitor] Error during orphaned meeting cleanup:', error);
@@ -213,7 +201,7 @@ async function cleanupOrphanedMeetings(stats: any): Promise<void> {
 }
 
 async function cleanupAbandonedCalls(stats: any): Promise<void> {
-    console.log('[cleanup-monitor] Checking for abandoned calls');
+    console.log('[cleanup-monitor] Checking for abandoned ringing/dialing calls');
     
     if (!CALL_QUEUE_TABLE_NAME) {
         console.warn('[cleanup-monitor] CALL_QUEUE_TABLE_NAME not configured');
@@ -221,30 +209,19 @@ async function cleanupAbandonedCalls(stats: any): Promise<void> {
     }
 
     try {
-        // CRITICAL FIX: Use consistent ISO string format for timestamps
-        const cutoffDate = new Date();
-        cutoffDate.setMinutes(cutoffDate.getMinutes() - ABANDONED_QUEUE_MINUTES);
-        const cutoffISOString = cutoffDate.toISOString();
+        const cutoffISOString = new Date(Date.now() - (ABANDONED_RINGING_CALL_MINUTES * 60 * 1000)).toISOString();
         
-        // Also calculate Unix timestamp for backward compatibility
-        const cutoffTimestamp = Math.floor(cutoffDate.getTime() / 1000);
-        
-        console.log(`[cleanup-monitor] Using abandoned call cutoff: ${cutoffISOString} (${cutoffTimestamp} in Unix time)`);
+        console.log(`[cleanup-monitor] Using abandoned call cutoff: ${cutoffISOString}`);
 
-        // Find calls that have been in queue/ringing state for too long
+        // Find calls that have been in 'ringing' or 'dialing' state for too long
         const { Items: abandonedCalls } = await ddb.send(new ScanCommand({
             TableName: CALL_QUEUE_TABLE_NAME,
-            // CRITICAL FIX: Replace invalid attribute_type with simpler expression
-            FilterExpression: '(#status = :queued OR #status = :ringing OR #status = :dialing) AND ' +
-                             '(queueEntryTime < :cutoffUnix OR ' +
-                             'queueEntryTimeIso < :cutoffISO)',
-            ExpressionAttributeNames: { '#status': 'status' },
+            FilterExpression: '(#s = :ringing OR #s = :dialing) AND queueEntryTimeIso < :cutoff',
+            ExpressionAttributeNames: { '#s': 'status' },
             ExpressionAttributeValues: {
-                ':queued': 'queued',
                 ':ringing': 'ringing',
                 ':dialing': 'dialing',
-                ':cutoffUnix': cutoffTimestamp,
-                ':cutoffISO': cutoffISOString
+                ':cutoff': cutoffISOString
             }
         }));
 
@@ -253,62 +230,59 @@ async function cleanupAbandonedCalls(stats: any): Promise<void> {
             
             for (const call of abandonedCalls) {
                 try {
-                    // Mark call as abandoned and clean up meeting if exists
+                    // 1. Mark call as abandoned
+                    // ** DO NOT REMOVE meetingInfo ** (it's the agent's session)
                     await ddb.send(new UpdateCommand({
                         TableName: CALL_QUEUE_TABLE_NAME,
                         Key: { 
                             clinicId: call.clinicId, 
                             queuePosition: call.queuePosition 
                         },
-                        // CRITICAL FIX: Use consistent timestamp formats (both Unix and ISO)
-                        UpdateExpression: 'SET #status = :abandonedStatus, endedAt = :timestamp, endedAtIso = :timestampIso, cleanupReason = :reason',
-                        ExpressionAttributeNames: { '#status': 'status' },
+                        UpdateExpression: 'SET #s = :abandoned, endedAtIso = :now, cleanupReason = :reason',
+                        ExpressionAttributeNames: { '#s': 'status' },
                         ExpressionAttributeValues: {
-                            ':abandonedStatus': 'abandoned',
-                            ':timestamp': Math.floor(Date.now() / 1000), // Keep Unix timestamp for backward compatibility
-                            ':timestampIso': new Date().toISOString(),  // Add ISO format for consistency
-                            ':reason': 'timeout_cleanup'
+                            ':abandoned': 'abandoned',
+                            ':now': new Date().toISOString(),
+                            ':reason': `abandoned_${call.status}_cleanup`
                         }
                     }));
                     
-                    // Clean up meeting if it exists
-                    if (call.meetingInfo?.MeetingId) {
-                        try {
-                            await chime.send(new DeleteMeetingCommand({ 
-                                MeetingId: call.meetingInfo.MeetingId 
-                            }));
-                        } catch (meetingErr: any) {
-                            if (meetingErr.name !== 'NotFoundException') {
-                                console.warn(`[cleanup-monitor] Error cleaning up meeting for abandoned call ${call.callId}:`, meetingErr);
-                            }
-                        }
+                    // 2. Clean up any agents stuck on this call
+                    const agentIdsToClear: string[] = [];
+                    if (call.status === 'dialing' && call.assignedAgentId) {
+                        agentIdsToClear.push(call.assignedAgentId);
+                    } else if (call.status === 'ringing' && Array.isArray(call.agentIds)) {
+                        agentIdsToClear.push(...call.agentIds);
                     }
                     
-                    // Clean up any agents who might be ringing for this call
-                    if (call.agentIds && Array.isArray(call.agentIds)) {
-                        for (const agentId of call.agentIds) {
-                            try {
-                                await ddb.send(new UpdateCommand({
-                                    TableName: AGENT_PRESENCE_TABLE_NAME!,
-                                    Key: { agentId },
-                                    UpdateExpression: 'REMOVE ringingCallId, inboundMeetingInfo, inboundAttendeeInfo SET lastActivityAt = :timestamp',
-                                    ConditionExpression: 'ringingCallId = :callId',
-                                    ExpressionAttributeValues: {
-                                        ':callId': call.callId,
-                                        ':timestamp': new Date().toISOString()
-                                    }
-                                }));
-                            } catch (agentErr: any) {
-                                // Ignore conditional check failures (agent already cleared)
-                                if (agentErr.name !== 'ConditionalCheckFailedException') {
-                                    console.warn(`[cleanup-monitor] Error clearing ringing agent ${agentId}:`, agentErr);
+                    for (const agentId of agentIdsToClear) {
+                        try {
+                            const updateExpr = call.status === 'dialing'
+                                ? 'REMOVE currentCallId, callStatus SET #s = :online, lastActivityAt = :now'
+                                : 'REMOVE ringingCallId, ringingCallTime, ringingCallFrom SET #s = :online, lastActivityAt = :now';
+                            
+                            await ddb.send(new UpdateCommand({
+                                TableName: AGENT_PRESENCE_TABLE_NAME!,
+                                Key: { agentId },
+                                UpdateExpression: updateExpr,
+                                ConditionExpression: call.status === 'dialing' ? 'currentCallId = :callId' : 'ringingCallId = :callId',
+                                ExpressionAttributeNames: { '#s': 'status' },
+                                ExpressionAttributeValues: {
+                                    ':callId': call.callId,
+                                    ':online': 'Online',
+                                    ':now': new Date().toISOString()
                                 }
+                            }));
+                            console.log(`[cleanup-monitor] Reset agent ${agentId} from stuck call ${call.callId}`);
+                        } catch (agentErr: any) {
+                            if (agentErr.name !== 'ConditionalCheckFailedException') {
+                                console.warn(`[cleanup-monitor] Error clearing ringing/dialing agent ${agentId}:`, agentErr);
                             }
                         }
                     }
                     
                     stats.abandonedCalls++;
-                    console.log(`[cleanup-monitor] Cleaned up abandoned call: ${call.callId}`);
+                    console.log(`[cleanup-monitor] Cleaned up abandoned call: ${call.callId} (was ${call.status})`);
                     
                 } catch (callErr) {
                     console.error(`[cleanup-monitor] Error cleaning up abandoned call ${call.callId}:`, callErr);
