@@ -174,7 +174,7 @@ export class ChimeStack extends Stack {
             LambdaArn: smaHandler.functionArn,
           }],
         },
-        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-SipMediaApp`),
+        physicalResourceId: customResources.PhysicalResourceId.fromResponse('SipMediaApplication.SipMediaApplicationId'),
       },
       onDelete: {
         service: 'ChimeSDKVoice',
@@ -208,7 +208,7 @@ export class ChimeStack extends Stack {
 
     // Removed redundant smaHandler.addPermission block to resolve circular dependency
 
-    // Create Voice Connector
+    // Create Voice Connector - FIX: Capture the ID correctly
     const voiceConnector = new customResources.AwsCustomResource(this, 'VoiceConnector', {
       onCreate: {
         service: 'ChimeSDKVoice',
@@ -218,7 +218,8 @@ export class ChimeStack extends Stack {
           RequireEncryption: true,
           AwsRegion: this.region,
         },
-        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-VoiceConnector`),
+        // CRITICAL FIX: Use the correct nested path for the VoiceConnectorId
+        physicalResourceId: customResources.PhysicalResourceId.fromResponse('VoiceConnector.VoiceConnectorId'),
       },
       onDelete: {
         service: 'ChimeSDKVoice',
@@ -241,91 +242,34 @@ export class ChimeStack extends Stack {
         }),
       ]),
     });
-    
-    // Configure Voice Connector termination settings for outbound calls
-    const vcTermination = new customResources.AwsCustomResource(this, 'VCTermination', {
-      onCreate: {
-        service: 'ChimeSDKVoice',
-        action: 'putVoiceConnectorTermination',
-        parameters: {
-          VoiceConnectorId: voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId'),
-          Termination: {
-            CpsLimit: 1,
-            CallingRegions: ['US'],
-            Disabled: false,
-            // CidrAllowedList is used for outbound PSTN calls
-            CidrAllowedList: [
-              '52.0.0.0/27',
-              '54.0.0.0/27',
-              '3.0.0.0/27',
-              '18.0.0.0/27',
-              '34.0.0.0/27'
-            ]
-          }
-        },
-        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-termination`),
-      },
-      onUpdate: {
-        service: 'ChimeSDKVoice',
-        action: 'putVoiceConnectorTermination',
-        parameters: {
-          VoiceConnectorId: voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId'),
-          Termination: {
-            CpsLimit: 1,
-            CallingRegions: ['US'],
-            Disabled: false,
-            CidrAllowedList: [
-              '52.0.0.0/27',
-              '54.0.0.0/27',
-              '3.0.0.0/27',
-              '18.0.0.0/27',
-              '34.0.0.0/27'
-            ]
-          }
-        },
-        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-termination`),
-      },
-      onDelete: {
-        service: 'ChimeSDKVoice',
-        action: 'putVoiceConnectorTermination',
-        parameters: {
-          VoiceConnectorId: voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId'),
-          // ✅ FIX: Pass an empty Termination object to clear it
-          Termination: {} 
-        },
-        ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
-      },
-      policy: customResources.AwsCustomResourcePolicy.fromStatements([
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'chime:PutVoiceConnectorTermination',
-            'chime:ListVoiceConnectors',
-          ],
-          resources: ['*'],
-        }),
-      ]),
-    });
-    
 
-    vcTermination.node.addDependency(voiceConnector);
+    // Store Voice Connector details with correct nested paths
+    const voiceConnectorId = voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId');
+    const voiceConnectorOutboundHost = voiceConnector.getResponseField('VoiceConnector.OutboundHostName');
 
-    // Configure Voice Connector origination settings for inbound calls
+    // ========================================
+    // Voice Connector Origination - For INBOUND calls
+    // ========================================
+    // THIS IS THE MISSING PIECE TO FIX INBOUND CALLS
+
     const vcOrigination = new customResources.AwsCustomResource(this, 'VCOrigination', {
       onCreate: {
         service: 'ChimeSDKVoice',
         action: 'putVoiceConnectorOrigination',
         parameters: {
-          VoiceConnectorId: voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId'),
+          VoiceConnectorId: voiceConnectorId,
           Origination: {
-            Routes: [{
-              Host: sipMediaApp.getResponseField('SipMediaApplication.Endpoints.0.Host'),
-              Port: 5060,
-              Protocol: 'TCP',
-              Priority: 1,
-              Weight: 1,
-            }],
-            Disabled: false,
+            Routes: [
+              {
+                // Route to the VC's own outbound host, which the SIP rule is monitoring
+                Host: voiceConnectorOutboundHost, 
+                Port: 5060,
+                Protocol: 'UDP',
+                Priority: 1,
+                Weight: 1,
+              },
+            ],
+            Disabled: false, // <-- This enables Origination
           }
         },
         physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-origination`),
@@ -334,15 +278,17 @@ export class ChimeStack extends Stack {
         service: 'ChimeSDKVoice',
         action: 'putVoiceConnectorOrigination',
         parameters: {
-          VoiceConnectorId: voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId'),
+          VoiceConnectorId: voiceConnectorId,
           Origination: {
-            Routes: [{
-              Host: sipMediaApp.getResponseField('SipMediaApplication.Endpoints.0.Host'),
-              Port: 5060,
-              Protocol: 'TCP',
-              Priority: 1,
-              Weight: 1,
-            }],
+            Routes: [
+              {
+                Host: voiceConnectorOutboundHost,
+                Port: 5060,
+                Protocol: 'UDP',
+                Priority: 1,
+                Weight: 1,
+              },
+            ],
             Disabled: false,
           }
         },
@@ -350,13 +296,9 @@ export class ChimeStack extends Stack {
       },
       onDelete: {
         service: 'ChimeSDKVoice',
-        action: 'putVoiceConnectorOrigination',
+        action: 'deleteVoiceConnectorOrigination',
         parameters: {
-          VoiceConnectorId: voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId'),
-          Origination: {
-            Routes: [],
-            Disabled: true,
-          }
+          VoiceConnectorId: voiceConnectorId,
         },
         ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
       },
@@ -365,6 +307,7 @@ export class ChimeStack extends Stack {
           effect: iam.Effect.ALLOW,
           actions: [
             'chime:PutVoiceConnectorOrigination',
+            'chime:DeleteVoiceConnectorOrigination',
             'chime:GetVoiceConnectorOrigination',
           ],
           resources: ['*'],
@@ -372,9 +315,66 @@ export class ChimeStack extends Stack {
       ]),
     });
 
-    // Origination depends on both the VC and the SMA
+    // CRITICAL: Add dependency on the Voice Connector
     vcOrigination.node.addDependency(voiceConnector);
-    vcOrigination.node.addDependency(sipMediaApp);
+
+    // ========================================
+    // Voice Connector Termination - For OUTBOUND calls only
+    // ========================================
+    const vcTermination = new customResources.AwsCustomResource(this, 'VCTermination', {
+      onCreate: {
+        service: 'ChimeSDKVoice',
+        action: 'putVoiceConnectorTermination',
+        parameters: {
+          VoiceConnectorId: voiceConnectorId,
+          Termination: {
+            CpsLimit: 1,
+            CallingRegions: ['US'],
+            // CRITICAL FIX: Replace CidrAllowedList with TerminationHosts.
+            // You MUST allowlist the VC's own hostname to use it in the Origination route.
+            TerminationHosts: [voiceConnectorOutboundHost],
+            Disabled: false,
+          }
+        },
+        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-termination`),
+      },
+      onUpdate: {
+        service: 'ChimeSDKVoice',
+        action: 'putVoiceConnectorTermination',
+        parameters: {
+          VoiceConnectorId: voiceConnectorId,
+          Termination: {
+            CpsLimit: 1,
+            CallingRegions: ['US'],
+            // CRITICAL FIX: Replace CidrAllowedList with TerminationHosts.
+            TerminationHosts: [voiceConnectorOutboundHost],
+            Disabled: false,
+          }
+        },
+        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-termination`),
+      },
+      onDelete: {
+        service: 'ChimeSDKVoice',
+        action: 'deleteVoiceConnectorTermination',
+        parameters: {
+          VoiceConnectorId: voiceConnectorId,
+        },
+        ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
+      },
+      policy: customResources.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'chime:PutVoiceConnectorTermination',
+            'chime:DeleteVoiceConnectorTermination',
+            'chime:GetVoiceConnectorTermination',
+          ],
+          resources: ['*'],
+        }),
+      ]),
+    });
+
+    vcTermination.node.addDependency(voiceConnector);
 
     // ========================================
     // Load clinic phone numbers from clinics.json
@@ -420,7 +420,7 @@ export class ChimeStack extends Stack {
             service: 'ChimeSDKVoice',
             action: 'associatePhoneNumbersWithVoiceConnector',
             parameters: {
-              VoiceConnectorId: voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId'),
+              VoiceConnectorId: voiceConnectorId,
               E164PhoneNumbers: phoneBatch,
               ForceAssociate: true 
             },
@@ -430,7 +430,7 @@ export class ChimeStack extends Stack {
             service: 'ChimeSDKVoice',
             action: 'associatePhoneNumbersWithVoiceConnector',
             parameters: {
-              VoiceConnectorId: voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId'),
+              VoiceConnectorId: voiceConnectorId,
               E164PhoneNumbers: phoneBatch,
               ForceAssociate: true 
             },
@@ -440,7 +440,7 @@ export class ChimeStack extends Stack {
             service: 'ChimeSDKVoice',
             action: 'disassociatePhoneNumbersFromVoiceConnector',
             parameters: {
-              VoiceConnectorId: voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId'),
+              VoiceConnectorId: voiceConnectorId,
               E164PhoneNumbers: phoneBatch,
             },
             ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*|.*DoesNotExist.*',
@@ -464,25 +464,32 @@ export class ChimeStack extends Stack {
     }
 
     // ========================================
-    // Create SINGLE SIP Rule for ALL Phone Numbers
+    // ✅ SINGLE GLOBAL SIP RULE - Routes ALL inbound calls to SMA
     // ========================================
-    // This replaces the custom Lambda resource that created one rule per number.
-    // This single rule routes ALL calls from the VoiceConnector to the SMA.
-    // The SMA (inbound-router.ts) is already written to handle this by
-    // inspecting the 'To' header, so no Lambda changes are needed.
+    console.log('Creating single global SIP Rule for all phone numbers');
 
-    console.log('Creating single global SIP Rule with RequestUriHostname trigger');
-    
     const globalSipRule = new customResources.AwsCustomResource(this, 'GlobalSipRule', {
       onCreate: {
         service: 'ChimeSDKVoice',
         action: 'createSipRule',
         parameters: {
-          Name: `${this.stackName}-GlobalRule-VC-Trigger`,
-          // Use RequestUriHostname trigger which will match on Voice Connector domain
-          TriggerType: 'RequestUriHostname', 
-          // Use the VoiceConnector outbound hostname as the trigger
-          TriggerValue: voiceConnector.getResponseField('VoiceConnector.OutboundHostName'),
+          Name: `${this.stackName}-GlobalRule`,
+          TriggerType: 'RequestUriHostname',
+          TriggerValue: voiceConnectorOutboundHost,
+          TargetApplications: [{
+            SipMediaApplicationId: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
+            Priority: 1,
+            AwsRegion: this.region,
+          }],
+        },
+        physicalResourceId: customResources.PhysicalResourceId.fromResponse('SipRule.SipRuleId'),
+      },
+      onUpdate: {
+        service: 'ChimeSDKVoice',
+        action: 'updateSipRule',
+        parameters: {
+          SipRuleId: new customResources.PhysicalResourceIdReference(),
+          Name: `${this.stackName}-GlobalRule`,
           TargetApplications: [{
             SipMediaApplicationId: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
             Priority: 1,
@@ -497,7 +504,6 @@ export class ChimeStack extends Stack {
         parameters: {
           SipRuleId: new customResources.PhysicalResourceIdReference(),
         },
-        // Ignore errors if the SIP rule doesn't exist
         ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*|.*DoesNotExist.*',
       },
       policy: customResources.AwsCustomResourcePolicy.fromStatements([
@@ -505,6 +511,7 @@ export class ChimeStack extends Stack {
           effect: iam.Effect.ALLOW,
           actions: [
             'chime:CreateSipRule',
+            'chime:UpdateSipRule',
             'chime:DeleteSipRule',
             'chime:GetSipRule',
             'chime:ListSipRules',
@@ -513,12 +520,21 @@ export class ChimeStack extends Stack {
         }),
       ]),
     });
-    
-    // The SIP rule depends on both the VC and the SMA
 
-  globalSipRule.node.addDependency(voiceConnector);
-  globalSipRule.node.addDependency(sipMediaApp);
-  globalSipRule.node.addDependency(vcOrigination);
+    // ✅ CRITICAL: Ensure proper dependency order
+    globalSipRule.node.addDependency(voiceConnector);
+    globalSipRule.node.addDependency(sipMediaApp);
+
+    // ✅ NOW add Lambda permission AFTER SIP rule is created
+    smaHandler.addPermission('ChimeVoiceInvoke', {
+      principal: new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com'),
+      sourceArn: `arn:aws:chime:${this.region}:${this.account}:vc/*`,
+    });
+
+    // Ensure phone associations happen after SIP rule AND permission
+    associatePhones.forEach(assoc => {
+      assoc.node.addDependency(globalSipRule);
+    });
 
 
     // Enable SIP Media Application logging for debugging
@@ -680,7 +696,7 @@ export class ChimeStack extends Stack {
         CLINICS_TABLE_NAME: this.clinicsTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
-        VOICE_CONNECTOR_ID: voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId'),
+        VOICE_CONNECTOR_ID: voiceConnectorId,
         CHIME_MEDIA_REGION: 'us-east-1', // Use us-east-1 for Chime
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
@@ -740,7 +756,9 @@ export class ChimeStack extends Stack {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
-        CHIME_MEDIA_REGION: 'us-east-1', // Use us-east-1 for Chime
+        CHIME_MEDIA_REGION: 'us-east-1',
+        USER_POOL_ID: props.userPool.userPoolId,
+        COGNITO_REGION: this.region,
       },
     });
     this.agentPresenceTable.grantReadWriteData(callAcceptedFn);
@@ -766,7 +784,9 @@ export class ChimeStack extends Stack {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
-        CHIME_MEDIA_REGION: 'us-east-1', // Use us-east-1 for Chime
+        CHIME_MEDIA_REGION: 'us-east-1',
+        USER_POOL_ID: props.userPool.userPoolId,
+        COGNITO_REGION: this.region,
       },
     });
     this.agentPresenceTable.grantReadWriteData(callRejectedFn);
@@ -821,7 +841,9 @@ export class ChimeStack extends Stack {
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-        CHIME_MEDIA_REGION: 'us-east-1', // Use us-east-1 for Chime
+        CHIME_MEDIA_REGION: 'us-east-1',
+        USER_POOL_ID: props.userPool.userPoolId,
+        COGNITO_REGION: this.region,
       },
     });
     this.agentPresenceTable.grantReadWriteData(leaveCallFn);
@@ -843,7 +865,9 @@ export class ChimeStack extends Stack {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
-        CHIME_MEDIA_REGION: 'us-east-1', // Use us-east-1 for Chime
+        CHIME_MEDIA_REGION: 'us-east-1',
+        USER_POOL_ID: props.userPool.userPoolId,
+        COGNITO_REGION: this.region,
       },
     });
     this.agentPresenceTable.grantReadWriteData(holdCallFn);
@@ -953,17 +977,7 @@ export class ChimeStack extends Stack {
       description: 'S3 bucket for hold music. Upload a file named "hold-music.wav" to this bucket.',
     });
     
-    new CfnOutput(this, 'VoiceConnectorId', {
-      value: voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId'),
-      description: 'Voice Connector ID - use this to associate phone numbers',
-      exportName: `${this.stackName}-VoiceConnectorId`,
-    });
-    
-    new CfnOutput(this, 'VoiceConnectorOutboundHostName', {
-      value: voiceConnector.getResponseField('VoiceConnector.OutboundHostName'),
-      description: 'Voice Connector Outbound Host - use this for SIP routing',
-      exportName: `${this.stackName}-VoiceConnectorHost`,
-    });
+
 
     // ========================================
     // 6. Heartbeat and Cleanup Monitor
@@ -1017,6 +1031,19 @@ export class ChimeStack extends Stack {
       actions: ['chime:DeleteMeeting', 'chime:ListMeetings'],
       resources: ['*'], 
     }));
+
+    // Add Voice Connector outputs for reference
+    new CfnOutput(this, 'VoiceConnectorId', {
+      value: voiceConnectorId,
+      description: 'Voice Connector ID - use this to associate phone numbers',
+      exportName: `${this.stackName}-VoiceConnectorId`,
+    });
+    
+    new CfnOutput(this, 'VoiceConnectorOutboundHostName', {
+      value: voiceConnectorOutboundHost,
+      description: 'Voice Connector Outbound Host - use this for SIP routing',
+      exportName: `${this.stackName}-VoiceConnectorHost`,
+    });
     
     const rule = new events.Rule(this, 'CleanupMonitorRule', {
       schedule: events.Schedule.rate(Duration.minutes(5)),
