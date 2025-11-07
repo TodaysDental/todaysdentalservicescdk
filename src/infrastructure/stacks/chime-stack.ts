@@ -376,6 +376,9 @@ export class ChimeStack extends Stack {
 
     vcTermination.node.addDependency(voiceConnector);
 
+    // ⬇️ ⬇️ ⬇️ FIX 1: Force Origination to wait for Termination ⬇️ ⬇️ ⬇️
+    vcOrigination.node.addDependency(vcTermination);
+
     // ========================================
     // Load clinic phone numbers from clinics.json
     // ========================================
@@ -524,6 +527,9 @@ export class ChimeStack extends Stack {
     // ✅ CRITICAL: Ensure proper dependency order
     globalSipRule.node.addDependency(voiceConnector);
     globalSipRule.node.addDependency(sipMediaApp);
+
+    // ⬇️ ⬇️ ⬇️ FIX 2: Force SIP Rule to wait for Termination ⬇️ ⬇️ ⬇️
+    globalSipRule.node.addDependency(vcTermination);
 
     // ✅ NOW add Lambda permission AFTER SIP rule is created
     smaHandler.addPermission('ChimeVoiceInvoke', {
