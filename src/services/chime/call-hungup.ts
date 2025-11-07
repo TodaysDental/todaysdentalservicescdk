@@ -5,6 +5,7 @@ import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand } from 
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { ChimeSDKMeetingsClient, CreateAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { getSmaIdForClinic } from './utils/sma-map';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -13,8 +14,6 @@ const chime = new ChimeSDKMeetingsClient({ region: process.env.CHIME_MEDIA_REGIO
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
-// FIX: SMA_ID environment variable is REQUIRED for this function
-const SMA_ID = process.env.SMA_ID;
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
 const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
@@ -104,14 +103,32 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 body: JSON.stringify({ message: 'Forbidden: You can only hang up calls you are on' })
             };
         }
-        
-        // CRITICAL FIX: Check for SMA_ID and return error if missing
-        if (!SMA_ID) {
-            console.error('[call-hungup] SMA_ID environment variable is missing');
+
+        const { Items: callLookupRecords } = await ddb.send(new QueryCommand({
+            TableName: CALL_QUEUE_TABLE_NAME,
+            IndexName: 'callId-index',
+            KeyConditionExpression: 'callId = :callId',
+            ExpressionAttributeValues: { ':callId': callId }
+        }));
+
+        const callMetadata = callLookupRecords && callLookupRecords.length > 0 ? callLookupRecords[0] : undefined;
+        if (!callMetadata) {
+            console.error('[call-hungup] Call record not found for hangup', { callId });
+            return {
+                statusCode: 404,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Call not found' })
+            };
+        }
+
+        const clinicId = typeof callMetadata.clinicId === 'string' ? callMetadata.clinicId : undefined;
+        const smaId = getSmaIdForClinic(clinicId);
+        if (!smaId) {
+            console.error('[call-hungup] Missing SMA mapping for clinic', { clinicId, callId });
             return {
                 statusCode: 500,
                 headers: corsHeaders,
-                body: JSON.stringify({ message: 'Server configuration error: Missing SMA_ID' })
+                body: JSON.stringify({ message: 'Call hangup is not configured for this clinic' })
             };
         }
 
@@ -120,10 +137,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         if (agentId) {
             try {
                 await chimeVoiceClient.send(new UpdateSipMediaApplicationCallCommand({
-                    SipMediaApplicationId: SMA_ID,
+                    SipMediaApplicationId: smaId,
                     TransactionId: callId,
                     Arguments: {
-                        Action: "Hangup" 
+                        Action: "Hangup"
                     }
                 }));
                 smaHangupSuccess = true;
@@ -136,8 +153,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         
         // 2. Update the agent's status and metrics
         if (agentId) {
-            if (smaHangupSuccess || !SMA_ID) {
-                // Only mark agent as available if SMA hangup succeeded or SMA_ID not configured
+            if (smaHangupSuccess) {
+                // Only mark agent as available if SMA hangup succeeded
                 await ddb.send(new UpdateCommand({
                     TableName: AGENT_PRESENCE_TABLE_NAME,
                     Key: { agentId },

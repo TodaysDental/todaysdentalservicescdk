@@ -190,50 +190,6 @@ export class ChimeStack extends Stack {
       prune: false, 
     });
 
-    // Create the SIP Media Application
-    const sipMediaApp = new customResources.AwsCustomResource(this, 'SipMediaApp', {
-      onCreate: {
-        service: 'ChimeSDKVoice',
-        action: 'createSipMediaApplication',
-        parameters: {
-          Name: `${this.stackName}-SMA`,
-          AwsRegion: this.region,
-          Endpoints: [{
-            LambdaArn: smaHandler.functionArn,
-          }],
-        },
-        physicalResourceId: customResources.PhysicalResourceId.fromResponse('SipMediaApplication.SipMediaApplicationId'),
-      },
-      onDelete: {
-        service: 'ChimeSDKVoice',
-        action: 'deleteSipMediaApplication',
-        parameters: {
-          SipMediaApplicationId: new customResources.PhysicalResourceIdReference(),
-        },
-        ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*|.*DoesNotExist.*',
-      },
-      policy: customResources.AwsCustomResourcePolicy.fromStatements([
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'chime:CreateSipMediaApplication',
-            'chime:DeleteSipMediaApplication',
-            'chime:GetSipMediaApplication',
-            'chime:ListSipMediaApplications',
-          ],
-          resources: ['*'],
-        }),
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'lambda:GetPolicy',
-            'lambda:AddPermission',
-          ],
-          resources: [smaHandler.functionArn],
-        }),
-      ]),
-    });
-
     // Create Voice Connector - FIX: Capture the ID correctly
     const voiceConnector = new customResources.AwsCustomResource(this, 'VoiceConnector', {
       onCreate: {
@@ -478,9 +434,180 @@ export class ChimeStack extends Stack {
 
     console.log(`Found ${clinicsWithPhones.length} clinics with phone numbers`);
 
+    // ========================================
+    // Create per-clinic SIP Media Applications and SIP Rules
+    // ========================================
+
+    const clinicSipRules: Record<string, customResources.AwsCustomResource> = {};
+    const smaIdMap: Record<string, string> = {};
+    const phoneNumberToClinicId = new Map<string, string>();
+
+    clinicsWithPhones.forEach((clinic) => {
+      const sanitizedId = clinic.clinicId.replace(/[^A-Za-z0-9]/g, '-');
+
+      const smaResource = new customResources.AwsCustomResource(this, `SipMediaApp-${sanitizedId}`, {
+        onCreate: {
+          service: 'ChimeSDKVoice',
+          action: 'createSipMediaApplication',
+          parameters: {
+            Name: `${this.stackName}-${sanitizedId}-SMA`,
+            AwsRegion: this.region,
+            Endpoints: [{
+              LambdaArn: smaHandler.functionArn,
+            }],
+          },
+          physicalResourceId: customResources.PhysicalResourceId.fromResponse('SipMediaApplication.SipMediaApplicationId'),
+        },
+        onDelete: {
+          service: 'ChimeSDKVoice',
+          action: 'deleteSipMediaApplication',
+          parameters: {
+            SipMediaApplicationId: new customResources.PhysicalResourceIdReference(),
+          },
+          ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*|.*DoesNotExist.*',
+        },
+        policy: customResources.AwsCustomResourcePolicy.fromStatements([
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: [
+              'chime:CreateSipMediaApplication',
+              'chime:DeleteSipMediaApplication',
+              'chime:GetSipMediaApplication',
+              'chime:ListSipMediaApplications',
+            ],
+            resources: ['*'],
+          }),
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: [
+              'lambda:GetPolicy',
+              'lambda:AddPermission',
+            ],
+            resources: [smaHandler.functionArn],
+          }),
+        ]),
+      });
+
+      const smaIdToken = smaResource.getResponseField('SipMediaApplication.SipMediaApplicationId');
+      smaIdMap[clinic.clinicId] = smaIdToken;
+      phoneNumberToClinicId.set(clinic.phoneNumber, clinic.clinicId);
+
+      const sipRule = new customResources.AwsCustomResource(this, `SipRule-${sanitizedId}`, {
+        onCreate: {
+          service: 'ChimeSDKVoice',
+          action: 'createSipRule',
+          parameters: {
+            Name: `${this.stackName}-${sanitizedId}-Rule`,
+            TriggerType: 'ToPhoneNumber',
+            TriggerValue: clinic.phoneNumber,
+            TargetApplications: [{
+              SipMediaApplicationId: smaIdToken,
+              Priority: 1,
+              AwsRegion: this.region,
+            }],
+          },
+          physicalResourceId: customResources.PhysicalResourceId.fromResponse('SipRule.SipRuleId'),
+        },
+        onUpdate: {
+          service: 'ChimeSDKVoice',
+          action: 'updateSipRule',
+          parameters: {
+            SipRuleId: new customResources.PhysicalResourceIdReference(),
+            Name: `${this.stackName}-${sanitizedId}-Rule`,
+            TriggerType: 'ToPhoneNumber',
+            TriggerValue: clinic.phoneNumber,
+            TargetApplications: [{
+              SipMediaApplicationId: smaIdToken,
+              Priority: 1,
+              AwsRegion: this.region,
+            }],
+          },
+          physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-${sanitizedId}-SipRule`),
+        },
+        onDelete: {
+          service: 'ChimeSDKVoice',
+          action: 'deleteSipRule',
+          parameters: {
+            SipRuleId: new customResources.PhysicalResourceIdReference(),
+          },
+          ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*|.*DoesNotExist.*',
+        },
+        policy: customResources.AwsCustomResourcePolicy.fromStatements([
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: [
+              'chime:CreateSipRule',
+              'chime:UpdateSipRule',
+              'chime:DeleteSipRule',
+              'chime:GetSipRule',
+              'chime:ListSipRules',
+            ],
+            resources: ['*'],
+          }),
+        ]),
+      });
+
+      sipRule.node.addDependency(voiceConnector);
+      sipRule.node.addDependency(smaResource);
+      if (vcTermination) {
+        sipRule.node.addDependency(vcTermination);
+      }
+
+      clinicSipRules[clinic.clinicId] = sipRule;
+
+      const smaLogging = new customResources.AwsCustomResource(this, `SmaLogging-${sanitizedId}`, {
+        onCreate: {
+          service: 'ChimeSDKVoice',
+          action: 'putSipMediaApplicationLoggingConfiguration',
+          parameters: {
+            SipMediaApplicationId: smaIdToken,
+            SipMediaApplicationLoggingConfiguration: {
+              EnableSipMediaApplicationMessageLogs: true
+            }
+          },
+          physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-${sanitizedId}-logging-config`),
+        },
+        policy: customResources.AwsCustomResourcePolicy.fromStatements([
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: [
+              'chime:PutSipMediaApplicationLoggingConfiguration',
+            ],
+            resources: ['*'],
+          }),
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: [
+              'logs:ListLogDeliveries',
+              'logs:CreateLogDelivery',
+              'logs:GetLogDelivery',
+              'logs:UpdateLogDelivery',
+              'logs:DeleteLogDelivery',
+              'logs:ListLogDeliveries',
+              'logs:PutResourcePolicy',
+              'logs:DescribeResourcePolicies',
+              'logs:DescribeLogGroups'
+            ],
+            resources: ['*'],
+          }),
+        ]),
+      });
+
+      smaLogging.node.addDependency(smaResource);
+    });
+
+    if (clinicsWithPhones.length > 0) {
+      smaHandler.addPermission('ChimeVoiceInvoke', {
+        principal: new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com'),
+        sourceArn: `arn:aws:chime:${this.region}:${this.account}:vc/*`,
+      });
+    }
+
+    const smaIdMapJson = Stack.of(this).toJsonString(smaIdMap);
+
     // Associate phone numbers with Voice Connector
     console.log(`Associating ${clinicsWithPhones.length} phone numbers with Voice Connector`);
-    
+
     let associatePhones: customResources.AwsCustomResource[] = [];
     
     if (clinicsWithPhones.length > 0) {
@@ -537,130 +664,21 @@ export class ChimeStack extends Stack {
             }),
           ]),
         });
-        
+
         resource.node.addDependency(voiceConnector);
+        phoneBatch.forEach(phoneNumber => {
+          const clinicId = phoneNumberToClinicId.get(phoneNumber);
+          if (clinicId) {
+            const sipRule = clinicSipRules[clinicId];
+            if (sipRule) {
+              resource.node.addDependency(sipRule);
+            }
+          }
+        });
         associatePhones.push(resource);
       });
     }
 
-    // ========================================
-    // SINGLE GLOBAL SIP RULE - Routes ALL inbound calls to SMA
-    // ========================================
-    console.log('Creating single global SIP Rule for all phone numbers');
-
-    const globalSipRule = new customResources.AwsCustomResource(this, 'GlobalSipRule', {
-      onCreate: {
-        service: 'ChimeSDKVoice',
-        action: 'createSipRule',
-        parameters: {
-          Name: `${this.stackName}-GlobalRule`,
-          TriggerType: 'RequestUriHostname',
-          TriggerValue: voiceConnectorOutboundHost,
-          TargetApplications: [{
-            SipMediaApplicationId: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
-            Priority: 1,
-            AwsRegion: this.region,
-          }],
-        },
-        physicalResourceId: customResources.PhysicalResourceId.fromResponse('SipRule.SipRuleId'),
-      },
-      onUpdate: {
-        service: 'ChimeSDKVoice',
-        action: 'updateSipRule',
-        parameters: {
-          SipRuleId: new customResources.PhysicalResourceIdReference(),
-          Name: `${this.stackName}-GlobalRule`,
-          TargetApplications: [{
-            SipMediaApplicationId: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
-            Priority: 1,
-            AwsRegion: this.region,
-          }],
-        },
-        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-GlobalSipRule`),
-      },
-      onDelete: {
-        service: 'ChimeSDKVoice',
-        action: 'deleteSipRule',
-        parameters: {
-          SipRuleId: new customResources.PhysicalResourceIdReference(),
-        },
-        ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*|.*DoesNotExist.*',
-      },
-      policy: customResources.AwsCustomResourcePolicy.fromStatements([
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'chime:CreateSipRule',
-            'chime:UpdateSipRule',
-            'chime:DeleteSipRule',
-            'chime:GetSipRule',
-            'chime:ListSipRules',
-          ],
-          resources: ['*'],
-        }),
-      ]),
-    });
-
-    // CRITICAL: Ensure proper dependency order
-    globalSipRule.node.addDependency(voiceConnector);
-    globalSipRule.node.addDependency(sipMediaApp);
-    if (vcTermination) {
-      globalSipRule.node.addDependency(vcTermination);
-    }
-
-    // Add Lambda permission AFTER SIP rule is created
-    smaHandler.addPermission('ChimeVoiceInvoke', {
-      principal: new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com'),
-      sourceArn: `arn:aws:chime:${this.region}:${this.account}:vc/*`,
-    });
-
-    // Ensure phone associations happen after SIP rule AND permission
-    associatePhones.forEach(assoc => {
-      assoc.node.addDependency(globalSipRule);
-    });
-
-
-    // Enable SIP Media Application logging for debugging
-    const smaLogging = new customResources.AwsCustomResource(this, 'SMALogging', {
-      onCreate: {
-        service: 'ChimeSDKVoice',
-        action: 'putSipMediaApplicationLoggingConfiguration',
-        parameters: {
-          SipMediaApplicationId: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
-          SipMediaApplicationLoggingConfiguration: {
-            EnableSipMediaApplicationMessageLogs: true
-          }
-        },
-        physicalResourceId: customResources.PhysicalResourceId.of('sma-logging-config'),
-      },
-      policy: customResources.AwsCustomResourcePolicy.fromStatements([
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'chime:PutSipMediaApplicationLoggingConfiguration',
-          ],
-          resources: ['*'],
-        }),
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'logs:ListLogDeliveries',
-            'logs:CreateLogDelivery',
-            'logs:GetLogDelivery',
-            'logs:UpdateLogDelivery',
-            'logs:DeleteLogDelivery',
-            'logs:ListLogDeliveries',
-            'logs:PutResourcePolicy',
-            'logs:DescribeResourcePolicies',
-            'logs:DescribeLogGroups'
-          ],
-          resources: ['*'],
-        }),
-      ]),
-    });
-
-    smaLogging.node.addDependency(sipMediaApp);
-    
     // ========================================
     // 3. Lambda Functions
     // ========================================
@@ -778,7 +796,7 @@ export class ChimeStack extends Stack {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CLINICS_TABLE_NAME: this.clinicsTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-        SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
+        SMA_ID_MAP: smaIdMapJson,
         VOICE_CONNECTOR_ID: voiceConnectorId,
         CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
@@ -797,7 +815,7 @@ export class ChimeStack extends Stack {
     outboundCallFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['chime:CreateSipMediaApplicationCall'],
-      resources: [`arn:aws:chime:${this.region}:${this.account}:sma/${sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId')}`],
+      resources: [`arn:aws:chime:${this.region}:${this.account}:sma/*`],
     }));
 
     // Lambda for POST /chime/transfer-call
@@ -810,7 +828,7 @@ export class ChimeStack extends Stack {
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-        SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
+        SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
@@ -838,7 +856,7 @@ export class ChimeStack extends Stack {
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-        SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
+        SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
@@ -866,7 +884,7 @@ export class ChimeStack extends Stack {
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-        SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
+        SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
@@ -878,7 +896,7 @@ export class ChimeStack extends Stack {
     callRejectedFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['chime:UpdateSipMediaApplicationCall'],
-      resources: [`arn:aws:chime:${this.region}:${this.account}:sma/${sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId')}`],
+      resources: [`arn:aws:chime:${this.region}:${this.account}:sma/*`],
     }));
     callRejectedFn.addPermission('AdminApiInvokeCallRejected', {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
@@ -895,7 +913,7 @@ export class ChimeStack extends Stack {
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-        SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
+        SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
@@ -907,7 +925,7 @@ export class ChimeStack extends Stack {
     callHungupFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['chime:UpdateSipMediaApplicationCall'],
-      resources: [`arn:aws:chime:${this.region}:${this.account}:sma/${sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId')}`],
+      resources: [`arn:aws:chime:${this.region}:${this.account}:sma/*`],
     }));
     callHungupFn.addPermission('AdminApiInvokeCallHungup', {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
@@ -947,7 +965,7 @@ export class ChimeStack extends Stack {
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-        SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
+        SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
@@ -974,7 +992,7 @@ export class ChimeStack extends Stack {
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-        SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
+        SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
@@ -1007,8 +1025,8 @@ export class ChimeStack extends Stack {
     new CfnOutput(this, 'AgentPresenceTableName', {
       value: this.agentPresenceTable.tableName,
     });
-     new CfnOutput(this, 'SipMediaApplicationId', {
-      value: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
+    new CfnOutput(this, 'SipMediaApplicationIdMap', {
+      value: smaIdMapJson,
     });
     
     new CfnOutput(this, 'StartSessionFnArn', {

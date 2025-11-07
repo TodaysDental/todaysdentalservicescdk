@@ -4,6 +4,7 @@ import { DynamoDBDocumentClient, GetCommand, UpdateCommand, QueryCommand, Transa
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { ChimeSDKMeetingsClient, CreateAttendeeCommand, DeleteAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { getSmaIdForClinic } from './utils/sma-map';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
 import { randomUUID } from 'crypto';
 
@@ -12,7 +13,6 @@ const chimeVoice = new ChimeSDKVoiceClient({});
 const chime = new ChimeSDKMeetingsClient({ region: process.env.CHIME_MEDIA_REGION || 'us-east-1' });
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
-const SMA_ID = process.env.SMA_ID;
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
 const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
@@ -120,6 +120,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         const callRecord = callRecords[0];
         const { clinicId, queuePosition } = callRecord;
+
+        const smaId = getSmaIdForClinic(clinicId);
+        if (!smaId) {
+            console.error('[transfer-call] Missing SMA mapping for clinic', { clinicId });
+            return {
+                statusCode: 500,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Call transfers are not configured for this clinic' })
+            };
+        }
         
         // CRITICAL FIX: Verify source agent is actually on this call
         if (callRecord.assignedAgentId !== fromAgentId) {
@@ -303,18 +313,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         
         // Trigger the SMA to handle the transfer - this happens AFTER the transaction is complete
         // so even if this fails, our database state is already updated consistently
-        if (!SMA_ID) {
-            console.error('[transfer-call] SMA_ID environment variable is missing');
-            return {
-                statusCode: 500,
-                headers: corsHeaders,
-                body: JSON.stringify({ message: 'Server configuration error: Missing SMA_ID' })
-            };
-        }
-        
         try {
             await chimeVoice.send(new UpdateSipMediaApplicationCallCommand({
-                SipMediaApplicationId: SMA_ID,
+                SipMediaApplicationId: smaId,
                 TransactionId: callId,
                 Arguments: {
                     action: 'TRANSFER_INITIATED',
