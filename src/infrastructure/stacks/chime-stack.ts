@@ -19,6 +19,17 @@ export interface ChimeStackProps extends StackProps {
   userPool: any;
   api?: apigw.RestApi;
   authorizer?: apigw.CognitoUserPoolsAuthorizer;
+  /**
+   * Optional list of CIDR blocks that are allowed to send SIP traffic to the
+   * Amazon Chime Voice Connector termination endpoint. Each CIDR must have a
+   * prefix of /27 or smaller as required by the service.
+   *
+   * Termination settings control outbound calling permissions only. Inbound
+   * routing continues to flow through the origination routes and SIP rule
+   * resources defined later in this stack, so leaving this undefined will not
+   * block phone numbers from reaching the contact center.
+   */
+  voiceConnectorTerminationCidrs?: string[];
 }
 
 export class ChimeStack extends Stack {
@@ -244,62 +255,87 @@ export class ChimeStack extends Stack {
     const voiceConnectorId = voiceConnector.getResponseField('VoiceConnector.VoiceConnectorId');
     const voiceConnectorOutboundHost = voiceConnector.getResponseField('VoiceConnector.OutboundHostName');
 
+    const terminationCidrs = props.voiceConnectorTerminationCidrs
+      ?.map((cidr) => cidr.trim())
+      .filter((cidr) => cidr.length > 0);
+
+    const hasTerminationCidrs = Boolean(terminationCidrs && terminationCidrs.length > 0);
+
+    if (hasTerminationCidrs) {
+      const invalidCidrs = terminationCidrs!.filter((cidr) => {
+        const [_, prefix] = cidr.split('/');
+        const prefixNumber = Number(prefix);
+        return Number.isNaN(prefixNumber) || prefixNumber < 27 || prefixNumber > 32;
+      });
+
+      if (invalidCidrs.length > 0) {
+        throw new Error(`voiceConnectorTerminationCidrs must contain CIDR blocks with a /27 or smaller prefix. Invalid entries: ${invalidCidrs.join(', ')}`);
+      }
+    }
+
     // ========================================
     // Voice Connector Termination - For OUTBOUND calls
     // ========================================
-    // CRITICAL FIX: Use CidrAllowedList instead of TerminationHosts
-    const vcTermination = new customResources.AwsCustomResource(this, 'VCTermination', {
-      onCreate: {
-        service: 'ChimeSDKVoice',
-        action: 'putVoiceConnectorTermination',
-        parameters: {
-          VoiceConnectorId: voiceConnectorId,
-          Termination: {
-            CpsLimit: 1,
-            CallingRegions: ['US'],
-            // Allow all IPs - this enables outbound calling
-            CidrAllowedList: ['0.0.0.0/0'],
-            Disabled: false,
-          }
-        },
-        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-termination`),
-      },
-      onUpdate: {
-        service: 'ChimeSDKVoice',
-        action: 'putVoiceConnectorTermination',
-        parameters: {
-          VoiceConnectorId: voiceConnectorId,
-          Termination: {
-            CpsLimit: 1,
-            CallingRegions: ['US'],
-            CidrAllowedList: ['0.0.0.0/0'],
-            Disabled: false,
-          }
-        },
-        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-termination`),
-      },
-      onDelete: {
-        service: 'ChimeSDKVoice',
-        action: 'deleteVoiceConnectorTermination',
-        parameters: {
-          VoiceConnectorId: voiceConnectorId,
-        },
-        ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
-      },
-      policy: customResources.AwsCustomResourcePolicy.fromStatements([
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'chime:PutVoiceConnectorTermination',
-            'chime:DeleteVoiceConnectorTermination',
-            'chime:GetVoiceConnectorTermination',
-          ],
-          resources: ['*'],
-        }),
-      ]),
-    });
+    // Allow deployments to optionally configure termination CIDR blocks. When
+    // no CIDRs are provided we skip provisioning the termination custom
+    // resource entirely so CloudFormation does not submit empty values that
+    // Chime rejects (e.g., null CIDR lists or 0.0.0.0/0 defaults).
+    let vcTermination: customResources.AwsCustomResource | undefined;
 
-    vcTermination.node.addDependency(voiceConnector);
+    if (hasTerminationCidrs) {
+      const terminationConfig = {
+        CpsLimit: 1,
+        CallingRegions: ['US'],
+        CidrAllowedList: terminationCidrs!,
+        Disabled: false,
+      };
+
+      vcTermination = new customResources.AwsCustomResource(this, 'VCTermination', {
+        onCreate: {
+          service: 'ChimeSDKVoice',
+          action: 'putVoiceConnectorTermination',
+          parameters: {
+            VoiceConnectorId: voiceConnectorId,
+            Termination: {
+              ...terminationConfig,
+            }
+          },
+          physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-termination`),
+        },
+        onUpdate: {
+          service: 'ChimeSDKVoice',
+          action: 'putVoiceConnectorTermination',
+          parameters: {
+            VoiceConnectorId: voiceConnectorId,
+            Termination: {
+              ...terminationConfig,
+            }
+          },
+          physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-termination`),
+        },
+        onDelete: {
+          service: 'ChimeSDKVoice',
+          action: 'deleteVoiceConnectorTermination',
+          parameters: {
+            VoiceConnectorId: voiceConnectorId,
+          },
+          ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
+        },
+        policy: customResources.AwsCustomResourcePolicy.fromStatements([
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: [
+              'chime:PutVoiceConnectorTermination',
+              'chime:DeleteVoiceConnectorTermination',
+              'chime:GetVoiceConnectorTermination',
+            ],
+            resources: ['*'],
+          }),
+        ]),
+      });
+
+      vcTermination.node.addDependency(voiceConnector);
+    }
 
     // ========================================
     // Voice Connector Origination - For INBOUND calls
@@ -368,7 +404,9 @@ export class ChimeStack extends Stack {
 
     // CRITICAL: Add dependencies - Origination must wait for Termination
     vcOrigination.node.addDependency(voiceConnector);
-    vcOrigination.node.addDependency(vcTermination);
+    if (vcTermination) {
+      vcOrigination.node.addDependency(vcTermination);
+    }
 
     // ========================================
     // Load clinic phone numbers from clinics.json
@@ -518,7 +556,9 @@ export class ChimeStack extends Stack {
     // CRITICAL: Ensure proper dependency order
     globalSipRule.node.addDependency(voiceConnector);
     globalSipRule.node.addDependency(sipMediaApp);
-    globalSipRule.node.addDependency(vcTermination);
+    if (vcTermination) {
+      globalSipRule.node.addDependency(vcTermination);
+    }
 
     // Add Lambda permission AFTER SIP rule is created
     smaHandler.addPermission('ChimeVoiceInvoke', {

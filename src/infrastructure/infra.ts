@@ -26,6 +26,36 @@ const env = {
   region: process.env.CDK_DEFAULT_REGION || process.env.AWS_REGION,
 };
 
+const voiceConnectorTerminationCidrsContext = app.node.tryGetContext('voiceConnectorTerminationCidrs');
+let voiceConnectorTerminationCidrs: string[] | undefined;
+
+if (Array.isArray(voiceConnectorTerminationCidrsContext)) {
+  voiceConnectorTerminationCidrs = voiceConnectorTerminationCidrsContext
+    .map((value) => String(value).trim())
+    .filter((value) => value.length > 0);
+} else if (typeof voiceConnectorTerminationCidrsContext === 'string') {
+  const trimmed = voiceConnectorTerminationCidrsContext.trim();
+
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        voiceConnectorTerminationCidrs = parsed
+          .map((value) => String(value).trim())
+          .filter((value) => value.length > 0);
+      }
+    } catch (error) {
+      throw new Error(`Failed to parse voiceConnectorTerminationCidrs context as JSON array: ${error}`);
+    }
+  } else if (trimmed.length > 0) {
+    voiceConnectorTerminationCidrs = trimmed.split(',').map((value) => value.trim()).filter((value) => value.length > 0);
+  }
+}
+
+if (voiceConnectorTerminationCidrs && voiceConnectorTerminationCidrs.length === 0) {
+  voiceConnectorTerminationCidrs = undefined;
+}
+
 // 1. Core Stack - Cognito and basic auth (minimal resources)
 const coreStack = new CoreStack(app, 'TodaysDentalInsightsCoreV2', { env });
 
@@ -84,6 +114,7 @@ const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNoti
 const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV22', {
   env,
   userPool: coreStack.userPool,
+  voiceConnectorTerminationCidrs,
 });
 
 // Admin services (AdminStack will import Chime lambda ARNs and wire API
