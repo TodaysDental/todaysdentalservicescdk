@@ -206,8 +206,6 @@ export class ChimeStack extends Stack {
       ]),
     });
 
-    // Removed redundant smaHandler.addPermission block to resolve circular dependency
-
     // Create Voice Connector - FIX: Capture the ID correctly
     const voiceConnector = new customResources.AwsCustomResource(this, 'VoiceConnector', {
       onCreate: {
@@ -218,7 +216,6 @@ export class ChimeStack extends Stack {
           RequireEncryption: true,
           AwsRegion: this.region,
         },
-        // CRITICAL FIX: Use the correct nested path for the VoiceConnectorId
         physicalResourceId: customResources.PhysicalResourceId.fromResponse('VoiceConnector.VoiceConnectorId'),
       },
       onDelete: {
@@ -248,10 +245,65 @@ export class ChimeStack extends Stack {
     const voiceConnectorOutboundHost = voiceConnector.getResponseField('VoiceConnector.OutboundHostName');
 
     // ========================================
+    // Voice Connector Termination - For OUTBOUND calls
+    // ========================================
+    // CRITICAL FIX: Use CidrAllowedList instead of TerminationHosts
+    const vcTermination = new customResources.AwsCustomResource(this, 'VCTermination', {
+      onCreate: {
+        service: 'ChimeSDKVoice',
+        action: 'putVoiceConnectorTermination',
+        parameters: {
+          VoiceConnectorId: voiceConnectorId,
+          Termination: {
+            CpsLimit: 1,
+            CallingRegions: ['US'],
+            // Allow all IPs - this enables outbound calling
+            CidrAllowedList: ['0.0.0.0/0'],
+            Disabled: false,
+          }
+        },
+        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-termination`),
+      },
+      onUpdate: {
+        service: 'ChimeSDKVoice',
+        action: 'putVoiceConnectorTermination',
+        parameters: {
+          VoiceConnectorId: voiceConnectorId,
+          Termination: {
+            CpsLimit: 1,
+            CallingRegions: ['US'],
+            CidrAllowedList: ['0.0.0.0/0'],
+            Disabled: false,
+          }
+        },
+        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-termination`),
+      },
+      onDelete: {
+        service: 'ChimeSDKVoice',
+        action: 'deleteVoiceConnectorTermination',
+        parameters: {
+          VoiceConnectorId: voiceConnectorId,
+        },
+        ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
+      },
+      policy: customResources.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'chime:PutVoiceConnectorTermination',
+            'chime:DeleteVoiceConnectorTermination',
+            'chime:GetVoiceConnectorTermination',
+          ],
+          resources: ['*'],
+        }),
+      ]),
+    });
+
+    vcTermination.node.addDependency(voiceConnector);
+
+    // ========================================
     // Voice Connector Origination - For INBOUND calls
     // ========================================
-    // THIS IS THE MISSING PIECE TO FIX INBOUND CALLS
-
     const vcOrigination = new customResources.AwsCustomResource(this, 'VCOrigination', {
       onCreate: {
         service: 'ChimeSDKVoice',
@@ -261,7 +313,6 @@ export class ChimeStack extends Stack {
           Origination: {
             Routes: [
               {
-                // Route to the VC's own outbound host, which the SIP rule is monitoring
                 Host: voiceConnectorOutboundHost, 
                 Port: 5060,
                 Protocol: 'UDP',
@@ -269,7 +320,7 @@ export class ChimeStack extends Stack {
                 Weight: 1,
               },
             ],
-            Disabled: false, // <-- This enables Origination
+            Disabled: false,
           }
         },
         physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-origination`),
@@ -315,68 +366,8 @@ export class ChimeStack extends Stack {
       ]),
     });
 
-    // CRITICAL: Add dependency on the Voice Connector
+    // CRITICAL: Add dependencies - Origination must wait for Termination
     vcOrigination.node.addDependency(voiceConnector);
-
-    // ========================================
-    // Voice Connector Termination - For OUTBOUND calls only
-    // ========================================
-    const vcTermination = new customResources.AwsCustomResource(this, 'VCTermination', {
-      onCreate: {
-        service: 'ChimeSDKVoice',
-        action: 'putVoiceConnectorTermination',
-        parameters: {
-          VoiceConnectorId: voiceConnectorId,
-          Termination: {
-            CpsLimit: 1,
-            CallingRegions: ['US'],
-            // CRITICAL FIX: Replace CidrAllowedList with TerminationHosts.
-            // You MUST allowlist the VC's own hostname to use it in the Origination route.
-            TerminationHosts: [voiceConnectorOutboundHost],
-            Disabled: false,
-          }
-        },
-        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-termination`),
-      },
-      onUpdate: {
-        service: 'ChimeSDKVoice',
-        action: 'putVoiceConnectorTermination',
-        parameters: {
-          VoiceConnectorId: voiceConnectorId,
-          Termination: {
-            CpsLimit: 1,
-            CallingRegions: ['US'],
-            // CRITICAL FIX: Replace CidrAllowedList with TerminationHosts.
-            TerminationHosts: [voiceConnectorOutboundHost],
-            Disabled: false,
-          }
-        },
-        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-termination`),
-      },
-      onDelete: {
-        service: 'ChimeSDKVoice',
-        action: 'deleteVoiceConnectorTermination',
-        parameters: {
-          VoiceConnectorId: voiceConnectorId,
-        },
-        ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
-      },
-      policy: customResources.AwsCustomResourcePolicy.fromStatements([
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'chime:PutVoiceConnectorTermination',
-            'chime:DeleteVoiceConnectorTermination',
-            'chime:GetVoiceConnectorTermination',
-          ],
-          resources: ['*'],
-        }),
-      ]),
-    });
-
-    vcTermination.node.addDependency(voiceConnector);
-
-    // ⬇️ ⬇️ ⬇️ FIX 1: Force Origination to wait for Termination ⬇️ ⬇️ ⬇️
     vcOrigination.node.addDependency(vcTermination);
 
     // ========================================
@@ -467,7 +458,7 @@ export class ChimeStack extends Stack {
     }
 
     // ========================================
-    // ✅ SINGLE GLOBAL SIP RULE - Routes ALL inbound calls to SMA
+    // SINGLE GLOBAL SIP RULE - Routes ALL inbound calls to SMA
     // ========================================
     console.log('Creating single global SIP Rule for all phone numbers');
 
@@ -524,14 +515,12 @@ export class ChimeStack extends Stack {
       ]),
     });
 
-    // ✅ CRITICAL: Ensure proper dependency order
+    // CRITICAL: Ensure proper dependency order
     globalSipRule.node.addDependency(voiceConnector);
     globalSipRule.node.addDependency(sipMediaApp);
-
-    // ⬇️ ⬇️ ⬇️ FIX 2: Force SIP Rule to wait for Termination ⬇️ ⬇️ ⬇️
     globalSipRule.node.addDependency(vcTermination);
 
-    // ✅ NOW add Lambda permission AFTER SIP rule is created
+    // Add Lambda permission AFTER SIP rule is created
     smaHandler.addPermission('ChimeVoiceInvoke', {
       principal: new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com'),
       sourceArn: `arn:aws:chime:${this.region}:${this.account}:vc/*`,
@@ -634,7 +623,7 @@ export class ChimeStack extends Stack {
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
-        CHIME_MEDIA_REGION: 'us-east-1', // Use us-east-1 for Chime
+        CHIME_MEDIA_REGION: 'us-east-1',
       },
     });
     const startSessionLogGroup = new logs.LogGroup(this, 'StartSessionLogGroup', {
@@ -680,7 +669,7 @@ export class ChimeStack extends Stack {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
-        CHIME_MEDIA_REGION: 'us-east-1', // Use us-east-1 for Chime
+        CHIME_MEDIA_REGION: 'us-east-1',
       },
     });
     stopSessionFn.addToRolePolicy(chimeSdkPolicy);
@@ -703,7 +692,7 @@ export class ChimeStack extends Stack {
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
         VOICE_CONNECTOR_ID: voiceConnectorId,
-        CHIME_MEDIA_REGION: 'us-east-1', // Use us-east-1 for Chime
+        CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
       },
@@ -734,14 +723,14 @@ export class ChimeStack extends Stack {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
-        CHIME_MEDIA_REGION: 'us-east-1', // Use us-east-1 for Chime
+        CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
       },
     });
     this.agentPresenceTable.grantReadWriteData(transferCallFn);
     this.callQueueTable.grantReadWriteData(transferCallFn);
-    transferCallFn.addToRolePolicy(chimeSdkPolicy); // Add Chime SDK policy
+    transferCallFn.addToRolePolicy(chimeSdkPolicy);
     transferCallFn.addToRolePolicy(new iam.PolicyStatement({
         actions: ['chime:UpdateSipMediaApplicationCall'],
         resources: ['*'],
@@ -769,8 +758,8 @@ export class ChimeStack extends Stack {
     });
     this.agentPresenceTable.grantReadWriteData(callAcceptedFn);
     this.callQueueTable.grantReadWriteData(callAcceptedFn);
-    callAcceptedFn.addToRolePolicy(chimeSdkPolicy); // Add Chime SDK policy
-    callAcceptedFn.addToRolePolicy(new iam.PolicyStatement({ // Add SMA update policy
+    callAcceptedFn.addToRolePolicy(chimeSdkPolicy);
+    callAcceptedFn.addToRolePolicy(new iam.PolicyStatement({
         actions: ['chime:UpdateSipMediaApplicationCall'],
         resources: ['*'],
     }));
@@ -797,7 +786,7 @@ export class ChimeStack extends Stack {
     });
     this.agentPresenceTable.grantReadWriteData(callRejectedFn);
     this.callQueueTable.grantReadWriteData(callRejectedFn);
-    callRejectedFn.addToRolePolicy(chimeSdkPolicy); // Add Chime SDK policy
+    callRejectedFn.addToRolePolicy(chimeSdkPolicy);
     callRejectedFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['chime:UpdateSipMediaApplicationCall'],
@@ -819,7 +808,7 @@ export class ChimeStack extends Stack {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
-        CHIME_MEDIA_REGION: 'us-east-1', // Use us-east-1 for Chime
+        CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
       },
@@ -898,7 +887,7 @@ export class ChimeStack extends Stack {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         SMA_ID: sipMediaApp.getResponseField('SipMediaApplication.SipMediaApplicationId'),
-        CHIME_MEDIA_REGION: 'us-east-1', // Use us-east-1 for Chime
+        CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
       },
@@ -1025,7 +1014,7 @@ export class ChimeStack extends Stack {
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-        CHIME_MEDIA_REGION: 'us-east-1', // Use us-east-1 for Chime
+        CHIME_MEDIA_REGION: 'us-east-1',
       },
     });
     
