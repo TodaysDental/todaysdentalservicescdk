@@ -4,6 +4,7 @@ import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand } from 
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { ChimeSDKMeetingsClient, CreateAttendeeCommand, GetMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { getSmaIdForClinic } from './utils/sma-map';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -15,7 +16,6 @@ const chimeClient = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
-const SMA_ID = process.env.SMA_ID;
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
 const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
@@ -127,15 +127,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // Verify the SMA_ID is available
-        if (!SMA_ID) {
-            return {
-                statusCode: 500,
-                headers: corsHeaders,
-                body: JSON.stringify({ message: 'Server configuration error: Missing SMA_ID' })
-            };
-        }
-
         // 1. Find the call record in the queue table
         const { Items: callRecords } = await ddb.send(new QueryCommand({
             TableName: CALL_QUEUE_TABLE_NAME,
@@ -156,6 +147,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         const callRecord = callRecords[0];
         const { clinicId, queuePosition } = callRecord;
+
+        const smaId = getSmaIdForClinic(clinicId);
+        if (!smaId) {
+            console.error('[resume-call] Missing SMA mapping for clinic', { clinicId });
+            return {
+                statusCode: 500,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Resume call is not configured for this clinic' })
+            };
+        }
         
         // CRITICAL FIX: Verify agent has access to the clinic
         const hasAccess = authorizedClinics[0] === "ALL" || authorizedClinics.includes(clinicId);
@@ -295,7 +296,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             
             // Send command to SMA with enhanced information for rejoining
             await chimeVoice.send(new UpdateSipMediaApplicationCallCommand({
-                SipMediaApplicationId: SMA_ID,
+                SipMediaApplicationId: smaId,
                 TransactionId: callId,
                 Arguments: {
                     action: 'RESUME_CALL',

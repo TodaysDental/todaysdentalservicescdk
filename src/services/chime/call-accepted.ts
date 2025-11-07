@@ -8,6 +8,7 @@ import {
     Attendee
 } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { getSmaIdForClinic } from './utils/sma-map';
 import { randomUUID } from 'crypto';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
 
@@ -18,8 +19,6 @@ const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
-const SMA_ID = process.env.SMA_ID;
-
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
 const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
@@ -151,6 +150,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const callRecord = callRecords[0];
         const { clinicId, queuePosition } = callRecord;
 
+        const smaId = getSmaIdForClinic(clinicId);
+
         // RACE CONDITION CHECK: Ensure call is still ringing
         if (callRecord.status !== 'ringing') {
             console.warn('[call-accepted] Race condition - call already accepted or handled', { callId, status: callRecord.status });
@@ -274,11 +275,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
 
         // 6. Notify the SMA to bridge the customer PSTN leg into the agent's meeting
-        if (SMA_ID) {
+        if (smaId) {
             try {
                 console.log('[call-accepted] Notifying SMA to bridge customer', { callId, agentId, meetingId: agentMeeting.MeetingId });
                 await chimeVoice.send(new UpdateSipMediaApplicationCallCommand({
-                    SipMediaApplicationId: SMA_ID,
+                    SipMediaApplicationId: smaId,
                     TransactionId: callId, // This is the PSTN call leg
                     Arguments: {
                         action: 'BRIDGE_CUSTOMER_INBOUND',
@@ -295,7 +296,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 // For now, we'll return success to the agent, as the DB state is "correct".
             }
         } else {
-            console.error('[call-accepted] SMA_ID not configured! Cannot bridge call.');
+            console.error('[call-accepted] SMA mapping not configured for clinic. Cannot bridge call.', { clinicId });
         }
 
         // 7. Return success to the agent's frontend.

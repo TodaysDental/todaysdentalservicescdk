@@ -5,6 +5,7 @@ import { ChimeSDKVoiceClient, CreateSipMediaApplicationCallCommand } from '@aws-
 // REMOVED: ChimeSDKMeetingsClient, CreateMeetingCommand, CreateAttendeeCommand, DeleteMeetingCommand
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
+import { getSmaIdForClinic } from './utils/sma-map';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const chimeVoiceClient = new ChimeSDKVoiceClient({});
@@ -12,10 +13,6 @@ const chimeVoiceClient = new ChimeSDKVoiceClient({});
 const CLINICS_TABLE_NAME = process.env.CLINICS_TABLE_NAME;
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
-const SMA_ID = process.env.SMA_ID;
-if (!SMA_ID) {
-    throw new Error('SMA_ID environment variable is required');
-}
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
 const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
@@ -193,18 +190,24 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'Failed to update agent status' }) };
     }
     
+    const smaId = getSmaIdForClinic(body.fromClinicId);
+    if (!smaId) {
+        console.error('[outbound-call] Missing SMA mapping for clinic', { clinicId: body.fromClinicId });
+        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'Outbound calling is not configured for this clinic' }) };
+    }
+
     // 5. Initiate the outbound call leg to the customer
     console.log('[outbound-call] Initiating SIP media application call', {
       fromPhoneNumber,
       toPhoneNumber: body.toPhoneNumber,
-      smaId: SMA_ID,
+      smaId,
       meetingId: agentMeeting.MeetingId
     });
-    
+
     const callResponse = await chimeVoiceClient.send(new CreateSipMediaApplicationCallCommand({
         FromPhoneNumber: fromPhoneNumber,
         ToPhoneNumber: body.toPhoneNumber,
-        SipMediaApplicationId: SMA_ID,
+        SipMediaApplicationId: smaId,
         ArgumentsMap: {
             // Pass all info the inbound-router.ts will need
             "callType": "Outbound",

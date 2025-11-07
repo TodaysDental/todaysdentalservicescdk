@@ -3,14 +3,13 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { getSmaIdForClinic } from './utils/sma-map';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const chimeVoice = new ChimeSDKVoiceClient({});
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
-const SMA_ID = process.env.SMA_ID;
-
 /**
  * Lambda handler for placing a call on hold
  * This is triggered by the frontend when an agent wants to put a customer on hold
@@ -40,15 +39,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // Verify the SMA_ID is available
-        if (!SMA_ID) {
-            return {
-                statusCode: 500,
-                headers: corsHeaders,
-                body: JSON.stringify({ message: 'Server configuration error: Missing SMA_ID' })
-            };
-        }
-
         // Update the call status in the database
         // 1. Find the call record in the queue table
         const { Items: callRecords } = await ddb.send(new QueryCommand({
@@ -70,6 +60,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         const callRecord = callRecords[0];
         const { clinicId, queuePosition } = callRecord;
+
+        const smaId = getSmaIdForClinic(clinicId);
+        if (!smaId) {
+            console.error('[hold-call] Missing SMA mapping for clinic', { clinicId });
+            return {
+                statusCode: 500,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Hold is not configured for this clinic' })
+            };
+        }
 
         // CRITICAL FIX: Check if this call has an active meeting
         let meetingId = null;
@@ -103,7 +103,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         try {
             // Send the hold command to the SMA with enhanced hold information
             await chimeVoice.send(new UpdateSipMediaApplicationCallCommand({
-                SipMediaApplicationId: SMA_ID,
+                SipMediaApplicationId: smaId,
                 TransactionId: callId,
                 Arguments: {
                     action: 'HOLD_CALL',
