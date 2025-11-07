@@ -187,8 +187,67 @@ export class ChimeStack extends Stack {
         s3deploy.Source.asset(path.join(__dirname, '..', '..', '..', 'assets', 'audio'))
       ],
       destinationBucket: holdMusicBucket,
-      prune: false, 
+      prune: false,
     });
+
+    const chimeCustomResourceRole = new iam.Role(this, 'ChimeVoiceCustomResourceRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      description: 'Shared role for Chime Voice custom resources',
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+      ],
+    });
+
+    chimeCustomResourceRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'chime:AssociatePhoneNumbersWithVoiceConnector',
+        'chime:CreateSipMediaApplication',
+        'chime:CreateSipRule',
+        'chime:CreateVoiceConnector',
+        'chime:DeleteSipMediaApplication',
+        'chime:DeleteSipRule',
+        'chime:DeleteVoiceConnector',
+        'chime:DeleteVoiceConnectorOrigination',
+        'chime:DeleteVoiceConnectorTermination',
+        'chime:DisassociatePhoneNumbersFromVoiceConnector',
+        'chime:GetSipMediaApplication',
+        'chime:GetSipRule',
+        'chime:GetVoiceConnector',
+        'chime:GetVoiceConnectorOrigination',
+        'chime:GetVoiceConnectorTermination',
+        'chime:ListPhoneNumbers',
+        'chime:ListSipMediaApplications',
+        'chime:ListSipRules',
+        'chime:ListVoiceConnectors',
+        'chime:PutSipMediaApplicationLoggingConfiguration',
+        'chime:PutVoiceConnectorOrigination',
+        'chime:PutVoiceConnectorTermination',
+        'chime:UpdateSipRule',
+      ],
+      resources: ['*'],
+    }));
+
+    chimeCustomResourceRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'logs:CreateLogDelivery',
+        'logs:DeleteLogDelivery',
+        'logs:DescribeLogGroups',
+        'logs:DescribeResourcePolicies',
+        'logs:GetLogDelivery',
+        'logs:ListLogDeliveries',
+        'logs:PutResourcePolicy',
+        'logs:UpdateLogDelivery',
+      ],
+      resources: ['*'],
+    }));
+
+    chimeCustomResourceRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['lambda:AddPermission', 'lambda:GetPolicy'],
+      resources: [smaHandler.functionArn],
+    }));
 
     // Create Voice Connector - FIX: Capture the ID correctly
     const voiceConnector = new customResources.AwsCustomResource(this, 'VoiceConnector', {
@@ -210,18 +269,7 @@ export class ChimeStack extends Stack {
         },
         ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*|.*DoesNotExist.*',
       },
-      policy: customResources.AwsCustomResourcePolicy.fromStatements([
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'chime:CreateVoiceConnector',
-            'chime:DeleteVoiceConnector',
-            'chime:GetVoiceConnector',
-            'chime:ListVoiceConnectors',
-          ],
-          resources: ['*'],
-        }),
-      ]),
+      role: chimeCustomResourceRole,
     });
 
     // Store Voice Connector details with correct nested paths
@@ -294,17 +342,7 @@ export class ChimeStack extends Stack {
           },
           ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
         },
-        policy: customResources.AwsCustomResourcePolicy.fromStatements([
-          new iam.PolicyStatement({
-            effect: iam.Effect.ALLOW,
-            actions: [
-              'chime:PutVoiceConnectorTermination',
-              'chime:DeleteVoiceConnectorTermination',
-              'chime:GetVoiceConnectorTermination',
-            ],
-            resources: ['*'],
-          }),
-        ]),
+        role: chimeCustomResourceRole,
       });
 
       vcTermination.node.addDependency(voiceConnector);
@@ -392,17 +430,7 @@ export class ChimeStack extends Stack {
           },
           ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
         },
-        policy: customResources.AwsCustomResourcePolicy.fromStatements([
-          new iam.PolicyStatement({
-            effect: iam.Effect.ALLOW,
-            actions: [
-              'chime:PutVoiceConnectorOrigination',
-              'chime:DeleteVoiceConnectorOrigination',
-              'chime:GetVoiceConnectorOrigination',
-            ],
-            resources: ['*'],
-          }),
-        ]),
+        role: chimeCustomResourceRole,
       });
 
       // CRITICAL: Add dependencies - Origination must wait for Termination
@@ -466,26 +494,7 @@ export class ChimeStack extends Stack {
           },
           ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*|.*DoesNotExist.*',
         },
-        policy: customResources.AwsCustomResourcePolicy.fromStatements([
-          new iam.PolicyStatement({
-            effect: iam.Effect.ALLOW,
-            actions: [
-              'chime:CreateSipMediaApplication',
-              'chime:DeleteSipMediaApplication',
-              'chime:GetSipMediaApplication',
-              'chime:ListSipMediaApplications',
-            ],
-            resources: ['*'],
-          }),
-          new iam.PolicyStatement({
-            effect: iam.Effect.ALLOW,
-            actions: [
-              'lambda:GetPolicy',
-              'lambda:AddPermission',
-            ],
-            resources: [smaHandler.functionArn],
-          }),
-        ]),
+        role: chimeCustomResourceRole,
       });
 
       const smaIdToken = smaResource.getResponseField('SipMediaApplication.SipMediaApplicationId');
@@ -532,19 +541,7 @@ export class ChimeStack extends Stack {
           },
           ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*|.*DoesNotExist.*',
         },
-        policy: customResources.AwsCustomResourcePolicy.fromStatements([
-          new iam.PolicyStatement({
-            effect: iam.Effect.ALLOW,
-            actions: [
-              'chime:CreateSipRule',
-              'chime:UpdateSipRule',
-              'chime:DeleteSipRule',
-              'chime:GetSipRule',
-              'chime:ListSipRules',
-            ],
-            resources: ['*'],
-          }),
-        ]),
+        role: chimeCustomResourceRole,
       });
 
       sipRule.node.addDependency(voiceConnector);
@@ -567,30 +564,7 @@ export class ChimeStack extends Stack {
           },
           physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-${sanitizedId}-logging-config`),
         },
-        policy: customResources.AwsCustomResourcePolicy.fromStatements([
-          new iam.PolicyStatement({
-            effect: iam.Effect.ALLOW,
-            actions: [
-              'chime:PutSipMediaApplicationLoggingConfiguration',
-            ],
-            resources: ['*'],
-          }),
-          new iam.PolicyStatement({
-            effect: iam.Effect.ALLOW,
-            actions: [
-              'logs:ListLogDeliveries',
-              'logs:CreateLogDelivery',
-              'logs:GetLogDelivery',
-              'logs:UpdateLogDelivery',
-              'logs:DeleteLogDelivery',
-              'logs:ListLogDeliveries',
-              'logs:PutResourcePolicy',
-              'logs:DescribeResourcePolicies',
-              'logs:DescribeLogGroups'
-            ],
-            resources: ['*'],
-          }),
-        ]),
+        role: chimeCustomResourceRole,
       });
 
       smaLogging.node.addDependency(smaResource);
@@ -652,17 +626,7 @@ export class ChimeStack extends Stack {
             },
             ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*|.*DoesNotExist.*',
           },
-          policy: customResources.AwsCustomResourcePolicy.fromStatements([
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: [
-                'chime:AssociatePhoneNumbersWithVoiceConnector',
-                'chime:DisassociatePhoneNumbersFromVoiceConnector',
-                'chime:ListPhoneNumbers'
-              ],
-              resources: ['*'],
-            }),
-          ]),
+          role: chimeCustomResourceRole,
         });
 
         resource.node.addDependency(voiceConnector);
