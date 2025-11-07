@@ -30,6 +30,23 @@ export interface ChimeStackProps extends StackProps {
    * block phone numbers from reaching the contact center.
    */
   voiceConnectorTerminationCidrs?: string[];
+  /**
+   * Optional list of origination routes that allow the contact center to
+   * receive inbound calls from an external SIP provider. When undefined we
+   * skip provisioning the origination custom resource entirely which avoids
+   * submitting placeholder hosts that Amazon Chime Voice Connector rejects.
+   */
+  voiceConnectorOriginationRoutes?: VoiceConnectorOriginationRouteConfig[];
+}
+
+export type VoiceConnectorOriginationProtocol = 'UDP' | 'TCP' | 'TLS';
+
+export interface VoiceConnectorOriginationRouteConfig {
+  host: string;
+  port?: number;
+  protocol?: VoiceConnectorOriginationProtocol;
+  priority?: number;
+  weight?: number;
 }
 
 export class ChimeStack extends Stack {
@@ -340,72 +357,103 @@ export class ChimeStack extends Stack {
     // ========================================
     // Voice Connector Origination - For INBOUND calls
     // ========================================
-    const vcOrigination = new customResources.AwsCustomResource(this, 'VCOrigination', {
-      onCreate: {
-        service: 'ChimeSDKVoice',
-        action: 'putVoiceConnectorOrigination',
-        parameters: {
-          VoiceConnectorId: voiceConnectorId,
-          Origination: {
-            Routes: [
-              {
-                Host: voiceConnectorOutboundHost, 
-                Port: 5060,
-                Protocol: 'UDP',
-                Priority: 1,
-                Weight: 1,
-              },
-            ],
-            Disabled: false,
-          }
-        },
-        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-origination`),
-      },
-      onUpdate: {
-        service: 'ChimeSDKVoice',
-        action: 'putVoiceConnectorOrigination',
-        parameters: {
-          VoiceConnectorId: voiceConnectorId,
-          Origination: {
-            Routes: [
-              {
-                Host: voiceConnectorOutboundHost,
-                Port: 5060,
-                Protocol: 'UDP',
-                Priority: 1,
-                Weight: 1,
-              },
-            ],
-            Disabled: false,
-          }
-        },
-        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-origination`),
-      },
-      onDelete: {
-        service: 'ChimeSDKVoice',
-        action: 'deleteVoiceConnectorOrigination',
-        parameters: {
-          VoiceConnectorId: voiceConnectorId,
-        },
-        ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
-      },
-      policy: customResources.AwsCustomResourcePolicy.fromStatements([
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'chime:PutVoiceConnectorOrigination',
-            'chime:DeleteVoiceConnectorOrigination',
-            'chime:GetVoiceConnectorOrigination',
-          ],
-          resources: ['*'],
-        }),
-      ]),
+    const originationRoutes = props.voiceConnectorOriginationRoutes?.map((route, index) => {
+      const host = route.host?.trim();
+
+      if (!host) {
+        throw new Error(`voiceConnectorOriginationRoutes[${index}] must include a non-empty host value.`);
+      }
+
+      if (/\.voiceconnector\.chime\.aws$/i.test(host)) {
+        throw new Error(
+          `voiceConnectorOriginationRoutes[${index}] host "${host}" uses an Amazon-managed domain that cannot be set ` +
+          'as an origination route. Provide the SIP host from your carrier or SBC instead.'
+        );
+      }
+
+      const port = route.port ?? 5060;
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error(`voiceConnectorOriginationRoutes[${index}] port must be an integer between 1 and 65535.`);
+      }
+
+      const protocol = (route.protocol ?? 'UDP').toUpperCase();
+      if (!['UDP', 'TCP', 'TLS'].includes(protocol)) {
+        throw new Error(
+          `voiceConnectorOriginationRoutes[${index}] protocol must be one of UDP, TCP, or TLS. Received: ${protocol}`
+        );
+      }
+
+      const priority = route.priority ?? index + 1;
+      if (!Number.isInteger(priority) || priority < 1 || priority > 20) {
+        throw new Error(`voiceConnectorOriginationRoutes[${index}] priority must be an integer between 1 and 20.`);
+      }
+
+      const weight = route.weight ?? 1;
+      if (!Number.isInteger(weight) || weight < 1 || weight > 10) {
+        throw new Error(`voiceConnectorOriginationRoutes[${index}] weight must be an integer between 1 and 10.`);
+      }
+
+      return {
+        Host: host,
+        Port: port,
+        Protocol: protocol as VoiceConnectorOriginationProtocol,
+        Priority: priority,
+        Weight: weight,
+      };
     });
 
-    // CRITICAL: Add dependencies - Origination must wait for Termination
-    vcOrigination.node.addDependency(voiceConnector);
-    if (vcTermination) {
-      vcOrigination.node.addDependency(vcTermination);
+    if (originationRoutes && originationRoutes.length > 0) {
+      const vcOrigination = new customResources.AwsCustomResource(this, 'VCOrigination', {
+        onCreate: {
+          service: 'ChimeSDKVoice',
+          action: 'putVoiceConnectorOrigination',
+          parameters: {
+            VoiceConnectorId: voiceConnectorId,
+            Origination: {
+              Routes: originationRoutes,
+              Disabled: false,
+            }
+          },
+          physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-origination`),
+        },
+        onUpdate: {
+          service: 'ChimeSDKVoice',
+          action: 'putVoiceConnectorOrigination',
+          parameters: {
+            VoiceConnectorId: voiceConnectorId,
+            Origination: {
+              Routes: originationRoutes,
+              Disabled: false,
+            }
+          },
+          physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-voice-connector-origination`),
+        },
+        onDelete: {
+          service: 'ChimeSDKVoice',
+          action: 'deleteVoiceConnectorOrigination',
+          parameters: {
+            VoiceConnectorId: voiceConnectorId,
+          },
+          ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
+        },
+        policy: customResources.AwsCustomResourcePolicy.fromStatements([
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: [
+              'chime:PutVoiceConnectorOrigination',
+              'chime:DeleteVoiceConnectorOrigination',
+              'chime:GetVoiceConnectorOrigination',
+            ],
+            resources: ['*'],
+          }),
+        ]),
+      });
+
+      // CRITICAL: Add dependencies - Origination must wait for Termination
+      vcOrigination.node.addDependency(voiceConnector);
+      if (vcTermination) {
+        vcOrigination.node.addDependency(vcTermination);
+      }
     }
 
     // ========================================
