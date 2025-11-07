@@ -17,7 +17,7 @@ import { ClinicInsuranceStack } from './stacks/clinic-insurance-stack';
 import { AdminStack } from './stacks/admin-stack';
 import { OpenDentalStack } from './stacks/opendental-stack';
 import { NotificationsStack } from './stacks/notifications-stack';
-import { ChimeStack } from './stacks/chime-stack';
+import { ChimeStack, type VoiceConnectorOriginationRouteConfig } from './stacks/chime-stack';
 
 const app = new cdk.App();
 
@@ -28,6 +28,8 @@ const env = {
 
 const voiceConnectorTerminationCidrsContext = app.node.tryGetContext('voiceConnectorTerminationCidrs');
 let voiceConnectorTerminationCidrs: string[] | undefined;
+const voiceConnectorOriginationRoutesContext = app.node.tryGetContext('voiceConnectorOriginationRoutes');
+let voiceConnectorOriginationRoutes: VoiceConnectorOriginationRouteConfig[] | undefined;
 
 if (Array.isArray(voiceConnectorTerminationCidrsContext)) {
   voiceConnectorTerminationCidrs = voiceConnectorTerminationCidrsContext
@@ -54,6 +56,93 @@ if (Array.isArray(voiceConnectorTerminationCidrsContext)) {
 
 if (voiceConnectorTerminationCidrs && voiceConnectorTerminationCidrs.length === 0) {
   voiceConnectorTerminationCidrs = undefined;
+}
+
+const normalizeOriginationRoute = (value: unknown, index: number): VoiceConnectorOriginationRouteConfig => {
+  if (typeof value === 'string') {
+    const host = value.trim();
+    if (!host) {
+      throw new Error(`voiceConnectorOriginationRoutes[${index}] must include a non-empty host value.`);
+    }
+    return { host };
+  }
+
+  if (value && typeof value === 'object') {
+    const routeObject = value as Record<string, unknown>;
+    const hostValue = routeObject.host;
+    const host = typeof hostValue === 'string' ? hostValue.trim() : hostValue != null ? String(hostValue).trim() : '';
+
+    if (!host) {
+      throw new Error(`voiceConnectorOriginationRoutes[${index}] must include a non-empty host value.`);
+    }
+
+    const route: VoiceConnectorOriginationRouteConfig = { host };
+
+    if ('port' in routeObject && routeObject.port != null) {
+      const port = Number(routeObject.port);
+      if (!Number.isFinite(port)) {
+        throw new Error(`voiceConnectorOriginationRoutes[${index}] port must be a finite number.`);
+      }
+      route.port = port;
+    }
+
+    if ('protocol' in routeObject && routeObject.protocol != null) {
+      route.protocol = String(routeObject.protocol).trim().toUpperCase() as VoiceConnectorOriginationRouteConfig['protocol'];
+    }
+
+    if ('priority' in routeObject && routeObject.priority != null) {
+      const priority = Number(routeObject.priority);
+      if (!Number.isFinite(priority)) {
+        throw new Error(`voiceConnectorOriginationRoutes[${index}] priority must be a finite number.`);
+      }
+      route.priority = priority;
+    }
+
+    if ('weight' in routeObject && routeObject.weight != null) {
+      const weight = Number(routeObject.weight);
+      if (!Number.isFinite(weight)) {
+        throw new Error(`voiceConnectorOriginationRoutes[${index}] weight must be a finite number.`);
+      }
+      route.weight = weight;
+    }
+
+    return route;
+  }
+
+  throw new Error(`voiceConnectorOriginationRoutes[${index}] must be a string host or an object with a host property.`);
+};
+
+if (Array.isArray(voiceConnectorOriginationRoutesContext)) {
+  voiceConnectorOriginationRoutes = voiceConnectorOriginationRoutesContext.map((value, index) =>
+    normalizeOriginationRoute(value, index)
+  );
+} else if (typeof voiceConnectorOriginationRoutesContext === 'string') {
+  const trimmed = voiceConnectorOriginationRoutesContext.trim();
+  if (trimmed.length > 0) {
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (!Array.isArray(parsed)) {
+          throw new Error('voiceConnectorOriginationRoutes context must be a JSON array.');
+        }
+        voiceConnectorOriginationRoutes = parsed.map((value, index) => normalizeOriginationRoute(value, index));
+      } catch (error) {
+        throw new Error(`Failed to parse voiceConnectorOriginationRoutes context: ${error}`);
+      }
+    } else {
+      voiceConnectorOriginationRoutes = trimmed
+        .split(',')
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+        .map((value, index) => normalizeOriginationRoute(value, index));
+    }
+  }
+} else if (voiceConnectorOriginationRoutesContext && typeof voiceConnectorOriginationRoutesContext === 'object') {
+  voiceConnectorOriginationRoutes = [normalizeOriginationRoute(voiceConnectorOriginationRoutesContext, 0)];
+}
+
+if (voiceConnectorOriginationRoutes && voiceConnectorOriginationRoutes.length === 0) {
+  voiceConnectorOriginationRoutes = undefined;
 }
 
 // 1. Core Stack - Cognito and basic auth (minimal resources)
@@ -115,6 +204,7 @@ const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV22', {
   env,
   userPool: coreStack.userPool,
   voiceConnectorTerminationCidrs,
+  voiceConnectorOriginationRoutes,
 });
 
 // Admin services (AdminStack will import Chime lambda ARNs and wire API
