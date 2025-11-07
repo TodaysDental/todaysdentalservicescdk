@@ -470,6 +470,8 @@ export class ChimeStack extends Stack {
     const smaIdMap: Record<string, string> = {};
     const phoneNumberToClinicId = new Map<string, string>();
 
+    let previousClinicResource: Construct | undefined;
+
     clinicsWithPhones.forEach((clinic) => {
       const sanitizedId = clinic.clinicId.replace(/[^A-Za-z0-9]/g, '-');
 
@@ -496,6 +498,10 @@ export class ChimeStack extends Stack {
         },
         role: chimeCustomResourceRole,
       });
+
+      if (previousClinicResource) {
+        smaResource.node.addDependency(previousClinicResource);
+      }
 
       const smaIdToken = smaResource.getResponseField('SipMediaApplication.SipMediaApplicationId');
       smaIdMap[clinic.clinicId] = smaIdToken;
@@ -568,6 +574,9 @@ export class ChimeStack extends Stack {
       });
 
       smaLogging.node.addDependency(smaResource);
+      smaLogging.node.addDependency(sipRule);
+
+      previousClinicResource = smaLogging;
     });
 
     if (clinicsWithPhones.length > 0) {
