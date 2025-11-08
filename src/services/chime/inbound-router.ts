@@ -386,13 +386,34 @@ export const handler = async (event: any): Promise<any> => {
             switch (eventType) {
                 // Case 1: A new call from the PSTN (customer) to one of our clinic numbers
                 case 'NEW_INBOUND_CALL': {
-                    const toPhoneNumber = parsePhoneNumber(event.CallDetails.SipHeaders.To);
-                    const fromPhoneNumber = parsePhoneNumber(event.CallDetails.SipHeaders.From) || 'Unknown';
+                    const sipHeaders = event?.CallDetails?.SipHeaders || {};
+
+                    const getPhoneFromValue = (value?: string | null) => {
+                        if (!value) return null;
+                        if (value.startsWith('+')) return value;
+                        return parsePhoneNumber(value);
+                    };
+
+                    const participants = event?.CallDetails?.Participants || [];
+                    const participantTo = participants[0]?.To;
+                    const participantFrom = participants[0]?.From;
+
+                    const toPhoneNumber =
+                        getPhoneFromValue(typeof sipHeaders.To === 'string' ? sipHeaders.To : null) ||
+                        getPhoneFromValue(typeof participantTo === 'string' ? participantTo : null);
+
+                    const fromPhoneNumber =
+                        getPhoneFromValue(typeof sipHeaders.From === 'string' ? sipHeaders.From : null) ||
+                        getPhoneFromValue(typeof participantFrom === 'string' ? participantFrom : null) ||
+                        'Unknown';
 
                     console.log('[NEW_INBOUND_CALL] Received inbound call', { callId, to: toPhoneNumber, from: fromPhoneNumber });
 
                     if (!toPhoneNumber) {
-                        console.error("Could not parse 'To' phone number from SIP header", { rawTo: event.CallDetails?.SipHeaders?.To });
+                        console.error("Could not parse 'To' phone number from event", {
+                            rawSipTo: event.CallDetails?.SipHeaders?.To,
+                            rawParticipantTo: participantTo,
+                        });
                         return buildActions([buildHangupAction('There was an error connecting your call.')]);
                     }
 
@@ -936,8 +957,27 @@ export const handler = async (event: any): Promise<any> => {
             
             // --- Informational events ---
             case 'RINGING':
-            case 'ACTION_SUCCESSFUL': {
+            case 'ACTION_SUCCESSFUL':
+            case 'INVALID_LAMBDA_RESPONSE': {
                 console.log(`Received informational event type: ${eventType}, returning empty actions.`);
+                return buildActions([]);
+            }
+
+            case 'ACTION_FAILED': {
+                const failedActionType = event?.ActionData?.Type;
+                const errorType = event?.ActionData?.ErrorType;
+                const errorMessage = event?.ActionData?.ErrorMessage;
+                console.warn(`[ACTION_FAILED] ${failedActionType ?? 'Unknown'} failed`, { errorType, errorMessage });
+
+                if (failedActionType === 'PlayAudio') {
+                    const audioKey = event?.ActionData?.Parameters?.AudioSource?.Key;
+                    console.warn(`[ACTION_FAILED] PlayAudio for ${audioKey ?? 'unknown asset'} failed. Falling back to spoken hold prompt.`);
+                    return buildActions([
+                        buildSpeakAction('Please stay on the line while we connect you to the next available agent.'),
+                        buildPauseAction(1000)
+                    ]);
+                }
+
                 return buildActions([]);
             }
 
