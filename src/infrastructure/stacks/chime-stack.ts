@@ -178,6 +178,16 @@ export class ChimeStack extends Stack {
     // Grant read access to the SMA handler
     holdMusicBucket.grantRead(smaHandler);
 
+    // Allow the Amazon Chime Voice Connector service to stream audio prompts
+    // directly from the bucket when executing PlayAudio actions.
+    holdMusicBucket.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AllowChimeVoiceConnectorAccess',
+      effect: iam.Effect.ALLOW,
+      principals: [new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com')],
+      actions: ['s3:GetObject', 's3:GetObjectVersion'],
+      resources: [holdMusicBucket.arnForObjects('*')],
+    }));
+
     // Update the environment variable
     smaHandler.addEnvironment('HOLD_MUSIC_BUCKET', holdMusicBucket.bucketName);
 
