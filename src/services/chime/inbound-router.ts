@@ -936,9 +936,13 @@ export const handler = async (event: any): Promise<any> => {
                             ddb.send(new UpdateCommand({
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
                                 Key: { agentId },
-                                UpdateExpression: 'REMOVE ringingCallId, ringingCallTime, ringingCallFrom SET lastActivityAt = :timestamp',
+                                UpdateExpression: 'SET #status = :online, lastActivityAt = :timestamp REMOVE ringingCallId, ringingCallTime, ringingCallFrom',
                                 ConditionExpression: 'attribute_exists(agentId) AND ringingCallId = :callId',
+                                ExpressionAttributeNames: {
+                                    '#status': 'status'
+                                },
                                 ExpressionAttributeValues: {
+                                    ':online': 'Online',
                                     ':timestamp': new Date().toISOString(),
                                     ':callId': callId
                                 }
