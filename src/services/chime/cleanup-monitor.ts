@@ -258,9 +258,9 @@ async function cleanupAbandonedCalls(stats: any): Promise<void> {
                     for (const agentId of agentIdsToClear) {
                         try {
                             const updateExpr = call.status === 'dialing'
-                                ? 'REMOVE currentCallId, callStatus SET #s = :online, lastActivityAt = :now'
-                                : 'REMOVE ringingCallId, ringingCallTime, ringingCallFrom SET #s = :online, lastActivityAt = :now';
-                            
+                                ? 'SET #s = :online, lastActivityAt = :now REMOVE currentCallId, callStatus'
+                                : 'SET #s = :online, lastActivityAt = :now REMOVE ringingCallId, ringingCallTime, ringingCallFrom';
+                                
                             await ddb.send(new UpdateCommand({
                                 TableName: AGENT_PRESENCE_TABLE_NAME!,
                                 Key: { agentId },

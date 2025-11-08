@@ -672,29 +672,7 @@ export const handler = async (event: any): Promise<any> => {
                 return buildActions([]);
             }
 
-            // *** NEW EVENT ***
-            // Case 4: Triggered by call-accepted.ts to bridge an inbound call
-            case 'BRIDGE_CUSTOMER_INBOUND': {
-                console.log(`[BRIDGE_CUSTOMER_INBOUND] Received for call ${callId}`, args);
-                
-                if (args.action === 'BRIDGE_CUSTOMER_INBOUND' && args.meetingId && args.customerAttendeeId && args.customerAttendeeJoinToken) {
-                    const { meetingId, customerAttendeeId, customerAttendeeJoinToken } = args;
-                    
-                    console.log(`[BRIDGE_CUSTOMER_INBOUND] Bridging customer PSTN leg into meeting ${meetingId}`);
 
-                    // Bridge the waiting customer (PSTN) into the agent's meeting
-                    return buildActions([
-                        buildSpeakAction('An agent will assist you now.'),
-                        buildJoinChimeMeetingAction(
-                            { MeetingId: meetingId },
-                            { AttendeeId: customerAttendeeId, JoinToken: customerAttendeeJoinToken }
-                        )
-                    ]);
-                }
-                
-                console.error('[BRIDGE_CUSTOMER_INBOUND] Invalid event. Missing required args.', args);
-                return buildActions([]); // Do nothing if args are wrong
-            }
 
             // Case 5: Hold call - triggered by hold-call.ts API
             case 'HOLD_CALL': {
@@ -835,16 +813,36 @@ export const handler = async (event: any): Promise<any> => {
             // Handle call update requests (e.g., hangup from another Lambda)
             case 'CALL_UPDATE_REQUESTED': {
                 console.log(`[CALL_UPDATE_REQUESTED] Received for call ${callId}`, args);
+
+                // *** FIX: Handle BRIDGE_CUSTOMER_INBOUND action here ***
+                // This is triggered by call-accepted.ts
+                if (args.action === 'BRIDGE_CUSTOMER_INBOUND' && args.meetingId && args.customerAttendeeId && args.customerAttendeeJoinToken) {
+                    const { meetingId, customerAttendeeId, customerAttendeeJoinToken } = args;
+                    
+                    console.log(`[BRIDGE_CUSTOMER_INBOUND] Bridging customer PSTN leg into meeting ${meetingId}`);
+
+                    // Bridge the waiting customer (PSTN) into the agent's meeting
+                    return buildActions([
+                        buildSpeakAction('An agent will assist you now.'),
+                        buildJoinChimeMeetingAction(
+                            { MeetingId: meetingId },
+                            { AttendeeId: customerAttendeeId, JoinToken: customerAttendeeJoinToken }
+                        )
+                    ]);
+                }
+                
                 // Check if the update is a Hangup action
-                if (args.Action === 'Hangup') {
+                // This is triggered by call-hungup.ts
+                if (args.Action === 'Hangup') { // Note: This is 'Action' (capital A)
                     console.log(`[CALL_UPDATE_REQUESTED] Acknowledging Hangup request for call ${callId}`);
                     // Acknowledge by returning the Hangup action
                     return buildActions([
                         { Type: 'Hangup' }
                     ]);
                 }
+                
                 // If it's another action (like 'Hold', etc.), just log and acknowledge
-                console.log(`[CALL_UPDATE_REQUESTED] Acknowledging action: ${args.Action}`);
+                console.log(`[CALL_UPDATE_REQUESTED] Acknowledging unknown action:`, args);
                 return buildActions([]); // Return empty actions to acknowledge
             }
 
