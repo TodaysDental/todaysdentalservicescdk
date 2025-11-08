@@ -957,8 +957,27 @@ export const handler = async (event: any): Promise<any> => {
             
             // --- Informational events ---
             case 'RINGING':
-            case 'ACTION_SUCCESSFUL': {
+            case 'ACTION_SUCCESSFUL':
+            case 'INVALID_LAMBDA_RESPONSE': {
                 console.log(`Received informational event type: ${eventType}, returning empty actions.`);
+                return buildActions([]);
+            }
+
+            case 'ACTION_FAILED': {
+                const failedActionType = event?.ActionData?.Type;
+                const errorType = event?.ActionData?.ErrorType;
+                const errorMessage = event?.ActionData?.ErrorMessage;
+                console.warn(`[ACTION_FAILED] ${failedActionType ?? 'Unknown'} failed`, { errorType, errorMessage });
+
+                if (failedActionType === 'PlayAudio') {
+                    const audioKey = event?.ActionData?.Parameters?.AudioSource?.Key;
+                    console.warn(`[ACTION_FAILED] PlayAudio for ${audioKey ?? 'unknown asset'} failed. Falling back to spoken hold prompt.`);
+                    return buildActions([
+                        buildSpeakAction('Please stay on the line while we connect you to the next available agent.'),
+                        buildPauseAction(1000)
+                    ]);
+                }
+
                 return buildActions([]);
             }
 
