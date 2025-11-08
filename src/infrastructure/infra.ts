@@ -18,7 +18,7 @@ import { AdminStack } from './stacks/admin-stack';
 import { OpenDentalStack } from './stacks/opendental-stack';
 import { NotificationsStack } from './stacks/notifications-stack';
 import { ChimeStack, type VoiceConnectorOriginationRouteConfig } from './stacks/chime-stack';
-
+import { HrStack } from './stacks/hr-stack';
 const app = new cdk.App();
 
 const env = {
@@ -246,7 +246,12 @@ chimeStack.addDependency(coreStack);
 // The Admin stack now receives the agent presence table name via props,
 // so no additional configuration is needed here.
 
-
+const hrStack = new HrStack(app, 'TodaysDentalInsightsHrV1', {
+  env,
+  userPool: coreStack.userPool,
+  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+});
+hrStack.addDependency(coreStack);
 // Schedules service (depends on other services for cross-table access)
 const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesV3', {
   env,
