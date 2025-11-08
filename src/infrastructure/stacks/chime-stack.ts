@@ -178,6 +178,49 @@ export class ChimeStack extends Stack {
     // Grant read access to the SMA handler
     holdMusicBucket.grantRead(smaHandler);
 
+    const stackContext = Stack.of(this);
+    const voiceConnectorSourceArn = stackContext.formatArn({
+      service: 'chime',
+      resource: 'voice-connector',
+      resourceName: '*',
+    });
+
+    // Allow the Amazon Chime Voice Connector service to stream audio prompts
+    // directly from the bucket when executing PlayAudio actions. We scope the
+    // permissions to Voice Connectors that belong to this account to avoid
+    // inadvertently granting cross-account access.
+    holdMusicBucket.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AllowChimeVoiceConnectorObjectAccess',
+      effect: iam.Effect.ALLOW,
+      principals: [new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com')],
+      actions: ['s3:GetObject', 's3:GetObjectVersion'],
+      resources: [holdMusicBucket.arnForObjects('*')],
+      conditions: {
+        StringEquals: {
+          'aws:SourceAccount': stackContext.account,
+        },
+        ArnLike: {
+          'aws:SourceArn': voiceConnectorSourceArn,
+        },
+      },
+    }));
+
+    holdMusicBucket.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AllowChimeVoiceConnectorListBucket',
+      effect: iam.Effect.ALLOW,
+      principals: [new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com')],
+      actions: ['s3:ListBucket'],
+      resources: [holdMusicBucket.bucketArn],
+      conditions: {
+        StringEquals: {
+          'aws:SourceAccount': stackContext.account,
+        },
+        ArnLike: {
+          'aws:SourceArn': voiceConnectorSourceArn,
+        },
+      },
+    }));
+
     // Update the environment variable
     smaHandler.addEnvironment('HOLD_MUSIC_BUCKET', holdMusicBucket.bucketName);
 
