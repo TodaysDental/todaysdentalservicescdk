@@ -386,13 +386,34 @@ export const handler = async (event: any): Promise<any> => {
             switch (eventType) {
                 // Case 1: A new call from the PSTN (customer) to one of our clinic numbers
                 case 'NEW_INBOUND_CALL': {
-                    const toPhoneNumber = parsePhoneNumber(event.CallDetails.SipHeaders.To);
-                    const fromPhoneNumber = parsePhoneNumber(event.CallDetails.SipHeaders.From) || 'Unknown';
+                    const sipHeaders = event?.CallDetails?.SipHeaders || {};
+
+                    const getPhoneFromValue = (value?: string | null) => {
+                        if (!value) return null;
+                        if (value.startsWith('+')) return value;
+                        return parsePhoneNumber(value);
+                    };
+
+                    const participants = event?.CallDetails?.Participants || [];
+                    const participantTo = participants[0]?.To;
+                    const participantFrom = participants[0]?.From;
+
+                    const toPhoneNumber =
+                        getPhoneFromValue(typeof sipHeaders.To === 'string' ? sipHeaders.To : null) ||
+                        getPhoneFromValue(typeof participantTo === 'string' ? participantTo : null);
+
+                    const fromPhoneNumber =
+                        getPhoneFromValue(typeof sipHeaders.From === 'string' ? sipHeaders.From : null) ||
+                        getPhoneFromValue(typeof participantFrom === 'string' ? participantFrom : null) ||
+                        'Unknown';
 
                     console.log('[NEW_INBOUND_CALL] Received inbound call', { callId, to: toPhoneNumber, from: fromPhoneNumber });
 
                     if (!toPhoneNumber) {
-                        console.error("Could not parse 'To' phone number from SIP header", { rawTo: event.CallDetails?.SipHeaders?.To });
+                        console.error("Could not parse 'To' phone number from event", {
+                            rawSipTo: event.CallDetails?.SipHeaders?.To,
+                            rawParticipantTo: participantTo,
+                        });
                         return buildActions([buildHangupAction('There was an error connecting your call.')]);
                     }
 
