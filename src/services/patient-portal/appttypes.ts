@@ -42,7 +42,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     switch (method) {
       case "GET":
         if (!queryParameters || !queryParameters[PARTITION_KEY]) {
-           return createResponse(400, { message: `Missing required query parameter: ${PARTITION_KEY}` }, requestOrigin);
+            return createResponse(400, { message: `Missing required query parameter: ${PARTITION_KEY}` }, requestOrigin);
         }
         const clinicId = queryParameters[PARTITION_KEY];
 
@@ -98,7 +98,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           return createResponse(400, { message: "Missing ID in path for DELETE" }, requestOrigin);
         }
         if (!queryParameters || !queryParameters[PARTITION_KEY]) {
-           return createResponse(400, { message: `Missing required query parameter for DELETE: ${PARTITION_KEY}` }, requestOrigin);
+            return createResponse(400, { message: `Missing required query parameter for DELETE: ${PARTITION_KEY}` }, requestOrigin);
         }
 
         await dynamo.send(

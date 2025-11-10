@@ -31,7 +31,7 @@ export class PatientPortalApptTypesStack extends Stack {
       sortKey: { name: 'AppointmentTypeNum', type: dynamodb.AttributeType.NUMBER },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
-      tableName: 'todaysdentalinsights-PatientPortal-ApptTypes',
+      tableName: 'todaysdentalinsights-PatientPortal-ApptTypes-V2', // <-- CHANGED
     });
 
     // ========================================
@@ -147,7 +147,7 @@ export class PatientPortalApptTypesStack extends Stack {
     // ========================================
     new apigateway.CfnBasePathMapping(this, 'ApptTypesBasePathMapping', {
       domainName: 'api.todaysdentalinsights.com',
-      basePath: 'patient-portal-appttypes',
+      basePath: 'patient-portal-appttypes-v2', // <-- CHANGED
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
     });
@@ -160,7 +160,7 @@ export class PatientPortalApptTypesStack extends Stack {
       exportName: `${Stack.of(this).stackName}-ApptTypesTableName`,
     });
     new CfnOutput(this, 'ApptTypesApiUrl', {
-      value: 'https://api.todaysdentalinsights.com/patient-portal-appttypes',
+      value: 'https://api.todaysdentalinsights.com/patient-portal-appttypes-v2', // <-- CHANGED
       description: 'Full URL for this service via custom domain',
       exportName: `${Stack.of(this).stackName}-ApptTypesApiUrl`,
     });
