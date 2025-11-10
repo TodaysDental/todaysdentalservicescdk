@@ -6,6 +6,8 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import { Construct } from 'constructs';
 import * as path from 'path';
+// Assuming this is the correct path to your new CORS utility file
+import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface PatientPortalApptTypesStackProps extends StackProps {
   userPool: cognito.IUserPool;
@@ -21,10 +23,9 @@ export class PatientPortalApptTypesStack extends Stack {
     super(scope, id, props);
 
     // ========================================
-    // DYNAMODB TABLE
+    // 1. DYNAMODB TABLE
     // ========================================
     this.apptTypesTable = new dynamodb.Table(this, 'ApptTypesTable', {
-      // UPDATED: Composite Primary Key
       partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'AppointmentTypeNum', type: dynamodb.AttributeType.NUMBER },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -33,15 +34,21 @@ export class PatientPortalApptTypesStack extends Stack {
     });
 
     // ========================================
-    // API GATEWAY SETUP
+    // 2. API GATEWAY SETUP (BASE)
     // ========================================
+    
+    // Get the dynamic CORS config from your utility file
+    const corsConfig = getCdkCorsConfig();
+
     this.api = new apigateway.RestApi(this, 'PatientPortalApptTypesApi', {
       restApiName: 'PatientPortalApptTypesApi',
       description: 'API for OpenDental Patient Portal Appointment Types',
+      // Use the imported config here
       defaultCorsPreflightOptions: {
-        allowOrigins: apigateway.Cors.ALL_ORIGINS,
-        allowMethods: apigateway.Cors.ALL_METHODS,
-        allowHeaders: ['Content-Type', 'X-Amz-Date', 'Authorization', 'X-Api-Key', 'X-Amz-Security-Token'],
+        allowOrigins: corsConfig.allowOrigins,
+        allowMethods: corsConfig.allowMethods,
+        allowHeaders: corsConfig.allowHeaders,
+        allowCredentials: true,
       },
       deployOptions: {
         stageName: 'prod',
@@ -51,28 +58,25 @@ export class PatientPortalApptTypesStack extends Stack {
       },
     });
 
-    const corsErrorHeaders = {
-      'Access-Control-Allow-Origin': "'*'",
-      'Access-Control-Allow-Headers': "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
-      'Access-Control-Allow-Methods': "'OPTIONS,GET,POST,PUT,DELETE'",
-    };
+    // Get the dynamic error headers from your utility file
+    const errorHeaders = getCorsErrorHeaders();
 
     new apigateway.GatewayResponse(this, 'GatewayResponseDefault4XX', {
       restApi: this.api,
       type: apigateway.ResponseType.DEFAULT_4XX,
-      responseHeaders: corsErrorHeaders,
+      responseHeaders: errorHeaders, // Use imported config
     });
 
     new apigateway.GatewayResponse(this, 'GatewayResponseDefault5XX', {
       restApi: this.api,
       type: apigateway.ResponseType.DEFAULT_5XX,
-      responseHeaders: corsErrorHeaders,
+      responseHeaders: errorHeaders, // Use imported config
     });
 
     new apigateway.GatewayResponse(this, 'GatewayResponseUnauthorized', {
       restApi: this.api,
       type: apigateway.ResponseType.UNAUTHORIZED,
-      responseHeaders: corsErrorHeaders,
+      responseHeaders: errorHeaders, // Use imported config
     });
 
     this.authorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'CognitoAuthorizer', {
@@ -80,10 +84,10 @@ export class PatientPortalApptTypesStack extends Stack {
     });
 
     // ========================================
-    // LAMBDA FUNCTION
+    // 3. LAMBDA FUNCTION
     // ========================================
     this.apptTypesFn = new nodelambda.NodejsFunction(this, 'ApptTypesHandler', {
-      entry: path.join(__dirname, '../../src/services/patient-portal/appttypes.ts'),
+      entry: path.join(__dirname, '../src/services/patient-portal/appttypes.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 256,
@@ -94,7 +98,6 @@ export class PatientPortalApptTypesStack extends Stack {
       },
       environment: {
         TABLE_NAME: this.apptTypesTable.tableName,
-        // UPDATED: New key definitions
         PARTITION_KEY: 'clinicId',
         SORT_KEY: 'AppointmentTypeNum',
       },
@@ -103,7 +106,7 @@ export class PatientPortalApptTypesStack extends Stack {
     this.apptTypesTable.grantReadWriteData(this.apptTypesFn);
 
     // ========================================
-    // API ROUTES
+    // 4. API ROUTES & INTEGRATION
     // ========================================
     const integration = new apigateway.LambdaIntegration(this.apptTypesFn);
 
@@ -123,6 +126,7 @@ export class PatientPortalApptTypesStack extends Stack {
       methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
     });
 
+    // Route: /{id}
     const singleItem = this.api.root.addResource('{id}');
     singleItem.addMethod('DELETE', integration, {
       authorizer: this.authorizer,
@@ -134,7 +138,13 @@ export class PatientPortalApptTypesStack extends Stack {
       authorizationType: apigateway.AuthorizationType.COGNITO,
       methodResponses: [{ statusCode: '200' }],
     });
+    
+    // Note: We do NOT need a manual .addMethod('OPTIONS') because
+    // 'defaultCorsPreflightOptions' handles it for us.
 
+    // ========================================
+    // 5. DOMAIN MAPPING
+    // ========================================
     new apigateway.CfnBasePathMapping(this, 'ApptTypesBasePathMapping', {
       domainName: 'api.todaysdentalinsights.com',
       basePath: 'patient-portal-appttypes',
@@ -143,7 +153,7 @@ export class PatientPortalApptTypesStack extends Stack {
     });
 
     // ========================================
-    // OUTPUTS
+    // 6. OUTPUTS
     // ========================================
     new CfnOutput(this, 'ApptTypesTableName', {
       value: this.apptTypesTable.tableName,
@@ -151,6 +161,7 @@ export class PatientPortalApptTypesStack extends Stack {
     });
     new CfnOutput(this, 'ApptTypesApiUrl', {
       value: 'https://api.todaysdentalinsights.com/patient-portal-appttypes',
+      description: 'Full URL for this service via custom domain',
       exportName: `${Stack.of(this).stackName}-ApptTypesApiUrl`,
     });
   }
