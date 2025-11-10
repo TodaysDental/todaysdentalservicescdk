@@ -1,7 +1,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
-  ScanCommand,
+  QueryCommand, // Replaced Scan with Query for efficiency
   GetCommand,
   PutCommand,
   DeleteCommand,
@@ -12,7 +12,8 @@ const client = new DynamoDBClient({});
 const dynamo = DynamoDBDocumentClient.from(client);
 
 const TABLE_NAME = process.env.TABLE_NAME || "";
-const PRIMARY_KEY = process.env.PRIMARY_KEY || "AppointmentTypeNum";
+const PARTITION_KEY = process.env.PARTITION_KEY || "clinicId";
+const SORT_KEY = process.env.SORT_KEY || "AppointmentTypeNum";
 
 // Helper for uniform responses
 const createResponse = (statusCode: number, body: any): APIGatewayProxyResult => {
@@ -30,45 +31,64 @@ const createResponse = (statusCode: number, body: any): APIGatewayProxyResult =>
 };
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  console.log("Request:", event.httpMethod, event.path, event.body);
+  console.log("Request:", event.httpMethod, event.path, event.queryStringParameters, event.body);
   const method = event.httpMethod;
   const pathParameters = event.pathParameters;
+  const queryParameters = event.queryStringParameters;
 
   try {
     switch (method) {
       case "GET":
+        // Require clinicId for ALL get operations for security/partitioning
+        if (!queryParameters || !queryParameters[PARTITION_KEY]) {
+           return createResponse(400, { message: `Missing required query parameter: ${PARTITION_KEY}` });
+        }
+        const clinicId = queryParameters[PARTITION_KEY];
+
         if (pathParameters && pathParameters.id) {
-          // GET /patient-portal-appttypes/{id}
+          // GET /appttypes/{id}?clinicId=... -> Get single item by PK + SK
           const data = await dynamo.send(
             new GetCommand({
               TableName: TABLE_NAME,
-              Key: { [PRIMARY_KEY]: Number(pathParameters.id) },
+              Key: {
+                  [PARTITION_KEY]: clinicId,
+                  [SORT_KEY]: Number(pathParameters.id)
+              },
             })
           );
           return data.Item
             ? createResponse(200, data.Item)
             : createResponse(404, { message: "Appointment type not found" });
         } else {
-          // GET /patient-portal-appttypes
-          const data = await dynamo.send(new ScanCommand({ TableName: TABLE_NAME }));
+          // GET /appttypes?clinicId=... -> Query all items for this clinic
+          const data = await dynamo.send(new QueryCommand({
+              TableName: TABLE_NAME,
+              KeyConditionExpression: "#pk = :pk",
+              ExpressionAttributeNames: {
+                  "#pk": PARTITION_KEY
+              },
+              ExpressionAttributeValues: {
+                  ":pk": clinicId
+              }
+          }));
           return createResponse(200, { appointmentTypes: data.Items || [] });
         }
 
       case "POST":
       case "PUT":
-        // POST /patient-portal-appttypes
+        // POST/PUT /appttypes - Body must contain both clinicId and AppointmentTypeNum
         if (!event.body) return createResponse(400, { message: "Missing request body" });
         const item = JSON.parse(event.body);
 
-        // Validate Primary Key exists
-        if (item[PRIMARY_KEY] === undefined || item[PRIMARY_KEY] === null) {
-             return createResponse(400, { message: `Missing required field: ${PRIMARY_KEY}` });
+        // Validate Keys exist
+        if (!item[PARTITION_KEY] || item[SORT_KEY] === undefined) {
+             return createResponse(400, { message: `Missing required fields: ${PARTITION_KEY} and ${SORT_KEY}` });
         }
 
-        // Enforce Primary Key as Number to match DynamoDB schema
-        item[PRIMARY_KEY] = Number(item[PRIMARY_KEY]);
+        // Enforce types
+        item[PARTITION_KEY] = String(item[PARTITION_KEY]);
+        item[SORT_KEY] = Number(item[SORT_KEY]);
 
-        // DynamoDB will automatically store all other fields (value, label, duration, opNum)
         await dynamo.send(
           new PutCommand({
             TableName: TABLE_NAME,
@@ -78,17 +98,24 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return createResponse(200, { message: "Operation successful", item });
 
       case "DELETE":
-        // DELETE /patient-portal-appttypes/{id}
+        // DELETE /appttypes/{id}?clinicId=...
         if (!pathParameters || !pathParameters.id) {
           return createResponse(400, { message: "Missing ID in path for DELETE" });
         }
+        if (!queryParameters || !queryParameters[PARTITION_KEY]) {
+           return createResponse(400, { message: `Missing required query parameter for DELETE: ${PARTITION_KEY}` });
+        }
+
         await dynamo.send(
           new DeleteCommand({
             TableName: TABLE_NAME,
-            Key: { [PRIMARY_KEY]: Number(pathParameters.id) },
+            Key: {
+                [PARTITION_KEY]: queryParameters[PARTITION_KEY],
+                [SORT_KEY]: Number(pathParameters.id)
+            },
           })
         );
-        return createResponse(200, { message: `Item ${pathParameters.id} deleted` });
+        return createResponse(200, { message: `Item deleted` });
 
       case "OPTIONS":
         return createResponse(200, {});

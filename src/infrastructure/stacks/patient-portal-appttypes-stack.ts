@@ -24,7 +24,9 @@ export class PatientPortalApptTypesStack extends Stack {
     // DYNAMODB TABLE
     // ========================================
     this.apptTypesTable = new dynamodb.Table(this, 'ApptTypesTable', {
-      partitionKey: { name: 'AppointmentTypeNum', type: dynamodb.AttributeType.NUMBER },
+      // UPDATED: Composite Primary Key
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'AppointmentTypeNum', type: dynamodb.AttributeType.NUMBER },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
       tableName: 'todaysdentalinsights-PatientPortal-ApptTypes',
@@ -81,8 +83,7 @@ export class PatientPortalApptTypesStack extends Stack {
     // LAMBDA FUNCTION
     // ========================================
     this.apptTypesFn = new nodelambda.NodejsFunction(this, 'ApptTypesHandler', {
-      // You might want to organize handlers into subfolders now, e.g. services/patient-portal/appttypes.ts
-      entry: path.join(__dirname, '../../services/patient-portal/appttypes.ts'),
+      entry: path.join(__dirname, '../../src/services/patient-portal/appttypes.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 256,
@@ -93,7 +94,9 @@ export class PatientPortalApptTypesStack extends Stack {
       },
       environment: {
         TABLE_NAME: this.apptTypesTable.tableName,
-        PRIMARY_KEY: 'AppointmentTypeNum',
+        // UPDATED: New key definitions
+        PARTITION_KEY: 'clinicId',
+        SORT_KEY: 'AppointmentTypeNum',
       },
     });
 
@@ -102,7 +105,6 @@ export class PatientPortalApptTypesStack extends Stack {
     // ========================================
     // API ROUTES
     // ========================================
-    // Root resource maps to /patient-portal/appttypes via custom domain
     const integration = new apigateway.LambdaIntegration(this.apptTypesFn);
 
     this.api.root.addMethod('GET', integration, {
@@ -133,23 +135,8 @@ export class PatientPortalApptTypesStack extends Stack {
       methodResponses: [{ statusCode: '200' }],
     });
 
-    // ========================================
-    // DOMAIN MAPPING
-    // ========================================
-    // Mapping: api.todaysdentalinsights.com/patient-portal/appttypes -> This API's root
-    // IMPORTANT: This assumes the domain is set up to handle multi-level base paths
-    // or that you want this specifically at this long path.
-    //
-    // Option A: Base path 'patient-portal/appttypes' (might not be supported by CfnBasePathMapping depending on exact AWS features at the time, usually it's single level).
-    //
-    // Option B (Better): Base path 'patient-portal-appttypes' -> api.todaysdentalinsights.com/patient-portal-appttypes
-    //
-    // Option C (Best if you control the main Patient Portal API): Add this as a resource to the EXISTING Patient Portal stack instead of a new stack.
-    //
-    // Assuming you want a separate stack, let's try a distinct base path to be safe:
     new apigateway.CfnBasePathMapping(this, 'ApptTypesBasePathMapping', {
       domainName: 'api.todaysdentalinsights.com',
-      // Using a distinct base path to avoid conflict with /patient-portal
       basePath: 'patient-portal-appttypes',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
