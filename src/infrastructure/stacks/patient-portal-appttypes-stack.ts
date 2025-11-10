@@ -6,7 +6,7 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import { Construct } from 'constructs';
 import * as path from 'path';
-// Assuming this is the correct path to your new CORS utility file
+// Assuming this stack is in src/infrastructure/stacks/, this path goes to src/shared/utils/cors
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface PatientPortalApptTypesStackProps extends StackProps {
@@ -26,6 +26,7 @@ export class PatientPortalApptTypesStack extends Stack {
     // 1. DYNAMODB TABLE
     // ========================================
     this.apptTypesTable = new dynamodb.Table(this, 'ApptTypesTable', {
+      // Composite Primary Key: clinicId (PK) + AppointmentTypeNum (SK)
       partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'AppointmentTypeNum', type: dynamodb.AttributeType.NUMBER },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -37,14 +38,14 @@ export class PatientPortalApptTypesStack extends Stack {
     // 2. API GATEWAY SETUP (BASE)
     // ========================================
     
-    // Get the dynamic CORS config from your utility file
+    // Load dynamic CORS configuration
     const corsConfig = getCdkCorsConfig();
 
     this.api = new apigateway.RestApi(this, 'PatientPortalApptTypesApi', {
       restApiName: 'PatientPortalApptTypesApi',
       description: 'API for OpenDental Patient Portal Appointment Types',
-      // Use the imported config here
       defaultCorsPreflightOptions: {
+        // Use allowed origins from clinics.json via util
         allowOrigins: corsConfig.allowOrigins,
         allowMethods: corsConfig.allowMethods,
         allowHeaders: corsConfig.allowHeaders,
@@ -58,25 +59,25 @@ export class PatientPortalApptTypesStack extends Stack {
       },
     });
 
-    // Get the dynamic error headers from your utility file
+    // Load dynamic error response headers
     const errorHeaders = getCorsErrorHeaders();
 
     new apigateway.GatewayResponse(this, 'GatewayResponseDefault4XX', {
       restApi: this.api,
       type: apigateway.ResponseType.DEFAULT_4XX,
-      responseHeaders: errorHeaders, // Use imported config
+      responseHeaders: errorHeaders,
     });
 
     new apigateway.GatewayResponse(this, 'GatewayResponseDefault5XX', {
       restApi: this.api,
       type: apigateway.ResponseType.DEFAULT_5XX,
-      responseHeaders: errorHeaders, // Use imported config
+      responseHeaders: errorHeaders,
     });
 
     new apigateway.GatewayResponse(this, 'GatewayResponseUnauthorized', {
       restApi: this.api,
       type: apigateway.ResponseType.UNAUTHORIZED,
-      responseHeaders: errorHeaders, // Use imported config
+      responseHeaders: errorHeaders,
     });
 
     this.authorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'CognitoAuthorizer', {
@@ -87,7 +88,8 @@ export class PatientPortalApptTypesStack extends Stack {
     // 3. LAMBDA FUNCTION
     // ========================================
     this.apptTypesFn = new nodelambda.NodejsFunction(this, 'ApptTypesHandler', {
-      entry: path.join(__dirname, '../src/services/patient-portal/appttypes.ts'),
+      // Path correction: Go up two levels from stacks/ to src/, then down to services/
+      entry: path.join(__dirname, '../../services/patient-portal/appttypes.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 256,
@@ -110,6 +112,7 @@ export class PatientPortalApptTypesStack extends Stack {
     // ========================================
     const integration = new apigateway.LambdaIntegration(this.apptTypesFn);
 
+    // Root methods (POST/PUT to create, GET to list all for a clinic)
     this.api.root.addMethod('GET', integration, {
       authorizer: this.authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
@@ -126,7 +129,7 @@ export class PatientPortalApptTypesStack extends Stack {
       methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
     });
 
-    // Route: /{id}
+    // Single item methods (GET one, DELETE one)
     const singleItem = this.api.root.addResource('{id}');
     singleItem.addMethod('DELETE', integration, {
       authorizer: this.authorizer,
@@ -138,9 +141,6 @@ export class PatientPortalApptTypesStack extends Stack {
       authorizationType: apigateway.AuthorizationType.COGNITO,
       methodResponses: [{ statusCode: '200' }],
     });
-    
-    // Note: We do NOT need a manual .addMethod('OPTIONS') because
-    // 'defaultCorsPreflightOptions' handles it for us.
 
     // ========================================
     // 5. DOMAIN MAPPING
