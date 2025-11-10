@@ -7,18 +7,17 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
 import { Construct } from 'constructs';
 import * as path from 'path';
 
-// Extend props to include userPool for auth, matching the reference
-export interface PatientPortalStackProps extends StackProps {
+export interface PatientPortalApptTypesStackProps extends StackProps {
   userPool: cognito.IUserPool;
 }
 
-export class PatientPortalStack extends Stack {
+export class PatientPortalApptTypesStack extends Stack {
   public readonly apptTypesTable: dynamodb.Table;
   public readonly apptTypesFn: nodelambda.NodejsFunction;
   public readonly api: apigateway.RestApi;
   public readonly authorizer: apigateway.CognitoUserPoolsAuthorizer;
 
-  constructor(scope: Construct, id: string, props: PatientPortalStackProps) {
+  constructor(scope: Construct, id: string, props: PatientPortalApptTypesStackProps) {
     super(scope, id, props);
 
     // ========================================
@@ -27,15 +26,15 @@ export class PatientPortalStack extends Stack {
     this.apptTypesTable = new dynamodb.Table(this, 'ApptTypesTable', {
       partitionKey: { name: 'AppointmentTypeNum', type: dynamodb.AttributeType.NUMBER },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: RemovalPolicy.RETAIN, // Changed to RETAIN for prod safety
+      removalPolicy: RemovalPolicy.RETAIN,
       tableName: 'todaysdentalinsights-PatientPortal-ApptTypes',
     });
 
     // ========================================
     // API GATEWAY SETUP
     // ========================================
-    this.api = new apigateway.RestApi(this, 'PatientPortalApi', {
-      restApiName: 'PatientPortalApi',
+    this.api = new apigateway.RestApi(this, 'PatientPortalApptTypesApi', {
+      restApiName: 'PatientPortalApptTypesApi',
       description: 'API for OpenDental Patient Portal Appointment Types',
       defaultCorsPreflightOptions: {
         allowOrigins: apigateway.Cors.ALL_ORIGINS,
@@ -50,8 +49,6 @@ export class PatientPortalStack extends Stack {
       },
     });
 
-    // Define standard CORS headers for 4xx/5xx responses
-    // (Replaces the missing getCorsErrorHeaders() util from reference)
     const corsErrorHeaders = {
       'Access-Control-Allow-Origin': "'*'",
       'Access-Control-Allow-Headers': "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
@@ -84,17 +81,15 @@ export class PatientPortalStack extends Stack {
     // LAMBDA FUNCTION
     // ========================================
     this.apptTypesFn = new nodelambda.NodejsFunction(this, 'ApptTypesHandler', {
-      entry: path.join(__dirname, '../src/handler.ts'),
+      // You might want to organize handlers into subfolders now, e.g. services/patient-portal/appttypes.ts
+      entry: path.join(__dirname, '../../services/patient-portal/appttypes.ts'),
       handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_22_X, // Upgraded to match reference
+      runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 256,
       timeout: Duration.seconds(30),
       bundling: {
         format: nodelambda.OutputFormat.CJS,
         target: 'node22',
-        // Force AWS SDK v3 to be bundled if not present in runtime yet,
-        // or exclude if you prefer using the runtime version.
-        // Reference didn't explicitly exclude, so we keep default bundling.
       },
       environment: {
         TABLE_NAME: this.apptTypesTable.tableName,
@@ -107,42 +102,32 @@ export class PatientPortalStack extends Stack {
     // ========================================
     // API ROUTES
     // ========================================
-    // The requirement was /patient-portal/appttypes.
-    // We will map the custom domain base path to 'patient-portal',
-    // so here we only need to add 'appttypes' to the root.
-    const apptTypesResource = this.api.root.addResource('appttypes');
-
+    // Root resource maps to /patient-portal/appttypes via custom domain
     const integration = new apigateway.LambdaIntegration(this.apptTypesFn);
 
-    // GET /appttypes (List all)
-    apptTypesResource.addMethod('GET', integration, {
+    this.api.root.addMethod('GET', integration, {
       authorizer: this.authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
       methodResponses: [{ statusCode: '200' }],
     });
-    // POST /appttypes (Create new)
-    apptTypesResource.addMethod('POST', integration, {
+    this.api.root.addMethod('POST', integration, {
       authorizer: this.authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
       methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
     });
-    // PUT /appttypes (Update existing)
-    apptTypesResource.addMethod('PUT', integration, {
+    this.api.root.addMethod('PUT', integration, {
       authorizer: this.authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
       methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
     });
 
-    // Single item operations: /appttypes/{id}
-    const singleApptTypeResource = apptTypesResource.addResource('{id}');
-
-    singleApptTypeResource.addMethod('DELETE', integration, {
+    const singleItem = this.api.root.addResource('{id}');
+    singleItem.addMethod('DELETE', integration, {
       authorizer: this.authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
       methodResponses: [{ statusCode: '200' }, { statusCode: '403' }],
     });
-
-    singleApptTypeResource.addMethod('GET', integration, {
+    singleItem.addMethod('GET', integration, {
       authorizer: this.authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
       methodResponses: [{ statusCode: '200' }],
@@ -151,12 +136,21 @@ export class PatientPortalStack extends Stack {
     // ========================================
     // DOMAIN MAPPING
     // ========================================
-    // Maps api.todaysdentalinsights.com/patient-portal -> This API
-    // NOTE: This resource requires that the custom domain 'api.todaysdentalinsights.com'
-    // already exists in API Gateway in your account.
-    new apigateway.CfnBasePathMapping(this, 'PatientPortalApiBasePathMapping', {
+    // Mapping: api.todaysdentalinsights.com/patient-portal/appttypes -> This API's root
+    // IMPORTANT: This assumes the domain is set up to handle multi-level base paths
+    // or that you want this specifically at this long path.
+    //
+    // Option A: Base path 'patient-portal/appttypes' (might not be supported by CfnBasePathMapping depending on exact AWS features at the time, usually it's single level).
+    //
+    // Option B (Better): Base path 'patient-portal-appttypes' -> api.todaysdentalinsights.com/patient-portal-appttypes
+    //
+    // Option C (Best if you control the main Patient Portal API): Add this as a resource to the EXISTING Patient Portal stack instead of a new stack.
+    //
+    // Assuming you want a separate stack, let's try a distinct base path to be safe:
+    new apigateway.CfnBasePathMapping(this, 'ApptTypesBasePathMapping', {
       domainName: 'api.todaysdentalinsights.com',
-      basePath: 'patient-portal',
+      // Using a distinct base path to avoid conflict with /patient-portal
+      basePath: 'patient-portal-appttypes',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
     });
@@ -166,28 +160,11 @@ export class PatientPortalStack extends Stack {
     // ========================================
     new CfnOutput(this, 'ApptTypesTableName', {
       value: this.apptTypesTable.tableName,
-      description: 'Name of the Appointment Types DynamoDB table',
       exportName: `${Stack.of(this).stackName}-ApptTypesTableName`,
     });
-
-    // The direct API URL (useful for testing before custom domain propagates)
-    new CfnOutput(this, 'PatientPortalApiUrl', {
-      value: this.api.url,
-      description: 'Patient Portal API Gateway URL',
-      exportName: `${Stack.of(this).stackName}-PatientPortalApiUrl`,
-    });
-
-    // The custom domain URL for this service
-    new CfnOutput(this, 'PatientPortalCustomDomainUrl', {
-      value: 'https://api.todaysdentalinsights.com/patient-portal/appttypes',
-      description: 'Patient Portal Custom Domain URL',
-      exportName: `${Stack.of(this).stackName}-PatientPortalCustomDomainUrl`,
-    });
-
-    new CfnOutput(this, 'PatientPortalApiId', {
-      value: this.api.restApiId,
-      description: 'Patient Portal API Gateway ID',
-      exportName: `${Stack.of(this).stackName}-PatientPortalApiId`,
+    new CfnOutput(this, 'ApptTypesApiUrl', {
+      value: 'https://api.todaysdentalinsights.com/patient-portal-appttypes',
+      exportName: `${Stack.of(this).stackName}-ApptTypesApiUrl`,
     });
   }
 }

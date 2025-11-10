@@ -19,6 +19,7 @@ import { OpenDentalStack } from './stacks/opendental-stack';
 import { NotificationsStack } from './stacks/notifications-stack';
 import { ChimeStack, type VoiceConnectorOriginationRouteConfig } from './stacks/chime-stack';
 import { HrStack } from './stacks/hr-stack';
+import { PatientPortalApptTypesStack } from './stacks/patient-portal-appttypes-stack';
 const app = new cdk.App();
 
 const env = {
@@ -278,7 +279,11 @@ const patientPortalStack = new PatientPortalStack(app, 'TodaysDentalInsightsPati
   consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
   consolidatedTransferServerBucket: openDentalStack.consolidatedSftpBucket.bucketName,
 });
-
+const patientPortalApptTypesStack = new PatientPortalApptTypesStack(app, 'TodaysDentalInsightsPatientPortalApptTypesV1', {
+  env,
+  userPool: coreStack.userPool,
+});
+patientPortalApptTypesStack.addDependency(coreStack);
 // 8. Chatbot Stack - WebSocket-based dental assistant chatbot (depends on core and clinic data)
 const chatbotStack = new ChatbotStack(app, 'TodaysDentalInsightsChatbotV2', {
   env,
