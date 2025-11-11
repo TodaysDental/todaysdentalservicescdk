@@ -45,7 +45,7 @@ export class PatientPortalApptTypesStack extends Stack {
         allowOrigins: corsConfig.allowOrigins,
         allowMethods: corsConfig.allowMethods,
         allowHeaders: corsConfig.allowHeaders,
-        allowCredentials: true,
+        // allowCredentials: true, // <-- REMOVED: To match templates-stack.ts behavior.
       },
       deployOptions: {
         stageName: 'prod',

@@ -180,8 +180,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         );
         return createResponse(200, { message: `Item '${labelToDelete}' deleted` }, requestOrigin);
 
-      case "OPTIONS":
-        return createResponse(200, {}, requestOrigin);
+      // case "OPTIONS": // <-- REMOVED: Let API Gateway handle preflight requests.
+      //   return createResponse(200, {}, requestOrigin);
 
       default:
         return createResponse(405, { message: `Unsupported method "${method}"` }, requestOrigin);
