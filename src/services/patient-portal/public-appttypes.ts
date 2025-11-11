@@ -2,24 +2,23 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
   QueryCommand,
+  GetCommand, // --- NEW: Import GetCommand
 } from "@aws-sdk/lib-dynamodb";
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
-import { buildCorsHeaders } from "../../shared/utils/cors"; // Assuming this is in your shared utils
+import { buildCorsHeaders } from "../../shared/utils/cors";
 
 const client = new DynamoDBClient({});
 const dynamo = DynamoDBDocumentClient.from(client);
 
-// The table name is passed from the CDK environment variables
 const TABLE_NAME = process.env.APPTTYPES_TABLE_NAME || "";
-// The partition key for the ApptTypes table is 'clinicId'
 const PARTITION_KEY = "clinicId";
+const SORT_KEY = "label"; // --- NEW: Define the Sort Key
 
 // Helper for uniform public responses
 const createResponse = (statusCode: number, body: any, requestOrigin?: string): APIGatewayProxyResult => {
   return {
     statusCode,
     headers: {
-      // Use the same CORS utility to ensure public access is correct
       ...buildCorsHeaders({}, requestOrigin), 
       "Content-Type": "application/json",
     },
@@ -42,20 +41,50 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const clinicId = event.pathParameters.clinicId;
+    // --- NEW: Check for the 'label' parameter ---
+    const label = event.pathParameters.label; 
 
     if (!TABLE_NAME) {
       throw new Error("TABLE_NAME environment variable is not set.");
     }
 
-    // Query all appointment types for the given clinicId
-    const data = await dynamo.send(new QueryCommand({
-        TableName: TABLE_NAME,
-        KeyConditionExpression: "#pk = :pk",
-        ExpressionAttributeNames: { "#pk": PARTITION_KEY },
-        ExpressionAttributeValues: { ":pk": clinicId }
-    }));
+    // --- NEW: LOGIC TO HANDLE BOTH ROUTES ---
+    if (label) {
+      // --- CASE 1: GET ONE BY LABEL ---
+      // The label from the URL will be URL-encoded (e.g., "New%20Patient")
+      // We must decode it to match the DynamoDB key.
+      const decodedLabel = decodeURIComponent(label);
 
-    return createResponse(200, { appointmentTypes: data.Items || [] }, requestOrigin);
+      console.log(`Fetching single item for clinicId: ${clinicId}, label: ${decodedLabel}`);
+      
+      const data = await dynamo.send(new GetCommand({
+          TableName: TABLE_NAME,
+          Key: { 
+              [PARTITION_KEY]: clinicId,
+              [SORT_KEY]: decodedLabel // Use the decoded label as the Sort Key
+          },
+      }));
+
+      if (!data.Item) {
+        return createResponse(404, { message: "Appointment type not found" }, requestOrigin);
+      }
+      // Return the single item directly
+      return createResponse(200, data.Item, requestOrigin);
+
+    } else {
+      // --- CASE 2: GET ALL FOR CLINIC (Existing Logic) ---
+      console.log(`Fetching all items for clinicId: ${clinicId}`);
+
+      const data = await dynamo.send(new QueryCommand({
+          TableName: TABLE_NAME,
+          KeyConditionExpression: "#pk = :pk",
+          ExpressionAttributeNames: { "#pk": PARTITION_KEY },
+          ExpressionAttributeValues: { ":pk": clinicId }
+      }));
+
+      // Return the array wrapped in an object
+      return createResponse(200, { appointmentTypes: data.Items || [] }, requestOrigin);
+    }
 
   } catch (error: any) {
     console.error("Error", error);
