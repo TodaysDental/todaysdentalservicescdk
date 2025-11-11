@@ -271,6 +271,65 @@ export class PatientPortalStack extends Stack {
     });
 
     // ===========================================
+    // PUBLIC APPOINTMENT TYPES ENDPOINT
+    // ===========================================
+
+    // 1. Get a reference to the existing ApptTypes table from the other stack
+    //    We use the known table name from 'patient-portal-appttypes-stack.ts'
+    const apptTypesTable = dynamodb.Table.fromTableName(
+      this,
+      'ImportedApptTypesTable',
+      'todaysdentalinsights-PatientPortal-ApptTypes-V3' //
+    );
+
+    // 2. Define the new Lambda function for the public endpoint
+    const publicApptTypesLambda = new lambdaNode.NodejsFunction(this, 'PublicApptTypesLambda', {
+      entry: path.join(__dirname, '..', '..', 'services', 'patient-portal', 'public-appttypes.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X, //
+      memorySize: 256,
+      timeout: Duration.seconds(10),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' }, //
+      environment: {
+        REGION: Stack.of(this).region,
+        APPTTYPES_TABLE_NAME: apptTypesTable.tableName,
+      },
+    });
+
+    // 3. Grant *read-only* permission to the new Lambda
+    apptTypesTable.grantReadData(publicApptTypesLambda);
+
+    // 4. Define the API Gateway integration
+    const publicApptTypesIntegration = new apigw.LambdaIntegration(publicApptTypesLambda);
+
+    // 5. Add the new route: /{clinicId}/appttypes
+    //    This resource is added to 'rootClinicResource' to match the custom domain path
+    //    .../patientportal/{clinicId} -> maps to -> /{clinicId}
+    const apptTypesResourceOnRoot = rootClinicResource.addResource('appttypes');
+    apptTypesResourceOnRoot.addMethod('GET', publicApptTypesIntegration, {
+      // NO authorizer - this makes it public
+      methodResponses: [
+        { statusCode: '200' },
+        { statusCode: '400' },
+        { statusCode: '404' },
+        { statusCode: '500' }
+      ],
+    });
+
+    // 6. Add the same route to the /patientportal/{clinicId} path for consistency
+    //    This maintains the existing pattern for the raw execute-api URL
+    const apptTypesResourceOnPortal = patientPortalResource.addResource('appttypes');
+    apptTypesResourceOnPortal.addMethod('GET', publicApptTypesIntegration, {
+      // NO authorizer - this makes it public
+      methodResponses: [
+        { statusCode: '200' },
+        { statusCode: '400' },
+        { statusCode: '404' },
+        { statusCode: '500' }
+      ],
+    });
+
+    // ===========================================
     // OUTPUTS
     // ===========================================
 
