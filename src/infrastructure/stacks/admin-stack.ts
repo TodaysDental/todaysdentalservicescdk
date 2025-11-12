@@ -32,7 +32,7 @@ export interface AdminStackProps extends StackProps {
 }
 
 export class AdminStack extends Stack {
-  public readonly registerFn: lambdaNode.NodejsFunction;
+  public readonly registerFnV3: lambdaNode.NodejsFunction;
   public readonly meFn: lambdaNode.NodejsFunction;
   public readonly usersFn: lambdaNode.NodejsFunction;
   public readonly mePresenceFn?: lambdaNode.NodejsFunction;
@@ -95,7 +95,7 @@ export class AdminStack extends Stack {
     // ========================================
 
     // Admin API Lambda (register)
-    this.registerFn = new lambdaNode.NodejsFunction(this, 'AdminRegisterFn', {
+    this.registerFnV3 = new lambdaNode.NodejsFunction(this, 'AdminRegisterFnV3', {
       entry: path.join(__dirname, '..', '..', 'services', 'admin', 'register.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
@@ -111,7 +111,7 @@ export class AdminStack extends Stack {
     });
 
     // Register Lambda permissions
-    this.registerFn.addToRolePolicy(new iam.PolicyStatement({
+    this.registerFnV3.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'cognito-idp:AdminCreateUser',
         'cognito-idp:AdminGetUser',
@@ -139,9 +139,7 @@ export class AdminStack extends Stack {
       },
     });
 
-    // ...existing code...
-    // START: ADD THIS CODE
-    // Grant permissions to the Users API Lambda
+    // Users Lambda permissions for Cognito operations
     this.usersFn.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'cognito-idp:ListUsers',
@@ -155,26 +153,19 @@ export class AdminStack extends Stack {
       resources: [props.userPoolArn],
     }));
 
-    // Grant DynamoDB permissions if the table name is provided
-    if (props.staffClinicInfoTableName) {
-      this.usersFn.addToRolePolicy(new iam.PolicyStatement({
-        actions: [
-          'dynamodb:Query',       // For getStaffInfoFromDynamoDB
-          'dynamodb:BatchWriteItem' // For syncStaffInfoInDynamoDB and deleteStaffInfoFromDynamoDB
-        ],
-        resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${props.staffClinicInfoTableName}`],
-      }));
-    }
+    // ...existing code...
 
     // If StaffClinicInfo table is provided, grant the register lambda read/write permissions
     if (props.staffClinicInfoTableName) {
-      this.registerFn.addToRolePolicy(new iam.PolicyStatement({
+      this.registerFnV3.addToRolePolicy(new iam.PolicyStatement({
         actions: [
           'dynamodb:PutItem',
           'dynamodb:UpdateItem',
           'dynamodb:GetItem',
           'dynamodb:Query',
-          'dynamodb:Scan'
+          'dynamodb:Scan',
+          'dynamodb:Query',       
+          'dynamodb:BatchWriteItem'
         ],
         resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${props.staffClinicInfoTableName}`],
       }));
@@ -267,7 +258,7 @@ export class AdminStack extends Stack {
 
     // User management routes
     const registerRes = this.api.root.addResource('register');
-    registerRes.addMethod('POST', new apigw.LambdaIntegration(this.registerFn), {
+    registerRes.addMethod('POST', new apigw.LambdaIntegration(this.registerFnV3), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.COGNITO,
       methodResponses: [{ statusCode: '200' }],
