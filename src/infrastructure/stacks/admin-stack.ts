@@ -152,6 +152,15 @@ export class AdminStack extends Stack {
       ],
       resources: [props.userPoolArn],
     }));
+    if (props.staffClinicInfoTableName) {
+      this.usersFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: [
+          'dynamodb:Query',        // For getStaffInfoFromDynamoDB
+          'dynamodb:BatchWriteItem'  // For syncStaffInfoInDynamoDB and deleteStaffInfoFromDynamoDB
+        ],
+        resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${props.staffClinicInfoTableName}`],
+      }));
+    }
 
     // ...existing code...
 
