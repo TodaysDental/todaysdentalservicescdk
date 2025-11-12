@@ -36,6 +36,7 @@ type PutUserBody = {
   clinics?: ClinicRole[];
   makeGlobalSuperAdmin?: boolean;
   staffDetails?: StaffClinicDetail[]; // Replaces obsolete per-user custom attributes
+  openDentalPerClinic?: StaffClinicDetail[];
 };
 
 const cognito = new CognitoIdentityProviderClient({});
@@ -165,8 +166,13 @@ export const handler = async (event: any) => {
       }
 
       // Sync per-clinic staff details in DynamoDB
-      if (STAFF_INFO_TABLE && body.staffDetails) { // Note: an empty array will clear all info
-          await syncStaffInfoInDynamoDB(pathUsername, body.staffDetails);
+      // if (STAFF_INFO_TABLE && body.staffDetails) { // Note: an empty array will clear all info
+      //     await syncStaffInfoInDynamoDB(pathUsername, body.staffDetails);
+      // }
+      const staffDetailsToSync = body.openDentalPerClinic ?? body.staffDetails;
+
+      if (STAFF_INFO_TABLE && staffDetailsToSync) { // Note: an empty array will clear all info
+          await syncStaffInfoInDynamoDB(pathUsername, staffDetailsToSync);
       }
 
       // Sync Cognito groups
