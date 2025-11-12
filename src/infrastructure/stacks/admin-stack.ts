@@ -140,6 +140,31 @@ export class AdminStack extends Stack {
     });
 
     // ...existing code...
+    // START: ADD THIS CODE
+    // Grant permissions to the Users API Lambda
+    this.usersFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'cognito-idp:ListUsers',
+        'cognito-idp:AdminListGroupsForUser',
+        'cognito-idp:AdminGetUser',
+        'cognito-idp:AdminUpdateUserAttributes',
+        'cognito-idp:AdminAddUserToGroup',
+        'cognito-idp:AdminRemoveUserFromGroup',
+        'cognito-idp:AdminDeleteUser',
+      ],
+      resources: [props.userPoolArn],
+    }));
+
+    // Grant DynamoDB permissions if the table name is provided
+    if (props.staffClinicInfoTableName) {
+      this.usersFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: [
+          'dynamodb:Query',       // For getStaffInfoFromDynamoDB
+          'dynamodb:BatchWriteItem' // For syncStaffInfoInDynamoDB and deleteStaffInfoFromDynamoDB
+        ],
+        resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${props.staffClinicInfoTableName}`],
+      }));
+    }
 
     // If StaffClinicInfo table is provided, grant the register lambda read/write permissions
     if (props.staffClinicInfoTableName) {

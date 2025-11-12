@@ -16,9 +16,24 @@ import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
 
 import { buildCorsHeaders } from "../../shared/utils/cors";
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from "jose";
-type RegisterClinic = { clinicId: string | number; role: string };
+// type RegisterClinic = { clinicId: string | number; role: string };
 
 // Defines the detailed staff info structure for a single clinic
+
+// This type now mirrors StaffClinicDetail but allows clinicId to be a number
+type RegisterClinic = {
+  clinicId: string | number;
+  role: string;
+  UserNum?: number;
+  UserName?: string;
+  EmployeeNum?: number;
+  employeeName?: string;
+  ProviderNum?: string;
+  providerName?: string;
+  ClinicNum?: string;
+  hourlyPay?: string | number;
+};
+
 type StaffClinicDetail = {
   clinicId: string;
   UserNum?: number;
@@ -98,8 +113,11 @@ export const handler = async (event: any) => {
     }
 
     // Save detailed staff info to DynamoDB
-    if (STAFF_INFO_TABLE && Array.isArray(body.staffDetails) && body.staffDetails.length > 0) {
-      await saveStaffInfoToDynamoDB(username, body.staffDetails);
+    // if (STAFF_INFO_TABLE && Array.isArray(body.staffDetails) && body.staffDetails.length > 0) {
+    //   await saveStaffInfoToDynamoDB(username, body.staffDetails);
+    // }
+    if (STAFF_INFO_TABLE && Array.isArray(body.clinics) && body.clinics.length > 0) {
+      await saveStaffInfoToDynamoDB(username, body.clinics);
     }
 
     return httpOk({
@@ -162,7 +180,12 @@ async function ensureUserExists({ userPoolId, username, body }: { userPoolId: st
 }
 
 // Function to save staff info to the StaffClinicInfo DynamoDB table
-async function saveStaffInfoToDynamoDB(email: string, details: StaffClinicDetail[]) {
+// async function saveStaffInfoToDynamoDB(email: string, details: StaffClinicDetail[]) {
+//   if (!STAFF_INFO_TABLE) {
+//     console.warn('STAFF_CLINIC_INFO_TABLE is not configured. Skipping save.');
+//     return;
+//   }
+async function saveStaffInfoToDynamoDB(email: string, details: RegisterClinic[]) {
   if (!STAFF_INFO_TABLE) {
     console.warn('STAFF_CLINIC_INFO_TABLE is not configured. Skipping save.');
     return;
