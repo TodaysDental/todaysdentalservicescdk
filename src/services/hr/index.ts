@@ -4,6 +4,10 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand, ScanCommand, PutCommand, DeleteCommand, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from "jose";
 import { v4 as uuidv4 } from 'uuid';
+import {
+  CognitoIdentityProviderClient,
+  AdminGetUserCommand,
+} from "@aws-sdk/client-cognito-identity-provider";
 
 // Environment Variables
 const SHIFTS_TABLE = process.env.SHIFTS_TABLE!;
@@ -13,7 +17,7 @@ const USER_POOL_ID = process.env.USER_POOL_ID;
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-
+const cognito = new CognitoIdentityProviderClient({});
 // ========================================
 // AUTH & ROUTING (Similar to your users.ts)
 // ========================================
@@ -53,10 +57,18 @@ async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; p
   }
 }
 
-// Same logic from your users.ts
-function callerAuthContextFromClaims(payload: JWTPayload): { username: string; isSuperAdmin: boolean; rolesByClinic: Record<string, string>; } {
-  const username = String(payload.email || payload.username || '').toLowerCase();
-  const ctx: { username: string, isSuperAdmin: boolean; rolesByClinic: Record<string, string>; } = { username, isSuperAdmin: false, rolesByClinic: {} };
+// ** FIX **: This function now correctly returns staffId (UUID) and email separately.
+function callerAuthContextFromClaims(payload: JWTPayload): { staffId: string; email: string; isSuperAdmin: boolean; rolesByClinic: Record<string, string>; } {
+  // 'sub' or 'username' claim is the UUID (staffId)
+  const staffId = String(payload.sub || payload.username || '');
+  const email = String(payload.email || '').toLowerCase();
+  
+  const ctx: { staffId: string, email: string, isSuperAdmin: boolean; rolesByClinic: Record<string, string>; } = { 
+    staffId, 
+    email, 
+    isSuperAdmin: false, 
+    rolesByClinic: {} 
+  };
   
   const groups = Array.isArray((payload as any)["cognito:groups"]) ? ((payload as any)["cognito:groups"] as string[]) : [];
   for (const g of groups) {
@@ -115,6 +127,7 @@ export const handler = async (event: any) => {
     return httpErr(verifyResult.code, verifyResult.message);
   }
 
+  // ** FIX **: 'caller' now contains staffId (UUID) and email
   const caller = callerAuthContextFromClaims(verifyResult.payload);
   const isAdmin = isRoleAdmin(caller);
 
@@ -124,6 +137,7 @@ export const handler = async (event: any) => {
   try {
     // GET /dashboard
     if (method === 'GET' && path === '/dashboard') {
+      // ** FIX **: Pass the full caller object
       return getDashboard(caller, isAdmin);
     }
     
@@ -139,6 +153,7 @@ export const handler = async (event: any) => {
     // --- SHIFTS ---
     // GET /shifts
     if (method === 'GET' && path === '/shifts') {
+      // ** FIX **: Pass the full caller object
       return getShifts(caller, isAdmin, event.queryStringParameters);
     }
     // POST /shifts
@@ -161,21 +176,25 @@ export const handler = async (event: any) => {
     // PUT /shifts/{shiftId}/reject
     if (method === 'PUT' && path.match(/^\/shifts\/[^\/]+\/reject$/)) {
       const shiftId = path.split('/')[2];
-      return rejectShift(shiftId, caller.username);
+      // ** FIX **: Pass staffId (UUID) for comparison
+      return rejectShift(shiftId, caller.staffId);
     }
 
     // --- LEAVE ---
     // GET /leave
     if (method === 'GET' && path === '/leave') {
+      // ** FIX **: Pass the full caller object
       return getLeave(caller, isAdmin);
     }
     // POST /leave
     if (method === 'POST' && path === '/leave') {
-      return createLeave(caller.username, JSON.parse(event.body));
+      // ** FIX **: Pass staffId (UUID)
+      return createLeave(caller.staffId, JSON.parse(event.body));
     }
     // DELETE /leave/{leaveId}
     if (method === 'DELETE' && path.match(/^\/leave\/[^\/]+$/)) {
       const leaveId = path.split('/')[2];
+      // ** FIX **: Pass the full caller object for comparison
       return deleteLeave(leaveId, caller, isAdmin);
     }
     // PUT /leave/{leaveId}/approve
@@ -202,8 +221,12 @@ export const handler = async (event: any) => {
 // BUSINESS LOGIC
 // ========================================
 
+// ** FIX **: Updated function signature
+type CallerContext = { staffId: string; email: string; isSuperAdmin: boolean; rolesByClinic: Record<string, string>; };
+
 // --- DASHBOARD ---
-async function getDashboard(caller: { username: string; isSuperAdmin: boolean; rolesByClinic: Record<string, string>; }, isAdmin: boolean) {
+// ** FIX **: Use correct caller type
+async function getDashboard(caller: CallerContext, isAdmin: boolean) {
   if (isAdmin) {
     // Admin Dashboard: Fetch aggregate stats (Total Staff, Budget, etc.)
     // This requires querying the StaffClinicInfo table and Shifts table
@@ -228,7 +251,8 @@ async function getDashboard(caller: { username: string; isSuperAdmin: boolean; r
         IndexName: 'byStaff',
         KeyConditionExpression: 'staffId = :staffId AND startTime < :now',
         ExpressionAttributeValues: {
-            ':staffId': caller.username,
+            // ** FIX **: Use caller.staffId (UUID)
+            ':staffId': caller.staffId,
             ':now': new Date().toISOString()
         }
     }));
@@ -251,7 +275,8 @@ async function getDashboard(caller: { username: string; isSuperAdmin: boolean; r
 }
 
 // --- SHIFTS ---
-async function getShifts(caller: { username: string; isSuperAdmin: boolean; rolesByClinic: Record<string, string>; }, isAdmin: boolean, queryParams: any) {
+// ** FIX **: Use correct caller type
+async function getShifts(caller: CallerContext, isAdmin: boolean, queryParams: any) {
   const { clinicId, startDate, endDate, status } = queryParams || {};
 
   if (isAdmin) {
@@ -274,7 +299,8 @@ async function getShifts(caller: { username: string; isSuperAdmin: boolean; role
   } else {
     // Staff: Get their own shifts, optionally filtered by status
     let KeyConditionExpression = 'staffId = :staffId';
-    const ExpressionAttributeValues: Record<string, any> = { ':staffId': caller.username };
+    // ** FIX **: Use caller.staffId (UUID)
+    const ExpressionAttributeValues: Record<string, any> = { ':staffId': caller.staffId };
 
     if (startDate && endDate) {
         KeyConditionExpression += ' AND startTime BETWEEN :startDate AND :endDate';
@@ -300,31 +326,54 @@ async function getShifts(caller: { username: string; isSuperAdmin: boolean; role
   }
 }
 
+// ** CORRECTED **: This function logic is correct as per our last fix.
 async function createShift(body: any) {
   const { staffId, clinicId, startTime, endTime } = body;
   if (!staffId || !clinicId || !startTime || !endTime) {
     return httpErr(400, "staffId, clinicId, startTime, and endTime are required");
   }
+  let email: string | undefined;
+  try {
+    const user = await cognito.send(new AdminGetUserCommand({
+        UserPoolId: USER_POOL_ID,
+        Username: staffId 
+    }));
+    email = (user.UserAttributes || []).find(a => a.Name === 'email')?.Value?.toLowerCase();
+  } catch (err) {
+    console.error("Cognito user lookup failed:", err);
+    return httpErr(404, "Staff user not found in Cognito");
+  }
 
+  if (!email) {
+    return httpErr(404, "Staff email not found, cannot determine pay");
+  }
   // Get staff's hourly rate from the StaffClinicInfo table
   const { Item: staffInfo } = await ddb.send(new GetCommand({
       TableName: STAFF_INFO_TABLE,
-      Key: { email: staffId, clinicId: clinicId }
+      Key: { email: email, clinicId: clinicId } // Use the email we just found
   }));
 
-  const hourlyRate = staffInfo?.hourlyPay || 0;
+  const hourlyRate = staffInfo?.hourlyPay ? parseFloat(String(staffInfo.hourlyPay)) : 0;
   const totalHours = (new Date(endTime).getTime() - new Date(startTime).getTime()) / (1000 * 60 * 60);
+  
+  // Handle invalid times
+  if (totalHours <= 0) {
+      return httpErr(400, "End time must be after start time");
+  }
+
   const pay = totalHours * hourlyRate;
 
   const shiftId = uuidv4();
   const shift = {
     shiftId,
-    staffId,
+    staffId, // This is the UUID, which is fine
+    email: email, // Store the email for reference
     clinicId,
     startTime,
     endTime,
-    totalHours,
-    pay,
+    totalHours: parseFloat(totalHours.toFixed(2)),
+    hourlyRate: hourlyRate, // Store the rate used
+    pay: parseFloat(pay.toFixed(2)),
     status: 'scheduled', // (scheduled, completed, rejected)
     ...body // Include other details like role
   };
@@ -333,44 +382,78 @@ async function createShift(body: any) {
   return httpOk({ shiftId, message: "Shift created successfully" });
 }
 
+// ** FIX **: This function is now corrected with the same logic as createShift
 async function updateShift(shiftId: string, body: any) {
-    // In a real app, you'd rebuild the update expressions
-    // For simplicity, we'll just re-calculate pay and Overwrite
     const { Item: oldShift } = await ddb.send(new GetCommand({ TableName: SHIFTS_TABLE, Key: { shiftId }}));
     if (!oldShift) return httpErr(404, "Shift not found");
 
-    // Recalculate pay if needed
+    // Determine the final staffId and clinicId
+    const staffId = body.staffId || oldShift.staffId; // UUID
+    const clinicId = body.clinicId || oldShift.clinicId;
+
+    // ** ADDED **: We must re-fetch the user's email to get the hourly rate
+    let email: string | undefined;
+    try {
+        const user = await cognito.send(new AdminGetUserCommand({
+            UserPoolId: USER_POOL_ID,
+            Username: staffId // Use the final staffId (UUID)
+        }));
+        email = (user.UserAttributes || []).find(a => a.Name === 'email')?.Value?.toLowerCase();
+    } catch (err) {
+        console.error("Cognito user lookup failed:", err);
+        return httpErr(404, "Staff user not found in Cognito");
+    }
+
+    if (!email) {
+        return httpErr(404, "Staff email not found, cannot determine pay");
+    }
+
+    // Get staff's hourly rate from the StaffClinicInfo table
     const { Item: staffInfo } = await ddb.send(new GetCommand({
       TableName: STAFF_INFO_TABLE,
-      Key: { email: body.staffId || oldShift.staffId, clinicId: body.clinicId || oldShift.clinicId }
+      Key: { email: email, clinicId: clinicId } // Use email and clinicId
     }));
     
-    const hourlyRate = staffInfo?.hourlyPay || 0;
+    const hourlyRate = staffInfo?.hourlyPay ? parseFloat(String(staffInfo.hourlyPay)) : 0;
     const startTime = body.startTime || oldShift.startTime;
     const endTime = body.endTime || oldShift.endTime;
     const totalHours = (new Date(endTime).getTime() - new Date(startTime).getTime()) / (1000 * 60 * 60);
+    
+    // Handle invalid times
+    if (totalHours <= 0) {
+        return httpErr(400, "End time must be after start time");
+    }
+
     const pay = totalHours * hourlyRate;
 
     const updatedShift = {
         ...oldShift,
         ...body,
         shiftId,
-        totalHours,
-        pay
+        staffId, // Ensure staffId is the UUID
+        email: email, // Update the email
+        clinicId,
+        totalHours: parseFloat(totalHours.toFixed(2)),
+        hourlyRate: hourlyRate,
+        pay: parseFloat(pay.toFixed(2))
     };
     
     await ddb.send(new PutCommand({ TableName: SHIFTS_TABLE, Item: updatedShift }));
     return httpOk({ shiftId, message: "Shift updated successfully" });
 }
 
+// ** CORRECTED **: This function was already correct. No changes needed.
 async function deleteShift(shiftId: string) {
     await ddb.send(new DeleteCommand({ TableName: SHIFTS_TABLE, Key: { shiftId } }));
     return httpOk({ message: "Shift deleted successfully" });
 }
 
+// ** FIX **: Use staffId (UUID) for comparison
 async function rejectShift(shiftId: string, staffId: string) {
     const { Item } = await ddb.send(new GetCommand({ TableName: SHIFTS_TABLE, Key: { shiftId }}));
     if (!Item) return httpErr(404, "Shift not found");
+    
+    // ** FIX **: This now correctly compares UUID (Item.staffId) to UUID (staffId)
     if (Item.staffId !== staffId) return httpErr(403, "Forbidden: You do not own this shift");
     if (Item.status !== 'scheduled') return httpErr(400, "Shift cannot be rejected");
 
@@ -385,7 +468,8 @@ async function rejectShift(shiftId: string, staffId: string) {
 }
 
 // --- LEAVE ---
-async function getLeave(caller: { username: string; isSuperAdmin: boolean; rolesByClinic: Record<string, string>; }, isAdmin: boolean) {
+// ** FIX **: Use correct caller type
+async function getLeave(caller: CallerContext, isAdmin: boolean) {
     if (isAdmin) {
         // Admin: Get all leave requests
         const { Items } = await ddb.send(new ScanCommand({ TableName: LEAVE_TABLE }));
@@ -396,12 +480,14 @@ async function getLeave(caller: { username: string; isSuperAdmin: boolean; roles
             TableName: LEAVE_TABLE,
             IndexName: 'byStaff',
             KeyConditionExpression: 'staffId = :staffId',
-            ExpressionAttributeValues: { ':staffId': caller.username }
+            // ** FIX **: Use caller.staffId (UUID)
+            ExpressionAttributeValues: { ':staffId': caller.staffId }
         }));
         return httpOk({ leaveRequests: Items || [] });
     }
 }
 
+// ** FIX **: staffId is the UUID
 async function createLeave(staffId: string, body: any) {
   const { startDate, endDate } = body;
   if (!startDate || !endDate) {
@@ -410,7 +496,7 @@ async function createLeave(staffId: string, body: any) {
   const leaveId = uuidv4();
   const leaveRequest = {
     leaveId,
-    staffId,
+    staffId, // This is the UUID
     startDate,
     endDate,
     status: 'pending' // (pending, approved, denied)
@@ -419,11 +505,13 @@ async function createLeave(staffId: string, body: any) {
   return httpOk({ leaveId, message: "Leave request submitted" });
 }
 
-async function deleteLeave(leaveId: string, caller: { username: string }, isAdmin: boolean) {
+// ** FIX **: Use correct caller type and compare staffId
+async function deleteLeave(leaveId: string, caller: CallerContext, isAdmin:boolean) {
     const { Item } = await ddb.send(new GetCommand({ TableName: LEAVE_TABLE, Key: { leaveId }}));
     if (!Item) return httpErr(404, "Leave request not found");
     
-    if (!isAdmin && Item.staffId !== caller.username) {
+    // ** FIX **: Compare Item.staffId (UUID) with caller.staffId (UUID)
+    if (!isAdmin && Item.staffId !== caller.staffId) {
         return httpErr(403, "Forbidden");
     }
 
@@ -431,6 +519,7 @@ async function deleteLeave(leaveId: string, caller: { username: string }, isAdmi
     return httpOk({ message: "Leave request deleted" });
 }
 
+// ** CORRECTED **: This function was already correct.
 async function updateLeaveStatus(leaveId: string, status: 'approved' | 'denied') {
     await ddb.send(new UpdateCommand({
         TableName: LEAVE_TABLE,

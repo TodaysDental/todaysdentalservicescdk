@@ -89,7 +89,7 @@ export const handler = async (event: any) => {
         const attrs: Record<string, string> = Object.fromEntries((u.Attributes || []).map((a: any) => [a.Name, a.Value]));
         const groupsResp = await cognito.send(new AdminListGroupsForUserCommand({ UserPoolId: userPoolId, Username: username }));
         let groupNames = (groupsResp.Groups || []).map((g) => g.GroupName!).filter(Boolean) as string[];
-
+        const email = attrs['email']?.toLowerCase() || '';
         // Restrict visibility for clinic admins to only their clinics
         if (allowedClinics) {
           groupNames = groupNames.filter((g) => {
@@ -102,42 +102,70 @@ export const handler = async (event: any) => {
         }
 
         const { clinics, rolesByClinic, isSuperAdmin } = deriveClinicsFromGroups(groupNames);
-        const staffDetails = STAFF_INFO_TABLE ? await getStaffInfoFromDynamoDB(username) : [];
-
+        // const staffDetails = STAFF_INFO_TABLE ? await getStaffInfoFromDynamoDB(username) : [];
+        const staffDetails = STAFF_INFO_TABLE && email ? await getStaffInfoFromDynamoDB(email) : [];
         items.push({
-          username,
-          email: String(attrs['email'] || username),
+          username, // This is the UUID, which is correct for the API
+          email: email, // This is the actual email
           givenName: String(attrs['given_name'] || ''),
           familyName: String(attrs['family_name'] || ''),
           groups: groupNames,
           clinics,
           rolesByClinic,
           isSuperAdmin,
-          staffDetails,
+          staffDetails, // This will no longer be empty!
         });
       }
       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ items, nextToken: (listResp as any)?.PaginationToken || undefined }) };
     }
 
+    // if (event.httpMethod === "GET") {
+    //   if (!pathUsername) return httpErr(400, "username path parameter is required");
+    //   const info = await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
+    //   const attrs = Object.fromEntries((info.UserAttributes || []).map((a) => [a.Name, a.Value]));
+    //   const groupsResp = await cognito.send(new AdminListGroupsForUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
+    //   const groupNames = (groupsResp.Groups || []).map((g) => g.GroupName!).filter(Boolean) as string[];
+    //   const { clinics, rolesByClinic, isSuperAdmin } = deriveClinicsFromGroups(groupNames);
+    //   const staffDetails = STAFF_INFO_TABLE ? await getStaffInfoFromDynamoDB(pathUsername) : [];
+
+    //   return httpOk({
+    //     username: info.Username || pathUsername,
+    //     email: String(attrs["email"] || pathUsername),
+    //     givenName: String(attrs["given_name"] || ""),
+    //     familyName: String(attrs["family_name"] || ""),
+    //     groups: groupNames,
+    //     clinics,
+    //     rolesByClinic,
+    //     isSuperAdmin,
+    //     staffDetails,
+    //   });
+    // }
     if (event.httpMethod === "GET") {
-      if (!pathUsername) return httpErr(400, "username path parameter is required");
-      const info = await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
-      const attrs = Object.fromEntries((info.UserAttributes || []).map((a) => [a.Name, a.Value]));
+      if (!pathUsername) return httpErr(400, "username required");
+      // This is the UUID
+      const user = await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
+      const attrs: Record<string, string> = Object.fromEntries((user.UserAttributes || []).map((a: any) => [a.Name, a.Value]));
+      
+      // ** CORRECT ** (This code from your file is already correct)
+      const email = attrs['email']?.toLowerCase() || ''; 
+      
       const groupsResp = await cognito.send(new AdminListGroupsForUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
       const groupNames = (groupsResp.Groups || []).map((g) => g.GroupName!).filter(Boolean) as string[];
       const { clinics, rolesByClinic, isSuperAdmin } = deriveClinicsFromGroups(groupNames);
-      const staffDetails = STAFF_INFO_TABLE ? await getStaffInfoFromDynamoDB(pathUsername) : [];
+      
+      // ** CORRECT ** (This code from your file is already correct)
+      const staffDetails = STAFF_INFO_TABLE ? await getStaffInfoFromDynamoDB(email) : []; // Use email
 
       return httpOk({
-        username: info.Username || pathUsername,
-        email: String(attrs["email"] || pathUsername),
-        givenName: String(attrs["given_name"] || ""),
-        familyName: String(attrs["family_name"] || ""),
+        username: pathUsername,
+        email,
+        givenName: String(attrs['given_name'] || ''),
+        familyName: String(attrs['family_name'] || ''),
         groups: groupNames,
         clinics,
         rolesByClinic,
         isSuperAdmin,
-        staffDetails,
+        staffDetails, // This will now be populated
       });
     }
 
@@ -165,14 +193,20 @@ export const handler = async (event: any) => {
         await cognito.send(new AdminUpdateUserAttributesCommand({ UserPoolId: userPoolId, Username: pathUsername, UserAttributes: attribs }));
       }
 
+      // ** FIX: Get email before syncing with DynamoDB **
+      const user = await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
+      const email = (user.UserAttributes || []).find(a => a.Name === 'email')?.Value?.toLowerCase();
+
+      if (!email) {
+          return httpErr(404, "User email not found, cannot sync staff details");
+      }
+      
       // Sync per-clinic staff details in DynamoDB
-      // if (STAFF_INFO_TABLE && body.staffDetails) { // Note: an empty array will clear all info
-      //     await syncStaffInfoInDynamoDB(pathUsername, body.staffDetails);
-      // }
       const staffDetailsToSync = body.openDentalPerClinic ?? body.staffDetails;
 
-      if (STAFF_INFO_TABLE && staffDetailsToSync) { // Note: an empty array will clear all info
-          await syncStaffInfoInDynamoDB(pathUsername, staffDetailsToSync);
+      if (STAFF_INFO_TABLE && staffDetailsToSync) { 
+          // ** FIX: Pass email, not pathUsername **
+          await syncStaffInfoInDynamoDB(email, staffDetailsToSync);
       }
 
       // Sync Cognito groups
@@ -211,19 +245,29 @@ export const handler = async (event: any) => {
 // DYNAMODB HELPER FUNCTIONS
 // ========================================
 
-async function getStaffInfoFromDynamoDB(email: string): Promise<StaffClinicDetail[]> {
-    if (!STAFF_INFO_TABLE) return [];
-    try {
-        const result = await ddb.send(new QueryCommand({
-            TableName: STAFF_INFO_TABLE,
-            KeyConditionExpression: 'email = :email',
-            ExpressionAttributeValues: { ':email': email.toLowerCase() }
-        }));
-        return (result.Items || []) as StaffClinicDetail[];
-    } catch (error) {
-        console.error(`Failed to get staff info for ${email}:`, error);
-        return [];
-    }
+// async function getStaffInfoFromDynamoDB(email: string): Promise<StaffClinicDetail[]> {
+//     if (!STAFF_INFO_TABLE) return [];
+//     try {
+//         const result = await ddb.send(new QueryCommand({
+//             TableName: STAFF_INFO_TABLE,
+//             KeyConditionExpression: 'email = :email',
+//             ExpressionAttributeValues: { ':email': email.toLowerCase() }
+//         }));
+//         return (result.Items || []) as StaffClinicDetail[];
+//     } catch (error) {
+//         console.error(`Failed to get staff info for ${email}:`, error);
+//         return [];
+//     }
+// }
+async function getStaffInfoFromDynamoDB(email: string) {  // Change param to email
+  if (!email) return [];
+  const { Items } = await ddb.send(new QueryCommand({
+    TableName: STAFF_INFO_TABLE,
+    KeyConditionExpression: 'email = :email',
+    ExpressionAttributeValues: { ':email': email.toLowerCase() },
+    ProjectionExpression: 'clinicId, UserNum, UserName, EmployeeNum, employeeName, ProviderNum, providerName, ClinicNum, hourlyPay'
+  }));
+  return Items || [];
 }
 
 async function syncStaffInfoInDynamoDB(email: string, details: StaffClinicDetail[]) {
