@@ -58,7 +58,7 @@ async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; p
   }
 }
 
-// ** FIX **: This function now correctly returns staffId (UUID) and email separately.
+// ** FIX ** This function now correctly returns staffId (UUID) and email separately.
 function callerAuthContextFromClaims(payload: JWTPayload): { staffId: string; email: string; isSuperAdmin: boolean; rolesByClinic: Record<string, string>; } {
   // 'sub' or 'username' claim is the UUID (staffId)
   const staffId = String(payload.sub || payload.username || '');
