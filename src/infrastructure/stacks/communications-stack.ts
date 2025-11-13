@@ -9,30 +9,6 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigwv2integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 
-
-// --- DEFINITIVE FIX: Custom Wrapper Class to implement IWebSocketRouteAuthorizer ---
-// This class satisfies the L2 interface requirement (IWebSocketRouteAuthorizer) 
-// by providing the necessary 'bind' method while internally referencing the L1 CfnAuthorizer.
-class CustomCognitoAuthorizer implements apigwv2.IWebSocketRouteAuthorizer {
-    readonly authorizerId: string;
-    // Set authorizationType to CUSTOM as a string literal (no property export issues)
-    readonly authorizationType: string = 'CUSTOM'; 
-
-    constructor(authorizerRef: string) {
-        this.authorizerId = authorizerRef;
-    }
-
-    // This signature satisfies the IWebSocketRouteAuthorizer interface requirement for 'bind'
-    bind(options: apigwv2.WebSocketRouteAuthorizerBindOptions): apigwv2.WebSocketRouteAuthorizerConfig {
-        return {
-            authorizerId: this.authorizerId,
-            authorizationType: 'CUSTOM' as any,
-        };
-    }
-}
-// --- END CUSTOM AUTHORIZER CLASS ---
-
-
 export interface CommunicationsStackProps extends StackProps {
     userPool: any; // Cognito UserPool construct
     userPoolId: string;
@@ -104,18 +80,21 @@ export class CommunicationsStack extends Stack {
       autoDeploy: true,
     });
     
-    // FIXED 1 & 6: Create a Lambda-based authorizer for WebSocket API with Cognito
-    // Note: WebSocket API uses Lambda authorizers, not Cognito USER_POOLS directly
+    // FINAL FIX: Using JWT configuration to bypass the 'userPoolArns' type error.
+    const userPoolIssuer = `https://cognito-idp.${this.region}.amazonaws.com/${props.userPoolId}`;
+
     const cfnAuthorizer = new apigwv2.CfnAuthorizer(this, 'CognitoAuthorizerCfn', {
         name: 'CognitoAuthorizer',
-        authorizerType: 'REQUEST', // Using REQUEST type for Lambda authorizer
-        authorizerUri: '',  // Will be set if using Lambda - for now we'll skip detailed Lambda setup
         identitySource: ['route.request.querystring.idtoken'],
+        authorizerType: 'JWT', // Use 'JWT' type
         apiId: webSocketApi.apiId,
+        
+        // Pass Cognito details via the JWT configuration structure:
+        jwtConfiguration: {
+            audience: [props.userPool.userPoolClientId], // Required Audience (App Client ID)
+            issuer: userPoolIssuer,
+        },
     });
-    
-    // Use the custom wrapper class to satisfy the L2 IWebSocketRouteAuthorizer interface
-    const customAuthorizer = new CustomCognitoAuthorizer(cfnAuthorizer.ref);
 
 
     // ========================================
@@ -201,12 +180,30 @@ export class CommunicationsStack extends Stack {
     // 5. ROUTE MAPPING
     // ========================================
     
-    // System Routes
-    webSocketApi.addRoute('$connect', { 
-        integration: new apigwv2integrations.WebSocketLambdaIntegration('ConnectIntegration', connectFn),
-        // FIX: Pass the custom authorizer wrapper object here
-        authorizer: customAuthorizer, 
+    // --- L1 Integration and Route for $connect (Bypasses L2 Authorizer Type Errors) ---
+    // 1. Define L1 Integration
+    const connectIntegration = new apigwv2.CfnIntegration(this, 'ConnectIntegrationCfn', {
+        apiId: webSocketApi.apiId,
+        integrationType: 'AWS_PROXY',
+        integrationUri: connectFn.functionArn,
+        integrationMethod: 'POST',
+        credentialsArn: connectFn.role?.roleArn,
+        timeoutInMillis: 10000,
     });
+    
+    // 2. Define L1 Route, referencing the L1 Authorizer
+    new apigwv2.CfnRoute(this, 'ConnectRouteCfn', {
+        apiId: webSocketApi.apiId,
+        routeKey: '$connect',
+        operationName: 'ConnectRoute',
+        target: `integrations/${connectIntegration.ref}`,
+        authorizationType: 'CUSTOM',
+        authorizerId: cfnAuthorizer.ref,
+    });
+    // --- END L1 ROUTE FIX ---
+
+
+    // System Routes (L2 addRoute works fine without custom authorizer)
     webSocketApi.addRoute('$disconnect', { integration: new apigwv2integrations.WebSocketLambdaIntegration('DisconnectIntegration', disconnectFn) });
     webSocketApi.addRoute('$default', { integration: new apigwv2integrations.WebSocketLambdaIntegration('DefaultIntegration', defaultFn) });
 
