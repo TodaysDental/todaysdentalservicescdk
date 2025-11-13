@@ -132,6 +132,10 @@ export class HrStack extends Stack {
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.staffClinicInfoTableName}/index/*`
       ],
     }));
+    this.hrFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:ListUsers'],
+      resources: [props.userPool.userPoolArn],
+    }));
 
     // ========================================
     // API ROUTES

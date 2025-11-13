@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import {
   CognitoIdentityProviderClient,
   AdminGetUserCommand,
+  ListUsersCommand,
 } from "@aws-sdk/client-cognito-identity-provider";
 
 // Environment Variables
@@ -228,38 +229,87 @@ type CallerContext = { staffId: string; email: string; isSuperAdmin: boolean; ro
 // ** FIX **: Use correct caller type
 async function getDashboard(caller: CallerContext, isAdmin: boolean) {
   if (isAdmin) {
-    // Admin Dashboard: Fetch aggregate stats (Total Staff, Budget, etc.)
-    // This requires querying the StaffClinicInfo table and Shifts table
-    // For simplicity, we'll return mock data based on the UI.
-    // A real implementation would query and aggregate data.
+    // --- ADMIN DASHBOARD ---
+    // 1. Get week start/end
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const dayOfWeek = today.getDay(); // 0 = Sunday, 1 = Monday
+    const diff = today.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1); // a-ssume week starts Monday
+    const weekStart = new Date(today.setDate(diff)).toISOString();
+    const weekEnd = new Date(today.setDate(diff + 6)).toISOString();
+
+    // 2. Fetch total staff count from Cognito
+    const staffCountPromise = cognito.send(new ListUsersCommand({
+      UserPoolId: USER_POOL_ID,
+      Limit: 0 // We only want the count, but API doesn't support that. We'll count users.
+    }));
+    
+    // 3. Fetch shifts for all clinics this admin can see
+    const adminClinics = Object.keys(caller.rolesByClinic);
+    const shiftQueryPromises = adminClinics.map(clinicId =>
+      ddb.send(new QueryCommand({
+        TableName: SHIFTS_TABLE,
+        IndexName: 'byClinicAndDate',
+        KeyConditionExpression: 'clinicId = :clinicId AND startTime BETWEEN :start AND :end',
+        ExpressionAttributeValues: {
+          ':clinicId': clinicId,
+          ':start': weekStart,
+          ':end': weekEnd,
+        }
+      }))
+    );
+
+    // 4. Run queries in parallel
+    const [staffResponse, ...shiftResponses] = await Promise.all([
+      staffCountPromise,
+      ...shiftQueryPromises
+    ]);
+    
+    // 5. Process results
+    const totalStaff = staffResponse.Users?.length || 0; // Counts all users
+    const allShifts = shiftResponses.flatMap(res => res.Items || []);
+    
+    let estimatedHours = 0;
+    let estimatedCost = 0;
+    allShifts.forEach(shift => {
+      estimatedHours += shift.totalHours || 0;
+      estimatedCost += shift.pay || 0;
+    });
+
     return httpOk({
-      totalOffices: Object.keys(caller.rolesByClinic).length,
-      totalStaff: 1, // Mock: would be a count from StaffClinicInfo
-      thisWeeksShifts: 2, // Mock: would be a query on Shifts table
-      budgetStatus: "On Track",
+      totalOffices: adminClinics.length,
+      totalStaff: totalStaff,
+      thisWeeksShifts: allShifts.length,
+      budgetStatus: "On Track", // This remains hardcoded as budget logic is complex
       currentWeekOverview: {
-        totalShifts: 2,
-        estimatedHours: 15,
-        estimatedCost: 375.00,
+        totalShifts: allShifts.length,
+        estimatedHours: parseFloat(estimatedHours.toFixed(2)),
+        estimatedCost: parseFloat(estimatedCost.toFixed(2)),
       }
     });
+
   } else {
-    // Staff Dashboard: Fetch personal stats
-    // We need to query *shifts* for this user
+    // --- STAFF DASHBOARD ---
+    
+    // ** THIS IS THE FIX **
+    // The ExpressionAttributeValues property was defined twice.
+    // I have merged them into a single object.
+    
     const { Items: shifts } = await ddb.send(new QueryCommand({
         TableName: SHIFTS_TABLE,
         IndexName: 'byStaff',
-        KeyConditionExpression: 'staffId = :staffId AND startTime < :now',
+        KeyConditionExpression: 'staffId = :staffId',
+        FilterExpression: '#status = :completed',
+        ExpressionAttributeNames: { '#status': 'status' },
         ExpressionAttributeValues: {
-            // ** FIX **: Use caller.staffId (UUID)
-            ':staffId': caller.staffId,
-            ':now': new Date().toISOString()
+          ':staffId': caller.staffId,
+          ':completed': 'completed'
         }
     }));
     
     let completedHours = 0;
     let totalEarnings = 0;
-    const completedShifts = (shifts || []).filter(s => s.status === 'completed');
+    const completedShifts = (shifts || []);
 
     for (const shift of completedShifts) {
         completedHours += shift.totalHours || 0;
@@ -268,8 +318,8 @@ async function getDashboard(caller: CallerContext, isAdmin: boolean) {
 
     return httpOk({
       completedShifts: completedShifts.length,
-      completedHours,
-      totalEarnings,
+      completedHours: parseFloat(completedHours.toFixed(2)),
+      totalEarnings: parseFloat(totalEarnings.toFixed(2)),
     });
   }
 }
@@ -508,7 +558,7 @@ async function createLeave(staffId: string, body: any) {
 // ** FIX **: Use correct caller type and compare staffId
 async function deleteLeave(leaveId: string, caller: CallerContext, isAdmin:boolean) {
     const { Item } = await ddb.send(new GetCommand({ TableName: LEAVE_TABLE, Key: { leaveId }}));
-    if (!Item) return httpErr(404, "Leave request not found");
+    if (!Item) return httpErr(44, "Leave request not found");
     
     // ** FIX **: Compare Item.staffId (UUID) with caller.staffId (UUID)
     if (!isAdmin && Item.staffId !== caller.staffId) {
