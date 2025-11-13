@@ -264,13 +264,13 @@ const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesV3'
   clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
   consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
 });
-//communications stack
-// const communicationsStack = new CommunicationsStack(app, 'TodaysDentalInsightsCommunicationsV1', {
-//   env,
-//   userPool: coreStack.userPool,
-//   userPoolId: coreStack.userPool.userPoolId,
-//   userPoolArn: coreStack.userPool.userPoolArn,
-// });
+
+const communicationsStack = new CommunicationsStack(app, 'TodaysDentalInsightsCommunicationsV1', {
+  env,
+  userPool: coreStack.userPool,
+  userPoolId: coreStack.userPool.userPoolId,
+  userPoolArn: coreStack.userPool.userPoolArn,
+});
 // 6. Callback Stack - Dedicated callback API (depends on core)
 const callbackStack = new CallbackStack(app, 'TodaysDentalInsightsCallbackV2', {
   env,
@@ -319,7 +319,7 @@ clinicHoursStack.addDependency(coreStack);
 clinicPricingStack.addDependency(coreStack);
 clinicInsuranceStack.addDependency(coreStack);
 openDentalStack.addDependency(coreStack);
-// communicationsStack.addDependency(coreStack);
+communicationsStack.addDependency(coreStack);
 // Cross-service dependencies for services that need data from other services
 notificationsStack.addDependency(coreStack);
 notificationsStack.addDependency(templatesStack);
