@@ -98,7 +98,7 @@ export class CommunicationsStack extends Stack {
 
 
     // ========================================
-    // 3. LAMBDA DEFINITIONS
+    // 3. LAMBDA DEFINITIONS (PATH FIX APPLIED)
     // ========================================
 
     const sharedEnvironment = {
@@ -119,17 +119,22 @@ export class CommunicationsStack extends Stack {
         environment: sharedEnvironment,
     };
 
+    // --- CRITICAL PATH FIX ---
+    // '..', '..' is required to navigate from stacks/ to src/ (two levels up)
+    const servicesPath = path.join(__dirname, '..', '..', 'services', 'communications');
+
     // System & Custom Handlers
-    const connectFn = new lambdaNode.NodejsFunction(this, 'ConnectFn', { ...fnProps, entry: path.join(__dirname, '..', 'services', 'communications', 'connect.ts') });
-    const disconnectFn = new lambdaNode.NodejsFunction(this, 'DisconnectFn', { ...fnProps, entry: path.join(__dirname, '..', 'services', 'communications', 'disconnect.ts') });
-    const defaultFn = new lambdaNode.NodejsFunction(this, 'DefaultFn', { ...fnProps, entry: path.join(__dirname, '..', 'services', 'communications', 'default.ts') });
-    const messageFn = new lambdaNode.NodejsFunction(this, 'MessageFn', { ...fnProps, entry: path.join(__dirname, '..', 'services', 'communications', 'message.ts') });
-    const createRequestFn = new lambdaNode.NodejsFunction(this, 'CreateRequestFn', { ...fnProps, entry: path.join(__dirname, '..', 'services', 'communications', 'create-request.ts') });
-    const resolveRequestFn = new lambdaNode.NodejsFunction(this, 'ResolveRequestFn', { ...fnProps, entry: path.join(__dirname, '..', 'services', 'communications', 'resolve-request.ts') });
+    const connectFn = new lambdaNode.NodejsFunction(this, 'ConnectFn', { ...fnProps, entry: path.join(servicesPath, 'connect.ts') });
+    const disconnectFn = new lambdaNode.NodejsFunction(this, 'DisconnectFn', { ...fnProps, entry: path.join(servicesPath, 'disconnect.ts') });
+    const defaultFn = new lambdaNode.NodejsFunction(this, 'DefaultFn', { ...fnProps, entry: path.join(servicesPath, 'default.ts') });
+    const messageFn = new lambdaNode.NodejsFunction(this, 'MessageFn', { ...fnProps, entry: path.join(servicesPath, 'message.ts') });
+    const createRequestFn = new lambdaNode.NodejsFunction(this, 'CreateRequestFn', { ...fnProps, entry: path.join(servicesPath, 'create-request.ts') });
+    const resolveRequestFn = new lambdaNode.NodejsFunction(this, 'ResolveRequestFn', { ...fnProps, entry: path.join(servicesPath, 'resolve-request.ts') });
     
     // File/History Handlers
-    const uploadFileFn = new lambdaNode.NodejsFunction(this, 'UploadFileFn', { ...fnProps, entry: path.join(__dirname, '..', 'services', 'communications', 'upload-file.ts') });
-    const historyFn = new lambdaNode.NodejsFunction(this, 'HistoryFn', { ...fnProps, entry: path.join(__dirname, '..', 'services', 'communications', 'history.ts') });
+    const uploadFileFn = new lambdaNode.NodejsFunction(this, 'UploadFileFn', { ...fnProps, entry: path.join(servicesPath, 'upload-file.ts') });
+    const historyFn = new lambdaNode.NodejsFunction(this, 'HistoryFn', { ...fnProps, entry: path.join(servicesPath, 'history.ts') });
+    // --- END PATH FIX ---
 
 
     // ========================================
