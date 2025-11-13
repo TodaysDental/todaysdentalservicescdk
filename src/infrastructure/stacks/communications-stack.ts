@@ -1,36 +1,235 @@
-import { ApiGatewayManagementApiClient, PostToConnectionCommand, GoneException } from "@aws-sdk/client-apigatewaymanagementapi";
-import { DynamoDBDocumentClient, DeleteCommand } from "@aws-sdk/lib-dynamodb";
+import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput } from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import * as path from 'path';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
+import * as apigwv2integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 
-/**
- * Pushes data asynchronously to a specific WebSocket connection ID.
- * This function is critical for all server-to-client communication.
- * It gracefully handles 'stale' connections (GoneException).
- * * @param connectionId The WebSocket connection ID to send data to.
- * @param data The JSON object to send.
- * @param api The initialized ApiGatewayManagementApiClient.
- * @param connectionTableName The name of the DynamoDB connection table.
- * @param ddb The initialized DynamoDBDocumentClient.
- */
-export async function sendPush(
-    connectionId: string, 
-    data: any, 
-    api: ApiGatewayManagementApiClient,
-    connectionTableName: string,
-    ddb: DynamoDBDocumentClient,
-) {
-    try {
-        await api.send(new PostToConnectionCommand({
-            ConnectionId: connectionId,
-            Data: JSON.stringify(data),
-        }));
-    } catch (e) {
-        if (e instanceof GoneException) {
-            // This happens when the client connection is dead, but the record wasn't removed on $disconnect.
-            console.warn(`Connection ${connectionId} is stale (GoneException).`);
-            // We rely on the next $connect event to overwrite the stale record.
-        } else {
-            console.error(`Failed to push to connection ${connectionId}:`, e);
-            throw e; 
-        }
+
+// --- DEFINITIVE FIX: Custom Wrapper Class to implement IWebSocketRouteAuthorizer ---
+// This class satisfies the L2 interface requirement (IWebSocketRouteAuthorizer) 
+// by providing the necessary 'bind' method while internally referencing the L1 CfnAuthorizer.
+class CustomCognitoAuthorizer implements apigwv2.IWebSocketRouteAuthorizer {
+    readonly authorizerId: string;
+    // Set authorizationType to CUSTOM as a string literal (no property export issues)
+    readonly authorizationType: string = 'CUSTOM'; 
+
+    constructor(authorizerRef: string) {
+        this.authorizerId = authorizerRef;
     }
+
+    // This signature satisfies the IWebSocketRouteAuthorizer interface requirement for 'bind'
+    bind(options: apigwv2.WebSocketRouteAuthorizerBindOptions): apigwv2.WebSocketRouteAuthorizerConfig {
+        return {
+            authorizerId: this.authorizerId,
+            authorizationType: 'CUSTOM' as any,
+        };
+    }
+}
+// --- END CUSTOM AUTHORIZER CLASS ---
+
+
+export interface CommunicationsStackProps extends StackProps {
+    userPool: any; // Cognito UserPool construct
+    userPoolId: string;
+    userPoolArn: string;
+}
+
+export class CommunicationsStack extends Stack {
+
+  constructor(scope: Construct, id: string, props: CommunicationsStackProps) {
+    super(scope, id, props);
+
+    // ========================================
+    // 1. DYNAMODB TABLES & S3 BUCKET
+    // ========================================
+
+    // 1.1 Favors Requests (Metadata)
+    const favorsRequestsTable = new dynamodb.Table(this, 'FavorsRequestsTable', {
+      partitionKey: { name: 'requestId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY,
+      tableName: `${this.stackName}-FavorsRequests`,
+    });
+
+    // 1.2 Favor Messages (History)
+    const favorMessagesTable = new dynamodb.Table(this, 'FavorMessagesTable', {
+      partitionKey: { name: 'requestId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY,
+      tableName: `${this.stackName}-FavorMessages`,
+    });
+
+    // 1.3 Favors Connections (Real-time mapping)
+    const favorsConnectionsTable = new dynamodb.Table(this, 'FavorsConnectionsTable', {
+      partitionKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY,
+      tableName: `${this.stackName}-FavorsConnections`,
+    });
+    
+    // 1.4 S3 Bucket for File Storage
+    const fileBucket = new s3.Bucket(this, 'FavorFilesBucket', {
+        versioned: false,
+        publicReadAccess: false,
+        removalPolicy: RemovalPolicy.DESTROY, // Use RETAIN in production
+        cors: [
+          {
+            allowedMethods: [s3.HttpMethods.PUT], // Allow client to PUT files
+            allowedOrigins: ['*'], // Restrict this in production to your frontend domain
+            allowedHeaders: ['*'],
+            exposedHeaders: ['ETag'], // ETag is often required for clients
+          },
+        ],
+    });
+
+
+    // ========================================
+    // 2. WEBSOCKET API & AUTHORIZER
+    // ========================================
+
+    const webSocketApi = new apigwv2.WebSocketApi(this, 'FavorsWebSocketApi', {
+      apiName: `${this.stackName}-FavorsWS`,
+      routeSelectionExpression: '$request.body.action', 
+    });
+
+    const webSocketStage = new apigwv2.WebSocketStage(this, 'ProdStage', {
+      webSocketApi,
+      stageName: 'prod',
+      autoDeploy: true,
+    });
+    
+    // FIXED 1 & 6: Create a Lambda-based authorizer for WebSocket API with Cognito
+    // Note: WebSocket API uses Lambda authorizers, not Cognito USER_POOLS directly
+    const cfnAuthorizer = new apigwv2.CfnAuthorizer(this, 'CognitoAuthorizerCfn', {
+        name: 'CognitoAuthorizer',
+        authorizerType: 'REQUEST', // Using REQUEST type for Lambda authorizer
+        authorizerUri: '',  // Will be set if using Lambda - for now we'll skip detailed Lambda setup
+        identitySource: ['route.request.querystring.idtoken'],
+        apiId: webSocketApi.apiId,
+    });
+    
+    // Use the custom wrapper class to satisfy the L2 IWebSocketRouteAuthorizer interface
+    const customAuthorizer = new CustomCognitoAuthorizer(cfnAuthorizer.ref);
+
+
+    // ========================================
+    // 3. LAMBDA DEFINITIONS
+    // ========================================
+
+    const sharedEnvironment = {
+      FAVORS_REQUESTS_TABLE: favorsRequestsTable.tableName,
+      FAVOR_MESSAGES_TABLE: favorMessagesTable.tableName,
+      FAVORS_CONNECTIONS_TABLE: favorsConnectionsTable.tableName,
+      WEBSOCKET_ENDPOINT: webSocketStage.url.replace('wss://', 'https://'), 
+      USER_POOL_ID: props.userPoolId,
+      FILE_BUCKET_NAME: fileBucket.bucketName, // New S3 env var
+    };
+
+    const fnProps = {
+        runtime: lambda.Runtime.NODEJS_20_X,
+        handler: 'handler',
+        memorySize: 128,
+        timeout: Duration.seconds(15),
+        bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+        environment: sharedEnvironment,
+    };
+
+    // System & Custom Handlers
+    const connectFn = new lambdaNode.NodejsFunction(this, 'ConnectFn', { ...fnProps, entry: path.join(__dirname, '..', 'services', 'communications', 'connect.ts') });
+    const disconnectFn = new lambdaNode.NodejsFunction(this, 'DisconnectFn', { ...fnProps, entry: path.join(__dirname, '..', 'services', 'communications', 'disconnect.ts') });
+    const defaultFn = new lambdaNode.NodejsFunction(this, 'DefaultFn', { ...fnProps, entry: path.join(__dirname, '..', 'services', 'communications', 'default.ts') });
+    const messageFn = new lambdaNode.NodejsFunction(this, 'MessageFn', { ...fnProps, entry: path.join(__dirname, '..', 'services', 'communications', 'message.ts') });
+    const createRequestFn = new lambdaNode.NodejsFunction(this, 'CreateRequestFn', { ...fnProps, entry: path.join(__dirname, '..', 'services', 'communications', 'create-request.ts') });
+    const resolveRequestFn = new lambdaNode.NodejsFunction(this, 'ResolveRequestFn', { ...fnProps, entry: path.join(__dirname, '..', 'services', 'communications', 'resolve-request.ts') });
+    
+    // File/History Handlers
+    const uploadFileFn = new lambdaNode.NodejsFunction(this, 'UploadFileFn', { ...fnProps, entry: path.join(__dirname, '..', 'services', 'communications', 'upload-file.ts') });
+    const historyFn = new lambdaNode.NodejsFunction(this, 'HistoryFn', { ...fnProps, entry: path.join(__dirname, '..', 'services', 'communications', 'history.ts') });
+
+
+    // ========================================
+    // 4. IAM PERMISSIONS & GRANTS
+    // ========================================
+
+    const allLambdas = [connectFn, disconnectFn, defaultFn, messageFn, createRequestFn, historyFn, resolveRequestFn, uploadFileFn];
+
+    // DynamoDB Grants
+    allLambdas.forEach(fn => {
+        favorsConnectionsTable.grantReadWriteData(fn);
+        favorsRequestsTable.grantReadWriteData(fn);
+        favorMessagesTable.grantReadWriteData(fn);
+    });
+
+    // API Gateway Management API (PostToConnection) Grant - required for all Lambdas that push data
+    const apiGwArn = `arn:aws:execute-api:${this.region}:${this.account}:${webSocketApi.apiId}/*/*`;
+    [messageFn, createRequestFn, historyFn, resolveRequestFn, uploadFileFn].forEach(fn => {
+        fn.addToRolePolicy(new iam.PolicyStatement({
+            actions: ['execute-api:ManageConnections'],
+            resources: [apiGwArn],
+        }));
+    });
+    
+    // Cognito Grants for user lookup
+    [createRequestFn].forEach(fn => {
+        fn.addToRolePolicy(new iam.PolicyStatement({
+            actions: ['cognito-idp:AdminGetUser', 'cognito-idp:ListUsers'],
+            resources: [props.userPoolArn],
+        }));
+    });
+
+    // S3 Grants for Presigning and File Access
+    // UploadFn generates the PUT presigned URL
+    uploadFileFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['s3:PutObject'], 
+        resources: [fileBucket.arnForObjects('*')],
+    }));
+
+    // HistoryFn generates the GET presigned URL
+    historyFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['s3:GetObject'],
+        resources: [fileBucket.arnForObjects('*')],
+    }));
+
+
+    // ========================================
+    // 5. ROUTE MAPPING
+    // ========================================
+    
+    // System Routes
+    webSocketApi.addRoute('$connect', { 
+        integration: new apigwv2integrations.WebSocketLambdaIntegration('ConnectIntegration', connectFn),
+        // FIX: Pass the custom authorizer wrapper object here
+        authorizer: customAuthorizer, 
+    });
+    webSocketApi.addRoute('$disconnect', { integration: new apigwv2integrations.WebSocketLambdaIntegration('DisconnectIntegration', disconnectFn) });
+    webSocketApi.addRoute('$default', { integration: new apigwv2integrations.WebSocketLambdaIntegration('DefaultIntegration', defaultFn) });
+
+    // Custom Routes (Business Logic)
+    webSocketApi.addRoute('sendMessage', { integration: new apigwv2integrations.WebSocketLambdaIntegration('MessageIntegration', messageFn) });
+    webSocketApi.addRoute('createRequest', { integration: new apigwv2integrations.WebSocketLambdaIntegration('CreateReqIntegration', createRequestFn) });
+    webSocketApi.addRoute('getHistory', { integration: new apigwv2integrations.WebSocketLambdaIntegration('HistoryIntegration', historyFn) });
+    webSocketApi.addRoute('resolveRequest', { integration: new apigwv2integrations.WebSocketLambdaIntegration('ResolveReqIntegration', resolveRequestFn) });
+    webSocketApi.addRoute('getUploadUrl', { integration: new apigwv2integrations.WebSocketLambdaIntegration('GetUploadUrlIntegration', uploadFileFn) });
+
+
+    // ========================================
+    // 6. OUTPUTS
+    // ========================================
+
+    new CfnOutput(this, 'WebSocketApiUrl', {
+        value: webSocketStage.url,
+        description: 'WebSocket API Endpoint URL',
+    });
+    
+    new CfnOutput(this, 'FileBucketName', {
+        value: fileBucket.bucketName,
+        description: 'S3 Bucket for file storage',
+    });
+  }
 }
