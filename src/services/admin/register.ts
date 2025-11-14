@@ -6,19 +6,12 @@ import {
   AdminCreateUserCommand,
   AdminAddUserToGroupCommand,
   AdminGetUserCommand,
-  ListGroupsCommand,
-  ListGroupsCommandOutput,
-  GroupType,
 } from "@aws-sdk/client-cognito-identity-provider";
-// DynamoDB SDK for StaffClinicInfo table management
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
 
 import { buildCorsHeaders } from "../../shared/utils/cors";
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from "jose";
-// type RegisterClinic = { clinicId: string | number; role: string };
-
-// Defines the detailed staff info structure for a single clinic
 
 // This type now mirrors StaffClinicDetail but allows clinicId to be a number
 type RegisterClinic = {
@@ -43,7 +36,7 @@ type StaffClinicDetail = {
   ProviderNum?: string;
   providerName?: string;
   ClinicNum?: string;
-  hourlyPay?: string | number; // This is now per-clinic
+  hourlyPay?: string | number;
 };
 
 // RegisterBody - user registration with clinic role assignments
@@ -112,12 +105,15 @@ export const handler = async (event: any) => {
       }));
     }
 
-    // Save detailed staff info to DynamoDB
-    // if (STAFF_INFO_TABLE && Array.isArray(body.staffDetails) && body.staffDetails.length > 0) {
-    //   await saveStaffInfoToDynamoDB(username, body.staffDetails);
-    // }
+    // **FIX: Save staffDetails to DynamoDB - use body.clinics directly if staffDetails not provided**
+    // This ensures that hourlyPay and other per-clinic data gets saved
     if (STAFF_INFO_TABLE && Array.isArray(body.clinics) && body.clinics.length > 0) {
-      await saveStaffInfoToDynamoDB(username, body.clinics);
+      // If staffDetails explicitly provided, use that; otherwise derive from clinics array
+      const detailsToSave = body.staffDetails && body.staffDetails.length > 0 
+        ? body.staffDetails 
+        : body.clinics;
+      
+      await saveStaffInfoToDynamoDB(username, detailsToSave);
     }
 
     return httpOk({
@@ -148,8 +144,6 @@ function validateBody(body: RegisterBody) {
       if (!allowedRoles.has(String(c.role || "").toUpperCase())) throw new Error("invalid role in clinics");
     }
   }
-
-
 }
 
 function buildGroupNames(clinics: RegisterClinic[]): string[] {
@@ -161,8 +155,6 @@ async function ensureUserExists({ userPoolId, username, body }: { userPoolId: st
     await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: username }));
     return; // user exists
   } catch (_) {
-    // Note: Per-user attributes like hourlyPay are no longer set here,
-    // as that data is now stored per-clinic in DynamoDB.
     await cognito.send(
       new AdminCreateUserCommand({
         UserPoolId: userPoolId,
@@ -179,97 +171,40 @@ async function ensureUserExists({ userPoolId, username, body }: { userPoolId: st
   }
 }
 
-// Function to save staff info to the StaffClinicInfo DynamoDB table
-// async function saveStaffInfoToDynamoDB(email: string, details: StaffClinicDetail[]) {
-//   if (!STAFF_INFO_TABLE) {
-//     console.warn('STAFF_CLINIC_INFO_TABLE is not configured. Skipping save.');
-//     return;
-//   }
-// async function saveStaffInfoToDynamoDB(email: string, details: RegisterClinic[]) {
-//   if (!STAFF_INFO_TABLE) {
-//     console.warn('STAFF_CLINIC_INFO_TABLE is not configured. Skipping save.');
-//     return;
-//   }
-
-//   // Process each clinic-specific detail object
-//   for (const detail of details) {
-//     if (!detail.clinicId) {
-//         console.warn('Skipping staff detail item without a clinicId for user:', email);
-//         continue;
-//     }
-    
-//     // ** FIX APPLIED HERE **
-//     // Spread the detail object first, then explicitly define/overwrite the keys
-//     // to ensure type correctness and avoid the TypeScript compiler error.
-//     const item = {
-//       ...detail,
-//       email: email.toLowerCase(), // Partition Key
-//       clinicId: String(detail.clinicId), // Sort Key
-//       createdAt: new Date().toISOString(),
-//       updatedAt: new Date().toISOString(),
-//     };
-
-//     try {
-//       await ddb.send(new PutCommand({
-//         TableName: STAFF_INFO_TABLE,
-//         Item: item,
-//       }));
-//     } catch (err) {
-//       console.error(`Failed to save staff info for ${email} at clinic ${detail.clinicId}`, err);
-//       // Depending on requirements, you might want to throw an error here to fail the request
-//     }
-//   }
-// }
-// In services/admin/register.ts
-
-async function saveStaffInfoToDynamoDB(email: string, details: RegisterClinic[]) {
+// **FIX: Updated to accept RegisterClinic[] which includes all fields**
+async function saveStaffInfoToDynamoDB(email: string, details: (StaffClinicDetail | RegisterClinic)[]) {
   if (!STAFF_INFO_TABLE) {
     console.warn('STAFF_CLINIC_INFO_TABLE is not configured. Skipping save.');
     return;
   }
 
-  const writeRequests: { PutRequest?: any }[] = [];
-  const lowerCaseEmail = email.toLowerCase();
-  const timestamp = new Date().toISOString();
-
   // Process each clinic-specific detail object
   for (const detail of details) {
-    const clinicId = String(detail.clinicId);
-    if (!clinicId) {
-      console.warn('Skipping staff detail item without a clinicId for user:', email);
-      continue;
+    if (!detail.clinicId) {
+        console.warn('Skipping staff detail item without a clinicId for user:', email);
+        continue;
     }
-
-    // Create the item to be saved
+    
+    // Build the item for DynamoDB - spread all fields except 'role' which is not stored in DDB
+    const { role, ...restOfDetail } = detail as any; // Remove 'role' as it's for Cognito groups only
+    
     const item = {
-      ...detail, // Spreads all properties like hourlyPay, openDentalUserNum, etc.
-      email: lowerCaseEmail, // Partition Key
-      clinicId: clinicId,    // Sort Key
-      createdAt: timestamp,
-      updatedAt: timestamp,
+      ...restOfDetail,
+      email: email.toLowerCase(), // Partition Key
+      clinicId: String(detail.clinicId), // Sort Key
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
 
-    writeRequests.push({
-      PutRequest: {
+    try {
+      await ddb.send(new PutCommand({
+        TableName: STAFF_INFO_TABLE,
         Item: item,
-      },
-    });
-  }
-
-  if (writeRequests.length === 0) {
-    return; // Nothing to save
-  }
-
-  // Execute in batches of 25 (DynamoDB limit)
-  // This will NOW throw an error if it fails, which the main handler will catch
-  // and return as a 500, so you'll know it failed.
-  for (let i = 0; i < writeRequests.length; i += 25) {
-    const batch = writeRequests.slice(i, i + 25);
-    await ddb.send(new BatchWriteCommand({
-      RequestItems: {
-        [STAFF_INFO_TABLE]: batch,
-      },
-    }));
+      }));
+    } catch (err) {
+      console.error(`Failed to save staff info for ${email} at clinic ${detail.clinicId}`, err);
+      // Depending on requirements, you might want to throw an error here to fail the request
+    }
   }
 }
 

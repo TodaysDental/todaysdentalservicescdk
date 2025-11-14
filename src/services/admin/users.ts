@@ -1,4 +1,3 @@
-
 import {
   CognitoIdentityProviderClient,
   AdminGetUserCommand,
@@ -82,44 +81,68 @@ export const handler = async (event: any) => {
       const listResp = await cognito.send(new ListUsersCommand({ UserPoolId: userPoolId, Limit: limit, PaginationToken: paginationToken } as any));
       const users = listResp.Users || [];
 
+      // Build set of clinic IDs the caller can administer
       const allowedClinics = caller.isSuperAdmin ? undefined : new Set(Object.entries(caller.rolesByClinic).filter(([, code]) => code === 'S' || code === 'A').map(([cid]) => cid));
 
       const items: Array<Record<string, any>> = [];
       for (const u of users) {
         const username = String(u.Username || '').toLowerCase(); // This is the UUID
         const attrs: Record<string, string> = Object.fromEntries((u.Attributes || []).map((a: any) => [a.Name, a.Value]));
+        const email = attrs['email']?.toLowerCase() || '';
+
+        // Get Cognito groups
         const groupsResp = await cognito.send(new AdminListGroupsForUserCommand({ UserPoolId: userPoolId, Username: username }));
         let groupNames = (groupsResp.Groups || []).map((g) => g.GroupName!).filter(Boolean) as string[];
         
-        // This is the correct logic:
-        const email = attrs['email']?.toLowerCase() || ''; 
+        // Get staff details from DynamoDB
+        const staffDetails = STAFF_INFO_TABLE && email ? await getStaffInfoFromDynamoDB(email) : [];
 
-        // Restrict visibility for clinic admins to only their clinics
+        // **FIX: Check visibility based on BOTH Cognito groups AND DynamoDB staffDetails**
         if (allowedClinics) {
-          groupNames = groupNames.filter((g) => {
+          // Filter Cognito groups to only show groups in allowed clinics
+          const visibleGroups = groupNames.filter((g) => {
             if (g === 'GLOBAL__SUPER_ADMIN') return false;
             const m = /^clinic_([^_][^\s]*)__[A-Z_]+$/.exec(String(g));
             if (!m) return false;
             return allowedClinics.has(m[1]);
           });
-          if (groupNames.length === 0) continue; // no visible clinics for this user
+
+          // Check if user has any staffDetails in allowed clinics
+          const hasStaffDetailsInAllowedClinics = staffDetails.some(detail => 
+            allowedClinics.has(String(detail.clinicId))
+          );
+
+          // Skip user only if they have NO visibility in ANY allowed clinic
+          if (visibleGroups.length === 0 && !hasStaffDetailsInAllowedClinics) {
+            continue; // User has no connection to caller's clinics
+          }
+
+          // Use visible groups for response
+          groupNames = visibleGroups;
         }
 
         const { clinics, rolesByClinic, isSuperAdmin } = deriveClinicsFromGroups(groupNames);
         
-        // This is the correct query using the email:
-        const staffDetails = STAFF_INFO_TABLE && email ? await getStaffInfoFromDynamoDB(email) : [];
-        
+        // **FIX: Merge clinics from both Cognito groups and DynamoDB staffDetails**
+        const allClinicsSet = new Set<string>(clinics);
+        staffDetails.forEach(detail => allClinicsSet.add(String(detail.clinicId)));
+        const allClinics = Array.from(allClinicsSet);
+
+        // **FIX: Filter staffDetails to only show clinics the caller can see**
+        const visibleStaffDetails = allowedClinics 
+          ? staffDetails.filter(detail => allowedClinics.has(String(detail.clinicId)))
+          : staffDetails;
+
         items.push({
-          username, // This is the UUID, which is correct for the API
-          email: email, // This is the actual email
+          username,
+          email,
           givenName: String(attrs['given_name'] || ''),
           familyName: String(attrs['family_name'] || ''),
           groups: groupNames,
-          clinics,
+          clinics: allClinics, // All clinics from both sources
           rolesByClinic,
           isSuperAdmin,
-          staffDetails, // This will now be populated
+          staffDetails: visibleStaffDetails, // Only show staff details for allowed clinics
         });
       }
       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ items, nextToken: (listResp as any)?.PaginationToken || undefined }) };
@@ -128,19 +151,21 @@ export const handler = async (event: any) => {
     // GET /users/{username}
     if (event.httpMethod === "GET") {
       if (!pathUsername) return httpErr(400, "username required");
-      // This is the UUID
+      
       const user = await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
       const attrs: Record<string, string> = Object.fromEntries((user.UserAttributes || []).map((a: any) => [a.Name, a.Value]));
-      
-      // This is the correct logic:
-      const email = attrs['email']?.toLowerCase() || ''; 
+      const email = attrs['email']?.toLowerCase() || '';
       
       const groupsResp = await cognito.send(new AdminListGroupsForUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
       const groupNames = (groupsResp.Groups || []).map((g) => g.GroupName!).filter(Boolean) as string[];
       const { clinics, rolesByClinic, isSuperAdmin } = deriveClinicsFromGroups(groupNames);
       
-      // This is the correct query using the email:
-      const staffDetails = STAFF_INFO_TABLE ? await getStaffInfoFromDynamoDB(email) : []; // Use email
+      const staffDetails = STAFF_INFO_TABLE ? await getStaffInfoFromDynamoDB(email) : [];
+
+      // **FIX: Merge clinics from both sources**
+      const allClinicsSet = new Set<string>(clinics);
+      staffDetails.forEach(detail => allClinicsSet.add(String(detail.clinicId)));
+      const allClinics = Array.from(allClinicsSet);
 
       return httpOk({
         username: pathUsername,
@@ -148,10 +173,10 @@ export const handler = async (event: any) => {
         givenName: String(attrs['given_name'] || ''),
         familyName: String(attrs['family_name'] || ''),
         groups: groupNames,
-        clinics,
+        clinics: allClinics,
         rolesByClinic,
         isSuperAdmin,
-        staffDetails, // This will now be populated
+        staffDetails,
       });
     }
 
@@ -180,7 +205,7 @@ export const handler = async (event: any) => {
         await cognito.send(new AdminUpdateUserAttributesCommand({ UserPoolId: userPoolId, Username: pathUsername, UserAttributes: attribs }));
       }
 
-      // This is the correct logic:
+      // Get user email
       const user = await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
       const email = (user.UserAttributes || []).find(a => a.Name === 'email')?.Value?.toLowerCase();
 
@@ -191,7 +216,6 @@ export const handler = async (event: any) => {
       const staffDetailsToSync = body.openDentalPerClinic ?? body.staffDetails;
 
       if (STAFF_INFO_TABLE && staffDetailsToSync) { 
-          // This is the correct sync using the email:
           await syncStaffInfoInDynamoDB(email, staffDetailsToSync);
       }
 
@@ -216,9 +240,7 @@ export const handler = async (event: any) => {
     // DELETE /users/{username}
     if (event.httpMethod === "DELETE") {
       
-      // --- THIS IS THE FIX ---
-      // We must get the user's email *before* deleting them from Cognito,
-      // so we can clean up DynamoDB properly.
+      // Get user email before deleting from Cognito
       let email: string | undefined;
       try {
         const user = await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
@@ -226,14 +248,13 @@ export const handler = async (event: any) => {
       } catch (e) {
         console.warn(`Could not find user ${pathUsername} to get email, may not be able to clean up DDB`, e);
       }
-      // --- END FIX ---
 
-      // Now, delete from Cognito
+      // Delete from Cognito
       await cognito.send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
       
-      // And delete from DynamoDB using the email
+      // Delete from DynamoDB using the email
       const deletedStaffInfo = (STAFF_INFO_TABLE && email) 
-        ? await deleteStaffInfoFromDynamoDB(email) // <-- Use email
+        ? await deleteStaffInfoFromDynamoDB(email)
         : { deleted: 0, enabled: false };
 
       return httpOk({ username: pathUsername, deleted: true, staffInfo: deletedStaffInfo });
@@ -250,10 +271,9 @@ export const handler = async (event: any) => {
 // DYNAMODB HELPER FUNCTIONS
 // ========================================
 
-// This function correctly queries by email
 async function getStaffInfoFromDynamoDB(email: string): Promise<StaffClinicDetail[]> {
     if (!STAFF_INFO_TABLE) return [];
-    if (!email) return []; // Don't query if email is empty
+    if (!email) return [];
     try {
         const result = await ddb.send(new QueryCommand({
             TableName: STAFF_INFO_TABLE,
@@ -267,7 +287,6 @@ async function getStaffInfoFromDynamoDB(email: string): Promise<StaffClinicDetai
     }
 }
 
-// This function correctly syncs by email
 async function syncStaffInfoInDynamoDB(email: string, details: StaffClinicDetail[]) {
     if (!STAFF_INFO_TABLE) return;
     const existingItems = await getStaffInfoFromDynamoDB(email);
@@ -282,8 +301,8 @@ async function syncStaffInfoInDynamoDB(email: string, details: StaffClinicDetail
             PutRequest: {
                 Item: {
                     ...detail,
-                    email, // Partition key
-                    clinicId: String(detail.clinicId), // Sort key
+                    email,
+                    clinicId: String(detail.clinicId),
                     updatedAt: new Date().toISOString()
                 }
             }
@@ -310,7 +329,6 @@ async function syncStaffInfoInDynamoDB(email: string, details: StaffClinicDetail
     }
 }
 
-// This function correctly deletes by email
 async function deleteStaffInfoFromDynamoDB(email: string): Promise<Record<string, any>> {
     if (!STAFF_INFO_TABLE) return { deleted: 0, enabled: false };
     const itemsToDelete = await getStaffInfoFromDynamoDB(email);
@@ -331,8 +349,7 @@ async function deleteStaffInfoFromDynamoDB(email: string): Promise<Record<string
 
 
 // ========================================
-// PRE-EXISTING HELPER FUNCTIONS
-// (No changes needed below this line)
+// HELPER FUNCTIONS
 // ========================================
 
 function parseBody(body: any): Record<string, any> {
@@ -344,7 +361,7 @@ function validatePutBody(body: PutUserBody) {
   if (body.makeGlobalSuperAdmin) return;
   const allowedRoles = new Set([
     "SUPER_ADMIN", "ADMIN", "PROVIDER", "MARKETING", "USER",
-    "DOCTOR", "HYGIENIST", "DENTAL_ASSISTANT", "", "PATIENT_COORDINATOR"
+    "DOCTOR", "HYGIENIST", "DENTAL_ASSISTANT", "TRAINEE", "PATIENT_COORDINATOR"
   ]);
   const clinics = Array.isArray(body.clinics) ? body.clinics : [];
   for (const c of clinics) {
