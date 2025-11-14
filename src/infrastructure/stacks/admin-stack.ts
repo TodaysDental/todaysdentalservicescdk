@@ -36,6 +36,8 @@ export class AdminStack extends Stack {
   public readonly meFn: lambdaNode.NodejsFunction;
   public readonly usersFn: lambdaNode.NodejsFunction;
   public readonly mePresenceFn?: lambdaNode.NodejsFunction;
+  // *** NEW: Add directory lookup function ***
+  public readonly directoryLookupFn: lambdaNode.NodejsFunction;
   // ...existing code...
   public readonly api: apigw.RestApi;
   public readonly authorizer: apigw.CognitoUserPoolsAuthorizer;
@@ -161,8 +163,26 @@ export class AdminStack extends Stack {
         resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${props.staffClinicInfoTableName}`],
       }));
     }
+    
+    // *** NEW: Directory Lookup Lambda for general user selection ***
+    this.directoryLookupFn = new lambdaNode.NodejsFunction(this, 'DirectoryLookupFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'admin', 'directory-lookup.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      memorySize: 128,
+      timeout: Duration.seconds(10),
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      environment: {
+        USER_POOL_ID: props.userPoolId,
+      },
+    });
 
-    // ...existing code...
+    // *** NEW: Grant only ListUsers permission to the Directory Lambda ***
+    this.directoryLookupFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:ListUsers'],
+      resources: [props.userPoolArn],
+    }));
+
 
     // If StaffClinicInfo table is provided, grant the register lambda read/write permissions
     if (props.staffClinicInfoTableName) {
@@ -291,6 +311,14 @@ export class AdminStack extends Stack {
     usersRes.addMethod('GET', new apigw.LambdaIntegration(this.usersFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.COGNITO,
+    });
+
+    // *** NEW: Directory Lookup Route for any authenticated user ***
+    const directoryRes = this.api.root.addResource('directory');
+    directoryRes.addMethod('GET', new apigw.LambdaIntegration(this.directoryLookupFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.COGNITO,
+      methodResponses: [{ statusCode: '200' }],
     });
 
     // ...existing code...
@@ -516,6 +544,11 @@ export class AdminStack extends Stack {
       description: 'Admin API Gateway ID',
       exportName: `${Stack.of(this).stackName}-AdminApiId`,
     });
-
+    
+    new CfnOutput(this, 'DirectoryApiUrl', {
+        value: 'https://api.todaysdentalinsights.com/admin/directory',
+        description: 'User Directory Lookup API URL',
+        exportName: `${Stack.of(this).stackName}-DirectoryApiUrl`,
+    });
   }
 }

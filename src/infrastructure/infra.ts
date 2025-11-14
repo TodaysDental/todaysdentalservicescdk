@@ -21,12 +21,13 @@ import { ChimeStack, type VoiceConnectorOriginationRouteConfig } from './stacks/
 import { HrStack } from './stacks/hr-stack';
 import { PatientPortalApptTypesStack } from './stacks/patient-portal-appttypes-stack';
 
-import { CommunicationsStack } from './stacks/communications-stack';
+import { CommStack } from './stacks/comm-stack'; // <-- NEW IMPORT ADDED HERE
+
 const app = new cdk.App();
 
 const env = {
-  account: process.env.CDK_DEFAULT_ACCOUNT,
-  region: process.env.CDK_DEFAULT_REGION || process.env.AWS_REGION,
+ account: process.env.CDK_DEFAULT_ACCOUNT,
+ region: process.env.CDK_DEFAULT_REGION || process.env.AWS_REGION,
 };
 
 const voiceConnectorTerminationCidrsContext = app.node.tryGetContext('voiceConnectorTerminationCidrs');
@@ -35,117 +36,117 @@ const voiceConnectorOriginationRoutesContext = app.node.tryGetContext('voiceConn
 let voiceConnectorOriginationRoutes: VoiceConnectorOriginationRouteConfig[] | undefined;
 
 if (Array.isArray(voiceConnectorTerminationCidrsContext)) {
-  voiceConnectorTerminationCidrs = voiceConnectorTerminationCidrsContext
-    .map((value) => String(value).trim())
-    .filter((value) => value.length > 0);
+ voiceConnectorTerminationCidrs = voiceConnectorTerminationCidrsContext
+  .map((value) => String(value).trim())
+  .filter((value) => value.length > 0);
 } else if (typeof voiceConnectorTerminationCidrsContext === 'string') {
-  const trimmed = voiceConnectorTerminationCidrsContext.trim();
+ const trimmed = voiceConnectorTerminationCidrsContext.trim();
 
-  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (Array.isArray(parsed)) {
-        voiceConnectorTerminationCidrs = parsed
-          .map((value) => String(value).trim())
-          .filter((value) => value.length > 0);
-      }
-    } catch (error) {
-      throw new Error(`Failed to parse voiceConnectorTerminationCidrs context as JSON array: ${error}`);
-    }
-  } else if (trimmed.length > 0) {
-    voiceConnectorTerminationCidrs = trimmed.split(',').map((value) => value.trim()).filter((value) => value.length > 0);
+ if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+  try {
+   const parsed = JSON.parse(trimmed);
+   if (Array.isArray(parsed)) {
+    voiceConnectorTerminationCidrs = parsed
+     .map((value) => String(value).trim())
+     .filter((value) => value.length > 0);
+   }
+  } catch (error) {
+   throw new Error(`Failed to parse voiceConnectorTerminationCidrs context as JSON array: ${error}`);
   }
+ } else if (trimmed.length > 0) {
+  voiceConnectorTerminationCidrs = trimmed.split(',').map((value) => value.trim()).filter((value) => value.length > 0);
+ }
 }
 
 if (voiceConnectorTerminationCidrs && voiceConnectorTerminationCidrs.length === 0) {
-  voiceConnectorTerminationCidrs = undefined;
+ voiceConnectorTerminationCidrs = undefined;
 }
 
 const normalizeOriginationRoute = (value: unknown, index: number): VoiceConnectorOriginationRouteConfig => {
-  if (typeof value === 'string') {
-    const host = value.trim();
-    if (!host) {
-      throw new Error(`voiceConnectorOriginationRoutes[${index}] must include a non-empty host value.`);
-    }
-    return { host };
+ if (typeof value === 'string') {
+  const host = value.trim();
+  if (!host) {
+   throw new Error(`voiceConnectorOriginationRoutes[${index}] must include a non-empty host value.`);
+  }
+  return { host };
+ }
+
+ if (value && typeof value === 'object') {
+  const routeObject = value as Record<string, unknown>;
+  const hostValue = routeObject.host;
+  const host = typeof hostValue === 'string' ? hostValue.trim() : hostValue != null ? String(hostValue).trim() : '';
+
+  if (!host) {
+   throw new Error(`voiceConnectorOriginationRoutes[${index}] must include a non-empty host value.`);
   }
 
-  if (value && typeof value === 'object') {
-    const routeObject = value as Record<string, unknown>;
-    const hostValue = routeObject.host;
-    const host = typeof hostValue === 'string' ? hostValue.trim() : hostValue != null ? String(hostValue).trim() : '';
+  const route: VoiceConnectorOriginationRouteConfig = { host };
 
-    if (!host) {
-      throw new Error(`voiceConnectorOriginationRoutes[${index}] must include a non-empty host value.`);
-    }
-
-    const route: VoiceConnectorOriginationRouteConfig = { host };
-
-    if ('port' in routeObject && routeObject.port != null) {
-      const port = Number(routeObject.port);
-      if (!Number.isFinite(port)) {
-        throw new Error(`voiceConnectorOriginationRoutes[${index}] port must be a finite number.`);
-      }
-      route.port = port;
-    }
-
-    if ('protocol' in routeObject && routeObject.protocol != null) {
-      route.protocol = String(routeObject.protocol).trim().toUpperCase() as VoiceConnectorOriginationRouteConfig['protocol'];
-    }
-
-    if ('priority' in routeObject && routeObject.priority != null) {
-      const priority = Number(routeObject.priority);
-      if (!Number.isFinite(priority)) {
-        throw new Error(`voiceConnectorOriginationRoutes[${index}] priority must be a finite number.`);
-      }
-      route.priority = priority;
-    }
-
-    if ('weight' in routeObject && routeObject.weight != null) {
-      const weight = Number(routeObject.weight);
-      if (!Number.isFinite(weight)) {
-        throw new Error(`voiceConnectorOriginationRoutes[${index}] weight must be a finite number.`);
-      }
-      route.weight = weight;
-    }
-
-    return route;
+  if ('port' in routeObject && routeObject.port != null) {
+   const port = Number(routeObject.port);
+   if (!Number.isFinite(port)) {
+    throw new Error(`voiceConnectorOriginationRoutes[${index}] port must be a finite number.`);
+   }
+   route.port = port;
   }
 
-  throw new Error(`voiceConnectorOriginationRoutes[${index}] must be a string host or an object with a host property.`);
+  if ('protocol' in routeObject && routeObject.protocol != null) {
+   route.protocol = String(routeObject.protocol).trim().toUpperCase() as VoiceConnectorOriginationRouteConfig['protocol'];
+  }
+
+  if ('priority' in routeObject && routeObject.priority != null) {
+   const priority = Number(routeObject.priority);
+   if (!Number.isFinite(priority)) {
+    throw new Error(`voiceConnectorOriginationRoutes[${index}] priority must be a finite number.`);
+   }
+   route.priority = priority;
+  }
+
+  if ('weight' in routeObject && routeObject.weight != null) {
+   const weight = Number(routeObject.weight);
+   if (!Number.isFinite(weight)) {
+    throw new Error(`voiceConnectorOriginationRoutes[${index}] weight must be a finite number.`);
+   }
+   route.weight = weight;
+  }
+
+  return route;
+ }
+
+ throw new Error(`voiceConnectorOriginationRoutes[${index}] must be a string host or an object with a host property.`);
 };
 
 if (Array.isArray(voiceConnectorOriginationRoutesContext)) {
-  voiceConnectorOriginationRoutes = voiceConnectorOriginationRoutesContext.map((value, index) =>
-    normalizeOriginationRoute(value, index)
-  );
+ voiceConnectorOriginationRoutes = voiceConnectorOriginationRoutesContext.map((value, index) =>
+  normalizeOriginationRoute(value, index)
+ );
 } else if (typeof voiceConnectorOriginationRoutesContext === 'string') {
-  const trimmed = voiceConnectorOriginationRoutesContext.trim();
-  if (trimmed.length > 0) {
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (!Array.isArray(parsed)) {
-          throw new Error('voiceConnectorOriginationRoutes context must be a JSON array.');
-        }
-        voiceConnectorOriginationRoutes = parsed.map((value, index) => normalizeOriginationRoute(value, index));
-      } catch (error) {
-        throw new Error(`Failed to parse voiceConnectorOriginationRoutes context: ${error}`);
-      }
-    } else {
-      voiceConnectorOriginationRoutes = trimmed
-        .split(',')
-        .map((value) => value.trim())
-        .filter((value) => value.length > 0)
-        .map((value, index) => normalizeOriginationRoute(value, index));
+ const trimmed = voiceConnectorOriginationRoutesContext.trim();
+ if (trimmed.length > 0) {
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+   try {
+    const parsed = JSON.parse(trimmed);
+    if (!Array.isArray(parsed)) {
+     throw new Error('voiceConnectorOriginationRoutes context must be a JSON array.');
     }
+    voiceConnectorOriginationRoutes = parsed.map((value, index) => normalizeOriginationRoute(value, index));
+   } catch (error) {
+    throw new Error(`Failed to parse voiceConnectorOriginationRoutes context: ${error}`);
+   }
+  } else {
+   voiceConnectorOriginationRoutes = trimmed
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+    .map((value, index) => normalizeOriginationRoute(value, index));
   }
+ }
 } else if (voiceConnectorOriginationRoutesContext && typeof voiceConnectorOriginationRoutesContext === 'object') {
-  voiceConnectorOriginationRoutes = [normalizeOriginationRoute(voiceConnectorOriginationRoutesContext, 0)];
+ voiceConnectorOriginationRoutes = [normalizeOriginationRoute(voiceConnectorOriginationRoutesContext, 0)];
 }
 
 if (voiceConnectorOriginationRoutes && voiceConnectorOriginationRoutes.length === 0) {
-  voiceConnectorOriginationRoutes = undefined;
+ voiceConnectorOriginationRoutes = undefined;
 }
 
 // 1. Core Stack - Cognito and basic auth (minimal resources)
@@ -156,47 +157,47 @@ const coreStack = new CoreStack(app, 'TodaysDentalInsightsCoreV2', { env });
 
 // Templates service
 const templatesStack = new TemplatesStack(app, 'TodaysDentalInsightsTemplatesV3', {
-  env,
-  userPool: coreStack.userPool,
+ env,
+ userPool: coreStack.userPool,
 });
 
 // *** NEW STACK ***
 // Consent Form Data service
 const consentFormDataStack = new ConsentFormDataStack(app, 'TodaysDentalInsightsConsentFormDataV1', {
-  env,
-  userPool: coreStack.userPool,
+ env,
+ userPool: coreStack.userPool,
 });
 // *** END NEW STACK ***
 
 // Queries service
 const queriesStack = new QueriesStack(app, 'TodaysDentalInsightsQueriesV3', {
-  env,
-  userPool: coreStack.userPool,
+ env,
+ userPool: coreStack.userPool,
 });
 
 // Clinic Pricing service
 const clinicPricingStack = new ClinicPricingStack(app, 'TodaysDentalInsightsClinicPricingV3', {
-  env,
-  userPool: coreStack.userPool,
+ env,
+ userPool: coreStack.userPool,
 });
 
 // Clinic Insurance service
 const clinicInsuranceStack = new ClinicInsuranceStack(app, 'TodaysDentalInsightsClinicInsuranceV3', {
-  env,
-  userPool: coreStack.userPool,
+ env,
+ userPool: coreStack.userPool,
 });
 
 // OpenDental service with SFTP resources
 const openDentalStack = new OpenDentalStack(app, 'TodaysDentalInsightsOpenDentalV2', {
-  env,
-  userPool: coreStack.userPool,
+ env,
+ userPool: coreStack.userPool,
 });
 
 // Notifications service
 const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNotificationsV3', {
-  env,
-  userPool: coreStack.userPool,
-  templatesTableName: templatesStack.templatesTable.tableName,
+ env,
+ userPool: coreStack.userPool,
+ templatesTableName: templatesStack.templatesTable.tableName,
 });
 
 // Amazon Chime Voice Integration - create Chime stack first and export
@@ -204,33 +205,33 @@ const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNoti
 // Chime stack to avoid a two-way construct dependency which leads to
 // cyclic CloudFormation references.
 const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV22', {
-  env,
-  userPool: coreStack.userPool,
-  voiceConnectorTerminationCidrs,
-  voiceConnectorOriginationRoutes,
+ env,
+ userPool: coreStack.userPool,
+ voiceConnectorTerminationCidrs,
+ voiceConnectorOriginationRoutes,
 });
 
 // Admin services (AdminStack will import Chime lambda ARNs and wire API
 // methods). Importing the ARNs makes Admin depend on Chime (one-way), which
 // avoids the cyclic dependency we were seeing.
 const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminV3', {
-  env,
-  userPool: coreStack.userPool,
-  userPoolArn: coreStack.userPool.userPoolArn,
-  userPoolId: coreStack.userPool.userPoolId,
-  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
-  clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
-  // Import ARNs exported by the Chime stack
-  startSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StartSessionArn`),
-  stopSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StopSessionArn`),
-  outboundCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-OutboundCallArn`),
-  transferCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-TransferCallArn`),
-  callAcceptedFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallAcceptedArn`),
-  callRejectedFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallRejectedArn`),
-  callHungupFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallHungupArn`),
-  leaveCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-LeaveCallArn`),
-  heartbeatFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-HeartbeatArn`),
-  agentPresenceTableName: cdk.Fn.importValue(`${chimeStack.stackName}-AgentPresenceTableName`),
+ env,
+ userPool: coreStack.userPool,
+ userPoolArn: coreStack.userPool.userPoolArn,
+ userPoolId: coreStack.userPool.userPoolId,
+ staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+ clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
+ // Import ARNs exported by the Chime stack
+ startSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StartSessionArn`),
+ stopSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StopSessionArn`),
+ outboundCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-OutboundCallArn`),
+ transferCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-TransferCallArn`),
+ callAcceptedFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallAcceptedArn`),
+ callRejectedFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallRejectedArn`),
+ callHungupFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallHungupArn`),
+ leaveCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-LeaveCallArn`),
+ heartbeatFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-HeartbeatArn`),
+ agentPresenceTableName: cdk.Fn.importValue(`${chimeStack.stackName}-AgentPresenceTableName`),
 });
 
 // CRITICAL FIX: Avoid circular dependencies between adminStack and chimeStack
@@ -250,62 +251,63 @@ chimeStack.addDependency(coreStack);
 // so no additional configuration is needed here.
 
 const hrStack = new HrStack(app, 'TodaysDentalInsightsHrV1', {
-  env,
-  userPool: coreStack.userPool,
-  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+ env,
+ userPool: coreStack.userPool,
+ staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
 });
 hrStack.addDependency(coreStack);
-// Schedules service (depends on other services for cross-table access)
-const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesV3', {
-  env,
-  userPool: coreStack.userPool,
-  templatesTableName: templatesStack.templatesTable.tableName,
-  queriesTableName: queriesStack.queriesTable.tableName,
-  clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
-  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
+
+// ** COMMUNICATIONS STACK INSTANTIATION **
+const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommV1', {
+    env,
+    userPoolArn: coreStack.userPool.userPoolArn,
+    userPoolId: coreStack.userPool.userPoolId,
 });
 
-// const communicationsStack = new CommunicationsStack(app, 'TodaysDentalInsightsCommunicationsV1', {
-//   env,
-//   userPool: coreStack.userPool,
-//   userPoolId: coreStack.userPool.userPoolId,
-//   userPoolArn: coreStack.userPool.userPoolArn,
-// });
-// 6. Callback Stack - Dedicated callback API (depends on core)
+// Schedules service (depends on other services for cross-table access)
+const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesV3', {
+ env,
+ userPool: coreStack.userPool,
+ templatesTableName: templatesStack.templatesTable.tableName,
+ queriesTableName: queriesStack.queriesTable.tableName,
+ clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
+ consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
+});
+
 const callbackStack = new CallbackStack(app, 'TodaysDentalInsightsCallbackV2', {
-  env,
-  userPoolArn: coreStack.userPool.userPoolArn,
-  userPoolId: coreStack.userPool.userPoolId,
+ env,
+ userPoolArn: coreStack.userPool.userPoolArn,
+ userPoolId: coreStack.userPool.userPoolId,
 });
 
 // 7. Patient Portal Stack - Dedicated patient portal API (depends on core and OpenDental)
 const patientPortalStack = new PatientPortalStack(app, 'TodaysDentalInsightsPatientPortalV2', {
-  env,
-  userPoolArn: coreStack.userPool.userPoolArn,
-  userPoolId: coreStack.userPool.userPoolId,
-  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
-  consolidatedTransferServerBucket: openDentalStack.consolidatedSftpBucket.bucketName,
+ env,
+ userPoolArn: coreStack.userPool.userPoolArn,
+ userPoolId: coreStack.userPool.userPoolId,
+ consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
+ consolidatedTransferServerBucket: openDentalStack.consolidatedSftpBucket.bucketName,
 });
 const patientPortalApptTypesStack = new PatientPortalApptTypesStack(app, 'TodaysDentalInsightsPatientPortalApptTypesV1', {
-  env,
-  userPool: coreStack.userPool,
+ env,
+ userPool: coreStack.userPool,
 });
 patientPortalApptTypesStack.addDependency(coreStack);
 // 8. Chatbot Stack - WebSocket-based dental assistant chatbot (depends on core and clinic data)
 const chatbotStack = new ChatbotStack(app, 'TodaysDentalInsightsChatbotV2', {
-  env,
-  userPoolArn: coreStack.userPool.userPoolArn,
-  userPoolId: coreStack.userPool.userPoolId,
-  // Chatbot reads directly from DynamoDB tables - no API calls needed
-  clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
-  clinicPricingTableName: clinicPricingStack.clinicPricingTable.tableName,
-  clinicInsuranceTableName: clinicInsuranceStack.clinicInsuranceTable.tableName,
+ env,
+ userPoolArn: coreStack.userPool.userPoolArn,
+ userPoolId: coreStack.userPool.userPoolId,
+ // Chatbot reads directly from DynamoDB tables - no API calls needed
+ clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
+ clinicPricingTableName: clinicPricingStack.clinicPricingTable.tableName,
+ clinicInsuranceTableName: clinicInsuranceStack.clinicInsuranceTable.tableName,
 });
 
 // Clinic Hours service
 const clinicHoursStack = new ClinicHoursStack(app, 'TodaysDentalInsightsClinicHoursV3', {
-  env,
-  userPool: coreStack.userPool,
+ env,
+ userPool: coreStack.userPool,
 });
 
 // Add stack dependencies
@@ -319,7 +321,9 @@ clinicHoursStack.addDependency(coreStack);
 clinicPricingStack.addDependency(coreStack);
 clinicInsuranceStack.addDependency(coreStack);
 openDentalStack.addDependency(coreStack);
-// communicationsStack.addDependency(coreStack);
+
+communicationsStack.addDependency(coreStack); // <-- NEW DEPENDENCY ADDED HERE
+
 // Cross-service dependencies for services that need data from other services
 notificationsStack.addDependency(coreStack);
 notificationsStack.addDependency(templatesStack);
