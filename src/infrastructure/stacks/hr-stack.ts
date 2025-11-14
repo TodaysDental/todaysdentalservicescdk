@@ -132,10 +132,17 @@ export class HrStack extends Stack {
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.staffClinicInfoTableName}/index/*`
       ],
     }));
+
+    // --- THIS IS THE FIX ---
+    // Added 'cognito-idp:AdminGetUser' to the policy
     this.hrFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['cognito-idp:ListUsers'],
+      actions: [
+        'cognito-idp:ListUsers',
+        'cognito-idp:AdminGetUser' // <-- ADD THIS PERMISSION
+      ],
       resources: [props.userPool.userPoolArn],
     }));
+    // --- END OF FIX ---
 
     // ========================================
     // API ROUTES
