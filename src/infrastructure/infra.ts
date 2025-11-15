@@ -210,6 +210,12 @@ const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV22', {
  voiceConnectorTerminationCidrs,
  voiceConnectorOriginationRoutes,
 });
+// ** COMMUNICATIONS STACK INSTANTIATION **
+const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommV1', {
+    env,
+    userPoolArn: coreStack.userPool.userPoolArn,
+    userPoolId: coreStack.userPool.userPoolId,
+});
 
 // Admin services (AdminStack will import Chime lambda ARNs and wire API
 // methods). Importing the ARNs makes Admin depend on Chime (one-way), which
@@ -220,6 +226,7 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminV3', {
  userPoolArn: coreStack.userPool.userPoolArn,
  userPoolId: coreStack.userPool.userPoolId,
  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+ favorsTableName: communicationsStack.favorsTable.tableName,
  clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
  // Import ARNs exported by the Chime stack
  startSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StartSessionArn`),
@@ -257,12 +264,6 @@ const hrStack = new HrStack(app, 'TodaysDentalInsightsHrV1', {
 });
 hrStack.addDependency(coreStack);
 
-// ** COMMUNICATIONS STACK INSTANTIATION **
-const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommV1', {
-    env,
-    userPoolArn: coreStack.userPool.userPoolArn,
-    userPoolId: coreStack.userPool.userPoolId,
-});
 
 // Schedules service (depends on other services for cross-table access)
 const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesV3', {
