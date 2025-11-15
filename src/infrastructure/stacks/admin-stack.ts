@@ -15,6 +15,8 @@ export interface AdminStackProps extends StackProps {
   clinicHoursTableName: string;
   staffClinicInfoTableName?: string;
   agentPresenceTableName?: string;
+  // ** NEW: Input for the Communications Module (Favor Requests Table Name) **
+  favorsTableName: string; 
   // Optional ARNs for Chime lambdas (imported from Chime stack to avoid
   // two-way construct references). When provided, Admin stack will add API
   // routes that integrate with these functions.
@@ -35,9 +37,9 @@ export class AdminStack extends Stack {
   public readonly registerFnV3: lambdaNode.NodejsFunction;
   public readonly meFn: lambdaNode.NodejsFunction;
   public readonly usersFn: lambdaNode.NodejsFunction;
-  public readonly mePresenceFn?: lambdaNode.NodejsFunction;
-  // *** NEW: Add directory lookup function ***
   public readonly directoryLookupFn: lambdaNode.NodejsFunction;
+  public readonly listRequestsFn: lambdaNode.NodejsFunction; // ** NEW: Request List Lambda Property **
+  public readonly mePresenceFn?: lambdaNode.NodejsFunction;
   // ...existing code...
   public readonly api: apigw.RestApi;
   public readonly authorizer: apigw.CognitoUserPoolsAuthorizer;
@@ -164,7 +166,7 @@ export class AdminStack extends Stack {
       }));
     }
     
-    // *** NEW: Directory Lookup Lambda for general user selection ***
+    // *** Directory Lookup Lambda for general user selection ***
     this.directoryLookupFn = new lambdaNode.NodejsFunction(this, 'DirectoryLookupFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'admin', 'directory-lookup.ts'),
       handler: 'handler',
@@ -177,10 +179,34 @@ export class AdminStack extends Stack {
       },
     });
 
-    // *** NEW: Grant only ListUsers permission to the Directory Lambda ***
+    // *** Grant only ListUsers permission to the Directory Lambda ***
     this.directoryLookupFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['cognito-idp:ListUsers'],
       resources: [props.userPoolArn],
+    }));
+    
+    // ** NEW: List Active Requests Lambda Deployment **
+    this.listRequestsFn = new lambdaNode.NodejsFunction(this, 'ListRequestsFn', {
+        entry: path.join(__dirname, '..', '..', 'services', 'admin', 'list-requests.ts'),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_20_X,
+        memorySize: 128,
+        timeout: Duration.seconds(10),
+        bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+        environment: {
+            USER_POOL_ID: props.userPoolId,
+            FAVORS_TABLE_NAME: props.favorsTableName, // Pass the table name
+        },
+    });
+    
+    // ** NEW: Grant permission to query the Favors Table via the UserIndex **
+    this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:Query'],
+        resources: [
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}`,
+            // Grant permission to the GSI ARN as well (required for Query with IndexName)
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/UserIndex`,
+        ],
     }));
 
 
@@ -266,10 +292,6 @@ export class AdminStack extends Stack {
     }));
 
     // ========================================
-    // API ROUTES
-    // ========================================
-
-    // ========================================
     // DOMAIN MAPPING
     // ========================================
 
@@ -313,15 +335,21 @@ export class AdminStack extends Stack {
       authorizationType: apigw.AuthorizationType.COGNITO,
     });
 
-    // *** NEW: Directory Lookup Route for any authenticated user ***
+    // *** Directory Lookup Route for any authenticated user ***
     const directoryRes = this.api.root.addResource('directory');
     directoryRes.addMethod('GET', new apigw.LambdaIntegration(this.directoryLookupFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.COGNITO,
       methodResponses: [{ statusCode: '200' }],
     });
-
-    // ...existing code...
+    
+    // ** NEW: List Requests Route (For the "Mini-Slack" sidebar) **
+    const requestsRes = this.api.root.addResource('requests');
+    requestsRes.addMethod('GET', new apigw.LambdaIntegration(this.listRequestsFn), {
+        authorizer: this.authorizer,
+        authorizationType: apigw.AuthorizationType.COGNITO,
+        methodResponses: [{ statusCode: '200' }],
+    });
 
     // Me API routes
     const meRes = this.api.root.addResource('me');
@@ -549,6 +577,12 @@ export class AdminStack extends Stack {
         value: 'https://api.todaysdentalinsights.com/admin/directory',
         description: 'User Directory Lookup API URL',
         exportName: `${Stack.of(this).stackName}-DirectoryApiUrl`,
+    });
+    
+    new CfnOutput(this, 'RequestsApiUrl', {
+        value: 'https://api.todaysdentalinsights.com/admin/requests',
+        description: 'Active Favor Requests List API URL',
+        exportName: `${Stack.of(this).stackName}-RequestsApiUrl`,
     });
   }
 }

@@ -20,20 +20,27 @@ export const handler = async (event: APIGatewayProxyEvent) => {
     return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: true }) };
   }
 
-  // NOTE: Authorization (token validation) is handled by the API Gateway Authorizer
-  // We do not need to check for Admin/Super Admin roles here, just that the user is logged in.
-
   if (!USER_POOL_ID) {
     return httpErr(500, "USER_POOL_ID not configured");
   }
 
   try {
-    // We only need basic information for a directory lookup
-    const listResp = await cognito.send(new ListUsersCommand({ 
+    // 1. Implement client-specified limit with max/min constraints
+    // Max 50 users (the user-friendly limit, which is less than the Cognito max of 60)
+    const limit = Math.max(1, Math.min(50, Number(event.queryStringParameters?.limit || 25)));
+    
+    // 2. Extract pagination token if present
+    const paginationToken = event.queryStringParameters?.nextToken;
+
+    // 3. Prepare command inputs
+    const commandInput = {
         UserPoolId: USER_POOL_ID,
-        Limit: 500, // Limit the list size for performance
-        // Filter out users that are not confirmed if needed, e.g., 'Status = "CONFIRMED"'
-    }));
+        Limit: limit,
+        // Pass the token if it exists to fetch the next page
+        ...(paginationToken && { PaginationToken: paginationToken }) 
+    };
+
+    const listResp = await cognito.send(new ListUsersCommand(commandInput));
 
     const directory = (listResp.Users || [])
         .map((u: UserType) => {
@@ -48,7 +55,11 @@ export const handler = async (event: APIGatewayProxyEvent) => {
         // Filter out users who might not have an email or are incomplete
         .filter(u => u.email);
 
-    return httpOk({ items: directory });
+    return httpOk({ 
+        items: directory,
+        // Return the token for the client to request the next page, or undefined if done
+        nextToken: listResp.PaginationToken || undefined 
+    });
   } catch (err: any) {
     console.error("Error listing users:", err);
     return httpErr(500, err?.message || "internal error");

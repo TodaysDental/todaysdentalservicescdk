@@ -13,7 +13,7 @@ const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || '';
 const MESSAGES_TABLE = process.env.MESSAGES_TABLE || '';
 const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
 const FILE_BUCKET_NAME = process.env.FILE_BUCKET_NAME || '';
-const NOTIFICATIONS_TOPIC_ARN = process.env.NOTIFICATIONS_TOPIC_ARN || '';
+const NOTIFICATIONS_TOPIC_ARN = process.env.NOTICES_TOPIC_ARN || '';
 
 // SDK Clients
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
@@ -36,7 +36,7 @@ interface FavorRequest {
     status: 'active' | 'resolved';
     createdAt: string;
     updatedAt: string;
-    userID: string; // <-- ADDED FOR GSI 'UserIndex'
+    userID: string; // Added for GSI 'UserIndex'
 }
 
 interface MessageData {
@@ -88,6 +88,9 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
             case 'getPresignedUrl':
                 await getPresignedUrl(senderID, payload, connectionId, apiGwManagement);
                 break;
+            case 'fetchHistory':
+                await fetchHistory(senderID, payload, connectionId, apiGwManagement);
+                break;
             default:
                 await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unknown action' });
         }
@@ -131,9 +134,7 @@ async function startFavorRequest(
         status: 'active',
         createdAt: nowIso,
         updatedAt: nowIso,
-        // The GSI 'UserIndex' requires a generic 'userID' as PK. 
-        // We'll use the sender's ID here for the primary record lookup.
-        userID: senderID, // <-- FIXED: Added 'userID' property
+        userID: senderID, 
     };
 
     // 1. Create Favor Request Record
@@ -199,12 +200,12 @@ async function sendMessage(
     }
     
     // 2. Update the favor's last update time to surface it in the UI list
-    const updatedFavor = await ddb.send(new UpdateCommand({
+    await ddb.send(new UpdateCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
         UpdateExpression: 'SET updatedAt = :ua',
         ExpressionAttributeValues: { ':ua': new Date().toISOString() },
-        ReturnValues: 'ALL_NEW',
+        ReturnValues: 'NONE',
     }));
     
     // 3. Create message data
@@ -282,6 +283,56 @@ async function resolveRequest(
     }
 }
 
+/**
+ * **NEW:** Handles fetching message history for a specific favor request.
+ */
+async function fetchHistory(
+    callerID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, limit = 100, lastTimestamp } = payload;
+    
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID for history fetch.' });
+        return;
+    }
+
+    // 1. Validate authorization (caller must be a participant)
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+
+    if (!favor || (favor.senderID !== callerID && favor.receiverID !== callerID)) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized access to favor request history.' });
+        return;
+    }
+
+    // 2. Query the MessagesTable (PK: favorRequestID, SK: timestamp)
+    const queryInput = {
+        TableName: MESSAGES_TABLE,
+        KeyConditionExpression: 'favorRequestID = :id',
+        ExpressionAttributeValues: { ':id': favorRequestID },
+        ScanIndexForward: true, // Chronological order (oldest first)
+        Limit: limit,
+        // Optional: Use ExclusiveStartKey for pagination (not fully implemented here, just lastTimestamp as anchor)
+    };
+
+    const historyResult = await ddb.send(new QueryCommand(queryInput));
+    
+    // 3. Send history back to the client
+    await sendToClient(apiGwManagement, connectionId, {
+        type: 'favorHistory',
+        favorRequestID,
+        messages: historyResult.Items || [],
+        // nextToken: historyResult.LastEvaluatedKey // To implement robust pagination
+    });
+}
+
+
 // ========================================
 // MESSAGE BROADCASTING AND PERSISTENCE
 // ========================================
@@ -333,7 +384,7 @@ async function _saveAndBroadcastMessage(messageData: MessageData, apiGwManagemen
 
 
 // ========================================
-// HELPER FUNCTIONS (Including stubs from previous step)
+// HELPER FUNCTIONS 
 // ========================================
 
 /** Retrieves sender (user and connection ID) information from the Connections table. */
