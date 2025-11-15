@@ -253,6 +253,7 @@ async function resolveRequest(
                 ':resolved': 'resolved',
                 ':ua': nowIso,
                 ':sender': senderID,
+                ':active': 'active', // <-- FIX: Defining the missing attribute value
             },
             // Condition: Only sender or receiver can resolve, and it must be active.
             ConditionExpression: '#s = :active AND (senderID = :sender OR receiverID = :sender)',

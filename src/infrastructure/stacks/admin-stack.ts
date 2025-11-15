@@ -200,14 +200,18 @@ export class AdminStack extends Stack {
     });
     
     // ** NEW: Grant permission to query the Favors Table via the UserIndex **
-    this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
-        actions: ['dynamodb:Query'],
-        resources: [
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}`,
-            // Grant permission to the GSI ARN as well (required for Query with IndexName)
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/UserIndex`,
-        ],
-    }));
+   // Grant permission to query the Favors Table via GSIs for sent/received lookups
+this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
+    actions: ['dynamodb:Query'],
+    resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}`,
+        // GSIs used by list-requests.ts
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/UserIndex`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/SenderIndex`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/ReceiverIndex`,
+    ],
+}));
+
 
 
     // If StaffClinicInfo table is provided, grant the register lambda read/write permissions

@@ -64,6 +64,19 @@ export class CommStack extends Stack {
       sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
+this.favorsTable.addGlobalSecondaryIndex({
+  indexName: 'SenderIndex',
+  partitionKey: { name: 'senderID', type: dynamodb.AttributeType.STRING },
+  sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
+  projectionType: dynamodb.ProjectionType.ALL,
+});
+
+this.favorsTable.addGlobalSecondaryIndex({
+  indexName: 'ReceiverIndex',
+  partitionKey: { name: 'receiverID', type: dynamodb.AttributeType.STRING },
+  sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
+  projectionType: dynamodb.ProjectionType.ALL,
+});
 
     // 3. Messages Table (Stores each message in a separate row)
     this.messagesTable = new dynamodb.Table(this, 'MessagesTable', {
