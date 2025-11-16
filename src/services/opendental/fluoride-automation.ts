@@ -58,15 +58,19 @@ async function runFluorideAutomation(clinic: ClinicConfig): Promise<{
   console.log(`Processing clinic: ${clinic.clinicName} (${clinic.clinicId})`);
 
   const API_BASE_URL = "https://api.opendental.com/api/v1";
+  const DEVELOPER_KEY = clinic.developerKey;
   const CUSTOMER_KEY = clinic.customerKey;
-  const API_KEY = clinic.developerKey;
 
-  // Headers for Authentication
+  // Headers for Authentication - format must be exactly "ODFHIR {DeveloperKey}/{CustomerKey}"
+  // with no spaces between developer key and customer key except for the slash
   const headers = {
-    "Authorization": `ODFHIR ${API_KEY}`,
+    "Authorization": `ODFHIR ${DEVELOPER_KEY}/${CUSTOMER_KEY}`,
     "Accept": "application/json",
     "Content-Type": "application/json"
   };
+  
+  // Log the authentication info for debugging purposes only (remove in production)
+  console.log(`Using auth for ${clinic.clinicId}: Developer=${DEVELOPER_KEY}, Customer=${CUSTOMER_KEY}`);
 
   // Track statistics
   let proceduresAdded = 0;
@@ -156,16 +160,35 @@ async function runFluorideAutomation(clinic: ClinicConfig): Promise<{
         SftpPassword: sftpPassword
       };
       
-      const response = await axios.post(url, queryPayload, { headers });
+      // Add timeout to prevent hanging if API is unresponsive
+      const response = await axios.post(url, queryPayload, { 
+        headers, 
+        timeout: 10000 // 10 second timeout
+      });
       
       // POST requests often return 200 or 201
       if (response.status === 200 || response.status === 201) {
         console.log(`SQL query results saved to SFTP path: ${sftpPath}`);
         return response.data;
+      } else {
+        console.warn(`Unexpected response status: ${response.status}`);
+        console.warn(`Response data:`, response.data);
       }
     } catch (error: any) {
       console.error(`Error running query for clinic ${clinic.clinicId}: ${error.message}`);
-      if (error.response) console.error(error.response.data);
+      
+      // Provide detailed error information for debugging
+      if (error.response) {
+        console.error(`Status: ${error.response.status}`);
+        console.error(`Response data:`, error.response.data);
+        
+        // Special handling for auth errors
+        if (error.response.status === 401) {
+          console.error(`Authentication failed for clinic ${clinic.clinicId}. Please verify developer key and customer key.`);
+        }
+      } else if (error.request) {
+        console.error(`No response received from server. Request:`, error.request);
+      }
     }
     
     return [];
@@ -187,16 +210,30 @@ async function runFluorideAutomation(clinic: ClinicConfig): Promise<{
     };
 
     try {
-      const response = await axios.post(url, payload, { headers });
+      const response = await axios.post(url, payload, { 
+        headers,
+        timeout: 10000 // 10 second timeout
+      });
       
       if (response.status === 201) {
         const data = response.data;
         console.log(`  [SUCCESS] Added D1206 for PatNum ${patNum} on ${dateStr}. New ProcNum: ${data.ProcNum}`);
         return data.ProcNum;
+      } else {
+        console.warn(`  [WARNING] Unexpected response status ${response.status} when adding procedure`);
+        console.warn(`  Response data:`, response.data);
       }
     } catch (error: any) {
       console.error(`  [ERROR] Failed to add procedure: ${error.message}`);
-      if (error.response) console.error(error.response.data);
+      
+      if (error.response) {
+        console.error(`  Status: ${error.response.status}`);
+        console.error(`  Response data:`, error.response.data);
+        
+        if (error.response.status === 401) {
+          console.error(`  Authentication failed while adding procedure. Check API keys.`);
+        }
+      }
     }
     
     return null;
@@ -216,18 +253,27 @@ async function runFluorideAutomation(clinic: ClinicConfig): Promise<{
     };
 
     try {
-      const response = await axios.post(url, payload, { headers });
+      const response = await axios.post(url, payload, { 
+        headers,
+        timeout: 10000 // 10 second timeout  
+      });
       
       if (response.status === 201) {
         console.log(`  [SUCCESS] Claim created for ProcNum ${procNum}`);
         return true;
+      } else {
+        console.warn(`  [WARNING] Unexpected response status ${response.status} when creating claim`);
+        console.warn(`  Response data:`, response.data);
       }
     } catch (error: any) {
       if (error.response && error.response.status === 400) {
         console.log(`  [WARNING] Could not create claim (Patient might not have insurance): ${error.response.data}`);
+      } else if (error.response && error.response.status === 401) {
+        console.error(`  [ERROR] Authentication failed while creating claim. Check API keys.`);
+        console.error(`  Response data:`, error.response.data);
       } else {
         console.error(`  [ERROR] Claim creation failed: ${error.message}`);
-        if (error.response) console.error(error.response.data);
+        if (error.response) console.error(`  Response data:`, error.response.data);
       }
     }
     return false;
