@@ -88,16 +88,16 @@ async function cleanupStaleAgentPresence(stats: any): Promise<void> {
         if (staleAgents && staleAgents.length > 0) {
             console.log(`[cleanup-monitor] Found ${staleAgents.length} stale agent presence records`);
             
-            for (const agent of staleAgents) {
+            const cleanupTasks = staleAgents.map(agent => (async () => {
                 try {
-                    // Mark agent as Offline and clean up all call-related fields
                     await ddb.send(new UpdateCommand({
                         TableName: AGENT_PRESENCE_TABLE_NAME,
                         Key: { agentId: agent.agentId },
                         UpdateExpression: 'SET #s = :offline, lastActivityAt = :now, cleanupReason = :reason ' + 
                                           'REMOVE ringingCallId, currentCallId, callStatus, inboundMeetingInfo, ' + 
-                                          'inboundAttendeeInfo, ringingCallTime, ringingCallFrom, ' + 
-                                          'currentMeetingAttendeeId, heldCallMeetingId, heldCallId, heldCallAttendeeId',
+                                          'inboundAttendeeInfo, ringingCallTime, ringingCallFrom, ringingCallNotes, ' +
+                                          'ringingCallTransferAgentId, ringingCallTransferMode, currentMeetingAttendeeId, ' +
+                                          'heldCallMeetingId, heldCallId, heldCallAttendeeId',
                         ExpressionAttributeNames: { '#s': 'status' },
                         ExpressionAttributeValues: {
                             ':offline': 'Offline',
@@ -105,14 +105,14 @@ async function cleanupStaleAgentPresence(stats: any): Promise<void> {
                             ':reason': `stale_${agent.status}_cleanup`
                         }
                     }));
-                    
                     stats.staleAgents++;
                     console.log(`[cleanup-monitor] Cleaned up stale agent: ${agent.agentId} (was ${agent.status})`);
                 } catch (agentErr) {
                     console.error(`[cleanup-monitor] Error cleaning up agent ${agent.agentId}:`, agentErr);
                     stats.errors++;
                 }
-            }
+            })());
+            await Promise.allSettled(cleanupTasks);
         } else {
             console.log('[cleanup-monitor] No stale agent presence records found');
         }
@@ -151,54 +151,46 @@ async function cleanupOrphanedMeetings(stats: any): Promise<void> {
             console.log(`[cleanup-monitor] Found ${callsWithMeetings.length} calls with orphaned queue meetings`);
             
             for (const call of callsWithMeetings) {
-                if (call.meetingInfo?.MeetingId) {
+                const recordKey = { clinicId: call.clinicId, queuePosition: call.queuePosition };
+                let priorMeetingId: string | undefined;
+                try {
+                    const updateResult = await ddb.send(new UpdateCommand({
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        Key: recordKey,
+                        UpdateExpression: 'SET #s = :abandoned, cleanupReason = :reason REMOVE meetingInfo, customerAttendeeInfo',
+                        ExpressionAttributeNames: { '#s': 'status' },
+                        ExpressionAttributeValues: {
+                            ':abandoned': 'abandoned',
+                            ':reason': 'orphaned_queue_meeting_cleanup',
+                            ':queued': 'queued'
+                        },
+                        ConditionExpression: '#s = :queued',
+                        ReturnValues: 'ALL_OLD'
+                    }));
+                    priorMeetingId = updateResult.Attributes?.meetingInfo?.MeetingId || call.meetingInfo?.MeetingId;
+                } catch (updateErr: any) {
+                    if (updateErr.name === 'ConditionalCheckFailedException') {
+                        console.log(`[cleanup-monitor] Skipping meeting cleanup for call ${call.callId} - status changed`);
+                        continue;
+                    }
+                    console.error(`[cleanup-monitor] Error updating call ${call.callId} before meeting cleanup:`, updateErr);
+                    stats.errors++;
+                    continue;
+                }
+
+                if (priorMeetingId) {
                     try {
-                        // 1. Attempt to delete the meeting
-                        await chime.send(new DeleteMeetingCommand({ 
-                            MeetingId: call.meetingInfo.MeetingId 
-                        }));
-                        
-                        // 2. Update call record to 'abandoned' and remove meeting info
-                        await ddb.send(new UpdateCommand({
-                            TableName: CALL_QUEUE_TABLE_NAME,
-                            Key: { 
-                                clinicId: call.clinicId, 
-                                queuePosition: call.queuePosition 
-                            },
-                            UpdateExpression: 'SET #s = :abandoned, cleanupReason = :reason REMOVE meetingInfo, customerAttendeeInfo',
-                            ExpressionAttributeNames: { '#s': 'status' },
-                            ExpressionAttributeValues: {
-                                ':abandoned': 'abandoned',
-                                ':reason': 'orphaned_queue_meeting_cleanup'
-                            }
-                        }));
-                        
-                        stats.orphanedMeetings++;
-                        console.log(`[cleanup-monitor] Cleaned up orphaned queue meeting: ${call.meetingInfo.MeetingId} for call ${call.callId}`);
-                        
+                        await chime.send(new DeleteMeetingCommand({ MeetingId: priorMeetingId }));
                     } catch (meetingErr: any) {
-                        if (meetingErr.name === 'NotFoundException') {
-                            // Meeting already gone, just update DB
-                            await ddb.send(new UpdateCommand({
-                                TableName: CALL_QUEUE_TABLE_NAME,
-                                Key: { 
-                                    clinicId: call.clinicId, 
-                                    queuePosition: call.queuePosition 
-                                },
-                                UpdateExpression: 'SET #s = :abandoned, cleanupReason = :reason REMOVE meetingInfo, customerAttendeeInfo',
-                                ExpressionAttributeNames: { '#s': 'status' },
-                                ExpressionAttributeValues: {
-                                     ':abandoned': 'abandoned',
-                                    ':reason': 'orphaned_queue_meeting_cleanup (not_found)'
-                                }
-                            }));
-                            stats.orphanedMeetings++;
-                        } else {
-                            console.error(`[cleanup-monitor] Error cleaning up meeting ${call.meetingInfo.MeetingId}:`, meetingErr);
+                        if (meetingErr.name !== 'NotFoundException') {
+                            console.error(`[cleanup-monitor] Error deleting meeting ${priorMeetingId}:`, meetingErr);
                             stats.errors++;
                         }
                     }
                 }
+
+                stats.orphanedMeetings++;
+                console.log(`[cleanup-monitor] Cleaned up orphaned queue meeting for call ${call.callId} (meetingId=${priorMeetingId || 'unknown'})`);
             }
         } else {
             console.log('[cleanup-monitor] No orphaned queue meetings found');
@@ -411,7 +403,7 @@ async function cleanupAbandonedCalls(stats: any): Promise<void> {
                         try {
                             const updateExpr = call.status === 'dialing'
                                 ? 'SET #s = :online, lastActivityAt = :now REMOVE currentCallId, callStatus'
-                                : 'SET #s = :online, lastActivityAt = :now REMOVE ringingCallId, ringingCallTime, ringingCallFrom';
+                                : 'SET #s = :online, lastActivityAt = :now REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode';
                                 
                             await ddb.send(new UpdateCommand({
                                 TableName: AGENT_PRESENCE_TABLE_NAME!,

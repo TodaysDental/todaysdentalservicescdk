@@ -1104,6 +1104,7 @@ export class ChimeStack extends Stack {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         CHIME_MEDIA_REGION: 'us-east-1',
+        SMA_ID_MAP: smaIdMapJson,
       },
     });
     

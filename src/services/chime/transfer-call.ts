@@ -17,6 +17,8 @@ const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
 const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
 let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
+const MAX_TRANSFER_NOTE_LENGTH = 500;
+const VALID_TRANSFER_NOTES_REGEX = /^[a-zA-Z0-9\s.,!?:;'"\-@#$/()&+]*$/;
 
 // Auth Helpers
 async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; payload: JWTPayload } | { ok: false; code: number; message: string }> {
@@ -37,6 +39,20 @@ async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; p
   } catch (err: any) {
     return { ok: false, code: 401, message: `Invalid token: ${err.message}` };
   }
+}
+
+function sanitizeTransferNotes(input?: string): { sanitized?: string; error?: string } {
+    if (typeof input !== 'string') {
+        return { sanitized: undefined };
+    }
+    const trimmed = input.trim();
+    if (!trimmed) {
+        return { sanitized: undefined };
+    }
+    if (!VALID_TRANSFER_NOTES_REGEX.test(trimmed)) {
+        return { error: 'Transfer notes contain unsupported characters' };
+    }
+    return { sanitized: trimmed.slice(0, MAX_TRANSFER_NOTE_LENGTH) };
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
@@ -63,7 +79,38 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         console.log('[transfer-call] Auth verification successful', { requestingAgentId });
         
         const body = JSON.parse(event.body);
-        const { callId, fromAgentId, toAgentId } = body;
+        const {
+            callId,
+            fromAgentId,
+            toAgentId,
+            transferType: transferTypeInput,
+            transferMode: transferModeInput,
+            mode: modeInput,
+            enableConference,
+            conference,
+            transferNotes: transferNotesInput,
+            notes: notesInput
+        } = body;
+
+        const normalizedTransferType = [transferTypeInput, transferModeInput, modeInput]
+            .find((value) => typeof value === 'string')?.toLowerCase();
+        const conferenceFlag = typeof enableConference === 'boolean'
+            ? enableConference
+            : typeof conference === 'boolean'
+                ? conference
+                : undefined;
+        const isConferenceTransfer = conferenceFlag ?? normalizedTransferType === 'conference';
+        const transferMode = isConferenceTransfer ? 'conference' : 'blind';
+
+        const rawNotes = [transferNotesInput, notesInput].find((value) => typeof value === 'string') as string | undefined;
+        const { sanitized: transferNotes, error: transferNotesError } = sanitizeTransferNotes(rawNotes);
+        if (transferNotesError) {
+            return {
+                statusCode: 400,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: transferNotesError })
+            };
+        }
 
         if (!callId || !fromAgentId || !toAgentId) {
             return { 
@@ -206,6 +253,56 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             // Step 3: Now perform our three database updates using TransactWriteItems
             // This ensures either ALL updates succeed or NONE do
             const timestamp = new Date().toISOString();
+            const callerNumber = typeof callRecord.phoneNumber === 'string' && callRecord.phoneNumber.trim().length > 0
+                ? callRecord.phoneNumber
+                : 'Transferred Caller';
+            const hasTransferNotes = Boolean(transferNotes);
+
+            const callRecordSetParts = [
+                'transferStatus = :ts',
+                'transferToAgentId = :ta',
+                'transferFromAgentId = :fa',
+                'transferInitiatedAt = :timestamp',
+                '#transferMode = :transferModeValue',
+                'isConferenceTransfer = :isConference'
+            ];
+            const callRecordRemoveParts: string[] = [];
+            if (hasTransferNotes) {
+                callRecordSetParts.push('transferNotes = :transferNotes');
+            } else {
+                callRecordRemoveParts.push('transferNotes');
+            }
+            const callRecordUpdateExpression = `SET ${callRecordSetParts.join(', ')}${callRecordRemoveParts.length ? ' REMOVE ' + callRecordRemoveParts.join(', ') : ''}`;
+
+            const targetAgentSetParts = [
+                'ringingCallId = :callId',
+                'callStatus = :status',
+                'inboundMeetingInfo = :meeting',
+                'inboundAttendeeInfo = :attendee',
+                'ringingCallTime = :time',
+                'lastActivityAt = :timestamp',
+                'ringingCallFrom = :callerNumber',
+                'ringingCallTransferAgentId = :transferInitiatedBy',
+                'ringingCallTransferMode = :ringingTransferMode'
+            ];
+            const targetAgentRemoveParts: string[] = [];
+            if (hasTransferNotes) {
+                targetAgentSetParts.push('ringingCallNotes = :transferNotes');
+            } else {
+                targetAgentRemoveParts.push('ringingCallNotes');
+            }
+            const targetAgentUpdateExpression = `SET ${targetAgentSetParts.join(', ')}${targetAgentRemoveParts.length ? ' REMOVE ' + targetAgentRemoveParts.join(', ') : ''}`;
+
+            const sourceAgentSetParts = [
+                '#status = :sourceStatus',
+                'lastActivityAt = :timestamp',
+                'transferInitiatedAt = :timestamp'
+            ];
+            const sourceAgentRemoveParts: string[] = [];
+            if (!isConferenceTransfer) {
+                sourceAgentRemoveParts.push('currentCallId', 'callStatus');
+            }
+            const sourceAgentUpdateExpression = `SET ${sourceAgentSetParts.join(', ')}${sourceAgentRemoveParts.length ? ' REMOVE ' + sourceAgentRemoveParts.join(', ') : ''}`;
             
             // Use the TransactWrite operation for atomic updates - already imported at the top of file
             
@@ -216,16 +313,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                         Update: {
                             TableName: CALL_QUEUE_TABLE_NAME,
                             Key: { clinicId, queuePosition },
-                            UpdateExpression: 'SET transferStatus = :ts, transferToAgentId = :ta, transferFromAgentId = :fa, transferInitiatedAt = :timestamp',
+                            UpdateExpression: callRecordUpdateExpression,
                             ConditionExpression: '#status = :connectedStatus AND assignedAgentId = :fromAgent',
-                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeNames: { '#status': 'status', '#transferMode': 'transferMode' },
                             ExpressionAttributeValues: {
                                 ':ts': 'pending',
                                 ':ta': toAgentId,
                                 ':fa': fromAgentId,
                                 ':timestamp': timestamp,
                                 ':connectedStatus': 'connected',
-                                ':fromAgent': fromAgentId
+                                ':fromAgent': fromAgentId,
+                                ':transferModeValue': transferMode,
+                                ':isConference': isConferenceTransfer,
+                                ...(hasTransferNotes ? { ':transferNotes': transferNotes } : {})
                             }
                         }
                     },
@@ -234,9 +334,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                         Update: {
                             TableName: AGENT_PRESENCE_TABLE_NAME,
                             Key: { agentId: toAgentId },
-                            UpdateExpression: 'SET ringingCallId = :callId, callStatus = :status, ' + 
-                                            'inboundMeetingInfo = :meeting, inboundAttendeeInfo = :attendee, ' +
-                                            'ringingCallTime = :time, lastActivityAt = :timestamp',
+                            UpdateExpression: targetAgentUpdateExpression,
                             ConditionExpression: '#status = :onlineStatus', // Only if agent is still online
                             ExpressionAttributeNames: { '#status': 'status' },
                             ExpressionAttributeValues: {
@@ -246,20 +344,24 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                                 ':attendee': toAgentAttendee,
                                 ':time': timestamp,
                                 ':timestamp': timestamp,
-                                ':onlineStatus': 'Online'
+                                ':onlineStatus': 'Online',
+                                ':callerNumber': callerNumber,
+                                ':transferInitiatedBy': fromAgentId,
+                                ':ringingTransferMode': transferMode,
+                                ...(hasTransferNotes ? { ':transferNotes': transferNotes } : {})
                             }
                         }
                     },
-                    // 3. Update source agent's record (set to Online)
+                    // 3. Update source agent's record (set to Online or keep OnCall for conference)
                     {
                         Update: {
                             TableName: AGENT_PRESENCE_TABLE_NAME,
                             Key: { agentId: fromAgentId },
-                            UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp, transferInitiatedAt = :timestamp REMOVE currentCallId, callStatus',
+                            UpdateExpression: sourceAgentUpdateExpression,
                             ConditionExpression: 'currentCallId = :callId', // Only if still on this call
                             ExpressionAttributeNames: { '#status': 'status' },
                             ExpressionAttributeValues: {
-                                ':status': 'Online',
+                                ':sourceStatus': isConferenceTransfer ? 'OnCall' : 'Online',
                                 ':timestamp': timestamp,
                                 ':callId': callId
                             }
@@ -314,14 +416,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // Trigger the SMA to handle the transfer - this happens AFTER the transaction is complete
         // so even if this fails, our database state is already updated consistently
         try {
+            const smaArguments: Record<string, string> = {
+                action: 'TRANSFER_INITIATED',
+                fromAgentId,
+                toAgentId,
+                transferType: transferMode,
+                isConference: isConferenceTransfer ? 'true' : 'false'
+            };
+            if (transferNotes) {
+                smaArguments.transferNotes = transferNotes;
+            }
             await chimeVoice.send(new UpdateSipMediaApplicationCallCommand({
                 SipMediaApplicationId: smaId,
                 TransactionId: callId,
-                Arguments: {
-                    action: 'TRANSFER_INITIATED',
-                    fromAgentId,
-                    toAgentId
-                }
+                Arguments: smaArguments
             }));
             
             console.log(`[transfer-call] SMA notification sent successfully for transfer from ${fromAgentId} to ${toAgentId}`);
@@ -355,7 +463,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                             Update: {
                                 TableName: CALL_QUEUE_TABLE_NAME,
                                 Key: { clinicId, queuePosition },
-                                UpdateExpression: 'REMOVE transferStatus, transferToAgentId, transferFromAgentId, transferInitiatedAt SET rollbackId = :rollbackId, lastRollbackAt = :timestamp',
+                                UpdateExpression: 'REMOVE transferStatus, transferToAgentId, transferFromAgentId, transferInitiatedAt, transferNotes, transferMode, isConferenceTransfer SET rollbackId = :rollbackId, lastRollbackAt = :timestamp',
                                 ConditionExpression: 'transferStatus = :pendingStatus AND transferToAgentId = :toAgent AND transferFromAgentId = :fromAgent',
                                 ExpressionAttributeValues: {
                                     ':pendingStatus': 'pending',
@@ -371,7 +479,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                             Update: {
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
                                 Key: { agentId: toAgentId },
-                                UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp, rollbackId = :rollbackId REMOVE ringingCallId, inboundMeetingInfo, inboundAttendeeInfo, ringingCallTime',
+                                UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp, rollbackId = :rollbackId REMOVE ringingCallId, inboundMeetingInfo, inboundAttendeeInfo, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
                                 ExpressionAttributeNames: { '#status': 'status' },
                                 ConditionExpression: 'ringingCallId = :callId',
                                 ExpressionAttributeValues: {

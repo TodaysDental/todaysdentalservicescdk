@@ -134,7 +134,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
              await ddb.send(new UpdateCommand({
                 TableName: AGENT_PRESENCE_TABLE_NAME,
                 Key: { agentId },
-                UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom',
+                UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
                 ConditionExpression: 'ringingCallId = :callId',
                 ExpressionAttributeNames: {'#status': 'status'},
                 ExpressionAttributeValues: { ':online': 'Online', ':callId': callId }
@@ -160,7 +160,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             await ddb.send(new UpdateCommand({
                 TableName: AGENT_PRESENCE_TABLE_NAME,
                 Key: { agentId },
-                UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom',
+                UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
                 ConditionExpression: 'ringingCallId = :callId',
                 ExpressionAttributeNames: {'#status': 'status'},
                 ExpressionAttributeValues: { ':online': 'Online', ':callId': callId }
@@ -201,6 +201,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         
         const otherRingingAgents = (callRecord.agentIds || []).filter((id: string) => id !== agentId);
         const timestamp = new Date().toISOString();
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const extendedTTL = nowSeconds + (24 * 60 * 60); // Keep active calls alive for another 24 hours
 
         const transactionItems = [
             // Item 1: Update call status to 'connected' and store customer attendee
@@ -208,7 +210,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 Update: {
                     TableName: CALL_QUEUE_TABLE_NAME,
                     Key: { clinicId, queuePosition },
-                    UpdateExpression: 'SET #status = :connected, assignedAgentId = :agentId, acceptedAt = :timestamp, customerAttendeeInfo = :customerAttendee REMOVE agentIds',
+                    UpdateExpression: 'SET #status = :connected, assignedAgentId = :agentId, acceptedAt = :timestamp, customerAttendeeInfo = :customerAttendee, ttl = :ttl REMOVE agentIds',
                     ConditionExpression: '#status = :ringing', // Final check for race condition
                     ExpressionAttributeNames: { '#status': 'status' },
                     ExpressionAttributeValues: {
@@ -216,7 +218,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                         ':agentId': agentId,
                         ':timestamp': timestamp,
                         ':customerAttendee': customerAttendee,
-                        ':ringing': 'ringing'
+                        ':ringing': 'ringing',
+                        ':ttl': extendedTTL
                     }
                 }
             },
@@ -225,7 +228,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 Update: {
                     TableName: AGENT_PRESENCE_TABLE_NAME,
                     Key: { agentId },
-                    UpdateExpression: 'SET #status = :onCall, currentCallId = :callId, lastActivityAt = :timestamp REMOVE ringingCallId, ringingCallTime, ringingCallFrom',
+                    UpdateExpression: 'SET #status = :onCall, currentCallId = :callId, lastActivityAt = :timestamp REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
                     ConditionExpression: 'ringingCallId = :callId', // Ensure agent was ringing for this call
                     ExpressionAttributeNames: { '#status': 'status' },
                     ExpressionAttributeValues: {
@@ -243,7 +246,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 Update: {
                     TableName: AGENT_PRESENCE_TABLE_NAME,
                     Key: { agentId: otherAgentId },
-                    UpdateExpression: 'SET #status = :onCall, lastActivityAt = :timestamp REMOVE ringingCallId, ringingCallTime, ringingCallFrom',
+                    UpdateExpression: 'SET #status = :onCall, lastActivityAt = :timestamp REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
                     ConditionExpression: 'ringingCallId = :callId', // Only clear if they were ringing for this call
                     ExpressionAttributeNames: { '#status': 'status' },
                     ExpressionAttributeValues: {

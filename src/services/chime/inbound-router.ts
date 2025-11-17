@@ -1,11 +1,9 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, QueryCommand, UpdateCommand, PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand, UpdateCommand, PutCommand, GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { 
     ChimeSDKMeetingsClient, 
-    CreateMeetingCommand, 
     CreateAttendeeCommand, 
-    DeleteMeetingCommand,
-    GetMeetingCommand
+    DeleteMeetingCommand
 } from '@aws-sdk/client-chime-sdk-meetings';
 import { randomUUID } from 'crypto';
 
@@ -20,6 +18,12 @@ const CLINICS_TABLE_NAME = process.env.CLINICS_TABLE_NAME;
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 const HOLD_MUSIC_BUCKET = process.env.HOLD_MUSIC_BUCKET;
+const MAX_RING_AGENTS = Math.max(1, Number.parseInt(process.env.MAX_RING_AGENTS || '25', 10));
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isValidTransactionId(value: unknown): value is string {
+    return typeof value === 'string' && UUID_REGEX.test(value);
+}
 
 // Default queue timeout in seconds (24 hours) - Increased to handle long calls
 const QUEUE_TIMEOUT = 24 * 60 * 60;
@@ -341,20 +345,6 @@ const buildHangupAction = (message?: string) => {
     return { Type: 'Hangup' };
 };
 
-// --- Meeting Management ---
-// This function is now only used for the "queue" flow
-async function createQueueMeeting(callId: string, clinicId: string) {
-    const meetingResponse = await chime.send(new CreateMeetingCommand({
-        ClientRequestToken: `queue-${callId}`,
-        MediaRegion: CHIME_MEDIA_REGION,
-        ExternalMeetingId: `queue-${callId}-${clinicId}`,
-    }));
-
-    const meeting = meetingResponse.Meeting;
-    if (!meeting) throw new Error('Failed to create meeting');
-    return meeting;
-}
-
 async function cleanupMeeting(meetingId: string) {
     try {
         await chime.send(new DeleteMeetingCommand({ MeetingId: meetingId }));
@@ -391,6 +381,13 @@ export const handler = async (event: any): Promise<any> => {
 
     const eventType = event?.InvocationEventType;
     const callId = event?.CallDetails?.TransactionId;
+    if (!isValidTransactionId(callId)) {
+        console.error('[inbound-router] Invalid or missing TransactionId', {
+            rawTransactionId: callId,
+            eventType: event?.InvocationEventType
+        });
+        return buildActions([buildHangupAction('There was an error connecting your call. Please try again later.')]);
+    }
     const args = event?.ActionData?.Parameters?.Arguments || event?.ActionData?.ArgumentsMap || event?.CallDetails?.ArgumentsMap || {};
     const pstnLegCallId = getPstnLegCallId(event);
 
@@ -456,142 +453,119 @@ export const handler = async (event: any): Promise<any> => {
                             ':status': 'Online',
                             ':clinicId': clinicId,
                         },
+                        Limit: MAX_RING_AGENTS
                     }));
 
-                    // --- FLOW A: No Agents Available (Queue Flow) ---
-                    if (!agents || agents.length === 0) {
-                        console.log(`No 'Online' agents found for clinic ${clinicId}. Adding to queue.`);
-                        
-                        try {
-                            // Create a temporary meeting just for this queued call
-                            const meeting = await createQueueMeeting(callId, clinicId);
-                            
-                            if (!meeting.MeetingId) {
-                                throw new Error('Failed to create meeting for queued call');
+                    const sortedAgents = (agents || []).sort((a, b) =>
+                        (a?.lastActivityAt || 'z').localeCompare(b?.lastActivityAt || 'z')
+                    );
+
+                    let callAssigned = false;
+                    let assignedAgentId: string | null = null;
+
+                    if (sortedAgents.length > 0) {
+                        const now = Date.now();
+                        const queuePosition = now + Math.floor(Math.random() * 100);
+                        const queueEntryTime = Math.floor(now / 1000);
+                        const queueEntryTimeIso = new Date(now).toISOString();
+                        const baseQueueItem = {
+                            clinicId,
+                            callId,
+                            queuePosition,
+                            queueEntryTime,
+                            queueEntryTimeIso,
+                            phoneNumber: fromPhoneNumber,
+                            status: 'ringing',
+                            direction: 'inbound',
+                            ttl: queueEntryTime + QUEUE_TIMEOUT
+                        };
+
+                        for (const agent of sortedAgents) {
+                            const agentId = agent?.agentId;
+                            if (!agentId) {
+                                continue;
                             }
 
-                            // Create customer attendee
-                            const customerAttendeeResponse = await chime.send(new CreateAttendeeCommand({
-                                MeetingId: meeting.MeetingId,
-                                ExternalUserId: `customer-${callId}`
-                            }));
+                            const callQueueItem = {
+                                ...baseQueueItem,
+                                agentIds: [agentId],
+                                assignedAgentId: agentId
+                            };
+                            const assignmentTimestamp = new Date().toISOString();
 
-                            if (!customerAttendeeResponse.Attendee?.AttendeeId) {
-                                throw new Error('Failed to create customer attendee for queued call');
-                            }
+                            try {
+                                await ddb.send(new TransactWriteCommand({
+                                    TransactItems: [
+                                        {
+                                            Put: {
+                                                TableName: CALL_QUEUE_TABLE_NAME,
+                                                Item: callQueueItem,
+                                                ConditionExpression: 'attribute_not_exists(clinicId) AND attribute_not_exists(queuePosition)'
+                                            }
+                                        },
+                                        {
+                                            Update: {
+                                                TableName: AGENT_PRESENCE_TABLE_NAME,
+                                                Key: { agentId },
+                                                UpdateExpression: 'SET #status = :ringing, ringingCallId = :callId, ringingCallTime = :time, ringingCallFrom = :from, lastActivityAt = :time',
+                                                ConditionExpression: '#status = :online',
+                                                ExpressionAttributeNames: { '#status': 'status' },
+                                                ExpressionAttributeValues: {
+                                                    ':ringing': 'ringing',
+                                                    ':callId': callId,
+                                                    ':time': assignmentTimestamp,
+                                                    ':from': fromPhoneNumber,
+                                                    ':online': 'Online'
+                                                }
+                                            }
+                                        }
+                                    ]
+                                }));
 
-                            // Add the call to the queue
-                            const queueEntry = await addToQueue(clinicId, callId, fromPhoneNumber);
-                            console.log('[NEW_INBOUND_CALL] Call added to queue', { clinicId, callId, queueEntry });
-                            
-                            // Update the queue entry with meeting info
-                            await ddb.send(new UpdateCommand({
-                                TableName: CALL_QUEUE_TABLE_NAME,
-                                Key: {
-                                    clinicId,
-                                    queuePosition: queueEntry.queuePosition
-                                },
-                                UpdateExpression: 'SET meetingInfo = :meeting, customerAttendeeInfo = :attendee',
-                                ExpressionAttributeValues: {
-                                    ':meeting': meeting,
-                                    ':attendee': customerAttendeeResponse.Attendee
+                                callAssigned = true;
+                                assignedAgentId = agentId;
+                                console.log(`[NEW_INBOUND_CALL] Atomically assigned call ${callId} to agent ${agentId}`);
+                                break;
+                            } catch (err: any) {
+                                if (err?.name === 'TransactionCanceledException') {
+                                    console.warn(`[NEW_INBOUND_CALL] Agent ${agentId} was claimed by another call. Trying next agent.`);
+                                } else {
+                                    console.error(`[NEW_INBOUND_CALL] Transaction failed for agent ${agentId}:`, err);
                                 }
-                            }));
-
-                            console.log(`[NEW_INBOUND_CALL] Queue entry updated with meeting ${meeting.MeetingId}`);
-                            
-                            // Get estimated wait time
-                            const queueInfo = await getQueuePosition(clinicId, callId);
-                            const waitMinutes = Math.ceil((queueInfo?.estimatedWaitTime || 120) / 60);
-                            const message = `All agents are currently busy. You are number ${queueInfo?.position || 1} in line. ` +
-                                          `The estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
-                                          `Please stay on the line.`;
-                            
-                            // Join customer to meeting to wait
-                            if (!pstnLegCallId) {
-                                console.error('[NEW_INBOUND_CALL] Missing PSTN CallId for JoinChimeMeeting action');
-                                return buildActions([buildHangupAction('There was an error connecting your call. Please try again later.')]);
                             }
-
-                            return buildActions([
-                                buildSpeakAction(message),
-                                buildPauseAction(500),
-                                buildJoinChimeMeetingAction(pstnLegCallId, meeting, customerAttendeeResponse.Attendee)
-                            ]);
-                            
-                        } catch (queueErr) {
-                            console.error('Error queuing call:', queueErr);
-                            return buildActions([buildHangupAction('All agents are currently busy. Please try again later.')]);
                         }
                     }
 
-                    // --- FLOW B: Agents are "Online" (Ringing Flow) ---
-                    console.log(`[NEW_INBOUND_CALL] Found ${agents.length} online agents for clinic ${clinicId}`);
-                    try {
-                        const agentIds = agents.map(a => a.agentId);
-                        const uniqueId = `${Date.now()}-${callId.substring(0, 8)}`;
-                        const currentTimestamp = Math.floor(Date.now() / 1000);
-
-                        // 1. Create the call record in the queue table with "ringing" status
-                        // ** NO MEETING INFO IS ADDED HERE **
-                        await ddb.send(new PutCommand({
-                            TableName: CALL_QUEUE_TABLE_NAME,
-                            Item: {
-                                clinicId,
-                                callId,
-                                queuePosition: 0, // 0 for ringing, not queued
-                                queueEntryTime: currentTimestamp,
-                                queueEntryTimeIso: new Date().toISOString(),
-                                uniquePositionId: uniqueId,
-                                phoneNumber: fromPhoneNumber,
-                                status: 'ringing',
-                                agentIds: agentIds, // List of agents we are ringing
-                                ttl: currentTimestamp + QUEUE_TIMEOUT
-                            }
-                        }));
-                        console.log(`[NEW_INBOUND_CALL] Call record created with status 'ringing' for agents: ${agentIds.join(', ')}`);
-
-                        // 2. Update all "Online" agents to "ringing" status
-                        for (const agent of agents) {
-                            try {
-                                await ddb.send(new UpdateCommand({
-                                    TableName: AGENT_PRESENCE_TABLE_NAME,
-                                    Key: { agentId: agent.agentId },
-                                    UpdateExpression: 'SET ringingCallId = :callId, #status = :ringingStatus, ringingCallTime = :time, ringingCallFrom = :from',
-                                    // Only check that agent is 'Online' and not already on another call
-                                    ConditionExpression: '#status = :onlineStatus AND attribute_not_exists(currentCallId)',
-                                    ExpressionAttributeNames: { '#status': 'status' },
-                                    ExpressionAttributeValues: {
-                                        ':callId': callId,
-                                        ':ringingStatus': 'ringing',
-                                        ':time': new Date().toISOString(),
-                                        ':from': fromPhoneNumber,
-                                        ':onlineStatus': 'Online'
-                                    }
-                                }));
-                                console.log(`[NEW_INBOUND_CALL] Notified agent ${agent.agentId}`);
-                            } catch (err: any) {
-                                if (err.name === 'ConditionalCheckFailedException') {
-                                    console.warn(`[NEW_INBOUND_CALL] Agent ${agent.agentId} status changed during notification - skipping`);
-                                } else {
-                                    console.error(`[NEW_INBOUND_CALL] Error notifying agent ${agent.agentId}:`, err.message);
-                                }
-                            }
-                        }
-
-                        // 3. Play hold music to the customer and WAIT.
-                        // The call-accepted.ts Lambda will trigger the bridge.
-                        console.log(`[NEW_INBOUND_CALL] Placing customer ${callId} on hold, waiting for agent accept.`);
+                    if (callAssigned && assignedAgentId) {
+                        console.log(`[NEW_INBOUND_CALL] Placing customer ${callId} on hold, ringing agent ${assignedAgentId}.`);
                         return buildActions([
                             buildSpeakAction('Thank you for calling. Please hold while we connect you with an available agent.'),
                             buildPauseAction(500),
-                            buildPlayAudioAction('hold-music.wav', 999) // Loop hold music
+                            buildPlayAudioAction('hold-music.wav', 999)
                         ]);
-
-                    } catch (err: any) {
-                        console.error('Error setting up simultaneous ring:', err);
-                        return buildActions([buildHangupAction('There was an error connecting your call. Please try again.')]);
                     }
+
+                    console.log(`[NEW_INBOUND_CALL] No available Online agents for clinic ${clinicId}. Adding to queue.`);
+                    try {
+                        const queueEntry = await addToQueue(clinicId, callId, fromPhoneNumber);
+                        console.log('[NEW_INBOUND_CALL] Call added to queue', { clinicId, callId, queueEntry });
+
+                        const queueInfo = await getQueuePosition(clinicId, callId);
+                        const waitMinutes = Math.ceil((queueInfo?.estimatedWaitTime || 120) / 60);
+                        const message = `All agents are currently busy. You are number ${queueInfo?.position || 1} in line. ` +
+                                      `The estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
+                                      `Please stay on the line.`;
+
+                        return buildActions([
+                            buildSpeakAction(message),
+                            buildPauseAction(500),
+                            buildPlayAudioAction('hold-music.wav', 999)
+                        ]);
+                    } catch (queueErr) {
+                        console.error('Error queuing call:', queueErr);
+                        return buildActions([buildHangupAction('All agents are currently busy. Please try again later.')]);
+                    }
+
                 }
 
             // Case 2: A new call *from* our system (agent outbound call)
@@ -731,6 +705,12 @@ export const handler = async (event: any): Promise<any> => {
                                 MeetingId: meetingId,
                                 AttendeeList: [agentAttendeeId]
                             }
+                        });
+                    } else {
+                        console.warn(`[HOLD_CALL] Cannot remove agent from meeting - missing required info`, {
+                            hasMeetingId: !!meetingId,
+                            hasAttendeeId: !!agentAttendeeId,
+                            removeAgent
                         });
                     }
                     
@@ -924,6 +904,13 @@ export const handler = async (event: any): Promise<any> => {
                         } catch (meetingErr) {
                             console.warn(`[${eventType}] Failed to cleanup queue meeting:`, meetingErr);
                         }
+                    } else if ((status === 'dialing' || status === 'failed') && meetingInfo?.MeetingId) {
+                        try {
+                            await cleanupMeeting(meetingInfo.MeetingId);
+                            console.log(`[${eventType}] Cleaned up failed outbound meeting ${meetingInfo.MeetingId}`);
+                        } catch (meetingErr) {
+                            console.warn(`[${eventType}] Failed to cleanup outbound meeting:`, meetingErr);
+                        }
                     } else if (meetingInfo?.MeetingId) {
                         console.log(`[${eventType}] Call ended for agent session meeting ${meetingInfo.MeetingId}. Meeting will NOT be deleted.`);
                     }
@@ -984,7 +971,7 @@ export const handler = async (event: any): Promise<any> => {
                             ddb.send(new UpdateCommand({
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
                                 Key: { agentId },
-                                UpdateExpression: 'SET #status = :online, lastActivityAt = :timestamp REMOVE ringingCallId, ringingCallTime, ringingCallFrom',
+                                UpdateExpression: 'SET #status = :online, lastActivityAt = :timestamp REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
                                 ConditionExpression: 'attribute_exists(agentId) AND ringingCallId = :callId',
                                 ExpressionAttributeNames: {
                                     '#status': 'status'
@@ -1043,3 +1030,5 @@ export const handler = async (event: any): Promise<any> => {
         return buildActions([buildHangupAction('An internal error occurred. Please try again.')]);
     }
 };
+
+

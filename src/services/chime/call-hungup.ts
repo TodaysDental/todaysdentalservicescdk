@@ -3,17 +3,24 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 // CORRECTED IMPORT: Use UpdateSipMediaApplicationCallCommand to manipulate an active call
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
-import { ChimeSDKMeetingsClient, CreateAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
+import { ChimeSDKMeetingsClient } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getSmaIdForClinic } from './utils/sma-map';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
+import { createCheckQueueForWork } from './utils/check-queue-for-work';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const chimeVoiceClient = new ChimeSDKVoiceClient({});
-const chime = new ChimeSDKMeetingsClient({ region: process.env.CHIME_MEDIA_REGION || 'us-east-1' });
-
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
+const chimeVoiceClient = new ChimeSDKVoiceClient({});
+const chime = new ChimeSDKMeetingsClient({ region: process.env.CHIME_MEDIA_REGION || 'us-east-1' });
+const checkQueueForWork = createCheckQueueForWork({
+    ddb,
+    callQueueTableName: CALL_QUEUE_TABLE_NAME,
+    agentPresenceTableName: AGENT_PRESENCE_TABLE_NAME,
+    chime,
+    chimeVoiceClient
+});
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
 const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
@@ -121,6 +128,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
+        const currentCallStatus = callMetadata.status || callMetadata.callStatus;
+        if (currentCallStatus === 'on_hold' && callMetadata.heldByAgentId && agentId && callMetadata.heldByAgentId !== agentId) {
+            console.warn('[call-hungup] Blocking hangup because call is on hold by another agent', {
+                callId,
+                heldByAgentId: callMetadata.heldByAgentId,
+                requestingAgentId: agentId
+            });
+            return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Call is currently on hold by another agent. Please wait for them to resume or complete the hold.' })
+            };
+        }
+
         const clinicId = typeof callMetadata.clinicId === 'string' ? callMetadata.clinicId : undefined;
         const smaId = getSmaIdForClinic(clinicId);
         if (!smaId) {
@@ -153,6 +174,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         
         // 2. Update the agent's status and metrics
         if (agentId) {
+            const callHasQueueKey = typeof callMetadata.queuePosition !== 'undefined' && typeof callMetadata.clinicId === 'string';
             if (smaHangupSuccess) {
                 // Only mark agent as available if SMA hangup succeeded
                 await ddb.send(new UpdateCommand({
@@ -168,6 +190,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     }
                 }));
                 console.log(`[call-hungup] Agent ${agentId} marked as Online after successful hangup`);
+                
+                if (callHasQueueKey) {
+                    await ddb.send(new UpdateCommand({
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        Key: { clinicId: callMetadata.clinicId, queuePosition: callMetadata.queuePosition },
+                        UpdateExpression: 'SET #status = :completed, endedAt = :now',
+                        ExpressionAttributeNames: { '#status': 'status' },
+                        ExpressionAttributeValues: {
+                            ':completed': 'completed',
+                            ':now': new Date().toISOString()
+                        }
+                    }));
+                    console.log(`[call-hungup] Call ${callId} marked completed after successful SMA hangup`);
+                } else {
+                    console.warn(`[call-hungup] Unable to update call record ${callId} - missing queue key`);
+                }
             } else {
                 // Mark agent as in an error state - requires manual intervention
                 await ddb.send(new UpdateCommand({
@@ -184,30 +222,39 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     }
                 }));
                 console.warn(`[call-hungup] Agent ${agentId} marked as Error due to SMA hangup failure`);
+                
+                if (callHasQueueKey) {
+                    await ddb.send(new UpdateCommand({
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        Key: { clinicId: callMetadata.clinicId, queuePosition: callMetadata.queuePosition },
+                        UpdateExpression: 'SET errorReason = :error, requiresManualCleanup = :true',
+                        ExpressionAttributeValues: {
+                            ':error': 'sma_hangup_failed',
+                            ':true': true
+                        }
+                    }));
+                    console.warn(`[call-hungup] Call ${callId} flagged for manual cleanup due to SMA hangup failure`);
+                } else {
+                    console.warn(`[call-hungup] Unable to flag call ${callId} for manual cleanup - missing queue key`);
+                }
             }
 
-            // CRITICAL FIX: Get call record to calculate duration server-side
+            // CRITICAL FIX: Calculate duration server-side from cached metadata
             try {
-                // First, find the call record
-                const { Items: callRecords } = await ddb.send(new QueryCommand({
-                    TableName: CALL_QUEUE_TABLE_NAME,
-                    IndexName: 'callId-index',
-                    KeyConditionExpression: 'callId = :callId',
-                    ExpressionAttributeValues: { ':callId': callId }
-                }));
-
-                // Calculate duration server-side based on acceptedAt timestamp
-                if (callRecords && callRecords.length > 0) {
-                    const callRecord = callRecords[0];
-                    if (callRecord.acceptedAt) {
-                        // Calculate duration in seconds from acceptedAt to now
-                        const acceptedTime = new Date(callRecord.acceptedAt).getTime();
-                        const endTime = Date.now();
-                        calculatedDuration = Math.floor((endTime - acceptedTime) / 1000);
-                        console.log(`[call-hungup] Call ${callId} duration calculated: ${calculatedDuration}s (started at ${callRecord.acceptedAt})`);
-                    }
+                const callRecord = callMetadata;
+                const candidates: Array<{ label: string; value?: number }> = [
+                    { label: 'acceptedAt', value: callRecord.acceptedAt ? Date.parse(callRecord.acceptedAt) : undefined },
+                    { label: 'connectedAt', value: callRecord.connectedAt ? Date.parse(callRecord.connectedAt) : undefined },
+                    { label: 'queueEntryTimeIso', value: callRecord.queueEntryTimeIso ? Date.parse(callRecord.queueEntryTimeIso) : undefined },
+                    { label: 'queueEntryTime', value: typeof callRecord.queueEntryTime === 'number' ? callRecord.queueEntryTime * 1000 : undefined }
+                ];
+                const startCandidate = candidates.find(candidate => typeof candidate.value === 'number' && !Number.isNaN(candidate.value));
+                if (startCandidate?.value !== undefined) {
+                    const endTime = Date.now();
+                    calculatedDuration = Math.max(0, Math.floor((endTime - startCandidate.value) / 1000));
+                    console.log(`[call-hungup] Call ${callId} duration calculated using ${startCandidate.label}: ${calculatedDuration}s`);
                 } else {
-                    console.warn(`[call-hungup] Call record not found for ${callId} - unable to calculate duration`);
+                    console.warn(`[call-hungup] No valid timestamp available to calculate duration for ${callId}`);
                 }
 
                 // Log call statistics for the agent regardless of hangup success
@@ -241,113 +288,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // Check for queued calls that could be assigned to this agent
         if (agentId) {
             try {
-                // Get the agent's active clinics
                 const { Item: agentInfo } = await ddb.send(new GetCommand({
                     TableName: AGENT_PRESENCE_TABLE_NAME,
                     Key: { agentId }
                 }));
-                
-                if (!agentInfo || !agentInfo.activeClinicIds || agentInfo.activeClinicIds.length === 0) {
-                    console.log(`No active clinics found for agent ${agentId} to check for queued calls`);
+
+                if (agentInfo) {
+                    await checkQueueForWork(agentId, agentInfo);
                 } else {
-                    const activeClinicIds = agentInfo.activeClinicIds;
-                    console.log(`Checking for queued calls in clinics for agent ${agentId}:`, activeClinicIds);
-                    
-                    // For each clinic, look for the oldest queued call
-                    for (const clinicId of activeClinicIds) {
-                        const { Items: queuedCalls } = await ddb.send(new QueryCommand({
-                            TableName: CALL_QUEUE_TABLE_NAME,
-                            KeyConditionExpression: 'clinicId = :clinicId',
-                            FilterExpression: '#status = :status',
-                            ExpressionAttributeNames: { '#status': 'status' },
-                            ExpressionAttributeValues: {
-                                ':clinicId': clinicId,
-                                ':status': 'queued'
-                            },
-                            // Sort by queuePosition (timestamp-based) to get oldest first
-                            ScanIndexForward: true,
-                            Limit: 1 // Just get the oldest call
-                        }));
-                        
-                        if (queuedCalls && queuedCalls.length > 0) {
-                            const oldestCall = queuedCalls[0];
-                            console.log(`Found queued call for clinic ${clinicId}:`, {
-                                callId: oldestCall.callId,
-                                queuedSince: oldestCall.queueEntryTime,
-                                hasMeeting: !!oldestCall.meetingInfo?.MeetingId
-                            });
-                            
-                            // Make sure the call has a valid meeting
-                            if (oldestCall.meetingInfo?.MeetingId) {
-                                // Create an attendee for this agent in the call's meeting
-                                const attendeeResponse = await chime.send(new CreateAttendeeCommand({
-                                    MeetingId: oldestCall.meetingInfo.MeetingId,
-                                    ExternalUserId: agentId
-                                }));
-                                
-                            if (!attendeeResponse.Attendee) {
-                                console.error(`Failed to create attendee for queued call ${oldestCall.callId}`);
-                                continue;
-                            }
-                            
-                            // CRITICAL FIX: Atomic claim operation - only assign if still queued and not already assigned
-                            try {
-                                await ddb.send(new UpdateCommand({
-                                    TableName: CALL_QUEUE_TABLE_NAME,
-                                    Key: { 
-                                        clinicId: oldestCall.clinicId, 
-                                        queuePosition: oldestCall.queuePosition 
-                                    },
-                                    UpdateExpression: 'SET #status = :status, agentIds = :agentIds, claimedAt = :timestamp',
-                                    ConditionExpression: '#status = :queuedStatus AND (attribute_not_exists(agentIds) OR size(agentIds) = :emptyArray)',
-                                    ExpressionAttributeNames: { '#status': 'status' },
-                                    ExpressionAttributeValues: {
-                                        ':status': 'ringing',
-                                        ':agentIds': [agentId],
-                                        ':queuedStatus': 'queued',
-                                        ':timestamp': new Date().toISOString(),
-                                        ':emptyArray': 0
-                                    }
-                                }));
-                            } catch (claimErr: any) {
-                                if (claimErr.name === 'ConditionalCheckFailedException') {
-                                    console.warn(`[call-hungup] Race condition - queued call ${oldestCall.callId} already claimed by another agent`);
-                                    continue; // Try next queued call
-                                }
-                                throw claimErr;
-                            }
-                                
-                                // Update agent's presence to show the ringing call
-                                await ddb.send(new UpdateCommand({
-                                    TableName: AGENT_PRESENCE_TABLE_NAME,
-                                    Key: { agentId },
-                                    UpdateExpression: 'SET ringingCallId = :callId, callStatus = :status, ' + 
-                                                    'inboundMeetingInfo = :meeting, inboundAttendeeInfo = :attendee, ' +
-                                                    'ringingCallTime = :time',
-                                    ExpressionAttributeValues: {
-                                        ':callId': oldestCall.callId,
-                                        ':status': 'ringing',
-                                        ':meeting': oldestCall.meetingInfo,
-                                        ':attendee': attendeeResponse.Attendee,
-                                        ':time': new Date().toISOString()
-                                    }
-                                }));
-                                
-                                console.log(`Assigned queued call ${oldestCall.callId} to agent ${agentId}`);
-                                
-                                // Only assign one call, even if there are multiple queued calls
-                                break;
-                            } else {
-                                console.error('Queued call has no valid meeting info:', oldestCall);
-                            }
-                        } else {
-                            console.log(`No queued calls found for clinic ${clinicId}`);
-                        }
-                    }
+                    console.log(`[call-hungup] Agent presence not found for ${agentId} when checking queue.`);
                 }
             } catch (queueError) {
                 // Non-fatal error - log but continue
-                console.error('Error processing call queue:', queueError);
+                console.error('[call-hungup] Error processing call queue:', queueError);
             }
         }
 

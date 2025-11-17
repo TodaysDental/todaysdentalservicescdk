@@ -15,6 +15,8 @@ const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
 const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
+const SESSION_MAX_SECONDS = Math.max(3600, Number.parseInt(process.env.AGENT_SESSION_MAX_SECONDS || `${8 * 60 * 60}`, 10));
+const HEARTBEAT_GRACE_SECONDS = Math.max(300, Number.parseInt(process.env.AGENT_HEARTBEAT_GRACE_SECONDS || `${15 * 60}`, 10));
 let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
 
 // Auth Helpers
@@ -84,18 +86,51 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         // Update lastActivityAt and extend TTL
         const now = new Date();
-        const newTtl = Math.floor(now.getTime() / 1000) + (8 * 60 * 60); // 8-hour TTL
+        const nowSeconds = Math.floor(now.getTime() / 1000);
+        const sessionExpiryEpoch = typeof agent.sessionExpiresAtEpoch === 'number'
+            ? agent.sessionExpiresAtEpoch
+            : agent.sessionExpiresAt
+                ? Math.floor(new Date(agent.sessionExpiresAt).getTime() / 1000)
+                : nowSeconds + SESSION_MAX_SECONDS;
+
+        if (sessionExpiryEpoch <= nowSeconds) {
+            console.warn('[heartbeat] Session expired for agent', { agentId, sessionExpiryEpoch, nowSeconds });
+            try {
+                await ddb.send(new UpdateCommand({
+                    TableName: AGENT_PRESENCE_TABLE_NAME,
+                    Key: { agentId },
+                    UpdateExpression: 'SET #status = :offline, lastActivityAt = :timestamp, cleanupReason = :reason REMOVE currentCallId, ringingCallId, callStatus, heldCallId, heldCallMeetingId, heldCallAttendeeId, inboundMeetingInfo, inboundAttendeeInfo',
+                    ExpressionAttributeNames: { '#status': 'status' },
+                    ExpressionAttributeValues: {
+                        ':offline': 'Offline',
+                        ':timestamp': now.toISOString(),
+                        ':reason': 'session_expired'
+                    }
+                }));
+            } catch (expireErr) {
+                console.warn('[heartbeat] Failed to mark session expired', expireErr);
+            }
+            return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Session expired. Please start a new session.' })
+            };
+        }
+
+        const newTtl = Math.min(sessionExpiryEpoch, nowSeconds + HEARTBEAT_GRACE_SECONDS);
 
         // CRITICAL FIX: Add separate lastHeartbeatAt field distinct from lastActivityAt
         // This allows cleanup monitor to distinguish between heartbeats and other activity
         await ddb.send(new UpdateCommand({
             TableName: AGENT_PRESENCE_TABLE_NAME,
             Key: { agentId },
-            UpdateExpression: 'SET lastActivityAt = :timestamp, lastHeartbeatAt = :timestamp, ttl = :ttl, heartbeatCount = if_not_exists(heartbeatCount, :zero) + :one',
+            UpdateExpression: 'SET lastActivityAt = :timestamp, lastHeartbeatAt = :timestamp, ttl = :ttl, sessionExpiresAtEpoch = :sessionExpiry, sessionExpiresAt = if_not_exists(sessionExpiresAt, :sessionExpiryIso), heartbeatCount = if_not_exists(heartbeatCount, :zero) + :one',
             ConditionExpression: 'attribute_exists(agentId)',
             ExpressionAttributeValues: {
                 ':timestamp': now.toISOString(),
                 ':ttl': newTtl,
+                ':sessionExpiry': sessionExpiryEpoch,
+                ':sessionExpiryIso': new Date(sessionExpiryEpoch * 1000).toISOString(),
                 ':zero': 0,
                 ':one': 1
             }

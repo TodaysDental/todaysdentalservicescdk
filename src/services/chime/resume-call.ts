@@ -2,7 +2,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
-import { ChimeSDKMeetingsClient, CreateAttendeeCommand, GetMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
+import { ChimeSDKMeetingsClient, CreateAttendeeCommand, DeleteAttendeeCommand, GetMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getSmaIdForClinic } from './utils/sma-map';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
@@ -186,16 +186,30 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
         
+        const callState = callRecord.status || callRecord.callStatus;
         // CRITICAL FIX: Verify call is actually on hold
-        if (callRecord.callStatus !== 'on_hold') {
+        if (callState !== 'on_hold') {
             console.warn('[resume-call] Call is not on hold', {
                 callId,
-                currentStatus: callRecord.callStatus
+                currentStatus: callState
             });
             return {
                 statusCode: 400,
                 headers: corsHeaders,
                 body: JSON.stringify({ message: 'Call is not on hold' })
+            };
+        }
+
+        if (callRecord.heldByAgentId && callRecord.heldByAgentId !== agentId) {
+            console.warn('[resume-call] Call held by different agent', {
+                callId,
+                heldBy: callRecord.heldByAgentId,
+                agentId
+            });
+            return {
+                statusCode: 403,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Another agent placed this call on hold' })
             };
         }
 
@@ -231,6 +245,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             // CRITICAL FIX: Check if we have the stored attendee ID before creating a new one
             // If there's a stored attendee ID, try to verify it's still valid before creating a new one
             const storedAttendeeId = agentRecord?.heldCallAttendeeId;
+
+            if (storedAttendeeId && meetingId) {
+                try {
+                    await chimeClient.send(new DeleteAttendeeCommand({
+                        MeetingId: meetingId,
+                        AttendeeId: storedAttendeeId
+                    }));
+                    console.log(`[resume-call] Cleaned up old attendee ${storedAttendeeId}`);
+                } catch (deleteErr: any) {
+                    if (deleteErr.name === 'NotFoundException') {
+                        console.log(`[resume-call] Old attendee ${storedAttendeeId} already removed`);
+                    } else {
+                        console.warn('[resume-call] Could not delete old attendee:', deleteErr);
+                    }
+                }
+            }
             
             // But in practice, we'll always create a new attendee because the old one was removed
             // This is safer than trying to reuse an attendee that might have been deleted
@@ -313,13 +343,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             await ddb.send(new UpdateCommand({
                 TableName: CALL_QUEUE_TABLE_NAME,
                 Key: { clinicId, queuePosition },
-                UpdateExpression: 'SET callStatus = :status, holdEndTime = :endTime, holdDuration = :duration REMOVE holdStartTime',
-                ConditionExpression: 'callStatus = :holdStatus',
+                UpdateExpression: 'SET #status = :status, callStatus = :status, holdEndTime = :endTime, holdDuration = :duration REMOVE holdStartTime, heldByAgentId',
+                ConditionExpression: '#status = :holdStatus AND heldByAgentId = :agentId',
+                ExpressionAttributeNames: {
+                    '#status': 'status'
+                },
                 ExpressionAttributeValues: {
                     ':status': 'connected',
                     ':endTime': new Date().toISOString(),
                     ':duration': holdDuration,
-                    ':holdStatus': 'on_hold'
+                    ':holdStatus': 'on_hold',
+                    ':agentId': agentId
                 }
             }));
 
@@ -327,7 +361,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             await ddb.send(new UpdateCommand({
                 TableName: AGENT_PRESENCE_TABLE_NAME,
                 Key: { agentId },
-                UpdateExpression: 'SET callStatus = :status, lastActivityAt = :timestamp, currentMeetingAttendeeId = :attendeeId REMOVE heldCallMeetingId, heldCallId',
+                UpdateExpression: 'SET callStatus = :status, lastActivityAt = :timestamp, currentMeetingAttendeeId = :attendeeId REMOVE heldCallMeetingId, heldCallId, heldCallAttendeeId',
                 ExpressionAttributeValues: {
                     ':status': 'connected',
                     ':timestamp': new Date().toISOString(),

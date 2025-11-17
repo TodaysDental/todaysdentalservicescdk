@@ -1,19 +1,25 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
-// REMOVED: ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand
-// REMOVED: ChimeSDKMeetingsClient, DeleteMeetingCommand
-// ADDED: CreateAttendeeCommand for checkQueueForWork
-import { ChimeSDKMeetingsClient, CreateAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings'; 
+import { ChimeSDKVoiceClient } from '@aws-sdk/client-chime-sdk-voice';
+import { ChimeSDKMeetingsClient } from '@aws-sdk/client-chime-sdk-meetings'; 
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
+import { createCheckQueueForWork } from './utils/check-queue-for-work';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
 const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
+const chimeVoiceClient = new ChimeSDKVoiceClient({});
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
-// REMOVED: SMA_ID, no longer used
+const checkQueueForWork = createCheckQueueForWork({
+    ddb,
+    callQueueTableName: CALL_QUEUE_TABLE_NAME,
+    agentPresenceTableName: AGENT_PRESENCE_TABLE_NAME,
+    chime,
+    chimeVoiceClient
+});
 
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
@@ -41,113 +47,6 @@ async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; p
   }
 }
 // --- End Auth Helpers ---
-
-/**
- * Proactively checks the queue for work for a newly "Online" agent
- * This is the same logic used in start-session.ts and call-hungup.ts
- */
-async function checkQueueForWork(agentId: string, agentInfo: any) {
-    if (!agentInfo?.activeClinicIds || agentInfo.activeClinicIds.length === 0) {
-        console.log(`[checkQueueForWork] Agent ${agentId} has no active clinics. Skipping queue check.`);
-        return;
-    }
-
-    const activeClinicIds = agentInfo.activeClinicIds;
-    console.log(`[checkQueueForWork] Agent ${agentId} is checking for queued calls in:`, activeClinicIds);
-
-    for (const clinicId of activeClinicIds) {
-        try {
-            // Find the oldest queued call for this clinic
-            const { Items: queuedCalls } = await ddb.send(new QueryCommand({
-                TableName: CALL_QUEUE_TABLE_NAME,
-                KeyConditionExpression: 'clinicId = :clinicId',
-                FilterExpression: '#status = :status',
-                ExpressionAttributeNames: { '#status': 'status' },
-                ExpressionAttributeValues: {
-                    ':clinicId': clinicId,
-                    ':status': 'queued'
-                },
-                ScanIndexForward: true, // Sort by queuePosition (timestamp) ASC
-                Limit: 1 
-            }));
-
-            if (queuedCalls && queuedCalls.length > 0) {
-                const callToAssign = queuedCalls[0];
-                console.log(`[checkQueueForWork] Found queued call ${callToAssign.callId} for clinic ${clinicId}`);
-
-                // Check for a valid meeting
-                if (!callToAssign.meetingInfo?.MeetingId) {
-                    console.error(`[checkQueueForWork] Queued call ${callToAssign.callId} is missing meetingInfo. Skipping.`);
-                    continue;
-                }
-
-                // Create an attendee for this agent in the call's "queue" meeting
-                const attendeeResponse = await chime.send(new CreateAttendeeCommand({
-                    MeetingId: callToAssign.meetingInfo.MeetingId,
-                    ExternalUserId: agentId
-                }));
-
-                if (!attendeeResponse.Attendee) {
-                    console.error(`[checkQueueForWork] Failed to create attendee for agent ${agentId}.`);
-                    continue;
-                }
-
-                // Atomically assign the call to this agent
-                await ddb.send(new TransactWriteCommand({
-                    TransactItems: [
-                        // 1. Update call status to 'ringing' and assign to this agent
-                        {
-                            Update: {
-                                TableName: CALL_QUEUE_TABLE_NAME,
-                                Key: { clinicId: callToAssign.clinicId, queuePosition: callToAssign.queuePosition },
-                                UpdateExpression: 'SET #status = :ringing, agentIds = :agentIds, assignedAt = :time',
-                                ConditionExpression: '#status = :queued', // Ensure it's still queued
-                                ExpressionAttributeNames: { '#status': 'status' },
-                                ExpressionAttributeValues: {
-                                    ':ringing': 'ringing',
-                                    ':agentIds': [agentId],
-                                    ':time': new Date().toISOString(),
-                                    ':queued': 'queued'
-                                }
-                            }
-                        },
-                        // 2. Update agent status to 'ringing'
-                        {
-                            Update: {
-                                TableName: AGENT_PRESENCE_TABLE_NAME,
-                                Key: { agentId },
-                                UpdateExpression: 'SET #status = :ringing, ringingCallId = :callId, ringingCallTime = :time, inboundMeetingInfo = :meeting, inboundAttendeeInfo = :attendee',
-                                ConditionExpression: '#status = :online', // Ensure agent is still online
-                                ExpressionAttributeNames: { '#status': 'status' },
-                                ExpressionAttributeValues: {
-                                    ':ringing': 'ringing',
-                                    ':callId': callToAssign.callId,
-                                    ':time': new Date().toISOString(),
-                                    ':meeting': callToAssign.meetingInfo,
-                                    ':attendee': attendeeResponse.Attendee,
-                                    ':online': 'Online'
-                                }
-                            }
-                        }
-                    ]
-                }));
-                
-                console.log(`[checkQueueForWork] Successfully assigned call ${callToAssign.callId} to agent ${agentId}`);
-                // Found work, no need to check other clinics
-                return;
-
-            }
-        } catch (err: any) {
-            if (err.name === 'TransactionCanceledException') {
-                console.warn(`[checkQueueForWork] Race condition assigning call for clinic ${clinicId}. Agent or call state changed.`);
-            } else {
-                console.error(`[checkQueueForWork] Error processing queue for clinic ${clinicId}:`, err);
-            }
-            // Continue to next clinic
-        }
-    }
-     console.log(`[checkQueueForWork] No queued calls found for agent ${agentId}.`);
-}
 
 /**
  * Lambda handler for call rejection notification
@@ -231,61 +130,47 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
         
-        // 4. Atomically update agent and call state
-        const originalAgentIds: string[] = callRecord.agentIds || [];
-        const remainingAgentIds = originalAgentIds.filter((id: string) => id !== agentId);
+        // 4. Atomically update agent and re-queue the call
         const newRejectedAgents = [...(callRecord.rejectedAgentIds || []), agentId];
         const timestamp = new Date().toISOString();
 
-        const wasLastAgent = remainingAgentIds.length === 0;
-
         try {
-            console.log(`[call-rejected] Agent ${agentId} rejecting call ${callId}. Was last agent: ${wasLastAgent}`);
+            console.log(`[call-rejected] Agent ${agentId} rejecting call ${callId}. Moving to queue.`);
             
-            const transactionItems = [
-                // 1. Update this agent's status back to "Online"
-                {
-                    Update: {
-                        TableName: AGENT_PRESENCE_TABLE_NAME,
-                        Key: { agentId },
-                        UpdateExpression: 'SET #status = :online, lastActivityAt = :ts, lastRejectedCallId = :callId REMOVE ringingCallId, ringingCallTime, ringingCallFrom',
-                        ConditionExpression: 'ringingCallId = :callId',
-                        ExpressionAttributeNames: { '#status': 'status' },
-                        ExpressionAttributeValues: {
-                            ':online': 'Online',
-                            ':ts': timestamp,
-                            ':callId': callId
+            await ddb.send(new TransactWriteCommand({
+                TransactItems: [
+                    {
+                        Update: {
+                            TableName: AGENT_PRESENCE_TABLE_NAME,
+                            Key: { agentId },
+                            UpdateExpression: 'SET #status = :online, lastActivityAt = :ts, lastRejectedCallId = :callId REMOVE ringingCallId, ringingCallTime, ringingCallFrom, inboundMeetingInfo, inboundAttendeeInfo',
+                            ConditionExpression: 'ringingCallId = :callId',
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: {
+                                ':online': 'Online',
+                                ':ts': timestamp,
+                                ':callId': callId
+                            }
+                        }
+                    },
+                    {
+                        Update: {
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            Key: { clinicId, queuePosition },
+                            UpdateExpression: 'SET #status = :queued, agentIds = :null, assignedAgentId = :null, rejectedAgentIds = :newRejected REMOVE meetingInfo, customerAttendeeInfo, agentAttendeeInfo',
+                            ConditionExpression: '#status = :ringing',
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: {
+                                ':queued': 'queued',
+                                ':null': null,
+                                ':newRejected': newRejectedAgents,
+                                ':ringing': 'ringing'
+                            }
                         }
                     }
-                },
-                // 2. Update the call record
-                {
-                    Update: {
-                        TableName: CALL_QUEUE_TABLE_NAME,
-                        Key: { clinicId, queuePosition },
-                        // If last agent, set to 'queued'. Otherwise, just update agent lists.
-                        UpdateExpression: wasLastAgent
-                            ? 'SET #status = :newStatus, agentIds = :newAgentIds, rejectedAgentIds = :newRejected'
-                            : 'SET agentIds = :newAgentIds, rejectedAgentIds = :newRejected',
-                        ConditionExpression: '#status = :ringing', // Final race condition check
-                        ExpressionAttributeNames: { '#status': 'status' },
-                        ExpressionAttributeValues: {
-                            ':newStatus': 'queued', // Only set if wasLastAgent is true
-                            ':newAgentIds': wasLastAgent ? null : remainingAgentIds, // Clear agentIds if queueing
-                            ':newRejected': newRejectedAgents,
-                            ':ringing': 'ringing'
-                        }
-                    }
-                }
-            ];
-            
-            // Adjust ExpressionAttributeValues if not the last agent
-            if (!wasLastAgent) {
-                delete transactionItems[1].Update.ExpressionAttributeValues[':newStatus'];
-            }
-
-            await ddb.send(new TransactWriteCommand({ TransactItems: transactionItems }));
-            console.log(`[call-rejected] Transaction successful. Call status set to: ${wasLastAgent ? 'queued' : 'ringing'}`);
+                ]
+            }));
+            console.log(`[call-rejected] Transaction successful. Call ${callId} moved to 'queued' state.`);
 
         } catch (err: any) {
              if (err.name === 'TransactionCanceledException') {
@@ -319,10 +204,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             statusCode: 200,
             headers: corsHeaders,
             body: JSON.stringify({ 
-                message: 'Call rejection recorded',
+                message: 'Call rejection recorded, call moved to queue',
                 callId,
                 agentId,
-                newCallStatus: wasLastAgent ? 'queued' : 'ringing'
+                newCallStatus: 'queued'
             })
         };
 
@@ -335,3 +220,4 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         };
     }
 };
+
