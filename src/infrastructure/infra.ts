@@ -20,6 +20,7 @@ import { NotificationsStack } from './stacks/notifications-stack';
 import { ChimeStack, type VoiceConnectorOriginationRouteConfig } from './stacks/chime-stack';
 import { HrStack } from './stacks/hr-stack';
 import { PatientPortalApptTypesStack } from './stacks/patient-portal-appttypes-stack';
+import { FluorideAutomationStack } from './stacks/fluoride-automation-stack';
 
 import { CommStack } from './stacks/comm-stack'; // <-- NEW IMPORT ADDED HERE
 
@@ -343,6 +344,14 @@ patientPortalStack.addDependency(openDentalStack);
 chatbotStack.addDependency(coreStack);
 chatbotStack.addDependency(clinicPricingStack);
 chatbotStack.addDependency(clinicInsuranceStack);
+
+// Fluoride Automation Stack - Run automation for adding fluoride treatments every hour
+const fluorideAutomationStack = new FluorideAutomationStack(app, 'TodaysDentalInsightsFluorideAutomationV1', {
+ env,
+ userPool: coreStack.userPool,
+});
+fluorideAutomationStack.addDependency(coreStack);
+fluorideAutomationStack.addDependency(openDentalStack); // Add dependency on OpenDental stack for SFTP server
 
 // CRITICAL FIX: Remove commented-out code that could lead to circular dependencies
 // Note: The proper dependencies are already set above:
