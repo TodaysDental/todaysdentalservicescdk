@@ -1,12 +1,133 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import axios from 'axios';
+import { parse as parseCsv } from 'csv-parse/sync';
+import { Client as SSH2Client } from 'ssh2';
 
 interface ClinicConfig {
   clinicId: string;
   clinicName: string;
   customerKey: string;
   developerKey: string;
+}
+
+interface SftpConfig {
+  host: string;
+  username: string;
+  password: string;
+  port: number;
+}
+
+let cachedSftpConfig: SftpConfig | null = null;
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+const sanitizeHost = (value: string): string =>
+  (value || '')
+    .replace(/^(?:https?|sftp):\/\//i, '')
+    .replace(/^\/+|\/+$/g, '')
+    .trim();
+
+function getSftpConfig(): SftpConfig {
+  if (cachedSftpConfig) {
+    return cachedSftpConfig;
+  }
+
+  const hostFromEnv = process.env.CONSOLIDATED_SFTP_HOST || '';
+  const username = (process.env.CONSOLIDATED_SFTP_USERNAME || 'sftpuser').trim();
+  const password = (process.env.CONSOLIDATED_SFTP_PASSWORD || '').trim();
+  const portValue = Number(process.env.CONSOLIDATED_SFTP_PORT || '22');
+
+  const sanitizedHost = sanitizeHost(hostFromEnv);
+  if (!sanitizedHost) {
+    throw new Error('CONSOLIDATED_SFTP_HOST is not configured or invalid');
+  }
+  if (!password) {
+    throw new Error('CONSOLIDATED_SFTP_PASSWORD is not configured');
+  }
+
+  cachedSftpConfig = {
+    host: sanitizedHost,
+    username: username || 'sftpuser',
+    password,
+    port: Number.isFinite(portValue) ? portValue : 22,
+  };
+
+  return cachedSftpConfig;
+}
+
+async function downloadCsvResult(fileName: string, clinicId: string): Promise<string> {
+  const sftpConfig = getSftpConfig();
+  const remotePath = `./${fileName}`;
+  const maxAttempts = 5;
+  const baseDelayMs = 1500;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const waitTime = baseDelayMs * attempt;
+    console.log(`[${clinicId}] Waiting ${waitTime}ms before fetching ${fileName} from SFTP (attempt ${attempt}/${maxAttempts})`);
+    await delay(waitTime);
+
+    try {
+      console.log(`[${clinicId}] Attempting to download ${fileName} from SFTP (attempt ${attempt})`);
+      const data = await readRemoteFile(remotePath, sftpConfig);
+      console.log(`[${clinicId}] Successfully downloaded ${fileName} on attempt ${attempt}`);
+      return data;
+    } catch (error: any) {
+      console.warn(
+        `[${clinicId}] Attempt ${attempt} failed to download ${fileName}: ${error?.message || error}`
+      );
+      if (attempt === maxAttempts) {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error(`Unable to download ${fileName} for clinic ${clinicId}`);
+}
+
+function readRemoteFile(remotePath: string, config: SftpConfig): Promise<string> {
+  const conn = new SSH2Client();
+  const { host, port, username, password } = config;
+
+  return new Promise<string>((resolve, reject) => {
+    conn
+      .on('ready', () => {
+        conn.sftp((err, sftp) => {
+          if (err) {
+            conn.end();
+            reject(err);
+            return;
+          }
+
+          const stream = sftp.createReadStream(remotePath, { encoding: 'utf8' });
+          let result = '';
+
+          stream.on('data', (chunk: Buffer) => {
+            result += chunk.toString();
+          });
+
+          stream.on('close', () => {
+            conn.end();
+            resolve(result);
+          });
+
+          stream.on('error', (streamErr: Error) => {
+            conn.end();
+            reject(streamErr);
+          });
+        });
+      })
+      .on('error', (err: Error) => {
+        reject(err);
+      })
+      .connect({
+        host,
+        port,
+        username,
+        password,
+        readyTimeout: 10000,
+      });
+  });
 }
 
 /**
@@ -86,8 +207,10 @@ async function runFluorideAutomation(clinic: ClinicConfig): Promise<{
     // Process each missing fluoride treatment
     for (const row of missingFluorideData) {
       const patNum = row.PatNum;
-      // Ensure date is formatted YYYY-MM-DD for the API
-      const procDate = row.ProcDate.split('T')[0];
+      // Parse the date string (e.g., "01/05/2018 12:00:00 AM")
+      // and reformat it to "YYYY-MM-DD"
+      const dateObj = new Date(row.ProcDate);
+      const procDate = dateObj.toISOString().split('T')[0]; // Formats as YYYY-MM-DD
       const provNum = row.ProvNum;
 
       console.log(`Processing PatNum ${patNum} for date ${procDate}...`);
@@ -139,50 +262,71 @@ async function runFluorideAutomation(clinic: ClinicConfig): Promise<{
     `;
 
     try {
-      // POST /queries endpoint for running SQL queries
       const url = `${API_BASE_URL}/queries`;
-      
-      // Include SFTP details required by Open Dental API
-      // The file will be saved to the clinic's SFTP folder with timestamp
+      const sftpConfig = getSftpConfig();
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const sftpPath = `${clinic.clinicId}/QuerytemplateCSV/missing-fluoride-${timestamp}.csv`;
-      
-      // Get SFTP credentials from environment variables if available
-      const sftpUsername = process.env.CONSOLIDATED_SFTP_USERNAME || "sftpuser";
-      const sftpPassword = process.env.CONSOLIDATED_SFTP_PASSWORD || "Clinic2020";
-      
-      // Query payload with SFTP details
+      const safeClinicSegment = clinic.clinicId.replace(/[^a-zA-Z0-9_-]/g, '') || 'clinic';
+      const fileName = `${safeClinicSegment}-fluoride-${timestamp}.csv`;
+      const sftpAddress = `${sftpConfig.host}/${fileName}`;
+
       const queryPayload = {
         SqlCommand: sql,
-        SftpAddress: `sftp-home/${sftpPath}`,
-        SftpPort: 22,
-        SftpUsername: sftpUsername,
-        SftpPassword: sftpPassword
+        SftpAddress: sftpAddress,
+        SftpUsername: sftpConfig.username,
+        SftpPassword: sftpConfig.password,
+        SftpPort: sftpConfig.port,
+        IsAsync: 'false',
       };
       
-      // Add timeout to prevent hanging if API is unresponsive
+      console.log(`Executing SQL query to find missing fluoride treatments for clinic ${clinic.clinicId}`);
+      console.log(`Query results for ${clinic.clinicId} will be delivered to ${sftpAddress}`);
+      
       const response = await axios.post(url, queryPayload, { 
         headers, 
-        timeout: 10000 // 10 second timeout
+        timeout: 20000 // Allow extra time for SFTP hand-off
       });
       
-      // POST requests often return 200 or 201
-      if (response.status === 200 || response.status === 201) {
-        console.log(`SQL query results saved to SFTP path: ${sftpPath}`);
-        return response.data;
-      } else {
+      if (response.status !== 200 && response.status !== 201) {
         console.warn(`Unexpected response status: ${response.status}`);
         console.warn(`Response data:`, response.data);
+        return [];
       }
+
+      const csvData = await downloadCsvResult(fileName, clinic.clinicId);
+      const trimmed = csvData.trim();
+
+      if (!trimmed || trimmed.toUpperCase() === 'OK') {
+        console.log(`No missing fluoride treatments returned for clinic ${clinic.clinicId}`);
+        return [];
+      }
+
+      let parsedRows: Array<Record<string, string>>;
+      try {
+        parsedRows = parseCsv(trimmed, {
+          columns: true,
+          skip_empty_lines: true,
+          trim: true
+        });
+      } catch (parseError: any) {
+        console.error(`Failed to parse CSV results for clinic ${clinic.clinicId}: ${parseError.message}`);
+        console.error(`CSV preview: ${trimmed.substring(0, 200)}`);
+        return [];
+      }
+
+      return parsedRows
+        .map((row) => ({
+          PatNum: String(row.PatNum || '').trim(),
+          ProcDate: String(row.ProcDate || '').trim(),
+          ProvNum: String(row.ProvNum || '').trim()
+        }))
+        .filter((row) => row.PatNum && row.ProcDate && row.ProvNum);
     } catch (error: any) {
       console.error(`Error running query for clinic ${clinic.clinicId}: ${error.message}`);
       
-      // Provide detailed error information for debugging
       if (error.response) {
         console.error(`Status: ${error.response.status}`);
         console.error(`Response data:`, error.response.data);
         
-        // Special handling for auth errors
         if (error.response.status === 401) {
           console.error(`Authentication failed for clinic ${clinic.clinicId}. Please verify developer key and customer key.`);
         }
@@ -199,13 +343,13 @@ async function runFluorideAutomation(clinic: ClinicConfig): Promise<{
    * Returns the new ProcNum.
    */
   async function addProcedure(patNum: string, dateStr: string, provNum: string): Promise<string | null> {
-    const url = `${API_BASE_URL}/procedures`;
+    const url = `${API_BASE_URL}/procedurelogs`; // The resource is 'procedurelog', lowercase plural
     
     const payload = {
       "PatNum": patNum,
       "ProcDate": dateStr,
       "ProcCode": "D1206",
-      "ProcStatus": "2", // Complete
+      "ProcStatus": "C", // Complete
       "ProvNum": provNum,
     };
 
@@ -244,7 +388,7 @@ async function runFluorideAutomation(clinic: ClinicConfig): Promise<{
    * @returns boolean indicating if claim was successfully created
    */
   async function createClaim(patNum: string, procNum: string): Promise<boolean> {
-    const url = `${API_BASE_URL}/claims/CreateClaim`;
+    const url = `${API_BASE_URL}/claims`; // Use lowercase plural resource name
     
     const payload = {
       "PatNum": patNum,

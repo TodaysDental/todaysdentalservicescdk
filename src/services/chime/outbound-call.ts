@@ -1,7 +1,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { ChimeSDKVoiceClient, CreateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
+import { ChimeSDKVoiceClient, CreateSipMediaApplicationCallCommand, CreateSipMediaApplicationCallCommandOutput } from '@aws-sdk/client-chime-sdk-voice';
 // REMOVED: ChimeSDKMeetingsClient, CreateMeetingCommand, CreateAttendeeCommand, DeleteMeetingCommand
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
@@ -17,6 +17,18 @@ const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
 const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
 let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const parseNumberOr = (value: string | undefined, fallback: number) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+const OUTBOUND_CALL_MAX_ATTEMPTS = Math.max(1, Math.floor(parseNumberOr(process.env.OUTBOUND_CALL_RETRY_ATTEMPTS, 3)));
+const OUTBOUND_CALL_RETRY_BASE_DELAY_MS = Math.max(250, Math.floor(parseNumberOr(process.env.OUTBOUND_CALL_RETRY_DELAY_MS, 1000)));
+const isConcurrentCallLimitError = (error: any): boolean => {
+  const message = (error?.message || '').toString();
+  return error?.name === 'BadRequestException' && message.includes('Concurrent call limits');
+};
 
 // --- Auth Helpers ---
 async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; payload: JWTPayload } | { ok: false; code: number; message: string }> {
@@ -204,7 +216,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       meetingId: agentMeeting.MeetingId
     });
 
-    const callResponse = await chimeVoiceClient.send(new CreateSipMediaApplicationCallCommand({
+    const callCommandInput = {
         FromPhoneNumber: fromPhoneNumber,
         ToPhoneNumber: body.toPhoneNumber,
         SipMediaApplicationId: smaId,
@@ -218,7 +230,30 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             "fromPhoneNumber": fromPhoneNumber,
             "fromClinicId": body.fromClinicId,
         }
-    }));
+    };
+
+    let callResponse: CreateSipMediaApplicationCallCommandOutput | null = null;
+    let lastDialError: any = null;
+
+    for (let attempt = 1; attempt <= OUTBOUND_CALL_MAX_ATTEMPTS; attempt++) {
+        try {
+            callResponse = await chimeVoiceClient.send(new CreateSipMediaApplicationCallCommand(callCommandInput));
+            break;
+        } catch (err: any) {
+            lastDialError = err;
+            if (isConcurrentCallLimitError(err) && attempt < OUTBOUND_CALL_MAX_ATTEMPTS) {
+                const waitTime = OUTBOUND_CALL_RETRY_BASE_DELAY_MS * attempt;
+                console.warn(`[outbound-call] Concurrent call limit reached (attempt ${attempt}/${OUTBOUND_CALL_MAX_ATTEMPTS}). Retrying in ${waitTime}ms.`);
+                await sleep(waitTime);
+                continue;
+            }
+            throw err;
+        }
+    }
+
+    if (!callResponse) {
+        throw lastDialError || new Error('Failed to initiate outbound call');
+    }
     
     const callId = callResponse.SipMediaApplicationCall?.TransactionId;
     if (!callId) {
@@ -289,6 +324,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       requestId: event.requestContext?.requestId
     };
     console.error('[outbound-call] Error making outbound call:', errorContext);
+    const concurrentLimitHit = isConcurrentCallLimitError(err);
     
     // --- ROLLBACK LOGIC ---
     // If we failed and have an agentId, try to set the agent's status back to Online
@@ -314,10 +350,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     
     return {
-      statusCode: 500,
+      statusCode: concurrentLimitHit ? 429 : 500,
       headers: corsHeaders,
       body: JSON.stringify({ 
-        message: 'Failed to make outbound call', 
+        message: concurrentLimitHit 
+            ? 'All outbound lines are currently in use. Please wait a moment and try again.' 
+            : 'Failed to make outbound call', 
         error: err?.message,
         code: err?.name || err?.code
       }),

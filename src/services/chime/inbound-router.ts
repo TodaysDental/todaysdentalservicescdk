@@ -227,9 +227,10 @@ const buildActions = (actions: any[]) => ({
     Actions: actions,
 });
 
-const buildJoinChimeMeetingAction = (meetingInfo: any, attendeeInfo: any) => ({
+const buildJoinChimeMeetingAction = (callLegId: string, meetingInfo: any, attendeeInfo: any) => ({
     Type: 'JoinChimeMeeting',
     Parameters: {
+        CallId: callLegId,
         JoinToken: attendeeInfo.JoinToken,
         MeetingId: meetingInfo.MeetingId,
         AttendeeId: attendeeInfo.AttendeeId,
@@ -374,6 +375,16 @@ function parsePhoneNumber(sipUri: string): string | null {
     }
 }
 
+function getPstnLegCallId(event: any): string | undefined {
+    const participants = event?.CallDetails?.Participants;
+    if (!Array.isArray(participants) || participants.length === 0) {
+        return undefined;
+    }
+
+    const legAParticipant = participants.find((participant: any) => participant.ParticipantTag === 'LEG-A');
+    return legAParticipant?.CallId || participants[0]?.CallId;
+}
+
 // --- Main Handler ---
 export const handler = async (event: any): Promise<any> => {
     console.log('SMA Event:', JSON.stringify(event, null, 2));
@@ -381,6 +392,7 @@ export const handler = async (event: any): Promise<any> => {
     const eventType = event?.InvocationEventType;
     const callId = event?.CallDetails?.TransactionId;
     const args = event?.ActionData?.Parameters?.Arguments || event?.ActionData?.ArgumentsMap || event?.CallDetails?.ArgumentsMap || {};
+    const pstnLegCallId = getPstnLegCallId(event);
 
     try {
             switch (eventType) {
@@ -496,10 +508,15 @@ export const handler = async (event: any): Promise<any> => {
                                           `Please stay on the line.`;
                             
                             // Join customer to meeting to wait
+                            if (!pstnLegCallId) {
+                                console.error('[NEW_INBOUND_CALL] Missing PSTN CallId for JoinChimeMeeting action');
+                                return buildActions([buildHangupAction('There was an error connecting your call. Please try again later.')]);
+                            }
+
                             return buildActions([
                                 buildSpeakAction(message),
                                 buildPauseAction(500),
-                                buildJoinChimeMeetingAction(meeting, customerAttendeeResponse.Attendee)
+                                buildJoinChimeMeetingAction(pstnLegCallId, meeting, customerAttendeeResponse.Attendee)
                             ]);
                             
                         } catch (queueErr) {
@@ -649,14 +666,37 @@ export const handler = async (event: any): Promise<any> => {
                                     }
                                 }));
                                 console.log(`[CALL_ANSWERED] Call queue updated for ${callId}`);
+                                
+                                // FIX: Update the agent's status to 'OnCall'
+                                await ddb.send(new UpdateCommand({
+                                    TableName: AGENT_PRESENCE_TABLE_NAME,
+                                    Key: { agentId: assignedAgentId },
+                                    UpdateExpression: 'SET #status = :onCall, currentCallId = :callId, lastActivityAt = :now',
+                                    ConditionExpression: '#status = :dialing',
+                                    ExpressionAttributeNames: { '#status': 'status' },
+                                    ExpressionAttributeValues: {
+                                        ':onCall': 'OnCall', // Or 'In Call', matching your other logic
+                                        ':callId': callId,
+                                        ':now': new Date().toISOString(),
+                                        ':dialing': 'dialing'
+                                    }
+                                }));
+                                console.log(`[CALL_ANSWERED] Agent ${assignedAgentId} status updated to OnCall`);
                             }
                         } catch (queueErr) {
                             console.warn(`[CALL_ANSWERED] Failed to update call queue:`, queueErr);
                         }
                         
                         // 3. Bridge customer (PSTN) into the agent's meeting
+                        if (!pstnLegCallId) {
+                            console.error('[CALL_ANSWERED] Missing PSTN CallId for JoinChimeMeeting');
+                            return buildActions([
+                                buildHangupAction('Unable to connect your call. Please try again.')
+                            ]);
+                        }
+
                         return buildActions([
-                            buildJoinChimeMeetingAction({ MeetingId: meetingId }, customerAttendee)
+                            buildJoinChimeMeetingAction(pstnLegCallId, { MeetingId: meetingId }, customerAttendee)
                         ]);
                         
                     } catch (err: any) {
@@ -744,7 +784,11 @@ export const handler = async (event: any): Promise<any> => {
                     
                     // Re-join the customer to the meeting (this stops the hold music)
                     actions.push(buildSpeakAction('Thank you for holding. Reconnecting now.'));
-                    actions.push(buildJoinChimeMeetingAction(callRecord.meetingInfo, callRecord.customerAttendeeInfo));
+                    if (!pstnLegCallId) {
+                        console.error('[RESUME_CALL] Missing PSTN CallId for JoinChimeMeeting');
+                        return buildActions([buildSpeakAction('Unable to reconnect your call.')]);
+                    }
+                    actions.push(buildJoinChimeMeetingAction(pstnLegCallId, callRecord.meetingInfo, callRecord.customerAttendeeInfo));
                     
                     return buildActions(actions);
                 }
@@ -821,10 +865,16 @@ export const handler = async (event: any): Promise<any> => {
                     
                     console.log(`[BRIDGE_CUSTOMER_INBOUND] Bridging customer PSTN leg into meeting ${meetingId}`);
 
+                    if (!pstnLegCallId) {
+                        console.error('[BRIDGE_CUSTOMER_INBOUND] Missing PSTN CallId for JoinChimeMeeting');
+                        return buildActions([buildHangupAction('Unable to connect your call. Please try again.')]);
+                    }
+
                     // Bridge the waiting customer (PSTN) into the agent's meeting
                     return buildActions([
                         buildSpeakAction('An agent will assist you now.'),
                         buildJoinChimeMeetingAction(
+                            pstnLegCallId,
                             { MeetingId: meetingId },
                             { AttendeeId: customerAttendeeId, JoinToken: customerAttendeeJoinToken }
                         )

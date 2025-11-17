@@ -26,7 +26,7 @@ export class FluorideAutomationStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.minutes(15), // Allow up to 15 minutes to process all clinics
-      memorySize: 512, // Allocate more memory for multiple HTTP requests
+      memorySize: 2048, // Allocate more memory for multiple HTTP requests
       environment: {
         // Add information about the SFTP server for debugging purposes
         CONSOLIDATED_SFTP_HOST: consolidatedTransferServerEndpoint,
@@ -87,7 +87,7 @@ export class FluorideAutomationStack extends Stack {
 
     // Create CloudWatch Event Rule to trigger Lambda every hour
     const rule = new events.Rule(this, 'HourlyFluorideAutomationRule', {
-      schedule: events.Schedule.rate(Duration.hours(1)),
+      schedule: events.Schedule.rate(Duration.hours(12)),
       description: 'Trigger fluoride automation to add missing D1206 procedures and create claims',
     });
     
