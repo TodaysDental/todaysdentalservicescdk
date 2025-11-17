@@ -25,9 +25,9 @@ export const handler = async (event: APIGatewayProxyEvent) => {
   }
 
   try {
-    // 1. Implement client-specified limit with max/min constraints
-    // Max 50 users (the user-friendly limit, which is less than the Cognito max of 60)
-    const limit = Math.max(1, Math.min(50, Number(event.queryStringParameters?.limit || 25)));
+    // 1. Remove limit input and set hardcoded limit to 60 (Cognito maximum)
+    // Client can still use nextToken for pagination if they exceed 60, but we default to 60.
+    const limit = 60;
     
     // 2. Extract pagination token if present
     const paginationToken = event.queryStringParameters?.nextToken;

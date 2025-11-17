@@ -37,6 +37,10 @@ interface FavorRequest {
     createdAt: string;
     updatedAt: string;
     userID: string; // Added for GSI 'UserIndex'
+    
+    // NEW: Fields for Feature Request
+    requestType: 'General' | 'Assign Task' | 'Ask a Favor' | 'Other';
+    unreadCount: number; // Count of unread messages for the user who is NOT the last sender
 }
 
 interface MessageData {
@@ -91,6 +95,9 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
             case 'fetchHistory':
                 await fetchHistory(senderID, payload, connectionId, apiGwManagement);
                 break;
+            case 'markRead':
+                await markRead(senderID, payload, connectionId, apiGwManagement); // NEW: Mark Read
+                break;
             default:
                 await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unknown action' });
         }
@@ -117,9 +124,10 @@ async function startFavorRequest(
     senderConnectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    const { receiverID, initialMessage } = payload;
-    if (!receiverID || !initialMessage) {
-        await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Missing receiverID or initialMessage.' });
+    // NEW: Destructure requestType
+    const { receiverID, initialMessage, requestType } = payload;
+    if (!receiverID || !initialMessage || !requestType) {
+        await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Missing receiverID, initialMessage, or requestType.' });
         return;
     }
 
@@ -135,6 +143,9 @@ async function startFavorRequest(
         createdAt: nowIso,
         updatedAt: nowIso,
         userID: senderID, 
+        // NEW: Initialize Request Type and Unread Count
+        requestType,
+        unreadCount: 1, // The initial message is unread by the receiver
     };
 
     // 1. Create Favor Request Record
@@ -160,7 +171,8 @@ async function startFavorRequest(
         type: 'favorRequestStarted', 
         favorRequestID, 
         receiverID,
-        initialMessage 
+        initialMessage,
+        requestType // Include new field in confirmation
     });
 }
 
@@ -177,7 +189,7 @@ async function sendMessage(
 
     if (!favorRequestID || (!content && !fileKey)) {
         if (senderConnectionId) {
-             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Missing favorRequestID or message content/file key.' });
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Missing favorRequestID or message content/file key.' });
         }
         return;
     }
@@ -185,7 +197,6 @@ async function sendMessage(
     const timestamp = Date.now();
 
     // 1. Validate and Update Favor Request (optimistic locking/status check)
-    // This fetches the request and verifies the sender is part of it.
     const favorResult = await ddb.send(new GetCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
@@ -198,13 +209,21 @@ async function sendMessage(
         }
         return;
     }
+
+    // Determine the ID of the person who is NOT the current sender
+    const receiverID = favor.senderID === senderID ? favor.receiverID : favor.senderID;
     
-    // 2. Update the favor's last update time to surface it in the UI list
+    // 2. Update the favor's last update time AND increment the unread counter for the receiver
     await ddb.send(new UpdateCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
-        UpdateExpression: 'SET updatedAt = :ua',
-        ExpressionAttributeValues: { ':ua': new Date().toISOString() },
+        // Increment unreadCount by 1 for the recipient, and update timestamp
+        UpdateExpression: 'SET updatedAt = :ua, senderID = :sID ADD unreadCount :incr', 
+        ExpressionAttributeValues: { 
+            ':ua': new Date().toISOString(),
+            ':sID': senderID, // Update senderID to keep track of the latest sender
+            ':incr': 1 // Increment unread count by 1
+        },
         ReturnValues: 'NONE',
     }));
     
@@ -220,6 +239,61 @@ async function sendMessage(
 
     // 4. Save message and broadcast
     await _saveAndBroadcastMessage(messageData, apiGwManagement);
+}
+
+/**
+ * NEW: Handles marking all messages in a conversation as read.
+ * This is triggered by the client opening the chat window.
+ */
+async function markRead(
+    callerID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID } = payload;
+    const callerConnectionId = (await getSenderInfoByUserID(callerID))?.connectionId;
+
+    if (!favorRequestID) {
+        if (callerConnectionId) {
+            await sendToClient(apiGwManagement, callerConnectionId, { type: 'error', message: 'Missing favorRequestID.' });
+        }
+        return;
+    }
+
+    // 1. Reset unreadCount to 0 for the specified request
+    try {
+        await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+            UpdateExpression: 'SET unreadCount = :zero',
+            ExpressionAttributeValues: { 
+                ':zero': 0,
+                ':caller': callerID
+            },
+            // Condition check ensures only participants can reset the count
+            ConditionExpression: 'senderID = :caller OR receiverID = :caller',
+            ReturnValues: 'NONE',
+        }));
+        
+        // 2. Send a real-time event back to the client to confirm the read status change
+        if (callerConnectionId) {
+            await sendToClient(apiGwManagement, callerConnectionId, {
+                type: 'readStatusUpdated',
+                favorRequestID,
+                unreadCount: 0,
+            });
+        }
+    } catch (e: any) {
+        if (e.name === 'ConditionalCheckFailedException') {
+            console.warn(`Mark read failed: Unauthorized or request not found: ${favorRequestID}`);
+        } else {
+            console.error('Error marking read:', e);
+            if (callerConnectionId) {
+                await sendToClient(apiGwManagement, callerConnectionId, { type: 'error', message: 'Failed to update read status.' });
+            }
+        }
+    }
 }
 
 /**
@@ -247,13 +321,15 @@ async function resolveRequest(
         const updateResult = await ddb.send(new UpdateCommand({
             TableName: FAVORS_TABLE,
             Key: { favorRequestID },
-            UpdateExpression: 'SET #s = :resolved, updatedAt = :ua',
+            // Also reset unread count on resolve
+            UpdateExpression: 'SET #s = :resolved, updatedAt = :ua, unreadCount = :zero', 
             ExpressionAttributeNames: { '#s': 'status' },
             ExpressionAttributeValues: {
                 ':resolved': 'resolved',
                 ':ua': nowIso,
                 ':sender': senderID,
-                ':active': 'active', // <-- FIX: Defining the missing attribute value
+                ':active': 'active',
+                ':zero': 0, // Reset unread count
             },
             // Condition: Only sender or receiver can resolve, and it must be active.
             ConditionExpression: '#s = :active AND (senderID = :sender OR receiverID = :sender)',
@@ -283,56 +359,6 @@ async function resolveRequest(
         }
     }
 }
-
-/**
- * **NEW:** Handles fetching message history for a specific favor request.
- */
-async function fetchHistory(
-    callerID: string,
-    payload: any,
-    connectionId: string,
-    apiGwManagement: ApiGatewayManagementApiClient
-): Promise<void> {
-    const { favorRequestID, limit = 100, lastTimestamp } = payload;
-    
-    if (!favorRequestID) {
-        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID for history fetch.' });
-        return;
-    }
-
-    // 1. Validate authorization (caller must be a participant)
-    const favorResult = await ddb.send(new GetCommand({
-        TableName: FAVORS_TABLE,
-        Key: { favorRequestID },
-    }));
-    const favor = favorResult.Item as FavorRequest;
-
-    if (!favor || (favor.senderID !== callerID && favor.receiverID !== callerID)) {
-        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized access to favor request history.' });
-        return;
-    }
-
-    // 2. Query the MessagesTable (PK: favorRequestID, SK: timestamp)
-    const queryInput = {
-        TableName: MESSAGES_TABLE,
-        KeyConditionExpression: 'favorRequestID = :id',
-        ExpressionAttributeValues: { ':id': favorRequestID },
-        ScanIndexForward: true, // Chronological order (oldest first)
-        Limit: limit,
-        // Optional: Use ExclusiveStartKey for pagination (not fully implemented here, just lastTimestamp as anchor)
-    };
-
-    const historyResult = await ddb.send(new QueryCommand(queryInput));
-    
-    // 3. Send history back to the client
-    await sendToClient(apiGwManagement, connectionId, {
-        type: 'favorHistory',
-        favorRequestID,
-        messages: historyResult.Items || [],
-        // nextToken: historyResult.LastEvaluatedKey // To implement robust pagination
-    });
-}
-
 
 // ========================================
 // MESSAGE BROADCASTING AND PERSISTENCE
@@ -417,7 +443,51 @@ async function getSenderInfoByUserID(userID: string): Promise<SenderInfo | undef
     if (!item) return undefined;
     return { connectionId: item.connectionId, userID: item.userID };
 }
+async function fetchHistory(
+    callerID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, limit = 100, lastTimestamp } = payload;
+    
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID for history fetch.' });
+        return;
+    }
 
+    // 1. Validate authorization (caller must be a participant)
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+
+    if (!favor || (favor.senderID !== callerID && favor.receiverID !== callerID)) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized access to favor request history.' });
+        return;
+    }
+
+    // 2. Query the MessagesTable (PK: favorRequestID, SK: timestamp)
+    const queryInput = {
+        TableName: MESSAGES_TABLE,
+        KeyConditionExpression: 'favorRequestID = :id',
+        ExpressionAttributeValues: { ':id': favorRequestID },
+        ScanIndexForward: true, // Chronological order (oldest first)
+        Limit: limit,
+        // Optional: Use ExclusiveStartKey for pagination (not fully implemented here, just lastTimestamp as anchor)
+    };
+
+    const historyResult = await ddb.send(new QueryCommand(queryInput));
+    
+    // 3. Send history back to the client
+    await sendToClient(apiGwManagement, connectionId, {
+        type: 'favorHistory',
+        favorRequestID,
+        messages: historyResult.Items || [],
+        // nextToken: historyResult.LastEvaluatedKey // To implement robust pagination
+    });
+}
 /** Sends a JSON payload back to a specific client. */
 async function sendToClient(apiGwManagement: ApiGatewayManagementApiClient, connectionId: string, data: any): Promise<void> {
     try {

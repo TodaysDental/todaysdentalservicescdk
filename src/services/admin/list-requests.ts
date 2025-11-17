@@ -1,21 +1,16 @@
 import { APIGatewayProxyEvent } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import {
-    CognitoIdentityProviderClient,
-    ListUsersCommand,
-    UserType,
-} from '@aws-sdk/client-cognito-identity-provider';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
+
+// (Cognito imports/clients are removed from this file, as we only need Auth validation)
 
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const FAVORS_TABLE_NAME = process.env.FAVORS_TABLE_NAME || '';
 const USER_POOL_ID = process.env.USER_POOL_ID || '';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
-const cognito = new CognitoIdentityProviderClient({ region: REGION });
-
 const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'GET'] });
 
 // Auth helpers (Copied from admin files for token validation)
@@ -63,6 +58,7 @@ export const handler = async (event: APIGatewayProxyEvent) => {
         const role: 'sent' | 'received' | 'all' =
             roleRaw === 'sent' || roleRaw === 'received' ? (roleRaw as any) : 'all';
 
+        // NOTE: Frontend does not pass a limit, but if it did, the max is 100
         const limit =
             qs.limit && !Number.isNaN(parseInt(qs.limit, 10))
                 ? Math.min(parseInt(qs.limit, 10), 100)
@@ -158,13 +154,9 @@ export const handler = async (event: APIGatewayProxyEvent) => {
             return 0;
         });
 
-        // The front-end now handles name resolution using the directory endpoint data.
-
         return httpOk({
             role: 'all',
             items: merged,
-            // Pagination across two separate GSIs is non-trivial;
-            // we deliberately omit nextToken in this mode.
             nextToken: undefined,
         });
     } catch (err: any) {
