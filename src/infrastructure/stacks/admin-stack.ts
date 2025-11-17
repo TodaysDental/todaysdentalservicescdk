@@ -207,7 +207,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}`,
         // GSIs used by list-requests.ts
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/UserIndex`,
-        // `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/SenderIndex`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/SenderIndex`,
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/ReceiverIndex`,
     ],
 }));
