@@ -1,6 +1,11 @@
 import { APIGatewayProxyEvent } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  CognitoIdentityProviderClient,
+  ListUsersCommand,
+  UserType,
+} from '@aws-sdk/client-cognito-identity-provider';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
 
@@ -9,6 +14,8 @@ const FAVORS_TABLE_NAME = process.env.FAVORS_TABLE_NAME || '';
 const USER_POOL_ID = process.env.USER_POOL_ID || '';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
+const cognito = new CognitoIdentityProviderClient({ region: REGION });
+
 const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'GET'] });
 
 // Auth helpers (Copied from admin files for token validation)
@@ -19,21 +26,23 @@ const ISSUER =
 let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
 
 /**
- * Handles the REST API call GET /admin/requests to list favor requests
- * associated with the authenticated user.
+ * GET /admin/requests
  *
  * Supports:
- *   - ?role=sent      → requests where caller is senderID (via SenderIndex)
- *   - ?role=received  → requests where caller is receiverID (via ReceiverIndex)
- *   - ?role=all (default) → merge of both (no cross-index pagination)
+ *  - ?role=sent      → requests where caller is senderID (SenderIndex)
+ *  - ?role=received  → requests where caller is receiverID (ReceiverIndex)
+ *  - ?role=all (default) → merge of both
  *
- * Optional:
- *   - ?limit=50
- *   - ?nextToken=<JSON of LastEvaluatedKey>   (works for sent/received individually)
+ * Also enriches each item with senderName / receiverName from Cognito
+ * (given_name + family_name).
  */
 export const handler = async (event: APIGatewayProxyEvent) => {
   if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: true }) };
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: JSON.stringify({ ok: true }),
+    };
   }
 
   if (!FAVORS_TABLE_NAME) {
@@ -48,13 +57,13 @@ export const handler = async (event: APIGatewayProxyEvent) => {
     if (!verifyResult.ok) {
       return httpErr(verifyResult.code, verifyResult.message);
     }
-    const callerID = verifyResult.payload.sub; // The Cognito 'sub' is the userID
+    const callerID = verifyResult.payload.sub; // Cognito 'sub'
 
     if (!callerID) {
       return httpErr(401, 'Could not determine authenticated user ID');
     }
 
-    // 2. Read filters from query string
+    // 2. Parse query params (role, limit, nextToken)
     const qs = event.queryStringParameters || {};
     const roleRaw = (qs.role || qs.type || 'all').toLowerCase();
     const role: 'sent' | 'received' | 'all' =
@@ -65,20 +74,22 @@ export const handler = async (event: APIGatewayProxyEvent) => {
         ? Math.min(parseInt(qs.limit, 10), 100)
         : 50;
 
-    // nextToken only applies cleanly to a SINGLE index (sent or received)
-    const nextTokenRaw = qs.nextToken;
     let exclusiveStartKey: any = undefined;
-    if (nextTokenRaw) {
+    if (qs.nextToken) {
       try {
-        exclusiveStartKey = JSON.parse(nextTokenRaw);
-      } catch (e) {
-        console.warn('Invalid nextToken JSON, ignoring:', nextTokenRaw);
+        exclusiveStartKey = JSON.parse(qs.nextToken);
+      } catch {
+        console.warn('Invalid nextToken JSON, ignoring:', qs.nextToken);
       }
     }
 
-    // Helper to run a single-index query
-    const queryByIndex = async (indexName: string, keyName: string, startKey?: any) =>
-      ddb.send(
+    // Helper to query a single GSI
+    const queryByIndex = async (
+      indexName: string,
+      keyName: string,
+      startKey?: any
+    ) => {
+      return ddb.send(
         new QueryCommand({
           TableName: FAVORS_TABLE_NAME,
           IndexName: indexName,
@@ -91,8 +102,9 @@ export const handler = async (event: APIGatewayProxyEvent) => {
           ...(startKey ? { ExclusiveStartKey: startKey } : {}),
         })
       );
+    };
 
-    // 3. Handle role-specific logic
+    // 3. Handle role=sent
     if (role === 'sent') {
       const sentResult = await queryByIndex(
         'SenderIndex',
@@ -100,6 +112,7 @@ export const handler = async (event: APIGatewayProxyEvent) => {
         exclusiveStartKey
       );
       const items = sentResult.Items || [];
+      await addNamesToRequests(items);
       return httpOk({
         role: 'sent',
         items,
@@ -109,29 +122,31 @@ export const handler = async (event: APIGatewayProxyEvent) => {
       });
     }
 
+    // 4. Handle role=received
     if (role === 'received') {
-      const receivedResult = await queryByIndex(
+      const recvResult = await queryByIndex(
         'ReceiverIndex',
         'receiverID',
         exclusiveStartKey
       );
-      const items = receivedResult.Items || [];
+      const items = recvResult.Items || [];
+      await addNamesToRequests(items);
       return httpOk({
         role: 'received',
         items,
-        nextToken: receivedResult.LastEvaluatedKey
-          ? JSON.stringify(receivedResult.LastEvaluatedKey)
+        nextToken: recvResult.LastEvaluatedKey
+          ? JSON.stringify(recvResult.LastEvaluatedKey)
           : undefined,
       });
     }
 
-    // role === 'all' → query both indexes and merge (no unified pagination)
-    const [sentResult, receivedResult] = await Promise.all([
+    // 5. role=all → query both and merge
+    const [sentResult, recvResult] = await Promise.all([
       queryByIndex('SenderIndex', 'senderID'),
       queryByIndex('ReceiverIndex', 'receiverID'),
     ]);
 
-    const allItems = [...(sentResult.Items || []), ...(receivedResult.Items || [])];
+    const allItems = [...(sentResult.Items || []), ...(recvResult.Items || [])];
 
     // Deduplicate by favorRequestID
     const byId = new Map<string, any>();
@@ -142,7 +157,7 @@ export const handler = async (event: APIGatewayProxyEvent) => {
 
     const merged = Array.from(byId.values());
 
-    // Sort by updatedAt desc if present
+    // Sort by updatedAt desc
     merged.sort((a, b) => {
       const aTime = a.updatedAt || '';
       const bTime = b.updatedAt || '';
@@ -151,12 +166,12 @@ export const handler = async (event: APIGatewayProxyEvent) => {
       return 0;
     });
 
+    await addNamesToRequests(merged);
+
     return httpOk({
       role: 'all',
       items: merged,
-      // Pagination across two separate GSIs is non-trivial;
-      // we deliberately omit nextToken in this mode.
-      nextToken: undefined,
+      nextToken: undefined, // cross-index pagination omitted
     });
   } catch (err: any) {
     console.error('Error fetching favor requests:', err);
@@ -164,9 +179,9 @@ export const handler = async (event: APIGatewayProxyEvent) => {
   }
 };
 
-// ========================================
-// AUTH HELPERS (from user's admin files)
-// ========================================
+// ==============================
+// AUTH HELPERS
+// ==============================
 
 async function verifyIdToken(
   authorizationHeader: string
@@ -198,9 +213,70 @@ async function verifyIdToken(
   }
 }
 
-// ========================================
+// ==============================
+// USER NAME ENRICHMENT HELPERS
+// ==============================
+
+async function getUserFullName(userID: string): Promise<string | null> {
+  if (!USER_POOL_ID) return null;
+  try {
+    const resp = await cognito.send(
+      new ListUsersCommand({
+        UserPoolId: USER_POOL_ID,
+        Filter: `sub = "${userID}"`,
+        Limit: 1,
+      })
+    );
+    const user: UserType | undefined = resp.Users?.[0];
+    if (!user) return null;
+
+    const attrs = Object.fromEntries(
+      (user.Attributes || []).map((a) => [a.Name, a.Value])
+    );
+    const given = attrs['given_name'] || '';
+    const family = attrs['family_name'] || '';
+    const full = [given, family].filter(Boolean).join(' ');
+    return full || null;
+  } catch (err) {
+    console.error('Failed to lookup user info for', userID, err);
+    return null;
+  }
+}
+
+async function addNamesToRequests(items: any[]): Promise<void> {
+  if (!items || items.length === 0) return;
+
+  const ids = new Set<string>();
+  for (const req of items) {
+    if (!req) continue;
+    if (req.senderID && !req.senderName) ids.add(req.senderID);
+    if (req.receiverID && !req.receiverName) ids.add(req.receiverID);
+  }
+  if (ids.size === 0) return;
+
+  const idArray = Array.from(ids);
+  const profiles = await Promise.all(idArray.map((id) => getUserFullName(id)));
+
+  const nameMap: Record<string, string> = {};
+  idArray.forEach((id, idx) => {
+    const fullName = profiles[idx];
+    if (fullName) nameMap[id] = fullName;
+  });
+
+  for (const req of items) {
+    if (!req) continue;
+    if (req.senderID) {
+      req.senderName = nameMap[req.senderID] || 'Unknown User';
+    }
+    if (req.receiverID) {
+      req.receiverName = nameMap[req.receiverID] || 'Unknown User';
+    }
+  }
+}
+
+// ==============================
 // HTTP RESPONSE HELPERS
-// ========================================
+// ==============================
 
 function httpOk(data: Record<string, any>) {
   return {
