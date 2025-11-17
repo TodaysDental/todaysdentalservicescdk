@@ -87,7 +87,7 @@ export class FluorideAutomationStack extends Stack {
 
     // Create CloudWatch Event Rule to trigger Lambda every hour
     const rule = new events.Rule(this, 'HourlyFluorideAutomationRule', {
-      schedule: events.Schedule.rate(Duration.hours(12)),
+      schedule: events.Schedule.rate(Duration.hours(1)),
       description: 'Trigger fluoride automation to add missing D1206 procedures and create claims',
     });
     
