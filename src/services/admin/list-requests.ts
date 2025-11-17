@@ -33,8 +33,10 @@ let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
  *  - ?role=received  → requests where caller is receiverID (ReceiverIndex)
  *  - ?role=all (default) → merge of both
  *
- * Also enriches each item with senderName / receiverName from Cognito
- * (given_name + family_name).
+ * Each item is enriched with senderName / receiverName, using the same
+ * Cognito attribute mapping as directory-lookup.ts:
+ *   givenName: attrs['given_name']
+ *   familyName: attrs['family_name']
  */
 export const handler = async (event: APIGatewayProxyEvent) => {
   if (event.httpMethod === 'OPTIONS') {
@@ -104,7 +106,7 @@ export const handler = async (event: APIGatewayProxyEvent) => {
       );
     };
 
-    // 3. Handle role=sent
+    // 3. role=sent → SenderIndex
     if (role === 'sent') {
       const sentResult = await queryByIndex(
         'SenderIndex',
@@ -122,7 +124,7 @@ export const handler = async (event: APIGatewayProxyEvent) => {
       });
     }
 
-    // 4. Handle role=received
+    // 4. role=received → ReceiverIndex
     if (role === 'received') {
       const recvResult = await queryByIndex(
         'ReceiverIndex',
@@ -140,7 +142,7 @@ export const handler = async (event: APIGatewayProxyEvent) => {
       });
     }
 
-    // 5. role=all → query both and merge
+    // 5. role=all → merge both
     const [sentResult, recvResult] = await Promise.all([
       queryByIndex('SenderIndex', 'senderID'),
       queryByIndex('ReceiverIndex', 'receiverID'),
@@ -217,26 +219,64 @@ async function verifyIdToken(
 // USER NAME ENRICHMENT HELPERS
 // ==============================
 
+/**
+ * Try to resolve a user's full name using the same pattern
+ * as directory-lookup.ts:
+ *   givenName: attrs['given_name']
+ *   familyName: attrs['family_name']
+ *
+ * We try both:
+ *   - Filter by sub = "<id>"
+ *   - If nothing, filter by username = "<id>"
+ *
+ * This covers the case where your stored IDs are either Cognito sub
+ * or Username.
+ */
 async function getUserFullName(userID: string): Promise<string | null> {
   if (!USER_POOL_ID) return null;
-  try {
+
+  const tryFilter = async (filter: string) => {
     const resp = await cognito.send(
       new ListUsersCommand({
         UserPoolId: USER_POOL_ID,
-        Filter: `sub = "${userID}"`,
+        Filter: filter,
         Limit: 1,
       })
     );
-    const user: UserType | undefined = resp.Users?.[0];
-    if (!user) return null;
+    return resp.Users?.[0];
+  };
+
+  try {
+    let user: UserType | undefined;
+
+    // 1) Try matching by sub (most common when you store payload.sub)
+    user = await tryFilter(`sub = "${userID}"`);
+
+    // 2) If not found, try matching by username
+    if (!user) {
+      user = await tryFilter(`username = "${userID}"`);
+    }
+
+    if (!user) {
+      console.warn('No Cognito user found for id:', userID);
+      return null;
+    }
 
     const attrs = Object.fromEntries(
       (user.Attributes || []).map((a) => [a.Name, a.Value])
     );
-    const given = attrs['given_name'] || '';
-    const family = attrs['family_name'] || '';
-    const full = [given, family].filter(Boolean).join(' ');
-    return full || null;
+
+    // Same attribute mapping as directory-lookup.ts
+    const givenName = attrs['given_name'] || '';
+    const familyName = attrs['family_name'] || '';
+    const full = [givenName, familyName].filter(Boolean).join(' ');
+
+    if (!full) {
+      console.warn('User has no name attributes, using ID as fallback:', userID);
+      return userID; // fallback to raw ID instead of null
+    }
+
+    return full;
   } catch (err) {
     console.error('Failed to lookup user info for', userID, err);
     return null;
@@ -266,10 +306,12 @@ async function addNamesToRequests(items: any[]): Promise<void> {
   for (const req of items) {
     if (!req) continue;
     if (req.senderID) {
-      req.senderName = nameMap[req.senderID] || 'Unknown User';
+      // fallback to senderID if no name
+      req.senderName = nameMap[req.senderID] || req.senderID;
     }
     if (req.receiverID) {
-      req.receiverName = nameMap[req.receiverID] || 'Unknown User';
+      // fallback to receiverID if no name
+      req.receiverName = nameMap[req.receiverID] || req.receiverID;
     }
   }
 }
