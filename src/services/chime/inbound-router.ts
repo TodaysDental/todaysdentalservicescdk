@@ -6,6 +6,8 @@ import {
     DeleteMeetingCommand
 } from '@aws-sdk/client-chime-sdk-meetings';
 import { randomUUID } from 'crypto';
+import { enrichCallContext, selectAgentsForCall } from './utils/agent-selection';
+import { buildBaseQueueItem, smartAssignCall } from './utils/parallel-assignment';
 
 // This Lambda is the "brain" for call routing.
 // It is NOT triggered by API Gateway. It is triggered by the Chime SDK SIP Media Application.
@@ -14,12 +16,15 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 // Chime meetings must be created in a supported media region
 const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
 const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
-const CLINICS_TABLE_NAME = process.env.CLINICS_TABLE_NAME;
-const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
-const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
+const CLINICS_TABLE_NAME = process.env.CLINICS_TABLE_NAME!;
+const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME!;
+const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME!;
+const LOCKS_TABLE_NAME = process.env.LOCKS_TABLE_NAME!;
 const HOLD_MUSIC_BUCKET = process.env.HOLD_MUSIC_BUCKET;
 const MAX_RING_AGENTS = Math.max(1, Number.parseInt(process.env.MAX_RING_AGENTS || '25', 10));
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ENABLE_PARALLEL_ASSIGNMENT = process.env.ENABLE_PARALLEL_ASSIGNMENT !== 'false';
+const PARALLEL_AGENT_COUNT = Math.max(1, Number.parseInt(process.env.PARALLEL_AGENT_COUNT || '3', 10));
 
 function isValidTransactionId(value: unknown): value is string {
     return typeof value === 'string' && UUID_REGEX.test(value);
@@ -73,6 +78,17 @@ interface QueueEntry {
     phoneNumber: string;
     status: CallStatus;
     ttl: number;
+    // Routing metadata
+    priority?: 'high' | 'normal' | 'low';
+    priorityScore?: number;
+    isVip?: boolean;
+    requiredSkills?: string[];
+    preferredSkills?: string[];
+    language?: string;
+    direction?: 'inbound' | 'outbound';
+    agentIds?: string[];
+    assignedAgentId?: string | null;
+    rejectedAgentIds?: string[];
 }
 
 async function addToQueue(clinicId: string, callId: string, phoneNumber: string): Promise<QueueEntry> {
@@ -90,7 +106,9 @@ async function addToQueue(clinicId: string, callId: string, phoneNumber: string)
         queueEntryTimeIso: new Date().toISOString(),
         uniquePositionId: uniqueId,
         status: 'queued',
-        ttl: now + QUEUE_TIMEOUT
+        ttl: now + QUEUE_TIMEOUT,
+        priority: 'normal',
+        direction: 'inbound'
     };
 
     try {
@@ -117,6 +135,31 @@ async function addToQueue(clinicId: string, callId: string, phoneNumber: string)
     }
 
     return entry;
+}
+
+let vipPhoneNumbersCache: Set<string> | null = null;
+
+function getVipPhoneNumbers(): Set<string> {
+    if (vipPhoneNumbersCache) {
+        return vipPhoneNumbersCache;
+    }
+    try {
+        const raw = process.env.VIP_PHONE_NUMBERS;
+        if (!raw) {
+            vipPhoneNumbersCache = new Set<string>();
+            return vipPhoneNumbersCache;
+        }
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+            vipPhoneNumbersCache = new Set<string>(parsed.map((v) => String(v)));
+        } else {
+            vipPhoneNumbersCache = new Set<string>();
+        }
+    } catch (err) {
+        console.warn('[inbound-router] Failed to parse VIP_PHONE_NUMBERS:', err);
+        vipPhoneNumbersCache = new Set<string>();
+    }
+    return vipPhoneNumbersCache;
 }
 
 async function getQueuePosition(clinicId: string, callId: string): Promise<{ position: number, estimatedWaitTime: number } | null> {
@@ -442,119 +485,108 @@ export const handler = async (event: any): Promise<any> => {
                     const clinicId = clinics[0].clinicId;
                     console.log(`[NEW_INBOUND_CALL] Call is for clinic ${clinicId}`);
 
-                    // 2. Find all "Online" agents for that clinic
-                    const { Items: agents } = await ddb.send(new QueryCommand({
-                        TableName: AGENT_PRESENCE_TABLE_NAME,
-                        IndexName: 'status-index',
-                        KeyConditionExpression: '#status = :status',
-                        FilterExpression: 'contains(activeClinicIds, :clinicId)',
-                        ExpressionAttributeNames: { '#status': 'status' },
-                        ExpressionAttributeValues: {
-                            ':status': 'Online',
-                            ':clinicId': clinicId,
-                        },
-                        Limit: MAX_RING_AGENTS
-                    }));
-
-                    const sortedAgents = (agents || []).sort((a, b) =>
-                        (a?.lastActivityAt || 'z').localeCompare(b?.lastActivityAt || 'z')
+                    // 2. Build call context (priority, VIP, etc.)
+                    const callContext = await enrichCallContext(
+                        ddb,
+                        callId,
+                        clinicId,
+                        fromPhoneNumber,
+                        CALL_QUEUE_TABLE_NAME,
+                        getVipPhoneNumbers()
                     );
 
-                    let callAssigned = false;
-                    let assignedAgentId: string | null = null;
+                    // 3. Select best agents for this call
+                    const selectedAgents = await selectAgentsForCall(
+                        ddb,
+                        callContext,
+                        AGENT_PRESENCE_TABLE_NAME,
+                        {
+                            maxAgents: MAX_RING_AGENTS,
+                            considerIdleTime: true,
+                            considerWorkload: true,
+                            prioritizeContinuity: callContext.isCallback || false
+                        }
+                    );
 
-                    if (sortedAgents.length > 0) {
-                        const now = Date.now();
-                        const queuePosition = now + Math.floor(Math.random() * 100);
-                        const queueEntryTime = Math.floor(now / 1000);
-                        const queueEntryTimeIso = new Date(now).toISOString();
-                        const baseQueueItem = {
+                    let assignmentSucceeded = false;
+
+                    if (selectedAgents.length > 0) {
+                        const baseQueueItem = buildBaseQueueItem(
                             clinicId,
                             callId,
-                            queuePosition,
-                            queueEntryTime,
-                            queueEntryTimeIso,
-                            phoneNumber: fromPhoneNumber,
-                            status: 'ringing',
-                            direction: 'inbound',
-                            ttl: queueEntryTime + QUEUE_TIMEOUT
-                        };
+                            fromPhoneNumber,
+                            QUEUE_TIMEOUT
+                        );
 
-                        for (const agent of sortedAgents) {
-                            const agentId = agent?.agentId;
-                            if (!agentId) {
-                                continue;
+                        const assignmentResult = await smartAssignCall(
+                            ddb,
+                            selectedAgents,
+                            callContext,
+                            baseQueueItem,
+                            AGENT_PRESENCE_TABLE_NAME,
+                            CALL_QUEUE_TABLE_NAME,
+                            LOCKS_TABLE_NAME,
+                            ENABLE_PARALLEL_ASSIGNMENT,
+                            {
+                                parallelCount: PARALLEL_AGENT_COUNT
                             }
+                        );
 
-                            const callQueueItem = {
-                                ...baseQueueItem,
-                                agentIds: [agentId],
-                                assignedAgentId: agentId
-                            };
-                            const assignmentTimestamp = new Date().toISOString();
-
-                            try {
-                                await ddb.send(new TransactWriteCommand({
-                                    TransactItems: [
-                                        {
-                                            Put: {
-                                                TableName: CALL_QUEUE_TABLE_NAME,
-                                                Item: callQueueItem,
-                                                ConditionExpression: 'attribute_not_exists(clinicId) AND attribute_not_exists(queuePosition)'
-                                            }
-                                        },
-                                        {
-                                            Update: {
-                                                TableName: AGENT_PRESENCE_TABLE_NAME,
-                                                Key: { agentId },
-                                                UpdateExpression: 'SET #status = :ringing, ringingCallId = :callId, ringingCallTime = :time, ringingCallFrom = :from, lastActivityAt = :time',
-                                                ConditionExpression: '#status = :online',
-                                                ExpressionAttributeNames: { '#status': 'status' },
-                                                ExpressionAttributeValues: {
-                                                    ':ringing': 'ringing',
-                                                    ':callId': callId,
-                                                    ':time': assignmentTimestamp,
-                                                    ':from': fromPhoneNumber,
-                                                    ':online': 'Online'
-                                                }
-                                            }
-                                        }
-                                    ]
-                                }));
-
-                                callAssigned = true;
-                                assignedAgentId = agentId;
-                                console.log(`[NEW_INBOUND_CALL] Atomically assigned call ${callId} to agent ${agentId}`);
-                                break;
-                            } catch (err: any) {
-                                if (err?.name === 'TransactionCanceledException') {
-                                    console.warn(`[NEW_INBOUND_CALL] Agent ${agentId} was claimed by another call. Trying next agent.`);
-                                } else {
-                                    console.error(`[NEW_INBOUND_CALL] Transaction failed for agent ${agentId}:`, err);
-                                }
-                            }
+                        if (assignmentResult.success && assignmentResult.agentId) {
+                            assignmentSucceeded = true;
+                            console.log('[NEW_INBOUND_CALL] Call assigned to agent', {
+                                callId,
+                                agentId: assignmentResult.agentId,
+                                durationMs: assignmentResult.duration,
+                                attemptedAgents: assignmentResult.attemptedAgents.length
+                            });
+                        } else {
+                            console.log('[NEW_INBOUND_CALL] Assignment failed, will queue call', {
+                                callId,
+                                error: assignmentResult.error
+                            });
                         }
                     }
 
-                    if (callAssigned && assignedAgentId) {
-                        console.log(`[NEW_INBOUND_CALL] Placing customer ${callId} on hold, ringing agent ${assignedAgentId}.`);
+                    if (assignmentSucceeded) {
+                        console.log(`[NEW_INBOUND_CALL] Placing customer ${callId} on hold while ringing agent(s).`);
                         return buildActions([
-                            buildSpeakAction('Thank you for calling. Please hold while we connect you with an available agent.'),
+                            buildSpeakAction(
+                                callContext.isVip
+                                    ? 'Thank you for calling. As a valued customer, we are connecting you with a specialist.'
+                                    : 'Thank you for calling. Please hold while we connect you with an available agent.'
+                            ),
                             buildPauseAction(500),
                             buildPlayAudioAction('hold-music.wav', 999)
                         ]);
                     }
 
-                    console.log(`[NEW_INBOUND_CALL] No available Online agents for clinic ${clinicId}. Adding to queue.`);
+                    console.log(`[NEW_INBOUND_CALL] No available Online agents for clinic ${clinicId} or assignment failed. Adding to queue.`);
                     try {
                         const queueEntry = await addToQueue(clinicId, callId, fromPhoneNumber);
                         console.log('[NEW_INBOUND_CALL] Call added to queue', { clinicId, callId, queueEntry });
 
                         const queueInfo = await getQueuePosition(clinicId, callId);
                         const waitMinutes = Math.ceil((queueInfo?.estimatedWaitTime || 120) / 60);
-                        const message = `All agents are currently busy. You are number ${queueInfo?.position || 1} in line. ` +
-                                      `The estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
-                                      `Please stay on the line.`;
+                        const position = queueInfo?.position || 1;
+
+                        let message: string;
+                        if (callContext.isVip) {
+                            message =
+                                `All agents are currently assisting other customers. ` +
+                                `As a valued customer, you will be connected as soon as possible. ` +
+                                `Your estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}.`;
+                        } else if (callContext.isCallback) {
+                            message =
+                                `Thank you for calling back. All agents are currently busy. ` +
+                                `You are number ${position} in line. ` +
+                                `The estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}.`;
+                        } else {
+                            message =
+                                `All agents are currently busy. You are number ${position} in line. ` +
+                                `The estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
+                                `Please stay on the line.`;
+                        }
 
                         return buildActions([
                             buildSpeakAction(message),

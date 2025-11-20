@@ -11,13 +11,164 @@ interface CheckQueueForWorkDeps {
     chimeVoiceClient: ChimeSDKVoiceClient;
 }
 
-type AgentInfo = Record<string, any>;
+interface AgentCapabilities {
+    skills?: string[];
+    languages?: string[];
+    canHandleVip?: boolean;
+}
+
+interface QueuedCall {
+    clinicId: string;
+    callId: string;
+    queuePosition: number;
+    queueEntryTime?: number;
+    status?: string;
+    priority?: 'high' | 'normal' | 'low';
+    priorityScore?: number;
+    isVip?: boolean;
+    requiredSkills?: string[];
+    preferredSkills?: string[];
+    language?: string;
+    phoneNumber?: string;
+    isCallback?: boolean;
+    previousCallCount?: number;
+    [key: string]: any;
+}
+
+interface AgentInfo extends Record<string, any> {
+    activeClinicIds?: string[];
+    meetingInfo?: any;
+    skills?: string[];
+    languages?: string[];
+    canHandleVip?: boolean;
+}
+
+function calculatePriorityScore(entry: QueuedCall, nowSeconds: number): number {
+    let score = 0;
+
+    const priority = entry.priority || 'normal';
+    switch (priority) {
+        case 'high':
+            score += 100;
+            break;
+        case 'normal':
+            score += 50;
+            break;
+        case 'low':
+            score += 25;
+            break;
+    }
+
+    if (entry.isVip) {
+        score += 50;
+    }
+
+    const queueEntryTime = entry.queueEntryTime ?? nowSeconds;
+    const waitMinutes = Math.max(0, (nowSeconds - queueEntryTime) / 60);
+    score += waitMinutes;
+
+    if (entry.isCallback) {
+        score += 30;
+    }
+
+    const previousCallCount = typeof entry.previousCallCount === 'number' ? entry.previousCallCount : 0;
+    if (previousCallCount > 0) {
+        score += Math.min(previousCallCount * 2, 10);
+    }
+
+    return score;
+}
 
 export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
     const { ddb, callQueueTableName, agentPresenceTableName, chime, chimeVoiceClient } = deps;
 
     if (!callQueueTableName || !agentPresenceTableName) {
         throw new Error('[checkQueueForWork] Table names are required to process the queue.');
+    }
+
+    async function getNextCallFromQueue(
+        clinicId: string,
+        agentId: string,
+        agentCapabilities: AgentCapabilities
+    ): Promise<QueuedCall | null> {
+        const { Items: queuedCalls } = await ddb.send(new QueryCommand({
+            TableName: callQueueTableName,
+            KeyConditionExpression: 'clinicId = :clinicId',
+            FilterExpression: '#status = :status AND (attribute_not_exists(rejectedAgentIds) OR NOT contains(rejectedAgentIds, :agentId))',
+            ExpressionAttributeNames: { '#status': 'status' },
+            ExpressionAttributeValues: {
+                ':clinicId': clinicId,
+                ':status': 'queued',
+                ':agentId': agentId
+            },
+            ScanIndexForward: true
+        }));
+
+        if (!queuedCalls || queuedCalls.length === 0) {
+            return null;
+        }
+
+        const nowSeconds = Math.floor(Date.now() / 1000);
+
+        const matchingCalls = queuedCalls.filter((call: any) => {
+            const requiredSkills = Array.isArray(call.requiredSkills) ? call.requiredSkills as string[] : undefined;
+            if (requiredSkills && requiredSkills.length > 0) {
+                const agentSkills = agentCapabilities.skills || [];
+                const hasAllSkills = requiredSkills.every((skill) => agentSkills.includes(skill));
+                if (!hasAllSkills) {
+                    return false;
+                }
+            }
+
+            const language = typeof call.language === 'string' ? call.language : undefined;
+            if (language) {
+                const agentLanguages = agentCapabilities.languages && agentCapabilities.languages.length > 0
+                    ? agentCapabilities.languages
+                    : ['en'];
+                if (!agentLanguages.includes(language)) {
+                    return false;
+                }
+            }
+
+            const isVip = call.isVip === true;
+            if (isVip && !agentCapabilities.canHandleVip) {
+                return false;
+            }
+
+            return true;
+        }) as QueuedCall[];
+
+        if (matchingCalls.length === 0) {
+            return null;
+        }
+
+        const scoredCalls = matchingCalls.map((call) => {
+            const priorityScore = typeof call.priorityScore === 'number'
+                ? call.priorityScore
+                : calculatePriorityScore(call, nowSeconds);
+
+            return { ...call, priorityScore };
+        });
+
+        scoredCalls.sort((a, b) => {
+            const scoreDiff = (b.priorityScore || 0) - (a.priorityScore || 0);
+            if (scoreDiff !== 0) {
+                return scoreDiff;
+            }
+
+            const aQueueTime = a.queueEntryTime ?? nowSeconds;
+            const bQueueTime = b.queueEntryTime ?? nowSeconds;
+            return aQueueTime - bQueueTime;
+        });
+
+        console.log('[checkQueueForWork] Top queued calls for clinic', clinicId, scoredCalls.slice(0, 3).map((c) => ({
+            callId: c.callId,
+            priority: c.priority || 'normal',
+            score: c.priorityScore,
+            waitMinutes: c.queueEntryTime ? Math.floor((nowSeconds - c.queueEntryTime) / 60) : 0
+        })));
+
+        return scoredCalls[0];
     }
 
     return async function checkQueueForWork(agentId: string, agentInfo: AgentInfo): Promise<void> {
@@ -33,31 +184,25 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
         }
 
         const activeClinicIds: string[] = agentInfo.activeClinicIds;
-        console.log(`[checkQueueForWork] Agent ${agentId} checking for queued calls in:`, activeClinicIds);
+
+        const agentCapabilities: AgentCapabilities = {
+            skills: Array.isArray(agentInfo.skills) ? agentInfo.skills : undefined,
+            languages: Array.isArray(agentInfo.languages) && agentInfo.languages.length > 0 ? agentInfo.languages : ['en'],
+            canHandleVip: agentInfo.canHandleVip === true
+        };
+
+        console.log(`[checkQueueForWork] Agent ${agentId} checking for queued calls in:`, activeClinicIds, 'capabilities:', agentCapabilities);
 
         for (const clinicId of activeClinicIds) {
-            let callToAssign: any = null;
+            let callToAssign: QueuedCall | null = null;
             try {
-                const { Items: queuedCalls } = await ddb.send(new QueryCommand({
-                    TableName: callQueueTableName,
-                    KeyConditionExpression: 'clinicId = :clinicId',
-                    FilterExpression: '#status = :status AND (attribute_not_exists(rejectedAgentIds) OR NOT contains(rejectedAgentIds, :agentId))',
-                    ExpressionAttributeNames: { '#status': 'status' },
-                    ExpressionAttributeValues: {
-                        ':clinicId': clinicId,
-                        ':status': 'queued',
-                        ':agentId': agentId
-                    },
-                    ScanIndexForward: true,
-                    Limit: 1
-                }));
+                callToAssign = await getNextCallFromQueue(clinicId, agentId, agentCapabilities);
 
-                if (!queuedCalls || queuedCalls.length === 0) {
+                if (!callToAssign) {
                     continue;
                 }
 
-                callToAssign = queuedCalls[0];
-                console.log(`[checkQueueForWork] Found queued call ${callToAssign.callId} for clinic ${clinicId}`);
+                console.log(`[checkQueueForWork] Selected queued call ${callToAssign.callId} for clinic ${clinicId} (priority=${callToAssign.priority || 'normal'}, score=${callToAssign.priorityScore})`);
 
                 const smaId = getSmaIdForClinic(clinicId);
                 if (!smaId) {
@@ -83,7 +228,7 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
                             Update: {
                                 TableName: callQueueTableName,
                                 Key: { clinicId: callToAssign.clinicId, queuePosition: callToAssign.queuePosition },
-                                UpdateExpression: 'SET #status = :ringing, agentIds = :agentIds, assignedAgentId = :agentId, meetingInfo = :meeting, customerAttendeeInfo = :attendee',
+                                UpdateExpression: 'SET #status = :ringing, agentIds = :agentIds, assignedAgentId = :agentId, meetingInfo = :meeting, customerAttendeeInfo = :attendee, assignedAt = :timestamp',
                                 ConditionExpression: '#status = :queued AND (attribute_not_exists(rejectedAgentIds) OR NOT contains(rejectedAgentIds, :agentId))',
                                 ExpressionAttributeNames: { '#status': 'status' },
                                 ExpressionAttributeValues: {
@@ -92,7 +237,8 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
                                     ':agentId': agentId,
                                     ':meeting': agentMeeting,
                                     ':attendee': customerAttendee,
-                                    ':queued': 'queued'
+                                    ':queued': 'queued',
+                                    ':timestamp': assignmentTimestamp
                                 }
                             }
                         },
@@ -100,7 +246,7 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
                             Update: {
                                 TableName: agentPresenceTableName,
                                 Key: { agentId },
-                                UpdateExpression: 'SET #status = :ringing, ringingCallId = :callId, ringingCallTime = :time, ringingCallFrom = :from, lastActivityAt = :time',
+                                UpdateExpression: 'SET #status = :ringing, ringingCallId = :callId, ringingCallTime = :time, ringingCallFrom = :from, ringingCallPriority = :priority, lastActivityAt = :time',
                                 ConditionExpression: '#status = :online',
                                 ExpressionAttributeNames: { '#status': 'status' },
                                 ExpressionAttributeValues: {
@@ -108,6 +254,7 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
                                     ':callId': callToAssign.callId,
                                     ':time': assignmentTimestamp,
                                     ':from': callToAssign.phoneNumber || 'Unknown',
+                                    ':priority': callToAssign.priority || 'normal',
                                     ':online': 'Online'
                                 }
                             }

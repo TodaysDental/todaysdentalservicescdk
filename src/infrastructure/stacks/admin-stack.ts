@@ -16,7 +16,9 @@ export interface AdminStackProps extends StackProps {
   staffClinicInfoTableName?: string;
   agentPresenceTableName?: string;
   // ** NEW: Input for the Communications Module (Favor Requests Table Name) **
-  favorsTableName: string; 
+  favorsTableName: string;
+  // ** NEW: Analytics Table Name **
+  analyticsTableName?: string;
   // Optional ARNs for Chime lambdas (imported from Chime stack to avoid
   // two-way construct references). When provided, Admin stack will add API
   // routes that integrate with these functions.
@@ -40,6 +42,7 @@ export class AdminStack extends Stack {
   public readonly directoryLookupFn: lambdaNode.NodejsFunction;
   public readonly listRequestsFn: lambdaNode.NodejsFunction; // ** NEW: Request List Lambda Property **
   public readonly mePresenceFn?: lambdaNode.NodejsFunction;
+  public readonly getAnalyticsFn?: lambdaNode.NodejsFunction; // ** NEW: Analytics Query Lambda **
   // ...existing code...
   public readonly api: apigw.RestApi;
   public readonly authorizer: apigw.CognitoUserPoolsAuthorizer;
@@ -277,6 +280,32 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
 
     // (Agent presence endpoint is wired from the Chime stack to avoid cross-stack cycles)
 
+    // ** NEW: Analytics Query Lambda **
+    if (props.analyticsTableName) {
+      this.getAnalyticsFn = new lambdaNode.NodejsFunction(this, 'GetAnalyticsFn', {
+        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'get-call-analytics.ts'),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_20_X,
+        memorySize: 256,
+        timeout: Duration.seconds(30),
+        bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+        environment: {
+          CALL_ANALYTICS_TABLE_NAME: props.analyticsTableName,
+          COGNITO_REGION: Stack.of(this).region,
+          USER_POOL_ID: props.userPoolId,
+        },
+      });
+
+      // Grant read permissions to the analytics table
+      this.getAnalyticsFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsTableName}/index/*`,
+        ],
+      }));
+    }
+
     // Allow MeFn to look up user groups if claims are missing
     this.meFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['cognito-idp:AdminListGroupsForUser'],
@@ -368,6 +397,46 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
     if (this.mePresenceFn) {
       const mePresenceRes = meRes.addResource('presence');
       mePresenceRes.addMethod('GET', new apigw.LambdaIntegration(this.mePresenceFn), {
+        authorizer: this.authorizer,
+        authorizationType: apigw.AuthorizationType.COGNITO,
+        methodResponses: [{ statusCode: '200' }],
+      });
+    }
+
+    // ** NEW: Analytics Routes **
+    if (this.getAnalyticsFn) {
+      const analyticsRes = this.api.root.addResource('analytics');
+      
+      // GET /analytics/call/{callId}
+      const callRes = analyticsRes.addResource('call');
+      const callIdRes = callRes.addResource('{callId}');
+      callIdRes.addMethod('GET', new apigw.LambdaIntegration(this.getAnalyticsFn), {
+        authorizer: this.authorizer,
+        authorizationType: apigw.AuthorizationType.COGNITO,
+        methodResponses: [{ statusCode: '200' }],
+      });
+      
+      // GET /analytics/clinic/{clinicId}
+      const clinicRes = analyticsRes.addResource('clinic');
+      const clinicIdRes = clinicRes.addResource('{clinicId}');
+      clinicIdRes.addMethod('GET', new apigw.LambdaIntegration(this.getAnalyticsFn), {
+        authorizer: this.authorizer,
+        authorizationType: apigw.AuthorizationType.COGNITO,
+        methodResponses: [{ statusCode: '200' }],
+      });
+      
+      // GET /analytics/agent/{agentId}
+      const agentRes = analyticsRes.addResource('agent');
+      const agentIdRes = agentRes.addResource('{agentId}');
+      agentIdRes.addMethod('GET', new apigw.LambdaIntegration(this.getAnalyticsFn), {
+        authorizer: this.authorizer,
+        authorizationType: apigw.AuthorizationType.COGNITO,
+        methodResponses: [{ statusCode: '200' }],
+      });
+      
+      // GET /analytics/summary
+      const summaryRes = analyticsRes.addResource('summary');
+      summaryRes.addMethod('GET', new apigw.LambdaIntegration(this.getAnalyticsFn), {
         authorizer: this.authorizer,
         authorizationType: apigw.AuthorizationType.COGNITO,
         methodResponses: [{ statusCode: '200' }],

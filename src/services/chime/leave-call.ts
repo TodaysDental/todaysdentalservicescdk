@@ -1,15 +1,15 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKMeetingsClient } from '@aws-sdk/client-chime-sdk-meetings';
 import { ChimeSDKVoiceClient } from '@aws-sdk/client-chime-sdk-voice';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
 import { createCheckQueueForWork } from './utils/check-queue-for-work';
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = getDynamoDBClient();
 const chime = new ChimeSDKMeetingsClient({ region: process.env.CHIME_MEDIA_REGION || 'us-east-1' });
 const chimeVoiceClient = new ChimeSDKVoiceClient({});
 const checkQueueForWork = createCheckQueueForWork({

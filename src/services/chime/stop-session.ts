@@ -1,11 +1,11 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKMeetingsClient, DeleteMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = getDynamoDBClient();
 const chimeClient = new ChimeSDKMeetingsClient({});
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;

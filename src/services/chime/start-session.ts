@@ -1,12 +1,12 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKMeetingsClient, CreateMeetingCommand, CreateAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { randomUUID } from 'crypto';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = getDynamoDBClient();
 
 // Chime SDK Meetings only supports specific regions
 // Use us-east-1 as the default Chime media region

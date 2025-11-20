@@ -37,6 +37,10 @@ export interface ChimeStackProps extends StackProps {
    * submitting placeholder hosts that Amazon Chime Voice Connector rejects.
    */
   voiceConnectorOriginationRoutes?: VoiceConnectorOriginationRouteConfig[];
+  /**
+   * Optional Kinesis stream ARN for sending Chime call analytics events
+   */
+  analyticsStreamArn?: string;
 }
 
 export type VoiceConnectorOriginationProtocol = 'UDP' | 'TCP' | 'TLS';
@@ -53,6 +57,7 @@ export class ChimeStack extends Stack {
   public readonly clinicsTable: dynamodb.Table;
   public readonly agentPresenceTable: dynamodb.Table;
   public readonly callQueueTable: dynamodb.Table;
+  public readonly locksTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: ChimeStackProps) {
     super(scope, id, props);
@@ -121,6 +126,23 @@ export class ChimeStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // GSI for querying by phoneNumber + clinicId (for history / callbacks)
+    this.callQueueTable.addGlobalSecondaryIndex({
+      indexName: 'phoneNumber-clinicId-index',
+      partitionKey: { name: 'phoneNumber', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Locks table for distributed locking on call assignments
+    this.locksTable = new dynamodb.Table(this, 'LocksTable', {
+      tableName: `${this.stackName}-Locks`,
+      partitionKey: { name: 'lockKey', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY,
+      timeToLiveAttribute: 'ttl',
+    });
+
     // ========================================
     // 2. Chime SIP Media Application
     // ========================================
@@ -136,8 +158,10 @@ export class ChimeStack extends Stack {
         CLINICS_TABLE_NAME: this.clinicsTable.tableName,
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
         HOLD_MUSIC_BUCKET: '', // Will be updated after bucket creation
         CHIME_MEDIA_REGION: 'us-east-1', // Supported Chime SDK media region
+        ANALYTICS_STREAM_ARN: props.analyticsStreamArn || '', // Analytics stream for call data
       },
     });
 
@@ -145,6 +169,7 @@ export class ChimeStack extends Stack {
     this.clinicsTable.grantReadData(smaHandler);
     this.agentPresenceTable.grantReadWriteData(smaHandler);
     this.callQueueTable.grantReadWriteData(smaHandler);
+    this.locksTable.grantReadWriteData(smaHandler);
 
     // Grant Chime SDK permissions
     smaHandler.addToRolePolicy(new iam.PolicyStatement({
@@ -164,6 +189,18 @@ export class ChimeStack extends Stack {
       ],
       resources: ['*'],
     }));
+
+    // Grant Kinesis permissions for analytics (if stream is provided)
+    if (props.analyticsStreamArn) {
+      smaHandler.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'kinesis:PutRecord',
+          'kinesis:PutRecords',
+        ],
+        resources: [props.analyticsStreamArn],
+      }));
+    }
 
     // Create S3 bucket for hold music
     const holdMusicBucket = new s3.Bucket(this, 'HoldMusicBucket', {
@@ -713,6 +750,8 @@ export class ChimeStack extends Stack {
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
         CHIME_MEDIA_REGION: 'us-east-1',
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
     });
     const startSessionLogGroup = new logs.LogGroup(this, 'StartSessionLogGroup', {
@@ -759,6 +798,8 @@ export class ChimeStack extends Stack {
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
         CHIME_MEDIA_REGION: 'us-east-1',
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
     });
     stopSessionFn.addToRolePolicy(chimeSdkPolicy);
@@ -779,11 +820,14 @@ export class ChimeStack extends Stack {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CLINICS_TABLE_NAME: this.clinicsTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
         SMA_ID_MAP: smaIdMapJson,
         VOICE_CONNECTOR_ID: voiceConnectorId,
         CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
     });
     outboundCallFn.addToRolePolicy(chimeSdkPolicy);
@@ -791,6 +835,7 @@ export class ChimeStack extends Stack {
     this.agentPresenceTable.grantReadWriteData(outboundCallFn);
     this.clinicsTable.grantReadData(outboundCallFn);
     this.callQueueTable.grantReadWriteData(outboundCallFn);
+    this.locksTable.grantReadWriteData(outboundCallFn);
     outboundCallFn.addPermission('AdminApiInvokeOutboundCall', {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
@@ -811,14 +856,18 @@ export class ChimeStack extends Stack {
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
         SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
     });
     this.agentPresenceTable.grantReadWriteData(transferCallFn);
     this.callQueueTable.grantReadWriteData(transferCallFn);
+    this.locksTable.grantReadWriteData(transferCallFn);
     transferCallFn.addToRolePolicy(chimeSdkPolicy);
     transferCallFn.addToRolePolicy(new iam.PolicyStatement({
         actions: ['chime:UpdateSipMediaApplicationCall'],
@@ -839,14 +888,18 @@ export class ChimeStack extends Stack {
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
         SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
     });
     this.agentPresenceTable.grantReadWriteData(callAcceptedFn);
     this.callQueueTable.grantReadWriteData(callAcceptedFn);
+    this.locksTable.grantReadWriteData(callAcceptedFn);
     callAcceptedFn.addToRolePolicy(chimeSdkPolicy);
     callAcceptedFn.addToRolePolicy(new iam.PolicyStatement({
         actions: ['chime:UpdateSipMediaApplicationCall'],
@@ -867,14 +920,18 @@ export class ChimeStack extends Stack {
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
         SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
     });
     this.agentPresenceTable.grantReadWriteData(callRejectedFn);
     this.callQueueTable.grantReadWriteData(callRejectedFn);
+    this.locksTable.grantReadWriteData(callRejectedFn);
     callRejectedFn.addToRolePolicy(chimeSdkPolicy);
     callRejectedFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
@@ -900,6 +957,8 @@ export class ChimeStack extends Stack {
         CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
     });
     this.agentPresenceTable.grantReadWriteData(callHungupFn);
@@ -928,6 +987,8 @@ export class ChimeStack extends Stack {
         CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
     });
     this.agentPresenceTable.grantReadWriteData(leaveCallFn);
@@ -948,14 +1009,18 @@ export class ChimeStack extends Stack {
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
         SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
     });
     this.agentPresenceTable.grantReadWriteData(holdCallFn);
     this.callQueueTable.grantReadWriteData(holdCallFn);
+    this.locksTable.grantReadWriteData(holdCallFn);
     holdCallFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['chime:UpdateSipMediaApplicationCall'],
       resources: ['*'],
@@ -975,14 +1040,18 @@ export class ChimeStack extends Stack {
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
         SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
     });
     this.agentPresenceTable.grantReadWriteData(resumeCallFn);
     this.callQueueTable.grantReadWriteData(resumeCallFn);
+    this.locksTable.grantReadWriteData(resumeCallFn);
     resumeCallFn.addToRolePolicy(chimeSdkPolicy);
     resumeCallFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['chime:UpdateSipMediaApplicationCall'],
@@ -1078,6 +1147,8 @@ export class ChimeStack extends Stack {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         USER_POOL_ID: props.userPool.userPoolId,
         COGNITO_REGION: this.region,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
     });
     
@@ -1105,6 +1176,8 @@ export class ChimeStack extends Stack {
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         CHIME_MEDIA_REGION: 'us-east-1',
         SMA_ID_MAP: smaIdMapJson,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
     });
     
@@ -1140,6 +1213,183 @@ export class ChimeStack extends Stack {
     new CfnOutput(this, 'CleanupMonitorFnArn', {
       value: cleanupMonitorFn.functionArn,
       exportName: `${this.stackName}-CleanupMonitorArn`,
+    });
+
+    // ========================================
+    // 13. CloudWatch Alarms for Monitoring
+    // ========================================
+
+    // Helper function to create Lambda error alarms
+    const createLambdaErrorAlarm = (fn: lambda.IFunction, fnNameDisplay: string) => {
+      new cloudwatch.Alarm(this, `${fn.node.id}ErrorAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Lambda',
+          metricName: 'Errors',
+          dimensionsMap: { FunctionName: fn.functionName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${fnNameDisplay} Lambda has errors`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    // Helper function to create Lambda throttle alarms
+    const createLambdaThrottleAlarm = (fn: lambda.IFunction, fnNameDisplay: string) => {
+      new cloudwatch.Alarm(this, `${fn.node.id}ThrottleAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Lambda',
+          metricName: 'Throttles',
+          dimensionsMap: { FunctionName: fn.functionName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${fnNameDisplay} Lambda is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    // Helper function to create Lambda duration alarms (p99)
+    const createLambdaDurationAlarm = (fn: lambda.IFunction, fnNameDisplay: string, thresholdMs: number) => {
+      new cloudwatch.Alarm(this, `${fn.node.id}DurationAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Lambda',
+          metricName: 'Duration',
+          dimensionsMap: { FunctionName: fn.functionName },
+          statistic: 'Maximum',
+          period: Duration.minutes(5),
+        }),
+        threshold: thresholdMs,
+        evaluationPeriods: 2,
+        alarmDescription: `Alert when ${fnNameDisplay} Lambda duration exceeds ${thresholdMs}ms (p99)`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    // Helper function to create DynamoDB throttle alarms
+    const createDynamoDBThrottleAlarm = (table: dynamodb.Table, tableName: string, operation: string) => {
+      new cloudwatch.Alarm(this, `${table.node.id}${operation}ThrottleAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/DynamoDB',
+          metricName: 'UserErrors',
+          dimensionsMap: { TableName: table.tableName, Operation: operation },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${tableName} ${operation} is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    // Create alarms for all Lambda functions
+    createLambdaErrorAlarm(startSessionFn, 'StartSession');
+    createLambdaThrottleAlarm(startSessionFn, 'StartSession');
+    createLambdaDurationAlarm(startSessionFn, 'StartSession', 8000); // 10s timeout, 80% = 8s
+
+    createLambdaErrorAlarm(stopSessionFn, 'StopSession');
+    createLambdaThrottleAlarm(stopSessionFn, 'StopSession');
+    createLambdaDurationAlarm(stopSessionFn, 'StopSession', 8000);
+
+    createLambdaErrorAlarm(outboundCallFn, 'OutboundCall');
+    createLambdaThrottleAlarm(outboundCallFn, 'OutboundCall');
+    createLambdaDurationAlarm(outboundCallFn, 'OutboundCall', 9000); // Complex operation
+
+    createLambdaErrorAlarm(transferCallFn, 'TransferCall');
+    createLambdaThrottleAlarm(transferCallFn, 'TransferCall');
+    createLambdaDurationAlarm(transferCallFn, 'TransferCall', 9000);
+
+    createLambdaErrorAlarm(callAcceptedFn, 'CallAccepted');
+    createLambdaThrottleAlarm(callAcceptedFn, 'CallAccepted');
+    createLambdaDurationAlarm(callAcceptedFn, 'CallAccepted', 8000);
+
+    createLambdaErrorAlarm(callRejectedFn, 'CallRejected');
+    createLambdaThrottleAlarm(callRejectedFn, 'CallRejected');
+    createLambdaDurationAlarm(callRejectedFn, 'CallRejected', 8000);
+
+    createLambdaErrorAlarm(callHungupFn, 'CallHungup');
+    createLambdaThrottleAlarm(callHungupFn, 'CallHungup');
+    createLambdaDurationAlarm(callHungupFn, 'CallHungup', 8000);
+
+    createLambdaErrorAlarm(leaveCallFn, 'LeaveCall');
+    createLambdaThrottleAlarm(leaveCallFn, 'LeaveCall');
+    createLambdaDurationAlarm(leaveCallFn, 'LeaveCall', 8000);
+
+    createLambdaErrorAlarm(holdCallFn, 'HoldCall');
+    createLambdaThrottleAlarm(holdCallFn, 'HoldCall');
+    createLambdaDurationAlarm(holdCallFn, 'HoldCall', 8000);
+
+    createLambdaErrorAlarm(resumeCallFn, 'ResumeCall');
+    createLambdaThrottleAlarm(resumeCallFn, 'ResumeCall');
+    createLambdaDurationAlarm(resumeCallFn, 'ResumeCall', 8000);
+
+    createLambdaErrorAlarm(heartbeatFn, 'Heartbeat');
+    createLambdaThrottleAlarm(heartbeatFn, 'Heartbeat');
+    createLambdaDurationAlarm(heartbeatFn, 'Heartbeat', 8000);
+
+    createLambdaErrorAlarm(cleanupMonitorFn, 'CleanupMonitor');
+    createLambdaThrottleAlarm(cleanupMonitorFn, 'CleanupMonitor');
+    createLambdaDurationAlarm(cleanupMonitorFn, 'CleanupMonitor', 25000); // 30s timeout, 25s threshold
+
+    // Create alarms for DynamoDB tables - monitor for throttling
+    createDynamoDBThrottleAlarm(this.clinicsTable, 'ClinicsTable', 'GetItem');
+    createDynamoDBThrottleAlarm(this.clinicsTable, 'ClinicsTable', 'Query');
+
+    createDynamoDBThrottleAlarm(this.agentPresenceTable, 'AgentPresenceTable', 'GetItem');
+    createDynamoDBThrottleAlarm(this.agentPresenceTable, 'AgentPresenceTable', 'Query');
+    createDynamoDBThrottleAlarm(this.agentPresenceTable, 'AgentPresenceTable', 'UpdateItem');
+
+    createDynamoDBThrottleAlarm(this.callQueueTable, 'CallQueueTable', 'GetItem');
+    createDynamoDBThrottleAlarm(this.callQueueTable, 'CallQueueTable', 'Query');
+    createDynamoDBThrottleAlarm(this.callQueueTable, 'CallQueueTable', 'UpdateItem');
+
+    createDynamoDBThrottleAlarm(this.locksTable, 'LocksTable', 'GetItem');
+    createDynamoDBThrottleAlarm(this.locksTable, 'LocksTable', 'PutItem');
+    createDynamoDBThrottleAlarm(this.locksTable, 'LocksTable', 'UpdateItem');
+
+    // Create composite alarm for critical operations
+    const criticalFunctionErrorMetrics = [
+      new cloudwatch.Metric({
+        namespace: 'AWS/Lambda',
+        metricName: 'Errors',
+        dimensionsMap: { FunctionName: outboundCallFn.functionName },
+        statistic: 'Sum',
+        period: Duration.minutes(1),
+      }),
+      new cloudwatch.Metric({
+        namespace: 'AWS/Lambda',
+        metricName: 'Errors',
+        dimensionsMap: { FunctionName: transferCallFn.functionName },
+        statistic: 'Sum',
+        period: Duration.minutes(1),
+      }),
+      new cloudwatch.Metric({
+        namespace: 'AWS/Lambda',
+        metricName: 'Errors',
+        dimensionsMap: { FunctionName: callAcceptedFn.functionName },
+        statistic: 'Sum',
+        period: Duration.minutes(1),
+      }),
+    ];
+
+    new cloudwatch.Alarm(this, 'CriticalCallOperationsErrorAlarm', {
+      metric: new cloudwatch.MathExpression({
+        expression: 'm1 + m2 + m3',
+        usingMetrics: {
+          m1: criticalFunctionErrorMetrics[0],
+          m2: criticalFunctionErrorMetrics[1],
+          m3: criticalFunctionErrorMetrics[2],
+        },
+      }),
+      threshold: 2,
+      evaluationPeriods: 1,
+      alarmDescription: 'Alert when critical call operations (OutboundCall, TransferCall, CallAccepted) have combined errors',
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
   }
 }

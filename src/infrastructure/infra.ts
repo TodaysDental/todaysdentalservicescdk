@@ -23,6 +23,7 @@ import { PatientPortalApptTypesStack } from './stacks/patient-portal-appttypes-s
 import { FluorideAutomationStack } from './stacks/fluoride-automation-stack';
 
 import { CommStack } from './stacks/comm-stack'; // <-- NEW IMPORT ADDED HERE
+import { AnalyticsStack } from './stacks/analytics-stack';
 
 const app = new cdk.App();
 
@@ -205,11 +206,20 @@ const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNoti
 // Lambda ARNs. We intentionally do NOT pass the Admin API object into the
 // Chime stack to avoid a two-way construct dependency which leads to
 // cyclic CloudFormation references.
+
+// ** ANALYTICS STACK INSTANTIATION (BEFORE CHIME) **
+const analyticsStack = new AnalyticsStack(app, 'TodaysDentalInsightsAnalyticsV1', {
+  env,
+  userPoolId: coreStack.userPool.userPoolId,
+  region: env.region || process.env.AWS_REGION || 'us-east-1',
+});
+
 const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV23', {
  env,
  userPool: coreStack.userPool,
  voiceConnectorTerminationCidrs,
  voiceConnectorOriginationRoutes,
+ analyticsStreamArn: analyticsStack.analyticsStream.streamArn,
 });
 // ** COMMUNICATIONS STACK INSTANTIATION **
 const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommV1', {
@@ -229,6 +239,7 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminV3', {
  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
  favorsTableName: communicationsStack.favorsTable.tableName,
  clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
+ analyticsTableName: analyticsStack.analyticsTable.tableName,
  // Import ARNs exported by the Chime stack
  startSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StartSessionArn`),
  stopSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StopSessionArn`),
@@ -325,6 +336,9 @@ clinicInsuranceStack.addDependency(coreStack);
 openDentalStack.addDependency(coreStack);
 
 communicationsStack.addDependency(coreStack); // <-- NEW DEPENDENCY ADDED HERE
+
+// Analytics stack dependencies
+analyticsStack.addDependency(coreStack);
 
 // Cross-service dependencies for services that need data from other services
 notificationsStack.addDependency(coreStack);

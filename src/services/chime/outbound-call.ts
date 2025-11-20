@@ -1,13 +1,15 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, CreateSipMediaApplicationCallCommand, CreateSipMediaApplicationCallCommandOutput } from '@aws-sdk/client-chime-sdk-voice';
 // REMOVED: ChimeSDKMeetingsClient, CreateMeetingCommand, CreateAttendeeCommand, DeleteMeetingCommand
 import { buildCorsHeaders } from '../../shared/utils/cors';
-import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
+import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
+import { verifyIdTokenCached } from '../shared/utils/jwt-verification';
+import { sanitizePhoneNumber } from '../shared/utils/input-sanitization';
+import { checkClinicAuthorization } from '../shared/utils/authorization';
 import { getSmaIdForClinic } from './utils/sma-map';
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = getDynamoDBClient();
 const chimeVoiceClient = new ChimeSDKVoiceClient({});
 
 const CLINICS_TABLE_NAME = process.env.CLINICS_TABLE_NAME;
@@ -15,8 +17,6 @@ const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
-const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
-let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const parseNumberOr = (value: string | undefined, fallback: number) => {
@@ -29,56 +29,6 @@ const isConcurrentCallLimitError = (error: any): boolean => {
   const message = (error?.message || '').toString();
   return error?.name === 'BadRequestException' && message.includes('Concurrent call limits');
 };
-
-// --- Auth Helpers ---
-async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; payload: JWTPayload } | { ok: false; code: number; message: string }> {
-  if (!authorizationHeader || !authorizationHeader.toLowerCase().startsWith("bearer ")) {
-    return { ok: false, code: 401, message: "Missing Bearer token" };
-  }
-  if (!ISSUER) {
-    return { ok: false, code: 500, message: "Issuer not configured" };
-  }
-  const token = authorizationHeader.slice(7).trim();
-  try {
-    JWKS = JWKS || createRemoteJWKSet(new URL(`${ISSUER}/.well-known/jwks.json`));
-    const { payload } = await jwtVerify(token, JWKS, { issuer: ISSUER });
-    if ((payload as any).token_use !== "id") {
-      return { ok: false, code: 401, message: "ID token required" };
-    }
-    return { ok: true, payload };
-  } catch (err: any) {
-    return { ok: false, code: 401, message: `Invalid token: ${err.message}` };
-  }
-}
-
-function getClinicsFromClaims(payload: JWTPayload): string[] {
-    const xClinics = String((payload as any)["x_clinics"] || "").trim();
-    if (xClinics === "ALL") return ["ALL"];
-    if (xClinics) {
-      return xClinics.split(',').map((s) => s.trim()).filter(Boolean);
-    }
-    const xRbc = String((payload as any)["x_rbc"] || "").trim();
-     if (xRbc) {
-      return xRbc.split(',').map((pair) => pair.split(':')[0]).filter(Boolean);
-    }
-    
-    // Fallback: Extract clinic IDs from cognito:groups (e.g., clinic_dentistinperrysburg__ADMIN)
-    const groups = Array.isArray((payload as any)["cognito:groups"]) ? ((payload as any)["cognito:groups"] as string[]) : [];
-    if (groups.length > 0) {
-      const clinicIds = groups
-        .map((name) => {
-          const match = /^clinic_([^_][^\s]*)__[A-Z_]+$/.exec(String(name));
-          return match ? match[1] : '';
-        })
-        .filter(Boolean);
-      if (clinicIds.length > 0) {
-        return clinicIds;
-      }
-    }
-    
-    return [];
-}
-// --- End Auth Helpers ---
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   console.log('[outbound-call] Function invoked', {
@@ -99,7 +49,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
     console.log('[outbound-call] Verifying auth token');
     
-    const verifyResult = await verifyIdToken(authz);
+    const verifyResult = await verifyIdTokenCached(authz, REGION!, USER_POOL_ID!);
     if (!verifyResult.ok) {
       console.warn('[outbound-call] Auth verification failed', { code: verifyResult.code, message: verifyResult.message });
       return { statusCode: verifyResult.code, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
@@ -113,7 +63,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'Invalid token: missing subject claim' }) };
     }
     
-    const authorizedClinics = getClinicsFromClaims(verifyResult.payload);
     const body = JSON.parse(event.body || '{}') as { toPhoneNumber: string, fromClinicId: string };
     console.log('[outbound-call] Parsed request body', { toPhoneNumber: body.toPhoneNumber, fromClinicId: body.fromClinicId });
 
@@ -122,20 +71,27 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'toPhoneNumber and fromClinicId are required' }) };
     }
     
-    const E164_REGEX = /^\+[1-9]\d{1,14}$/;
-    if (!E164_REGEX.test(body.toPhoneNumber)) {
-        console.error('[outbound-call] Invalid phone number format');
+    // Sanitize phone number
+    const phoneValidation = sanitizePhoneNumber(body.toPhoneNumber);
+    if (!phoneValidation.sanitized) {
+        console.error('[outbound-call] Invalid phone number', { error: phoneValidation.error });
         return { 
             statusCode: 400, 
             headers: corsHeaders, 
-            body: JSON.stringify({ message: 'toPhoneNumber must be in E.164 format (e.g., +12065550100)' }) 
+            body: JSON.stringify({ message: phoneValidation.error }) 
         };
     }
+    const toPhoneNumber = phoneValidation.sanitized;
 
     // 1. Security Check: Validate clinicId against JWT claims
-    if (authorizedClinics[0] !== "ALL" && !authorizedClinics.includes(body.fromClinicId)) {
-        console.warn('[outbound-call] Authorization failed for clinic', { agentId, requestedClinic: body.fromClinicId });
-        return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ message: `Forbidden: not authorized for clinic ${body.fromClinicId}` }) };
+    const authzCheck = checkClinicAuthorization(verifyResult.payload, body.fromClinicId);
+    if (!authzCheck.authorized) {
+        console.warn('[outbound-call] Authorization failed', {
+            agentId,
+            clinic: body.fromClinicId,
+            reason: authzCheck.reason
+        });
+        return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ message: authzCheck.reason }) };
     }
     console.log('[outbound-call] Clinic authorization successful');
     

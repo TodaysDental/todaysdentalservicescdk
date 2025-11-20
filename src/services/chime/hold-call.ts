@@ -1,41 +1,19 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getSmaIdForClinic } from './utils/sma-map';
-import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
+import { verifyIdTokenCached } from '../shared/utils/jwt-verification';
+import { checkClinicAuthorization } from '../shared/utils/authorization';
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = getDynamoDBClient();
 const chimeVoice = new ChimeSDKVoiceClient({});
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
-const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
-let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
-
-// Auth Helpers
-async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; payload: JWTPayload } | { ok: false; code: number; message: string }> {
-  if (!authorizationHeader || !authorizationHeader.toLowerCase().startsWith("bearer ")) {
-    return { ok: false, code: 401, message: "Missing Bearer token" };
-  }
-  if (!ISSUER) {
-    return { ok: false, code: 500, message: "Issuer not configured" };
-  }
-  const token = authorizationHeader.slice(7).trim();
-  try {
-    JWKS = JWKS || createRemoteJWKSet(new URL(`${ISSUER}/.well-known/jwks.json`));
-    const { payload } = await jwtVerify(token, JWKS, { issuer: ISSUER });
-    if ((payload as any).token_use !== "id") {
-      return { ok: false, code: 401, message: "ID token required" };
-    }
-    return { ok: true, payload };
-  } catch (err: any) {
-    return { ok: false, code: 401, message: `Invalid token: ${err.message}` };
-  }
-}
 /**
  * Lambda handler for placing a call on hold
  * This is triggered by the frontend when an agent wants to put a customer on hold
@@ -48,7 +26,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     try {
         // Authenticate request
         const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
-        const verifyResult = await verifyIdToken(authz);
+        const verifyResult = await verifyIdTokenCached(authz, REGION!, USER_POOL_ID!);
         if (!verifyResult.ok) {
             console.warn('[hold-call] Auth verification failed', verifyResult);
             return { statusCode: verifyResult.code, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
@@ -105,6 +83,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         const callRecord = callRecords[0];
         const { clinicId, queuePosition } = callRecord;
+        
+        // Check clinic authorization
+        const authzCheck = checkClinicAuthorization(verifyResult.payload, clinicId);
+        if (!authzCheck.authorized) {
+            console.warn('[hold-call] Authorization failed', {
+                agentId: requestingAgentId,
+                clinicId,
+                reason: authzCheck.reason
+            });
+            return {
+                statusCode: 403,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: authzCheck.reason })
+            };
+        }
+        
         if (callRecord.assignedAgentId && callRecord.assignedAgentId !== agentId) {
             console.warn('[hold-call] Agent attempting to hold call they are not assigned to', { agentId, assignedAgentId: callRecord.assignedAgentId });
             return {

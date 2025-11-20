@@ -1,13 +1,14 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { ChimeSDKMeetingsClient, CreateAttendeeCommand, DeleteAttendeeCommand, GetMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getSmaIdForClinic } from './utils/sma-map';
-import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
+import { verifyIdTokenCached } from '../shared/utils/jwt-verification';
+import { checkClinicAuthorization } from '../shared/utils/authorization';
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = getDynamoDBClient();
 const chimeVoice = new ChimeSDKVoiceClient({});
 
 // Initialize Chime Meetings client for attendee operations
@@ -18,57 +19,6 @@ const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
-const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
-let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
-
-// Auth Helpers
-async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; payload: JWTPayload } | { ok: false; code: number; message: string }> {
-  if (!authorizationHeader || !authorizationHeader.toLowerCase().startsWith("bearer ")) {
-    return { ok: false, code: 401, message: "Missing Bearer token" };
-  }
-  if (!ISSUER) {
-    return { ok: false, code: 500, message: "Issuer not configured" };
-  }
-  const token = authorizationHeader.slice(7).trim();
-  try {
-    JWKS = JWKS || createRemoteJWKSet(new URL(`${ISSUER}/.well-known/jwks.json`));
-    const { payload } = await jwtVerify(token, JWKS, { issuer: ISSUER });
-    if ((payload as any).token_use !== "id") {
-      return { ok: false, code: 401, message: "ID token required" };
-    }
-    return { ok: true, payload };
-  } catch (err: any) {
-    return { ok: false, code: 401, message: `Invalid token: ${err.message}` };
-  }
-}
-
-function getClinicsFromClaims(payload: JWTPayload): string[] {
-    const xClinics = String((payload as any)["x_clinics"] || "").trim();
-    if (xClinics === "ALL") return ["ALL"];
-    if (xClinics) {
-      return xClinics.split(',').map((s) => s.trim()).filter(Boolean);
-    }
-    const xRbc = String((payload as any)["x_rbc"] || "").trim();
-     if (xRbc) {
-      return xRbc.split(',').map((pair) => pair.split(':')[0]).filter(Boolean);
-    }
-    
-    // Fallback: Extract clinic IDs from cognito:groups
-    const groups = Array.isArray((payload as any)["cognito:groups"]) ? ((payload as any)["cognito:groups"] as string[]) : [];
-    if (groups.length > 0) {
-      const clinicIds = groups
-        .map((name) => {
-          const match = /^clinic_([^_][^\s]*)__[A-Z_]+$/.exec(String(name));
-          return match ? match[1] : '';
-        })
-        .filter(Boolean);
-      if (clinicIds.length > 0) {
-        return clinicIds;
-      }
-    }
-    
-    return [];
-}
 
 /**
  * Lambda handler for resuming a call from hold
@@ -82,7 +32,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     try {
         // CRITICAL FIX: Add JWT verification for security
         const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
-        const verifyResult = await verifyIdToken(authz);
+        const verifyResult = await verifyIdTokenCached(authz, REGION!, USER_POOL_ID!);
         if (!verifyResult.ok) {
             console.warn('[resume-call] Auth verification failed', { 
                 code: verifyResult.code, 
@@ -92,7 +42,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
         
         const requestingAgentId = verifyResult.payload.sub;
-        const authorizedClinics = getClinicsFromClaims(verifyResult.payload);
         console.log('[resume-call] Auth verification successful', { requestingAgentId });
         
         if (!event.body) {
@@ -148,6 +97,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const callRecord = callRecords[0];
         const { clinicId, queuePosition } = callRecord;
 
+        // Check clinic authorization
+        const authzCheck = checkClinicAuthorization(verifyResult.payload, clinicId);
+        if (!authzCheck.authorized) {
+            console.warn('[resume-call] Authorization failed', {
+                agentId: requestingAgentId,
+                clinicId,
+                reason: authzCheck.reason
+            });
+            return {
+                statusCode: 403,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: authzCheck.reason })
+            };
+        }
+
         const smaId = getSmaIdForClinic(clinicId);
         if (!smaId) {
             console.error('[resume-call] Missing SMA mapping for clinic', { clinicId });
@@ -155,21 +119,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 statusCode: 500,
                 headers: corsHeaders,
                 body: JSON.stringify({ message: 'Resume call is not configured for this clinic' })
-            };
-        }
-        
-        // CRITICAL FIX: Verify agent has access to the clinic
-        const hasAccess = authorizedClinics[0] === "ALL" || authorizedClinics.includes(clinicId);
-        if (!hasAccess) {
-            console.warn('[resume-call] Agent does not have access to this clinic', {
-                agentId,
-                clinicId,
-                authorizedClinics
-            });
-            return {
-                statusCode: 403,
-                headers: corsHeaders,
-                body: JSON.stringify({ message: 'Forbidden: You do not have access to this clinic' })
             };
         }
         
