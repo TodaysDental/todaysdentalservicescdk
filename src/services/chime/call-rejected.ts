@@ -131,7 +131,63 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
         
         // 4. Atomically update agent and re-queue the call
-        const newRejectedAgents = [...(callRecord.rejectedAgentIds || []), agentId];
+        // CRITICAL FIX #11: Deduplicate and limit rejectedAgentIds to prevent unbounded growth
+        const existingRejectedAgents = new Set(callRecord.rejectedAgentIds || []);
+        existingRejectedAgents.add(agentId);
+        
+        const MAX_REJECTED_AGENTS = 100;
+        const newRejectedAgents = Array.from(existingRejectedAgents).slice(-MAX_REJECTED_AGENTS);
+        
+        // Check if too many rejections - escalate to supervisor
+        if (newRejectedAgents.length >= MAX_REJECTED_AGENTS) {
+            console.warn(`[call-rejected] Too many rejections for call ${callId} (${newRejectedAgents.length}), escalating to supervisor`);
+            
+            await ddb.send(new TransactWriteCommand({
+                TransactItems: [
+                    {
+                        Update: {
+                            TableName: AGENT_PRESENCE_TABLE_NAME,
+                            Key: { agentId },
+                            UpdateExpression: 'SET #status = :online, lastActivityAt = :ts, lastRejectedCallId = :callId REMOVE ringingCallId, ringingCallTime, ringingCallFrom, inboundMeetingInfo, inboundAttendeeInfo',
+                            ConditionExpression: 'ringingCallId = :callId',
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: {
+                                ':online': 'Online',
+                                ':ts': new Date().toISOString(),
+                                ':callId': callId
+                            }
+                        }
+                    },
+                    {
+                        Update: {
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            Key: { clinicId, queuePosition },
+                            UpdateExpression: 'SET #status = :escalated, escalationReason = :reason, escalatedAt = :timestamp REMOVE meetingInfo, customerAttendeeInfo, agentAttendeeInfo',
+                            ConditionExpression: '#status = :ringing',
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: {
+                                ':escalated': 'escalated',
+                                ':reason': 'excessive_rejections',
+                                ':timestamp': new Date().toISOString(),
+                                ':ringing': 'ringing'
+                            }
+                        }
+                    }
+                ]
+            }));
+            
+            return {
+                statusCode: 200,
+                headers: corsHeaders,
+                body: JSON.stringify({ 
+                    message: 'Call escalated to supervisor due to excessive rejections',
+                    callId,
+                    agentId,
+                    newCallStatus: 'escalated'
+                })
+            };
+        }
+        
         const timestamp = new Date().toISOString();
 
         try {

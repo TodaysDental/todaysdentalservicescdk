@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
+import { TTL_POLICY, calculateSessionExpiry } from './config/ttl-policy';
 
 const ddb = getDynamoDBClient();
 
@@ -23,8 +24,7 @@ const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 if (!CALL_QUEUE_TABLE_NAME) {
     throw new Error('CALL_QUEUE_TABLE_NAME environment variable is required');
 }
-const SESSION_MAX_SECONDS = Math.max(3600, Number.parseInt(process.env.AGENT_SESSION_MAX_SECONDS || `${8 * 60 * 60}`, 10));
-const HEARTBEAT_GRACE_SECONDS = Math.max(300, Number.parseInt(process.env.AGENT_HEARTBEAT_GRACE_SECONDS || `${15 * 60}`, 10));
+// CRITICAL FIX #5: Use centralized TTL policy
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
 const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
@@ -240,19 +240,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       });
     
     // 3. Save presence to DynamoDB
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const sessionExpiresAtEpoch = nowSeconds + SESSION_MAX_SECONDS;
-    const ttl = Math.min(sessionExpiresAtEpoch, nowSeconds + HEARTBEAT_GRACE_SECONDS);
+    // CRITICAL FIX #5: Use centralized TTL policy for consistency
+    const sessionExpiry = calculateSessionExpiry();
     const presenceItem = {
         agentId: agentId,
         status: 'Online',
-        activeClinicIds: body.activeClinicIds, // The clinics they are actively covering
+        activeClinicIds: body.activeClinicIds,
         meetingInfo: meetingResponse.Meeting,
         attendeeInfo: attendeeResponse.Attendee,
         updatedAt: new Date().toISOString(),
-        ttl,
-        sessionExpiresAt: new Date(sessionExpiresAtEpoch * 1000).toISOString(),
-        sessionExpiresAtEpoch
+        ttl: sessionExpiry.ttl,
+        sessionExpiresAt: sessionExpiry.sessionExpiresAt,
+        sessionExpiresAtEpoch: sessionExpiry.sessionExpiresAtEpoch,
+        lastHeartbeatAt: new Date().toISOString()
     };
 
   await ddb.send(new PutCommand({
@@ -260,11 +260,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     Item: presenceItem,
   }));
 
+    // CRITICAL FIX: Use sessionExpiry properties instead of undefined variables
     console.log('[start-session] Agent presence saved successfully', { 
       agentId, 
       table: AGENT_PRESENCE_TABLE_NAME, 
-      ttl,
-      sessionExpiresAtEpoch,
+      ttl: sessionExpiry.ttl,
+      sessionExpiresAtEpoch: sessionExpiry.sessionExpiresAtEpoch,
       activeClinicIds: body.activeClinicIds,
       meetingId: meetingResponse.Meeting.MeetingId
     });

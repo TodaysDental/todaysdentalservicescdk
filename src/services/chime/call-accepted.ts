@@ -4,6 +4,7 @@ import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-
 import { 
     ChimeSDKMeetingsClient, 
     CreateAttendeeCommand,
+    DeleteAttendeeCommand,
     Attendee
 } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
@@ -12,6 +13,7 @@ import { getSmaIdForClinic } from './utils/sma-map';
 import { verifyIdTokenCached } from '../shared/utils/jwt-verification';
 import { cleanupOrphanedCallResources } from './utils/resource-cleanup';
 import { randomUUID } from 'crypto';
+import { TTL_POLICY } from './config/ttl-policy';
 
 const ddb = getDynamoDBClient();
 const chimeVoice = new ChimeSDKVoiceClient({});
@@ -150,51 +152,31 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // 4. Create a new attendee *for the customer* in the *agent's* meeting
-        let customerAttendee: Attendee;
-        try {
-            console.log(`[call-accepted] Creating customer attendee for agent's meeting ${agentMeeting.MeetingId}`);
-            const attendeeResponse = await chime.send(new CreateAttendeeCommand({
-                MeetingId: agentMeeting.MeetingId,
-                ExternalUserId: `customer-${callId}` // Link attendee to the callId
-            }));
-            
-            if (!attendeeResponse.Attendee?.AttendeeId || !attendeeResponse.Attendee?.JoinToken) {
-                throw new Error('Invalid attendee data returned from Chime');
-            }
-            customerAttendee = attendeeResponse.Attendee;
-            console.log(`[call-accepted] Created customer attendee: ${customerAttendee.AttendeeId}`);
-        } catch (attendeeErr) {
-            console.error('[call-accepted] Failed to create customer attendee:', attendeeErr);
-            return {
-                statusCode: 500,
-                headers: corsHeaders,
-                body: JSON.stringify({ message: 'Failed to create meeting credentials for customer' })
-            };
-        }
-
-        // 5. Use transaction to atomically claim the call and update agent statuses
+        // 4. Use transaction to atomically claim the call and update agent statuses
+        // CRITICAL FIX #1: Win transaction FIRST before creating attendee to prevent resource leak
+        // CRITICAL FIX #1: Prevent double-acceptance with explicit assignedAgentId check
+        // CRITICAL FIX #6: Simplify transaction to 2 items (exclude other agents cleanup)
         console.log('[call-accepted] Attempting to claim call with transaction', { callId, agentId });
         
-        const otherRingingAgents = (callRecord.agentIds || []).filter((id: string) => id !== agentId);
         const timestamp = new Date().toISOString();
         const nowSeconds = Math.floor(Date.now() / 1000);
-        const extendedTTL = nowSeconds + (24 * 60 * 60); // Keep active calls alive for another 24 hours
+        // CRITICAL FIX #5: Use centralized TTL policy
+        const extendedTTL = nowSeconds + TTL_POLICY.ACTIVE_CALL_SECONDS;
 
         const transactionItems: any[] = [
-            // Item 1: Update call status to 'connected' and store customer attendee
+            // Item 1: Update call status to 'accepting' to reserve the call
+            // CRITICAL: Verify call is still ringing AND hasn't been claimed by another agent
             {
                 Update: {
                     TableName: CALL_QUEUE_TABLE_NAME,
                     Key: { clinicId, queuePosition },
-                    UpdateExpression: 'SET #status = :connected, assignedAgentId = :agentId, acceptedAt = :timestamp, customerAttendeeInfo = :customerAttendee, #ttl = :ttl REMOVE agentIds',
-                    ConditionExpression: '#status = :ringing', // Final check for race condition
+                    UpdateExpression: 'SET #status = :accepting, assignedAgentId = :agentId, acceptedAt = :timestamp, #ttl = :ttl',
+                    ConditionExpression: '#status = :ringing AND attribute_not_exists(assignedAgentId)', // Prevent double-acceptance
                     ExpressionAttributeNames: { '#status': 'status', '#ttl': 'ttl' },
                     ExpressionAttributeValues: {
-                        ':connected': 'connected',
+                        ':accepting': 'accepting',
                         ':agentId': agentId,
                         ':timestamp': timestamp,
-                        ':customerAttendee': customerAttendee,
                         ':ringing': 'ringing',
                         ':ttl': extendedTTL
                     }
@@ -217,27 +199,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             }
         ];
         
-        // Items 3..N: Update all other ringing agents back to 'Online'
-        otherRingingAgents.forEach((otherAgentId: string) => {
-            transactionItems.push({
-                Update: {
-                    TableName: AGENT_PRESENCE_TABLE_NAME,
-                    Key: { agentId: otherAgentId },
-                    UpdateExpression: 'SET #status = :onCall, lastActivityAt = :timestamp REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
-                    ConditionExpression: 'ringingCallId = :callId', // Only clear if they were ringing for this call
-                    ExpressionAttributeNames: { '#status': 'status' },
-                    ExpressionAttributeValues: {
-                        ':onCall': 'Online', // Using the same key as other transactions
-                        ':callId': callId,
-                        ':timestamp': timestamp
-                    }
-                }
-            });
-        });
+        // NOTE: We no longer update other ringing agents in this transaction.
+        // Reason: If any of 25 agents' states changed, the entire transaction fails.
+        // The cleanup-monitor will handle stale ringing states via heartbeat monitoring.
         
         try {
             await ddb.send(new TransactWriteCommand({ TransactItems: transactionItems }));
-            console.log('[call-accepted] Transaction completed successfully', { callId, agentId, otherAgentsCleaned: otherRingingAgents.length });
+            console.log('[call-accepted] Transaction completed successfully - call reserved', { callId, agentId });
         } catch (err: any) {
             if (err.name === 'TransactionCanceledException') {
                 console.warn('[call-accepted] Transaction failed. Call likely claimed by another agent.', { callId, agentId, reasons: err.CancellationReasons });
@@ -254,7 +222,54 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             throw err;
         }
 
+        // 5. Create attendee AFTER winning the transaction (prevents resource leak)
+        let customerAttendee: Attendee;
+        try {
+            console.log(`[call-accepted] Creating customer attendee for agent's meeting ${agentMeeting.MeetingId}`);
+            const attendeeResponse = await chime.send(new CreateAttendeeCommand({
+                MeetingId: agentMeeting.MeetingId,
+                ExternalUserId: `customer-${callId}` // Link attendee to the callId
+            }));
+            
+            if (!attendeeResponse.Attendee?.AttendeeId || !attendeeResponse.Attendee?.JoinToken) {
+                throw new Error('Invalid attendee data returned from Chime');
+            }
+            customerAttendee = attendeeResponse.Attendee;
+            console.log(`[call-accepted] Created customer attendee: ${customerAttendee.AttendeeId}`);
+        } catch (attendeeErr) {
+            console.error('[call-accepted] Failed to create customer attendee:', attendeeErr);
+            // ROLLBACK: Release the call reservation
+            await ddb.send(new UpdateCommand({
+                TableName: CALL_QUEUE_TABLE_NAME,
+                Key: { clinicId, queuePosition },
+                UpdateExpression: 'SET #status = :ringing REMOVE assignedAgentId, acceptedAt',
+                ConditionExpression: '#status = :accepting AND assignedAgentId = :agentId',
+                ExpressionAttributeNames: { '#status': 'status' },
+                ExpressionAttributeValues: {
+                    ':ringing': 'ringing',
+                    ':accepting': 'accepting',
+                    ':agentId': agentId
+                }
+            })).catch(rollbackErr => console.error('[call-accepted] Rollback failed:', rollbackErr));
+            
+            // Also reset agent status
+            await ddb.send(new UpdateCommand({
+                TableName: AGENT_PRESENCE_TABLE_NAME,
+                Key: { agentId },
+                UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
+                ExpressionAttributeNames: { '#status': 'status' },
+                ExpressionAttributeValues: { ':online': 'Online' }
+            })).catch(rollbackErr => console.error('[call-accepted] Agent rollback failed:', rollbackErr));
+            
+            return {
+                statusCode: 500,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Failed to create meeting credentials for customer' })
+            };
+        }
+
         // 6. Notify the SMA to bridge the customer PSTN leg into the agent's meeting
+        // CRITICAL FIX #2: Implement rollback if SMA fails
         if (smaId) {
             try {
                 console.log('[call-accepted] Notifying SMA to bridge customer', { callId, agentId, meetingId: agentMeeting.MeetingId });
@@ -269,14 +284,110 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     }
                 }));
                 console.log('[call-accepted] SMA notified successfully');
+                
+                // 7. Update call to 'connected' status now that SMA bridge is complete
+                await ddb.send(new UpdateCommand({
+                    TableName: CALL_QUEUE_TABLE_NAME,
+                    Key: { clinicId, queuePosition },
+                    UpdateExpression: 'SET #status = :connected, customerAttendeeInfo = :customerAttendee, connectedAt = :timestamp REMOVE agentIds',
+                    ConditionExpression: '#status = :accepting AND assignedAgentId = :agentId',
+                    ExpressionAttributeNames: { '#status': 'status' },
+                    ExpressionAttributeValues: {
+                        ':connected': 'connected',
+                        ':accepting': 'accepting',
+                        ':agentId': agentId,
+                        ':customerAttendee': customerAttendee,
+                        ':timestamp': new Date().toISOString()
+                    }
+                }));
+                
+                // CRITICAL FIX #7: Async cleanup of other ringing agents (fire and forget)
+                const otherAgentIds = (callRecord.agentIds || []).filter((id: string) => id !== agentId);
+                if (otherAgentIds.length > 0) {
+                    console.log('[call-accepted] Cleaning up other ringing agents (async)', { count: otherAgentIds.length });
+                    Promise.all(otherAgentIds.map((otherId: string) =>
+                        ddb.send(new UpdateCommand({
+                            TableName: AGENT_PRESENCE_TABLE_NAME,
+                            Key: { agentId: otherId },
+                            UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
+                            ConditionExpression: 'ringingCallId = :callId',
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: { ':online': 'Online', ':callId': callId }
+                        })).catch(err => {
+                            console.warn('[call-accepted] Failed to cleanup agent', { otherId, error: err.message });
+                            // Don't throw - this is best-effort
+                        })
+                    )).catch(() => {}); // Fire and forget
+                }
+                
             } catch (smaErr) {
-                console.error('[call-accepted] Failed to notify SMA of agent acceptance:', smaErr);
-                // NOTE: This is a critical failure. The DB is updated but the call isn't bridged.
-                // The cleanup-monitor will eventually catch this, but it's a bad state.
-                // For now, we'll return success to the agent, as the DB state is "correct".
+                console.error('[call-accepted] CRITICAL: Failed to notify SMA of agent acceptance:', smaErr);
+                // CRITICAL FIX #2: Rollback the acceptance since we can't bridge the call
+                
+                // Delete the orphaned attendee
+                try {
+                    await chime.send(new DeleteAttendeeCommand({
+                        MeetingId: agentMeeting.MeetingId,
+                        AttendeeId: customerAttendee.AttendeeId!
+                    }));
+                } catch (deleteErr) {
+                    console.error('[call-accepted] Failed to delete orphaned attendee:', deleteErr);
+                }
+                
+                // Rollback database state
+                await ddb.send(new TransactWriteCommand({
+                    TransactItems: [
+                        {
+                            Update: {
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                Key: { clinicId, queuePosition },
+                                UpdateExpression: 'SET #status = :ringing REMOVE assignedAgentId, acceptedAt, customerAttendeeInfo, agentIds',
+                                ConditionExpression: '#status = :accepting AND assignedAgentId = :agentId',
+                                ExpressionAttributeNames: { '#status': 'status' },
+                                ExpressionAttributeValues: {
+                                    ':ringing': 'ringing',
+                                    ':accepting': 'accepting',
+                                    ':agentId': agentId
+                                }
+                            }
+                        },
+                        {
+                            Update: {
+                                TableName: AGENT_PRESENCE_TABLE_NAME,
+                                Key: { agentId },
+                                UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
+                                ExpressionAttributeNames: { '#status': 'status' },
+                                ExpressionAttributeValues: { ':online': 'Online' }
+                            }
+                        }
+                    ]
+                })).catch(rollbackErr => {
+                    console.error('[call-accepted] CRITICAL: Rollback failed after SMA failure:', rollbackErr);
+                    // Log for manual intervention
+                });
+                
+                return {
+                    statusCode: 500,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ 
+                        message: 'Failed to bridge call. Please try again.',
+                        error: 'SMA_BRIDGE_FAILED'
+                    })
+                };
             }
         } else {
             console.error('[call-accepted] SMA mapping not configured for clinic. Cannot bridge call.', { clinicId });
+            // Rollback if no SMA configured
+            await chime.send(new DeleteAttendeeCommand({
+                MeetingId: agentMeeting.MeetingId,
+                AttendeeId: customerAttendee.AttendeeId!
+            })).catch(() => {});
+            
+            return {
+                statusCode: 500,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Call bridging not configured for this clinic' })
+            };
         }
 
         // 7. Return success to the agent's frontend.

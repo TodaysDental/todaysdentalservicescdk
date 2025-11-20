@@ -168,6 +168,23 @@ async function getClinicAnalytics(
     ? parseInt(queryParams.endTime, 10)
     : Math.floor(Date.now() / 1000);
   
+  // **FLAW #10 FIX: Add pagination support with lastEvaluatedKey**
+  // Parse optional pagination token from query string
+  let exclusiveStartKey: any = undefined;
+  if (queryParams.lastEvaluatedKey) {
+    try {
+      // Base64 decode the token
+      exclusiveStartKey = JSON.parse(
+        Buffer.from(queryParams.lastEvaluatedKey, 'base64').toString('utf-8')
+      );
+    } catch (parseErr) {
+      console.warn('[get-analytics] Invalid pagination token, starting from beginning');
+      exclusiveStartKey = undefined;
+    }
+  }
+
+  const limit = Math.min(parseInt(queryParams.limit || '100', 10), 100); // Max 100 per request
+  
   // Query analytics for clinic
   const queryResult = await ddb.send(new QueryCommand({
     TableName: ANALYTICS_TABLE_NAME,
@@ -179,7 +196,8 @@ async function getClinicAnalytics(
       ':start': startTime,
       ':end': endTime
     },
-    Limit: parseInt(queryParams.limit || '100', 10)
+    Limit: limit,
+    ExclusiveStartKey: exclusiveStartKey
   }));
 
   let analytics = queryResult.Items || [];
@@ -212,7 +230,12 @@ async function getClinicAnalytics(
       startTime,
       endTime,
       totalCalls: analytics.length,
-      calls: analytics
+      calls: analytics,
+      // **FLAW #10 FIX: Include pagination tokens**
+      hasMore: !!queryResult.LastEvaluatedKey,
+      lastEvaluatedKey: queryResult.LastEvaluatedKey
+        ? Buffer.from(JSON.stringify(queryResult.LastEvaluatedKey)).toString('base64')
+        : null
     })
   };
 }
@@ -255,6 +278,21 @@ async function getAgentAnalytics(
     ? parseInt(queryParams.endTime, 10)
     : Math.floor(Date.now() / 1000);
   
+  // **FLAW #10 FIX: Add pagination support**
+  let exclusiveStartKey: any = undefined;
+  if (queryParams.lastEvaluatedKey) {
+    try {
+      exclusiveStartKey = JSON.parse(
+        Buffer.from(queryParams.lastEvaluatedKey, 'base64').toString('utf-8')
+      );
+    } catch (parseErr) {
+      console.warn('[get-analytics] Invalid pagination token in agent analytics');
+      exclusiveStartKey = undefined;
+    }
+  }
+
+  const limit = Math.min(parseInt(queryParams.limit || '100', 10), 100);
+  
   // Query analytics for agent
   const queryResult = await ddb.send(new QueryCommand({
     TableName: ANALYTICS_TABLE_NAME,
@@ -265,7 +303,9 @@ async function getAgentAnalytics(
       ':agentId': agentId,
       ':start': startTime,
       ':end': endTime
-    }
+    },
+    Limit: limit,
+    ExclusiveStartKey: exclusiveStartKey
   }));
 
   const analytics = queryResult.Items || [];
@@ -278,7 +318,9 @@ async function getAgentAnalytics(
         agentId,
         totalCalls: 0,
         metrics: {},
-        calls: []
+        calls: [],
+        hasMore: false,
+        lastEvaluatedKey: null
       })
     };
   }
@@ -295,7 +337,12 @@ async function getAgentAnalytics(
       endTime,
       totalCalls: analytics.length,
       metrics,
-      calls: analytics
+      calls: analytics,
+      // **FLAW #10 FIX: Include pagination info**
+      hasMore: !!queryResult.LastEvaluatedKey,
+      lastEvaluatedKey: queryResult.LastEvaluatedKey
+        ? Buffer.from(JSON.stringify(queryResult.LastEvaluatedKey)).toString('base64')
+        : null
     })
   };
 }

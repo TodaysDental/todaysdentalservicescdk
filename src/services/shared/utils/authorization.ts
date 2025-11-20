@@ -18,7 +18,12 @@ export function getClinicsFromClaims(payload: JWTPayload): string[] {
     if (groups.length > 0) {
         const clinicIds = groups
             .map((name) => {
-                const match = /^clinic_([^_][^\s]*)__[A-Z_]+$/.exec(String(name));
+                // CRITICAL FIX #15: Prevent ReDoS with length check and simpler regex
+                const nameStr = String(name);
+                if (nameStr.length > 200) return ''; // Reject obviously malicious input
+                
+                // Simpler regex without nested quantifiers
+                const match = /^clinic_([a-zA-Z0-9_-]+)__[A-Z_]+$/.exec(nameStr);
                 return match ? match[1] : '';
             })
             .filter(Boolean);

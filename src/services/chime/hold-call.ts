@@ -1,14 +1,18 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
+import { ChimeSDKMeetingsClient, DeleteAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getSmaIdForClinic } from './utils/sma-map';
 import { verifyIdTokenCached } from '../shared/utils/jwt-verification';
 import { checkClinicAuthorization } from '../shared/utils/authorization';
+import { randomUUID } from 'crypto';
 
 const ddb = getDynamoDBClient();
 const chimeVoice = new ChimeSDKVoiceClient({});
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || process.env.AWS_REGION || 'us-east-1';
+const chimeClient = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
@@ -165,8 +169,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             console.log(`[hold-call] No active meeting found for call ${callId}`);
         }
         
+        // CRITICAL FIX #5: Make hold operation as atomic as possible
+        // CRITICAL FIX #4: Comprehensive error handling for each step
+        // Log operation ID for debugging and potential retry
+        const holdOperationId = randomUUID();
+        console.log('[hold-call] Starting hold operation', { holdOperationId, callId, agentId });
+        
+        // Step 1: Send the hold command to the SMA
         try {
-            // Send the hold command to the SMA with enhanced hold information
             await chimeVoice.send(new UpdateSipMediaApplicationCallCommand({
                 SipMediaApplicationId: smaId,
                 TransactionId: callId,
@@ -175,43 +185,83 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     agentId,
                     meetingId,
                     agentAttendeeId: agentAttendeeId || '',
-                    removeAgent: 'true'  // Indicate that agent should be removed from meeting (as string)
+                    removeAgent: 'true',
+                    holdOperationId // Include for idempotency
                 }
+            }));
+            console.log(`[hold-call] SMA hold command successful (${holdOperationId})`);
+        } catch (smaErr: any) {
+            console.error(`[hold-call] STEP 1 FAILED - SMA hold command failed (${holdOperationId}):`, smaErr);
+            return {
+                statusCode: 503,
+                headers: corsHeaders,
+                body: JSON.stringify({ 
+                    message: 'SMA service unavailable. Please try again.',
+                    error: 'SMA_COMMAND_FAILED',
+                    holdOperationId
+                })
+            };
+        }
+        
+        // Step 2: Verify attendee removal (if applicable)
+        if (agentAttendeeId && meetingId) {
+            try {
+                await chimeClient.send(new DeleteAttendeeCommand({
+                    MeetingId: meetingId,
+                    AttendeeId: agentAttendeeId
+                }));
+                console.log(`[hold-call] Agent attendee removed from meeting (${holdOperationId})`);
+            } catch (deleteErr: any) {
+                if (deleteErr.name === 'NotFoundException') {
+                    console.log(`[hold-call] Agent attendee already removed (${holdOperationId})`);
+                } else {
+                    console.warn(`[hold-call] STEP 2 WARNING - Could not verify attendee removal (${holdOperationId}):`, deleteErr);
+                    // Non-fatal - continue with hold operation (SMA already on hold)
+                }
+            }
+        }
+        
+        // Step 3: Update both records atomically in a transaction
+        const timestamp = new Date().toISOString();
+        try {
+            await ddb.send(new TransactWriteCommand({
+                TransactItems: [
+                    {
+                        Update: {
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            Key: { clinicId, queuePosition },
+                            UpdateExpression: 'SET #status = :status, callStatus = :status, holdStartTime = :time, heldByAgentId = :agentId, holdOperationId = :operationId',
+                            ConditionExpression: '#status = :connectedStatus AND assignedAgentId = :agentId',
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: {
+                                ':status': 'on_hold',
+                                ':time': timestamp,
+                                ':connectedStatus': 'connected',
+                                ':agentId': agentId,
+                                ':operationId': holdOperationId
+                            }
+                        }
+                    },
+                    {
+                        Update: {
+                            TableName: AGENT_PRESENCE_TABLE_NAME,
+                            Key: { agentId },
+                            // CRITICAL FIX #9: Don't store heldCallAttendeeId - always create new attendee on resume
+                            UpdateExpression: 'SET callStatus = :status, lastActivityAt = :timestamp, ' +
+                                             'heldCallMeetingId = :meetingId, heldCallId = :callId',
+                            ConditionExpression: 'currentCallId = :callId',
+                            ExpressionAttributeValues: {
+                                ':status': 'on_hold',
+                                ':timestamp': timestamp,
+                                ':meetingId': meetingId || null,
+                                ':callId': callId
+                            }
+                        }
+                    }
+                ]
             }));
             
-            console.log(`[hold-call] SMA hold command successful for call ${callId}`);
-            
-            // First update the call record
-            await ddb.send(new UpdateCommand({
-                TableName: CALL_QUEUE_TABLE_NAME,
-                Key: { clinicId, queuePosition },
-                UpdateExpression: 'SET #status = :status, callStatus = :status, holdStartTime = :time, heldByAgentId = :agentId',
-                ConditionExpression: '#status = :connectedStatus AND assignedAgentId = :agentId',
-                ExpressionAttributeNames: { '#status': 'status' },
-                ExpressionAttributeValues: {
-                    ':status': 'on_hold',
-                    ':time': new Date().toISOString(),
-                    ':connectedStatus': 'connected',
-                    ':agentId': agentId
-                }
-            }));
-
-            // CRITICAL FIX: Store the agent's attendee ID, meeting ID, and other info for reconnection later
-            await ddb.send(new UpdateCommand({
-                TableName: AGENT_PRESENCE_TABLE_NAME,
-                Key: { agentId },
-                UpdateExpression: 'SET callStatus = :status, lastActivityAt = :timestamp, ' +
-                                 'heldCallMeetingId = :meetingId, heldCallId = :callId, ' +
-                                 'heldCallAttendeeId = :attendeeId',
-                ConditionExpression: 'currentCallId = :callId',
-                ExpressionAttributeValues: {
-                    ':status': 'on_hold',
-                    ':timestamp': new Date().toISOString(),
-                    ':meetingId': meetingId || null,
-                    ':callId': callId,
-                    ':attendeeId': agentAttendeeId || null // Store attendee ID for potential reuse
-                }
-            }));
+            console.log(`[hold-call] Database updated successfully (${holdOperationId})`);
 
             return {
                 statusCode: 200,
@@ -219,27 +269,37 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 body: JSON.stringify({ 
                     message: 'Call placed on hold',
                     callId,
-                    status: 'on_hold'
+                    status: 'on_hold',
+                    holdOperationId
                 })
             };
-        } catch (smaError: any) {
-            console.error('[hold-call] Error placing call on hold:', smaError);
+        } catch (dbErr: any) {
+            console.error(`[hold-call] STEP 3 FAILED - Database transaction failed (${holdOperationId}):`, dbErr);
             
-            // Provide more specific error message
-            if (smaError.name === 'ConditionalCheckFailedException') {
+            // CRITICAL: SMA is on hold but DB not updated - state inconsistent
+            // Cleanup monitor should reconcile this
+            
+            if (dbErr.name === 'TransactionCanceledException') {
+                console.error(`[hold-call] INCONSISTENT STATE - SMA on hold but DB update failed due to condition check (${holdOperationId})`);
                 return {
                     statusCode: 409,
                     headers: corsHeaders,
-                    body: JSON.stringify({ message: 'Call is not in a valid state to be placed on hold' })
+                    body: JSON.stringify({ 
+                        message: 'Call state changed during hold operation. Call may be on hold - please check status.',
+                        error: 'STATE_CHANGED',
+                        holdOperationId
+                    })
                 };
             }
             
+            console.error(`[hold-call] INCONSISTENT STATE - SMA on hold but DB update failed (${holdOperationId})`);
             return {
                 statusCode: 500,
                 headers: corsHeaders,
                 body: JSON.stringify({ 
-                    message: 'Failed to place call on hold', 
-                    error: smaError.message 
+                    message: 'Database update failed. Call may be on hold - please check status.',
+                    error: 'DB_UPDATE_FAILED',
+                    holdOperationId
                 })
             };
         }

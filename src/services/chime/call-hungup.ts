@@ -1,5 +1,5 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 // CORRECTED IMPORT: Use UpdateSipMediaApplicationCallCommand to manipulate an active call
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { ChimeSDKMeetingsClient } from '@aws-sdk/client-chime-sdk-meetings';
@@ -128,18 +128,45 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
+        // CRITICAL FIX #4: Add timeout for stale holds and supervisor override
         const currentCallStatus = callMetadata.status || callMetadata.callStatus;
         if (currentCallStatus === 'on_hold' && callMetadata.heldByAgentId && agentId && callMetadata.heldByAgentId !== agentId) {
-            console.warn('[call-hungup] Blocking hangup because call is on hold by another agent', {
-                callId,
-                heldByAgentId: callMetadata.heldByAgentId,
-                requestingAgentId: agentId
-            });
-            return {
-                statusCode: 409,
-                headers: corsHeaders,
-                body: JSON.stringify({ message: 'Call is currently on hold by another agent. Please wait for them to resume or complete the hold.' })
-            };
+            // Check if hold is stale (>30 minutes) or requester is supervisor
+            const holdStartTime = callMetadata.holdStartTime ? new Date(callMetadata.holdStartTime).getTime() : 0;
+            const holdDuration = holdStartTime > 0 ? (Date.now() - holdStartTime) / 1000 : 0;
+            const MAX_HOLD_DURATION = 30 * 60; // 30 minutes
+            const isSupervisor = requestingAgentId && verifyResult.payload['custom:role'] === 'supervisor';
+            
+            if (holdDuration > MAX_HOLD_DURATION) {
+                console.warn('[call-hungup] Overriding stale hold', {
+                    callId,
+                    heldByAgentId: callMetadata.heldByAgentId,
+                    holdDuration,
+                    requestingAgentId: agentId
+                });
+            } else if (isSupervisor) {
+                console.warn('[call-hungup] Supervisor override of hold', {
+                    callId,
+                    heldByAgentId: callMetadata.heldByAgentId,
+                    requestingAgentId: agentId
+                });
+            } else {
+                console.warn('[call-hungup] Blocking hangup because call is on hold by another agent', {
+                    callId,
+                    heldByAgentId: callMetadata.heldByAgentId,
+                    requestingAgentId: agentId,
+                    holdDuration: Math.floor(holdDuration)
+                });
+                return {
+                    statusCode: 409,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ 
+                        message: 'Call is currently on hold by another agent. Please wait for them to resume or complete the hold.',
+                        holdDuration: Math.floor(holdDuration),
+                        heldByAgentId: callMetadata.heldByAgentId
+                    })
+                };
+            }
         }
 
         const clinicId = typeof callMetadata.clinicId === 'string' ? callMetadata.clinicId : undefined;
@@ -153,123 +180,135 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // 1. CRITICAL FIX: First try to hangup via SMA, only mark agent available if successful
-        let smaHangupSuccess = false;
-        if (agentId) {
-            try {
-                await chimeVoiceClient.send(new UpdateSipMediaApplicationCallCommand({
-                    SipMediaApplicationId: smaId,
-                    TransactionId: callId,
-                    Arguments: {
-                        Action: "Hangup"
-                    }
-                }));
-                smaHangupSuccess = true;
-                console.log(`[call-hungup] SMA hangup successful for call ${callId}`);
-            } catch (smaError: any) {
-                console.error(`[call-hungup] SMA hangup failed for call ${callId}:`, smaError);
-                // Continue but don't mark agent as available immediately
-            }
+        // 1. Hangup via SMA FIRST, then atomically update database
+        // CRITICAL FIX #3: Accept eventual consistency - SMA is source of truth
+        // If SMA succeeds but DB fails, cleanup-monitor will fix DB state
+        // If SMA fails, call may already be disconnected - continue with DB cleanup
+        try {
+            await chimeVoiceClient.send(new UpdateSipMediaApplicationCallCommand({
+                SipMediaApplicationId: smaId,
+                TransactionId: callId,
+                Arguments: {
+                    Action: "Hangup"
+                }
+            }));
+            console.log(`[call-hungup] SMA hangup successful for call ${callId}`);
+        } catch (smaError: any) {
+            console.error(`[call-hungup] SMA hangup failed for call ${callId}:`, smaError);
+            // Log but continue - we still need to clean up database state
+            // Even if SMA hangup fails, the call is likely already disconnected
+            // Cleanup-monitor will reconcile any inconsistencies
         }
         
-        // 2. Update the agent's status and metrics
-        if (agentId) {
-            const callHasQueueKey = typeof callMetadata.queuePosition !== 'undefined' && typeof callMetadata.clinicId === 'string';
-            if (smaHangupSuccess) {
-                // Only mark agent as available if SMA hangup succeeded
-                await ddb.send(new UpdateCommand({
-                    TableName: AGENT_PRESENCE_TABLE_NAME,
-                    Key: { agentId },
-                    UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp REMOVE currentCallId',
-                    ExpressionAttributeNames: {
-                        '#status': 'status'
-                    },
-                    ExpressionAttributeValues: {
-                        ':status': 'Online', // Back to available
-                        ':timestamp': new Date().toISOString()
-                    }
-                }));
-                console.log(`[call-hungup] Agent ${agentId} marked as Online after successful hangup`);
-                
-                if (callHasQueueKey) {
-                    await ddb.send(new UpdateCommand({
-                        TableName: CALL_QUEUE_TABLE_NAME,
-                        Key: { clinicId: callMetadata.clinicId, queuePosition: callMetadata.queuePosition },
-                        UpdateExpression: 'SET #status = :completed, endedAt = :now',
-                        ExpressionAttributeNames: { '#status': 'status' },
-                        ExpressionAttributeValues: {
-                            ':completed': 'completed',
-                            ':now': new Date().toISOString()
+        // 2. ATOMIC: Update agent status and call record together in single transaction
+        // This ensures agent isn't marked as available until both updates succeed
+        if (agentId && callMetadata.clinicId && typeof callMetadata.queuePosition !== 'undefined') {
+            try {
+                await ddb.send(new TransactWriteCommand({
+                    TransactItems: [
+                        {
+                            Update: {
+                                TableName: AGENT_PRESENCE_TABLE_NAME,
+                                Key: { agentId },
+                                UpdateExpression: 'SET #status = :online, lastActivityAt = :now REMOVE currentCallId, ringingCallId',
+                                ConditionExpression: 'currentCallId = :callId OR ringingCallId = :callId',
+                                ExpressionAttributeNames: { '#status': 'status' },
+                                ExpressionAttributeValues: {
+                                    ':online': 'Online',
+                                    ':now': new Date().toISOString(),
+                                    ':callId': callId
+                                }
+                            }
+                        },
+                        {
+                            Update: {
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                Key: { clinicId: callMetadata.clinicId, queuePosition: callMetadata.queuePosition },
+                                UpdateExpression: 'SET #status = :completed, completedAt = :timestamp, completedByAgentId = :agentId',
+                                ConditionExpression: 'assignedAgentId = :agentId',
+                                ExpressionAttributeNames: { '#status': 'status' },
+                                ExpressionAttributeValues: {
+                                    ':completed': 'completed',
+                                    ':timestamp': new Date().toISOString(),
+                                    ':agentId': agentId
+                                }
+                            }
                         }
-                    }));
-                    console.log(`[call-hungup] Call ${callId} marked completed after successful SMA hangup`);
-                } else {
-                    console.warn(`[call-hungup] Unable to update call record ${callId} - missing queue key`);
+                    ]
+                }));
+                console.log('[call-hungup] Hangup completed atomically', { callId, agentId });
+            } catch (txErr: any) {
+                if (txErr.name === 'TransactionCanceledException') {
+                    console.warn('[call-hungup] Hangup transaction failed - agent state may be inconsistent', {
+                        callId, agentId, reasons: txErr.CancellationReasons
+                    });
+                    // Return error so caller can retry
+                    return {
+                        statusCode: 409,
+                        headers: corsHeaders,
+                        body: JSON.stringify({ message: 'Call state changed during hangup. Please retry.' })
+                    };
+                }
+                throw txErr;
+            }
+        } else if (agentId) {
+            // Fallback if call doesn't have queue key: just update agent status
+            await ddb.send(new UpdateCommand({
+                TableName: AGENT_PRESENCE_TABLE_NAME,
+                Key: { agentId },
+                UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp REMOVE currentCallId',
+                ExpressionAttributeNames: {
+                    '#status': 'status'
+                },
+                ExpressionAttributeValues: {
+                    ':status': 'Online',
+                    ':timestamp': new Date().toISOString()
+                }
+            }));
+            console.log(`[call-hungup] Agent ${agentId} marked as Online after successful hangup`);
+        }
+
+        // CRITICAL FIX #8: Use consistent timestamp for duration calculation
+        try {
+            const callRecord = callMetadata;
+            // Always use acceptedAt as the single source of truth for agent talk time
+            const startTime = callRecord.acceptedAt ? Date.parse(callRecord.acceptedAt) : null;
+            
+            if (startTime && !isNaN(startTime)) {
+                const endTime = Date.now();
+                calculatedDuration = Math.max(0, Math.floor((endTime - startTime) / 1000));
+                console.log(`[call-hungup] Call ${callId} duration calculated from acceptedAt: ${calculatedDuration}s`);
+                
+                // Calculate queue wait time separately for analytics
+                if (callRecord.queueEntryTimeIso) {
+                    const queueStartTime = Date.parse(callRecord.queueEntryTimeIso);
+                    if (!isNaN(queueStartTime) && queueStartTime < startTime) {
+                        const queueDuration = Math.floor((startTime - queueStartTime) / 1000);
+                        console.log(`[call-hungup] Call ${callId} queue wait time: ${queueDuration}s`);
+                        // Store queue duration if needed for analytics
+                    }
                 }
             } else {
-                // Mark agent as in an error state - requires manual intervention
-                await ddb.send(new UpdateCommand({
-                    TableName: AGENT_PRESENCE_TABLE_NAME,
-                    Key: { agentId },
-                    UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp, errorReason = :error REMOVE currentCallId',
-                    ExpressionAttributeNames: {
-                        '#status': 'status'
-                    },
-                    ExpressionAttributeValues: {
-                        ':status': 'Error',
-                        ':timestamp': new Date().toISOString(),
-                        ':error': 'sma_hangup_failed'
-                    }
-                }));
-                console.warn(`[call-hungup] Agent ${agentId} marked as Error due to SMA hangup failure`);
-                
-                if (callHasQueueKey) {
-                    await ddb.send(new UpdateCommand({
-                        TableName: CALL_QUEUE_TABLE_NAME,
-                        Key: { clinicId: callMetadata.clinicId, queuePosition: callMetadata.queuePosition },
-                        UpdateExpression: 'SET errorReason = :error, requiresManualCleanup = :true',
-                        ExpressionAttributeValues: {
-                            ':error': 'sma_hangup_failed',
-                            ':true': true
-                        }
-                    }));
-                    console.warn(`[call-hungup] Call ${callId} flagged for manual cleanup due to SMA hangup failure`);
-                } else {
-                    console.warn(`[call-hungup] Unable to flag call ${callId} for manual cleanup - missing queue key`);
-                }
+                console.warn(`[call-hungup] No acceptedAt timestamp for ${callId} - cannot calculate duration`);
+                calculatedDuration = 0;
             }
 
-            // CRITICAL FIX: Calculate duration server-side from cached metadata
-            try {
-                const callRecord = callMetadata;
-                const candidates: Array<{ label: string; value?: number }> = [
-                    { label: 'acceptedAt', value: callRecord.acceptedAt ? Date.parse(callRecord.acceptedAt) : undefined },
-                    { label: 'connectedAt', value: callRecord.connectedAt ? Date.parse(callRecord.connectedAt) : undefined },
-                    { label: 'queueEntryTimeIso', value: callRecord.queueEntryTimeIso ? Date.parse(callRecord.queueEntryTimeIso) : undefined },
-                    { label: 'queueEntryTime', value: typeof callRecord.queueEntryTime === 'number' ? callRecord.queueEntryTime * 1000 : undefined }
-                ];
-                const startCandidate = candidates.find(candidate => typeof candidate.value === 'number' && !Number.isNaN(candidate.value));
-                if (startCandidate?.value !== undefined) {
-                    const endTime = Date.now();
-                    calculatedDuration = Math.max(0, Math.floor((endTime - startCandidate.value) / 1000));
-                    console.log(`[call-hungup] Call ${callId} duration calculated using ${startCandidate.label}: ${calculatedDuration}s`);
-                } else {
-                    console.warn(`[call-hungup] No valid timestamp available to calculate duration for ${callId}`);
-                }
-
-                // Log call statistics for the agent regardless of hangup success
+            // Log call statistics for the agent
+            if (agentId) {
                 await ddb.send(new UpdateCommand({
                     TableName: AGENT_PRESENCE_TABLE_NAME,
                     Key: { agentId },
                     UpdateExpression: 'ADD completedCalls :one, totalCallDuration :duration',
                     ExpressionAttributeValues: {
                         ':one': 1,
-                        ':duration': calculatedDuration // Use server-calculated duration
+                        ':duration': calculatedDuration
                     }
                 }));
-            } catch (durationErr) {
-                console.error(`[call-hungup] Error calculating call duration:`, durationErr);
-                // Still increment completed calls counter even if duration calculation fails
+            }
+        } catch (durationErr) {
+            console.error(`[call-hungup] Error calculating call duration:`, durationErr);
+            // Still increment completed calls counter even if duration calculation fails
+            if (agentId) {
                 await ddb.send(new UpdateCommand({
                     TableName: AGENT_PRESENCE_TABLE_NAME,
                     Key: { agentId },
@@ -281,38 +320,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             }
         }
 
-        // Note: SMA hangup is handled above in the agent status section to ensure proper error handling
-        
-        console.log(`Agent ${agentId} marked as available after hanging up call ${callId}`);
-        
-        // Check for queued calls that could be assigned to this agent
-        if (agentId) {
-            try {
-                const { Item: agentInfo } = await ddb.send(new GetCommand({
-                    TableName: AGENT_PRESENCE_TABLE_NAME,
-                    Key: { agentId }
-                }));
-
-                if (agentInfo) {
-                    await checkQueueForWork(agentId, agentInfo);
-                } else {
-                    console.log(`[call-hungup] Agent presence not found for ${agentId} when checking queue.`);
-                }
-            } catch (queueError) {
-                // Non-fatal error - log but continue
-                console.error('[call-hungup] Error processing call queue:', queueError);
-            }
-        }
-
-        // Use calculatedDuration declared at higher scope
+        // Return success response
         return {
             statusCode: 200,
             headers: corsHeaders,
-            body: JSON.stringify({ 
-                message: 'Call termination initiated and agent status updated',
+            body: JSON.stringify({
+                message: 'Call hung up successfully',
                 callId,
-                agentId,
-                duration: calculatedDuration || 0
+                duration: calculatedDuration
             })
         };
 

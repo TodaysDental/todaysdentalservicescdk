@@ -1,4 +1,4 @@
-import { DynamoDBDocumentClient, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand, TransactWriteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKMeetingsClient, CreateAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { getSmaIdForClinic } from './sma-map';
@@ -63,9 +63,11 @@ function calculatePriorityScore(entry: QueuedCall, nowSeconds: number): number {
         score += 50;
     }
 
+    // CRITICAL FIX #7: Cap wait time bonus to prevent integer overflow with long wait times
     const queueEntryTime = entry.queueEntryTime ?? nowSeconds;
     const waitMinutes = Math.max(0, (nowSeconds - queueEntryTime) / 60);
-    score += waitMinutes;
+    const cappedWaitMinutes = Math.min(waitMinutes, 120); // Max 2 hours bonus (120 points)
+    score += cappedWaitMinutes;
 
     if (entry.isCallback) {
         score += 30;
@@ -111,7 +113,11 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
         const nowSeconds = Math.floor(Date.now() / 1000);
 
         const matchingCalls = queuedCalls.filter((call: any) => {
-            const requiredSkills = Array.isArray(call.requiredSkills) ? call.requiredSkills as string[] : undefined;
+            // CRITICAL FIX #7: Validate skills array contents before type cast
+            const requiredSkills = Array.isArray(call.requiredSkills) && 
+                                  call.requiredSkills.every((s: any) => typeof s === 'string')
+                ? call.requiredSkills as string[] 
+                : undefined;
             if (requiredSkills && requiredSkills.length > 0) {
                 const agentSkills = agentCapabilities.skills || [];
                 const hasAllSkills = requiredSkills.every((skill) => agentSkills.includes(skill));
@@ -210,25 +216,16 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
                     continue;
                 }
 
-                const customerAttendeeResponse = await chime.send(new CreateAttendeeCommand({
-                    MeetingId: agentMeeting.MeetingId,
-                    ExternalUserId: `customer-${callToAssign.callId}`
-                }));
-
-                const customerAttendee = customerAttendeeResponse.Attendee;
-                if (!customerAttendee?.AttendeeId || !customerAttendee.JoinToken) {
-                    throw new Error('Failed to create customer attendee');
-                }
-
                 const assignmentTimestamp = new Date().toISOString();
 
+                // CRITICAL FIX #1: Win transaction FIRST, THEN create attendee to prevent resource leak
                 await ddb.send(new TransactWriteCommand({
                     TransactItems: [
                         {
                             Update: {
                                 TableName: callQueueTableName,
                                 Key: { clinicId: callToAssign.clinicId, queuePosition: callToAssign.queuePosition },
-                                UpdateExpression: 'SET #status = :ringing, agentIds = :agentIds, assignedAgentId = :agentId, meetingInfo = :meeting, customerAttendeeInfo = :attendee, assignedAt = :timestamp',
+                                UpdateExpression: 'SET #status = :ringing, agentIds = :agentIds, assignedAgentId = :agentId, meetingInfo = :meeting, assignedAt = :timestamp',
                                 ConditionExpression: '#status = :queued AND (attribute_not_exists(rejectedAgentIds) OR NOT contains(rejectedAgentIds, :agentId))',
                                 ExpressionAttributeNames: { '#status': 'status' },
                                 ExpressionAttributeValues: {
@@ -236,7 +233,6 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
                                     ':agentIds': [agentId],
                                     ':agentId': agentId,
                                     ':meeting': agentMeeting,
-                                    ':attendee': customerAttendee,
                                     ':queued': 'queued',
                                     ':timestamp': assignmentTimestamp
                                 }
@@ -262,6 +258,72 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
                     ]
                 }));
 
+                console.log(`[checkQueueForWork] Transaction succeeded - call ${callToAssign.callId} reserved`);
+
+                // CRITICAL FIX #1: Create attendee AFTER winning the transaction
+                let customerAttendee;
+                try {
+                    const customerAttendeeResponse = await chime.send(new CreateAttendeeCommand({
+                        MeetingId: agentMeeting.MeetingId,
+                        ExternalUserId: `customer-${callToAssign.callId}`
+                    }));
+
+                    customerAttendee = customerAttendeeResponse.Attendee;
+                    if (!customerAttendee?.AttendeeId || !customerAttendee.JoinToken) {
+                        throw new Error('Failed to create customer attendee');
+                    }
+
+                    // Update call record with attendee info
+                    await ddb.send(new UpdateCommand({
+                        TableName: callQueueTableName,
+                        Key: { clinicId: callToAssign.clinicId, queuePosition: callToAssign.queuePosition },
+                        UpdateExpression: 'SET customerAttendeeInfo = :attendee',
+                        ConditionExpression: '#status = :ringing AND assignedAgentId = :agentId',
+                        ExpressionAttributeNames: { '#status': 'status' },
+                        ExpressionAttributeValues: {
+                            ':attendee': customerAttendee,
+                            ':ringing': 'ringing',
+                            ':agentId': agentId
+                        }
+                    }));
+
+                    console.log(`[checkQueueForWork] Created customer attendee ${customerAttendee.AttendeeId}`);
+                } catch (attendeeErr) {
+                    console.error(`[checkQueueForWork] Failed to create attendee, rolling back:`, attendeeErr);
+                    // Rollback: reset call to queued
+                    await ddb.send(new TransactWriteCommand({
+                        TransactItems: [
+                            {
+                                Update: {
+                                    TableName: callQueueTableName,
+                                    Key: { clinicId: callToAssign.clinicId, queuePosition: callToAssign.queuePosition },
+                                    UpdateExpression: 'SET #status = :queued REMOVE agentIds, assignedAgentId, meetingInfo, assignedAt',
+                                    ConditionExpression: '#status = :ringing AND assignedAgentId = :agentId',
+                                    ExpressionAttributeNames: { '#status': 'status' },
+                                    ExpressionAttributeValues: {
+                                        ':queued': 'queued',
+                                        ':ringing': 'ringing',
+                                        ':agentId': agentId
+                                    }
+                                }
+                            },
+                            {
+                                Update: {
+                                    TableName: agentPresenceTableName,
+                                    Key: { agentId },
+                                    UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallPriority',
+                                    ExpressionAttributeNames: { '#status': 'status' },
+                                    ExpressionAttributeValues: {
+                                        ':online': 'Online'
+                                    }
+                                }
+                            }
+                        ]
+                    })).catch(rollbackErr => console.error('[checkQueueForWork] Rollback failed:', rollbackErr));
+                    
+                    continue; // Skip to next clinic
+                }
+
                 await chimeVoiceClient.send(new UpdateSipMediaApplicationCallCommand({
                     SipMediaApplicationId: smaId,
                     TransactionId: callToAssign.callId,
@@ -278,9 +340,7 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
             } catch (err: any) {
                 if (err?.name === 'TransactionCanceledException') {
                     console.warn(`[checkQueueForWork] Race condition assigning call for clinic ${clinicId}. Agent or call state changed.`);
-                    if (callToAssign?.callId) {
-                        console.warn(`[checkQueueForWork] An attendee may have been orphaned for call ${callToAssign.callId}`);
-                    }
+                    // CRITICAL FIX #1: No orphaned attendees possible - created after transaction
                 } else {
                     console.error(`[checkQueueForWork] Error processing queue for clinic ${clinicId}:`, err);
                 }

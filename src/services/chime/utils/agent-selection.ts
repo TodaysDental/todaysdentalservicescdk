@@ -242,11 +242,12 @@ function scoreAgentForCall(
     }
 
     // 5. IDLE TIME CONSIDERATION (longer idle = higher score)
+    // CRITICAL FIX #6: Cap idle time to prevent overwhelming other factors
     if (config.considerIdleTime && agent.lastActivityAt) {
         const lastActivitySeconds = Math.floor(
             new Date(agent.lastActivityAt).getTime() / 1000
         );
-        const idleMinutes = Math.min(30, (nowSeconds - lastActivitySeconds) / 60);
+        const idleMinutes = Math.min(30, (nowSeconds - lastActivitySeconds) / 60); // Already capped at 30
         const idleBonus = Math.floor(idleMinutes * 2); // Max 60 points for 30+ minutes
 
         breakdown.idleTime += idleBonus;
@@ -361,6 +362,7 @@ export function selectBestAgents(
 
 /**
  * Fetches online agents for a clinic with optimized query
+ * CRITICAL FIX #5: Handle pagination to evaluate all available agents
  */
 export async function fetchOnlineAgents(
     ddb: DynamoDBDocumentClient,
@@ -370,29 +372,48 @@ export async function fetchOnlineAgents(
 ): Promise<AgentInfo[]> {
 
     try {
-        const { Items: agents } = await ddb.send(new QueryCommand({
-            TableName: agentPresenceTableName,
-            IndexName: 'status-index',
-            KeyConditionExpression: '#status = :status',
-            FilterExpression: 'contains(activeClinicIds, :clinicId)',
-            ProjectionExpression: 'agentId, skills, languages, canHandleVip, lastActivityAt, recentCallCount, completedCallsToday, lastCallCustomerPhone',
-            ExpressionAttributeNames: {
-                '#status': 'status'
-            },
-            ExpressionAttributeValues: {
-                ':status': 'Online',
-                ':clinicId': clinicId
-            },
-            Limit: maxAgents * 2 // Fetch more to account for filtering
-        }));
+        const allAgents: AgentInfo[] = [];
+        let lastEvaluatedKey: Record<string, any> | undefined = undefined;
+        const targetCount = maxAgents * 4; // Fetch 4x to ensure good selection after filtering
+        
+        // CRITICAL FIX #5: Implement pagination loop
+        do {
+            const queryResult = await ddb.send(new QueryCommand({
+                TableName: agentPresenceTableName,
+                IndexName: 'status-index',
+                KeyConditionExpression: '#status = :status',
+                FilterExpression: 'contains(activeClinicIds, :clinicId)',
+                ProjectionExpression: 'agentId, skills, languages, canHandleVip, lastActivityAt, recentCallCount, completedCallsToday, lastCallCustomerPhone',
+                ExpressionAttributeNames: {
+                    '#status': 'status'
+                },
+                ExpressionAttributeValues: {
+                    ':status': 'Online',
+                    ':clinicId': clinicId
+                },
+                Limit: 100, // Reasonable batch size
+                ExclusiveStartKey: lastEvaluatedKey
+            }));
 
-        if (!agents || agents.length === 0) {
+            if (queryResult.Items && queryResult.Items.length > 0) {
+                allAgents.push(...(queryResult.Items as AgentInfo[]));
+            }
+
+            lastEvaluatedKey = queryResult.LastEvaluatedKey;
+            
+            // Stop if we have enough agents or no more pages
+            if (allAgents.length >= targetCount || !lastEvaluatedKey) {
+                break;
+            }
+        } while (lastEvaluatedKey);
+
+        if (allAgents.length === 0) {
             console.log(`[fetchOnlineAgents] No online agents found for clinic ${clinicId}`);
             return [];
         }
 
-        console.log(`[fetchOnlineAgents] Found ${agents.length} online agents for clinic ${clinicId}`);
-        return agents as AgentInfo[];
+        console.log(`[fetchOnlineAgents] Found ${allAgents.length} online agents for clinic ${clinicId} (target: ${targetCount})`);
+        return allAgents;
 
     } catch (err) {
         console.error('[fetchOnlineAgents] Error fetching agents:', err);

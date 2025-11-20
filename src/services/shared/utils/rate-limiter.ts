@@ -7,26 +7,29 @@ export interface RateLimiterConfig {
 export class TokenBucketRateLimiter {
   private tokens: number;
   private lastRefillTime: number;
-  private refillTimer: NodeJS.Timeout | null = null;
 
   constructor(private config: RateLimiterConfig) {
     this.tokens = config.maxTokens;
     this.lastRefillTime = Date.now();
-    this.startRefill();
   }
 
-  private startRefill() {
-    this.refillTimer = setInterval(() => {
-      const now = Date.now();
-      const elapsed = now - this.lastRefillTime;
-      const tokensToAdd = (elapsed / 1000) * this.config.refillRate;
-      
+  // CRITICAL FIX: Refill tokens on-demand instead of using timers
+  // This prevents memory leaks in Lambda and works correctly across invocations
+  private refillTokens() {
+    const now = Date.now();
+    const elapsed = now - this.lastRefillTime;
+    const tokensToAdd = (elapsed / 1000) * this.config.refillRate;
+    
+    if (tokensToAdd > 0) {
       this.tokens = Math.min(this.config.maxTokens, this.tokens + tokensToAdd);
       this.lastRefillTime = now;
-    }, this.config.refillInterval);
+    }
   }
 
   public async acquire(tokens: number = 1): Promise<boolean> {
+    // Refill before checking availability
+    this.refillTokens();
+    
     if (this.tokens >= tokens) {
       this.tokens -= tokens;
       return true;
@@ -42,21 +45,27 @@ export class TokenBucketRateLimiter {
         return true;
       }
       
-      // Wait for next refill cycle
-      await new Promise(resolve => setTimeout(resolve, this.config.refillInterval));
+      // Calculate how long until we have enough tokens
+      const tokensNeeded = tokens - this.tokens;
+      const msToWait = Math.min(
+        (tokensNeeded / this.config.refillRate) * 1000,
+        this.config.refillInterval
+      );
+      
+      await new Promise(resolve => setTimeout(resolve, msToWait));
     }
     
     return false;
   }
 
   public getAvailableTokens(): number {
+    this.refillTokens();
     return Math.floor(this.tokens);
   }
 
+  // CRITICAL FIX: No longer needed since we don't use timers
   public destroy() {
-    if (this.refillTimer) {
-      clearInterval(this.refillTimer);
-    }
+    // No-op: keeping for backward compatibility
   }
 }
 

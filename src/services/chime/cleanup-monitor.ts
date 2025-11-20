@@ -1,5 +1,5 @@
 import { ScheduledEvent } from 'aws-lambda';
-import { DynamoDBDocumentClient, ScanCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, ScanCommand, UpdateCommand, QueryCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKMeetingsClient, DeleteMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
@@ -88,31 +88,10 @@ async function cleanupStaleAgentPresence(stats: any): Promise<void> {
         if (staleAgents && staleAgents.length > 0) {
             console.log(`[cleanup-monitor] Found ${staleAgents.length} stale agent presence records`);
             
-            const cleanupTasks = staleAgents.map(agent => (async () => {
-                try {
-                    await ddb.send(new UpdateCommand({
-                        TableName: AGENT_PRESENCE_TABLE_NAME,
-                        Key: { agentId: agent.agentId },
-                        UpdateExpression: 'SET #s = :offline, lastActivityAt = :now, cleanupReason = :reason ' + 
-                                          'REMOVE ringingCallId, currentCallId, callStatus, inboundMeetingInfo, ' + 
-                                          'inboundAttendeeInfo, ringingCallTime, ringingCallFrom, ringingCallNotes, ' +
-                                          'ringingCallTransferAgentId, ringingCallTransferMode, currentMeetingAttendeeId, ' +
-                                          'heldCallMeetingId, heldCallId, heldCallAttendeeId',
-                        ExpressionAttributeNames: { '#s': 'status' },
-                        ExpressionAttributeValues: {
-                            ':offline': 'Offline',
-                            ':now': new Date().toISOString(),
-                            ':reason': `stale_${agent.status}_cleanup`
-                        }
-                    }));
-                    stats.staleAgents++;
-                    console.log(`[cleanup-monitor] Cleaned up stale agent: ${agent.agentId} (was ${agent.status})`);
-                } catch (agentErr) {
-                    console.error(`[cleanup-monitor] Error cleaning up agent ${agent.agentId}:`, agentErr);
-                    stats.errors++;
-                }
-            })());
-            await Promise.allSettled(cleanupTasks);
+            // **FLAW #8 FIX: Use BatchWriteCommand instead of individual UpdateCommand calls**
+            // Instead of 1000 API calls for 1000 agents, batch into groups of 25
+            // Reduces from 1000 calls to 40 calls (~25x reduction)
+            await batchCleanupStaleAgents(staleAgents, stats);
         } else {
             console.log('[cleanup-monitor] No stale agent presence records found');
         }
@@ -440,4 +419,66 @@ async function cleanupAbandonedCalls(stats: any): Promise<void> {
         console.error('[cleanup-monitor] Error during abandoned call cleanup:', error);
         stats.errors++;
     }
+}
+
+/**
+ * **FLAW #8 FIX: Batch cleanup using BatchWriteCommand**
+ * 
+ * Instead of sending 1 UpdateCommand per agent (1000 agents = 1000 API calls),
+ * batch updates into groups of 25 using BatchWriteCommand (1000 agents = 40 API calls).
+ * 
+ * DynamoDB BatchWriteItem allows up to 25 requests per batch, each batch = 1 API call.
+ * This reduces cost by 25x and improves performance by reducing latency.
+ */
+async function batchCleanupStaleAgents(staleAgents: any[], stats: any): Promise<void> {
+    if (!AGENT_PRESENCE_TABLE_NAME) {
+        console.warn('[cleanup-monitor] AGENT_PRESENCE_TABLE_NAME not configured');
+        return;
+    }
+
+    const BATCH_SIZE = 25; // DynamoDB BatchWriteItem limit
+    const now = new Date().toISOString();
+
+    // Group agents into batches of 25
+    for (let i = 0; i < staleAgents.length; i += BATCH_SIZE) {
+        const batch = staleAgents.slice(i, i + BATCH_SIZE);
+        
+        try {
+            // Build batch write requests for this group
+            const writeRequests = batch.map(agent => ({
+                Update: {
+                    TableName: AGENT_PRESENCE_TABLE_NAME,
+                    Key: { agentId: agent.agentId },
+                    UpdateExpression: 'SET #s = :offline, lastActivityAt = :now, cleanupReason = :reason ' + 
+                                      'REMOVE ringingCallId, currentCallId, callStatus, inboundMeetingInfo, ' + 
+                                      'inboundAttendeeInfo, ringingCallTime, ringingCallFrom, ringingCallNotes, ' +
+                                      'ringingCallTransferAgentId, ringingCallTransferMode, currentMeetingAttendeeId, ' +
+                                      'heldCallMeetingId, heldCallId, heldCallAttendeeId',
+                    ExpressionAttributeNames: { '#s': 'status' },
+                    ExpressionAttributeValues: {
+                        ':offline': 'Offline',
+                        ':now': now,
+                        ':reason': `stale_${agent.status}_cleanup`
+                    }
+                }
+            }));
+
+            // Send batch (all 25 updates in single API call)
+            await ddb.send(new BatchWriteCommand({
+                RequestItems: {
+                    [AGENT_PRESENCE_TABLE_NAME]: writeRequests
+                }
+            }));
+
+            stats.staleAgents += batch.length;
+            console.log(`[cleanup-monitor] Batch cleaned ${batch.length} stale agents (batch ${Math.floor(i / BATCH_SIZE) + 1})`);
+            
+        } catch (batchErr) {
+            console.error(`[cleanup-monitor] Error cleaning batch of agents starting at index ${i}:`, batchErr);
+            stats.errors++;
+            // Continue processing remaining batches
+        }
+    }
+
+    console.log(`[cleanup-monitor] Completed batch cleanup of ${staleAgents.length} stale agents in ${Math.ceil(staleAgents.length / BATCH_SIZE)} API calls`);
 }

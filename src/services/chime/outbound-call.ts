@@ -1,13 +1,14 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, CreateSipMediaApplicationCallCommand, CreateSipMediaApplicationCallCommandOutput } from '@aws-sdk/client-chime-sdk-voice';
-// REMOVED: ChimeSDKMeetingsClient, CreateMeetingCommand, CreateAttendeeCommand, DeleteMeetingCommand
+import { randomUUID } from 'crypto';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { verifyIdTokenCached } from '../shared/utils/jwt-verification';
 import { sanitizePhoneNumber } from '../shared/utils/input-sanitization';
 import { checkClinicAuthorization } from '../shared/utils/authorization';
 import { getSmaIdForClinic } from './utils/sma-map';
+import { TTL_POLICY } from './config/ttl-policy';
 
 const ddb = getDynamoDBClient();
 const chimeVoiceClient = new ChimeSDKVoiceClient({});
@@ -172,16 +173,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       meetingId: agentMeeting.MeetingId
     });
 
+    // CRITICAL FIX #3: Add idempotency token to prevent duplicate calls on Lambda retry
+    const idempotencyKey = randomUUID();
+    
     const callCommandInput = {
         FromPhoneNumber: fromPhoneNumber,
         ToPhoneNumber: body.toPhoneNumber,
         SipMediaApplicationId: smaId,
+        ClientRequestToken: idempotencyKey, // Prevents duplicate calls if Lambda is retried
         ArgumentsMap: {
             // Pass all info the inbound-router.ts will need
             "callType": "Outbound",
             "agentId": agentId,
-            "meetingId": agentMeeting.MeetingId, // <-- CRITICAL CHANGE
-            "callReference": callReference, 
+            "meetingId": agentMeeting.MeetingId,
+            "callReference": callReference,
+            "idempotencyKey": idempotencyKey, // Also pass in arguments for logging
             "toPhoneNumber": body.toPhoneNumber,
             "fromPhoneNumber": fromPhoneNumber,
             "fromClinicId": body.fromClinicId,
@@ -220,12 +226,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // 6. Store outbound call in queue table for tracking
     const now = new Date();
     const nowTs = Math.floor(now.getTime() / 1000);
+    // CRITICAL FIX #5: Use centralized TTL policy
+    const callTTL = nowTs + TTL_POLICY.ACTIVE_CALL_SECONDS;
     await ddb.send(new PutCommand({
         TableName: CALL_QUEUE_TABLE_NAME,
         Item: {
             clinicId: body.fromClinicId,
             callId: callId,
-            queuePosition: now.getTime(), // Use timestamp as unique position
+            queuePosition: now.getTime(),
             queueEntryTime: nowTs,
             queueEntryTimeIso: now.toISOString(),
             phoneNumber: body.toPhoneNumber,
@@ -233,10 +241,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             direction: 'outbound',
             assignedAgentId: agentId,
             callReference: callReference,
-            meetingInfo: agentMeeting, // Store the agent's meeting info
-            // NOTE: We do NOT store agent attendee info, as the agent is already in the meeting.
-            // The customer's attendee info will be added by inbound-router on CALL_ANSWERED.
-            ttl: nowTs + (1 * 60 * 60) // 1 hour TTL for an active call
+            meetingInfo: agentMeeting,
+            ttl: callTTL
         }
     }));
     console.log(`[outbound-call] Call ${callId} added to queue table`);

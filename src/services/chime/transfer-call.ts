@@ -226,13 +226,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             
             const meetingInfo = callRecord.meetingInfo;
             
+            // **FLAW #14 FIX: Use unique ExternalUserId for transfer to prevent attendee collisions**
+            // Each transfer attempt gets a unique ID based on randomUUID to ensure idempotency
+            const transferAttemptId = randomUUID();
+            const externalUserIdForTransfer = `${toAgentId}-transfer-${transferAttemptId}`;
+            
             // Step 2: Create a new attendee for the target agent in the existing meeting
             console.log(`[transfer-call] Creating attendee for target agent ${toAgentId} in meeting ${meetingInfo.MeetingId}`);
             let toAgentAttendee;
             try {
                 const toAgentAttendeeResponse = await chime.send(new CreateAttendeeCommand({
                     MeetingId: meetingInfo.MeetingId,
-                    ExternalUserId: toAgentId
+                    ExternalUserId: externalUserIdForTransfer
                 }));
                 
                 if (!toAgentAttendeeResponse.Attendee) {
@@ -304,7 +309,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             }
             const sourceAgentUpdateExpression = `SET ${sourceAgentSetParts.join(', ')}${sourceAgentRemoveParts.length ? ' REMOVE ' + sourceAgentRemoveParts.join(', ') : ''}`;
             
+            // **FLAW #12 FIX: If call is currently held, update the held call meeting ID for source agent**
+            // This ensures resume-call uses the correct meeting after transfer
+            let sourceAgentExtra = '';
+            let sourceAgentExtraValues: any = {};
+            if (callRecord.status === 'on_hold') {
+                // Call is on hold - update the source agent's held call meeting info if they're holding it
+                sourceAgentExtra = ', heldCallMeetingId = :heldMeetingId, heldCallId = :heldCallId, heldCallAttendeeId = :heldAttendeeId';
+                sourceAgentExtraValues = {
+                    ':heldMeetingId': meetingInfo.MeetingId,
+                    ':heldCallId': callId,
+                    ':heldAttendeeId': toAgentAttendee.AttendeeId
+                };
+            }
+            
             // Use the TransactWrite operation for atomic updates - already imported at the top of file
+            
+            const sourceAgentFinalUpdateExpression = sourceAgentUpdateExpression + sourceAgentExtra;
             
             await ddb.send(new TransactWriteCommand({
                 TransactItems: [
@@ -357,13 +378,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                         Update: {
                             TableName: AGENT_PRESENCE_TABLE_NAME,
                             Key: { agentId: fromAgentId },
-                            UpdateExpression: sourceAgentUpdateExpression,
+                            UpdateExpression: sourceAgentFinalUpdateExpression,
                             ConditionExpression: 'currentCallId = :callId', // Only if still on this call
                             ExpressionAttributeNames: { '#status': 'status' },
                             ExpressionAttributeValues: {
                                 ':sourceStatus': isConferenceTransfer ? 'OnCall' : 'Online',
                                 ':timestamp': timestamp,
-                                ':callId': callId
+                                ':callId': callId,
+                                ...sourceAgentExtraValues
                             }
                         }
                     }

@@ -70,98 +70,103 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // Check current agent status
-        const { Item: agent } = await ddb.send(new GetCommand({
-            TableName: AGENT_PRESENCE_TABLE_NAME,
-            Key: { agentId }
-        }));
-
-        if (!agent) {
-            return {
-                statusCode: 404,
-                headers: corsHeaders,
-                body: JSON.stringify({ message: 'Agent presence not found. Please start a new session.' })
-            };
-        }
-
-        // Update lastActivityAt and extend TTL
+        // CRITICAL FIX #7: Atomic check and update to prevent session expiry race condition
         const now = new Date();
         const nowSeconds = Math.floor(now.getTime() / 1000);
-        const sessionExpiryEpoch = typeof agent.sessionExpiresAtEpoch === 'number'
-            ? agent.sessionExpiresAtEpoch
-            : agent.sessionExpiresAt
-                ? Math.floor(new Date(agent.sessionExpiresAt).getTime() / 1000)
-                : nowSeconds + SESSION_MAX_SECONDS;
-
-        if (sessionExpiryEpoch <= nowSeconds) {
-            console.warn('[heartbeat] Session expired for agent', { agentId, sessionExpiryEpoch, nowSeconds });
-            try {
-                await ddb.send(new UpdateCommand({
-                    TableName: AGENT_PRESENCE_TABLE_NAME,
-                    Key: { agentId },
-                    UpdateExpression: 'SET #status = :offline, lastActivityAt = :timestamp, cleanupReason = :reason REMOVE currentCallId, ringingCallId, callStatus, heldCallId, heldCallMeetingId, heldCallAttendeeId, inboundMeetingInfo, inboundAttendeeInfo',
-                    ExpressionAttributeNames: { '#status': 'status' },
-                    ExpressionAttributeValues: {
-                        ':offline': 'Offline',
-                        ':timestamp': now.toISOString(),
-                        ':reason': 'session_expired'
-                    }
-                }));
-            } catch (expireErr) {
-                console.warn('[heartbeat] Failed to mark session expired', expireErr);
-            }
+        
+        // First attempt: Try to update with expiry check in condition
+        try {
+            // Calculate new TTL assuming session is still valid
+            const newTtl = nowSeconds + HEARTBEAT_GRACE_SECONDS;
+            
+            // CRITICAL FIX: Add separate lastHeartbeatAt field distinct from lastActivityAt
+            // This allows cleanup monitor to distinguish between heartbeats and other activity
+            // ATOMIC: Check expiry in the same operation as the update
+            await ddb.send(new UpdateCommand({
+                TableName: AGENT_PRESENCE_TABLE_NAME,
+                Key: { agentId },
+                UpdateExpression: 'SET lastActivityAt = :timestamp, lastHeartbeatAt = :timestamp, #ttl = :ttl, heartbeatCount = if_not_exists(heartbeatCount, :zero) + :one',
+                ConditionExpression: 'attribute_exists(agentId) AND ' +
+                                    '(attribute_not_exists(sessionExpiresAtEpoch) OR sessionExpiresAtEpoch > :nowSeconds)',
+                ExpressionAttributeNames: {
+                    '#ttl': 'ttl'
+                },
+                ExpressionAttributeValues: {
+                    ':timestamp': now.toISOString(),
+                    ':ttl': newTtl,
+                    ':nowSeconds': nowSeconds,
+                    ':zero': 0,
+                    ':one': 1
+                }
+            }));
+            
+            console.log(`[heartbeat] Updated heartbeat for agent ${agentId}`);
+            
             return {
-                statusCode: 409,
+                statusCode: 200,
                 headers: corsHeaders,
-                body: JSON.stringify({ message: 'Session expired. Please start a new session.' })
+                body: JSON.stringify({ 
+                    message: 'Heartbeat recorded',
+                    timestamp: now.toISOString(),
+                    ttl: newTtl
+                })
             };
-        }
-
-        const newTtl = Math.min(sessionExpiryEpoch, nowSeconds + HEARTBEAT_GRACE_SECONDS);
-
-        // CRITICAL FIX: Add separate lastHeartbeatAt field distinct from lastActivityAt
-        // This allows cleanup monitor to distinguish between heartbeats and other activity
-        await ddb.send(new UpdateCommand({
-            TableName: AGENT_PRESENCE_TABLE_NAME,
-            Key: { agentId },
-            UpdateExpression: 'SET lastActivityAt = :timestamp, lastHeartbeatAt = :timestamp, #ttl = :ttl, sessionExpiresAtEpoch = :sessionExpiry, sessionExpiresAt = if_not_exists(sessionExpiresAt, :sessionExpiryIso), heartbeatCount = if_not_exists(heartbeatCount, :zero) + :one',
-            ConditionExpression: 'attribute_exists(agentId)',
-            ExpressionAttributeNames: {
-                '#ttl': 'ttl',
-            },
-            ExpressionAttributeValues: {
-                ':timestamp': now.toISOString(),
-                ':ttl': newTtl,
-                ':sessionExpiry': sessionExpiryEpoch,
-                ':sessionExpiryIso': new Date(sessionExpiryEpoch * 1000).toISOString(),
-                ':zero': 0,
-                ':one': 1
+            
+        } catch (error: any) {
+            // CRITICAL FIX #5: Fix duplicate condition check handling
+            // If condition failed, could be expired session OR agent doesn't exist
+            if (error.name === 'ConditionalCheckFailedException') {
+                // Try to determine if it's expiry or missing agent by checking existence
+                try {
+                    const { Item: agent } = await ddb.send(new GetCommand({
+                        TableName: AGENT_PRESENCE_TABLE_NAME,
+                        Key: { agentId }
+                    }));
+                    
+                    if (!agent) {
+                        // Agent doesn't exist
+                        return {
+                            statusCode: 404,
+                            headers: corsHeaders,
+                            body: JSON.stringify({ message: 'Agent session not found. Please start a new session.' })
+                        };
+                    }
+                    
+                    // Agent exists but session expired - mark offline
+                    console.warn('[heartbeat] Session expired for agent (atomic check)', { agentId, nowSeconds });
+                    await ddb.send(new UpdateCommand({
+                        TableName: AGENT_PRESENCE_TABLE_NAME,
+                        Key: { agentId },
+                        UpdateExpression: 'SET #status = :offline, lastActivityAt = :timestamp, cleanupReason = :reason REMOVE currentCallId, ringingCallId, callStatus, heldCallId, heldCallMeetingId, inboundMeetingInfo, inboundAttendeeInfo',
+                        ExpressionAttributeNames: { '#status': 'status' },
+                        ExpressionAttributeValues: {
+                            ':offline': 'Offline',
+                            ':timestamp': now.toISOString(),
+                            ':reason': 'session_expired'
+                        }
+                    })).catch(expireErr => console.warn('[heartbeat] Failed to mark session expired', expireErr));
+                    
+                    return {
+                        statusCode: 409,
+                        headers: corsHeaders,
+                        body: JSON.stringify({ message: 'Session expired. Please start a new session.' })
+                    };
+                } catch (checkErr) {
+                    console.error('[heartbeat] Error checking agent existence:', checkErr);
+                    // Fallback: assume expired
+                    return {
+                        statusCode: 409,
+                        headers: corsHeaders,
+                        body: JSON.stringify({ message: 'Session expired or not found. Please start a new session.' })
+                    };
+                }
             }
-        }));
-
-        console.log(`[heartbeat] Updated heartbeat for agent ${agentId}`);
-
-        return {
-            statusCode: 200,
-            headers: corsHeaders,
-            body: JSON.stringify({ 
-                message: 'Heartbeat recorded',
-                timestamp: now.toISOString(),
-                status: agent.status,
-                ttl: newTtl
-            })
-        };
+            
+            throw error;
+        }
 
     } catch (error: any) {
         console.error('[heartbeat] Error processing heartbeat:', error);
-        
-        if (error.name === 'ConditionalCheckFailedException') {
-            return {
-                statusCode: 404,
-                headers: corsHeaders,
-                body: JSON.stringify({ message: 'Agent session not found. Please start a new session.' })
-            };
-        }
         
         return {
             statusCode: 500,

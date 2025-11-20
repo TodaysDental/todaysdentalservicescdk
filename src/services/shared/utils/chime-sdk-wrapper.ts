@@ -31,8 +31,11 @@ export class ChimeSDKWrapper {
     } catch (err: any) {
       if (err.name === 'ThrottlingException' || err.name === 'TooManyRequestsException') {
         console.warn('[ChimeSDKWrapper] Throttled on CreateMeeting despite rate limiting');
-        // Add token back for retry
-        await this.rateLimiters.meetings.acquire(-1);
+        // CRITICAL FIX: Refund the token correctly (add 1 token back, not negative)
+        this.rateLimiters.meetings['tokens'] = Math.min(
+          this.rateLimiters.meetings['config'].maxTokens,
+          this.rateLimiters.meetings['tokens'] + 1
+        );
       }
       throw err;
     }
@@ -49,7 +52,11 @@ export class ChimeSDKWrapper {
     } catch (err: any) {
       if (err.name === 'ThrottlingException' || err.name === 'TooManyRequestsException') {
         console.warn('[ChimeSDKWrapper] Throttled on CreateAttendee despite rate limiting');
-        await this.rateLimiters.attendees.acquire(-1);
+        // CRITICAL FIX: Refund the token correctly
+        this.rateLimiters.attendees['tokens'] = Math.min(
+          this.rateLimiters.attendees['config'].maxTokens,
+          this.rateLimiters.attendees['tokens'] + 1
+        );
       }
       throw err;
     }
@@ -100,7 +107,11 @@ export class ChimeSDKWrapper {
     } catch (err: any) {
       if (err.name === 'ThrottlingException' || err.name === 'TooManyRequestsException') {
         console.warn('[ChimeSDKWrapper] Throttled on CreateSipMediaApplicationCall');
-        await this.rateLimiters.smaCalls.acquire(-1);
+        // CRITICAL FIX: Refund the token correctly
+        this.rateLimiters.smaCalls['tokens'] = Math.min(
+          this.rateLimiters.smaCalls['config'].maxTokens,
+          this.rateLimiters.smaCalls['tokens'] + 1
+        );
       }
       throw err;
     }
@@ -117,7 +128,11 @@ export class ChimeSDKWrapper {
     } catch (err: any) {
       if (err.name === 'ThrottlingException' || err.name === 'TooManyRequestsException') {
         console.warn('[ChimeSDKWrapper] Throttled on UpdateSipMediaApplicationCall');
-        await this.rateLimiters.smaUpdates.acquire(-1);
+        // CRITICAL FIX: Refund the token correctly
+        this.rateLimiters.smaUpdates['tokens'] = Math.min(
+          this.rateLimiters.smaUpdates['config'].maxTokens,
+          this.rateLimiters.smaUpdates['tokens'] + 1
+        );
       }
       throw err;
     }
@@ -128,14 +143,14 @@ export class ChimeSDKWrapper {
   }
 }
 
-// Singleton instance
-let wrapperInstance: ChimeSDKWrapper | null = null;
+// CRITICAL FIX: Store instances per region to support multi-region usage
+const wrapperInstances: Map<string, ChimeSDKWrapper> = new Map();
 
 export function getChimeSDKWrapper(region: string = 'us-east-1'): ChimeSDKWrapper {
-  if (!wrapperInstance) {
+  if (!wrapperInstances.has(region)) {
     const meetingsClient = new ChimeSDKMeetingsClient({ region });
     const voiceClient = new ChimeSDKVoiceClient({ region });
-    wrapperInstance = new ChimeSDKWrapper(meetingsClient, voiceClient);
+    wrapperInstances.set(region, new ChimeSDKWrapper(meetingsClient, voiceClient));
   }
-  return wrapperInstance;
+  return wrapperInstances.get(region)!;
 }

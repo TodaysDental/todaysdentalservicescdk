@@ -115,13 +115,14 @@ export async function cleanupOrphanedCallResources(
         }
 
         // 4. Clean up agent presence records
+        // CRITICAL FIX #11: Use parallel cleanup to avoid sequential delays
         const affectedAgents = new Set<string>();
         if (assignedAgentId) affectedAgents.add(assignedAgentId);
         if (agentIds && Array.isArray(agentIds)) {
             agentIds.forEach(id => affectedAgents.add(id));
         }
 
-        for (const agentId of affectedAgents) {
+        const cleanupPromises = Array.from(affectedAgents).map(async (agentId) => {
             try {
                 await ctx.ddb.send(new UpdateCommand({
                     TableName: ctx.agentPresenceTableName,
@@ -135,13 +136,24 @@ export async function cleanupOrphanedCallResources(
                         ':callId': callId
                     }
                 }));
-                result.agentRecordsUpdated++;
+                return { success: true, agentId };
             } catch (err: any) {
                 if (err.name !== 'ConditionalCheckFailedException') {
-                    result.errors.push(`Failed to clean agent ${agentId}: ${err.message}`);
+                    return { success: false, agentId, error: err.message };
                 }
+                return { success: true, agentId }; // Condition check fail is okay
             }
-        }
+        });
+
+        const cleanupResults = await Promise.all(cleanupPromises);
+        
+        cleanupResults.forEach((cleanupResult) => {
+            if (cleanupResult.success) {
+                result.agentRecordsUpdated++;
+            } else {
+                result.errors.push(`Failed to clean agent ${cleanupResult.agentId}: ${cleanupResult.error}`);
+            }
+        });
 
         if (result.errors.length > 0) {
             result.success = false;

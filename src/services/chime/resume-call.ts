@@ -191,8 +191,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         try {
             let agentAttendeeId = null;
             
-            // CRITICAL FIX: Check if we have the stored attendee ID before creating a new one
-            // If there's a stored attendee ID, try to verify it's still valid before creating a new one
+            // CRITICAL FIX #2: Delete OLD attendee BEFORE creating new one
+            // This prevents "Attendee already exists" errors
             const storedAttendeeId = agentRecord?.heldCallAttendeeId;
 
             if (storedAttendeeId && meetingId) {
@@ -201,42 +201,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                         MeetingId: meetingId,
                         AttendeeId: storedAttendeeId
                     }));
-                    console.log(`[resume-call] Cleaned up old attendee ${storedAttendeeId}`);
+                    console.log(`[resume-call] Cleaned up old attendee ${storedAttendeeId} before resume`);
                 } catch (deleteErr: any) {
                     if (deleteErr.name === 'NotFoundException') {
                         console.log(`[resume-call] Old attendee ${storedAttendeeId} already removed`);
                     } else {
                         console.warn('[resume-call] Could not delete old attendee:', deleteErr);
+                        // Continue anyway - might still be able to create new attendee
                     }
                 }
             }
             
-            // But in practice, we'll always create a new attendee because the old one was removed
-            // This is safer than trying to reuse an attendee that might have been deleted
-            console.log(`[resume-call] Stored attendee ID: ${storedAttendeeId || 'none'} (we'll create a new one anyway)`);
-            
-            // Create a new attendee for the agent if we have a valid meeting
+            // CRITICAL FIX: Create a new attendee for the agent to resume the call
+            // The old attendee was already cleaned up above
             if (meetingId) {
                 try {
-                    // CRITICAL FIX: Verify meeting still exists before creating attendee
-                    try {
-                        await chimeClient.send(new GetMeetingCommand({
-                            MeetingId: meetingId
-                        }));
-                    } catch (meetingErr: any) {
-                        if (meetingErr.name === 'NotFoundException') {
-                            console.error(`[resume-call] Meeting ${meetingId} no longer exists`);
-                            return {
-                                statusCode: 404,
-                                headers: corsHeaders,
-                                body: JSON.stringify({ message: 'Meeting no longer exists. Please start a new call.' })
-                            };
-                        }
-                        // For other errors, log and continue
-                        console.warn('[resume-call] Error verifying meeting:', meetingErr);
-                    }
-                    
-                    // Save response to a broader scoped variable that we can access later
+                    // CreateAttendeeCommand will validate meeting exists
                     const attendeeResponse = await chimeClient.send(new CreateAttendeeCommand({
                         MeetingId: meetingId,
                         ExternalUserId: agentId

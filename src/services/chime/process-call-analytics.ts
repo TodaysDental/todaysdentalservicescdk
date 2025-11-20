@@ -5,7 +5,11 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 const dynamodbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(dynamodbClient);
 
+// CRITICAL FIX: Add validation for required environment variable
 const ANALYTICS_TABLE_NAME = process.env.CALL_ANALYTICS_TABLE_NAME;
+if (!ANALYTICS_TABLE_NAME) {
+  throw new Error('CALL_ANALYTICS_TABLE_NAME environment variable is required');
+}
 const RETENTION_DAYS = parseInt(process.env.ANALYTICS_RETENTION_DAYS || '90', 10);
 
 interface ChimeAnalyticsEvent {
@@ -104,6 +108,7 @@ async function processAnalyticsRecord(record: KinesisStreamRecord): Promise<void
 }
 
 async function initializeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> {
+  // CRITICAL FIX: Extract callId and timestamp from event
   const { callId, timestamp } = event;
   const metadata = event.callStateEvent?.metadata || {};
   
@@ -137,9 +142,44 @@ async function initializeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void
 }
 
 async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void> {
-  const { callId, transcriptEvent } = event;
+  const { callId, transcriptEvent, timestamp: eventTimestamp } = event;
   
   if (!transcriptEvent?.results) return;
+
+  // CRITICAL FIX #10: Check if call is finalized to handle out-of-order events
+  const { Items: existingRecords } = await ddb.send(new QueryCommand({
+    TableName: ANALYTICS_TABLE_NAME,
+    KeyConditionExpression: 'callId = :callId',
+    ExpressionAttributeValues: { ':callId': callId },
+    Limit: 1
+  }));
+
+  if (!existingRecords || existingRecords.length === 0) {
+    console.warn(`[processTranscriptEvent] No analytics record found for ${callId}, skipping transcript`);
+    return;
+  }
+
+  const storedRecord = existingRecords[0];
+  const storedTimestamp = storedRecord.timestamp;
+  
+  // Don't process transcripts if call is already finalized (out-of-order event)
+  if (storedRecord.finalized === true) {
+    console.warn(`[processTranscriptEvent] Call ${callId} already finalized, skipping late transcript`);
+    return;
+  }
+  
+  // If call has ended, check if transcript is from before end time
+  if (storedRecord.callEndTime) {
+    const eventTime = eventTimestamp || Date.now();
+    const endTime = new Date(storedRecord.callEndTime).getTime();
+    
+    if (eventTime > endTime) {
+      console.warn(`[processTranscriptEvent] Rejecting transcript for ${callId} (event after call end)`);
+      return;
+    }
+    
+    console.log(`[processTranscriptEvent] Accepting late transcript for ${callId} (event before call end)`);
+  }
 
   for (const result of transcriptEvent.results) {
     // Skip partial results - wait for final
@@ -168,12 +208,13 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
     const hasNegative = negativeKeywords.some(kw => textLower.includes(kw));
     const hasPositive = positiveKeywords.some(kw => textLower.includes(kw));
     
+    // CRITICAL FIX: Sentiment score should reflect negative (0.2) not 0.8
     if (hasNegative && !hasPositive) {
       sentiment = 'NEGATIVE';
-      sentimentScore = 0.8;
+      sentimentScore = 0.2; // Low score for negative sentiment
     } else if (hasPositive && !hasNegative) {
       sentiment = 'POSITIVE';
-      sentimentScore = 0.8;
+      sentimentScore = 0.8; // High score for positive sentiment
     }
     
     // Extract keywords - split on whitespace and filter longer words
@@ -195,34 +236,70 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
       score: sentimentScore
     };
     
-    // Update analytics record
-    await ddb.send(new UpdateCommand({
-      TableName: ANALYTICS_TABLE_NAME,
-      Key: { callId: event.callId, timestamp: event.timestamp },
-      UpdateExpression: `
-        SET transcript = list_append(if_not_exists(transcript, :empty_list), :transcript),
-            sentimentTrend = list_append(if_not_exists(sentimentTrend, :empty_list), :sentiment),
-            keywords = list_append(if_not_exists(keywords, :empty_list), :keywords),
-            updatedAt = :now
-      `,
-      ExpressionAttributeValues: {
-        ':transcript': [transcriptItem],
-        ':sentiment': [sentimentDataPoint],
-        ':keywords': keywords,
-        ':empty_list': [],
-        ':now': new Date().toISOString()
-      }
-    }));
+    // CRITICAL FIX: Get current list sizes to enforce limits
+    const currentTranscriptLength = existingRecords[0].transcript?.length || 0;
+    const currentSentimentLength = existingRecords[0].sentimentTrend?.length || 0;
+    const currentKeywordsLength = existingRecords[0].keywords?.length || 0;
     
-    // Check for issues
-    await detectIssues(event.callId, event.timestamp, text, speaker, sentiment);
+    // CRITICAL FIX: Only append if under size limits (prevent memory issues)
+    const MAX_TRANSCRIPT_ITEMS = 1000;
+    const MAX_SENTIMENT_ITEMS = 500;
+    const MAX_KEYWORDS = 100;
+    
+    if (currentTranscriptLength < MAX_TRANSCRIPT_ITEMS) {
+      // Update analytics record with the correct stored timestamp
+      await ddb.send(new UpdateCommand({
+        TableName: ANALYTICS_TABLE_NAME,
+        Key: { callId, timestamp: storedTimestamp }, // Use stored timestamp, not event.timestamp
+        UpdateExpression: `
+          SET transcript = list_append(if_not_exists(transcript, :empty_list), :transcript),
+              sentimentTrend = list_append(if_not_exists(sentimentTrend, :empty_list), :sentiment),
+              keywords = list_append(if_not_exists(keywords, :empty_list), :keywords),
+              updatedAt = :now
+        `,
+        ExpressionAttributeValues: {
+          ':transcript': [transcriptItem],
+          ':sentiment': currentSentimentLength < MAX_SENTIMENT_ITEMS ? [sentimentDataPoint] : [],
+          ':keywords': currentKeywordsLength < MAX_KEYWORDS ? keywords : [],
+          ':empty_list': [],
+          ':now': new Date().toISOString()
+        }
+      }));
+      
+      // Check for issues
+      await detectIssues(callId, storedTimestamp, text, speaker, sentiment);
+    } else {
+      console.warn(`[processTranscriptEvent] Transcript limit reached for ${callId}, skipping`);
+    }
   }
 }
 
 async function processCallQualityEvent(event: ChimeAnalyticsEvent): Promise<void> {
-  const { callId, timestamp, callQualityEvent } = event;
+  const { callId, callQualityEvent } = event;
   
   if (!callQualityEvent) return;
+  
+  // CRITICAL FIX #10: Check if call is finalized
+  const { Items: existingRecords } = await ddb.send(new QueryCommand({
+    TableName: ANALYTICS_TABLE_NAME,
+    KeyConditionExpression: 'callId = :callId',
+    ExpressionAttributeValues: { ':callId': callId },
+    Limit: 1
+  }));
+
+  if (!existingRecords || existingRecords.length === 0) {
+    console.warn(`[processCallQualityEvent] No analytics record found for ${callId}`);
+    return;
+  }
+
+  const storedRecord = existingRecords[0];
+  const storedTimestamp = storedRecord.timestamp;
+  
+  // Don't process quality events if call is finalized
+  if (storedRecord.finalized === true) {
+    console.warn(`[processCallQualityEvent] Call ${callId} already finalized, skipping quality event`);
+    return;
+  }
   
   const { jitter, packetLoss, roundTripTime } = callQualityEvent;
   
@@ -235,7 +312,7 @@ async function processCallQualityEvent(event: ChimeAnalyticsEvent): Promise<void
   
   await ddb.send(new UpdateCommand({
     TableName: ANALYTICS_TABLE_NAME,
-    Key: { callId, timestamp },
+    Key: { callId, timestamp: storedTimestamp }, // Use stored timestamp
     UpdateExpression: `
       SET audioQuality = :quality,
           updatedAt = :now
@@ -253,12 +330,17 @@ async function processCallQualityEvent(event: ChimeAnalyticsEvent): Promise<void
   
   // Detect quality issues
   if (qualityScore < 3) {
-    await addDetectedIssue(callId, timestamp, 'poor-audio-quality');
+    await addDetectedIssue(callId, storedTimestamp, 'poor-audio-quality');
   }
 }
 
 async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> {
   const { callId, timestamp } = event;
+
+  // CRITICAL FIX #10: Don't finalize immediately - mark for delayed finalization
+  // This allows buffering window for out-of-order events
+  const FINALIZATION_DELAY = 30000; // 30 seconds
+  const finalizationTime = Date.now() + FINALIZATION_DELAY;
 
   // Get full analytics record
   const queryResult = await ddb.send(new QueryCommand({
@@ -272,6 +354,12 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
   
   if (!analytics) {
     console.warn(`[process-analytics] No analytics record found for ${callId}`);
+    return;
+  }
+  
+  // Check if already scheduled for finalization
+  if (analytics.finalizationScheduledAt) {
+    console.log(`[finalizeCallAnalytics] Call ${callId} already scheduled for finalization`);
     return;
   }
   
@@ -305,6 +393,7 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
   const callEndTime = Date.now();
   const totalDuration = Math.floor((callEndTime - callStartTime) / 1000);
   
+  // Mark call end time and schedule finalization
   await ddb.send(new UpdateCommand({
     TableName: ANALYTICS_TABLE_NAME,
     Key: { callId, timestamp: analytics.timestamp },
@@ -313,6 +402,7 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
           totalDuration = :duration,
           overallSentiment = :sentiment,
           speakerMetrics = :metrics,
+          finalizationScheduledAt = :scheduleTime,
           updatedAt = :now
     `,
     ExpressionAttributeValues: {
@@ -325,15 +415,21 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
         silencePercentage: 100 - agentTalkPercentage - customerTalkPercentage,
         interruptionCount: 0  // TODO: Calculate interruptions
       },
+      ':scheduleTime': finalizationTime,
       ':now': new Date().toISOString()
     }
   }));
   
-  console.log(`[process-analytics] Finalized analytics for ${callId}`, {
+  console.log(`[process-analytics] Analytics for ${callId} scheduled for finalization at ${new Date(finalizationTime).toISOString()}`, {
     duration: totalDuration,
     sentiment: overallSentiment,
     agentTalkPercentage
   });
+  
+  // NOTE: Actual finalization (setting finalized=true) should be done by a separate
+  // scheduled Lambda or EventBridge rule that runs every minute to finalize records
+  // where finalizationScheduledAt < now() and finalized != true
+  // This provides a buffer window for out-of-order events
 }
 
 async function detectIssues(
