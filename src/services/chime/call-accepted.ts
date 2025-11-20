@@ -210,9 +210,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 Update: {
                     TableName: CALL_QUEUE_TABLE_NAME,
                     Key: { clinicId, queuePosition },
-                    UpdateExpression: 'SET #status = :connected, assignedAgentId = :agentId, acceptedAt = :timestamp, customerAttendeeInfo = :customerAttendee, ttl = :ttl REMOVE agentIds',
+                    UpdateExpression: 'SET #status = :connected, assignedAgentId = :agentId, acceptedAt = :timestamp, customerAttendeeInfo = :customerAttendee, #ttl = :ttl REMOVE agentIds',
                     ConditionExpression: '#status = :ringing', // Final check for race condition
-                    ExpressionAttributeNames: { '#status': 'status' },
+                    ExpressionAttributeNames: { '#status': 'status', '#ttl': 'ttl' },
                     ExpressionAttributeValues: {
                         ':connected': 'connected',
                         ':agentId': agentId,
@@ -230,7 +230,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     Key: { agentId },
                     UpdateExpression: 'SET #status = :onCall, currentCallId = :callId, lastActivityAt = :timestamp REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
                     ConditionExpression: 'ringingCallId = :callId', // Ensure agent was ringing for this call
-                    ExpressionAttributeNames: { '#status': 'status' },
+                    ExpressionAttributeNames: { '#status': 'status', '#ttl': 'ttl' },
                     ExpressionAttributeValues: {
                         ':onCall': 'OnCall',
                         ':callId': callId,
@@ -248,7 +248,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     Key: { agentId: otherAgentId },
                     UpdateExpression: 'SET #status = :onCall, lastActivityAt = :timestamp REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
                     ConditionExpression: 'ringingCallId = :callId', // Only clear if they were ringing for this call
-                    ExpressionAttributeNames: { '#status': 'status' },
+                    ExpressionAttributeNames: { '#status': 'status', '#ttl': 'ttl' },
                     ExpressionAttributeValues: {
                         ':onCall': 'Online', // Using the same key as other transactions
                         ':callId': callId,
