@@ -204,7 +204,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const nowSeconds = Math.floor(Date.now() / 1000);
         const extendedTTL = nowSeconds + (24 * 60 * 60); // Keep active calls alive for another 24 hours
 
-        const transactionItems = [
+        const transactionItems: any[] = [
             // Item 1: Update call status to 'connected' and store customer attendee
             {
                 Update: {
@@ -230,7 +230,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     Key: { agentId },
                     UpdateExpression: 'SET #status = :onCall, currentCallId = :callId, lastActivityAt = :timestamp REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
                     ConditionExpression: 'ringingCallId = :callId', // Ensure agent was ringing for this call
-                    ExpressionAttributeNames: { '#status': 'status', '#ttl': 'ttl' },
+                    ExpressionAttributeNames: { '#status': 'status' },
                     ExpressionAttributeValues: {
                         ':onCall': 'OnCall',
                         ':callId': callId,
@@ -248,7 +248,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     Key: { agentId: otherAgentId },
                     UpdateExpression: 'SET #status = :onCall, lastActivityAt = :timestamp REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
                     ConditionExpression: 'ringingCallId = :callId', // Only clear if they were ringing for this call
-                    ExpressionAttributeNames: { '#status': 'status', '#ttl': 'ttl' },
+                    ExpressionAttributeNames: { '#status': 'status' },
                     ExpressionAttributeValues: {
                         ':onCall': 'Online', // Using the same key as other transactions
                         ':callId': callId,
