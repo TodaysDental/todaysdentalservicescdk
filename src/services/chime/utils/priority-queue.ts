@@ -89,14 +89,15 @@ export class PriorityQueueManager {
     const queueTime = (now - new Date(call.queueEntryTime).getTime()) / 1000;
 
     // Base priority weights
-    const PRIORITY_WEIGHTS = {
+    const PRIORITY_WEIGHTS: Record<'high' | 'normal' | 'low', number> = {
       high: 1000,
       normal: 100,
       low: 10
     };
 
     // Start with priority
-    score += PRIORITY_WEIGHTS[call.priority || 'normal'];
+    const priority = (call.priority as 'high' | 'normal' | 'low') || 'normal';
+    score += PRIORITY_WEIGHTS[priority];
 
     // Add wait time bonus (prevents starvation)
     // After 5 minutes, even low priority calls start getting priority

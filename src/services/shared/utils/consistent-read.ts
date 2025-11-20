@@ -5,7 +5,7 @@
  * for critical operations that require strong consistency.
  */
 
-import { DynamoDBDocumentClient, GetCommand, QueryCommand, QueryCommandInput } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, QueryCommand, QueryCommandInput, BatchGetCommand } from '@aws-sdk/lib-dynamodb';
 
 export interface ReadOptions {
   consistentRead?: boolean;
@@ -161,17 +161,17 @@ export async function batchGetWithConsistency<T>(
   const allItems: T[] = [];
 
   for (const batch of batches) {
-    const { Responses } = await ddb.send({
+    const result = await ddb.send(new BatchGetCommand({
       RequestItems: {
         [tableName]: {
           Keys: batch,
           ConsistentRead: consistentRead
         }
       }
-    } as any);
+    }));
 
-    if (Responses && Responses[tableName]) {
-      allItems.push(...(Responses[tableName] as T[]));
+    if (result.Responses && result.Responses[tableName]) {
+      allItems.push(...(result.Responses[tableName] as T[]));
     }
   }
 

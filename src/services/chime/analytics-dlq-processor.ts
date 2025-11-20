@@ -47,7 +47,7 @@ export const handler = async (event: SQSEvent): Promise<void> => {
       );
 
       // Store in permanent failure table for manual review
-      await storePermamentFailure(record, err);
+      await storePermanentFailure(record, err);
     }
   }
 };
@@ -87,7 +87,7 @@ async function processAnalyticsEvent(event: any): Promise<void> {
 /**
  * Store permanently failed event for manual review
  */
-async function storePermamentFailure(record: any, error: any): Promise<void> {
+async function storePermanentFailure(record: any, error: any): Promise<void> {
   if (!PERMANENT_FAILURES_TABLE) {
     console.error('[DLQ] No permanent failures table configured');
     return;

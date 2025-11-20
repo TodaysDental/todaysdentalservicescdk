@@ -102,6 +102,7 @@ export class ChimeStack extends Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
+      timeToLiveAttribute: 'ttl',
     });
 
     // GSI for querying by clinic
@@ -342,13 +343,24 @@ export class ChimeStack extends Stack {
 
     if (hasTerminationCidrs) {
       const invalidCidrs = terminationCidrs!.filter((cidr) => {
-        const [_, prefix] = cidr.split('/');
+        const [network, prefix] = cidr.split('/');
         const prefixNumber = Number(prefix);
-        return Number.isNaN(prefixNumber) || prefixNumber < 27 || prefixNumber > 32;
+
+        // Require valid IPv4 CIDR format and mask of /27 or smaller (e.g., /27, /26, /25...)
+        return (
+          !network ||
+          Number.isNaN(prefixNumber) ||
+          prefixNumber < 1 ||
+          prefixNumber > 27
+        );
       });
 
       if (invalidCidrs.length > 0) {
-        throw new Error(`voiceConnectorTerminationCidrs must contain CIDR blocks with a /27 or smaller prefix. Invalid entries: ${invalidCidrs.join(', ')}`);
+        throw new Error(
+          `voiceConnectorTerminationCidrs must contain CIDR blocks with a /27 or smaller prefix. Invalid entries: ${invalidCidrs.join(
+            ', '
+          )}`
+        );
       }
     }
 

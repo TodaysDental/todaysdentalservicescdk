@@ -208,13 +208,16 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
     const hasNegative = negativeKeywords.some(kw => textLower.includes(kw));
     const hasPositive = positiveKeywords.some(kw => textLower.includes(kw));
     
-    // CRITICAL FIX: Sentiment score should reflect negative (0.2) not 0.8
+    // Sentiment score: low (0.2) for negative, high (0.8) for positive, neutral (0.5) for mixed/neutral
     if (hasNegative && !hasPositive) {
       sentiment = 'NEGATIVE';
       sentimentScore = 0.2; // Low score for negative sentiment
     } else if (hasPositive && !hasNegative) {
       sentiment = 'POSITIVE';
       sentimentScore = 0.8; // High score for positive sentiment
+    } else if (hasNegative && hasPositive) {
+      sentiment = 'MIXED';
+      sentimentScore = 0.5; // Neutral score for mixed sentiment
     }
     
     // Extract keywords - split on whitespace and filter longer words

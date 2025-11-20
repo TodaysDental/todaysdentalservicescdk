@@ -20,7 +20,13 @@ export async function generateCallAnalytics(callData: any): Promise<any> {
   const endTime = completedAt || abandonedAt || Date.now();
 
   // Calculate durations
-  const queueDuration = connectedAt ? (connectedAt - queueEntryTime) / 1000 : 0;
+  // FIX: Queue duration should show wait time even if call was abandoned before connection
+  const queueDuration = connectedAt 
+    ? (connectedAt - queueEntryTime) / 1000 
+    : abandonedAt 
+      ? (abandonedAt - queueEntryTime) / 1000  // Time waited before abandoning
+      : (endTime - queueEntryTime) / 1000;     // Fallback to end time
+  
   const callDuration = connectedAt && completedAt ? (completedAt - connectedAt) / 1000 : 0;
   const totalDuration = (endTime - queueEntryTime) / 1000;
 
@@ -115,14 +121,25 @@ export async function analyzeSentiment(callData: any): Promise<{
   let agentText = '';
   let customerText = '';
 
-  if (transcript.results.speaker_labels) {
-    transcript.results.items.forEach((item: any) => {
-      if (item.speaker_label === 'spk_0') {
-        agentText += item.alternatives[0].content + ' ';
-      } else {
-        customerText += item.alternatives[0].content + ' ';
-      }
-    });
+  // FIX: Add error handling for speaker label detection
+  if (transcript.results.speaker_labels && transcript.results.items) {
+    try {
+      transcript.results.items.forEach((item: any) => {
+        // Validate item has required fields
+        if (item && item.speaker_label && item.alternatives && item.alternatives[0]) {
+          if (item.speaker_label === 'spk_0') {
+            agentText += item.alternatives[0].content + ' ';
+          } else {
+            customerText += item.alternatives[0].content + ' ';
+          }
+        }
+      });
+    } catch (err) {
+      console.error('[Analytics] Error processing speaker labels:', err);
+      // Continue without speaker separation if parsing fails
+    }
+  } else {
+    console.log('[Analytics] No speaker labels available for transcript');
   }
 
   // Call sentiment analysis service (AWS Comprehend)

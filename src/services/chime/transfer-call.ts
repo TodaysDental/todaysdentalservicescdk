@@ -158,12 +158,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
 
         // FIX #3: Acquire distributed lock on target agent to prevent race conditions
-        const lock = new DistributedLock(
-            ddb,
-            process.env.LOCKS_TABLE_NAME || 'ChimeLocks',
-            `agent-transfer-${toAgentId}`,
-            30000 // 30 second lock
-        );
+        const lock = new DistributedLock(ddb, {
+            tableName: process.env.LOCKS_TABLE_NAME || 'ChimeLocks',
+            lockKey: `agent-transfer-${toAgentId}`,
+            ttlSeconds: 30 // 30 second lock
+        });
 
         const lockAcquired = await lock.acquire();
         if (!lockAcquired) {

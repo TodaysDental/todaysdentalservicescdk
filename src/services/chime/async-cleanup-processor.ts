@@ -6,8 +6,8 @@
  */
 
 import { SQSEvent, SQSRecord } from 'aws-lambda';
-import { DynamoDBDocumentClient, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
-import { ChimeSDKMessagingClient, DeleteChannelCommand } from '@aws-sdk/client-chime-sdk-messaging';
+import { DynamoDBDocumentClient, UpdateCommand, DeleteCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+// import { ChimeSDKMessagingClient, DeleteChannelCommand } from '@aws-sdk/client-chime-sdk-messaging';
 import { ChimeSDKMeetingsClient, DeleteMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
@@ -193,15 +193,15 @@ async function cleanupMeetingResources(meetingId: string, metadata: any): Promis
   if (metadata.callId) {
     try {
       // Find and update the call record
-      const { Items } = await ddb.send({
+      const result = await ddb.send(new QueryCommand({
         TableName: CALL_QUEUE_TABLE_NAME,
         IndexName: 'callId-index',
         KeyConditionExpression: 'callId = :callId',
         ExpressionAttributeValues: { ':callId': metadata.callId }
-      } as any);
+      }));
 
-      if (Items && Items.length > 0) {
-        const call = Items[0];
+      if (result.Items && result.Items.length > 0) {
+        const call = result.Items[0];
         await ddb.send(new UpdateCommand({
           TableName: CALL_QUEUE_TABLE_NAME,
           Key: {

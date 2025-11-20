@@ -6,7 +6,7 @@
  * Manages call recording lifecycle with proper timing and deduplication
  */
 
-import { DynamoDBDocumentClient, PutCommand, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, UpdateCommand, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { 
   TranscribeClient, 
   StartTranscriptionJobCommand, 
@@ -228,13 +228,13 @@ async function findCallByCallId(
   callId: string
 ): Promise<any | null> {
   try {
-    const result = await ddb.send({
+    const result = await ddb.send(new QueryCommand({
       TableName: tableName,
       IndexName: 'callId-index',
       KeyConditionExpression: 'callId = :callId',
       ExpressionAttributeValues: { ':callId': callId },
       Limit: 1
-    } as any);
+    }));
 
     return result.Items?.[0] || null;
   } catch (err) {

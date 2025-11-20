@@ -6,8 +6,11 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as path from 'path';
-import { KinesisEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
+import { KinesisEventSource, SqsEventSource, SqsDlq } from 'aws-cdk-lib/aws-lambda-event-sources';
 
 export interface AnalyticsStackProps extends StackProps {
   userPoolId: string;
@@ -60,6 +63,16 @@ export class AnalyticsStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // Permanent failures table for DLQ triage visibility
+    const analyticsFailuresTable = new dynamodb.Table(this, 'AnalyticsFailuresTable', {
+      tableName: `${this.stackName}-AnalyticsFailures`,
+      partitionKey: { name: 'failureId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+      timeToLiveAttribute: 'ttl',
+    });
+
     // ========================================
     // 2. Kinesis Stream for Analytics Events
     // ========================================
@@ -79,7 +92,7 @@ export class AnalyticsStack extends Stack {
       functionName: `${this.stackName}-AnalyticsProcessor`,
       entry: path.join(__dirname, '..', '..', 'services', 'chime', 'process-call-analytics.ts'),
       handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_18_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(60),
       memorySize: 512,
       environment: {
@@ -95,17 +108,56 @@ export class AnalyticsStack extends Stack {
     this.analyticsTable.grantReadWriteData(this.analyticsProcessor);
     this.analyticsStream.grantRead(this.analyticsProcessor);
 
-    // Add Kinesis event source to Lambda
+    // Dead Letter Queue for failed analytics events
+    const analyticsDLQ = new sqs.Queue(this, 'AnalyticsDLQ', {
+      queueName: `${this.stackName}-analytics-dlq`,
+      retentionPeriod: Duration.days(14), // Keep failed events for 2 weeks
+      visibilityTimeout: Duration.seconds(300), // Match DLQ processor timeout
+    });
+
+    // Add Kinesis event source to Lambda with DLQ configuration
     this.analyticsProcessor.addEventSource(
       new KinesisEventSource(this.analyticsStream, {
         batchSize: 100,
         startingPosition: lambda.StartingPosition.LATEST,
         parallelizationFactor: 10,
+        onFailure: new SqsDlq(analyticsDLQ),
+        retryAttempts: 3,
+        maxRecordAge: Duration.hours(24),
+        bisectBatchOnError: true, // Split batch on error to isolate bad records
       })
     );
 
     // ========================================
-    // 4. CloudWatch Outputs
+    // 4. Analytics DLQ Processor
+    // ========================================
+
+    const analyticsDlqProcessor = new lambdaNode.NodejsFunction(this, 'AnalyticsDlqProcessor', {
+      functionName: `${this.stackName}-AnalyticsDlqProcessor`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'analytics-dlq-processor.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.minutes(5),
+      memorySize: 512,
+      environment: {
+        ANALYTICS_TABLE_NAME: this.analyticsTable.tableName,
+        PERMANENT_FAILURES_TABLE: analyticsFailuresTable.tableName,
+      },
+      logRetention: logs.RetentionDays.ONE_WEEK,
+    });
+
+    this.analyticsTable.grantReadWriteData(analyticsDlqProcessor);
+    analyticsFailuresTable.grantWriteData(analyticsDlqProcessor);
+    analyticsDLQ.grantConsumeMessages(analyticsDlqProcessor);
+
+    analyticsDlqProcessor.addEventSource(new SqsEventSource(analyticsDLQ, {
+      batchSize: 10,
+      maxBatchingWindow: Duration.seconds(30),
+      reportBatchItemFailures: true,
+    }));
+
+    // ========================================
+    // 5. CloudWatch Outputs
     // ========================================
 
     new CfnOutput(this, 'AnalyticsTableName', {
@@ -130,6 +182,58 @@ export class AnalyticsStack extends Stack {
       value: this.analyticsProcessor.functionArn,
       description: 'Analytics Processor Lambda ARN',
       exportName: `${this.stackName}-AnalyticsProcessorArn`,
+    });
+
+    new CfnOutput(this, 'AnalyticsDLQUrl', {
+      value: analyticsDLQ.queueUrl,
+      description: 'Analytics DLQ URL',
+      exportName: `${this.stackName}-AnalyticsDLQUrl`,
+    });
+
+    new CfnOutput(this, 'AnalyticsFailuresTableName', {
+      value: analyticsFailuresTable.tableName,
+      description: 'Table storing permanently failed analytics events',
+      exportName: `${this.stackName}-AnalyticsFailuresTable`,
+    });
+
+    new CfnOutput(this, 'AnalyticsDlqProcessorArn', {
+      value: analyticsDlqProcessor.functionArn,
+      description: 'Lambda that reprocesses analytics DLQ events',
+      exportName: `${this.stackName}-AnalyticsDlqProcessorArn`,
+    });
+
+    // ========================================
+    // 6. Analytics Finalization Lambda
+    // ========================================
+
+    const finalizeAnalyticsFn = new lambdaNode.NodejsFunction(this, 'FinalizeAnalyticsFunction', {
+      functionName: `${this.stackName}-FinalizeAnalytics`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'finalize-analytics.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(60),
+      memorySize: 256,
+      environment: {
+        CALL_ANALYTICS_TABLE_NAME: this.analyticsTable.tableName,
+      },
+      logRetention: logs.RetentionDays.ONE_WEEK,
+    });
+
+    // Grant permissions
+    this.analyticsTable.grantReadWriteData(finalizeAnalyticsFn);
+
+    // Schedule to run every minute
+    const finalizationRule = new events.Rule(this, 'AnalyticsFinalizationRule', {
+      schedule: events.Schedule.rate(Duration.minutes(1)),
+      description: 'Finalize analytics records after buffer window',
+    });
+
+    finalizationRule.addTarget(new targets.LambdaFunction(finalizeAnalyticsFn));
+
+    new CfnOutput(this, 'FinalizeAnalyticsFunctionArn', {
+      value: finalizeAnalyticsFn.functionArn,
+      description: 'Analytics Finalization Lambda ARN',
+      exportName: `${this.stackName}-FinalizeAnalyticsArn`,
     });
   }
 }

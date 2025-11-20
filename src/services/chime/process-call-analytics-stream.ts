@@ -18,8 +18,17 @@ import { unmarshall } from '@aws-sdk/util-dynamodb';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 
 const ddb = getDynamoDBClient();
-const ANALYTICS_TABLE = process.env.ANALYTICS_TABLE_NAME || process.env.ANALYTICS_TABLE;
-const DEDUP_TABLE = process.env.ANALYTICS_DEDUP_TABLE || `${ANALYTICS_TABLE}-dedup`;
+// Use consistent environment variable naming
+const ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE_NAME;
+const DEDUP_TABLE = process.env.ANALYTICS_DEDUP_TABLE;
+
+if (!ANALYTICS_TABLE) {
+  throw new Error('CALL_ANALYTICS_TABLE_NAME environment variable is required');
+}
+
+if (!DEDUP_TABLE) {
+  console.warn('[AnalyticsStream] ANALYTICS_DEDUP_TABLE not configured, deduplication will use derived name');
+}
 
 interface CallAnalytics {
     callId: string;
@@ -108,10 +117,10 @@ async function processStreamRecord(
     }
 
     const newImage = record.dynamodb?.NewImage 
-        ? unmarshall(record.dynamodb.NewImage as Record<string, AttributeValue>)
+        ? unmarshall(record.dynamodb.NewImage as any)
         : null;
     const oldImage = record.dynamodb?.OldImage
-        ? unmarshall(record.dynamodb.OldImage as Record<string, AttributeValue>)
+        ? unmarshall(record.dynamodb.OldImage as any)
         : null;
 
     // Determine if this is a call completion event
@@ -237,11 +246,12 @@ async function storeAnalyticsWithDedup(
 ): Promise<boolean> {
     // First, check deduplication
     const dedupId = `${analytics.callId}-${analytics.timestamp}`;
+    const dedupTableName = DEDUP_TABLE || `${ANALYTICS_TABLE}-dedup`;
 
     try {
         // Atomic deduplication check
         await ddb.send(new PutCommand({
-            TableName: DEDUP_TABLE,
+            TableName: dedupTableName,
             Item: {
                 eventId: dedupId,
                 callId: analytics.callId,

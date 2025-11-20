@@ -11,6 +11,9 @@ const ANALYTICS_TABLE_NAME = process.env.CALL_ANALYTICS_TABLE_NAME;
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
 
+// Authorization constants
+const ADMIN_CLINIC_ACCESS = 'ALL';
+
 /**
  * Lambda handler for retrieving call analytics
  * 
@@ -177,6 +180,15 @@ async function getClinicAnalytics(
       exclusiveStartKey = JSON.parse(
         Buffer.from(queryParams.lastEvaluatedKey, 'base64').toString('utf-8')
       );
+      
+      // Validate the structure has required keys
+      if (!exclusiveStartKey || typeof exclusiveStartKey !== 'object') {
+        console.warn('[get-analytics] Invalid pagination token structure, starting from beginning');
+        exclusiveStartKey = undefined;
+      } else if (!exclusiveStartKey.callId || !exclusiveStartKey.timestamp) {
+        console.warn('[get-analytics] Pagination token missing required fields, starting from beginning');
+        exclusiveStartKey = undefined;
+      }
     } catch (parseErr) {
       console.warn('[get-analytics] Invalid pagination token, starting from beginning');
       exclusiveStartKey = undefined;
@@ -259,7 +271,7 @@ async function getAgentAnalytics(
   // Security: Agents can only view their own analytics unless they're admin
   const requestingAgentId = jwtPayload.sub;
   const authorizedClinics = getClinicsFromClaims(jwtPayload);
-  const isAdmin = authorizedClinics[0] === 'ALL';
+  const isAdmin = authorizedClinics[0] === ADMIN_CLINIC_ACCESS;
   
   if (!isAdmin && requestingAgentId !== agentId) {
     return {
@@ -285,6 +297,15 @@ async function getAgentAnalytics(
       exclusiveStartKey = JSON.parse(
         Buffer.from(queryParams.lastEvaluatedKey, 'base64').toString('utf-8')
       );
+      
+      // Validate the structure
+      if (!exclusiveStartKey || typeof exclusiveStartKey !== 'object') {
+        console.warn('[get-analytics] Invalid pagination token structure in agent analytics');
+        exclusiveStartKey = undefined;
+      } else if (!exclusiveStartKey.agentId || !exclusiveStartKey.timestamp) {
+        console.warn('[get-analytics] Pagination token missing required fields in agent analytics');
+        exclusiveStartKey = undefined;
+      }
     } catch (parseErr) {
       console.warn('[get-analytics] Invalid pagination token in agent analytics');
       exclusiveStartKey = undefined;
@@ -449,11 +470,12 @@ function calculateAgentMetrics(analytics: any[]): any {
     : 0;
   
   return {
-    averageDuration: Math.round(totalDuration / totalCalls),
-    averageTalkPercentage: Math.round(totalTalkPercentage / totalCalls),
+    // FIX: Ensure division by zero is handled (totalCalls checked at start but adding safety)
+    averageDuration: totalCalls > 0 ? Math.round(totalDuration / totalCalls) : 0,
+    averageTalkPercentage: totalCalls > 0 ? Math.round(totalTalkPercentage / totalCalls) : 0,
     sentimentBreakdown: sentimentCounts,
     issuesDetected: totalIssues,
-    averageQualityScore: Math.round(averageQualityScore * 10) / 10
+    averageQualityScore: qualityScores.length > 0 ? Math.round(averageQualityScore * 10) / 10 : 0
   };
 }
 

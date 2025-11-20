@@ -9,7 +9,7 @@
  * - Status mismatches between agent and call
  */
 
-import { DynamoDBDocumentClient, ScanCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, ScanCommand, QueryCommand, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 
 export interface InconsistencyReport {
     timestamp: string;
@@ -297,11 +297,10 @@ export class ConsistencyChecker {
      * Check a specific agent on demand
      */
     async checkSpecificAgent(agentId: string): Promise<InconsistencyDetail | null> {
-        const { Item: agent } = await this.ddb.send(new QueryCommand({
+        const { Item: agent } = await this.ddb.send(new GetCommand({
             TableName: this.agentTable,
-            KeyConditionExpression: 'agentId = :agentId',
-            ExpressionAttributeValues: { ':agentId': agentId }
-        }) as any);
+            Key: { agentId }
+        }));
 
         if (!agent || (!agent.currentCallId && !agent.heldCallId)) {
             return null;

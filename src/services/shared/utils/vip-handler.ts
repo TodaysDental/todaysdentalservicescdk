@@ -5,7 +5,7 @@
  * Ensures VIP calls receive guaranteed response times.
  */
 
-import { DynamoDBDocumentClient, PutCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, UpdateCommand, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 
 const sns = new SNSClient({});
@@ -58,10 +58,10 @@ export async function determineCallPriority(
 ): Promise<CallPriority> {
   try {
     // Check VIP table for caller
-    const { Item } = await ddb.send({
+    const { Item } = await ddb.send(new GetCommand({
       TableName: vipTableName,
       Key: { clinicId, phoneNumber }
-    } as any);
+    }));
 
     if (Item) {
       return (Item.priority as CallPriority) || 'high';
