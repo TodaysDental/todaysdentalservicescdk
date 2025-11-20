@@ -33,6 +33,8 @@ export interface AdminStackProps extends StackProps {
   heartbeatFnArn?: string;
   holdCallFnArn?: string;
   resumeCallFnArn?: string;
+  // ** NEW: Call Recording **
+  getRecordingFnArn?: string;
 }
 
 export class AdminStack extends Stack {
@@ -629,6 +631,57 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
       }
     }
 
+    // ========================================
+    // RECORDING API ROUTES (if enabled in Chime stack)
+    // ========================================
+
+    if (props.getRecordingFnArn) {
+      const getRecordingFn = lambda.Function.fromFunctionArn(
+        this,
+        'ImportedGetRecordingFn',
+        props.getRecordingFnArn
+      );
+
+      // Add API Gateway permission
+      getRecordingFn.addPermission('ApiGatewayInvokeGetRecording', {
+        principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+        sourceArn: this.api.arnForExecuteApi('*', '/recordings/*', '*')
+      });
+
+      const recordingsRes = this.api.root.addResource('recordings');
+
+      // GET /recordings/{recordingId}
+      const recordingIdRes = recordingsRes.addResource('{recordingId}');
+      recordingIdRes.addMethod('GET', new apigw.LambdaIntegration(getRecordingFn), {
+        authorizer: this.authorizer,
+        authorizationType: apigw.AuthorizationType.COGNITO,
+        methodResponses: [{ statusCode: '200' }]
+      });
+
+      // GET /recordings/call/{callId}
+      const callRecordingsRes = recordingsRes.addResource('call');
+      const callIdRecordingRes = callRecordingsRes.addResource('{callId}');
+      callIdRecordingRes.addMethod('GET', new apigw.LambdaIntegration(getRecordingFn), {
+        authorizer: this.authorizer,
+        authorizationType: apigw.AuthorizationType.COGNITO,
+        methodResponses: [{ statusCode: '200' }]
+      });
+
+      // GET /recordings/clinic/{clinicId}
+      const clinicRecordingsRes = recordingsRes.addResource('clinic');
+      const clinicIdRecordingRes = clinicRecordingsRes.addResource('{clinicId}');
+      clinicIdRecordingRes.addMethod('GET', new apigw.LambdaIntegration(getRecordingFn), {
+        authorizer: this.authorizer,
+        authorizationType: apigw.AuthorizationType.COGNITO,
+        methodResponses: [{ statusCode: '200' }]
+      });
+
+      new CfnOutput(this, 'RecordingsApiUrl', {
+        value: 'https://api.todaysdentalinsights.com/admin/recordings',
+        description: 'Recordings API URL',
+        exportName: `${Stack.of(this).stackName}-RecordingsApiUrl`
+      });
+    }
 
     // ========================================
     // OUTPUTS

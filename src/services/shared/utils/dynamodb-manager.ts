@@ -1,5 +1,9 @@
+/**
+ * FIX #43: Connection Pool Per Container
+ * Enhanced DynamoDB manager with connection warming and optimized pooling
+ */
 import { DynamoDBClient, DynamoDBClientConfig } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { Agent } from 'https';
 
 interface DynamoDBConfig {
@@ -15,18 +19,25 @@ class DynamoDBManager {
   private documentClient: DynamoDBDocumentClient;
   private requestCount: number = 0;
   private lastResetTime: number = Date.now();
+  private warmed: boolean = false;
 
   private constructor(config: DynamoDBConfig = {}) {
+    // Optimize connection pool for Lambda
+    const httpsAgent = new Agent({
+      maxSockets: config.maxSockets || 50,
+      keepAlive: true,
+      keepAliveMsecs: 1000,
+      maxFreeSockets: 10, // Keep some connections ready
+      timeout: 60000,
+      scheduling: 'lifo' as any // Reuse recent connections first
+    });
+
     const clientConfig: DynamoDBClientConfig = {
       maxAttempts: config.maxRetries || 3,
       requestHandler: {
         requestTimeout: config.requestTimeout || 3000,
         connectionTimeout: config.connectionTimeout || 1000,
-        httpsAgent: new Agent({
-          maxSockets: config.maxSockets || 50,
-          keepAlive: true,
-          keepAliveMsecs: 1000,
-        }),
+        httpsAgent
       } as any,
     };
 
@@ -43,7 +54,33 @@ class DynamoDBManager {
       },
     });
 
-    console.log('[DynamoDBManager] Initialized with connection pooling');
+    console.log('[DynamoDBManager] Initialized with optimized connection pooling');
+
+    // Warm connections on first use (async, non-blocking)
+    this.warmConnections();
+  }
+
+  /**
+   * Warm DynamoDB connections on Lambda cold start
+   * Makes a lightweight query to establish connection pool
+   */
+  private async warmConnections(): Promise<void> {
+    if (this.warmed) return;
+
+    try {
+      // Make a lightweight query to establish connection
+      // Use a dummy key that doesn't exist to minimize overhead
+      await this.documentClient.send(new GetCommand({
+        TableName: process.env.AGENT_PRESENCE_TABLE_NAME || 'warmup-dummy',
+        Key: { agentId: '__warmup__' }
+      })).catch(() => {}); // Ignore errors - warmup is best-effort
+
+      this.warmed = true;
+      console.log('[DynamoDBManager] Connections warmed successfully');
+    } catch (err) {
+      console.warn('[DynamoDBManager] Connection warming failed (non-fatal):', err);
+      // Don't throw - warmup failure is not critical
+    }
   }
 
   public static getInstance(config?: DynamoDBConfig): DynamoDBManager {

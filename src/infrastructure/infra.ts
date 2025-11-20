@@ -217,9 +217,12 @@ const analyticsStack = new AnalyticsStack(app, 'TodaysDentalInsightsAnalyticsV1'
 const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV23', {
  env,
  userPool: coreStack.userPool,
+ userPoolId: coreStack.userPool.userPoolId,
  voiceConnectorTerminationCidrs,
  voiceConnectorOriginationRoutes,
  analyticsStreamArn: analyticsStack.analyticsStream.streamArn,
+ enableCallRecording: true, // Enable call recording by default
+ recordingRetentionDays: 2555, // ~7 years for compliance
 });
 // ** COMMUNICATIONS STACK INSTANTIATION **
 const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommV1', {
@@ -251,6 +254,8 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminV3', {
  leaveCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-LeaveCallArn`),
  heartbeatFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-HeartbeatArn`),
  agentPresenceTableName: cdk.Fn.importValue(`${chimeStack.stackName}-AgentPresenceTableName`),
+ // Call Recording
+ getRecordingFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-GetRecordingFnArn`),
 });
 
 // CRITICAL FIX: Avoid circular dependencies between adminStack and chimeStack

@@ -4,6 +4,9 @@ import { ChimeSDKMeetingsClient, DeleteMeetingCommand } from '@aws-sdk/client-ch
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getSmaIdForClinic } from './utils/sma-map';
+import { MeetingLifecycleManager } from './utils/meeting-lifecycle';
+import { ConsistencyChecker } from './utils/consistency-checker';
+import { StateTimeoutManager } from './utils/state-timeouts';
 
 const ddb = getDynamoDBClient();
 const chime = new ChimeSDKMeetingsClient({ region: process.env.CHIME_MEDIA_REGION || 'us-east-1' });
@@ -11,6 +14,11 @@ const chimeVoice = new ChimeSDKVoiceClient({});
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
+
+// Initialize utility managers
+const meetingLifecycle = new MeetingLifecycleManager(ddb, chime, CALL_QUEUE_TABLE_NAME!);
+const consistencyChecker = new ConsistencyChecker(ddb, AGENT_PRESENCE_TABLE_NAME!, CALL_QUEUE_TABLE_NAME!);
+const stateTimeoutManager = new StateTimeoutManager(ddb, chime, CALL_QUEUE_TABLE_NAME!, AGENT_PRESENCE_TABLE_NAME!);
 
 // Thresholds for cleanup
 const STALE_HEARTBEAT_MINUTES = 15; // Agent hasn't sent a heartbeat
@@ -31,6 +39,7 @@ export const handler = async (event: ScheduledEvent): Promise<void> => {
         orphanedMeetings: 0,
         abandonedCalls: 0,
         longRunningHangups: 0,
+        stateTimeouts: 0,
         errors: 0
     };
 
@@ -38,14 +47,58 @@ export const handler = async (event: ScheduledEvent): Promise<void> => {
         // 1. Clean up stale agent presence records
         await cleanupStaleAgentPresence(cleanupStats);
         
-        // 2. Clean up orphaned QUEUE meetings (Safe for Agent-Centric model)
-        await cleanupOrphanedMeetings(cleanupStats);
+        // 2. CRITICAL FIX #12: Use MeetingLifecycleManager for orphaned meetings
+        try {
+            const meetingResult = await meetingLifecycle.cleanupOrphanedMeetings();
+            cleanupStats.orphanedMeetings = meetingResult.cleanedCount;
+            console.log('[cleanup-monitor] Meeting lifecycle cleanup:', meetingResult);
+        } catch (meetingErr) {
+            console.error('[cleanup-monitor] Meeting lifecycle error:', meetingErr);
+            cleanupStats.errors++;
+        }
         
         // 3. Clean up abandoned calls (ringing/dialing, NO meeting delete)
         await cleanupAbandonedCalls(cleanupStats);
 
         // 4. Hang up any meetings that exceeded the hard cap
         await cleanupLongRunningCalls(cleanupStats);
+        
+        // 5. CRITICAL FIX #13: Run consistency checker to reconcile states
+        try {
+            const consistencyReport = await consistencyChecker.checkAndReconcile();
+            console.log('[cleanup-monitor] Consistency check:', {
+                checked: consistencyReport.totalChecked,
+                found: consistencyReport.inconsistenciesFound,
+                reconciled: consistencyReport.reconciled,
+                manualReview: consistencyReport.manualReviewNeeded.length
+            });
+            
+            // Alert if many inconsistencies found
+            if (consistencyReport.inconsistenciesFound > 10) {
+                console.warn('[cleanup-monitor] HIGH INCONSISTENCY COUNT detected:', 
+                           consistencyReport.inconsistenciesFound);
+            }
+        } catch (consistencyErr) {
+            console.error('[cleanup-monitor] Consistency check error:', consistencyErr);
+            cleanupStats.errors++;
+        }
+        
+        // 6. FIX #14: Run state timeout manager to transition hung states
+        try {
+            const stateTimeoutResult = await stateTimeoutManager.checkAndTransitionTimedOutStates();
+            cleanupStats.stateTimeouts = stateTimeoutResult.transitioned;
+            console.log('[cleanup-monitor] State timeout check:', {
+                transitioned: stateTimeoutResult.transitioned,
+                errors: stateTimeoutResult.errors.length
+            });
+            
+            if (stateTimeoutResult.errors.length > 0) {
+                console.error('[cleanup-monitor] State timeout errors:', stateTimeoutResult.errors);
+            }
+        } catch (stateTimeoutErr) {
+            console.error('[cleanup-monitor] State timeout check error:', stateTimeoutErr);
+            cleanupStats.errors++;
+        }
         
         console.log('[cleanup-monitor] Cleanup completed', cleanupStats);
         

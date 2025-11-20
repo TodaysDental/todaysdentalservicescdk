@@ -8,6 +8,8 @@ class MetricsPublisher {
   private flushInterval: NodeJS.Timeout | null = null;
   private readonly BATCH_SIZE = 20; // CloudWatch limit
   private readonly FLUSH_INTERVAL_MS = 60000; // 1 minute
+  private readonly MAX_BUFFER_SIZE = 1000; // FIX #34: Prevent unbounded growth
+  private dropped = 0; // FIX #34: Track dropped metrics
 
   private constructor(namespace: string = 'ContactCenter') {
     this.client = new CloudWatchClient({});
@@ -34,6 +36,28 @@ class MetricsPublisher {
     unit: string = 'Count',
     dimensions?: Record<string, string>
   ) {
+    // FIX #34: Check buffer capacity before adding
+    if (this.buffer.length >= this.MAX_BUFFER_SIZE) {
+      this.dropped++;
+
+      // Log warning every 100 drops
+      if (this.dropped % 100 === 0) {
+        console.warn(`[MetricsPublisher] Dropped ${this.dropped} metrics due to buffer overflow`);
+      }
+
+      // Try emergency flush
+      if (this.buffer.length >= this.MAX_BUFFER_SIZE) {
+        await this.flush().catch(err => 
+          console.error('[MetricsPublisher] Emergency flush failed:', err)
+        );
+      }
+
+      // If still full, drop this metric
+      if (this.buffer.length >= this.MAX_BUFFER_SIZE) {
+        return;
+      }
+    }
+
     const metric: MetricDatum = {
       MetricName: name,
       Value: value,
@@ -59,6 +83,7 @@ class MetricsPublisher {
   public async flush() {
     if (this.buffer.length === 0) return;
 
+    // Take max one batch
     const metricsToSend = this.buffer.splice(0, this.BATCH_SIZE);
 
     try {
@@ -68,11 +93,30 @@ class MetricsPublisher {
       }));
 
       console.log(`[MetricsPublisher] Published ${metricsToSend.length} metrics`);
+
+      // FIX #34: Reset drop counter on successful flush
+      if (this.dropped > 0) {
+        console.log(`[MetricsPublisher] Recovered. Total dropped: ${this.dropped}`);
+        this.dropped = 0;
+      }
+
     } catch (err) {
       console.error('[MetricsPublisher] Failed to publish metrics:', err);
-      // Re-add metrics to buffer for retry
-      this.buffer.unshift(...metricsToSend);
+
+      // FIX #34: Re-add to front of buffer for retry (if space)
+      if (this.buffer.length + metricsToSend.length <= this.MAX_BUFFER_SIZE) {
+        this.buffer.unshift(...metricsToSend);
+      } else {
+        this.dropped += metricsToSend.length;
+      }
     }
+  }
+
+  /**
+   * FIX #34: Get count of dropped metrics
+   */
+  public getDroppedCount(): number {
+    return this.dropped;
   }
 
   public async publishCallMetrics(callId: string, metrics: {

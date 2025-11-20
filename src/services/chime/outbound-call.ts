@@ -228,12 +228,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const nowTs = Math.floor(now.getTime() / 1000);
     // CRITICAL FIX #5: Use centralized TTL policy
     const callTTL = nowTs + TTL_POLICY.ACTIVE_CALL_SECONDS;
+    
+    // FIX #4: Use unique queue position generation
+    const { generateUniqueQueuePosition } = require('../shared/utils/unique-id');
+    const queuePosition = generateUniqueQueuePosition();
+    
     await ddb.send(new PutCommand({
         TableName: CALL_QUEUE_TABLE_NAME,
         Item: {
             clinicId: body.fromClinicId,
             callId: callId,
-            queuePosition: now.getTime(),
+            queuePosition,
             queueEntryTime: nowTs,
             queueEntryTimeIso: now.toISOString(),
             phoneNumber: body.toPhoneNumber,

@@ -11,12 +11,15 @@ import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as customResources from 'aws-cdk-lib/custom-resources';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
+import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as fs from 'fs';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 
 export interface ChimeStackProps extends StackProps {
   userPool: any;
+  userPoolId: string;
   api?: apigw.RestApi;
   authorizer?: apigw.CognitoUserPoolsAuthorizer;
   /**
@@ -41,6 +44,14 @@ export interface ChimeStackProps extends StackProps {
    * Optional Kinesis stream ARN for sending Chime call analytics events
    */
   analyticsStreamArn?: string;
+  /**
+   * Enable call recording (default: true)
+   */
+  enableCallRecording?: boolean;
+  /**
+   * Recording retention period in days (default: 2555 days / ~7 years)
+   */
+  recordingRetentionDays?: number;
 }
 
 export type VoiceConnectorOriginationProtocol = 'UDP' | 'TCP' | 'TLS';
@@ -1214,6 +1225,209 @@ export class ChimeStack extends Stack {
       value: cleanupMonitorFn.functionArn,
       exportName: `${this.stackName}-CleanupMonitorArn`,
     });
+
+    // ========================================
+    // 7. CALL RECORDING INFRASTRUCTURE
+    // ========================================
+
+    let recordingsBucket: s3.Bucket | undefined;
+    let recordingsKey: kms.Key | undefined;
+    let getRecordingFn: lambdaNode.NodejsFunction | undefined;
+
+    if (props.enableCallRecording !== false) { // Default to enabled
+      console.log('[ChimeStack] Setting up call recording infrastructure');
+
+      // 1. KMS Key for encryption at rest (HIPAA compliance)
+      recordingsKey = new kms.Key(this, 'RecordingsEncryptionKey', {
+        description: 'Encryption key for call recordings',
+        enableKeyRotation: true,
+        removalPolicy: RemovalPolicy.RETAIN, // Keep keys even if stack is deleted
+      });
+
+      // Allow Chime to use the key
+      recordingsKey.addToResourcePolicy(new iam.PolicyStatement({
+        sid: 'AllowChimeToUseKey',
+        principals: [new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com')],
+        actions: [
+          'kms:Decrypt',
+          'kms:GenerateDataKey'
+        ],
+        resources: ['*'],
+        conditions: {
+          StringEquals: {
+            'aws:SourceAccount': this.account
+          }
+        }
+      }));
+
+      // 2. S3 Bucket for storing recordings
+      const retentionDays = props.recordingRetentionDays || 2555; // ~7 years (common compliance requirement)
+      
+      recordingsBucket = new s3.Bucket(this, 'CallRecordingsBucket', {
+        bucketName: `${this.stackName.toLowerCase()}-recordings-${this.account}-${this.region}`,
+        encryption: s3.BucketEncryption.KMS,
+        encryptionKey: recordingsKey,
+        blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+        versioned: true, // Protect against accidental deletion
+        lifecycleRules: [
+          {
+            id: 'DeleteOldRecordings',
+            enabled: true,
+            expiration: Duration.days(retentionDays),
+            noncurrentVersionExpiration: Duration.days(7), // Clean up old versions
+          },
+          {
+            id: 'TransitionToGlacier',
+            enabled: true,
+            transitions: [
+              {
+                storageClass: s3.StorageClass.INTELLIGENT_TIERING,
+                transitionAfter: Duration.days(90),
+              }
+            ]
+          }
+        ],
+        serverAccessLogsPrefix: 'access-logs/',
+        objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+        removalPolicy: RemovalPolicy.RETAIN, // Never delete recordings accidentally
+        autoDeleteObjects: false, // Extra safety - don't auto-delete
+      });
+
+      // Bucket policy to allow Chime to write recordings
+      recordingsBucket.addToResourcePolicy(new iam.PolicyStatement({
+        sid: 'AllowChimeVoiceConnectorToWriteRecordings',
+        principals: [new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com')],
+        actions: [
+          's3:PutObject',
+          's3:PutObjectAcl'
+        ],
+        resources: [recordingsBucket.arnForObjects('*')],
+        conditions: {
+          StringEquals: {
+            'aws:SourceAccount': this.account
+          }
+        }
+      }));
+
+      // 3. DynamoDB table for recording metadata
+      const recordingMetadataTable = new dynamodb.Table(this, 'RecordingMetadataTable', {
+        tableName: `${this.stackName}-RecordingMetadata`,
+        partitionKey: { name: 'recordingId', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+        removalPolicy: RemovalPolicy.RETAIN, // Keep metadata
+        pointInTimeRecovery: true,
+        timeToLiveAttribute: 'ttl', // Auto-cleanup old metadata
+      });
+
+      // GSI: Query by callId
+      recordingMetadataTable.addGlobalSecondaryIndex({
+        indexName: 'callId-index',
+        partitionKey: { name: 'callId', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
+        projectionType: dynamodb.ProjectionType.ALL,
+      });
+
+      // GSI: Query by clinic and date
+      recordingMetadataTable.addGlobalSecondaryIndex({
+        indexName: 'clinicId-timestamp-index',
+        partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
+        projectionType: dynamodb.ProjectionType.ALL,
+      });
+
+      // 4. Lambda to process new recordings
+      const recordingProcessorFn = new lambdaNode.NodejsFunction(this, 'RecordingProcessorFn', {
+        functionName: `${this.stackName}-RecordingProcessor`,
+        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'process-recording.ts'),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_20_X,
+        timeout: Duration.minutes(5), // Allow time for transcription
+        memorySize: 1024,
+        environment: {
+          RECORDING_METADATA_TABLE: recordingMetadataTable.tableName,
+          CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+          ENABLE_TRANSCRIPTION: 'true',
+          ENABLE_SENTIMENT_ANALYSIS: 'true',
+        },
+        logRetention: logs.RetentionDays.ONE_MONTH,
+      });
+
+      // Grant permissions
+      recordingsBucket.grantRead(recordingProcessorFn);
+      recordingMetadataTable.grantWriteData(recordingProcessorFn);
+      this.callQueueTable.grantReadWriteData(recordingProcessorFn);
+      recordingsKey.grantDecrypt(recordingProcessorFn);
+
+      // Grant Transcribe permissions
+      recordingProcessorFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: [
+          'transcribe:StartTranscriptionJob',
+          'transcribe:GetTranscriptionJob'
+        ],
+        resources: ['*']
+      }));
+
+      // Grant Comprehend permissions
+      recordingProcessorFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: [
+          'comprehend:DetectSentiment',
+          'comprehend:BatchDetectSentiment'
+        ],
+        resources: ['*']
+      }));
+
+      // Trigger Lambda on new recordings
+      recordingsBucket.addEventNotification(
+        s3.EventType.OBJECT_CREATED,
+        new s3n.LambdaDestination(recordingProcessorFn),
+        { prefix: 'recordings/', suffix: '.wav' }
+      );
+
+      // 5. Update SMA Handler environment variables
+      smaHandler.addEnvironment('RECORDINGS_BUCKET', recordingsBucket.bucketName);
+      smaHandler.addEnvironment('ENABLE_CALL_RECORDING', 'true');
+      recordingsBucket.grantWrite(smaHandler);
+      recordingsKey.grantEncrypt(smaHandler);
+
+      // 6. API Lambda for retrieving recordings
+      getRecordingFn = new lambdaNode.NodejsFunction(this, 'GetRecordingFn', {
+        functionName: `${this.stackName}-GetRecording`,
+        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'get-recording.ts'),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_20_X,
+        timeout: Duration.seconds(30),
+        memorySize: 256,
+        environment: {
+          RECORDINGS_BUCKET: recordingsBucket.bucketName,
+          RECORDING_METADATA_TABLE: recordingMetadataTable.tableName,
+          USER_POOL_ID: props.userPoolId,
+          COGNITO_REGION: this.region,
+        },
+      });
+
+      recordingsBucket.grantRead(getRecordingFn);
+      recordingMetadataTable.grantReadData(getRecordingFn);
+      recordingsKey.grantDecrypt(getRecordingFn);
+
+      // Outputs
+      new CfnOutput(this, 'RecordingsBucketName', {
+        value: recordingsBucket.bucketName,
+        description: 'S3 bucket for call recordings',
+        exportName: `${this.stackName}-RecordingsBucket`,
+      });
+
+      new CfnOutput(this, 'RecordingMetadataTableName', {
+        value: recordingMetadataTable.tableName,
+        description: 'DynamoDB table for recording metadata',
+        exportName: `${this.stackName}-RecordingMetadataTable`,
+      });
+
+      new CfnOutput(this, 'GetRecordingFnArn', {
+        value: getRecordingFn.functionArn,
+        exportName: `${this.stackName}-GetRecordingFnArn`,
+      });
+    }
 
     // ========================================
     // 13. CloudWatch Alarms for Monitoring

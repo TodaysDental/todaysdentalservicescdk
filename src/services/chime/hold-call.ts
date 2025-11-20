@@ -1,13 +1,26 @@
+/**
+ * FIX #2: Hold/Resume State Mismatch with Compensating Transactions
+ * 
+ * Enhanced with:
+ * - Pre-flight state checks
+ * - Atomic state reservation
+ * - Compensating actions via SQS on failure
+ * - State machine enforcement
+ */
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { ChimeSDKMeetingsClient, DeleteAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
+import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getSmaIdForClinic } from './utils/sma-map';
 import { verifyIdTokenCached } from '../shared/utils/jwt-verification';
 import { checkClinicAuthorization } from '../shared/utils/authorization';
+import { validateStateTransition, CALL_STATE_MACHINE } from '../shared/utils/state-machine';
 import { randomUUID } from 'crypto';
+
+const sqs = new SQSClient({});
 
 const ddb = getDynamoDBClient();
 const chimeVoice = new ChimeSDKVoiceClient({});
@@ -16,6 +29,7 @@ const chimeClient = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
+const COMPENSATING_ACTIONS_QUEUE_URL = process.env.COMPENSATING_ACTIONS_QUEUE_URL;
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
 /**
@@ -88,6 +102,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const callRecord = callRecords[0];
         const { clinicId, queuePosition } = callRecord;
         
+        // FIX #2: Validate state transition before attempting hold
+        try {
+            validateStateTransition(callRecord.status, 'on_hold', CALL_STATE_MACHINE, 'call');
+        } catch (err: any) {
+            console.warn('[hold-call] Invalid state transition:', err.message);
+            return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({ 
+                    message: err.message,
+                    currentStatus: callRecord.status
+                })
+            };
+        }
+        
         // Check clinic authorization
         const authzCheck = checkClinicAuthorization(verifyResult.payload, clinicId);
         if (!authzCheck.authorized) {
@@ -146,27 +175,73 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // CRITICAL FIX: Check if this call has an active meeting
+        // FIX #15: CRITICAL - Validate meeting exists before hold operations
         let meetingId = null;
         let agentAttendeeId = null;
         
-        if (callRecord.meetingInfo?.MeetingId) {
-            meetingId = callRecord.meetingInfo.MeetingId;
-            console.log(`[hold-call] Found active meeting ${meetingId} for call ${callId}`);
+        if (!callRecord.meetingInfo?.MeetingId) {
+            console.error(`[hold-call] No active meeting for call ${callId}`);
+            return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({ 
+                    message: 'Cannot hold call - no active meeting',
+                    error: 'NO_ACTIVE_MEETING'
+                })
+            };
+        }
+        
+        meetingId = callRecord.meetingInfo.MeetingId;
+        console.log(`[hold-call] Found active meeting ${meetingId} for call ${callId}`);
+        
+        // FIX #15: Validate meeting actually exists in Chime
+        const meetingExists = await validateMeetingExists(meetingId);
+        if (!meetingExists) {
+            console.error(`[hold-call] Meeting ${meetingId} not found in Chime`);
             
-            // Check for attendee ID in various fields
-            if (agentRecord?.currentMeetingAttendeeId) {
-                agentAttendeeId = agentRecord.currentMeetingAttendeeId;
-                console.log(`[hold-call] Found agent attendee ID in currentMeetingAttendeeId: ${agentAttendeeId}`);
-            } else if (agentRecord?.inboundAttendeeInfo?.AttendeeId) {
-                agentAttendeeId = agentRecord.inboundAttendeeInfo.AttendeeId;
-                console.log(`[hold-call] Found agent attendee ID in inboundAttendeeInfo: ${agentAttendeeId}`);
-            } else if (agentRecord?.attendeeInfo?.AttendeeId) {
-                agentAttendeeId = agentRecord.attendeeInfo.AttendeeId;
-                console.log(`[hold-call] Found agent attendee ID in attendeeInfo: ${agentAttendeeId}`);
-            }
-        } else {
-            console.log(`[hold-call] No active meeting found for call ${callId}`);
+            // Clean up stale meeting reference
+            await ddb.send(new UpdateCommand({
+                TableName: CALL_QUEUE_TABLE_NAME,
+                Key: { clinicId, queuePosition },
+                UpdateExpression: 'REMOVE meetingInfo, customerAttendeeInfo, agentAttendeeInfo ' +
+                                 'SET meetingError = :error',
+                ExpressionAttributeValues: {
+                    ':error': 'Meeting not found in Chime SDK'
+                }
+            }));
+            
+            return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({
+                    message: 'Cannot hold call - meeting no longer exists',
+                    error: 'MEETING_NOT_FOUND'
+                })
+            };
+        }
+        
+        // Check for attendee ID in various fields
+        if (agentRecord?.currentMeetingAttendeeId) {
+            agentAttendeeId = agentRecord.currentMeetingAttendeeId;
+            console.log(`[hold-call] Found agent attendee ID in currentMeetingAttendeeId: ${agentAttendeeId}`);
+        } else if (agentRecord?.inboundAttendeeInfo?.AttendeeId) {
+            agentAttendeeId = agentRecord.inboundAttendeeInfo.AttendeeId;
+            console.log(`[hold-call] Found agent attendee ID in inboundAttendeeInfo: ${agentAttendeeId}`);
+        } else if (agentRecord?.attendeeInfo?.AttendeeId) {
+            agentAttendeeId = agentRecord.attendeeInfo.AttendeeId;
+            console.log(`[hold-call] Found agent attendee ID in attendeeInfo: ${agentAttendeeId}`);
+        }
+        
+        // FIX #15: Validate agent is in the meeting
+        if (!agentAttendeeId) {
+            return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({
+                    message: 'Cannot hold call - agent not in meeting',
+                    error: 'AGENT_NOT_IN_MEETING'
+                })
+            };
         }
         
         // CRITICAL FIX #5: Make hold operation as atomic as possible
@@ -276,8 +351,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         } catch (dbErr: any) {
             console.error(`[hold-call] STEP 3 FAILED - Database transaction failed (${holdOperationId}):`, dbErr);
             
-            // CRITICAL: SMA is on hold but DB not updated - state inconsistent
-            // Cleanup monitor should reconcile this
+            // FIX #2: CRITICAL - SMA is on hold but DB not updated - schedule compensating action
+            await scheduleCompensatingAction({
+                action: 'RESUME_HELD_CALL',
+                callId,
+                agentId,
+                clinicId,
+                queuePosition,
+                smaId,
+                holdOperationId,
+                reason: 'DB_UPDATE_FAILED',
+                timestamp: new Date().toISOString()
+            });
             
             if (dbErr.name === 'TransactionCanceledException') {
                 console.error(`[hold-call] INCONSISTENT STATE - SMA on hold but DB update failed due to condition check (${holdOperationId})`);
@@ -313,3 +398,53 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         };
     }
 };
+
+/**
+ * FIX #2: Schedule compensating action to fix inconsistent state
+ * Sends message to SQS for async processing
+ */
+async function scheduleCompensatingAction(action: any): Promise<void> {
+    if (!COMPENSATING_ACTIONS_QUEUE_URL) {
+        console.error('[hold-call] No compensating actions queue configured - cannot schedule recovery');
+        return;
+    }
+
+    try {
+        await sqs.send(new SendMessageCommand({
+            QueueUrl: COMPENSATING_ACTIONS_QUEUE_URL,
+            MessageBody: JSON.stringify(action),
+            MessageAttributes: {
+                actionType: {
+                    DataType: 'String',
+                    StringValue: action.action
+                },
+                priority: {
+                    DataType: 'String',
+                    StringValue: 'HIGH'
+                }
+            },
+            DelaySeconds: 5 // Small delay to allow potential race conditions to settle
+        }));
+
+        console.log('[hold-call] Compensating action scheduled:', action.action, action.holdOperationId);
+    } catch (err) {
+        console.error('[hold-call] Failed to schedule compensating action:', err);
+        // Don't throw - this is best-effort recovery
+    }
+}
+
+/**
+ * FIX #15: Validate meeting exists in Chime SDK
+ */
+async function validateMeetingExists(meetingId: string): Promise<boolean> {
+    try {
+        const { GetMeetingCommand } = await import('@aws-sdk/client-chime-sdk-meetings');
+        await chimeClient.send(new GetMeetingCommand({ MeetingId: meetingId }));
+        return true;
+    } catch (err: any) {
+        if (err.name === 'NotFoundException') {
+            return false;
+        }
+        throw err; // Re-throw other errors
+    }
+}

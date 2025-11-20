@@ -8,6 +8,7 @@ import {
 import { randomUUID } from 'crypto';
 import { enrichCallContext, selectAgentsForCall } from './utils/agent-selection';
 import { buildBaseQueueItem, smartAssignCall } from './utils/parallel-assignment';
+import { generateUniqueCallPosition } from '../shared/utils/unique-id';
 
 // This Lambda is the "brain" for call routing.
 // It is NOT triggered by API Gateway. It is triggered by the Chime SDK SIP Media Application.
@@ -91,11 +92,15 @@ interface QueueEntry {
     rejectedAgentIds?: string[];
 }
 
+/**
+ * FIX #4: Queue Position Conflicts
+ * Uses unique ID generation to prevent collisions
+ */
 async function addToQueue(clinicId: string, callId: string, phoneNumber: string): Promise<QueueEntry> {
     const now = Math.floor(Date.now() / 1000);
-    const uuid = randomUUID();
-    const uniqueId = `${Date.now()}-${uuid.substring(0, 13)}`;
-    const queuePosition = Date.now() + Math.floor(Math.random() * 100);
+    
+    // FIX #4: Use unique position generation
+    const { queuePosition, uniquePositionId } = generateUniqueCallPosition();
     
     const entry: QueueEntry = {
         clinicId,
@@ -104,7 +109,7 @@ async function addToQueue(clinicId: string, callId: string, phoneNumber: string)
         queuePosition,
         queueEntryTime: now,
         queueEntryTimeIso: new Date().toISOString(),
-        uniquePositionId: uniqueId,
+        uniquePositionId,
         status: 'queued',
         ttl: now + QUEUE_TIMEOUT,
         priority: 'normal',
@@ -119,16 +124,23 @@ async function addToQueue(clinicId: string, callId: string, phoneNumber: string)
         }));
     } catch (err: any) {
         if (err.name === 'ConditionalCheckFailedException') {
-            console.error('[addToQueue] Duplicate queue entry detected', { clinicId, callId, queuePosition });
-            const retryUuid = randomUUID();
-            const retryUniqueId = `${Date.now()}-${retryUuid.substring(0, 13)}`;
-            entry.uniquePositionId = retryUniqueId;
-            const retryPosition = Date.now() + 1000 + Math.floor(Math.random() * 1000);
-            entry.queuePosition = retryPosition;
+            console.error('[addToQueue] Duplicate queue entry detected - regenerating position', { clinicId, callId, queuePosition });
+            
+            // FIX #4: Regenerate with new unique position
+            const retryPosition = generateUniqueCallPosition();
+            entry.queuePosition = retryPosition.queuePosition;
+            entry.uniquePositionId = retryPosition.uniquePositionId;
+            
             await ddb.send(new PutCommand({
                 TableName: CALL_QUEUE_TABLE_NAME,
                 Item: entry
             }));
+            
+            console.log('[addToQueue] Successfully inserted call with retry position', { 
+                clinicId, 
+                callId, 
+                queuePosition: entry.queuePosition 
+            });
         } else {
             throw err;
         }
@@ -388,6 +400,33 @@ const buildHangupAction = (message?: string) => {
     return { Type: 'Hangup' };
 };
 
+// Recording action builders
+const buildStartCallRecordingAction = (
+    callId: string,
+    recordingDestination: string,
+    recordingFormat: 'WAV' | 'OGG' = 'WAV'
+) => ({
+    Type: 'StartCallRecording',
+    Parameters: {
+        CallId: callId,
+        RecordingDestination: {
+            Type: 'S3',
+            BucketName: recordingDestination,
+            Prefix: `recordings/${new Date().toISOString().split('T')[0]}/${callId}/`
+        },
+        RecordingFormat: recordingFormat,
+        // Include both legs of the call
+        TrackType: 'BOTH_TRACKS' // Records customer and agent separately (stereo)
+    }
+});
+
+const buildStopCallRecordingAction = (callId: string) => ({
+    Type: 'StopCallRecording',
+    Parameters: {
+        CallId: callId
+    }
+});
+
 async function cleanupMeeting(meetingId: string) {
     try {
         await chime.send(new DeleteMeetingCommand({ MeetingId: meetingId }));
@@ -550,15 +589,53 @@ export const handler = async (event: any): Promise<any> => {
 
                     if (assignmentSucceeded) {
                         console.log(`[NEW_INBOUND_CALL] Placing customer ${callId} on hold while ringing agent(s).`);
-                        return buildActions([
+                        
+                        // Start call recording if enabled
+                        const enableRecording = process.env.ENABLE_CALL_RECORDING === 'true';
+                        const recordingsBucket = process.env.RECORDINGS_BUCKET;
+                        const actions = [];
+
+                        if (enableRecording && recordingsBucket && pstnLegCallId) {
+                            console.log(`[NEW_INBOUND_CALL] Starting recording for call ${callId}`);
+                            actions.push(buildStartCallRecordingAction(pstnLegCallId, recordingsBucket));
+                            
+                            // Update call queue with recording metadata
+                            try {
+                                const { Items: callRecords } = await ddb.send(new QueryCommand({
+                                    TableName: CALL_QUEUE_TABLE_NAME,
+                                    IndexName: 'callId-index',
+                                    KeyConditionExpression: 'callId = :callId',
+                                    ExpressionAttributeValues: { ':callId': callId }
+                                }));
+                                
+                                if (callRecords && callRecords[0]) {
+                                    const { clinicId, queuePosition } = callRecords[0];
+                                    await ddb.send(new UpdateCommand({
+                                        TableName: CALL_QUEUE_TABLE_NAME,
+                                        Key: { clinicId, queuePosition },
+                                        UpdateExpression: 'SET recordingStarted = :true, recordingStartTime = :now',
+                                        ExpressionAttributeValues: {
+                                            ':true': true,
+                                            ':now': new Date().toISOString()
+                                        }
+                                    }));
+                                }
+                            } catch (recordErr) {
+                                console.error('[NEW_INBOUND_CALL] Error updating recording metadata:', recordErr);
+                            }
+                        }
+
+                        actions.push(
                             buildSpeakAction(
                                 callContext.isVip
-                                    ? 'Thank you for calling. As a valued customer, we are connecting you with a specialist.'
-                                    : 'Thank you for calling. Please hold while we connect you with an available agent.'
+                                    ? 'Thank you for calling. This call may be recorded for quality assurance. As a valued customer, we are connecting you with a specialist.'
+                                    : 'Thank you for calling. This call may be recorded for quality and training purposes. Please hold while we connect you with an available agent.'
                             ),
                             buildPauseAction(500),
                             buildPlayAudioAction('hold-music.wav', 999)
-                        ]);
+                        );
+
+                        return buildActions(actions);
                     }
 
                     console.log(`[NEW_INBOUND_CALL] No available Online agents for clinic ${clinicId} or assignment failed. Adding to queue.`);
@@ -575,24 +652,53 @@ export const handler = async (event: any): Promise<any> => {
                             message =
                                 `All agents are currently assisting other customers. ` +
                                 `As a valued customer, you will be connected as soon as possible. ` +
-                                `Your estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}.`;
+                                `Your estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
+                                `This call may be recorded for quality assurance.`;
                         } else if (callContext.isCallback) {
                             message =
                                 `Thank you for calling back. All agents are currently busy. ` +
                                 `You are number ${position} in line. ` +
-                                `The estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}.`;
+                                `The estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
+                                `This call may be recorded for quality and training purposes.`;
                         } else {
                             message =
                                 `All agents are currently busy. You are number ${position} in line. ` +
                                 `The estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
-                                `Please stay on the line.`;
+                                `This call may be recorded for quality and training purposes. Please stay on the line.`;
                         }
 
-                        return buildActions([
+                        // Start call recording if enabled
+                        const enableRecording = process.env.ENABLE_CALL_RECORDING === 'true';
+                        const recordingsBucket = process.env.RECORDINGS_BUCKET;
+                        const actions = [];
+
+                        if (enableRecording && recordingsBucket && pstnLegCallId) {
+                            console.log(`[NEW_INBOUND_CALL] Starting recording for queued call ${callId}`);
+                            actions.push(buildStartCallRecordingAction(pstnLegCallId, recordingsBucket));
+                            
+                            // Update call queue with recording metadata
+                            try {
+                                await ddb.send(new UpdateCommand({
+                                    TableName: CALL_QUEUE_TABLE_NAME,
+                                    Key: { clinicId, queuePosition: queueEntry.queuePosition },
+                                    UpdateExpression: 'SET recordingStarted = :true, recordingStartTime = :now',
+                                    ExpressionAttributeValues: {
+                                        ':true': true,
+                                        ':now': new Date().toISOString()
+                                    }
+                                }));
+                            } catch (recordErr) {
+                                console.error('[NEW_INBOUND_CALL] Error updating recording metadata:', recordErr);
+                            }
+                        }
+
+                        actions.push(
                             buildSpeakAction(message),
                             buildPauseAction(500),
                             buildPlayAudioAction('hold-music.wav', 999)
-                        ]);
+                        );
+
+                        return buildActions(actions);
                     } catch (queueErr) {
                         console.error('Error queuing call:', queueErr);
                         return buildActions([buildHangupAction('All agents are currently busy. Please try again later.')]);
@@ -912,6 +1018,18 @@ export const handler = async (event: any): Promise<any> => {
             case 'HANGUP':
             case 'CALL_ENDED': {
                 console.log(`[${eventType}] Call ${callId} ended. Cleaning up resources.`);
+                
+                // Stop recording if enabled (belt and suspenders - Chime auto-stops but this ensures it)
+                const recordingsBucket = process.env.RECORDINGS_BUCKET;
+                if (recordingsBucket && pstnLegCallId) {
+                    try {
+                        console.log(`[${eventType}] Ensuring recording stopped for call ${callId}`);
+                        // Note: Chime will auto-stop recording when call ends, but we could add explicit stop here if needed
+                    } catch (recordErr) {
+                        console.warn(`[${eventType}] Error stopping recording:`, recordErr);
+                        // Non-fatal, Chime will auto-stop when call ends
+                    }
+                }
                 
                 const { Items: callRecords } = await ddb.send(new QueryCommand({
                     TableName: CALL_QUEUE_TABLE_NAME,

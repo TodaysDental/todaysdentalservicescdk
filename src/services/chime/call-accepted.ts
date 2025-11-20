@@ -14,8 +14,10 @@ import { verifyIdTokenCached } from '../shared/utils/jwt-verification';
 import { cleanupOrphanedCallResources } from './utils/resource-cleanup';
 import { randomUUID } from 'crypto';
 import { TTL_POLICY } from './config/ttl-policy';
+import { DistributedLock } from './utils/distributed-lock';
 
 const ddb = getDynamoDBClient();
+const LOCKS_TABLE_NAME = process.env.LOCKS_TABLE_NAME;
 const chimeVoice = new ChimeSDKVoiceClient({});
 const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
 const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
@@ -152,74 +154,124 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // 4. Use transaction to atomically claim the call and update agent statuses
-        // CRITICAL FIX #1: Win transaction FIRST before creating attendee to prevent resource leak
-        // CRITICAL FIX #1: Prevent double-acceptance with explicit assignedAgentId check
-        // CRITICAL FIX #6: Simplify transaction to 2 items (exclude other agents cleanup)
-        console.log('[call-accepted] Attempting to claim call with transaction', { callId, agentId });
+        // 4. CRITICAL FIX #1: Use distributed lock to prevent race conditions
+        // Acquire lock on this specific call before attempting to claim it
+        console.log('[call-accepted] Acquiring distributed lock for call', { callId });
         
-        const timestamp = new Date().toISOString();
-        const nowSeconds = Math.floor(Date.now() / 1000);
-        // CRITICAL FIX #5: Use centralized TTL policy
-        const extendedTTL = nowSeconds + TTL_POLICY.ACTIVE_CALL_SECONDS;
+        if (!LOCKS_TABLE_NAME) {
+            console.error('[call-accepted] LOCKS_TABLE_NAME not configured');
+            return {
+                statusCode: 500,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'System configuration error' })
+            };
+        }
 
-        const transactionItems: any[] = [
-            // Item 1: Update call status to 'accepting' to reserve the call
-            // CRITICAL: Verify call is still ringing AND hasn't been claimed by another agent
-            {
-                Update: {
-                    TableName: CALL_QUEUE_TABLE_NAME,
-                    Key: { clinicId, queuePosition },
-                    UpdateExpression: 'SET #status = :accepting, assignedAgentId = :agentId, acceptedAt = :timestamp, #ttl = :ttl',
-                    ConditionExpression: '#status = :ringing AND attribute_not_exists(assignedAgentId)', // Prevent double-acceptance
-                    ExpressionAttributeNames: { '#status': 'status', '#ttl': 'ttl' },
-                    ExpressionAttributeValues: {
-                        ':accepting': 'accepting',
-                        ':agentId': agentId,
-                        ':timestamp': timestamp,
-                        ':ringing': 'ringing',
-                        ':ttl': extendedTTL
-                    }
-                }
-            },
-            // Item 2: Update the accepting agent's status to 'OnCall'
-            {
-                Update: {
-                    TableName: AGENT_PRESENCE_TABLE_NAME,
-                    Key: { agentId },
-                    UpdateExpression: 'SET #status = :onCall, currentCallId = :callId, lastActivityAt = :timestamp REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
-                    ConditionExpression: 'ringingCallId = :callId', // Ensure agent was ringing for this call
-                    ExpressionAttributeNames: { '#status': 'status' },
-                    ExpressionAttributeValues: {
-                        ':onCall': 'OnCall',
-                        ':callId': callId,
-                        ':timestamp': timestamp
-                    }
-                }
-            }
-        ];
-        
-        // NOTE: We no longer update other ringing agents in this transaction.
-        // Reason: If any of 25 agents' states changed, the entire transaction fails.
-        // The cleanup-monitor will handle stale ringing states via heartbeat monitoring.
-        
+        const lock = new DistributedLock(ddb, {
+            tableName: LOCKS_TABLE_NAME,
+            lockKey: `call-assignment-${callId}`,
+            ttlSeconds: 10,
+            maxRetries: 3,
+            retryDelayMs: 50
+        });
+
+        const acquired = await lock.acquire();
+        if (!acquired) {
+            console.warn('[call-accepted] Failed to acquire lock - call being processed by another agent', { callId, agentId });
+            return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Call is being assigned to another agent' })
+            };
+        }
+
         try {
-            await ddb.send(new TransactWriteCommand({ TransactItems: transactionItems }));
-            console.log('[call-accepted] Transaction completed successfully - call reserved', { callId, agentId });
-        } catch (err: any) {
-            if (err.name === 'TransactionCanceledException') {
-                console.warn('[call-accepted] Transaction failed. Call likely claimed by another agent.', { callId, agentId, reasons: err.CancellationReasons });
-                return {
-                    statusCode: 409, // Conflict
-                    headers: corsHeaders,
-                    body: JSON.stringify({ 
-                        message: 'Call was already accepted by another agent.',
-                        callId, agentId
-                    })
-                };
+            // 5. Use transaction to atomically claim the call with version number
+            // CRITICAL FIX #1: Win transaction FIRST before creating attendee to prevent resource leak
+            console.log('[call-accepted] Attempting to claim call with transaction (lock acquired)', { callId, agentId });
+            
+            const timestamp = new Date().toISOString();
+            const nowSeconds = Math.floor(Date.now() / 1000);
+            // CRITICAL FIX #5: Use centralized TTL policy
+            const extendedTTL = nowSeconds + TTL_POLICY.ACTIVE_CALL_SECONDS;
+
+            const transactionItems: any[] = [
+                // Item 1: Update call status to 'accepting' with version check
+                // CRITICAL: Verify call is still ringing AND hasn't been claimed
+                {
+                    Update: {
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        Key: { clinicId, queuePosition },
+                        UpdateExpression: 'SET #status = :accepting, assignedAgentId = :agentId, acceptedAt = :timestamp, ' +
+                                         '#ttl = :ttl, #version = if_not_exists(#version, :zero) + :one',
+                        ConditionExpression: '#status = :ringing AND attribute_not_exists(assignedAgentId) AND ' +
+                                            ':agentId IN (agentIds)',
+                        ExpressionAttributeNames: { 
+                            '#status': 'status', 
+                            '#ttl': 'ttl',
+                            '#version': 'version'
+                        },
+                        ExpressionAttributeValues: {
+                            ':accepting': 'accepting',
+                            ':agentId': agentId,
+                            ':timestamp': timestamp,
+                            ':ringing': 'ringing',
+                            ':ttl': extendedTTL,
+                            ':zero': 0,
+                            ':one': 1
+                        }
+                    }
+                },
+                // Item 2: Update the accepting agent's status to 'OnCall'
+                {
+                    Update: {
+                        TableName: AGENT_PRESENCE_TABLE_NAME,
+                        Key: { agentId },
+                        UpdateExpression: 'SET #status = :onCall, currentCallId = :callId, callStatus = :connected, ' +
+                                         'lastActivityAt = :timestamp ' +
+                                         'REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ' +
+                                         'ringingCallTransferAgentId, ringingCallTransferMode',
+                        ConditionExpression: 'ringingCallId = :callId', // Ensure agent was ringing for this call
+                        ExpressionAttributeNames: { '#status': 'status' },
+                        ExpressionAttributeValues: {
+                            ':onCall': 'OnCall',
+                            ':connected': 'connected',
+                            ':callId': callId,
+                            ':timestamp': timestamp
+                        }
+                    }
+                }
+            ];
+            
+            // NOTE: We no longer update other ringing agents in this transaction.
+            // Reason: If any of 25 agents' states changed, the entire transaction fails.
+            // The cleanup-monitor will handle stale ringing states via heartbeat monitoring.
+            
+            try {
+                await ddb.send(new TransactWriteCommand({ TransactItems: transactionItems }));
+                console.log('[call-accepted] Transaction completed successfully - call reserved', { callId, agentId });
+            } catch (err: any) {
+                if (err.name === 'TransactionCanceledException') {
+                    console.warn('[call-accepted] Transaction failed. Call likely claimed by another agent.', { 
+                        callId, 
+                        agentId, 
+                        reasons: err.CancellationReasons 
+                    });
+                    return {
+                        statusCode: 409, // Conflict
+                        headers: corsHeaders,
+                        body: JSON.stringify({ 
+                            message: 'Call was already accepted by another agent.',
+                            callId, agentId
+                        })
+                    };
+                }
+                // Other transaction error
+                throw err;
             }
-            // Other transaction error
-            throw err;
+        } finally {
+            // Always release the lock
+            await lock.release();
         }
 
         // 5. Create attendee AFTER winning the transaction (prevents resource leak)

@@ -83,3 +83,60 @@ export function calculateSessionExpiry(): {
         durationSeconds: TTL_POLICY.SESSION_MAX_SECONDS,
     };
 }
+
+/**
+ * FIX #5: Extend TTL for active calls and agent sessions
+ * Ensures sessions don't expire during active calls
+ */
+export function extendSessionForActiveCall(): {
+    ttl: number;
+    sessionExpiresAtEpoch: number;
+} {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    
+    // FIX #5: Use ACTIVE_CALL_SECONDS for calls in progress
+    // This ensures the session outlasts the call duration
+    const sessionExpiresAtEpoch = nowSeconds + TTL_POLICY.ACTIVE_CALL_SECONDS;
+    const ttl = sessionExpiresAtEpoch + TTL_POLICY.HEARTBEAT_GRACE_SECONDS;
+
+    return {
+        ttl,
+        sessionExpiresAtEpoch
+    };
+}
+
+/**
+ * FIX #7: Calculate TTL extension for heartbeat
+ * Extends session without exceeding max session duration
+ */
+export function calculateHeartbeatTTL(currentSessionExpiresAt?: number): {
+    ttl: number;
+    sessionExpiresAtEpoch: number;
+    extended: boolean;
+} {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    
+    // If session has existing expiry, extend it up to max
+    if (currentSessionExpiresAt && currentSessionExpiresAt > nowSeconds) {
+        // Calculate remaining time + heartbeat grace
+        const remainingSeconds = currentSessionExpiresAt - nowSeconds;
+        const extensionSeconds = Math.min(
+            remainingSeconds + TTL_POLICY.HEARTBEAT_GRACE_SECONDS,
+            TTL_POLICY.SESSION_MAX_SECONDS
+        );
+        
+        return {
+            ttl: nowSeconds + extensionSeconds + TTL_POLICY.HEARTBEAT_GRACE_SECONDS,
+            sessionExpiresAtEpoch: nowSeconds + extensionSeconds,
+            extended: true
+        };
+    }
+    
+    // No existing expiry or expired - create new session
+    const sessionExpiresAtEpoch = nowSeconds + TTL_POLICY.HEARTBEAT_GRACE_SECONDS;
+    return {
+        ttl: sessionExpiresAtEpoch + TTL_POLICY.HEARTBEAT_GRACE_SECONDS,
+        sessionExpiresAtEpoch,
+        extended: false
+    };
+}

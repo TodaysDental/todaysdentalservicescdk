@@ -1,3 +1,11 @@
+/**
+ * FIX #3: Transfer Race Condition with Agent Locking
+ * 
+ * Enhanced with:
+ * - Distributed lock on target agent to prevent simultaneous transfers
+ * - State machine validation
+ * - Atomic operations with proper rollback
+ */
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
@@ -5,6 +13,8 @@ import { ChimeSDKMeetingsClient, CreateAttendeeCommand, DeleteAttendeeCommand } 
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getSmaIdForClinic } from './utils/sma-map';
+import { DistributedLock } from './utils/distributed-lock';
+import { validateStateTransition, CALL_STATE_MACHINE } from '../shared/utils/state-machine';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
 import { randomUUID } from 'crypto';
 
@@ -17,7 +27,11 @@ const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 const USER_POOL_ID = process.env.USER_POOL_ID;
 const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
 let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
-const MAX_TRANSFER_NOTE_LENGTH = 500;
+// FIX #31: Use centralized config for transfer note length
+import { CHIME_CONFIG } from './config';
+import { sanitizeText } from '../shared/utils/input-sanitization';
+
+const MAX_TRANSFER_NOTE_LENGTH = CHIME_CONFIG.TRANSFER.MAX_NOTE_LENGTH;
 const VALID_TRANSFER_NOTES_REGEX = /^[a-zA-Z0-9\s.,!?:;'"\-@#$/()&+]*$/;
 
 // Auth Helpers
@@ -41,6 +55,7 @@ async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; p
   }
 }
 
+// FIX #31: Enhanced transfer notes validation
 function sanitizeTransferNotes(input?: string): { sanitized?: string; error?: string } {
     if (typeof input !== 'string') {
         return { sanitized: undefined };
@@ -49,6 +64,15 @@ function sanitizeTransferNotes(input?: string): { sanitized?: string; error?: st
     if (!trimmed) {
         return { sanitized: undefined };
     }
+    
+    // FIX #31: Validate length before processing
+    if (trimmed.length > MAX_TRANSFER_NOTE_LENGTH) {
+        return { 
+            error: `Transfer notes too long (max ${MAX_TRANSFER_NOTE_LENGTH} characters)`,
+            sanitized: undefined
+        };
+    }
+    
     if (!VALID_TRANSFER_NOTES_REGEX.test(trimmed)) {
         return { error: 'Transfer notes contain unsupported characters' };
     }
@@ -133,19 +157,63 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // 1. Verify the target agent is available
-        const { Item: targetAgent } = await ddb.send(new GetCommand({
-            TableName: AGENT_PRESENCE_TABLE_NAME,
-            Key: { agentId: toAgentId }
-        }));
+        // FIX #3: Acquire distributed lock on target agent to prevent race conditions
+        const lock = new DistributedLock(
+            ddb,
+            process.env.LOCKS_TABLE_NAME || 'ChimeLocks',
+            `agent-transfer-${toAgentId}`,
+            30000 // 30 second lock
+        );
 
-        if (!targetAgent || targetAgent.status !== 'Online') {
+        const lockAcquired = await lock.acquire();
+        if (!lockAcquired) {
+            console.warn('[transfer-call] Could not acquire lock on target agent', { toAgentId });
             return {
-                statusCode: 400,
+                statusCode: 409,
                 headers: corsHeaders,
-                body: JSON.stringify({ message: 'Target agent is not available' })
+                body: JSON.stringify({ message: 'Target agent is busy with another operation. Please try again.' })
             };
         }
+
+        try {
+            // 1. Verify the target agent is available (with strong consistency)
+            const { Item: targetAgent } = await ddb.send(new GetCommand({
+                TableName: AGENT_PRESENCE_TABLE_NAME,
+                Key: { agentId: toAgentId },
+                ConsistentRead: true // FIX #3: Use consistent read for critical state check
+            }));
+
+            // FIX #30: Enhanced target agent validation
+            if (!targetAgent) {
+                await lock.release();
+                return {
+                    statusCode: 404,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ message: 'Target agent not found' })
+                };
+            }
+
+            if (targetAgent.status !== 'Online') {
+                await lock.release();
+                return {
+                    statusCode: 409,
+                    headers: corsHeaders,
+                    body: JSON.stringify({
+                        message: `Target agent is ${targetAgent.status}`,
+                        error: 'AGENT_NOT_AVAILABLE'
+                    })
+                };
+            }
+
+            // FIX #3: Verify target agent is not already on another call
+            if (targetAgent.currentCallId || targetAgent.ringingCallId) {
+                await lock.release();
+                return {
+                    statusCode: 409,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ message: 'Target agent is already on a call' })
+                };
+            }
 
         // 2. Find the call record in the call queue table
         const { Items: callRecords } = await ddb.send(new QueryCommand({
@@ -167,6 +235,48 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         const callRecord = callRecords[0];
         const { clinicId, queuePosition } = callRecord;
+
+        // FIX #30: Validate call is in transferable state
+        const TRANSFERABLE_STATES = ['connected'];
+        if (!TRANSFERABLE_STATES.includes(callRecord.status)) {
+            await lock.release();
+            return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({
+                    message: `Cannot transfer call in ${callRecord.status} state`,
+                    error: 'INVALID_CALL_STATE',
+                    currentState: callRecord.status,
+                    allowedStates: TRANSFERABLE_STATES
+                })
+            };
+        }
+
+        // FIX #30: Validate call is not on hold
+        if (callRecord.callStatus === 'on_hold') {
+            await lock.release();
+            return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({
+                    message: 'Cannot transfer call while on hold. Resume call first.',
+                    error: 'CALL_ON_HOLD'
+                })
+            };
+        }
+
+        // FIX #30: Validate call has active meeting
+        if (!callRecord.meetingInfo?.MeetingId) {
+            await lock.release();
+            return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({
+                    message: 'Cannot transfer call - no active meeting',
+                    error: 'NO_ACTIVE_MEETING'
+                })
+            };
+        }
 
         const smaId = getSmaIdForClinic(clinicId);
         if (!smaId) {
@@ -567,14 +677,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             }
         }
 
-        return {
-            statusCode: 200,
-            headers: corsHeaders,
-            body: JSON.stringify({ 
-                message: 'Transfer initiated',
-                transferStatus: 'pending'
-            })
-        };
+            return {
+                statusCode: 200,
+                headers: corsHeaders,
+                body: JSON.stringify({ 
+                    message: 'Transfer initiated',
+                    transferStatus: 'pending'
+                })
+            };
+
+        } catch (transferErr: any) {
+            console.error('[transfer-call] Transfer operation failed:', transferErr);
+            await lock.release();
+            throw transferErr;
+        } finally {
+            // FIX #3: Always release the lock
+            await lock.release();
+        }
 
     } catch (error: any) {
         console.error('Error processing transfer request:', error);

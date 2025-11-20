@@ -481,7 +481,8 @@ export async function smartAssignCall(
 }
 
 /**
- * Helper to build base queue item from call context
+ * FIX #4: Helper to build base queue item from call context
+ * Uses unique queue position generation to prevent collisions
  */
 export function buildBaseQueueItem(
     clinicId: string,
@@ -491,11 +492,15 @@ export function buildBaseQueueItem(
 ): BaseQueueItem {
     const now = Date.now();
     const queueEntryTime = Math.floor(now / 1000);
+    
+    // FIX #4: Use unique position generation
+    const { generateUniqueQueuePosition } = require('../../shared/utils/unique-id');
+    const queuePosition = generateUniqueQueuePosition();
 
     return {
         clinicId,
         callId,
-        queuePosition: now + Math.floor(Math.random() * 100),
+        queuePosition,
         queueEntryTime,
         queueEntryTimeIso: new Date(now).toISOString(),
         phoneNumber,

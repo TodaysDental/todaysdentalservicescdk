@@ -6,8 +6,13 @@ import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
 import { createCheckQueueForWork } from './utils/check-queue-for-work';
+import { RejectionTracker } from './utils/rejection-tracker';
 
 const ddb = getDynamoDBClient();
+const rejectionTracker = new RejectionTracker({
+    rejectionWindowMinutes: 5,
+    maxRejections: 50
+});
 const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
 const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 const chimeVoiceClient = new ChimeSDKVoiceClient({});
@@ -130,17 +135,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
         
-        // 4. Atomically update agent and re-queue the call
-        // CRITICAL FIX #11: Deduplicate and limit rejectedAgentIds to prevent unbounded growth
-        const existingRejectedAgents = new Set(callRecord.rejectedAgentIds || []);
-        existingRejectedAgents.add(agentId);
-        
-        const MAX_REJECTED_AGENTS = 100;
-        const newRejectedAgents = Array.from(existingRejectedAgents).slice(-MAX_REJECTED_AGENTS);
-        
-        // Check if too many rejections - escalate to supervisor
-        if (newRejectedAgents.length >= MAX_REJECTED_AGENTS) {
-            console.warn(`[call-rejected] Too many rejections for call ${callId} (${newRejectedAgents.length}), escalating to supervisor`);
+        // 4. CRITICAL FIX #11: Use RejectionTracker for time-windowed rejection tracking
+        // Check if call has exceeded rejection limit
+        if (rejectionTracker.hasExceededRejectionLimit(callRecord)) {
+            const stats = rejectionTracker.getStatistics(callRecord);
+            console.warn(`[call-rejected] Call ${callId} exceeded rejection limit`, stats);
             
             await ddb.send(new TransactWriteCommand({
                 TransactItems: [
@@ -148,7 +147,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                         Update: {
                             TableName: AGENT_PRESENCE_TABLE_NAME,
                             Key: { agentId },
-                            UpdateExpression: 'SET #status = :online, lastActivityAt = :ts, lastRejectedCallId = :callId REMOVE ringingCallId, ringingCallTime, ringingCallFrom, inboundMeetingInfo, inboundAttendeeInfo',
+                            UpdateExpression: 'SET #status = :online, lastActivityAt = :ts, lastRejectedCallId = :callId ' +
+                                             'REMOVE ringingCallId, ringingCallTime, ringingCallFrom, inboundMeetingInfo, inboundAttendeeInfo',
                             ConditionExpression: 'ringingCallId = :callId',
                             ExpressionAttributeNames: { '#status': 'status' },
                             ExpressionAttributeValues: {
@@ -162,7 +162,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                         Update: {
                             TableName: CALL_QUEUE_TABLE_NAME,
                             Key: { clinicId, queuePosition },
-                            UpdateExpression: 'SET #status = :escalated, escalationReason = :reason, escalatedAt = :timestamp REMOVE meetingInfo, customerAttendeeInfo, agentAttendeeInfo',
+                            UpdateExpression: 'SET #status = :escalated, escalationReason = :reason, escalatedAt = :timestamp ' +
+                                             'REMOVE meetingInfo, customerAttendeeInfo, agentAttendeeInfo',
                             ConditionExpression: '#status = :ringing',
                             ExpressionAttributeNames: { '#status': 'status' },
                             ExpressionAttributeValues: {
@@ -183,12 +184,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     message: 'Call escalated to supervisor due to excessive rejections',
                     callId,
                     agentId,
-                    newCallStatus: 'escalated'
+                    newCallStatus: 'escalated',
+                    stats
                 })
             };
         }
         
         const timestamp = new Date().toISOString();
+
+        // Get rejection update expression from tracker
+        const rejectionUpdate = rejectionTracker.recordRejection(callId, agentId);
 
         try {
             console.log(`[call-rejected] Agent ${agentId} rejecting call ${callId}. Moving to queue.`);
@@ -199,7 +204,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                         Update: {
                             TableName: AGENT_PRESENCE_TABLE_NAME,
                             Key: { agentId },
-                            UpdateExpression: 'SET #status = :online, lastActivityAt = :ts, lastRejectedCallId = :callId REMOVE ringingCallId, ringingCallTime, ringingCallFrom, inboundMeetingInfo, inboundAttendeeInfo',
+                            UpdateExpression: 'SET #status = :online, lastActivityAt = :ts, lastRejectedCallId = :callId ' +
+                                             'REMOVE ringingCallId, ringingCallTime, ringingCallFrom, inboundMeetingInfo, inboundAttendeeInfo',
                             ConditionExpression: 'ringingCallId = :callId',
                             ExpressionAttributeNames: { '#status': 'status' },
                             ExpressionAttributeValues: {
@@ -213,14 +219,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                         Update: {
                             TableName: CALL_QUEUE_TABLE_NAME,
                             Key: { clinicId, queuePosition },
-                            UpdateExpression: 'SET #status = :queued, agentIds = :null, assignedAgentId = :null, rejectedAgentIds = :newRejected REMOVE meetingInfo, customerAttendeeInfo, agentAttendeeInfo',
+                            UpdateExpression: `${rejectionUpdate.UpdateExpression}, #status = :queued, agentIds = :null, assignedAgentId = :null ` +
+                                             'REMOVE meetingInfo, customerAttendeeInfo, agentAttendeeInfo',
                             ConditionExpression: '#status = :ringing',
-                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeNames: { 
+                                '#status': 'status',
+                                ...rejectionUpdate.ExpressionAttributeNames
+                            },
                             ExpressionAttributeValues: {
                                 ':queued': 'queued',
                                 ':null': null,
-                                ':newRejected': newRejectedAgents,
-                                ':ringing': 'ringing'
+                                ':ringing': 'ringing',
+                                ...rejectionUpdate.ExpressionAttributeValues
                             }
                         }
                     }

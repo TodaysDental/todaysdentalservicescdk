@@ -87,32 +87,40 @@ export async function enrichCallContext(
     };
 
     try {
-        // Check call history for this number
+        // FIX #55: Query recent call history (last 24 hours only)
+        const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+        
         const { Items: previousCalls } = await ddb.send(new QueryCommand({
             TableName: callQueueTableName,
-            IndexName: 'phoneNumber-clinicId-index',
-            KeyConditionExpression: 'phoneNumber = :phone AND clinicId = :clinic',
+            IndexName: 'phoneNumber-queueEntryTime-index',
+            KeyConditionExpression: 'phoneNumber = :phone AND queueEntryTime > :cutoff',
+            FilterExpression: 'clinicId = :clinic',
             ExpressionAttributeValues: {
                 ':phone': phoneNumber,
-                ':clinic': clinicId
+                ':clinic': clinicId,
+                ':cutoff': new Date(oneDayAgo).toISOString()
             },
             Limit: 10,
-            ScanIndexForward: false, // Most recent first
-            ProjectionExpression: 'callId, #status, assignedAgentId, queueEntryTime',
-            ExpressionAttributeNames: {
-                '#status': 'status'
-            }
+            ScanIndexForward: false // Most recent first
         }));
 
         if (previousCalls && previousCalls.length > 0) {
             context.previousCallCount = previousCalls.length;
 
-            // Check if most recent call was abandoned (callback scenario)
+            // FIX #55: Check if most recent call was abandoned in last 2 hours
             const lastCall = previousCalls[0] as any;
-            if (lastCall.status === 'abandoned') {
+            const lastCallTime = new Date(lastCall.queueEntryTime).getTime();
+            const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+
+            if (lastCall.status === 'abandoned' && lastCallTime > twoHoursAgo) {
                 context.isCallback = true;
                 context.previousAgentId = lastCall.assignedAgentId;
-                console.log(`[enrichCallContext] Detected callback for ${phoneNumber}, previous agent: ${context.previousAgentId}`);
+
+                // Calculate how long ago they called
+                const minutesAgo = Math.floor((Date.now() - lastCallTime) / 60000);
+
+                console.log(`[enrichCallContext] Detected callback for ${phoneNumber}, ` +
+                           `abandoned ${minutesAgo} minutes ago, previous agent: ${context.previousAgentId}`);
             }
         }
 
@@ -242,17 +250,32 @@ function scoreAgentForCall(
     }
 
     // 5. IDLE TIME CONSIDERATION (longer idle = higher score)
-    // CRITICAL FIX #6: Cap idle time to prevent overwhelming other factors
+    // CRITICAL FIX #10: Use logarithmic scaling to prevent idle time from dominating
     if (config.considerIdleTime && agent.lastActivityAt) {
         const lastActivitySeconds = Math.floor(
             new Date(agent.lastActivityAt).getTime() / 1000
         );
-        const idleMinutes = Math.min(30, (nowSeconds - lastActivitySeconds) / 60); // Already capped at 30
-        const idleBonus = Math.floor(idleMinutes * 2); // Max 60 points for 30+ minutes
+        const idleSeconds = nowSeconds - lastActivitySeconds;
+        const idleMinutes = Math.floor(idleSeconds / 60);
 
+        // Logarithmic scaling with diminishing returns:
+        // 0-5 min: 0-50 points (linear, 10 points/min)
+        // 5-30 min: 50-100 points (logarithmic, diminishing)
+        // 30+ min: capped at 100 points
+        let idleBonus: number;
+        if (idleMinutes <= 5) {
+            idleBonus = idleMinutes * 10; // 0-50 points
+        } else if (idleMinutes <= 30) {
+            // Logarithmic: 50 + log2(minutes - 4) * 10
+            idleBonus = 50 + Math.log2(idleMinutes - 4) * 10; // 50-100 points
+        } else {
+            idleBonus = 100; // Cap at 100
+        }
+
+        idleBonus = Math.min(Math.floor(idleBonus), 100);
         breakdown.idleTime += idleBonus;
         score += idleBonus;
-        reasons.push(`idle_${Math.floor(idleMinutes)}min`);
+        reasons.push(`idle_${idleMinutes}min_bonus_${idleBonus}`);
     }
 
     // 6. WORKLOAD BALANCING (avoid overwhelming recently busy agents)
@@ -322,18 +345,50 @@ export function selectBestAgents(
         isCallback: callContext.isCallback
     });
 
-    // Score all agents
-    const scoredAgents = agents
+    // FIX #56: First pass - strict matching
+    let scoredAgents = agents
         .map(agent => scoreAgentForCall(agent, callContext, nowSeconds, fullConfig))
         .filter(scored => scored.score > -1000); // Remove disqualified agents
 
+    // FIX #56: If no agents qualify with strict criteria, try flexible matching
+    if (scoredAgents.length === 0 && callContext.requiredSkills) {
+        console.warn('[selectBestAgents] No agents with required skills, trying flexible match');
+
+        // Relax required skills to "preferred"
+        const relaxedContext = {
+            ...callContext,
+            preferredSkills: [...(callContext.preferredSkills || []), ...callContext.requiredSkills],
+            requiredSkills: []
+        };
+
+        scoredAgents = agents
+            .map(agent => scoreAgentForCall(agent, relaxedContext, nowSeconds, fullConfig))
+            .filter(scored => scored.score > -1000);
+
+        if (scoredAgents.length > 0) {
+            console.log(`[selectBestAgents] Found ${scoredAgents.length} agents with flexible matching`);
+        }
+    }
+
+    // FIX #56: If still no agents, return best available regardless of skills
     if (scoredAgents.length === 0) {
-        console.warn('[selectBestAgents] No qualified agents found for call', {
-            callId: callContext.callId,
-            requiredSkills: callContext.requiredSkills,
-            language: callContext.language,
-            isVip: callContext.isVip
-        });
+        console.warn('[selectBestAgents] No qualified agents found, using any available agent');
+
+        const desperateContext = {
+            ...callContext,
+            requiredSkills: [],
+            preferredSkills: [],
+            language: undefined, // Relax language requirement too
+            isVip: false // Don't require VIP capability
+        };
+
+        scoredAgents = agents
+            .map(agent => scoreAgentForCall(agent, desperateContext, nowSeconds, fullConfig))
+            .filter(scored => scored.score > -1000);
+    }
+
+    if (scoredAgents.length === 0) {
+        console.error('[selectBestAgents] No agents available at all');
         return [];
     }
 
@@ -378,7 +433,7 @@ export async function fetchOnlineAgents(
         
         // CRITICAL FIX #5: Implement pagination loop
         do {
-            const queryResult = await ddb.send(new QueryCommand({
+            const queryResult: any = await ddb.send(new QueryCommand({
                 TableName: agentPresenceTableName,
                 IndexName: 'status-index',
                 KeyConditionExpression: '#status = :status',
