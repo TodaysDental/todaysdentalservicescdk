@@ -10,10 +10,12 @@ import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { QueryCommand, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { ComprehendClient, DetectSentimentCommand } from '@aws-sdk/client-comprehend';
+import { TranscribeClient, GetTranscriptionJobCommand } from '@aws-sdk/client-transcribe';
 
 const ddb = getDynamoDBClient();
 const s3 = new S3Client({});
 const comprehend = new ComprehendClient({});
+const transcribe = new TranscribeClient({});
 
 const RECORDING_METADATA_TABLE = process.env.RECORDING_METADATA_TABLE_NAME!;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME!;
@@ -40,13 +42,23 @@ export const handler = async (event: EventBridgeEvent<'Transcribe Job State Chan
   try {
     // Extract job information
     const jobName = detail.TranscriptionJobName;
-    const transcriptUri = detail.TranscriptionJob?.Transcript?.TranscriptFileUri;
-
+    
     console.log('[TranscriptionComplete] Job name:', jobName);
+    console.log('[TranscriptionComplete] Fetching transcription job details...');
+
+    // Fetch the transcription job to get the transcript URI
+    // EventBridge doesn't include the URI in the event, so we need to fetch it
+    const getJobCommand = new GetTranscriptionJobCommand({
+      TranscriptionJobName: jobName
+    });
+    
+    const jobResponse = await transcribe.send(getJobCommand);
+    const transcriptUri = jobResponse.TranscriptionJob?.Transcript?.TranscriptFileUri;
+
     console.log('[TranscriptionComplete] Transcript URI:', transcriptUri);
 
     if (!transcriptUri) {
-      console.error('[TranscriptionComplete] No transcript URI found in event');
+      console.error('[TranscriptionComplete] No transcript URI found in transcription job');
       return;
     }
 
@@ -174,17 +186,31 @@ async function findRecordingByJobName(jobName: string): Promise<any | null> {
 
 /**
  * Download transcript from S3
+ * Handles both S3 URIs (s3://bucket/key) and HTTPS URLs from AWS Transcribe
  */
 async function downloadTranscript(transcriptUri: string): Promise<string | null> {
   try {
-    // Parse S3 URI
-    const match = transcriptUri.match(/s3:\/\/([^\/]+)\/(.+)/);
-    if (!match) {
-      console.error('[TranscriptionComplete] Invalid transcript URI:', transcriptUri);
-      return null;
+    let bucket: string;
+    let key: string;
+
+    // Parse S3 URI (s3://bucket/key format)
+    const s3Match = transcriptUri.match(/s3:\/\/([^\/]+)\/(.+)/);
+    if (s3Match) {
+      [, bucket, key] = s3Match;
+    } 
+    // Parse HTTPS URL (https://s3.region.amazonaws.com/bucket/key format)
+    else {
+      const httpsMatch = transcriptUri.match(/https:\/\/s3[.-]([^.]+)\.amazonaws\.com\/([^\/]+)\/(.+)/);
+      if (httpsMatch) {
+        [, , bucket, key] = httpsMatch;
+      } else {
+        console.error('[TranscriptionComplete] Invalid transcript URI format:', transcriptUri);
+        console.error('[TranscriptionComplete] Expected s3:// or https://s3.*.amazonaws.com/ format');
+        return null;
+      }
     }
 
-    const [, bucket, key] = match;
+    console.log('[TranscriptionComplete] Downloading transcript from S3:', { bucket, key: key.substring(0, 50) + '...' });
 
     const response = await s3.send(new GetObjectCommand({
       Bucket: bucket,
@@ -194,13 +220,17 @@ async function downloadTranscript(transcriptUri: string): Promise<string | null>
     const transcriptData = await response.Body?.transformToString();
     
     if (!transcriptData) {
+      console.error('[TranscriptionComplete] Empty transcript data received');
       return null;
     }
 
     const parsed = JSON.parse(transcriptData);
     
     // Extract full transcript text
-    return parsed.results?.transcripts?.[0]?.transcript || '';
+    const transcript = parsed.results?.transcripts?.[0]?.transcript || '';
+    console.log('[TranscriptionComplete] Extracted transcript, length:', transcript.length);
+    
+    return transcript;
 
   } catch (error) {
     console.error('[TranscriptionComplete] Error downloading transcript:', error);

@@ -10,15 +10,18 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as path from 'path';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import { KinesisEventSource, SqsEventSource, SqsDlq } from 'aws-cdk-lib/aws-lambda-event-sources';
 
 export interface AnalyticsStackProps extends StackProps {
   userPoolId: string;
   region: string;
+  callQueueTableStreamArn?: string; // Optional: will be passed from ChimeStack
 }
 
 export class AnalyticsStack extends Stack {
   public readonly analyticsTable: dynamodb.Table;
+  public readonly analyticsDedupTable: dynamodb.Table;
   public readonly analyticsStream: kinesis.Stream;
   public readonly analyticsProcessor: lambda.Function;
 
@@ -71,6 +74,15 @@ export class AnalyticsStack extends Stack {
       removalPolicy: RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
       timeToLiveAttribute: 'ttl',
+    });
+
+    // Deduplication table for preventing duplicate analytics processing
+    this.analyticsDedupTable = new dynamodb.Table(this, 'AnalyticsDedupTable', {
+      tableName: `${this.stackName}-CallAnalytics-dedup`,
+      partitionKey: { name: 'eventId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY,
+      timeToLiveAttribute: 'ttl', // Auto-cleanup after 7 days
     });
 
     // ========================================
@@ -201,6 +213,61 @@ export class AnalyticsStack extends Stack {
       description: 'Lambda that reprocesses analytics DLQ events',
       exportName: `${this.stackName}-AnalyticsDlqProcessorArn`,
     });
+
+    // ========================================
+    // 5.5. CallQueue Stream Processor (DynamoDB Streams)
+    // ========================================
+
+    // Only create if callQueueTableStreamArn is provided
+    if (props.callQueueTableStreamArn) {
+      const callQueueStreamProcessor = new lambdaNode.NodejsFunction(this, 'CallQueueStreamProcessor', {
+        functionName: `${this.stackName}-CallQueueStreamProcessor`,
+        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'process-call-analytics-stream.ts'),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_20_X,
+        timeout: Duration.seconds(60),
+        memorySize: 512,
+        environment: {
+          CALL_ANALYTICS_TABLE_NAME: this.analyticsTable.tableName,
+          ANALYTICS_DEDUP_TABLE: this.analyticsDedupTable.tableName,
+        },
+        logRetention: logs.RetentionDays.ONE_WEEK,
+      });
+
+      // Grant permissions
+      this.analyticsTable.grantReadWriteData(callQueueStreamProcessor);
+      this.analyticsDedupTable.grantReadWriteData(callQueueStreamProcessor);
+
+      // Add DynamoDB Stream event source
+      callQueueStreamProcessor.addEventSource(
+        new lambdaEventSources.DynamoEventSource(
+          // Import the stream from ARN
+          dynamodb.Table.fromTableAttributes(this, 'ImportedCallQueueTable', {
+            tableStreamArn: props.callQueueTableStreamArn,
+          }) as any,
+          {
+            startingPosition: lambda.StartingPosition.LATEST,
+            batchSize: 100,
+            bisectBatchOnError: true,
+            retryAttempts: 3,
+            maxRecordAge: Duration.hours(24),
+            parallelizationFactor: 1,
+          }
+        )
+      );
+
+      new CfnOutput(this, 'CallQueueStreamProcessorArn', {
+        value: callQueueStreamProcessor.functionArn,
+        description: 'Lambda processing CallQueue DynamoDB Stream events',
+        exportName: `${this.stackName}-CallQueueStreamProcessorArn`,
+      });
+
+      new CfnOutput(this, 'AnalyticsDedupTableName', {
+        value: this.analyticsDedupTable.tableName,
+        description: 'Deduplication table for analytics events',
+        exportName: `${this.stackName}-AnalyticsDedupTable`,
+      });
+    }
 
     // ========================================
     // 6. Analytics Finalization Lambda

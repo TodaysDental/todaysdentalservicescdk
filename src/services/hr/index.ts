@@ -110,60 +110,50 @@ function roleKeyToCode(roleKey: string): string {
 }
 
 // ========================================
-// UTILITY FUNCTIONS
+// HELPER FUNCTIONS
 // ========================================
 
-// Check if a date range overlaps with approved/pending leave
-async function hasLeaveConflict(staffId: string, startDate: string, endDate: string): Promise<boolean> {
-  const { Items: leaves } = await ddb.send(new QueryCommand({
+// Check if a date is blocked by approved leave
+async function isDateBlocked(staffId: string, date: Date): Promise<boolean> {
+  const { Items } = await ddb.send(new QueryCommand({
     TableName: LEAVE_TABLE,
     IndexName: 'byStaff',
     KeyConditionExpression: 'staffId = :staffId',
-    FilterExpression: '#status IN (:approved, :pending)',
+    FilterExpression: '#status = :approved',
     ExpressionAttributeNames: { '#status': 'status' },
     ExpressionAttributeValues: {
       ':staffId': staffId,
-      ':approved': 'approved',
-      ':pending': 'pending'
+      ':approved': 'approved'
     }
   }));
 
-  if (!leaves || leaves.length === 0) return false;
+  if (!Items || Items.length === 0) return false;
 
-  // Check for overlap
-  const shiftStart = new Date(startDate);
-  const shiftEnd = new Date(endDate);
-
-  for (const leave of leaves) {
-    const leaveStart = new Date(leave.startDate);
-    const leaveEnd = new Date(leave.endDate);
-
-    // Check if dates overlap
-    if (shiftStart <= leaveEnd && shiftEnd >= leaveStart) {
-      return true;
-    }
-  }
-
-  return false;
+  const dateTime = date.getTime();
+  return Items.some(leave => {
+    const startTime = new Date(leave.startDate).getTime();
+    const endTime = new Date(leave.endDate).getTime() + (24 * 60 * 60 * 1000 - 1); // End of day
+    return dateTime >= startTime && dateTime <= endTime;
+  });
 }
 
-// Get all shifts for a staff member in a date range
-async function getShiftsInDateRange(staffId: string, startDate: string, endDate: string) {
-  const { Items: shifts } = await ddb.send(new QueryCommand({
+// Get all shifts that overlap with a date range
+async function getOverlappingShifts(staffId: string, startDate: string, endDate: string): Promise<any[]> {
+  const { Items } = await ddb.send(new QueryCommand({
     TableName: SHIFTS_TABLE,
     IndexName: 'byStaff',
     KeyConditionExpression: 'staffId = :staffId',
-    FilterExpression: 'startTime BETWEEN :startDate AND :endDate AND #status = :scheduled',
+    FilterExpression: '#status = :scheduled AND startTime <= :endDate AND endTime >= :startDate',
     ExpressionAttributeNames: { '#status': 'status' },
     ExpressionAttributeValues: {
       ':staffId': staffId,
+      ':scheduled': 'scheduled',
       ':startDate': startDate,
-      ':endDate': endDate,
-      ':scheduled': 'scheduled'
+      ':endDate': endDate
     }
   }));
 
-  return shifts || [];
+  return Items || [];
 }
 
 // ========================================
@@ -188,66 +178,54 @@ export const handler = async (event: any) => {
   const path = event.path.replace('/hr', '');
 
   try {
-    // GET /dashboard
     if (method === 'GET' && path === '/dashboard') {
       return getDashboard(caller, isAdmin);
     }
     
-    // GET /clinics
     if (method === 'GET' && path === '/clinics') {
       const clinicIds = Object.keys(caller.rolesByClinic);
       return httpOk({ clinics: clinicIds.map(id => ({ clinicId: id, clinicName: `Clinic ${id}` })) });
     }
 
     // --- SHIFTS ---
-    // GET /shifts
     if (method === 'GET' && path === '/shifts') {
       return getShifts(caller, isAdmin, event.queryStringParameters);
     }
-    // POST /shifts
     if (method === 'POST' && path === '/shifts') {
       if (!isAdmin) return httpErr(403, "Forbidden");
       return createShift(JSON.parse(event.body));
     }
-    // PUT /shifts/{shiftId}
     if (method === 'PUT' && path.match(/^\/shifts\/[^\/]+$/)) {
       if (!isAdmin) return httpErr(403, "Forbidden");
       const shiftId = path.split('/')[2];
       return updateShift(shiftId, JSON.parse(event.body));
     }
-    // DELETE /shifts/{shiftId}
     if (method === 'DELETE' && path.match(/^\/shifts\/[^\/]+$/)) {
       if (!isAdmin) return httpErr(403, "Forbidden");
       const shiftId = path.split('/')[2];
       return deleteShift(shiftId);
     }
-    // PUT /shifts/{shiftId}/reject
     if (method === 'PUT' && path.match(/^\/shifts\/[^\/]+\/reject$/)) {
       const shiftId = path.split('/')[2];
       return rejectShift(shiftId, caller.staffId);
     }
 
     // --- LEAVE ---
-    // GET /leave
     if (method === 'GET' && path === '/leave') {
       return getLeave(caller, isAdmin);
     }
-    // POST /leave
     if (method === 'POST' && path === '/leave') {
       return createLeave(caller.staffId, JSON.parse(event.body));
     }
-    // DELETE /leave/{leaveId}
     if (method === 'DELETE' && path.match(/^\/leave\/[^\/]+$/)) {
       const leaveId = path.split('/')[2];
       return deleteLeave(leaveId, caller, isAdmin);
     }
-    // PUT /leave/{leaveId}/approve
     if (method === 'PUT' && path.match(/^\/leave\/[^\/]+\/approve$/)) {
       if (!isAdmin) return httpErr(403, "Forbidden");
       const leaveId = path.split('/')[2];
       return approveLeave(leaveId);
     }
-    // PUT /leave/{leaveId}/deny
     if (method === 'PUT' && path.match(/^\/leave\/[^\/]+\/deny$/)) {
       if (!isAdmin) return httpErr(403, "Forbidden");
       const leaveId = path.split('/')[2];
@@ -267,7 +245,6 @@ export const handler = async (event: any) => {
 
 type CallerContext = { staffId: string; email: string; isSuperAdmin: boolean; rolesByClinic: Record<string, string>; };
 
-// --- DASHBOARD ---
 async function getDashboard(caller: CallerContext, isAdmin: boolean) {
   if (isAdmin) {
     const now = new Date();
@@ -353,7 +330,6 @@ async function getDashboard(caller: CallerContext, isAdmin: boolean) {
   }
 }
 
-// --- SHIFTS ---
 async function getShifts(caller: CallerContext, isAdmin: boolean, queryParams: any) {
   const { clinicId, startDate, endDate, status } = queryParams || {};
 
@@ -407,10 +383,11 @@ async function createShift(body: any) {
     return httpErr(400, "staffId, clinicId, startTime, and endTime are required");
   }
 
-  // **NEW: Check for leave conflict**
-  const hasConflict = await hasLeaveConflict(staffId, startTime, endTime);
-  if (hasConflict) {
-    return httpErr(409, "Cannot schedule shift: Staff has approved or pending leave during this period");
+  // ** NEW: Check if the date is blocked **
+  const shiftDate = new Date(startTime);
+  const isBlocked = await isDateBlocked(staffId, shiftDate);
+  if (isBlocked) {
+    return httpErr(400, "Cannot schedule shift: Staff has approved leave on this date");
   }
 
   let email: string | undefined;
@@ -469,12 +446,12 @@ async function updateShift(shiftId: string, body: any) {
     const staffId = body.staffId || oldShift.staffId;
     const clinicId = body.clinicId || oldShift.clinicId;
     const startTime = body.startTime || oldShift.startTime;
-    const endTime = body.endTime || oldShift.endTime;
 
-    // **NEW: Check for leave conflict**
-    const hasConflict = await hasLeaveConflict(staffId, startTime, endTime);
-    if (hasConflict) {
-      return httpErr(409, "Cannot update shift: Staff has approved or pending leave during this period");
+    // ** NEW: Check if the date is blocked **
+    const shiftDate = new Date(startTime);
+    const isBlocked = await isDateBlocked(staffId, shiftDate);
+    if (isBlocked) {
+      return httpErr(400, "Cannot update shift: Staff has approved leave on this date");
     }
 
     let email: string | undefined;
@@ -499,6 +476,7 @@ async function updateShift(shiftId: string, body: any) {
     }));
     
     const hourlyRate = staffInfo?.hourlyPay ? parseFloat(String(staffInfo.hourlyPay)) : 0;
+    const endTime = body.endTime || oldShift.endTime;
     const totalHours = (new Date(endTime).getTime() - new Date(startTime).getTime()) / (1000 * 60 * 60);
     
     if (totalHours <= 0) {
@@ -578,7 +556,7 @@ async function createLeave(staffId: string, body: any) {
   return httpOk({ leaveId, message: "Leave request submitted" });
 }
 
-async function deleteLeave(leaveId: string, caller: CallerContext, isAdmin: boolean) {
+async function deleteLeave(leaveId: string, caller: CallerContext, isAdmin:boolean) {
     const { Item } = await ddb.send(new GetCommand({ TableName: LEAVE_TABLE, Key: { leaveId }}));
     if (!Item) return httpErr(404, "Leave request not found");
     
@@ -590,8 +568,9 @@ async function deleteLeave(leaveId: string, caller: CallerContext, isAdmin: bool
     return httpOk({ message: "Leave request deleted" });
 }
 
-// **NEW: Approve leave and cancel conflicting shifts**
+// ** UPDATED: Auto-cancel overlapping shifts when approving leave **
 async function approveLeave(leaveId: string) {
+    // Get the leave request
     const { Item: leave } = await ddb.send(new GetCommand({ TableName: LEAVE_TABLE, Key: { leaveId }}));
     if (!leave) return httpErr(404, "Leave request not found");
 
@@ -604,24 +583,26 @@ async function approveLeave(leaveId: string) {
         ExpressionAttributeValues: { ':status': 'approved' }
     }));
 
-    // Find and cancel conflicting shifts
-    const conflictingShifts = await getShiftsInDateRange(leave.staffId, leave.startDate, leave.endDate);
+    // Find and cancel overlapping shifts
+    const overlappingShifts = await getOverlappingShifts(leave.staffId, leave.startDate, leave.endDate);
     
-    for (const shift of conflictingShifts) {
-        await ddb.send(new UpdateCommand({
-            TableName: SHIFTS_TABLE,
-            Key: { shiftId: shift.shiftId },
-            UpdateExpression: 'set #status = :status',
-            ExpressionAttributeNames: { '#status': 'status' },
-            ExpressionAttributeValues: { ':status': 'rejected' }
-        }));
-    }
+    const cancelPromises = overlappingShifts.map(shift =>
+      ddb.send(new UpdateCommand({
+        TableName: SHIFTS_TABLE,
+        Key: { shiftId: shift.shiftId },
+        UpdateExpression: 'set #status = :status',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: { ':status': 'rejected' }
+      }))
+    );
+
+    await Promise.all(cancelPromises);
 
     return httpOk({ 
       leaveId, 
       status: 'approved',
-      cancelledShifts: conflictingShifts.length,
-      message: `Leave approved. ${conflictingShifts.length} conflicting shift(s) cancelled.`
+      cancelledShifts: overlappingShifts.length,
+      message: `Leave approved. ${overlappingShifts.length} overlapping shift(s) have been automatically cancelled.`
     });
 }
 

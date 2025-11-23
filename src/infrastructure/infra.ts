@@ -221,6 +221,8 @@ const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV23', {
  voiceConnectorTerminationCidrs,
  voiceConnectorOriginationRoutes,
  analyticsStreamArn: analyticsStack.analyticsStream.streamArn,
+ analyticsTableName: analyticsStack.analyticsTable.tableName,
+ analyticsDedupTableName: analyticsStack.analyticsDedupTable.tableName,
  enableCallRecording: true, // Enable call recording by default
  recordingRetentionDays: 2555, // ~7 years for compliance
 });
@@ -229,6 +231,18 @@ const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommV1', {
     env,
     userPoolArn: coreStack.userPool.userPoolArn,
     userPoolId: coreStack.userPool.userPoolId,
+});
+
+// Chatbot Stack - WebSocket-based dental assistant chatbot (depends on core and clinic data)
+// NOTE: Declared here before AdminStack because AdminStack needs chatbotStack.conversationsTable.tableName
+const chatbotStack = new ChatbotStack(app, 'TodaysDentalInsightsChatbotV2', {
+ env,
+ userPoolArn: coreStack.userPool.userPoolArn,
+ userPoolId: coreStack.userPool.userPoolId,
+ // Chatbot reads directly from DynamoDB tables - no API calls needed
+ clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
+ clinicPricingTableName: clinicPricingStack.clinicPricingTable.tableName,
+ clinicInsuranceTableName: clinicInsuranceStack.clinicInsuranceTable.tableName,
 });
 
 // Admin services (AdminStack will import Chime lambda ARNs and wire API
@@ -243,6 +257,12 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminV3', {
  favorsTableName: communicationsStack.favorsTable.tableName,
  clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
  analyticsTableName: analyticsStack.analyticsTable.tableName,
+ // Additional table names for detailed analytics
+ callQueueTableName: chimeStack.callQueueTable.tableName,
+ recordingMetadataTableName: chimeStack.recordingMetadataTable?.tableName,
+ chatHistoryTableName: chatbotStack.conversationsTable.tableName,
+ clinicsTableName: chimeStack.clinicsTable.tableName,
+ recordingsBucketName: chimeStack.recordingsBucket?.bucketName,
  // Import ARNs exported by the Chime stack
  startSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StartSessionArn`),
  stopSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StopSessionArn`),
@@ -311,16 +331,6 @@ const patientPortalApptTypesStack = new PatientPortalApptTypesStack(app, 'Todays
  userPool: coreStack.userPool,
 });
 patientPortalApptTypesStack.addDependency(coreStack);
-// 8. Chatbot Stack - WebSocket-based dental assistant chatbot (depends on core and clinic data)
-const chatbotStack = new ChatbotStack(app, 'TodaysDentalInsightsChatbotV2', {
- env,
- userPoolArn: coreStack.userPool.userPoolArn,
- userPoolId: coreStack.userPool.userPoolId,
- // Chatbot reads directly from DynamoDB tables - no API calls needed
- clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
- clinicPricingTableName: clinicPricingStack.clinicPricingTable.tableName,
- clinicInsuranceTableName: clinicInsuranceStack.clinicInsuranceTable.tableName,
-});
 
 // Clinic Hours service
 const clinicHoursStack = new ClinicHoursStack(app, 'TodaysDentalInsightsClinicHoursV3', {

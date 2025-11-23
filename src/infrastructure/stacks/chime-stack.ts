@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -45,6 +46,14 @@ export interface ChimeStackProps extends StackProps {
    */
   analyticsStreamArn?: string;
   /**
+   * Analytics table name for storing call analytics
+   */
+  analyticsTableName?: string;
+  /**
+   * Analytics deduplication table name
+   */
+  analyticsDedupTableName?: string;
+  /**
    * Enable call recording (default: true)
    */
   enableCallRecording?: boolean;
@@ -70,6 +79,8 @@ export class ChimeStack extends Stack {
   public readonly callQueueTable: dynamodb.Table;
   public readonly locksTable: dynamodb.Table;
   public readonly agentPerformanceTable: dynamodb.Table;
+  public readonly recordingMetadataTable?: dynamodb.Table;
+  public readonly recordingsBucket?: s3.Bucket;
 
   constructor(scope: Construct, id: string, props: ChimeStackProps) {
     super(scope, id, props);
@@ -130,6 +141,7 @@ export class ChimeStack extends Stack {
       removalPolicy: RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
       timeToLiveAttribute: 'ttl',
+      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES, // Enable streaming for call analytics
     });
 
     // GSI for querying by callId
@@ -1439,8 +1451,11 @@ export class ChimeStack extends Stack {
         }
       }));
 
+      // Store recordingsBucket to public property
+      this.recordingsBucket = recordingsBucket;
+
       // 3. DynamoDB table for recording metadata
-      const recordingMetadataTable = new dynamodb.Table(this, 'RecordingMetadataTable', {
+      this.recordingMetadataTable = new dynamodb.Table(this, 'RecordingMetadataTable', {
         tableName: `${this.stackName}-RecordingMetadata`,
         partitionKey: { name: 'recordingId', type: dynamodb.AttributeType.STRING },
         sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
@@ -1449,6 +1464,7 @@ export class ChimeStack extends Stack {
         pointInTimeRecovery: true,
         timeToLiveAttribute: 'ttl', // Auto-cleanup old metadata
       });
+      const recordingMetadataTable = this.recordingMetadataTable; // Keep local reference for backward compatibility
 
       // GSI: Query by callId
       recordingMetadataTable.addGlobalSecondaryIndex({
@@ -1624,6 +1640,14 @@ export class ChimeStack extends Stack {
         resources: ['*']
       }));
 
+      // Grant Transcribe permissions to fetch job details
+      transcriptionCompleteFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: [
+          'transcribe:GetTranscriptionJob'
+        ],
+        resources: ['*']
+      }));
+
       // Trigger on transcription completion via EventBridge
       const transcriptionRule = new events.Rule(this, 'TranscriptionCompleteRule', {
         eventPattern: {
@@ -1669,6 +1693,62 @@ export class ChimeStack extends Stack {
         value: this.agentPerformanceTable.tableName,
         description: 'DynamoDB table for agent performance metrics',
         exportName: `${this.stackName}-AgentPerformanceTable`,
+      });
+    }
+
+    // ========================================
+    // CallQueue Stream Processor for Analytics
+    // ========================================
+    
+    // Only create if analytics table names are provided
+    if (props.analyticsTableName && props.analyticsDedupTableName) {
+      const callQueueStreamProcessor = new lambdaNode.NodejsFunction(this, 'CallQueueStreamProcessor', {
+        functionName: `${this.stackName}-CallQueueStreamProcessor`,
+        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'process-call-analytics-stream.ts'),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_20_X,
+        timeout: Duration.seconds(60),
+        memorySize: 512,
+        environment: {
+          CALL_ANALYTICS_TABLE_NAME: props.analyticsTableName,
+          ANALYTICS_DEDUP_TABLE: props.analyticsDedupTableName,
+        },
+        logRetention: logs.RetentionDays.ONE_WEEK,
+      });
+
+      // Grant read access to CallQueue table's stream
+      this.callQueueTable.grantStreamRead(callQueueStreamProcessor);
+
+      // Grant write access to analytics tables (cross-stack permissions)
+      callQueueStreamProcessor.addToRolePolicy(new iam.PolicyStatement({
+        actions: [
+          'dynamodb:PutItem',
+          'dynamodb:UpdateItem',
+          'dynamodb:GetItem',
+          'dynamodb:Query'
+        ],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsDedupTableName}`
+        ]
+      }));
+
+      // Add DynamoDB Stream event source
+      callQueueStreamProcessor.addEventSource(
+        new lambdaEventSources.DynamoEventSource(this.callQueueTable, {
+          startingPosition: lambda.StartingPosition.LATEST,
+          batchSize: 100,
+          bisectBatchOnError: true,
+          retryAttempts: 3,
+          maxRecordAge: Duration.hours(24),
+          parallelizationFactor: 1,
+        })
+      );
+
+      new CfnOutput(this, 'CallQueueStreamProcessorArn', {
+        value: callQueueStreamProcessor.functionArn,
+        description: 'Lambda processing CallQueue DynamoDB Stream events for analytics',
+        exportName: `${this.stackName}-CallQueueStreamProcessorArn`,
       });
     }
 

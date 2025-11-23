@@ -19,6 +19,12 @@ export interface AdminStackProps extends StackProps {
   favorsTableName: string;
   // ** NEW: Analytics Table Name **
   analyticsTableName?: string;
+  // ** NEW: Additional table names for detailed analytics **
+  callQueueTableName?: string;
+  recordingMetadataTableName?: string;
+  chatHistoryTableName?: string;
+  clinicsTableName?: string;
+  recordingsBucketName?: string;
   // Optional ARNs for Chime lambdas (imported from Chime stack to avoid
   // two-way construct references). When provided, Admin stack will add API
   // routes that integrate with these functions.
@@ -45,6 +51,7 @@ export class AdminStack extends Stack {
   public readonly listRequestsFn: lambdaNode.NodejsFunction; // ** NEW: Request List Lambda Property **
   public readonly mePresenceFn?: lambdaNode.NodejsFunction;
   public readonly getAnalyticsFn?: lambdaNode.NodejsFunction; // ** NEW: Analytics Query Lambda **
+  public readonly getDetailedAnalyticsFn?: lambdaNode.NodejsFunction; // ** NEW: Detailed Analytics Lambda **
   // ...existing code...
   public readonly api: apigw.RestApi;
   public readonly authorizer: apigw.CognitoUserPoolsAuthorizer;
@@ -308,6 +315,61 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
       }));
     }
 
+    // ** NEW: Detailed Analytics Lambda **
+    if (props.callQueueTableName && props.recordingMetadataTableName) {
+      this.getDetailedAnalyticsFn = new lambdaNode.NodejsFunction(this, 'GetDetailedAnalyticsFn', {
+        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'get-detailed-call-analytics.ts'),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_20_X,
+        memorySize: 512,
+        timeout: Duration.seconds(30),
+        bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+        environment: {
+          CALL_QUEUE_TABLE_NAME: props.callQueueTableName,
+          RECORDING_METADATA_TABLE_NAME: props.recordingMetadataTableName,
+          CHAT_HISTORY_TABLE_NAME: props.chatHistoryTableName || '',
+          CLINICS_TABLE_NAME: props.clinicsTableName || '',
+          RECORDINGS_BUCKET_NAME: props.recordingsBucketName || '',
+          COGNITO_REGION: Stack.of(this).region,
+          USER_POOL_ID: props.userPoolId,
+        },
+      });
+
+      // Grant read permissions to all required tables
+      const tableResources: string[] = [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.callQueueTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.callQueueTableName}/index/*`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.recordingMetadataTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.recordingMetadataTableName}/index/*`,
+      ];
+
+      if (props.chatHistoryTableName) {
+        tableResources.push(
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.chatHistoryTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.chatHistoryTableName}/index/*`
+        );
+      }
+
+      if (props.clinicsTableName) {
+        tableResources.push(
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicsTableName}`
+        );
+      }
+
+      this.getDetailedAnalyticsFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: tableResources,
+      }));
+
+      // Grant S3 read permissions if bucket is provided
+      if (props.recordingsBucketName) {
+        this.getDetailedAnalyticsFn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['s3:GetObject'],
+          resources: [`arn:aws:s3:::${props.recordingsBucketName}/*`],
+        }));
+      }
+    }
+
     // Allow MeFn to look up user groups if claims are missing
     this.meFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['cognito-idp:AdminListGroupsForUser'],
@@ -443,6 +505,17 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         authorizationType: apigw.AuthorizationType.COGNITO,
         methodResponses: [{ statusCode: '200' }],
       });
+
+      // GET /analytics/detailed/{callId} - Comprehensive analytics with history, insights, and transcript
+      if (this.getDetailedAnalyticsFn) {
+        const detailedRes = analyticsRes.addResource('detailed');
+        const detailedCallIdRes = detailedRes.addResource('{callId}');
+        detailedCallIdRes.addMethod('GET', new apigw.LambdaIntegration(this.getDetailedAnalyticsFn), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.COGNITO,
+          methodResponses: [{ statusCode: '200' }],
+        });
+      }
     }
 
     // If Chime lambdas are provided by ARN (exported from Chime stack), import
