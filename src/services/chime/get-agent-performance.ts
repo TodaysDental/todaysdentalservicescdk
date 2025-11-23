@@ -275,27 +275,37 @@ function aggregatePerformanceData(records: AgentPerformanceRecord[]): any {
     ? totals.totalTalkTime / totals.totalCalls 
     : 0;
 
-  // Calculate sentiment score (positive = +1, neutral = 0, negative = -1)
-  const totalSentimentCalls = 
-    totals.sentimentScores.positive + 
-    totals.sentimentScores.neutral + 
+  // FIXED FLAW #17: Sentiment calculation should account for negative sentiment properly
+  // positive = 100, neutral = 50, negative = 0, mixed = 50
+  const totalSentimentCalls =
+    totals.sentimentScores.positive +
+    totals.sentimentScores.neutral +
     totals.sentimentScores.negative +
     totals.sentimentScores.mixed;
 
   const averageSentiment = totalSentimentCalls > 0
-    ? ((totals.sentimentScores.positive * 100 + totals.sentimentScores.neutral * 50) / totalSentimentCalls)
+    ? ((totals.sentimentScores.positive * 100 +
+        totals.sentimentScores.neutral * 50 +
+        totals.sentimentScores.negative * 0 +
+        totals.sentimentScores.mixed * 50) / totalSentimentCalls)
     : 50;
 
   // Calculate performance score (0-100)
-  // Factors: call completion rate, sentiment, average handle time efficiency
-  const completionRate = totals.totalCalls > 0 
-    ? (totals.callsCompleted / totals.totalCalls) * 100 
+  // Factors: call completion rate, sentiment, rejection rate
+  const completionRate = totals.totalCalls > 0
+    ? (totals.callsCompleted / totals.totalCalls) * 100
     : 0;
 
-  const performanceScore = Math.min(100, Math.max(0,
-    (completionRate * 0.4) + 
-    (averageSentiment * 0.4) + 
-    (Math.min(100, (1 - (totals.rejectedCalls / Math.max(1, totals.totalCalls))) * 100) * 0.2)
+  // FIXED FLAW #19: Check totalCalls > 0 before calculating rejection rate
+  const rejectionRate = totals.totalCalls > 0
+    ? (totals.rejectedCalls / totals.totalCalls) * 100
+    : 0;
+
+  // FIXED FLAW #18: Simplify Math.min/max nesting
+  const performanceScore = Math.max(0, Math.min(100,
+    (completionRate * 0.4) +
+    (averageSentiment * 0.4) +
+    ((100 - rejectionRate) * 0.2)
   ));
 
   return {
@@ -311,11 +321,12 @@ function aggregatePerformanceData(records: AgentPerformanceRecord[]): any {
     rejectedCalls: totals.rejectedCalls,
     callsTransferred: totals.callsTransferred,
     callsCompleted: totals.callsCompleted,
-    completionRate: completionRate.toFixed(2),
+    // FIXED FLAW #20: Keep as numbers, round to 2 decimals but don't convert to string
+    completionRate: Math.round(completionRate * 100) / 100,
     averageHandleTime: Math.round(averageHandleTime),
     averageTalkTime: Math.round(averageTalkTime),
-    averageHoldTime: totals.totalCalls > 0 
-      ? Math.round(totals.totalHoldTime / totals.totalCalls) 
+    averageHoldTime: totals.totalCalls > 0
+      ? Math.round(totals.totalHoldTime / totals.totalCalls)
       : 0,
     sentimentBreakdown: {
       positive: totals.sentimentScores.positive,
@@ -323,8 +334,8 @@ function aggregatePerformanceData(records: AgentPerformanceRecord[]): any {
       negative: totals.sentimentScores.negative,
       mixed: totals.sentimentScores.mixed,
     },
-    averageSentiment: averageSentiment.toFixed(2),
-    performanceScore: performanceScore.toFixed(2),
+    averageSentiment: Math.round(averageSentiment * 100) / 100,
+    performanceScore: Math.round(performanceScore * 100) / 100,
     rating: getRatingFromScore(performanceScore),
   };
 }

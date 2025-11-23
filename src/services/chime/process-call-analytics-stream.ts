@@ -178,9 +178,10 @@ async function generateCallAnalytics(
     const completedAt = parseTimestamp(callData.completedAt || callData.endedAtIso);
     const ringingStartedAt = parseTimestamp(callData.ringingStartedAt || callData.assignedAt);
 
-    // Calculate durations
-    const totalDuration = connectedAt && completedAt
-        ? Math.floor((completedAt - connectedAt) / 1000)
+    // FIXED FLAW #7: Total duration should be from queue entry to completion (full call lifecycle)
+    // FIXED FLAW #6: Ensure talk duration cannot be negative
+    const totalDuration = queueEntryTime && completedAt
+        ? Math.floor((completedAt - queueEntryTime) / 1000)
         : 0;
 
     const queueDuration = queueEntryTime && connectedAt
@@ -193,13 +194,19 @@ async function generateCallAnalytics(
 
     const holdDuration = callData.holdDuration || 0;
 
-    // Talk duration = total - hold time
-    const talkDuration = Math.max(0, totalDuration - holdDuration);
+    // Call duration is time from connection to completion
+    const callDuration = connectedAt && completedAt
+        ? Math.floor((completedAt - connectedAt) / 1000)
+        : 0;
 
+    // Talk duration = call duration - hold time (with safety check)
+    const talkDuration = Math.max(0, callDuration - holdDuration);
+
+    // FIXED FLAW #8: Add null safety for parseTimestamp results
     // Create analytics record
     const analytics: CallAnalytics = {
         callId: callData.callId,
-        timestamp: Math.floor((queueEntryTime || now) / 1000),
+        timestamp: queueEntryTime ? Math.floor(queueEntryTime / 1000) : Math.floor(now / 1000),
         timestampIso: callData.queueEntryTimeIso || new Date().toISOString(),
         clinicId: callData.clinicId,
         agentId: callData.assignedAgentId,
@@ -283,13 +290,17 @@ async function storeAnalyticsWithDedup(
 
 /**
  * Parse timestamp from various formats
+ * FIXED FLAW #9: Better detection of milliseconds vs seconds (check against year 2010)
  */
 function parseTimestamp(value: any): number | null {
     if (!value) return null;
 
-    // Already a number (epoch ms)
+    // Already a number (epoch)
     if (typeof value === 'number') {
-        return value > 1e12 ? value : value * 1000;
+        // If value is greater than Jan 1, 2010 in seconds (1262304000), assume it's already milliseconds
+        // This handles dates from 2010 onwards correctly
+        const YEAR_2010_SECONDS = 1262304000;
+        return value > YEAR_2010_SECONDS * 1000 ? value : value * 1000;
     }
 
     // ISO string
