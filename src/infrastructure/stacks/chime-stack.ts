@@ -120,9 +120,9 @@ export class ChimeStack extends Stack {
     });
 
 
-    // Call Queue table
+    // Call Queue table - V2 with corrected GSI types
     this.callQueueTable = new dynamodb.Table(this, 'CallQueueTable', {
-      tableName: `${this.stackName}-CallQueue`,
+      tableName: `${this.stackName}-CallQueueV2`,
       partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'queuePosition', type: dynamodb.AttributeType.NUMBER },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -143,6 +143,15 @@ export class ChimeStack extends Stack {
       indexName: 'phoneNumber-clinicId-index',
       partitionKey: { name: 'phoneNumber', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI for querying by phoneNumber + queueEntryTime (for call history by time)
+    // Using NUMBER type for efficient timestamp queries
+    this.callQueueTable.addGlobalSecondaryIndex({
+      indexName: 'phoneNumber-queueEntryTime-index',
+      partitionKey: { name: 'phoneNumber', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'queueEntryTime', type: dynamodb.AttributeType.NUMBER },
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
@@ -1300,12 +1309,13 @@ export class ChimeStack extends Stack {
           }
         ],
         serverAccessLogsPrefix: 'access-logs/',
-        objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+        objectOwnership: s3.ObjectOwnership.OBJECT_WRITER,
         removalPolicy: RemovalPolicy.RETAIN, // Never delete recordings accidentally
         autoDeleteObjects: false, // Extra safety - don't auto-delete
       });
 
       // Bucket policy to allow Chime to write recordings
+      // Includes security conditions to prevent confused deputy problem
       recordingsBucket.addToResourcePolicy(new iam.PolicyStatement({
         sid: 'AllowChimeVoiceConnectorToWriteRecordings',
         principals: [new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com')],
@@ -1317,6 +1327,9 @@ export class ChimeStack extends Stack {
         conditions: {
           StringEquals: {
             'aws:SourceAccount': this.account
+          },
+          ArnLike: {
+            'aws:SourceArn': `arn:aws:chime:*:${this.account}:sma/*`
           }
         }
       }));

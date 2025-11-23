@@ -89,6 +89,7 @@ export async function enrichCallContext(
     try {
         // FIX #55: Query recent call history (last 24 hours only)
         const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+        const cutoffTimestamp = Math.floor(oneDayAgo / 1000); // Convert to Unix timestamp (seconds)
         
         const { Items: previousCalls } = await ddb.send(new QueryCommand({
             TableName: callQueueTableName,
@@ -98,7 +99,7 @@ export async function enrichCallContext(
             ExpressionAttributeValues: {
                 ':phone': phoneNumber,
                 ':clinic': clinicId,
-                ':cutoff': new Date(oneDayAgo).toISOString()
+                ':cutoff': cutoffTimestamp // Use numeric timestamp for NUMBER-type GSI
             },
             Limit: 10,
             ScanIndexForward: false // Most recent first
@@ -109,7 +110,8 @@ export async function enrichCallContext(
 
             // FIX #55: Check if most recent call was abandoned in last 2 hours
             const lastCall = previousCalls[0] as any;
-            const lastCallTime = new Date(lastCall.queueEntryTime).getTime();
+            // queueEntryTime is stored as Unix timestamp in seconds, convert to milliseconds
+            const lastCallTime = lastCall.queueEntryTime * 1000;
             const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
 
             if (lastCall.status === 'abandoned' && lastCallTime > twoHoursAgo) {

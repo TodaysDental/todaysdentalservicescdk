@@ -252,17 +252,56 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 console.log('[call-accepted] Transaction completed successfully - call reserved', { callId, agentId });
             } catch (err: any) {
                 if (err.name === 'TransactionCanceledException') {
-                    console.warn('[call-accepted] Transaction failed. Call likely claimed by another agent.', { 
+                    // Analyze which condition failed for better diagnostics
+                    const reasons = err.CancellationReasons || [];
+                    const callQueueFailed = reasons[0]?.Code === 'ConditionalCheckFailed';
+                    const agentPresenceFailed = reasons[1]?.Code === 'ConditionalCheckFailed';
+                    
+                    let failureReason = 'unknown';
+                    if (callQueueFailed && agentPresenceFailed) {
+                        failureReason = 'both_call_and_agent_state_changed';
+                    } else if (callQueueFailed) {
+                        // Fetch current call state to understand why it failed
+                        try {
+                            const { Items: currentCallState } = await ddb.send(new QueryCommand({
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                IndexName: 'callId-index',
+                                KeyConditionExpression: 'callId = :callId',
+                                ExpressionAttributeValues: { ':callId': callId }
+                            }));
+                            if (currentCallState && currentCallState[0]) {
+                                const call = currentCallState[0];
+                                failureReason = `call_status_is_${call.status}_expected_ringing`;
+                                if (call.assignedAgentId && call.assignedAgentId !== agentId) {
+                                    failureReason += `_already_assigned_to_${call.assignedAgentId}`;
+                                } else if (call.assignedAgentId === agentId) {
+                                    failureReason += '_already_assigned_to_same_agent';
+                                }
+                                if (call.agentIds && !call.agentIds.includes(agentId)) {
+                                    failureReason += '_agent_not_in_ring_list';
+                                }
+                            }
+                        } catch (diagErr) {
+                            console.error('[call-accepted] Failed to diagnose failure', diagErr);
+                        }
+                    } else if (agentPresenceFailed) {
+                        failureReason = 'agent_not_ringing_for_this_call';
+                    }
+                    
+                    console.warn('[call-accepted] Transaction failed. Call not available.', { 
                         callId, 
                         agentId, 
-                        reasons: err.CancellationReasons 
+                        failureReason,
+                        reasons 
                     });
                     return {
                         statusCode: 409, // Conflict
                         headers: corsHeaders,
                         body: JSON.stringify({ 
-                            message: 'Call was already accepted by another agent.',
-                            callId, agentId
+                            message: 'Call is no longer available. It may have been accepted by another agent or the caller hung up.',
+                            callId, 
+                            agentId,
+                            reason: failureReason
                         })
                     };
                 }

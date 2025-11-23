@@ -401,22 +401,21 @@ const buildHangupAction = (message?: string) => {
 };
 
 // Recording action builders
+// FIXED: Use correct StartCallRecording format with Destination.Location (not RecordingDestination)
 const buildStartCallRecordingAction = (
     callId: string,
-    recordingDestination: string,
-    recordingFormat: 'WAV' | 'OGG' = 'WAV'
+    recordingBucketName: string
 ) => ({
     Type: 'StartCallRecording',
     Parameters: {
         CallId: callId,
-        RecordingDestination: {
+        Track: 'BOTH', // Valid values: INCOMING, OUTGOING, or BOTH
+        Destination: {
             Type: 'S3',
-            BucketName: recordingDestination,
-            Prefix: `recordings/${new Date().toISOString().split('T')[0]}/${callId}/`
-        },
-        RecordingFormat: recordingFormat,
-        // Include both legs of the call
-        TrackType: 'BOTH_TRACKS' // Records customer and agent separately (stereo)
+            // Location is a single string: bucketname/prefix/path
+            // AWS automatically appends: year/month/date/timestamp_transactionId_callId.wav
+            Location: `${recordingBucketName}/recordings/${new Date().toISOString().split('T')[0]}/${callId}/`
+        }
     }
 });
 
@@ -1000,13 +999,28 @@ export const handler = async (event: any): Promise<any> => {
                 }
                 
                 // Check if the update is a Hangup action
-                // This is triggered by call-hungup.ts
+                // This is triggered by call-hungup.ts or cleanup-monitor
                 if (args.Action === 'Hangup') { // Note: This is 'Action' (capital A)
                     console.log(`[CALL_UPDATE_REQUESTED] Acknowledging Hangup request for call ${callId}`);
-                    // Acknowledge by returning the Hangup action
-                    return buildActions([
-                        { Type: 'Hangup' }
-                    ]);
+                    
+                    // Get all active participants to hang up
+                    const participants = event?.CallDetails?.Participants || [];
+                    const hangupActions = participants
+                        .filter((p: any) => p.Status === 'Connected')
+                        .map((p: any) => ({
+                            Type: 'Hangup',
+                            Parameters: {
+                                CallId: p.CallId,
+                                SipResponseCode: '0'
+                            }
+                        }));
+                    
+                    // If no specific participants, hang up all
+                    if (hangupActions.length === 0) {
+                        hangupActions.push({ Type: 'Hangup', Parameters: { SipResponseCode: '0' } });
+                    }
+                    
+                    return buildActions(hangupActions);
                 }
                 
                 // If it's another action (like 'Hold', etc.), just log and acknowledge
@@ -1167,7 +1181,16 @@ export const handler = async (event: any): Promise<any> => {
                     ]);
                 }
 
-                return buildActions([]);
+                // For StartCallRecording failures, just log and continue with a pause - recording is optional
+                if (failedActionType === 'StartCallRecording') {
+                    console.warn(`[ACTION_FAILED] StartCallRecording failed - continuing call without recording`, { errorType, errorMessage });
+                    // Return a minimal pause action to keep call flow going
+                    return buildActions([buildPauseAction(100)]);
+                }
+
+                // For other failures, return a pause action to keep the call alive
+                console.warn(`[ACTION_FAILED] Returning pause action for failed ${failedActionType}`);
+                return buildActions([buildPauseAction(100)]);
             }
 
             default:
