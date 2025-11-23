@@ -17,25 +17,34 @@ export async function generateCallAnalytics(callData: any): Promise<any> {
   const connectedAt = callData.connectedAt ? new Date(callData.connectedAt).getTime() : null;
   const completedAt = callData.completedAt ? new Date(callData.completedAt).getTime() : null;
   const abandonedAt = callData.abandonedAt ? new Date(callData.abandonedAt).getTime() : null;
-  const endTime = completedAt || abandonedAt || Date.now();
+
+  // FIXED FLAW #21: Use actual end time from call data, not Date.now()
+  const endTime = completedAt || abandonedAt || (callData.endedAt ? new Date(callData.endedAt).getTime() : Date.now());
 
   // Calculate durations
   // FIX: Queue duration should show wait time even if call was abandoned before connection
-  const queueDuration = connectedAt 
-    ? (connectedAt - queueEntryTime) / 1000 
-    : abandonedAt 
+  const queueDuration = connectedAt
+    ? (connectedAt - queueEntryTime) / 1000
+    : abandonedAt
       ? (abandonedAt - queueEntryTime) / 1000  // Time waited before abandoning
-      : (endTime - queueEntryTime) / 1000;     // Fallback to end time
-  
-  const callDuration = connectedAt && completedAt ? (completedAt - connectedAt) / 1000 : 0;
-  const totalDuration = (endTime - queueEntryTime) / 1000;
+      : endTime > queueEntryTime
+        ? (endTime - queueEntryTime) / 1000     // Fallback to end time if valid
+        : 0;
 
-  // FIX #18: Determine abandonment type
+  // FIXED FLAW #22: Call duration should include abandoned calls that were connected
+  const callDuration = connectedAt && (completedAt || abandonedAt)
+    ? ((completedAt || abandonedAt)! - connectedAt) / 1000
+    : 0;
+
+  const totalDuration = endTime > queueEntryTime ? (endTime - queueEntryTime) / 1000 : 0;
+
+  // FIXED FLAW #23: Add validation for callStatus field before using it
+  // Determine abandonment type
   let abandonmentStage: string | null = null;
   if (callData.status === 'abandoned') {
     if (!connectedAt) {
       abandonmentStage = 'queue'; // Abandoned while waiting
-    } else if (callData.callStatus === 'on_hold') {
+    } else if (callData.callStatus && callData.callStatus === 'on_hold') {
       abandonmentStage = 'hold'; // Abandoned while on hold
     } else {
       abandonmentStage = 'ringing'; // Abandoned while ringing
@@ -121,17 +130,22 @@ export async function analyzeSentiment(callData: any): Promise<{
   let agentText = '';
   let customerText = '';
 
-  // FIX: Add error handling for speaker label detection
+  // FIXED FLAW #24: Better speaker assignment logic
+  // Assume spk_0 is agent (first speaker, usually answers), spk_1 is customer
+  // Any additional speakers (spk_2+) are ignored or treated as unknowns
   if (transcript.results.speaker_labels && transcript.results.items) {
     try {
       transcript.results.items.forEach((item: any) => {
         // Validate item has required fields
         if (item && item.speaker_label && item.alternatives && item.alternatives[0]) {
+          const content = item.alternatives[0].content;
           if (item.speaker_label === 'spk_0') {
-            agentText += item.alternatives[0].content + ' ';
-          } else {
-            customerText += item.alternatives[0].content + ' ';
+            agentText += content + ' ';
+          } else if (item.speaker_label === 'spk_1') {
+            // Only spk_1 is treated as customer
+            customerText += content + ' ';
           }
+          // spk_2, spk_3, etc. are ignored (could be transfers or conference calls)
         }
       });
     } catch (err) {

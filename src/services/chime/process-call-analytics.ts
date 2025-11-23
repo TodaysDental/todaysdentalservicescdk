@@ -208,16 +208,21 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
     const hasNegative = negativeKeywords.some(kw => textLower.includes(kw));
     const hasPositive = positiveKeywords.some(kw => textLower.includes(kw));
     
-    // Sentiment score: low (0.2) for negative, high (0.8) for positive, neutral (0.5) for mixed/neutral
+    // FIXED FLAW #1: Sentiment score should be 0-100 scale where higher = better
+    // Negative should be LOW (0-33), Neutral/Mixed = MEDIUM (34-66), Positive = HIGH (67-100)
     if (hasNegative && !hasPositive) {
       sentiment = 'NEGATIVE';
-      sentimentScore = 0.2; // Low score for negative sentiment
+      sentimentScore = 20; // Low score for negative sentiment (0-33 range)
     } else if (hasPositive && !hasNegative) {
       sentiment = 'POSITIVE';
-      sentimentScore = 0.8; // High score for positive sentiment
+      sentimentScore = 85; // High score for positive sentiment (67-100 range)
     } else if (hasNegative && hasPositive) {
       sentiment = 'MIXED';
-      sentimentScore = 0.5; // Neutral score for mixed sentiment
+      sentimentScore = 50; // Neutral score for mixed sentiment (34-66 range)
+    } else {
+      // Neither positive nor negative keywords found
+      sentiment = 'NEUTRAL';
+      sentimentScore = 50; // Neutral default
     }
     
     // Extract keywords - split on whitespace and filter longer words
@@ -369,31 +374,44 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
   // Calculate final metrics
   const transcript = analytics.transcript || [];
   const sentimentTrend = analytics.sentimentTrend || [];
-  
-  // Overall sentiment (most common)
-  const sentimentCounts = sentimentTrend.reduce((acc: any, point: any) => {
-    acc[point.sentiment] = (acc[point.sentiment] || 0) + 1;
+
+  // FIXED FLAW #2: Use transcript array for sentiment aggregation (sentimentTrend may be truncated)
+  const sentimentCounts = transcript.reduce((acc: any, item: any) => {
+    const sentiment = item.sentiment || 'NEUTRAL';
+    acc[sentiment] = (acc[sentiment] || 0) + 1;
     return acc;
   }, {} as Record<string, number>);
+
+  const overallSentiment = Object.entries(sentimentCounts).length > 0
+    ? Object.entries(sentimentCounts)
+        .sort(([, a], [, b]) => (b as number) - (a as number))[0]?.[0] as any
+    : 'NEUTRAL';
   
-  const overallSentiment = Object.entries(sentimentCounts)
-    .sort(([, a], [, b]) => (b as number) - (a as number))[0]?.[0] as any || 'NEUTRAL';
-  
-  // Speaker metrics
+  // FIXED FLAW #3: Calculate talk percentage based on actual talk duration, not segment count
+  // Note: Since we don't have segment durations from live transcription, we estimate
+  // based on word count as a proxy for duration (more accurate than segment count)
   const agentSegments = transcript.filter((t: any) => t.speaker === 'AGENT');
   const customerSegments = transcript.filter((t: any) => t.speaker === 'CUSTOMER');
-  
-  const totalSegments = transcript.length;
-  const agentTalkPercentage = totalSegments > 0 
-    ? (agentSegments.length / totalSegments) * 100 
+
+  // Calculate word counts as proxy for talk time
+  const agentWordCount = agentSegments.reduce((sum: number, seg: any) =>
+    sum + (seg.text?.split(/\s+/).length || 0), 0);
+  const customerWordCount = customerSegments.reduce((sum: number, seg: any) =>
+    sum + (seg.text?.split(/\s+/).length || 0), 0);
+  const totalWordCount = agentWordCount + customerWordCount;
+
+  const agentTalkPercentage = totalWordCount > 0
+    ? Math.round((agentWordCount / totalWordCount) * 100)
     : 0;
-  const customerTalkPercentage = totalSegments > 0
-    ? (customerSegments.length / totalSegments) * 100
+  const customerTalkPercentage = totalWordCount > 0
+    ? Math.round((customerWordCount / totalWordCount) * 100)
     : 0;
   
-  // Calculate duration
+  // FIXED FLAW #4: Use actual call end time from event, not Date.now()
   const callStartTime = new Date(analytics.callStartTime).getTime();
-  const callEndTime = Date.now();
+  const callEndTime = event.callStateEvent?.metadata?.endTime
+    ? new Date(event.callStateEvent.metadata.endTime).getTime()
+    : Date.now(); // Fallback to now only if no end time in event
   const totalDuration = Math.floor((callEndTime - callStartTime) / 1000);
   
   // Mark call end time and schedule finalization

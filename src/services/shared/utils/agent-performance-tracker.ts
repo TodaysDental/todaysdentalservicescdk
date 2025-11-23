@@ -81,20 +81,37 @@ export async function trackCallCompletion(
     const averageHandleTime = newTotalCalls > 0 ? Math.round(newTotalHandleTime / newTotalCalls) : 0;
     const averageTalkTime = newTotalCalls > 0 ? Math.round(newTotalTalkTime / newTotalCalls) : 0;
 
-    // Calculate performance score
+    // Calculate performance metrics
     const callsCompleted = (existingData.callsCompleted || 0) + completedIncrement;
     const callsRejected = (existingData.rejectedCalls || 0) + rejectedIncrement;
+    const callsTransferredTotal = (existingData.callsTransferred || 0) + transferredIncrement;
     const completionRate = newTotalCalls > 0 ? (callsCompleted / newTotalCalls) * 100 : 0;
     const rejectionRate = newTotalCalls > 0 ? (callsRejected / newTotalCalls) * 100 : 0;
-    
+
+    // FIXED FLAW #10: FCR should be (completed - transferred) / completed, not just completion rate
+    const fcrRate = callsCompleted > 0
+      ? ((callsCompleted - callsTransferredTotal) / callsCompleted) * 100
+      : 0;
+
+    // FIXED FLAW #11: Recalculate sentiment based on updated totals, not reuse old value
+    const totalSentimentCalls =
+      (existingData.sentimentScores?.positive || 0) +
+      (existingData.sentimentScores?.neutral || 0) +
+      (existingData.sentimentScores?.negative || 0) +
+      (existingData.sentimentScores?.mixed || 0);
+
+    const recalculatedSentiment = totalSentimentCalls > 0
+      ? ((existingData.sentimentScores.positive * 100 + existingData.sentimentScores.neutral * 50) / totalSentimentCalls)
+      : 50;
+
     // Performance score: weighted combination of metrics
     // - Completion rate (40%)
     // - Low rejection rate (20%)
-    // - Sentiment will be added when transcription completes (40%)
+    // - Sentiment (40%)
     const performanceScore = Math.round(
-      (completionRate * 0.4) + 
+      (completionRate * 0.4) +
       ((100 - rejectionRate) * 0.2) +
-      ((existingData.averageSentiment || 50) * 0.4)
+      (recalculatedSentiment * 0.4)
     );
 
     // Update or create performance record
@@ -118,6 +135,7 @@ export async function trackCallCompletion(
             totalHandleTime = if_not_exists(totalHandleTime, :zero) + :handleTimeInc,
             averageHandleTime = :avgHandleTime,
             averageTalkTime = :avgTalkTime,
+            averageSentiment = :avgSentiment,
             firstCallResolutionRate = :fcrRate,
             performanceScore = :perfScore,
             lastUpdated = :now,
@@ -139,7 +157,8 @@ export async function trackCallCompletion(
         ':handleTimeInc': handleTimeIncrement,
         ':avgHandleTime': averageHandleTime,
         ':avgTalkTime': averageTalkTime,
-        ':fcrRate': completionRate,
+        ':avgSentiment': recalculatedSentiment,
+        ':fcrRate': fcrRate,
         ':perfScore': performanceScore,
         ':now': new Date().toISOString(),
         ':emptyList': [],
@@ -213,24 +232,47 @@ export async function trackCallMissed(
 
 /**
  * Extract call metrics from a call record
+ * FIXED FLAW #12 & #13: Handle mixed timestamp formats and null values properly
  */
 export function extractCallMetrics(callRecord: any): CallMetrics | null {
   if (!callRecord.assignedAgentId) {
     return null; // No agent assigned, can't track performance
   }
 
-  const startTime = callRecord.queueEntryTimeIso || callRecord.queueEntryTime 
-    ? new Date(callRecord.queueEntryTime * 1000).toISOString()
-    : new Date().toISOString();
+  // Handle various timestamp formats (ISO string or epoch seconds)
+  let startTime: string;
+  if (callRecord.queueEntryTimeIso) {
+    startTime = callRecord.queueEntryTimeIso;
+  } else if (callRecord.queueEntryTime) {
+    // Could be epoch seconds or milliseconds
+    const timestamp = typeof callRecord.queueEntryTime === 'number'
+      ? callRecord.queueEntryTime
+      : parseInt(callRecord.queueEntryTime, 10);
+    // If less than year 2010 in milliseconds, it's in seconds
+    startTime = new Date(timestamp < 1262304000000 ? timestamp * 1000 : timestamp).toISOString();
+  } else {
+    startTime = new Date().toISOString();
+  }
 
-  const endTime = callRecord.endTime 
-    ? new Date(callRecord.endTime * 1000).toISOString()
-    : new Date().toISOString();
+  let endTime: string;
+  if (callRecord.endedAtIso) {
+    endTime = callRecord.endedAtIso;
+  } else if (callRecord.endTime) {
+    const timestamp = typeof callRecord.endTime === 'number'
+      ? callRecord.endTime
+      : parseInt(callRecord.endTime, 10);
+    endTime = new Date(timestamp < 1262304000000 ? timestamp * 1000 : timestamp).toISOString();
+  } else {
+    endTime = new Date().toISOString();
+  }
 
-  // Calculate durations from call record
-  const totalDuration = callRecord.endTime && callRecord.queueEntryTime
-    ? callRecord.endTime - callRecord.queueEntryTime
-    : 0;
+  // Calculate durations from call record with null safety
+  let totalDuration = 0;
+  if (callRecord.endTime && callRecord.queueEntryTime) {
+    const end = typeof callRecord.endTime === 'number' ? callRecord.endTime : parseInt(callRecord.endTime, 10);
+    const start = typeof callRecord.queueEntryTime === 'number' ? callRecord.queueEntryTime : parseInt(callRecord.queueEntryTime, 10);
+    totalDuration = Math.max(0, end - start); // Ensure non-negative
+  }
 
   const talkTime = callRecord.talkDuration || 0;
   const holdTime = callRecord.holdDuration || 0;
@@ -244,7 +286,7 @@ export function extractCallMetrics(callRecord: any): CallMetrics | null {
     talkTime,
     holdTime,
     wasCompleted: callRecord.status === 'completed',
-    wasTransferred: callRecord.wasTransferred || false,
+    wasTransferred: callRecord.wasTransferred || !!callRecord.transferredToAgentId || false,
     wasRejected: callRecord.status === 'rejected',
     wasMissed: callRecord.status === 'abandoned' || callRecord.status === 'missed',
     startTime,

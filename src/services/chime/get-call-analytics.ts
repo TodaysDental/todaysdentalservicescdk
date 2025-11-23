@@ -196,43 +196,54 @@ async function getClinicAnalytics(
   }
 
   const limit = Math.min(parseInt(queryParams.limit || '100', 10), 100); // Max 100 per request
-  
+
+  // FIXED FLAW #14: Build filter expression for DynamoDB instead of filtering after fetch
+  // This ensures we get full results even with filters applied
+  let filterExpression = '';
+  const filterValues: any = {
+    ':clinicId': clinicId,
+    ':start': startTime,
+    ':end': endTime
+  };
+  const filterNames: any = { '#ts': 'timestamp' };
+
+  if (queryParams.sentiment) {
+    filterExpression = 'overallSentiment = :sentiment';
+    filterValues[':sentiment'] = queryParams.sentiment;
+  }
+
+  if (queryParams.minDuration) {
+    const minDuration = parseInt(queryParams.minDuration, 10);
+    filterExpression = filterExpression
+      ? `${filterExpression} AND totalDuration >= :minDuration`
+      : 'totalDuration >= :minDuration';
+    filterValues[':minDuration'] = minDuration;
+  }
+
+  if (queryParams.hasIssues === 'true') {
+    filterExpression = filterExpression
+      ? `${filterExpression} AND attribute_exists(detectedIssues) AND size(detectedIssues) > :zero`
+      : 'attribute_exists(detectedIssues) AND size(detectedIssues) > :zero';
+    filterValues[':zero'] = 0;
+  }
+
   // Query analytics for clinic
-  const queryResult = await ddb.send(new QueryCommand({
+  const queryCommand: any = {
     TableName: ANALYTICS_TABLE_NAME,
     IndexName: 'clinicId-timestamp-index',
     KeyConditionExpression: 'clinicId = :clinicId AND #ts BETWEEN :start AND :end',
-    ExpressionAttributeNames: { '#ts': 'timestamp' },
-    ExpressionAttributeValues: {
-      ':clinicId': clinicId,
-      ':start': startTime,
-      ':end': endTime
-    },
+    ExpressionAttributeNames: filterNames,
+    ExpressionAttributeValues: filterValues,
     Limit: limit,
     ExclusiveStartKey: exclusiveStartKey
-  }));
+  };
 
-  let analytics = queryResult.Items || [];
-  
-  // Apply filters
-  if (queryParams.sentiment) {
-    analytics = analytics.filter(a => 
-      a.overallSentiment === queryParams.sentiment
-    );
+  if (filterExpression) {
+    queryCommand.FilterExpression = filterExpression;
   }
-  
-  if (queryParams.minDuration) {
-    const minDuration = parseInt(queryParams.minDuration, 10);
-    analytics = analytics.filter(a => 
-      (a.totalDuration || 0) >= minDuration
-    );
-  }
-  
-  if (queryParams.hasIssues === 'true') {
-    analytics = analytics.filter(a =>
-      a.detectedIssues && a.detectedIssues.length > 0
-    );
-  }
+
+  const queryResult = await ddb.send(new QueryCommand(queryCommand));
+  const analytics = queryResult.Items || [];
   
   return {
     statusCode: 200,
@@ -509,11 +520,19 @@ function calculateSummaryMetrics(analytics: any[]): any {
     .slice(0, 5)
     .map(([issue, count]) => ({ issue, count }));
   
-  // Calculate call volume by hour
+  // FIXED FLAW #16: Add null safety for callStartTime
   const volumeByHour = new Array(24).fill(0);
   analytics.forEach(a => {
-    const hour = new Date(a.callStartTime).getHours();
-    volumeByHour[hour]++;
+    if (a.callStartTime) {
+      try {
+        const hour = new Date(a.callStartTime).getHours();
+        if (!isNaN(hour) && hour >= 0 && hour < 24) {
+          volumeByHour[hour]++;
+        }
+      } catch (err) {
+        console.warn('[calculateSummaryMetrics] Invalid callStartTime:', a.callStartTime);
+      }
+    }
   });
   
   return {
