@@ -69,6 +69,7 @@ export class ChimeStack extends Stack {
   public readonly agentPresenceTable: dynamodb.Table;
   public readonly callQueueTable: dynamodb.Table;
   public readonly locksTable: dynamodb.Table;
+  public readonly agentPerformanceTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: ChimeStackProps) {
     super(scope, id, props);
@@ -155,6 +156,13 @@ export class ChimeStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // GSI for querying by pstnCallId (for recording metadata lookups)
+    this.callQueueTable.addGlobalSecondaryIndex({
+      indexName: 'pstnCallId-index',
+      partitionKey: { name: 'pstnCallId', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // Locks table for distributed locking on call assignments
     this.locksTable = new dynamodb.Table(this, 'LocksTable', {
       tableName: `${this.stackName}-Locks`,
@@ -162,6 +170,33 @@ export class ChimeStack extends Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.DESTROY,
       timeToLiveAttribute: 'ttl',
+    });
+
+    // Agent Performance table - tracks agent metrics and performance
+    this.agentPerformanceTable = new dynamodb.Table(this, 'AgentPerformanceTable', {
+      tableName: `${this.stackName}-AgentPerformance`,
+      partitionKey: { name: 'agentId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'periodDate', type: dynamodb.AttributeType.STRING }, // Format: YYYY-MM-DD for daily aggregates
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN, // Keep performance data for historical records
+      pointInTimeRecovery: true,
+      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES, // Enable streaming for real-time analytics
+    });
+
+    // GSI for querying by clinic and date
+    this.agentPerformanceTable.addGlobalSecondaryIndex({
+      indexName: 'clinicId-periodDate-index',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'periodDate', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI for querying by performance score
+    this.agentPerformanceTable.addGlobalSecondaryIndex({
+      indexName: 'clinicId-performanceScore-index',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'performanceScore', type: dynamodb.AttributeType.NUMBER },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     // ========================================
@@ -1284,6 +1319,28 @@ export class ChimeStack extends Stack {
         }
       }));
 
+      // FIXED: Allow Transcribe to decrypt recordings AND encrypt transcription output
+      recordingsKey.addToResourcePolicy(new iam.PolicyStatement({
+        sid: 'AllowTranscribeToUseKey',
+        principals: [new iam.ServicePrincipal('transcribe.amazonaws.com')],
+        actions: [
+          'kms:Decrypt',           // Read encrypted audio files
+          'kms:GenerateDataKey',   // Encrypt transcription output  
+          'kms:DescribeKey',       // Get key metadata
+          'kms:CreateGrant'        // Allow Transcribe to create grants for encryption
+        ],
+        resources: ['*'],
+        conditions: {
+          StringEquals: {
+            'kms:ViaService': [
+              `s3.${this.region}.amazonaws.com`,
+              `transcribe.${this.region}.amazonaws.com`
+            ],
+            'kms:CallerAccount': this.account
+          }
+        }
+      }));
+
       // 2. S3 Bucket for storing recordings
       const retentionDays = props.recordingRetentionDays || 2555; // ~7 years (common compliance requirement)
       
@@ -1337,6 +1394,51 @@ export class ChimeStack extends Stack {
         }
       }));
 
+      // FIXED: Allow AWS Transcribe to access bucket for transcription
+      // Transcribe needs these permissions to read input files and write transcription results
+      recordingsBucket.addToResourcePolicy(new iam.PolicyStatement({
+        sid: 'AllowTranscribeToAccessBucket',
+        principals: [new iam.ServicePrincipal('transcribe.amazonaws.com')],
+        actions: [
+          's3:GetBucketLocation',
+          's3:ListBucket'
+        ],
+        resources: [recordingsBucket.bucketArn],
+        conditions: {
+          StringEquals: {
+            'aws:SourceAccount': this.account
+          }
+        }
+      }));
+
+      recordingsBucket.addToResourcePolicy(new iam.PolicyStatement({
+        sid: 'AllowTranscribeToReadInputFiles',
+        principals: [new iam.ServicePrincipal('transcribe.amazonaws.com')],
+        actions: [
+          's3:GetObject'
+        ],
+        resources: [recordingsBucket.arnForObjects('recordings/*')],
+        conditions: {
+          StringEquals: {
+            'aws:SourceAccount': this.account
+          }
+        }
+      }));
+
+      recordingsBucket.addToResourcePolicy(new iam.PolicyStatement({
+        sid: 'AllowTranscribeToWriteTranscriptions',
+        principals: [new iam.ServicePrincipal('transcribe.amazonaws.com')],
+        actions: [
+          's3:PutObject'
+        ],
+        resources: [recordingsBucket.arnForObjects('transcriptions/*')],
+        conditions: {
+          StringEquals: {
+            'aws:SourceAccount': this.account
+          }
+        }
+      }));
+
       // 3. DynamoDB table for recording metadata
       const recordingMetadataTable = new dynamodb.Table(this, 'RecordingMetadataTable', {
         tableName: `${this.stackName}-RecordingMetadata`,
@@ -1364,6 +1466,13 @@ export class ChimeStack extends Stack {
         projectionType: dynamodb.ProjectionType.ALL,
       });
 
+      // GSI: Query by transcription job name (for processing transcription completion)
+      recordingMetadataTable.addGlobalSecondaryIndex({
+        indexName: 'transcriptionJobName-index',
+        partitionKey: { name: 'transcriptionJobName', type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+      });
+
       // 4. Lambda to process new recordings
       const recordingProcessorFn = new lambdaNode.NodejsFunction(this, 'RecordingProcessorFn', {
         functionName: `${this.stackName}-RecordingProcessor`,
@@ -1375,6 +1484,7 @@ export class ChimeStack extends Stack {
         environment: {
           RECORDING_METADATA_TABLE_NAME: recordingMetadataTable.tableName, // FIXED: Added _NAME suffix
           CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+          AGENT_PERFORMANCE_TABLE_NAME: this.agentPerformanceTable.tableName,
           RECORDINGS_BUCKET_NAME: recordingsBucket.bucketName, // FIXED: Added missing bucket name
           AUTO_TRANSCRIBE_RECORDINGS: 'true', // FIXED: Renamed from ENABLE_TRANSCRIPTION
           ENABLE_SENTIMENT_ANALYSIS: 'true',
@@ -1383,18 +1493,38 @@ export class ChimeStack extends Stack {
       });
 
       // Grant permissions
-      recordingsBucket.grantRead(recordingProcessorFn);
+      // Grant read/write access - Lambda needs to read recordings and write transcription metadata
+      recordingsBucket.grantReadWrite(recordingProcessorFn);
       recordingMetadataTable.grantWriteData(recordingProcessorFn);
       this.callQueueTable.grantReadWriteData(recordingProcessorFn);
-      recordingsKey.grantDecrypt(recordingProcessorFn);
+      this.agentPerformanceTable.grantReadWriteData(recordingProcessorFn);
+      // Grant encrypt/decrypt for KMS - needed for both reading recordings and writing transcriptions
+      recordingsKey.grantEncryptDecrypt(recordingProcessorFn);
 
       // Grant Transcribe permissions
       recordingProcessorFn.addToRolePolicy(new iam.PolicyStatement({
         actions: [
           'transcribe:StartTranscriptionJob',
-          'transcribe:GetTranscriptionJob'
+          'transcribe:GetTranscriptionJob',
+          'transcribe:TagResource' // FIXED: Required for tagging transcription jobs
         ],
         resources: ['*']
+      }));
+
+      // CRITICAL: Explicit S3 permissions for Transcribe output
+      // Ensures Lambda can specify the S3 output location for Transcribe
+      recordingProcessorFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: [
+          's3:PutObject',
+          's3:PutObjectAcl',
+          's3:GetObject',
+          's3:GetBucketLocation',
+          's3:ListBucket'
+        ],
+        resources: [
+          recordingsBucket.bucketArn,
+          recordingsBucket.arnForObjects('*')
+        ]
       }));
 
       // Grant Comprehend permissions
@@ -1439,6 +1569,74 @@ export class ChimeStack extends Stack {
       recordingMetadataTable.grantReadData(getRecordingFn);
       recordingsKey.grantDecrypt(getRecordingFn);
 
+      // 7. Lambda for getting agent performance reports
+      const getAgentPerformanceFn = new lambdaNode.NodejsFunction(this, 'GetAgentPerformanceFn', {
+        functionName: `${this.stackName}-GetAgentPerformance`,
+        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'get-agent-performance.ts'),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_20_X,
+        timeout: Duration.seconds(30),
+        memorySize: 512,
+        environment: {
+          AGENT_PERFORMANCE_TABLE_NAME: this.agentPerformanceTable.tableName,
+          CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+          USER_POOL_ID: props.userPoolId,
+          COGNITO_REGION: this.region,
+        },
+      });
+
+      this.agentPerformanceTable.grantReadData(getAgentPerformanceFn);
+      this.callQueueTable.grantReadData(getAgentPerformanceFn);
+
+      getAgentPerformanceFn.addPermission('AdminApiInvokeGetAgentPerformance', {
+        principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+        sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+      });
+
+      // 8. Lambda for processing transcription completion and sentiment analysis
+      const transcriptionCompleteFn = new lambdaNode.NodejsFunction(this, 'TranscriptionCompleteFn', {
+        functionName: `${this.stackName}-TranscriptionComplete`,
+        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'process-transcription.ts'),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_20_X,
+        timeout: Duration.minutes(2),
+        memorySize: 1024,
+        environment: {
+          RECORDING_METADATA_TABLE_NAME: recordingMetadataTable.tableName,
+          CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+          AGENT_PERFORMANCE_TABLE_NAME: this.agentPerformanceTable.tableName,
+          RECORDINGS_BUCKET_NAME: recordingsBucket.bucketName,
+        },
+      });
+
+      recordingsBucket.grantRead(transcriptionCompleteFn);
+      recordingMetadataTable.grantReadWriteData(transcriptionCompleteFn);
+      this.callQueueTable.grantReadWriteData(transcriptionCompleteFn);
+      this.agentPerformanceTable.grantReadWriteData(transcriptionCompleteFn);
+      recordingsKey.grantDecrypt(transcriptionCompleteFn);
+
+      // Grant Comprehend permissions for sentiment analysis
+      transcriptionCompleteFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: [
+          'comprehend:DetectSentiment',
+          'comprehend:BatchDetectSentiment'
+        ],
+        resources: ['*']
+      }));
+
+      // Trigger on transcription completion via EventBridge
+      const transcriptionRule = new events.Rule(this, 'TranscriptionCompleteRule', {
+        eventPattern: {
+          source: ['aws.transcribe'],
+          detailType: ['Transcribe Job State Change'],
+          detail: {
+            TranscriptionJobStatus: ['COMPLETED', 'FAILED']
+          }
+        },
+      });
+
+      transcriptionRule.addTarget(new targets.LambdaFunction(transcriptionCompleteFn));
+
       // Outputs
       new CfnOutput(this, 'RecordingsBucketName', {
         value: recordingsBucket.bucketName,
@@ -1455,6 +1653,22 @@ export class ChimeStack extends Stack {
       new CfnOutput(this, 'GetRecordingFnArn', {
         value: getRecordingFn.functionArn,
         exportName: `${this.stackName}-GetRecordingFnArn`,
+      });
+
+      new CfnOutput(this, 'GetAgentPerformanceFnArn', {
+        value: getAgentPerformanceFn.functionArn,
+        exportName: `${this.stackName}-GetAgentPerformanceFnArn`,
+      });
+
+      new CfnOutput(this, 'TranscriptionCompleteFnArn', {
+        value: transcriptionCompleteFn.functionArn,
+        exportName: `${this.stackName}-TranscriptionCompleteFnArn`,
+      });
+
+      new CfnOutput(this, 'AgentPerformanceTableName', {
+        value: this.agentPerformanceTable.tableName,
+        description: 'DynamoDB table for agent performance metrics',
+        exportName: `${this.stackName}-AgentPerformanceTable`,
       });
     }
 

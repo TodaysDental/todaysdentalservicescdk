@@ -15,12 +15,15 @@ import {
   RecordingMetadata 
 } from '../shared/utils/recording-manager';
 import { getErrorTracker } from '../shared/utils/error-tracker';
+import { extractCallMetrics, trackCallCompletion } from '../shared/utils/agent-performance-tracker';
+import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 
 const ddb = getDynamoDBClient();
 const errorTracker = getErrorTracker();
 
 const RECORDING_METADATA_TABLE = process.env.RECORDING_METADATA_TABLE_NAME!;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME!;
+const AGENT_PERFORMANCE_TABLE_NAME = process.env.AGENT_PERFORMANCE_TABLE_NAME!;
 const RECORDINGS_BUCKET = process.env.RECORDINGS_BUCKET_NAME!;
 const AUTO_TRANSCRIBE = process.env.AUTO_TRANSCRIBE_RECORDINGS === 'true';
 
@@ -101,5 +104,51 @@ async function processRecordingEvent(record: S3EventRecord): Promise<void> {
     }
   }
 
+  // Track agent performance if agent is assigned
+  if (metadata.agentId) {
+    try {
+      // Get call record to extract full metrics
+      const callRecord = await getCallRecord(metadata.callId);
+      
+      if (callRecord) {
+        const callMetrics = extractCallMetrics(callRecord);
+        
+        if (callMetrics) {
+          await trackCallCompletion(
+            ddb,
+            AGENT_PERFORMANCE_TABLE_NAME,
+            callMetrics
+          );
+          console.log('[RecordingProcessor] Updated agent performance for:', metadata.agentId);
+        }
+      }
+    } catch (err) {
+      console.error('[RecordingProcessor] Failed to track agent performance:', err);
+      // Don't throw - performance tracking is not critical
+    }
+  }
+
   console.log('[RecordingProcessor] Recording processed successfully:', metadata.recordingId);
+}
+
+/**
+ * Get call record by pstnCallId
+ */
+async function getCallRecord(pstnCallId: string): Promise<any | null> {
+  try {
+    const result = await ddb.send(new QueryCommand({
+      TableName: CALL_QUEUE_TABLE_NAME,
+      IndexName: 'pstnCallId-index',
+      KeyConditionExpression: 'pstnCallId = :pstnCallId',
+      ExpressionAttributeValues: {
+        ':pstnCallId': pstnCallId,
+      },
+      Limit: 1,
+    }));
+
+    return result.Items?.[0] || null;
+  } catch (err) {
+    console.error('[RecordingProcessor] Error getting call record:', err);
+    return null;
+  }
 }

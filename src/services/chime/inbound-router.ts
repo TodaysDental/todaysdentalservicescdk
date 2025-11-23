@@ -612,12 +612,14 @@ export const handler = async (event: any): Promise<any> => {
                                     await ddb.send(new UpdateCommand({
                                         TableName: CALL_QUEUE_TABLE_NAME,
                                         Key: { clinicId, queuePosition },
-                                        UpdateExpression: 'SET recordingStarted = :true, recordingStartTime = :now',
+                                        UpdateExpression: 'SET recordingStarted = :true, recordingStartTime = :now, pstnCallId = :pstnCallId',
                                         ExpressionAttributeValues: {
                                             ':true': true,
-                                            ':now': new Date().toISOString()
+                                            ':now': new Date().toISOString(),
+                                            ':pstnCallId': pstnLegCallId
                                         }
                                     }));
+                                    console.log('[NEW_INBOUND_CALL] Updated call record with pstnCallId:', pstnLegCallId);
                                 }
                             } catch (recordErr) {
                                 console.error('[NEW_INBOUND_CALL] Error updating recording metadata:', recordErr);
@@ -680,12 +682,14 @@ export const handler = async (event: any): Promise<any> => {
                                 await ddb.send(new UpdateCommand({
                                     TableName: CALL_QUEUE_TABLE_NAME,
                                     Key: { clinicId, queuePosition: queueEntry.queuePosition },
-                                    UpdateExpression: 'SET recordingStarted = :true, recordingStartTime = :now',
+                                    UpdateExpression: 'SET recordingStarted = :true, recordingStartTime = :now, pstnCallId = :pstnCallId',
                                     ExpressionAttributeValues: {
                                         ':true': true,
-                                        ':now': new Date().toISOString()
+                                        ':now': new Date().toISOString(),
+                                        ':pstnCallId': pstnLegCallId
                                     }
                                 }));
+                                console.log('[NEW_INBOUND_CALL] Updated queued call record with pstnCallId:', pstnLegCallId);
                             } catch (recordErr) {
                                 console.error('[NEW_INBOUND_CALL] Error updating recording metadata:', recordErr);
                             }

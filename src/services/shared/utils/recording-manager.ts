@@ -6,7 +6,7 @@
  * Manages call recording lifecycle with proper timing and deduplication
  */
 
-import { DynamoDBDocumentClient, PutCommand, UpdateCommand, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, UpdateCommand, GetCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { 
   TranscribeClient, 
   StartTranscriptionJobCommand, 
@@ -111,9 +111,26 @@ export function generateRecordingId(callId: string, s3Key: string): string {
  * Extract call ID from S3 key path
  */
 export function extractCallIdFromKey(key: string): string | null {
-  // Expected format: recordings/YYYY-MM-DD/{callId}/recording.wav
+  // Expected format: recordings/YYYY-MM-DD/{callId}/YYYY/MM/DD/timestamp_transactionId_callId.wav
+  // AWS Chime automatically appends: year/month/date/timestamp_transactionId_callId.wav
+  // We want to extract the callId which is the 3rd segment in the path
   const match = key.match(/recordings\/[^/]+\/([^/]+)\//);
-  return match ? match[1] : null;
+  
+  if (!match) {
+    // Try alternative format: extract callId from filename if present
+    // Format: timestamp_transactionId_callId.wav
+    const filenameMatch = key.match(/([a-f0-9-]+)\.wav$/);
+    if (filenameMatch) {
+      console.log('[RecordingManager] Extracted callId from filename:', filenameMatch[1]);
+      return filenameMatch[1];
+    }
+    
+    console.error('[RecordingManager] Could not extract callId from key:', key);
+    return null;
+  }
+  
+  console.log('[RecordingManager] Extracted callId from path:', match[1]);
+  return match[1];
 }
 
 /**
@@ -157,7 +174,22 @@ export async function processRecordingIdempotent(
   const fileSize = headResult.ContentLength || 0;
 
   // Get call record to enrich metadata
+  // NOTE: callId extracted from S3 key is actually the pstnCallId (PSTN leg ID)
   const callRecord = await findCallByCallId(ddb, callQueueTableName, callId);
+  
+  if (!callRecord) {
+    console.warn('[RecordingManager] Call record not found for pstnCallId:', callId);
+    console.warn('[RecordingManager] S3 key:', key);
+    console.warn('[RecordingManager] This will cause clinicId to be set as "unknown"');
+    console.warn('[RecordingManager] Possible causes: 1) Call record not created yet, 2) pstnCallId not stored in record, 3) Timing issue');
+  } else {
+    console.log('[RecordingManager] Found call record:', {
+      callId: callRecord.callId,
+      pstnCallId: callRecord.pstnCallId,
+      clinicId: callRecord.clinicId,
+      phoneNumber: callRecord.phoneNumber
+    });
+  }
   
   const timestamp = callRecord?.queueEntryTime 
     ? new Date(callRecord.queueEntryTime).getTime()
@@ -220,25 +252,40 @@ export async function processRecordingIdempotent(
 }
 
 /**
- * Helper to find call record by callId
+ * Helper to find call record by pstnCallId (extracted from S3 recording key)
+ * The recording S3 key contains the pstnCallId, not the meeting callId,
+ * so we need to query using the pstnCallId-index
  */
 async function findCallByCallId(
   ddb: DynamoDBDocumentClient,
   tableName: string,
-  callId: string
+  pstnCallId: string
 ): Promise<any | null> {
   try {
+    console.log('[RecordingManager] Querying for pstnCallId:', pstnCallId);
+    console.log('[RecordingManager] Table:', tableName);
+    
+    // Query using pstnCallId-index since the recording path uses pstnCallId
     const result = await ddb.send(new QueryCommand({
       TableName: tableName,
-      IndexName: 'callId-index',
-      KeyConditionExpression: 'callId = :callId',
-      ExpressionAttributeValues: { ':callId': callId },
+      IndexName: 'pstnCallId-index',
+      KeyConditionExpression: 'pstnCallId = :pstnCallId',
+      ExpressionAttributeValues: { ':pstnCallId': pstnCallId },
       Limit: 1
     }));
 
+    console.log('[RecordingManager] Query returned', result.Items?.length || 0, 'items');
+    
+    if (result.Items && result.Items.length > 0) {
+      console.log('[RecordingManager] Found call record with clinicId:', result.Items[0].clinicId);
+    } else {
+      console.warn('[RecordingManager] No call record found for pstnCallId:', pstnCallId);
+      console.warn('[RecordingManager] This may indicate the call record was not created yet or pstnCallId was not stored');
+    }
+
     return result.Items?.[0] || null;
   } catch (err) {
-    console.error('[RecordingManager] Error finding call:', err);
+    console.error('[RecordingManager] Error finding call by pstnCallId:', pstnCallId, 'Error:', err);
     return null;
   }
 }
@@ -282,9 +329,13 @@ export async function startTranscription(
     }));
 
     // Update metadata with transcription job info
+    // FIXED: Include both partition key AND sort key for composite key table
     await ddb.send(new UpdateCommand({
       TableName: metadataTableName,
-      Key: { recordingId: metadata.recordingId },
+      Key: { 
+        recordingId: metadata.recordingId,
+        timestamp: metadata.timestamp // Required - table has composite key
+      },
       UpdateExpression: `
         SET transcriptionJobName = :jobName, 
             transcriptionStatus = :status, 
@@ -297,7 +348,11 @@ export async function startTranscription(
       }
     }));
 
-    console.log('[RecordingManager] Transcription job started:', jobName);
+    console.log('[RecordingManager] ✅ Transcription job started successfully');
+    console.log('[RecordingManager] Job name:', jobName);
+    console.log('[RecordingManager] Recording ID:', metadata.recordingId);
+    console.log('[RecordingManager] Call ID:', metadata.callId);
+    console.log('[RecordingManager] Saved transcriptionJobName to DynamoDB for EventBridge lookup');
 
   } catch (err: any) {
     // Handle specific transcription errors
@@ -310,9 +365,13 @@ export async function startTranscription(
     console.error('[RecordingManager] Transcription failed:', err);
 
     // Update metadata with error
+    // FIXED: Include both partition key AND sort key for composite key table
     await ddb.send(new UpdateCommand({
       TableName: metadataTableName,
-      Key: { recordingId: metadata.recordingId },
+      Key: { 
+        recordingId: metadata.recordingId,
+        timestamp: metadata.timestamp // Required - table has composite key
+      },
       UpdateExpression: 'SET transcriptionStatus = :status, transcriptionError = :error',
       ExpressionAttributeValues: {
         ':status': 'FAILED',
@@ -334,20 +393,40 @@ export async function checkTranscriptionStatus(
   jobName: string
 ): Promise<string> {
   try {
+    // FIXED: Table has composite key (recordingId + timestamp), so we need to scan
+    // to find the record when we only have recordingId
+    const { Items } = await ddb.send(new ScanCommand({
+      TableName: metadataTableName,
+      FilterExpression: 'recordingId = :recordingId',
+      ExpressionAttributeValues: {
+        ':recordingId': recordingId
+      },
+      Limit: 1
+    }));
+
+    const metadata = Items?.[0];
+    if (!metadata) {
+      console.error('[RecordingManager] Recording metadata not found:', recordingId);
+      throw new Error(`Recording metadata not found: ${recordingId}`);
+    }
+
     const result = await transcribe.send(new GetTranscriptionJobCommand({
       TranscriptionJobName: jobName
     }));
 
     const status = result.TranscriptionJob?.TranscriptionJobStatus || 'UNKNOWN';
 
-    // Update metadata
+    // Update metadata - include both keys for composite key table
     const updateExpr = status === 'COMPLETED'
       ? 'SET transcriptionStatus = :status, transcriptionCompletedAt = :now'
       : 'SET transcriptionStatus = :status';
 
     await ddb.send(new UpdateCommand({
       TableName: metadataTableName,
-      Key: { recordingId },
+      Key: { 
+        recordingId,
+        timestamp: metadata.timestamp // Required - table has composite key
+      },
       UpdateExpression: updateExpr,
       ExpressionAttributeValues: {
         ':status': status,
