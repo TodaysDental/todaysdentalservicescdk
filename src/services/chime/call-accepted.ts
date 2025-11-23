@@ -197,15 +197,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
             const transactionItems: any[] = [
                 // Item 1: Update call status to 'accepting' with version check
-                // CRITICAL: Verify call is still ringing AND hasn't been claimed
+                // CRITICAL: Verify call is still ringing AND hasn't been claimed by a DIFFERENT agent
                 {
                     Update: {
                         TableName: CALL_QUEUE_TABLE_NAME,
                         Key: { clinicId, queuePosition },
                         UpdateExpression: 'SET #status = :accepting, assignedAgentId = :agentId, acceptedAt = :timestamp, ' +
                                          '#ttl = :ttl, #version = if_not_exists(#version, :zero) + :one',
-                        ConditionExpression: '#status = :ringing AND attribute_not_exists(assignedAgentId) AND ' +
-                                            ':agentId IN (agentIds)',
+                        ConditionExpression: '#status = :ringing AND ' +
+                                            '(attribute_not_exists(assignedAgentId) OR assignedAgentId = :agentId) AND ' +
+                                            'contains(agentIds, :agentId)',
                         ExpressionAttributeNames: { 
                             '#status': 'status', 
                             '#ttl': 'ttl',
@@ -272,13 +273,29 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                             if (currentCallState && currentCallState[0]) {
                                 const call = currentCallState[0];
                                 failureReason = `call_status_is_${call.status}_expected_ringing`;
+                                
+                                // Log full call state for debugging
+                                console.warn('[call-accepted] Call state details:', {
+                                    status: call.status,
+                                    assignedAgentId: call.assignedAgentId,
+                                    agentIds: call.agentIds,
+                                    attemptingAgentId: agentId,
+                                    agentIdsType: typeof call.agentIds,
+                                    agentIdsLength: call.agentIds?.length,
+                                    isAgentInList: call.agentIds?.includes(agentId)
+                                });
+                                
                                 if (call.assignedAgentId && call.assignedAgentId !== agentId) {
-                                    failureReason += `_already_assigned_to_${call.assignedAgentId}`;
-                                } else if (call.assignedAgentId === agentId) {
-                                    failureReason += '_already_assigned_to_same_agent';
+                                    failureReason += `_already_assigned_to_different_agent_${call.assignedAgentId}`;
                                 }
-                                if (call.agentIds && !call.agentIds.includes(agentId)) {
+                                if (!call.agentIds || call.agentIds.length === 0) {
+                                    failureReason += '_agentIds_missing_or_empty';
+                                } else if (!call.agentIds.includes(agentId)) {
                                     failureReason += '_agent_not_in_ring_list';
+                                }
+                                // Check for double-click scenario (same agent, status changed from ringing)
+                                if (call.status !== 'ringing' && call.assignedAgentId === agentId) {
+                                    failureReason += '_possible_double_click';
                                 }
                             }
                         } catch (diagErr) {
@@ -330,6 +347,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         } catch (attendeeErr) {
             console.error('[call-accepted] Failed to create customer attendee:', attendeeErr);
             // ROLLBACK: Release the call reservation
+            // CRITICAL FIX: Preserve agentIds during rollback so the call can be retried
             await ddb.send(new UpdateCommand({
                 TableName: CALL_QUEUE_TABLE_NAME,
                 Key: { clinicId, queuePosition },
@@ -347,9 +365,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             await ddb.send(new UpdateCommand({
                 TableName: AGENT_PRESENCE_TABLE_NAME,
                 Key: { agentId },
-                UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
+                UpdateExpression: 'SET #status = :online REMOVE currentCallId, callStatus',
+                ConditionExpression: 'currentCallId = :callId',
                 ExpressionAttributeNames: { '#status': 'status' },
-                ExpressionAttributeValues: { ':online': 'Online' }
+                ExpressionAttributeValues: { 
+                    ':online': 'Online',
+                    ':callId': callId
+                }
             })).catch(rollbackErr => console.error('[call-accepted] Agent rollback failed:', rollbackErr));
             
             return {
@@ -426,13 +448,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 }
                 
                 // Rollback database state
+                // CRITICAL FIX: Preserve agentIds during rollback so the call can be retried
                 await ddb.send(new TransactWriteCommand({
                     TransactItems: [
                         {
                             Update: {
                                 TableName: CALL_QUEUE_TABLE_NAME,
                                 Key: { clinicId, queuePosition },
-                                UpdateExpression: 'SET #status = :ringing REMOVE assignedAgentId, acceptedAt, customerAttendeeInfo, agentIds',
+                                UpdateExpression: 'SET #status = :ringing REMOVE assignedAgentId, acceptedAt, customerAttendeeInfo',
                                 ConditionExpression: '#status = :accepting AND assignedAgentId = :agentId',
                                 ExpressionAttributeNames: { '#status': 'status' },
                                 ExpressionAttributeValues: {
@@ -446,9 +469,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                             Update: {
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
                                 Key: { agentId },
-                                UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
+                                UpdateExpression: 'SET #status = :online REMOVE currentCallId, callStatus',
+                                ConditionExpression: 'currentCallId = :callId',
                                 ExpressionAttributeNames: { '#status': 'status' },
-                                ExpressionAttributeValues: { ':online': 'Online' }
+                                ExpressionAttributeValues: { 
+                                    ':online': 'Online',
+                                    ':callId': callId
+                                }
                             }
                         }
                     ]

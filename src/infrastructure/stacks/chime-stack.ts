@@ -256,6 +256,9 @@ export class ChimeStack extends Stack {
       ],
       destinationBucket: holdMusicBucket,
       prune: false,
+      // CRITICAL: Set correct content type for Chime SMA compatibility
+      // Chime SMA requires 'audio/wav' not 'audio/x-wav'
+      contentType: 'audio/wav',
     });
 
     const chimeCustomResourceRole = new iam.Role(this, 'ChimeVoiceCustomResourceRole', {
@@ -1370,9 +1373,10 @@ export class ChimeStack extends Stack {
         timeout: Duration.minutes(5), // Allow time for transcription
         memorySize: 1024,
         environment: {
-          RECORDING_METADATA_TABLE: recordingMetadataTable.tableName,
+          RECORDING_METADATA_TABLE_NAME: recordingMetadataTable.tableName, // FIXED: Added _NAME suffix
           CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-          ENABLE_TRANSCRIPTION: 'true',
+          RECORDINGS_BUCKET_NAME: recordingsBucket.bucketName, // FIXED: Added missing bucket name
+          AUTO_TRANSCRIBE_RECORDINGS: 'true', // FIXED: Renamed from ENABLE_TRANSCRIPTION
           ENABLE_SENTIMENT_ANALYSIS: 'true',
         },
         logRetention: logs.RetentionDays.ONE_MONTH,
