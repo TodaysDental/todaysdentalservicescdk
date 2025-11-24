@@ -43,6 +43,13 @@ interface FavorRequest {
     unreadCount: number; // Count of unread messages for the user who is NOT the last sender
 }
 
+// NEW: Interface for storing rich file metadata
+interface FileDetails {
+    fileName: string;
+    fileType: string;
+    fileSize: number; // in bytes
+}
+
 interface MessageData {
     favorRequestID: string;
     senderID: string;
@@ -50,6 +57,7 @@ interface MessageData {
     timestamp: number;
     type: 'text' | 'file';
     fileKey?: string; // S3 file path if type is 'file'
+    fileDetails?: FileDetails; // NEW: Detailed file metadata
 }
 
 // ========================================
@@ -96,7 +104,10 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 await fetchHistory(senderID, payload, connectionId, apiGwManagement);
                 break;
             case 'markRead':
-                await markRead(senderID, payload, connectionId, apiGwManagement); // NEW: Mark Read
+                await markRead(senderID, payload, connectionId, apiGwManagement); 
+                break;
+            case 'fetchRequests': // NEW: Action to list favor requests
+                await fetchRequests(senderID, payload, connectionId, apiGwManagement);
                 break;
             default:
                 await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unknown action' });
@@ -184,10 +195,11 @@ async function sendMessage(
     payload: any,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    const { favorRequestID, content, fileKey } = payload;
+    // UPDATED: Destructure fileDetails from payload
+    const { favorRequestID, content, fileKey, fileDetails } = payload;
     const senderConnectionId = (await getSenderInfoByUserID(senderID))?.connectionId;
 
-    if (!favorRequestID || (!content && !fileKey)) {
+    if (!favorRequestID || ((!content || content.trim() === '') && !fileKey)) {
         if (senderConnectionId) {
             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Missing favorRequestID or message content/file key.' });
         }
@@ -211,7 +223,7 @@ async function sendMessage(
     }
 
     // Determine the ID of the person who is NOT the current sender
-    const receiverID = favor.senderID === senderID ? favor.receiverID : favor.senderID;
+    // const receiverID = favor.senderID === senderID ? favor.receiverID : favor.senderID;
     
     // 2. Update the favor's last update time AND increment the unread counter for the receiver
     await ddb.send(new UpdateCommand({
@@ -235,6 +247,7 @@ async function sendMessage(
         timestamp,
         type: fileKey ? 'file' : 'text',
         fileKey: fileKey,
+        fileDetails: fileDetails, // NEW: Include file metadata
     };
 
     // 4. Save message and broadcast
@@ -359,6 +372,121 @@ async function resolveRequest(
         }
     }
 }
+
+/**
+ * NEW: Handles fetching the list of favor requests a user is involved in.
+ * This function replaces the logic of the former REST API /admin/requests endpoint.
+ */
+async function fetchRequests(
+    callerID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    // role can be 'sent', 'received', or 'all'
+    const { role = 'all', limit = 50, nextToken } = payload;
+    
+    // NOTE: Limit is applied in the DDB Query, max 100 on client side for 'all' merge.
+    const queryLimit = Math.min(limit, 100);
+
+    let exclusiveStartKey: any = undefined;
+    if (nextToken) {
+        try {
+            // nextToken is expected to be a JSON string of DynamoDB's LastEvaluatedKey
+            exclusiveStartKey = JSON.parse(nextToken);
+        } catch {
+            console.warn('Invalid nextToken JSON received, ignoring:', nextToken);
+        }
+    }
+
+    // Helper to query a single GSI
+    const queryByIndex = async (
+        indexName: string,
+        keyName: string,
+        startKey?: any
+    ) => {
+        return ddb.send(
+            new QueryCommand({
+                TableName: FAVORS_TABLE, 
+                IndexName: indexName,
+                KeyConditionExpression: `${keyName} = :uid`,
+                ExpressionAttributeValues: {
+                    ':uid': callerID,
+                },
+                ScanIndexForward: false, // newest first
+                Limit: queryLimit,
+                ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+            })
+        );
+    };
+    
+    let items: any[] = [];
+    let newToken: string | undefined = undefined;
+
+    try {
+        if (role === 'sent') {
+            const sentResult = await queryByIndex(
+                'SenderIndex',
+                'senderID',
+                exclusiveStartKey
+            );
+            items = sentResult.Items || [];
+            newToken = sentResult.LastEvaluatedKey ? JSON.stringify(sentResult.LastEvaluatedKey) : undefined;
+            
+        } else if (role === 'received') {
+            const recvResult = await queryByIndex(
+                'ReceiverIndex',
+                'receiverID',
+                exclusiveStartKey
+            );
+            items = recvResult.Items || [];
+            newToken = recvResult.LastEvaluatedKey ? JSON.stringify(recvResult.LastEvaluatedKey) : undefined;
+            
+        } else { // role = 'all' -> merge both (Default behavior, no robust DDB pagination)
+            const [sentResult, recvResult] = await Promise.all([
+                queryByIndex('SenderIndex', 'senderID'),
+                queryByIndex('ReceiverIndex', 'receiverID'),
+            ]);
+
+            const allItems = [...(sentResult.Items || []), ...(recvResult.Items || [])];
+
+            // Deduplicate by favorRequestID
+            const byId = new Map<string, any>();
+            for (const item of allItems) {
+                if (!item || !item.favorRequestID) continue;
+                byId.set(item.favorRequestID, item);
+            }
+
+            const merged = Array.from(byId.values());
+
+            // Sort by updatedAt desc
+            merged.sort((a, b) => {
+                const aTime = a.updatedAt || '';
+                const bTime = b.updatedAt || '';
+                if (aTime < bTime) return 1;
+                if (aTime > bTime) return -1;
+                return 0;
+            });
+            
+            // Limit the result set in-memory
+            items = merged.slice(0, queryLimit);
+            newToken = undefined; // Merging makes DDB pagination token complex/irrelevant
+        }
+
+        // Send the results back to the client
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'favorRequestsList',
+            role,
+            items,
+            nextToken: newToken,
+        });
+
+    } catch (error) {
+        console.error('Error fetching favor requests via WebSocket:', error);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to fetch favor requests list.' });
+    }
+}
+
 
 // ========================================
 // MESSAGE BROADCASTING AND PERSISTENCE
@@ -535,7 +663,9 @@ async function publishSnsNotification(messageData: any): Promise<void> {
     }));
 }
 
-/** Handles the file sharing request by generating a signed S3 PUT URL. */
+/** * Handles the file sharing request by generating a signed S3 PUT URL.
+ * Also returns the fileType for client-side upload configuration.
+ */
 async function getPresignedUrl(senderID: string, payload: any, connectionId: string, apiGwManagement: ApiGatewayManagementApiClient): Promise<void> {
     if (!payload.fileName || !payload.fileType || !payload.favorRequestID) {
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing file details or favorRequestID' });
@@ -559,6 +689,7 @@ async function getPresignedUrl(senderID: string, payload: any, connectionId: str
             favorRequestID: payload.favorRequestID,
             url: url,
             fileKey: fileKey,
+            fileType: payload.fileType, // Include fileType in response
         });
     } catch (e) {
         console.error('Error generating signed URL:', e);
