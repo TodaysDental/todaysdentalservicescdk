@@ -66,6 +66,24 @@ export class AnalyticsStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // GSI: Query by call category
+    // NOTE: DynamoDB only allows adding one GSI at a time. Deploy this first,
+    // then uncomment the second GSI (clinicId-callCategory-index) and deploy again.
+    this.analyticsTable.addGlobalSecondaryIndex({
+      indexName: 'callCategory-timestamp-index',
+      partitionKey: { name: 'callCategory', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // SECOND GSI - Uncomment after first GSI is deployed successfully
+    this.analyticsTable.addGlobalSecondaryIndex({
+      indexName: 'clinicId-callCategory-index',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'callCategory', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // Permanent failures table for DLQ triage visibility
     const analyticsFailuresTable = new dynamodb.Table(this, 'AnalyticsFailuresTable', {
       tableName: `${this.stackName}-AnalyticsFailures`,
