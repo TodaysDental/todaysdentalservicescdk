@@ -1,9 +1,13 @@
 import { KinesisStreamEvent, KinesisStreamRecord } from 'aws-lambda';
-import { DynamoDBDocumentClient, PutCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, UpdateCommand, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { ComprehendClient, DetectSentimentCommand, DetectKeyPhrasesCommand, DetectEntitiesCommand } from '@aws-sdk/client-comprehend';
+import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 
 const dynamodbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(dynamodbClient);
+const comprehend = new ComprehendClient({});
+const sns = new SNSClient({});
 
 // CRITICAL FIX: Add validation for required environment variable
 const ANALYTICS_TABLE_NAME = process.env.CALL_ANALYTICS_TABLE_NAME;
@@ -11,6 +15,9 @@ if (!ANALYTICS_TABLE_NAME) {
   throw new Error('CALL_ANALYTICS_TABLE_NAME environment variable is required');
 }
 const RETENTION_DAYS = parseInt(process.env.ANALYTICS_RETENTION_DAYS || '90', 10);
+const ENABLE_REAL_TIME_SENTIMENT = process.env.ENABLE_REAL_TIME_SENTIMENT === 'true';
+const ENABLE_REAL_TIME_ALERTS = process.env.ENABLE_REAL_TIME_ALERTS === 'true';
+const CALL_ALERTS_TOPIC_ARN = process.env.CALL_ALERTS_TOPIC_ARN;
 
 interface ChimeAnalyticsEvent {
   version: string;
@@ -108,6 +115,20 @@ const CATEGORY_KEYWORDS: Record<CallCategory, string[]> = {
   'uncategorized': []
 };
 
+// ENHANCED: In-memory transcript buffer for better analytics
+interface TranscriptBuffer {
+  segments: Array<{
+    timestamp: number;
+    speaker: string;
+    text: string;
+    startTime?: number;
+    endTime?: number;
+  }>;
+  lastUpdate: number;
+}
+
+const transcriptBuffers = new Map<string, TranscriptBuffer>();
+
 /**
  * Lambda handler for processing Chime SDK Voice Analytics events
  * Triggered by Kinesis stream containing real-time analytics data
@@ -166,12 +187,14 @@ async function processAnalyticsRecord(record: KinesisStreamRecord): Promise<void
 }
 
 async function initializeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> {
-  // CRITICAL FIX: Extract callId and timestamp from event
   const { callId, timestamp } = event;
   const metadata = event.callStateEvent?.metadata || {};
   
   const now = new Date().toISOString();
   const ttl = Math.floor(Date.now() / 1000) + (RETENTION_DAYS * 24 * 60 * 60);
+  
+  // Initialize transcript buffer
+  transcriptBuffers.set(callId, { segments: [], lastUpdate: Date.now() });
   
   await ddb.send(new PutCommand({
     TableName: ANALYTICS_TABLE_NAME,
@@ -183,10 +206,15 @@ async function initializeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void
       customerPhone: metadata.phoneNumber,
       direction: metadata.direction || 'inbound',
       callStartTime: now,
-      transcript: [],
-      sentimentTrend: [],
+      // FIXED: Use separate tracking fields instead of large lists
+      transcriptCount: 0,
+      latestTranscripts: [], // Only keep last 10 for quick reference
+      sentimentDataPoints: 0,
+      latestSentiment: [],
       detectedIssues: [],
-      keywords: [],
+      keywords: new Set(), // Will be converted to array on write
+      keyPhrases: [],
+      entities: [],
       callCategory: 'uncategorized',
       categoryScores: {},
       createdAt: now,
@@ -202,8 +230,149 @@ async function initializeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void
 }
 
 /**
+ * ENHANCED: Analyze sentiment using AWS Comprehend
+ */
+async function analyzeSentimentWithComprehend(
+  text: string,
+  languageCode: string = 'en'
+): Promise<{
+  sentiment: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' | 'MIXED';
+  sentimentScore: number;
+  scores: {
+    Positive: number;
+    Negative: number;
+    Neutral: number;
+    Mixed: number;
+  };
+}> {
+  if (!ENABLE_REAL_TIME_SENTIMENT || text.length < 3) {
+    // Fallback to keyword-based for very short texts
+    return analyzeKeywordSentiment(text);
+  }
+
+  try {
+    const result = await comprehend.send(new DetectSentimentCommand({
+      Text: text.substring(0, 5000), // Comprehend limit
+      LanguageCode: languageCode,
+    }));
+
+    const scores = {
+      Positive: result.SentimentScore?.Positive || 0,
+      Negative: result.SentimentScore?.Negative || 0,
+      Neutral: result.SentimentScore?.Neutral || 0,
+      Mixed: result.SentimentScore?.Mixed || 0,
+    };
+
+    const sentiment = result.Sentiment as 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' | 'MIXED';
+
+    // Calculate 0-100 score where higher = better
+    const sentimentScore = Math.round(
+      (scores.Positive * 100) + 
+      (scores.Neutral * 50) + 
+      (scores.Mixed * 50)
+    );
+
+    return { sentiment, sentimentScore, scores };
+  } catch (err) {
+    console.error('[process-analytics] Comprehend error, falling back to keywords:', err);
+    return analyzeKeywordSentiment(text);
+  }
+}
+
+/**
+ * Fallback keyword-based sentiment analysis
+ */
+function analyzeKeywordSentiment(text: string): {
+  sentiment: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' | 'MIXED';
+  sentimentScore: number;
+  scores: {
+    Positive: number;
+    Negative: number;
+    Neutral: number;
+    Mixed: number;
+  };
+} {
+  const negativeKeywords = ['problem', 'issue', 'error', 'fail', 'angry', 'frustrated', 'upset', 'terrible', 'awful'];
+  const positiveKeywords = ['great', 'excellent', 'perfect', 'happy', 'satisfied', 'thank', 'appreciate', 'wonderful'];
+  
+  const textLower = text.toLowerCase();
+  const hasNegative = negativeKeywords.some(kw => textLower.includes(kw));
+  const hasPositive = positiveKeywords.some(kw => textLower.includes(kw));
+  
+  let sentiment: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' | 'MIXED' = 'NEUTRAL';
+  let sentimentScore = 50;
+  let scores = { Positive: 0, Negative: 0, Neutral: 1, Mixed: 0 };
+  
+  if (hasNegative && !hasPositive) {
+    sentiment = 'NEGATIVE';
+    sentimentScore = 20;
+    scores = { Positive: 0, Negative: 0.8, Neutral: 0.2, Mixed: 0 };
+  } else if (hasPositive && !hasNegative) {
+    sentiment = 'POSITIVE';
+    sentimentScore = 85;
+    scores = { Positive: 0.8, Negative: 0, Neutral: 0.2, Mixed: 0 };
+  } else if (hasNegative && hasPositive) {
+    sentiment = 'MIXED';
+    sentimentScore = 50;
+    scores = { Positive: 0.3, Negative: 0.3, Neutral: 0.2, Mixed: 0.2 };
+  }
+  
+  return { sentiment, sentimentScore, scores };
+}
+
+/**
+ * ENHANCED: Extract key phrases using AWS Comprehend
+ */
+async function extractKeyPhrases(text: string, languageCode: string = 'en'): Promise<string[]> {
+  if (!ENABLE_REAL_TIME_SENTIMENT || text.length < 10) {
+    return [];
+  }
+
+  try {
+    const result = await comprehend.send(new DetectKeyPhrasesCommand({
+      Text: text.substring(0, 5000),
+      LanguageCode: languageCode,
+    }));
+
+    return (result.KeyPhrases || [])
+      .filter(kp => (kp.Score || 0) > 0.8) // High confidence only
+      .map(kp => kp.Text || '')
+      .slice(0, 5); // Top 5
+  } catch (err) {
+    console.error('[process-analytics] KeyPhrases extraction error:', err);
+    return [];
+  }
+}
+
+/**
+ * ENHANCED: Extract entities using AWS Comprehend
+ */
+async function extractEntities(text: string, languageCode: string = 'en'): Promise<Array<{type: string, text: string}>> {
+  if (!ENABLE_REAL_TIME_SENTIMENT || text.length < 10) {
+    return [];
+  }
+
+  try {
+    const result = await comprehend.send(new DetectEntitiesCommand({
+      Text: text.substring(0, 5000),
+      LanguageCode: languageCode,
+    }));
+
+    return (result.Entities || [])
+      .filter(entity => (entity.Score || 0) > 0.8)
+      .map(entity => ({
+        type: entity.Type || 'UNKNOWN',
+        text: entity.Text || ''
+      }))
+      .slice(0, 10);
+  } catch (err) {
+    console.error('[process-analytics] Entity extraction error:', err);
+    return [];
+  }
+}
+
+/**
  * Detect call category based on transcript text
- * Returns category scores for all categories
  */
 function detectCallCategory(text: string): Record<CallCategory, number> {
   const textLower = text.toLowerCase();
@@ -220,10 +389,8 @@ function detectCallCategory(text: string): Record<CallCategory, number> {
     'uncategorized': 0
   };
 
-  // Count keyword matches for each category
   for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
     for (const keyword of keywords) {
-      // Use word boundary regex to match whole words/phrases
       const regex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
       const matches = textLower.match(regex);
       if (matches) {
@@ -239,7 +406,6 @@ function detectCallCategory(text: string): Record<CallCategory, number> {
  * Determine the most likely call category from accumulated scores
  */
 function determineFinalCategory(categoryScores: Record<CallCategory, number>): CallCategory {
-  // Exclude 'general' and 'uncategorized' from final determination
   const scorableCategories = Object.entries(categoryScores)
     .filter(([cat]) => cat !== 'general' && cat !== 'uncategorized');
 
@@ -247,11 +413,9 @@ function determineFinalCategory(categoryScores: Record<CallCategory, number>): C
     return 'uncategorized';
   }
 
-  // Find category with highest score
   const [topCategory, topScore] = scorableCategories
     .sort(([, a], [, b]) => (b as number) - (a as number))[0];
 
-  // If no keywords matched any category, return uncategorized
   if (topScore === 0) {
     return 'uncategorized';
   }
@@ -259,12 +423,86 @@ function determineFinalCategory(categoryScores: Record<CallCategory, number>): C
   return topCategory as CallCategory;
 }
 
+/**
+ * ENHANCED: Detect interruptions by analyzing speaker overlaps and timing
+ */
+function detectInterruptions(buffer: TranscriptBuffer): number {
+  if (buffer.segments.length < 2) return 0;
+
+  let interruptions = 0;
+  
+  for (let i = 1; i < buffer.segments.length; i++) {
+    const prev = buffer.segments[i - 1];
+    const curr = buffer.segments[i];
+    
+    // Interruption detected if:
+    // 1. Different speakers
+    // 2. Current segment starts before previous ends
+    // 3. Gap between segments is very small (< 200ms)
+    if (prev.speaker !== curr.speaker) {
+      if (prev.endTime && curr.startTime && prev.endTime > curr.startTime) {
+        interruptions++;
+      } else if (curr.startTime && prev.endTime) {
+        const gap = curr.startTime - prev.endTime;
+        if (gap < 0.2) { // Less than 200ms indicates interruption
+          interruptions++;
+        }
+      }
+    }
+  }
+  
+  return interruptions;
+}
+
+/**
+ * ENHANCED: Calculate silence periods from audio metrics and transcript timing
+ */
+function calculateSilenceMetrics(buffer: TranscriptBuffer, totalDuration: number): {
+  silencePercentage: number;
+  silencePeriods: number;
+} {
+  if (buffer.segments.length === 0 || totalDuration === 0) {
+    return { silencePercentage: 100, silencePeriods: 0 };
+  }
+
+  let totalSpeechTime = 0;
+  let silencePeriods = 0;
+  
+  // Calculate actual speech time from segment timings
+  for (const segment of buffer.segments) {
+    if (segment.startTime !== undefined && segment.endTime !== undefined) {
+      totalSpeechTime += (segment.endTime - segment.startTime);
+    }
+  }
+  
+  // Count silence periods (gaps > 2 seconds between segments)
+  for (let i = 1; i < buffer.segments.length; i++) {
+    const prev = buffer.segments[i - 1];
+    const curr = buffer.segments[i];
+    
+    if (prev.endTime && curr.startTime) {
+      const gap = curr.startTime - prev.endTime;
+      if (gap > 2) { // Silence period > 2 seconds
+        silencePeriods++;
+      }
+    }
+  }
+  
+  const silenceTime = Math.max(0, totalDuration - totalSpeechTime);
+  const silencePercentage = (silenceTime / totalDuration) * 100;
+  
+  return {
+    silencePercentage: Math.round(silencePercentage),
+    silencePeriods
+  };
+}
+
 async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void> {
   const { callId, transcriptEvent, timestamp: eventTimestamp } = event;
   
   if (!transcriptEvent?.results) return;
 
-  // CRITICAL FIX #10: Check if call is finalized to handle out-of-order events
+  // Check if call is finalized
   const { Items: existingRecords } = await ddb.send(new QueryCommand({
     TableName: ANALYTICS_TABLE_NAME,
     KeyConditionExpression: 'callId = :callId',
@@ -273,34 +511,26 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
   }));
 
   if (!existingRecords || existingRecords.length === 0) {
-    console.warn(`[processTranscriptEvent] No analytics record found for ${callId}, skipping transcript`);
+    console.warn(`[processTranscriptEvent] No analytics record found for ${callId}`);
     return;
   }
 
   const storedRecord = existingRecords[0];
   const storedTimestamp = storedRecord.timestamp;
   
-  // Don't process transcripts if call is already finalized (out-of-order event)
   if (storedRecord.finalized === true) {
-    console.warn(`[processTranscriptEvent] Call ${callId} already finalized, skipping late transcript`);
+    console.warn(`[processTranscriptEvent] Call ${callId} already finalized, skipping`);
     return;
   }
-  
-  // If call has ended, check if transcript is from before end time
-  if (storedRecord.callEndTime) {
-    const eventTime = eventTimestamp || Date.now();
-    const endTime = new Date(storedRecord.callEndTime).getTime();
-    
-    if (eventTime > endTime) {
-      console.warn(`[processTranscriptEvent] Rejecting transcript for ${callId} (event after call end)`);
-      return;
-    }
-    
-    console.log(`[processTranscriptEvent] Accepting late transcript for ${callId} (event before call end)`);
+
+  // Get or create transcript buffer
+  let buffer = transcriptBuffers.get(callId);
+  if (!buffer) {
+    buffer = { segments: [], lastUpdate: Date.now() };
+    transcriptBuffers.set(callId, buffer);
   }
 
   for (const result of transcriptEvent.results) {
-    // Skip partial results - wait for final
     if (result.isPartial) continue;
     
     const alternative = result.alternatives[0];
@@ -314,101 +544,84 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
       sum + (item.confidence || 0), 0
     ) / (alternative.items.length || 1);
     
-    // Analyze sentiment for this utterance
-    // NOTE: Basic keyword-based sentiment detection. For production, integrate AWS Comprehend
-    let sentiment: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' | 'MIXED' = 'NEUTRAL';
-    let sentimentScore = 0.5;
+    const startTime = alternative.items[0]?.startTime || 0;
+    const endTime = alternative.items[alternative.items.length - 1]?.endTime || 0;
     
-    const negativeKeywords = ['problem', 'issue', 'error', 'fail', 'angry', 'frustrated', 'upset', 'terrible', 'awful'];
-    const positiveKeywords = ['great', 'excellent', 'perfect', 'happy', 'satisfied', 'thank', 'appreciate', 'wonderful'];
+    // Add to buffer
+    buffer.segments.push({
+      timestamp: Date.now(),
+      speaker,
+      text,
+      startTime,
+      endTime
+    });
+    buffer.lastUpdate = Date.now();
     
-    const textLower = text.toLowerCase();
-    const hasNegative = negativeKeywords.some(kw => textLower.includes(kw));
-    const hasPositive = positiveKeywords.some(kw => textLower.includes(kw));
+    // ENHANCED: Use AWS Comprehend for sentiment analysis
+    const sentimentResult = await analyzeSentimentWithComprehend(text);
     
-    // FIXED FLAW #1: Sentiment score should be 0-100 scale where higher = better
-    // Negative should be LOW (0-33), Neutral/Mixed = MEDIUM (34-66), Positive = HIGH (67-100)
-    if (hasNegative && !hasPositive) {
-      sentiment = 'NEGATIVE';
-      sentimentScore = 20; // Low score for negative sentiment (0-33 range)
-    } else if (hasPositive && !hasNegative) {
-      sentiment = 'POSITIVE';
-      sentimentScore = 85; // High score for positive sentiment (67-100 range)
-    } else if (hasNegative && hasPositive) {
-      sentiment = 'MIXED';
-      sentimentScore = 50; // Neutral score for mixed sentiment (34-66 range)
-    } else {
-      // Neither positive nor negative keywords found
-      sentiment = 'NEUTRAL';
-      sentimentScore = 50; // Neutral default
-    }
+    // Extract advanced analytics
+    const keyPhrases = await extractKeyPhrases(text);
+    const entities = await extractEntities(text);
     
-    // Extract keywords - split on whitespace and filter longer words
-    const words = text.split(/\s+/).filter(w => w.length > 4);
-    const keywords = [...new Set(words)].slice(0, 5);
-    
-    // Detect call category from this transcript segment
+    // Detect call category
     const categoryScores = detectCallCategory(text);
     
     // Store transcript segment
     const transcriptItem = {
-      timestamp: alternative.items[0]?.startTime || Date.now(),
+      timestamp: startTime,
       speaker,
       text,
-      sentiment,
+      sentiment: sentimentResult.sentiment,
       confidence
     };
     
     const sentimentDataPoint = {
-      timestamp: transcriptItem.timestamp,
-      sentiment,
-      score: sentimentScore
+      timestamp: startTime,
+      sentiment: sentimentResult.sentiment,
+      score: sentimentResult.sentimentScore
     };
     
-    // CRITICAL FIX: Get current list sizes to enforce limits
-    const currentTranscriptLength = existingRecords[0].transcript?.length || 0;
-    const currentSentimentLength = existingRecords[0].sentimentTrend?.length || 0;
-    const currentKeywordsLength = existingRecords[0].keywords?.length || 0;
-    const existingCategoryScores = existingRecords[0].categoryScores || {};
+    // FIXED: Use atomic counters instead of list append
+    const transcriptCount = storedRecord.transcriptCount || 0;
+    const existingCategoryScores = storedRecord.categoryScores || {};
     
-    // CRITICAL FIX: Only append if under size limits (prevent memory issues)
-    const MAX_TRANSCRIPT_ITEMS = 1000;
-    const MAX_SENTIMENT_ITEMS = 500;
-    const MAX_KEYWORDS = 100;
-    
-    if (currentTranscriptLength < MAX_TRANSCRIPT_ITEMS) {
-      // Accumulate category scores
-      const updatedCategoryScores: Record<string, number> = { ...existingCategoryScores };
-      for (const [category, score] of Object.entries(categoryScores)) {
-        updatedCategoryScores[category] = (updatedCategoryScores[category] || 0) + score;
-      }
-      
-      // Update analytics record with the correct stored timestamp
-      await ddb.send(new UpdateCommand({
-        TableName: ANALYTICS_TABLE_NAME,
-        Key: { callId, timestamp: storedTimestamp }, // Use stored timestamp, not event.timestamp
-        UpdateExpression: `
-          SET transcript = list_append(if_not_exists(transcript, :empty_list), :transcript),
-              sentimentTrend = list_append(if_not_exists(sentimentTrend, :empty_list), :sentiment),
-              keywords = list_append(if_not_exists(keywords, :empty_list), :keywords),
-              categoryScores = :categoryScores,
-              updatedAt = :now
-        `,
-        ExpressionAttributeValues: {
-          ':transcript': [transcriptItem],
-          ':sentiment': currentSentimentLength < MAX_SENTIMENT_ITEMS ? [sentimentDataPoint] : [],
-          ':keywords': currentKeywordsLength < MAX_KEYWORDS ? keywords : [],
-          ':categoryScores': updatedCategoryScores,
-          ':empty_list': [],
-          ':now': new Date().toISOString()
-        }
-      }));
-      
-      // Check for issues
-      await detectIssues(callId, storedTimestamp, text, speaker, sentiment);
-    } else {
-      console.warn(`[processTranscriptEvent] Transcript limit reached for ${callId}, skipping`);
+    // Update category scores
+    const updatedCategoryScores: Record<string, number> = { ...existingCategoryScores };
+    for (const [category, score] of Object.entries(categoryScores)) {
+      updatedCategoryScores[category] = (updatedCategoryScores[category] || 0) + score;
     }
+    
+    // Update with atomic operations
+    await ddb.send(new UpdateCommand({
+      TableName: ANALYTICS_TABLE_NAME,
+      Key: { callId, timestamp: storedTimestamp },
+      UpdateExpression: `
+        SET transcriptCount = transcriptCount + :one,
+            latestTranscripts = list_append(:newTranscript, list_slice(if_not_exists(latestTranscripts, :empty), :zero, :nine)),
+            sentimentDataPoints = sentimentDataPoints + :one,
+            latestSentiment = list_append(:newSentiment, list_slice(if_not_exists(latestSentiment, :empty), :zero, :nine)),
+            categoryScores = :categoryScores,
+            keyPhrases = list_append(if_not_exists(keyPhrases, :empty), :keyPhrases),
+            entities = list_append(if_not_exists(entities, :empty), :entities),
+            updatedAt = :now
+      `,
+      ExpressionAttributeValues: {
+        ':one': 1,
+        ':newTranscript': [transcriptItem],
+        ':newSentiment': [sentimentDataPoint],
+        ':keyPhrases': keyPhrases,
+        ':entities': entities,
+        ':categoryScores': updatedCategoryScores,
+        ':empty': [],
+        ':zero': 0,
+        ':nine': 9,
+        ':now': new Date().toISOString()
+      }
+    }));
+    
+    // Check for issues and send alerts
+    await detectIssues(callId, storedTimestamp, text, speaker, sentimentResult.sentiment, sentimentResult.sentimentScore);
   }
 }
 
@@ -417,7 +630,6 @@ async function processCallQualityEvent(event: ChimeAnalyticsEvent): Promise<void
   
   if (!callQualityEvent) return;
   
-  // CRITICAL FIX #10: Check if call is finalized
   const { Items: existingRecords } = await ddb.send(new QueryCommand({
     TableName: ANALYTICS_TABLE_NAME,
     KeyConditionExpression: 'callId = :callId',
@@ -433,9 +645,8 @@ async function processCallQualityEvent(event: ChimeAnalyticsEvent): Promise<void
   const storedRecord = existingRecords[0];
   const storedTimestamp = storedRecord.timestamp;
   
-  // Don't process quality events if call is finalized
   if (storedRecord.finalized === true) {
-    console.warn(`[processCallQualityEvent] Call ${callId} already finalized, skipping quality event`);
+    console.warn(`[processCallQualityEvent] Call ${callId} already finalized`);
     return;
   }
   
@@ -450,7 +661,7 @@ async function processCallQualityEvent(event: ChimeAnalyticsEvent): Promise<void
   
   await ddb.send(new UpdateCommand({
     TableName: ANALYTICS_TABLE_NAME,
-    Key: { callId, timestamp: storedTimestamp }, // Use stored timestamp
+    Key: { callId, timestamp: storedTimestamp },
     UpdateExpression: `
       SET audioQuality = :quality,
           updatedAt = :now
@@ -466,21 +677,24 @@ async function processCallQualityEvent(event: ChimeAnalyticsEvent): Promise<void
     }
   }));
   
-  // Detect quality issues
+  // ENHANCED: Send alert for poor quality
   if (qualityScore < 3) {
     await addDetectedIssue(callId, storedTimestamp, 'poor-audio-quality');
+    await sendCallAlert(callId, 'POOR_AUDIO_QUALITY', {
+      qualityScore,
+      jitter,
+      packetLoss,
+      roundTripTime
+    });
   }
 }
 
 async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> {
   const { callId, timestamp } = event;
 
-  // CRITICAL FIX #10: Don't finalize immediately - mark for delayed finalization
-  // This allows buffering window for out-of-order events
   const FINALIZATION_DELAY = 30000; // 30 seconds
   const finalizationTime = Date.now() + FINALIZATION_DELAY;
 
-  // Get full analytics record
   const queryResult = await ddb.send(new QueryCommand({
     TableName: ANALYTICS_TABLE_NAME,
     KeyConditionExpression: 'callId = :callId',
@@ -491,22 +705,24 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
   const analytics = queryResult.Items?.[0];
   
   if (!analytics) {
-    console.warn(`[process-analytics] No analytics record found for ${callId}`);
+    console.warn(`[finalizeCallAnalytics] No analytics record found for ${callId}`);
     return;
   }
   
-  // Check if already scheduled for finalization
   if (analytics.finalizationScheduledAt) {
-    console.log(`[finalizeCallAnalytics] Call ${callId} already scheduled for finalization`);
+    console.log(`[finalizeCallAnalytics] Call ${callId} already scheduled`);
     return;
   }
   
-  // Calculate final metrics
-  const transcript = analytics.transcript || [];
-  const sentimentTrend = analytics.sentimentTrend || [];
-
-  // FIXED FLAW #2: Use transcript array for sentiment aggregation (sentimentTrend may be truncated)
-  const sentimentCounts = transcript.reduce((acc: any, item: any) => {
+  // Get transcript buffer for final analysis
+  const buffer = transcriptBuffers.get(callId) || { segments: [], lastUpdate: Date.now() };
+  
+  // Calculate interruptions
+  const interruptionCount = detectInterruptions(buffer);
+  
+  // Calculate sentiment from latest data
+  const latestTranscripts = analytics.latestTranscripts || [];
+  const sentimentCounts = latestTranscripts.reduce((acc: any, item: any) => {
     const sentiment = item.sentiment || 'NEUTRAL';
     acc[sentiment] = (acc[sentiment] || 0) + 1;
     return acc;
@@ -517,20 +733,17 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
         .sort(([, a], [, b]) => (b as number) - (a as number))[0]?.[0] as any
     : 'NEUTRAL';
   
-  // Determine final call category based on accumulated scores
+  // Determine final call category
   const categoryScores = analytics.categoryScores || {};
   const finalCategory = determineFinalCategory(categoryScores as Record<CallCategory, number>);
   
-  // FIXED FLAW #3: Calculate talk percentage based on actual talk duration, not segment count
-  // Note: Since we don't have segment durations from live transcription, we estimate
-  // based on word count as a proxy for duration (more accurate than segment count)
-  const agentSegments = transcript.filter((t: any) => t.speaker === 'AGENT');
-  const customerSegments = transcript.filter((t: any) => t.speaker === 'CUSTOMER');
+  // Calculate talk percentages from buffer
+  const agentSegments = buffer.segments.filter(t => t.speaker === 'AGENT');
+  const customerSegments = buffer.segments.filter(t => t.speaker === 'CUSTOMER');
 
-  // Calculate word counts as proxy for talk time
-  const agentWordCount = agentSegments.reduce((sum: number, seg: any) =>
+  const agentWordCount = agentSegments.reduce((sum, seg) =>
     sum + (seg.text?.split(/\s+/).length || 0), 0);
-  const customerWordCount = customerSegments.reduce((sum: number, seg: any) =>
+  const customerWordCount = customerSegments.reduce((sum, seg) =>
     sum + (seg.text?.split(/\s+/).length || 0), 0);
   const totalWordCount = agentWordCount + customerWordCount;
 
@@ -541,14 +754,15 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
     ? Math.round((customerWordCount / totalWordCount) * 100)
     : 0;
   
-  // FIXED FLAW #4: Use actual call end time from event, not Date.now()
+  // Calculate duration and silence
   const callStartTime = new Date(analytics.callStartTime).getTime();
   const callEndTime = event.callStateEvent?.metadata?.endTime
     ? new Date(event.callStateEvent.metadata.endTime).getTime()
-    : Date.now(); // Fallback to now only if no end time in event
+    : Date.now();
   const totalDuration = Math.floor((callEndTime - callStartTime) / 1000);
   
-  // Mark call end time and schedule finalization
+  const silenceMetrics = calculateSilenceMetrics(buffer, totalDuration);
+  
   await ddb.send(new UpdateCommand({
     TableName: ANALYTICS_TABLE_NAME,
     Key: { callId, timestamp: analytics.timestamp },
@@ -569,25 +783,24 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
       ':metrics': {
         agentTalkPercentage,
         customerTalkPercentage,
-        silencePercentage: 100 - agentTalkPercentage - customerTalkPercentage,
-        interruptionCount: 0  // TODO: Calculate interruptions
+        silencePercentage: silenceMetrics.silencePercentage,
+        interruptionCount,
+        silencePeriods: silenceMetrics.silencePeriods
       },
       ':scheduleTime': finalizationTime,
       ':now': new Date().toISOString()
     }
   }));
   
-  console.log(`[process-analytics] Analytics for ${callId} scheduled for finalization at ${new Date(finalizationTime).toISOString()}`, {
+  // Clean up buffer
+  transcriptBuffers.delete(callId);
+  
+  console.log(`[finalizeCallAnalytics] Analytics for ${callId} scheduled for finalization`, {
     duration: totalDuration,
     sentiment: overallSentiment,
     category: finalCategory,
-    agentTalkPercentage
+    interruptions: interruptionCount
   });
-  
-  // NOTE: Actual finalization (setting finalized=true) should be done by a separate
-  // scheduled Lambda or EventBridge rule that runs every minute to finalize records
-  // where finalizationScheduledAt < now() and finalized != true
-  // This provides a buffer window for out-of-order events
 }
 
 async function detectIssues(
@@ -595,12 +808,13 @@ async function detectIssues(
   timestamp: number, 
   text: string, 
   speaker: string, 
-  sentiment: string
+  sentiment: string,
+  sentimentScore: number
 ): Promise<void> {
   const issues: string[] = [];
   
   // Detect customer frustration
-  if (speaker === 'CUSTOMER' && sentiment === 'NEGATIVE') {
+  if (speaker === 'CUSTOMER' && sentiment === 'NEGATIVE' && sentimentScore < 30) {
     const frustrationKeywords = ['frustrated', 'angry', 'upset', 'disappointed', 'terrible', 'awful'];
     const hasFrustration = frustrationKeywords.some(keyword => 
       text.toLowerCase().includes(keyword)
@@ -608,10 +822,15 @@ async function detectIssues(
     
     if (hasFrustration) {
       issues.push('customer-frustration');
+      // ENHANCED: Send real-time alert
+      await sendCallAlert(callId, 'CUSTOMER_FRUSTRATION', {
+        text,
+        sentimentScore
+      });
     }
   }
   
-  // Detect requests for supervisor
+  // Detect escalation requests
   const escalationKeywords = ['supervisor', 'manager', 'speak to someone else'];
   const hasEscalation = escalationKeywords.some(keyword =>
     text.toLowerCase().includes(keyword)
@@ -619,6 +838,7 @@ async function detectIssues(
   
   if (hasEscalation) {
     issues.push('escalation-request');
+    await sendCallAlert(callId, 'ESCALATION_REQUEST', { text });
   }
   
   // Add detected issues
@@ -652,3 +872,34 @@ async function addDetectedIssue(
     console.error('[process-analytics] Failed to add issue:', err);
   }
 }
+
+/**
+ * ENHANCED: Send real-time alerts via SNS
+ */
+async function sendCallAlert(
+  callId: string,
+  alertType: string,
+  details: any
+): Promise<void> {
+  if (!ENABLE_REAL_TIME_ALERTS || !CALL_ALERTS_TOPIC_ARN) {
+    return;
+  }
+
+  try {
+    await sns.send(new PublishCommand({
+      TopicArn: CALL_ALERTS_TOPIC_ARN,
+      Subject: `Call Alert: ${alertType}`,
+      Message: JSON.stringify({
+        callId,
+        alertType,
+        timestamp: new Date().toISOString(),
+        details
+      }, null, 2)
+    }));
+    
+    console.log(`[process-analytics] Alert sent for ${callId}: ${alertType}`);
+  } catch (err) {
+    console.error('[process-analytics] Failed to send alert:', err);
+  }
+}
+

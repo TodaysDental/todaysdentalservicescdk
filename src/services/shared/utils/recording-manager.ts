@@ -292,41 +292,70 @@ async function findCallByCallId(
 
 /**
  * FIX #50: Start transcription with unique job name
- * Uses UUID to prevent job name collisions on retries
+ * Enhanced with custom vocabulary and multi-language support
  */
 export async function startTranscription(
   ddb: DynamoDBDocumentClient,
   metadataTableName: string,
   metadata: RecordingMetadata,
-  outputBucket: string
+  outputBucket: string,
+  options?: {
+    vocabularyName?: string;
+    languageCode?: string;
+    identifyLanguage?: boolean;
+    languageOptions?: string[];
+  }
 ): Promise<void> {
   // Generate unique job name with UUID to prevent collisions
   const jobName = `transcription-${metadata.callId}-${randomUUID().substring(0, 8)}`;
 
   console.log('[RecordingManager] Starting transcription:', jobName);
 
+  // Support automatic language identification or specific language
+  const languageCode = options?.languageCode || process.env.DEFAULT_LANGUAGE_CODE || 'en-US';
+  const identifyLanguage = options?.identifyLanguage || false;
+  const languageOptions = options?.languageOptions || ['en-US', 'es-US', 'fr-CA'];
+
+  // Build settings with optional custom vocabulary
+  const settings: any = {
+    ShowSpeakerLabels: true,
+    MaxSpeakerLabels: 2,
+    ChannelIdentification: true,
+  };
+
+  // Add custom vocabulary if provided and not using language identification
+  if (options?.vocabularyName && !identifyLanguage) {
+    settings.VocabularyName = options.vocabularyName;
+  }
+
   try {
-    await transcribe.send(new StartTranscriptionJobCommand({
+    const command: any = {
       TranscriptionJobName: jobName,
-      LanguageCode: 'en-US', // TODO: Make configurable based on clinic
       MediaFormat: 'wav',
       Media: {
         MediaFileUri: `s3://${metadata.s3Bucket}/${metadata.s3Key}`
       },
       OutputBucketName: outputBucket,
       OutputKey: `transcriptions/${metadata.callId}/${jobName}/`,
-      Settings: {
-        ShowSpeakerLabels: true,
-        MaxSpeakerLabels: 2,
-        ChannelIdentification: true
-      },
+      Settings: settings,
       // Add tags for tracking
       Tags: [
         { Key: 'callId', Value: metadata.callId },
         { Key: 'recordingId', Value: metadata.recordingId },
-        { Key: 'clinicId', Value: metadata.clinicId }
+        { Key: 'clinicId', Value: metadata.clinicId },
+        { Key: 'languageCode', Value: languageCode }
       ]
-    }));
+    };
+
+    // Either identify language automatically or use specified language
+    if (identifyLanguage) {
+      command.IdentifyLanguage = true;
+      command.LanguageOptions = languageOptions;
+    } else {
+      command.LanguageCode = languageCode;
+    }
+
+    await transcribe.send(new StartTranscriptionJobCommand(command));
 
     // Update metadata with transcription job info
     // FIXED: Include both partition key AND sort key for composite key table

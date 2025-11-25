@@ -86,11 +86,20 @@ async function processRecordingEvent(record: S3EventRecord): Promise<void> {
   // Start transcription if enabled
   if (AUTO_TRANSCRIBE && metadata.fileSize && metadata.fileSize > 0) {
     try {
+      // Get custom vocabulary name from environment
+      const vocabularyName = process.env.MEDICAL_VOCABULARY_NAME;
+      const enableLanguageId = process.env.ENABLE_LANGUAGE_IDENTIFICATION === 'true';
+      
       await startTranscription(
         ddb,
         RECORDING_METADATA_TABLE,
         metadata,
-        RECORDINGS_BUCKET
+        RECORDINGS_BUCKET,
+        {
+          vocabularyName,
+          identifyLanguage: enableLanguageId,
+          languageOptions: ['en-US', 'es-US', 'fr-CA'], // English, Spanish, French
+        }
       );
     } catch (err) {
       console.error('[RecordingProcessor] Transcription failed:', err);
