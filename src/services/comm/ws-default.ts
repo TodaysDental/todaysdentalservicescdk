@@ -41,7 +41,7 @@ interface FavorRequest {
     // NEW: Fields for Feature Request
     requestType: 'General' | 'Assign Task' | 'Ask a Favor' | 'Other';
     unreadCount: number; // Count of unread messages for the user who is NOT the last sender
-    initialMessage: string; // <-- FIX 2A: ADDED initialMessage
+    initialMessage: string; // <-- FIX: ADDED initialMessage
 }
 
 // NEW: Interface for storing rich file metadata
@@ -143,6 +143,16 @@ async function startFavorRequest(
         return;
     }
 
+    // CRITICAL FIX: Prevent a user from starting a request with themselves
+    if (senderID === receiverID) {
+        console.error(`Attempted self-request: Sender ID ${senderID} equals Receiver ID ${receiverID}`);
+        await sendToClient(apiGwManagement, senderConnectionId, { 
+            type: 'error', 
+            message: 'A favor request cannot be started with yourself. Please select another user.' 
+        });
+        return;
+    }
+
     const favorRequestID = uuidv4();
     const timestamp = Date.now();
     const nowIso = new Date().toISOString();
@@ -158,7 +168,7 @@ async function startFavorRequest(
         // NEW: Initialize Request Type and Unread Count
         requestType,
         unreadCount: 1, // The initial message is unread by the receiver
-        initialMessage: initialMessage, // <-- FIX 2A: SAVE INITIAL MESSAGE TO FAVOR TABLE
+        initialMessage: initialMessage, // <-- FIX: SAVE INITIAL MESSAGE TO FAVOR TABLE
     };
 
     // 1. Create Favor Request Record
@@ -224,24 +234,23 @@ async function sendMessage(
         return;
     }
 
-    // Determine the ID of the person who is NOT the current sender (This is correct)
+    // Determine the ID of the person who is NOT the current sender 
     const recipientID = favor.senderID === senderID ? favor.receiverID : favor.senderID;
     
-    // 2. Update the favor's last update time AND increment the unread counter for the receiver
-    const updateResult = await ddb.send(new UpdateCommand({ // <-- Store result to get ALL_NEW attributes
+    // 2. Update the favor's last update time AND increment the unread counter for the recipient
+    const updateResult = await ddb.send(new UpdateCommand({ 
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
-        // Increment unreadCount by 1 for the recipient, and update timestamp
-        UpdateExpression: 'SET updatedAt = :ua, senderID = :sID ADD unreadCount :incr', 
+        // CRITICAL FIX: Removed senderID update. The original senderID and receiverID must be immutable for GSI integrity.
+        UpdateExpression: 'SET updatedAt = :ua ADD unreadCount :incr', 
         ExpressionAttributeValues: { 
             ':ua': new Date().toISOString(),
-            ':sID': senderID, // Update senderID to keep track of the latest sender
             ':incr': 1 // Increment unread count by 1
         },
-        ReturnValues: 'ALL_NEW', // <-- FIX 1: Retrieve the updated item
+        ReturnValues: 'ALL_NEW', // <-- FIX: Retrieve the updated item for broadcast
     }));
     
-    // FIX 1: Broadcast the updated favor object to both parties
+    // FIX: Broadcast the updated favor object to both parties
     const updatedFavor = updateResult.Attributes as FavorRequest;
     const broadcastUpdatePayload = {
         type: 'favorRequestUpdated',
@@ -260,13 +269,12 @@ async function sendMessage(
         fileDetails: fileDetails, // NEW: Include file metadata
     };
 
-    // 4. Save message and broadcast
+    // 4. Save message and broadcast (sends 'newMessage' payload)
     await _saveAndBroadcastMessage(messageData, apiGwManagement);
 }
 
 /**
- * NEW: Handles marking all messages in a conversation as read.
- * This is triggered by the client opening the chat window.
+ * Handles marking all messages in a conversation as read.
  */
 async function markRead(
     callerID: string,
@@ -296,7 +304,7 @@ async function markRead(
             },
             // Condition check ensures only participants can reset the count
             ConditionExpression: 'senderID = :caller OR receiverID = :caller',
-            ReturnValues: 'ALL_NEW', // Retrieve the updated item for broadcast
+            ReturnValues: 'ALL_NEW', // FIX: Retrieve the updated item for broadcast
         }));
         
         // 2. Broadcast the read status update to the caller
@@ -306,8 +314,6 @@ async function markRead(
             favor: updatedFavor,
         };
 
-        // We only broadcast to the caller since the other participant's unreadCount is 
-        // not changing (it was zero for them or it's not their turn to read).
         if (callerConnectionId) {
             await sendToClient(apiGwManagement, callerConnectionId, broadcastUpdatePayload);
         }
@@ -388,8 +394,7 @@ async function resolveRequest(
 }
 
 /**
- * NEW: Handles fetching the list of favor requests a user is involved in.
- * This function replaces the logic of the former REST API /admin/requests endpoint.
+ * Handles fetching the list of favor requests a user is involved in.
  */
 async function fetchRequests(
     callerID: string,
