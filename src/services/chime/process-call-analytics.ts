@@ -50,6 +50,64 @@ interface ChimeAnalyticsEvent {
   };
 }
 
+// Call category types
+type CallCategory = 
+  | 'marketing' 
+  | 'sales' 
+  | 'spam' 
+  | 'insurance' 
+  | 'payments' 
+  | 'accounting' 
+  | 'treatment' 
+  | 'service-enquiry'
+  | 'general'
+  | 'uncategorized';
+
+// Category detection keywords
+const CATEGORY_KEYWORDS: Record<CallCategory, string[]> = {
+  'marketing': [
+    'promotion', 'offer', 'discount', 'special', 'deal', 'advertisement',
+    'campaign', 'marketing', 'promo', 'newsletter', 'subscription'
+  ],
+  'sales': [
+    'purchase', 'buy', 'sell', 'price', 'cost', 'quote', 'estimate',
+    'package', 'plan', 'upgrade', 'product', 'service plan'
+  ],
+  'spam': [
+    'congratulations', 'winner', 'free gift', 'limited time', 'act now',
+    'urgent', 'click here', 'verify account', 'suspended', 'expires'
+  ],
+  'insurance': [
+    'insurance', 'coverage', 'claim', 'policy', 'deductible', 'copay',
+    'benefit', 'covered', 'out of network', 'in network', 'pre-authorization',
+    'eligibility', 'insurance card', 'provider', 'carrier'
+  ],
+  'payments': [
+    'payment', 'bill', 'invoice', 'charge', 'credit card', 'balance',
+    'pay', 'transaction', 'receipt', 'refund', 'outstanding', 'owe',
+    'statement', 'debt', 'installment'
+  ],
+  'accounting': [
+    'accounting', 'bookkeeping', 'ledger', 'financial', 'tax', 'expense',
+    'revenue', 'accounts payable', 'accounts receivable', 'reconciliation'
+  ],
+  'treatment': [
+    'treatment', 'procedure', 'appointment', 'cleaning', 'extraction',
+    'filling', 'root canal', 'crown', 'bridge', 'implant', 'denture',
+    'orthodontic', 'braces', 'whitening', 'exam', 'x-ray', 'cavity',
+    'tooth', 'teeth', 'dental', 'pain', 'toothache', 'emergency'
+  ],
+  'service-enquiry': [
+    'question', 'inquiry', 'enquiry', 'information', 'hours', 'location',
+    'address', 'phone number', 'email', 'website', 'directions',
+    'services offered', 'what do you', 'do you offer', 'tell me about'
+  ],
+  'general': [
+    'hello', 'hi', 'thank you', 'thanks', 'goodbye', 'bye'
+  ],
+  'uncategorized': []
+};
+
 /**
  * Lambda handler for processing Chime SDK Voice Analytics events
  * Triggered by Kinesis stream containing real-time analytics data
@@ -129,6 +187,8 @@ async function initializeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void
       sentimentTrend: [],
       detectedIssues: [],
       keywords: [],
+      callCategory: 'uncategorized',
+      categoryScores: {},
       createdAt: now,
       updatedAt: now,
       ttl
@@ -139,6 +199,64 @@ async function initializeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void
       throw err;
     }
   });
+}
+
+/**
+ * Detect call category based on transcript text
+ * Returns category scores for all categories
+ */
+function detectCallCategory(text: string): Record<CallCategory, number> {
+  const textLower = text.toLowerCase();
+  const scores: Record<CallCategory, number> = {
+    'marketing': 0,
+    'sales': 0,
+    'spam': 0,
+    'insurance': 0,
+    'payments': 0,
+    'accounting': 0,
+    'treatment': 0,
+    'service-enquiry': 0,
+    'general': 0,
+    'uncategorized': 0
+  };
+
+  // Count keyword matches for each category
+  for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
+    for (const keyword of keywords) {
+      // Use word boundary regex to match whole words/phrases
+      const regex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+      const matches = textLower.match(regex);
+      if (matches) {
+        scores[category as CallCategory] += matches.length;
+      }
+    }
+  }
+
+  return scores;
+}
+
+/**
+ * Determine the most likely call category from accumulated scores
+ */
+function determineFinalCategory(categoryScores: Record<CallCategory, number>): CallCategory {
+  // Exclude 'general' and 'uncategorized' from final determination
+  const scorableCategories = Object.entries(categoryScores)
+    .filter(([cat]) => cat !== 'general' && cat !== 'uncategorized');
+
+  if (scorableCategories.length === 0) {
+    return 'uncategorized';
+  }
+
+  // Find category with highest score
+  const [topCategory, topScore] = scorableCategories
+    .sort(([, a], [, b]) => (b as number) - (a as number))[0];
+
+  // If no keywords matched any category, return uncategorized
+  if (topScore === 0) {
+    return 'uncategorized';
+  }
+
+  return topCategory as CallCategory;
 }
 
 async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void> {
@@ -229,6 +347,9 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
     const words = text.split(/\s+/).filter(w => w.length > 4);
     const keywords = [...new Set(words)].slice(0, 5);
     
+    // Detect call category from this transcript segment
+    const categoryScores = detectCallCategory(text);
+    
     // Store transcript segment
     const transcriptItem = {
       timestamp: alternative.items[0]?.startTime || Date.now(),
@@ -248,6 +369,7 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
     const currentTranscriptLength = existingRecords[0].transcript?.length || 0;
     const currentSentimentLength = existingRecords[0].sentimentTrend?.length || 0;
     const currentKeywordsLength = existingRecords[0].keywords?.length || 0;
+    const existingCategoryScores = existingRecords[0].categoryScores || {};
     
     // CRITICAL FIX: Only append if under size limits (prevent memory issues)
     const MAX_TRANSCRIPT_ITEMS = 1000;
@@ -255,6 +377,12 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
     const MAX_KEYWORDS = 100;
     
     if (currentTranscriptLength < MAX_TRANSCRIPT_ITEMS) {
+      // Accumulate category scores
+      const updatedCategoryScores: Record<string, number> = { ...existingCategoryScores };
+      for (const [category, score] of Object.entries(categoryScores)) {
+        updatedCategoryScores[category] = (updatedCategoryScores[category] || 0) + score;
+      }
+      
       // Update analytics record with the correct stored timestamp
       await ddb.send(new UpdateCommand({
         TableName: ANALYTICS_TABLE_NAME,
@@ -263,12 +391,14 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
           SET transcript = list_append(if_not_exists(transcript, :empty_list), :transcript),
               sentimentTrend = list_append(if_not_exists(sentimentTrend, :empty_list), :sentiment),
               keywords = list_append(if_not_exists(keywords, :empty_list), :keywords),
+              categoryScores = :categoryScores,
               updatedAt = :now
         `,
         ExpressionAttributeValues: {
           ':transcript': [transcriptItem],
           ':sentiment': currentSentimentLength < MAX_SENTIMENT_ITEMS ? [sentimentDataPoint] : [],
           ':keywords': currentKeywordsLength < MAX_KEYWORDS ? keywords : [],
+          ':categoryScores': updatedCategoryScores,
           ':empty_list': [],
           ':now': new Date().toISOString()
         }
@@ -387,6 +517,10 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
         .sort(([, a], [, b]) => (b as number) - (a as number))[0]?.[0] as any
     : 'NEUTRAL';
   
+  // Determine final call category based on accumulated scores
+  const categoryScores = analytics.categoryScores || {};
+  const finalCategory = determineFinalCategory(categoryScores as Record<CallCategory, number>);
+  
   // FIXED FLAW #3: Calculate talk percentage based on actual talk duration, not segment count
   // Note: Since we don't have segment durations from live transcription, we estimate
   // based on word count as a proxy for duration (more accurate than segment count)
@@ -422,6 +556,7 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
       SET callEndTime = :endTime,
           totalDuration = :duration,
           overallSentiment = :sentiment,
+          callCategory = :category,
           speakerMetrics = :metrics,
           finalizationScheduledAt = :scheduleTime,
           updatedAt = :now
@@ -430,6 +565,7 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
       ':endTime': new Date(callEndTime).toISOString(),
       ':duration': totalDuration,
       ':sentiment': overallSentiment,
+      ':category': finalCategory,
       ':metrics': {
         agentTalkPercentage,
         customerTalkPercentage,
@@ -444,6 +580,7 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
   console.log(`[process-analytics] Analytics for ${callId} scheduled for finalization at ${new Date(finalizationTime).toISOString()}`, {
     duration: totalDuration,
     sentiment: overallSentiment,
+    category: finalCategory,
     agentTalkPercentage
   });
   

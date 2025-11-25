@@ -227,6 +227,14 @@ async function getClinicAnalytics(
     filterValues[':zero'] = 0;
   }
 
+  // Add call category filter
+  if (queryParams.category) {
+    filterExpression = filterExpression
+      ? `${filterExpression} AND callCategory = :category`
+      : 'callCategory = :category';
+    filterValues[':category'] = queryParams.category;
+  }
+
   // Query analytics for clinic
   const queryCommand: any = {
     TableName: ANALYTICS_TABLE_NAME,
@@ -452,6 +460,7 @@ function calculateAgentMetrics(analytics: any[]): any {
       averageDuration: 0,
       averageTalkPercentage: 0,
       sentimentBreakdown: {},
+      categoryBreakdown: {},
       issuesDetected: 0,
       averageQualityScore: 0
     };
@@ -465,6 +474,13 @@ function calculateAgentMetrics(analytics: any[]): any {
   const sentimentCounts = analytics.reduce((acc: any, a: any) => {
     const sentiment = a.overallSentiment || 'NEUTRAL';
     acc[sentiment] = (acc[sentiment] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+  
+  // Calculate category breakdown
+  const categoryCounts = analytics.reduce((acc: any, a: any) => {
+    const category = a.callCategory || 'uncategorized';
+    acc[category] = (acc[category] || 0) + 1;
     return acc;
   }, {} as Record<string, number>);
   
@@ -485,6 +501,7 @@ function calculateAgentMetrics(analytics: any[]): any {
     averageDuration: totalCalls > 0 ? Math.round(totalDuration / totalCalls) : 0,
     averageTalkPercentage: totalCalls > 0 ? Math.round(totalTalkPercentage / totalCalls) : 0,
     sentimentBreakdown: sentimentCounts,
+    categoryBreakdown: categoryCounts,
     issuesDetected: totalIssues,
     averageQualityScore: qualityScores.length > 0 ? Math.round(averageQualityScore * 10) / 10 : 0
   };
@@ -498,6 +515,7 @@ function calculateSummaryMetrics(analytics: any[]): any {
       totalCalls: 0,
       averageDuration: 0,
       sentimentBreakdown: {},
+      categoryBreakdown: {},
       topIssues: [],
       averageQualityScore: 0,
       callVolumeByHour: []
