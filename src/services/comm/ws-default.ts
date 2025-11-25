@@ -10,7 +10,7 @@ import { v4 as uuidv4 } from 'uuid';
 // Environment Variables
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || '';
-const MESSAGES_TABLE = process.env.MESSAGES_TABLE || '';
+const MESSAGES_TABLE = processs.env.MESSAGES_TABLE || '';
 const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
 const FILE_BUCKET_NAME = process.env.FILE_BUCKET_NAME || '';
 const NOTIFICATIONS_TOPIC_ARN = process.env.NOTICES_TOPIC_ARN || '';
@@ -125,6 +125,27 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
 // ========================================
 // CORE LOGIC FUNCTIONS
 // ========================================
+
+/**
+ * Helper to ensure we only store the clean S3 key (path) and not a full Presigned URL.
+ * This prevents the client from trying to download using the upload URL.
+ */
+function sanitizeFileKey(key: string): string {
+    if (!key || key.includes('?')) {
+        // If the key is a full URL, attempt to strip everything after the first '?'
+        try {
+            const url = new URL(key);
+            // The pathname should be the raw S3 Key, excluding the leading slash if present.
+            // Example: /favors/UUID/file.png -> favors/UUID/file.png
+            return url.pathname.replace(/^\/+/, '');
+        } catch (e) {
+            // If it's not a valid URL or other error, return the original key as a fallback.
+            return key;
+        }
+    }
+    // If it's already a clean path, return it.
+    return key;
+}
 
 /**
  * Handles the initiation of a new favor request.
@@ -258,14 +279,19 @@ async function sendMessage(
     };
     await sendToAll(apiGwManagement, [senderID, recipientID], broadcastUpdatePayload);
 
+    // CRITICAL FIX: Sanitize the fileKey before storing it in the database.
+    // This ensures that if the client accidentally sends the full signed upload URL,
+    // only the clean S3 path remains for later download reference.
+    const cleanFileKey = fileKey ? sanitizeFileKey(fileKey) : undefined;
+
     // 3. Create message data
     const messageData: MessageData = {
         favorRequestID,
         senderID,
         content: content || '',
         timestamp,
-        type: fileKey ? 'file' : 'text',
-        fileKey: fileKey,
+        type: cleanFileKey ? 'file' : 'text',
+        fileKey: cleanFileKey, // <-- USE SANITIZED KEY HERE
         fileDetails: fileDetails, // NEW: Include file metadata
     };
 

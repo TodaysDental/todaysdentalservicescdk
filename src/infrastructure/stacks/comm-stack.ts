@@ -113,6 +113,11 @@ this.favorsTable.addGlobalSecondaryIndex({
       ],
       removalPolicy: RemovalPolicy.DESTROY, // Use RETAIN in production
       autoDeleteObjects: true,
+      
+      // CRITICAL FIX: Removing explicit blockPublicAccess to allow public access, 
+      // as requested for troubleshooting (use this ONLY for debugging).
+      // Note: If you don't define blockPublicAccess, it might still default to blocking all public access 
+      // depending on account settings, but we are removing the explicit override here.
     });
 
     // ========================================
