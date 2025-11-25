@@ -212,6 +212,8 @@ const analyticsStack = new AnalyticsStack(app, 'TodaysDentalInsightsAnalyticsV1'
   env,
   userPoolId: coreStack.userPool.userPoolId,
   region: env.region || process.env.AWS_REGION || 'us-east-1',
+  supervisorEmails: [], // Add supervisor emails for alerts
+  // Note: agentPresenceTableName will be set after ChimeStack is created
 });
 
 const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV23', {
@@ -225,6 +227,7 @@ const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV23', {
  analyticsDedupTableName: analyticsStack.analyticsDedupTable.tableName,
  enableCallRecording: true, // Enable call recording by default
  recordingRetentionDays: 2555, // ~7 years for compliance
+ medicalVocabularyName: analyticsStack.medicalVocabularyName,
 });
 // ** COMMUNICATIONS STACK INSTANTIATION **
 const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommV1', {

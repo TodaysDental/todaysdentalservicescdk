@@ -24,13 +24,12 @@ function getAllowedOrigin(requestOrigin?: string): string {
   
   // If no specific origin requested, use the main domain
   if (!requestOrigin) {
-    console.log('[CORS] No request origin provided, using default origin');
+
     return ALLOWED_ORIGINS_LIST[0]; // 'https://todaysdentalinsights.com'
   }
   
   // If the request origin is in our allowed list, use it
   if (ALLOWED_ORIGINS_LIST.includes(requestOrigin)) {
-    console.log('[CORS] Request origin allowed:', requestOrigin);
     return requestOrigin;
   }
   
@@ -40,7 +39,6 @@ function getAllowedOrigin(requestOrigin?: string): string {
 }
 
 export function buildCorsHeaders(options: CorsOptions = {}, requestOrigin?: string): Record<string, string> {
-  console.log('[CORS] Building CORS headers', { options, requestOrigin });
   
   const allowOrigin = options.allowOrigin || getAllowedOrigin(requestOrigin);
   const allowMethods = (options.allowMethods || DEFAULT_METHODS).join(', ');

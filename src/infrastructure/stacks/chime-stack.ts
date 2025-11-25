@@ -61,6 +61,10 @@ export interface ChimeStackProps extends StackProps {
    * Recording retention period in days (default: 2555 days / ~7 years)
    */
   recordingRetentionDays?: number;
+  /**
+   * Custom vocabulary name for medical/dental transcription
+   */
+  medicalVocabularyName?: string;
 }
 
 export type VoiceConnectorOriginationProtocol = 'UDP' | 'TCP' | 'TLS';
@@ -327,12 +331,14 @@ export class ChimeStack extends Stack {
         'chime:DeleteSipRule',
         'chime:DeleteVoiceConnector',
         'chime:DeleteVoiceConnectorOrigination',
+        'chime:DeleteVoiceConnectorStreamingConfiguration',
         'chime:DeleteVoiceConnectorTermination',
         'chime:DisassociatePhoneNumbersFromVoiceConnector',
         'chime:GetSipMediaApplication',
         'chime:GetSipRule',
         'chime:GetVoiceConnector',
         'chime:GetVoiceConnectorOrigination',
+        'chime:GetVoiceConnectorStreamingConfiguration',
         'chime:GetVoiceConnectorTermination',
         'chime:ListPhoneNumbers',
         'chime:ListSipMediaApplications',
@@ -340,8 +346,11 @@ export class ChimeStack extends Stack {
         'chime:ListVoiceConnectors',
         'chime:PutSipMediaApplicationLoggingConfiguration',
         'chime:PutVoiceConnectorOrigination',
+        'chime:PutVoiceConnectorStreamingConfiguration',
         'chime:PutVoiceConnectorTermination',
         'chime:UpdateSipRule',
+        'chime:StartVoiceToneAnalysisTask',
+        'chime:StartSpeakerSearchTask',
       ],
       resources: ['*'],
     }));
@@ -567,6 +576,93 @@ export class ChimeStack extends Stack {
       if (vcTermination) {
         vcOrigination.node.addDependency(vcTermination);
       }
+    }
+
+    // ========================================
+    // Voice Connector Streaming - For Call Analytics
+    // ========================================
+    if (props.analyticsStreamArn) {
+      console.log('[ChimeStack] Configuring Voice Connector streaming to Kinesis');
+
+      // Grant Voice Connector permission to write to Kinesis
+      const voiceConnectorStreamingRole = new iam.Role(this, 'VoiceConnectorStreamingRole', {
+        assumedBy: new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com'),
+        description: 'Allow Chime Voice Connector to stream analytics to Kinesis',
+      });
+
+      // Extract stream name from ARN for granting specific permissions
+      const streamArn = props.analyticsStreamArn;
+      
+      voiceConnectorStreamingRole.addToPolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'kinesis:PutRecord',
+          'kinesis:PutRecords',
+        ],
+        resources: [streamArn],
+      }));
+
+      // Configure streaming on Voice Connector
+      const vcStreaming = new customResources.AwsCustomResource(this, 'VCStreaming', {
+        onCreate: {
+          service: 'ChimeSDKVoice',
+          action: 'putVoiceConnectorStreamingConfiguration',
+          parameters: {
+            VoiceConnectorId: voiceConnectorId,
+            StreamingConfiguration: {
+              DataRetentionInHours: 24,
+              Disabled: false,
+              StreamingNotificationTargets: [
+                {
+                  NotificationTarget: 'EventBridge', // Send events to EventBridge for routing
+                },
+              ],
+              MediaInsightsConfiguration: {
+                Disabled: false,
+                ConfigurationArn: streamArn, // Note: This may need adjustment based on AWS API
+              },
+            },
+          },
+          physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-vc-streaming`),
+        },
+        onUpdate: {
+          service: 'ChimeSDKVoice',
+          action: 'putVoiceConnectorStreamingConfiguration',
+          parameters: {
+            VoiceConnectorId: voiceConnectorId,
+            StreamingConfiguration: {
+              DataRetentionInHours: 24,
+              Disabled: false,
+              StreamingNotificationTargets: [
+                {
+                  NotificationTarget: 'EventBridge',
+                },
+              ],
+              MediaInsightsConfiguration: {
+                Disabled: false,
+                ConfigurationArn: streamArn,
+              },
+            },
+          },
+          physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-vc-streaming`),
+        },
+        onDelete: {
+          service: 'ChimeSDKVoice',
+          action: 'deleteVoiceConnectorStreamingConfiguration',
+          parameters: {
+            VoiceConnectorId: voiceConnectorId,
+          },
+          ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
+        },
+        role: chimeCustomResourceRole,
+      });
+
+      vcStreaming.node.addDependency(voiceConnector);
+      if (vcTermination) {
+        vcStreaming.node.addDependency(vcTermination);
+      }
+    } else {
+      console.log('[ChimeStack] Analytics stream not provided, skipping Voice Connector streaming configuration');
     }
 
     // ========================================
@@ -1504,6 +1600,9 @@ export class ChimeStack extends Stack {
           RECORDINGS_BUCKET_NAME: recordingsBucket.bucketName, // FIXED: Added missing bucket name
           AUTO_TRANSCRIBE_RECORDINGS: 'true', // FIXED: Renamed from ENABLE_TRANSCRIPTION
           ENABLE_SENTIMENT_ANALYSIS: 'true',
+          MEDICAL_VOCABULARY_NAME: props.medicalVocabularyName || '',
+          ENABLE_LANGUAGE_IDENTIFICATION: 'false', // Set to true to auto-detect language
+          DEFAULT_LANGUAGE_CODE: 'en-US',
         },
         logRetention: logs.RetentionDays.ONE_MONTH,
       });
