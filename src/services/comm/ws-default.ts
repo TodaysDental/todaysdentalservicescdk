@@ -10,7 +10,7 @@ import { v4 as uuidv4 } from 'uuid';
 // Environment Variables
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || '';
-const MESSAGES_TABLE = processs.env.MESSAGES_TABLE || '';
+const MESSAGES_TABLE = process.env.MESSAGES_TABLE || '';
 const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
 const FILE_BUCKET_NAME = process.env.FILE_BUCKET_NAME || '';
 const NOTIFICATIONS_TOPIC_ARN = process.env.NOTICES_TOPIC_ARN || '';
