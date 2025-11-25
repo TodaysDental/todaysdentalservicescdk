@@ -132,7 +132,7 @@ async function isDateBlocked(staffId: string, date: Date): Promise<boolean> {
   const dateTime = date.getTime();
   return Items.some(leave => {
     const startTime = new Date(leave.startDate).getTime();
-    const endTime = new Date(leave.endDate).getTime() + (24 * 60 * 60 * 1000 - 1); // End of day
+    const endTime = new Date(leave.endDate).getTime() + (24 * 60 * 60 * 1000 - 1);
     return dateTime >= startTime && dateTime <= endTime;
   });
 }
@@ -234,7 +234,7 @@ export const handler = async (event: any) => {
 
     return httpErr(404, "Not Found");
   } catch (err: any) {
-    console.error(err);
+    console.error('Error in handler:', err);
     return httpErr(500, err.message || "Internal server error");
   }
 };
@@ -383,7 +383,6 @@ async function createShift(body: any) {
     return httpErr(400, "staffId, clinicId, startTime, and endTime are required");
   }
 
-  // ** NEW: Check if the date is blocked **
   const shiftDate = new Date(startTime);
   const isBlocked = await isDateBlocked(staffId, shiftDate);
   if (isBlocked) {
@@ -447,7 +446,6 @@ async function updateShift(shiftId: string, body: any) {
     const clinicId = body.clinicId || oldShift.clinicId;
     const startTime = body.startTime || oldShift.startTime;
 
-    // ** NEW: Check if the date is blocked **
     const shiftDate = new Date(startTime);
     const isBlocked = await isDateBlocked(staffId, shiftDate);
     if (isBlocked) {
@@ -568,42 +566,78 @@ async function deleteLeave(leaveId: string, caller: CallerContext, isAdmin:boole
     return httpOk({ message: "Leave request deleted" });
 }
 
-// ** UPDATED: Auto-cancel overlapping shifts when approving leave **
 async function approveLeave(leaveId: string) {
-    // Get the leave request
-    const { Item: leave } = await ddb.send(new GetCommand({ TableName: LEAVE_TABLE, Key: { leaveId }}));
-    if (!leave) return httpErr(404, "Leave request not found");
-
-    // Update leave status to approved
-    await ddb.send(new UpdateCommand({
-        TableName: LEAVE_TABLE,
-        Key: { leaveId },
-        UpdateExpression: 'set #status = :status',
-        ExpressionAttributeNames: { '#status': 'status' },
-        ExpressionAttributeValues: { ':status': 'approved' }
-    }));
-
-    // Find and cancel overlapping shifts
-    const overlappingShifts = await getOverlappingShifts(leave.staffId, leave.startDate, leave.endDate);
+    console.log('🔄 Starting approveLeave for leaveId:', leaveId);
     
-    const cancelPromises = overlappingShifts.map(shift =>
-      ddb.send(new UpdateCommand({
-        TableName: SHIFTS_TABLE,
-        Key: { shiftId: shift.shiftId },
-        UpdateExpression: 'set #status = :status',
-        ExpressionAttributeNames: { '#status': 'status' },
-        ExpressionAttributeValues: { ':status': 'rejected' }
-      }))
-    );
+    try {
+        // Get the leave request
+        const { Item: leave } = await ddb.send(new GetCommand({ 
+            TableName: LEAVE_TABLE, 
+            Key: { leaveId }
+        }));
+        
+        if (!leave) {
+            console.error('❌ Leave request not found:', leaveId);
+            return httpErr(404, "Leave request not found");
+        }
 
-    await Promise.all(cancelPromises);
+        console.log('✅ Found leave request:', JSON.stringify(leave, null, 2));
 
-    return httpOk({ 
-      leaveId, 
-      status: 'approved',
-      cancelledShifts: overlappingShifts.length,
-      message: `Leave approved. ${overlappingShifts.length} overlapping shift(s) have been automatically cancelled.`
-    });
+        // Update leave status to approved
+        await ddb.send(new UpdateCommand({
+            TableName: LEAVE_TABLE,
+            Key: { leaveId },
+            UpdateExpression: 'set #status = :status',
+            ExpressionAttributeNames: { '#status': 'status' },
+            ExpressionAttributeValues: { ':status': 'approved' }
+        }));
+
+        console.log('✅ Leave status updated to approved');
+
+        // Find overlapping shifts
+        const overlappingShifts = await getOverlappingShifts(
+            leave.staffId, 
+            leave.startDate, 
+            leave.endDate
+        );
+        
+        console.log(`📊 Found ${overlappingShifts.length} overlapping shifts:`, 
+            overlappingShifts.map(s => ({ shiftId: s.shiftId, startTime: s.startTime }))
+        );
+
+        // Cancel overlapping shifts
+        if (overlappingShifts.length > 0) {
+            const cancelPromises = overlappingShifts.map(shift => {
+                console.log('🔄 Cancelling shift:', shift.shiftId);
+                return ddb.send(new UpdateCommand({
+                    TableName: SHIFTS_TABLE,
+                    Key: { shiftId: shift.shiftId },
+                    UpdateExpression: 'set #status = :status',
+                    ExpressionAttributeNames: { '#status': 'status' },
+                    ExpressionAttributeValues: { ':status': 'rejected' }
+                }));
+            });
+
+            await Promise.all(cancelPromises);
+            console.log('✅ All overlapping shifts cancelled');
+        }
+
+        const response = {
+            leaveId, 
+            status: 'approved',
+            cancelledShifts: overlappingShifts.length,
+            message: overlappingShifts.length > 0 
+                ? `Leave approved. ${overlappingShifts.length} overlapping shift(s) have been automatically cancelled.`
+                : 'Leave approved successfully. No shifts were affected.'
+        };
+
+        console.log('✅ Returning response:', response);
+        return httpOk(response);
+
+    } catch (error) {
+        console.error('❌ Error in approveLeave:', error);
+        throw error;
+    }
 }
 
 async function updateLeaveStatus(leaveId: string, status: 'approved' | 'denied') {
