@@ -10,8 +10,9 @@ const s3 = new S3Client({ region: REGION });
 
 /**
  * Generates an S3 Presigned URL for GetObject and redirects the user to it (HTTP 302).
- * This function runs inside a Lambda deployed by CommStack, providing the secure link.
- * Authentication is expected to be handled by the AdminStack's API Gateway prior to invocation.
+ * The Lambda is invoked after the API Gateway Cognito Authorizer successfully authenticates the user.
+ * @param event The API Gateway event containing the file key as a path parameter.
+ * @returns An API Gateway Proxy Result object with a 302 redirect status and Location header.
  */
 export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyResult> => {
     // The S3 key is passed as a path parameter named 'key'
@@ -44,16 +45,17 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
         return {
             statusCode: 302,
             headers: {
+                // The browser will follow this redirect immediately
                 'Location': presignedUrl,
                 'Access-Control-Allow-Origin': '*', 
                 'Access-Control-Allow-Methods': 'GET',
             },
-            body: '', 
+            body: '', // Required for Lambda Proxy Integration
         };
 
     } catch (e) {
+        // Common errors include 404 Not Found if the S3 key is incorrect/deleted
         console.error(`Error generating signed URL for download key ${fileKey}:`, e);
-        // Return 404 if the key is likely missing, otherwise 500
         return { statusCode: 500, body: JSON.stringify({ message: 'Failed to generate download URL' }) };
     }
 };

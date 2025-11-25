@@ -9,7 +9,6 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sns from 'aws-cdk-lib/aws-sns';
-import * as subs from 'aws-cdk-lib/aws-sns-subscriptions';
 
 export interface CommStackProps extends StackProps {
   // Required to authorize users against the existing Cognito User Pool
@@ -114,10 +113,10 @@ this.favorsTable.addGlobalSecondaryIndex({
       removalPolicy: RemovalPolicy.DESTROY, // Use RETAIN in production
       autoDeleteObjects: true,
       
-      // CRITICAL FIX: Removing explicit blockPublicAccess to allow public access, 
-      // as requested for troubleshooting (use this ONLY for debugging).
-      // Note: If you don't define blockPublicAccess, it might still default to blocking all public access 
-      // depending on account settings, but we are removing the explicit override here.
+      // CRITICAL FIX: Removing blockPublicAccess to allow public access, as requested for troubleshooting 
+      // (This will allow signed URLs to work without issues from strong AWS default settings).
+      // Note: If account-level blocks exist, this still might not work, but this is the maximum change possible here.
+      // blockPublicAccess is now removed.
     });
 
     // ========================================
