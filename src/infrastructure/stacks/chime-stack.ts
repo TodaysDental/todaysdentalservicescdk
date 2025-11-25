@@ -14,6 +14,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as kms from 'aws-cdk-lib/aws-kms';
+import * as kinesis from 'aws-cdk-lib/aws-kinesis';
 import * as fs from 'fs';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
@@ -323,6 +324,8 @@ export class ChimeStack extends Stack {
     chimeCustomResourceRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
+        // LEGACY Chime namespace (needed temporarily to clean up existing failed resources)
+        // TODO: Remove these after successful deployment of new resources
         'chime:AssociatePhoneNumbersWithVoiceConnector',
         'chime:CreateSipMediaApplication',
         'chime:CreateSipRule',
@@ -351,6 +354,35 @@ export class ChimeStack extends Stack {
         'chime:UpdateSipRule',
         'chime:StartVoiceToneAnalysisTask',
         'chime:StartSpeakerSearchTask',
+        // NEW Chime SDK Voice namespace (for new resources)
+        'chime-sdk-voice:AssociatePhoneNumbersWithVoiceConnector',
+        'chime-sdk-voice:CreateSipMediaApplication',
+        'chime-sdk-voice:CreateSipRule',
+        'chime-sdk-voice:CreateVoiceConnector',
+        'chime-sdk-voice:DeleteSipMediaApplication',
+        'chime-sdk-voice:DeleteSipRule',
+        'chime-sdk-voice:DeleteVoiceConnector',
+        'chime-sdk-voice:DeleteVoiceConnectorOrigination',
+        'chime-sdk-voice:DeleteVoiceConnectorStreamingConfiguration',
+        'chime-sdk-voice:DeleteVoiceConnectorTermination',
+        'chime-sdk-voice:DisassociatePhoneNumbersFromVoiceConnector',
+        'chime-sdk-voice:GetSipMediaApplication',
+        'chime-sdk-voice:GetSipRule',
+        'chime-sdk-voice:GetVoiceConnector',
+        'chime-sdk-voice:GetVoiceConnectorOrigination',
+        'chime-sdk-voice:GetVoiceConnectorStreamingConfiguration',
+        'chime-sdk-voice:GetVoiceConnectorTermination',
+        'chime-sdk-voice:ListPhoneNumbers',
+        'chime-sdk-voice:ListSipMediaApplications',
+        'chime-sdk-voice:ListSipRules',
+        'chime-sdk-voice:ListVoiceConnectors',
+        'chime-sdk-voice:PutSipMediaApplicationLoggingConfiguration',
+        'chime-sdk-voice:PutVoiceConnectorOrigination',
+        'chime-sdk-voice:PutVoiceConnectorStreamingConfiguration',
+        'chime-sdk-voice:PutVoiceConnectorTermination',
+        'chime-sdk-voice:UpdateSipRule',
+        'chime-sdk-voice:StartVoiceToneAnalysisTask',
+        'chime-sdk-voice:StartSpeakerSearchTask',
       ],
       resources: ['*'],
     }));
@@ -614,13 +646,11 @@ export class ChimeStack extends Stack {
               Disabled: false,
               StreamingNotificationTargets: [
                 {
-                  NotificationTarget: 'EventBridge', // Send events to EventBridge for routing
+                  NotificationTarget: 'EventBridge', // Send call events to EventBridge
                 },
               ],
-              MediaInsightsConfiguration: {
-                Disabled: false,
-                ConfigurationArn: streamArn, // Note: This may need adjustment based on AWS API
-              },
+              // Note: MediaInsightsConfiguration is for Kinesis Video Streams (media analysis),
+              // not Kinesis Data Streams. We use EventBridge for call events/analytics.
             },
           },
           physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-vc-streaming`),
@@ -638,10 +668,6 @@ export class ChimeStack extends Stack {
                   NotificationTarget: 'EventBridge',
                 },
               ],
-              MediaInsightsConfiguration: {
-                Disabled: false,
-                ConfigurationArn: streamArn,
-              },
             },
           },
           physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-vc-streaming`),
@@ -661,6 +687,34 @@ export class ChimeStack extends Stack {
       if (vcTermination) {
         vcStreaming.node.addDependency(vcTermination);
       }
+
+      // ========================================
+      // EventBridge Rule - Route Voice Connector Events to Kinesis
+      // ========================================
+      
+      // Import the Kinesis stream from ARN
+      const analyticsStream = kinesis.Stream.fromStreamArn(this, 'ImportedAnalyticsStream', streamArn);
+      
+      // Create EventBridge rule to capture Voice Connector events
+      const voiceConnectorEventsRule = new events.Rule(this, 'VoiceConnectorEventsRule', {
+        eventPattern: {
+          source: ['aws.chime'],
+          detailType: [
+            'Chime VoiceConnector Streaming Status',
+            'Chime VoiceConnector Call Detail Record',
+          ],
+        },
+        description: 'Route Chime Voice Connector events to Kinesis for analytics',
+      });
+
+      // Add Kinesis stream as target
+      voiceConnectorEventsRule.addTarget(
+        new targets.KinesisStream(analyticsStream, {
+          partitionKeyPath: '$.detail.voiceConnectorId',
+        })
+      );
+
+      console.log('[ChimeStack] EventBridge rule created to route Voice Connector events to Kinesis');
     } else {
       console.log('[ChimeStack] Analytics stream not provided, skipping Voice Connector streaming configuration');
     }

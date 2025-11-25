@@ -518,7 +518,7 @@ export class AnalyticsStack extends Stack {
       description: 'Steps to create QuickSight analytics dashboard',
     });
 
-    new CfnOutput(this, 'QuickSightDataSourceRole', {
+    new CfnOutput(this, 'QuickSightRoleArn', {
       value: quicksightRole.roleArn,
       description: 'IAM Role ARN for QuickSight data source',
       exportName: `${this.stackName}-QuickSightRole`,
