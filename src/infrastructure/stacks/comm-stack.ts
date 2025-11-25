@@ -3,8 +3,8 @@ import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
-import * as apigw2 from 'aws-cdk-lib/aws-apigatewayv2'; // <-- UPDATED IMPORT
-import * as apigw2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations'; // <-- UPDATED IMPORT
+import * as apigw2 from 'aws-cdk-lib/aws-apigatewayv2'; 
+import * as apigw2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations'; 
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -24,6 +24,7 @@ export class CommStack extends Stack {
   public readonly connectionsTable: dynamodb.Table;
   public readonly fileBucket: s3.Bucket;
   public readonly notificationsTopic: sns.Topic;
+  public readonly getFileFn: lambdaNode.NodejsFunction; // <-- Expose the new function
 
   constructor(scope: Construct, id: string, props: CommStackProps) {
     super(scope, id, props);
@@ -124,7 +125,7 @@ this.favorsTable.addGlobalSecondaryIndex({
     });
 
     // ========================================
-    // LAMBDA FUNCTIONS (WebSocket Handlers)
+    // LAMBDA FUNCTIONS (WebSocket Handlers & REST utility)
     // ========================================
 
     const defaultLambdaEnv = {
@@ -134,6 +135,24 @@ this.favorsTable.addGlobalSecondaryIndex({
       FILE_BUCKET_NAME: this.fileBucket.bucketName,
       NOTIFICATIONS_TOPIC_ARN: this.notificationsTopic.topicArn,
     };
+    
+    // ** S3 File Download Lambda Deployment (MOVED TO COMM/get-file.ts) **
+    this.getFileFn = new lambdaNode.NodejsFunction(this, 'GetFileFn', {
+        // --- UPDATED PATH HERE ---
+        entry: path.join(__dirname, '..', '..', 'services', 'comm', 'get-file.ts'),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_20_X,
+        memorySize: 128,
+        timeout: Duration.seconds(10),
+        bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+        environment: {
+            FILE_BUCKET_NAME: this.fileBucket.bucketName, 
+        },
+    });
+
+    // Grant S3 read permission (GetObject) to the Lambda to generate a Presigned GET URL
+    this.fileBucket.grantRead(this.getFileFn);
+
 
     // $connect handler (for initial connection and authentication)
     const connectFn = new lambdaNode.NodejsFunction(this, 'WsConnectFn', {
@@ -248,6 +267,11 @@ this.favorsTable.addGlobalSecondaryIndex({
     new CfnOutput(this, 'NotificationsTopicArn', {
         value: this.notificationsTopic.topicArn,
         exportName: `${this.stackName}-NotificationsTopicArn`,
+    });
+    new CfnOutput(this, 'FileDownloadFnArn', { // <-- NEW OUTPUT for AdminStack to use
+        value: this.getFileFn.functionArn,
+        description: 'ARN of the S3 Get File Download Lambda',
+        exportName: `${this.stackName}-FileDownloadFnArn`,
     });
   }
 }
