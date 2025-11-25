@@ -349,7 +349,7 @@ export async function getAgentPerformanceSummary(
     (totals.totalTalkTime + totals.totalHoldTime) / totals.answeredCalls
   );
 
-  const totalSentimentCalls = Object.values(totals.sentimentScores).reduce((sum, count) => sum + count, 0);
+  const totalSentimentCalls = (Object.values(totals.sentimentScores) as number[]).reduce((sum: number, count: number) => sum + count, 0);
   const csatProxy = Math.round(
     ((totals.sentimentScores.positive + totals.sentimentScores.neutral * 0.5) / totalSentimentCalls) * 100
   );

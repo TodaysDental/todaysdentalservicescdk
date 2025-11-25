@@ -1,7 +1,7 @@
 import { KinesisStreamEvent, KinesisStreamRecord } from 'aws-lambda';
 import { DynamoDBDocumentClient, PutCommand, UpdateCommand, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { ComprehendClient, DetectSentimentCommand, DetectKeyPhrasesCommand, DetectEntitiesCommand } from '@aws-sdk/client-comprehend';
+import { ComprehendClient, DetectSentimentCommand, DetectKeyPhrasesCommand, DetectEntitiesCommand, LanguageCode } from '@aws-sdk/client-comprehend';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 
 const dynamodbClient = new DynamoDBClient({});
@@ -253,7 +253,7 @@ async function analyzeSentimentWithComprehend(
   try {
     const result = await comprehend.send(new DetectSentimentCommand({
       Text: text.substring(0, 5000), // Comprehend limit
-      LanguageCode: languageCode,
+      LanguageCode: languageCode as LanguageCode,
     }));
 
     const scores = {
@@ -331,7 +331,7 @@ async function extractKeyPhrases(text: string, languageCode: string = 'en'): Pro
   try {
     const result = await comprehend.send(new DetectKeyPhrasesCommand({
       Text: text.substring(0, 5000),
-      LanguageCode: languageCode,
+      LanguageCode: languageCode as LanguageCode,
     }));
 
     return (result.KeyPhrases || [])
@@ -355,7 +355,7 @@ async function extractEntities(text: string, languageCode: string = 'en'): Promi
   try {
     const result = await comprehend.send(new DetectEntitiesCommand({
       Text: text.substring(0, 5000),
-      LanguageCode: languageCode,
+      LanguageCode: languageCode as LanguageCode,
     }));
 
     return (result.Entities || [])

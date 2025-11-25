@@ -3,6 +3,7 @@ import { DynamoDBDocumentClient, QueryCommand, GetCommand } from '@aws-sdk/lib-d
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { verifyIdTokenCached } from '../shared/utils/jwt-verification';
 import { getClinicsFromClaims, hasClinicAccess } from '../shared/utils/authorization';
+import { buildCorsHeaders } from '../../shared/utils/cors';
 
 const dynamodbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(dynamodbClient);
@@ -19,6 +20,7 @@ const ADMIN_CLINIC_ACCESS = 'ALL';
  * 
  * Endpoints:
  * GET /analytics/call/{callId} - Get analytics for specific call
+ * GET /analytics/live?callId={callId} - Get live/real-time analytics (query param)
  * GET /analytics/clinic/{clinicId} - Get analytics for clinic (with filters)
  * GET /analytics/agent/{agentId} - Get analytics for agent
  * GET /analytics/summary - Get aggregate metrics
@@ -30,11 +32,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     requestId: event.requestContext?.requestId
   });
   
-  const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-  };
+  // Use proper CORS headers that match API Gateway configuration
+  const requestOrigin = event.headers?.origin || event.headers?.Origin;
+  const corsHeaders = buildCorsHeaders({
+    allowMethods: ['GET', 'OPTIONS'],
+    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  }, requestOrigin);
   
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
@@ -59,6 +62,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Route to appropriate handler
     if (path.includes('/call/')) {
       return await getCallAnalytics(event, verifyResult.payload, corsHeaders);
+    } else if (path.includes('/live')) {
+      return await getLiveCallAnalytics(event, verifyResult.payload, corsHeaders);
     } else if (path.includes('/clinic/')) {
       return await getClinicAnalytics(event, verifyResult.payload, corsHeaders);
     } else if (path.includes('/agent/')) {
@@ -133,6 +138,66 @@ async function getCallAnalytics(
     statusCode: 200,
     headers: corsHeaders,
     body: JSON.stringify(analytics)
+  };
+}
+
+async function getLiveCallAnalytics(
+  event: APIGatewayProxyEvent,
+  jwtPayload: any,
+  corsHeaders: any
+): Promise<APIGatewayProxyResult> {
+  const callId = event.queryStringParameters?.callId;
+  
+  if (!callId) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({ message: 'Missing callId query parameter' })
+    };
+  }
+  
+  console.log('[getLiveCallAnalytics] Fetching live analytics for callId:', callId);
+  
+  // Query analytics for this call
+  const queryResult = await ddb.send(new QueryCommand({
+    TableName: ANALYTICS_TABLE_NAME,
+    KeyConditionExpression: 'callId = :callId',
+    ExpressionAttributeValues: { ':callId': callId },
+    ScanIndexForward: false, // Get most recent first
+    Limit: 1
+  }));
+
+  const analytics = queryResult.Items?.[0];
+  
+  if (!analytics) {
+    return {
+      statusCode: 404,
+      headers: corsHeaders,
+      body: JSON.stringify({ 
+        message: 'Call analytics not found',
+        callId: callId 
+      })
+    };
+  }
+  
+  // Check authorization
+  const authorizedClinics = getClinicsFromClaims(jwtPayload);
+  if (!hasClinicAccess(authorizedClinics, analytics.clinicId)) {
+    return {
+      statusCode: 403,
+      headers: corsHeaders,
+      body: JSON.stringify({ message: 'Unauthorized' })
+    };
+  }
+  
+  return {
+    statusCode: 200,
+    headers: corsHeaders,
+    body: JSON.stringify({
+      ...analytics,
+      isLive: true, // Indicator that this is from the live endpoint
+      fetchedAt: Date.now()
+    })
   };
 }
 

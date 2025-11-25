@@ -506,6 +506,14 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         methodResponses: [{ statusCode: '200' }],
       });
 
+      // GET /analytics/live?callId={callId} - Real-time/live call analytics with query params
+      const liveRes = analyticsRes.addResource('live');
+      liveRes.addMethod('GET', new apigw.LambdaIntegration(this.getAnalyticsFn), {
+        authorizer: this.authorizer,
+        authorizationType: apigw.AuthorizationType.COGNITO,
+        methodResponses: [{ statusCode: '200' }],
+      });
+
       // GET /analytics/detailed/{callId} - Comprehensive analytics with history, insights, and transcript
       if (this.getDetailedAnalyticsFn) {
         const detailedRes = analyticsRes.addResource('detailed');

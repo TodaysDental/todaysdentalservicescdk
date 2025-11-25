@@ -16,6 +16,13 @@ import { DynamoDBStreamEvent, DynamoDBRecord, AttributeValue } from 'aws-lambda'
 import { DynamoDBDocumentClient, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { unmarshall } from '@aws-sdk/util-dynamodb';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
+import {
+    searchPatientByPhone,
+    getPatientByPatNum,
+    createCommlog,
+    extractPatNumFromCallData,
+    generateCallSummary,
+} from '../../shared/utils/opendental-api';
 
 const ddb = getDynamoDBClient();
 // Use consistent environment variable naming
@@ -59,6 +66,28 @@ interface CallAnalytics {
     // Source info
     phoneNumber?: string;
     direction: 'inbound' | 'outbound';
+    
+    // Patient data (from OpenDental)
+    patientData?: {
+        PatNum: number;
+        LName: string;
+        FName: string;
+        Birthdate?: string;
+        Email?: string;
+        WirelessPhone?: string;
+        HmPhone?: string;
+        WkPhone?: string;
+        Address?: string;
+        City?: string;
+        State?: string;
+        Zip?: string;
+        PreferContactMethod?: string;
+        EstBalance?: number;
+        BalTotal?: number;
+    };
+    
+    // Commlog tracking
+    commlogNum?: number;
     
     // Processing info
     processedAt: string;
@@ -159,8 +188,16 @@ async function processStreamRecord(
     // Generate analytics
     const analytics = await generateCallAnalytics(callData, record);
 
+    // Fetch patient data if available
+    await enrichWithPatientData(analytics, callData);
+
     // Store with deduplication
     const stored = await storeAnalyticsWithDedup(analytics, record.eventID!);
+
+    // Create commlog in OpenDental if patient data is available
+    if (stored && analytics.patientData) {
+        await createCallCommlog(analytics);
+    }
 
     return stored ? 'PROCESSED' : 'DUPLICATE';
 }
@@ -310,6 +347,127 @@ function parseTimestamp(value: any): number | null {
     }
 
     return null;
+}
+
+/**
+ * Enrich analytics with patient data from OpenDental
+ */
+async function enrichWithPatientData(
+    analytics: CallAnalytics,
+    callData: any
+): Promise<void> {
+    try {
+        if (!analytics.clinicId) {
+            console.log('[AnalyticsStream] No clinicId, skipping patient data enrichment');
+            return;
+        }
+
+        // First, try to get PatNum from call metadata
+        let patNum = extractPatNumFromCallData(callData);
+        
+        // If no PatNum but we have a phone number, search for patient
+        if (!patNum && analytics.phoneNumber) {
+            console.log(`[AnalyticsStream] Searching for patient by phone: ${analytics.phoneNumber}`);
+            try {
+                const patient = await searchPatientByPhone(analytics.phoneNumber, analytics.clinicId);
+                if (patient?.PatNum) {
+                    patNum = patient.PatNum;
+                    console.log(`[AnalyticsStream] Found patient PatNum: ${patNum}`);
+                }
+            } catch (err: any) {
+                console.warn('[AnalyticsStream] Error searching patient by phone:', err.message);
+            }
+        }
+
+        // If we have a PatNum, fetch full patient details
+        if (patNum) {
+            console.log(`[AnalyticsStream] Fetching patient details for PatNum: ${patNum}`);
+            try {
+                const patientDetails = await getPatientByPatNum(patNum, analytics.clinicId);
+                
+                // Store relevant patient data
+                analytics.patientData = {
+                    PatNum: patientDetails.PatNum,
+                    LName: patientDetails.LName,
+                    FName: patientDetails.FName,
+                    Birthdate: patientDetails.Birthdate,
+                    Email: patientDetails.Email,
+                    WirelessPhone: patientDetails.WirelessPhone,
+                    HmPhone: patientDetails.HmPhone,
+                    WkPhone: patientDetails.WkPhone,
+                    Address: patientDetails.Address,
+                    City: patientDetails.City,
+                    State: patientDetails.State,
+                    Zip: patientDetails.Zip,
+                    PreferContactMethod: patientDetails.PreferContactMethod,
+                    EstBalance: patientDetails.EstBalance,
+                    BalTotal: patientDetails.BalTotal,
+                };
+
+                console.log(`[AnalyticsStream] Patient data enriched: ${patientDetails.FName} ${patientDetails.LName}`);
+            } catch (err: any) {
+                console.error(`[AnalyticsStream] Error fetching patient details:`, err.message);
+            }
+        } else {
+            console.log('[AnalyticsStream] No PatNum available, skipping patient data enrichment');
+        }
+    } catch (error: any) {
+        console.error('[AnalyticsStream] Error in enrichWithPatientData:', error);
+        // Don't throw - continue processing without patient data
+    }
+}
+
+/**
+ * Create a commlog entry in OpenDental for the call
+ */
+async function createCallCommlog(analytics: CallAnalytics): Promise<void> {
+    try {
+        if (!analytics.patientData?.PatNum || !analytics.clinicId) {
+            console.log('[AnalyticsStream] Missing PatNum or clinicId, skipping commlog creation');
+            return;
+        }
+
+        const note = generateCallSummary(analytics, analytics.patientData);
+        
+        // Determine commType based on call characteristics
+        let commType = 'Misc';
+        if (analytics.wasCallback) {
+            commType = 'ApptRelated';
+        }
+
+        const commlog = await createCommlog(
+            analytics.patientData.PatNum,
+            note,
+            analytics.clinicId,
+            {
+                commType,
+                mode: 'Phone',
+                sentOrReceived: analytics.direction === 'inbound' ? 'Received' : 'Sent',
+                commDateTime: analytics.timestampIso,
+            }
+        );
+
+        analytics.commlogNum = commlog.CommlogNum;
+        console.log(`[AnalyticsStream] Commlog created: ${commlog.CommlogNum} for patient ${analytics.patientData.PatNum}`);
+
+        // Update the analytics record with the commlog number
+        if (ANALYTICS_TABLE) {
+            await ddb.send(new UpdateCommand({
+                TableName: ANALYTICS_TABLE,
+                Key: {
+                    callId: analytics.callId,
+                    timestamp: analytics.timestamp,
+                },
+                UpdateExpression: 'SET commlogNum = :commlogNum',
+                ExpressionAttributeValues: {
+                    ':commlogNum': commlog.CommlogNum,
+                },
+            }));
+        }
+    } catch (error: any) {
+        console.error('[AnalyticsStream] Error creating commlog:', error);
+        // Don't throw - the analytics are already stored
+    }
 }
 
 /**
