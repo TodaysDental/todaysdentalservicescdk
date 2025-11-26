@@ -32,8 +32,6 @@ export interface AnalyticsStackProps extends StackProps {
 export class AnalyticsStack extends Stack {
   public readonly analyticsTable: dynamodb.Table;
   public readonly analyticsDedupTable: dynamodb.Table;
-  public readonly analyticsStream: kinesis.Stream;
-  public readonly analyticsProcessor: lambda.Function;
   public readonly callAlertsTopic: sns.Topic;
   public readonly medicalVocabularyName: string;
 
@@ -151,16 +149,6 @@ export class AnalyticsStack extends Stack {
       timeToLiveAttribute: 'ttl', // Keep failures for 90 days
     });
 
-    // ========================================
-    // 2. Kinesis Stream for Analytics Events
-    // ========================================
-
-    this.analyticsStream = new kinesis.Stream(this, 'AnalyticsStream', {
-      streamName: `${this.stackName}-analytics-stream`,
-      shardCount: 1,
-      retentionPeriod: Duration.hours(24),
-      removalPolicy: RemovalPolicy.DESTROY,
-    });
 
     // ========================================
     // 2.5. SNS Topics for Real-Time Alerts
@@ -297,106 +285,6 @@ export class AnalyticsStack extends Stack {
       timeout: Duration.minutes(5), // Vocabulary creation can take a few minutes
     });
 
-    // ========================================
-    // 3. Analytics Processor Lambda
-    // ========================================
-
-    this.analyticsProcessor = new lambdaNode.NodejsFunction(this, 'AnalyticsProcessor', {
-      functionName: `${this.stackName}-AnalyticsProcessor`,
-      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'process-call-analytics.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(60),
-      memorySize: 1024, // Increased for Comprehend processing
-      environment: {
-        CALL_ANALYTICS_TABLE_NAME: this.analyticsTable.tableName,
-        ANALYTICS_RETENTION_DAYS: '90',
-        COGNITO_REGION: props.region,
-        USER_POOL_ID: props.userPoolId,
-        CALL_ALERTS_TOPIC_ARN: this.callAlertsTopic.topicArn,
-        ENABLE_REAL_TIME_SENTIMENT: 'true', // Use Comprehend for sentiment
-        ENABLE_REAL_TIME_ALERTS: 'true',
-        MEDICAL_VOCABULARY_NAME: this.medicalVocabularyName,
-        DEFAULT_LANGUAGE: 'en', // Can be overridden per call
-      },
-      logRetention: logs.RetentionDays.ONE_WEEK,
-    });
-
-    // Grant permissions to analytics processor
-    this.analyticsTable.grantReadWriteData(this.analyticsProcessor);
-    this.analyticsStream.grantRead(this.analyticsProcessor);
-    this.callAlertsTopic.grantPublish(this.analyticsProcessor);
-
-    // Grant AWS Comprehend permissions for real-time sentiment analysis
-    this.analyticsProcessor.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        'comprehend:DetectSentiment',
-        'comprehend:DetectKeyPhrases',
-        'comprehend:DetectEntities',
-        'comprehend:BatchDetectSentiment',
-      ],
-      resources: ['*'],
-    }));
-
-    // Grant Transcribe permissions to read vocabulary
-    this.analyticsProcessor.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        'transcribe:GetVocabulary',
-      ],
-      resources: [
-        `arn:aws:transcribe:${this.region}:${this.account}:vocabulary/${this.medicalVocabularyName}`,
-      ],
-    }));
-
-    // Dead Letter Queue for failed analytics events
-    const analyticsDLQ = new sqs.Queue(this, 'AnalyticsDLQ', {
-      queueName: `${this.stackName}-analytics-dlq`,
-      retentionPeriod: Duration.days(14), // Keep failed events for 2 weeks
-      visibilityTimeout: Duration.seconds(300), // Match DLQ processor timeout
-    });
-
-    // Add Kinesis event source to Lambda with DLQ configuration
-    this.analyticsProcessor.addEventSource(
-      new KinesisEventSource(this.analyticsStream, {
-        batchSize: 100,
-        startingPosition: lambda.StartingPosition.LATEST,
-        parallelizationFactor: 10,
-        onFailure: new SqsDlq(analyticsDLQ),
-        retryAttempts: 3,
-        maxRecordAge: Duration.hours(24),
-        bisectBatchOnError: true, // Split batch on error to isolate bad records
-      })
-    );
-
-    // ========================================
-    // 4. Analytics DLQ Processor
-    // ========================================
-
-    const analyticsDlqProcessor = new lambdaNode.NodejsFunction(this, 'AnalyticsDlqProcessor', {
-      functionName: `${this.stackName}-AnalyticsDlqProcessor`,
-      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'analytics-dlq-processor.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: Duration.minutes(5),
-      memorySize: 512,
-      environment: {
-        ANALYTICS_TABLE_NAME: this.analyticsTable.tableName,
-        PERMANENT_FAILURES_TABLE: analyticsFailuresTable.tableName,
-      },
-      logRetention: logs.RetentionDays.ONE_WEEK,
-    });
-
-    this.analyticsTable.grantReadWriteData(analyticsDlqProcessor);
-    analyticsFailuresTable.grantWriteData(analyticsDlqProcessor);
-    analyticsDLQ.grantConsumeMessages(analyticsDlqProcessor);
-
-    analyticsDlqProcessor.addEventSource(new SqsEventSource(analyticsDLQ, {
-      batchSize: 10,
-      maxBatchingWindow: Duration.seconds(30),
-      reportBatchItemFailures: true,
-    }));
 
     // ========================================
     // 5. CloudWatch Outputs
@@ -407,35 +295,6 @@ export class AnalyticsStack extends Stack {
       description: 'DynamoDB Analytics Table Name',
     });
 
-    new CfnOutput(this, 'AnalyticsStreamName', {
-      value: this.analyticsStream.streamName,
-      description: 'Kinesis Analytics Stream Name',
-    });
-
-    new CfnOutput(this, 'AnalyticsStreamArn', {
-      value: this.analyticsStream.streamArn,
-      description: 'Kinesis Analytics Stream ARN',
-    });
-
-    new CfnOutput(this, 'AnalyticsProcessorFunctionArn', {
-      value: this.analyticsProcessor.functionArn,
-      description: 'Analytics Processor Lambda ARN',
-    });
-
-    new CfnOutput(this, 'AnalyticsDLQUrl', {
-      value: analyticsDLQ.queueUrl,
-      description: 'Analytics DLQ URL',
-    });
-
-    new CfnOutput(this, 'AnalyticsFailuresTableName', {
-      value: analyticsFailuresTable.tableName,
-      description: 'Table storing permanently failed analytics events',
-    });
-
-    new CfnOutput(this, 'AnalyticsDlqProcessorArn', {
-      value: analyticsDlqProcessor.functionArn,
-      description: 'Lambda that reprocesses analytics DLQ events',
-    });
 
     // ========================================
     // 5.5. CallQueue Stream Processor (DynamoDB Streams)
@@ -734,144 +593,5 @@ export class AnalyticsStack extends Stack {
       description: 'Analytics Reconciliation Lambda ARN',
     });
 
-    // ========================================
-    // 8. Real-Time Coaching Lambda
-    // ========================================
-    // 
-    // Provides real-time coaching suggestions to agents during live calls
-    // based on call analytics and transcript analysis.
-    //
-    // LIVE COACHING SUGGESTIONS (8 Rules):
-    //
-    // 1. TALK_TIME - Agent Talk Ratio Analysis
-    //    - WARNING: Agent talking > 70% of time
-    //      Message: "You are talking more than 70% of the time. Try to listen more and ask open-ended questions."
-    //      Priority: 4
-    //    - INFO: Agent talking < 30% of time
-    //      Message: "Customer is doing most of the talking. Ensure you are providing helpful information."
-    //      Priority: 2
-    //
-    // 2. CUSTOMER_SENTIMENT - Frustration Detection
-    //    - WARNING: Customer frustration detected in transcript
-    //      Message: "Customer frustration detected. Use empathetic language and acknowledge their concerns."
-    //      Priority: 5 (HIGHEST)
-    //
-    // 3. INTERRUPTIONS - Active Listening
-    //    - WARNING: Interruption count > 3
-    //      Message: "Multiple interruptions detected. Allow the customer to finish speaking."
-    //      Priority: 4
-    //
-    // 4. ENGAGEMENT - Silence Period Monitoring
-    //    - INFO: Silence periods > 3
-    //      Message: "Multiple silence periods detected. Keep the conversation flowing with engaging questions."
-    //      Priority: 3
-    //
-    // 5. SENTIMENT_TREND - Declining Sentiment Detection
-    //    - WARNING: 2+ negative sentiments in last 3 segments
-    //      Message: "Recent sentiment is declining. Consider offering solutions or escalating if needed."
-    //      Priority: 4
-    //
-    // 6. PERFORMANCE - Positive Reinforcement
-    //    - POSITIVE: Overall sentiment positive with 5+ segments
-    //      Message: "Great job! Customer sentiment is positive. Keep up the good work!"
-    //      Priority: 2
-    //
-    // 7. DURATION - Long Call Management
-    //    - INFO: Call duration > 15 minutes
-    //      Message: "Call duration is over 15 minutes. Consider summarizing and wrapping up."
-    //      Priority: 3
-    //
-    // 8. ESCALATION - Critical Issue Handling
-    //    - WARNING: Customer requested escalation
-    //      Message: "Customer requested escalation. Transfer to supervisor if unable to resolve."
-    //      Priority: 5 (HIGHEST)
-    //
-    // Suggestions are sent via IoT Core WebSocket to agent dashboard
-    // Top 2 highest priority suggestions are displayed in real-time
-    // Agent presence table is updated with latest coaching tips
-    //
-    // ========================================
-
-    if (props.agentPresenceTableName) {
-      const realTimeCoachingFn = new lambdaNode.NodejsFunction(this, 'RealTimeCoachingFunction', {
-        functionName: `${this.stackName}-RealTimeCoaching`,
-        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'real-time-coaching.ts'),
-        handler: 'handler',
-        runtime: lambda.Runtime.NODEJS_20_X,
-        timeout: Duration.seconds(30),
-        memorySize: 256,
-        environment: {
-          AGENT_PRESENCE_TABLE_NAME: props.agentPresenceTableName,
-          // Live Coaching Suggestions Configuration
-          // RULE 1: Agent Talk Time Thresholds
-          AGENT_TALK_HIGH_THRESHOLD: '70', // Warning if agent talks more than 70%
-          AGENT_TALK_LOW_THRESHOLD: '30', // Info if agent talks less than 30%
-          // RULE 2: Customer Frustration Detection
-          ENABLE_FRUSTRATION_DETECTION: 'true',
-          // RULE 3: Interruption Thresholds
-          INTERRUPTION_WARNING_THRESHOLD: '3', // Warning after 3 interruptions
-          // RULE 4: Silence Detection
-          SILENCE_PERIODS_THRESHOLD: '3', // Info after 3 silence periods
-          // RULE 5: Sentiment Trend Analysis
-          SENTIMENT_TREND_WINDOW: '3', // Analyze last 3 sentiment readings
-          NEGATIVE_SENTIMENT_THRESHOLD: '2', // Warning if 2+ negative in window
-          // RULE 6: Positive Reinforcement
-          ENABLE_POSITIVE_REINFORCEMENT: 'true',
-          POSITIVE_REINFORCEMENT_MIN_SEGMENTS: '5', // Min segments before positive feedback
-          // RULE 7: Call Duration Monitoring
-          LONG_CALL_DURATION_MINUTES: '15', // Info after 15 minutes
-          // RULE 8: Escalation Detection
-          ENABLE_ESCALATION_DETECTION: 'true',
-        },
-        logRetention: logs.RetentionDays.ONE_WEEK,
-      });
-
-      // Grant permissions to read analytics and update agent presence
-      this.analyticsTable.grantStreamRead(realTimeCoachingFn);
-
-      // Add DynamoDB Stream event source
-      realTimeCoachingFn.addEventSource(
-        new lambdaEventSources.DynamoEventSource(this.analyticsTable, {
-          startingPosition: lambda.StartingPosition.LATEST,
-          batchSize: 10,
-          bisectBatchOnError: true,
-          retryAttempts: 2,
-          maxRecordAge: Duration.minutes(5),
-          filters: [
-            // Only process records with transcript updates
-            lambda.FilterCriteria.filter({
-              eventName: lambda.FilterRule.isEqual('MODIFY'),
-            }),
-          ],
-        })
-      );
-
-      // Grant IoT permissions for real-time agent notifications
-      realTimeCoachingFn.addToRolePolicy(new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          'iot:Publish',
-          'iot:Connect',
-        ],
-        resources: ['*'], // Fine-grained in production
-      }));
-
-      // Grant permission to update agent presence
-      realTimeCoachingFn.addToRolePolicy(new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          'dynamodb:UpdateItem',
-          'dynamodb:GetItem',
-        ],
-        resources: [
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.agentPresenceTableName}`,
-        ],
-      }));
-
-      new CfnOutput(this, 'RealTimeCoachingFunctionArn', {
-        value: realTimeCoachingFn.functionArn,
-        description: 'Real-time coaching Lambda ARN',
-      });
-    }
   }
 }

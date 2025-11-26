@@ -222,7 +222,6 @@ const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV23', {
  userPoolId: coreStack.userPool.userPoolId,
  voiceConnectorTerminationCidrs,
  voiceConnectorOriginationRoutes,
- analyticsStreamArn: analyticsStack.analyticsStream.streamArn,
  analyticsTableName: analyticsStack.analyticsTable.tableName,
  analyticsDedupTableName: analyticsStack.analyticsDedupTable.tableName,
  enableCallRecording: true, // Enable call recording by default
