@@ -15,6 +15,7 @@ import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as kinesis from 'aws-cdk-lib/aws-kinesis';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as fs from 'fs';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
@@ -43,15 +44,11 @@ export interface ChimeStackProps extends StackProps {
    */
   voiceConnectorOriginationRoutes?: VoiceConnectorOriginationRouteConfig[];
   /**
-   * Optional Kinesis stream ARN for sending Chime call analytics events
-   */
-  analyticsStreamArn?: string;
-  /**
-   * Analytics table name for storing call analytics
+   * Analytics table name for storing call analytics (post-call via DynamoDB Stream)
    */
   analyticsTableName?: string;
   /**
-   * Analytics deduplication table name
+   * Analytics deduplication table name (used by CallQueue stream processor)
    */
   analyticsDedupTableName?: string;
   /**
@@ -234,7 +231,6 @@ export class ChimeStack extends Stack {
         LOCKS_TABLE_NAME: this.locksTable.tableName,
         HOLD_MUSIC_BUCKET: '', // Will be updated after bucket creation
         CHIME_MEDIA_REGION: 'us-east-1', // Supported Chime SDK media region
-        ANALYTICS_STREAM_ARN: props.analyticsStreamArn || '', // Analytics stream for call data
       },
     });
 
@@ -264,16 +260,6 @@ export class ChimeStack extends Stack {
     }));
 
     // Grant Kinesis permissions for analytics (if stream is provided)
-    if (props.analyticsStreamArn) {
-      smaHandler.addToRolePolicy(new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          'kinesis:PutRecord',
-          'kinesis:PutRecords',
-        ],
-        resources: [props.analyticsStreamArn],
-      }));
-    }
 
     // Create S3 bucket for hold music
     const holdMusicBucket = new s3.Bucket(this, 'HoldMusicBucket', {
@@ -610,114 +596,6 @@ export class ChimeStack extends Stack {
       }
     }
 
-    // ========================================
-    // Voice Connector Streaming - For Call Analytics
-    // ========================================
-    if (props.analyticsStreamArn) {
-      console.log('[ChimeStack] Configuring Voice Connector streaming to Kinesis');
-
-      // Grant Voice Connector permission to write to Kinesis
-      const voiceConnectorStreamingRole = new iam.Role(this, 'VoiceConnectorStreamingRole', {
-        assumedBy: new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com'),
-        description: 'Allow Chime Voice Connector to stream analytics to Kinesis',
-      });
-
-      // Extract stream name from ARN for granting specific permissions
-      const streamArn = props.analyticsStreamArn;
-      
-      voiceConnectorStreamingRole.addToPolicy(new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          'kinesis:PutRecord',
-          'kinesis:PutRecords',
-        ],
-        resources: [streamArn],
-      }));
-
-      // Configure streaming on Voice Connector
-      const vcStreaming = new customResources.AwsCustomResource(this, 'VCStreaming', {
-        onCreate: {
-          service: 'ChimeSDKVoice',
-          action: 'putVoiceConnectorStreamingConfiguration',
-          parameters: {
-            VoiceConnectorId: voiceConnectorId,
-            StreamingConfiguration: {
-              DataRetentionInHours: 24,
-              Disabled: false,
-              StreamingNotificationTargets: [
-                {
-                  NotificationTarget: 'EventBridge', // Send call events to EventBridge
-                },
-              ],
-              // Note: MediaInsightsConfiguration is for Kinesis Video Streams (media analysis),
-              // not Kinesis Data Streams. We use EventBridge for call events/analytics.
-            },
-          },
-          physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-vc-streaming`),
-        },
-        onUpdate: {
-          service: 'ChimeSDKVoice',
-          action: 'putVoiceConnectorStreamingConfiguration',
-          parameters: {
-            VoiceConnectorId: voiceConnectorId,
-            StreamingConfiguration: {
-              DataRetentionInHours: 24,
-              Disabled: false,
-              StreamingNotificationTargets: [
-                {
-                  NotificationTarget: 'EventBridge',
-                },
-              ],
-            },
-          },
-          physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-vc-streaming`),
-        },
-        onDelete: {
-          service: 'ChimeSDKVoice',
-          action: 'deleteVoiceConnectorStreamingConfiguration',
-          parameters: {
-            VoiceConnectorId: voiceConnectorId,
-          },
-          ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
-        },
-        role: chimeCustomResourceRole,
-      });
-
-      vcStreaming.node.addDependency(voiceConnector);
-      if (vcTermination) {
-        vcStreaming.node.addDependency(vcTermination);
-      }
-
-      // ========================================
-      // EventBridge Rule - Route Voice Connector Events to Kinesis
-      // ========================================
-      
-      // Import the Kinesis stream from ARN
-      const analyticsStream = kinesis.Stream.fromStreamArn(this, 'ImportedAnalyticsStream', streamArn);
-      
-      // Create EventBridge rule to capture Voice Connector events
-      const voiceConnectorEventsRule = new events.Rule(this, 'VoiceConnectorEventsRule', {
-        eventPattern: {
-          source: ['aws.chime'],
-          detailType: [
-            'Chime VoiceConnector Streaming Status',
-            'Chime VoiceConnector Call Detail Record',
-          ],
-        },
-        description: 'Route Chime Voice Connector events to Kinesis for analytics',
-      });
-
-      // Add Kinesis stream as target
-      voiceConnectorEventsRule.addTarget(
-        new targets.KinesisStream(analyticsStream, {
-          partitionKeyPath: '$.detail.voiceConnectorId',
-        })
-      );
-
-      console.log('[ChimeStack] EventBridge rule created to route Voice Connector events to Kinesis');
-    } else {
-      console.log('[ChimeStack] Analytics stream not provided, skipping Voice Connector streaming configuration');
-    }
 
     // ========================================
     // Load clinic phone numbers from clinics.json

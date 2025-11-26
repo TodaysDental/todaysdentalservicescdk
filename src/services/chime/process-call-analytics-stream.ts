@@ -203,9 +203,14 @@ async function processStreamRecord(
         newImage?.status === 'abandoned';
 
     const wasRemoved = record.eventName === 'REMOVE' && oldImage;
+    
+    // NEW: Detect when call becomes active (for live analytics support)
+    const wasActivated = 
+        oldImage?.status !== 'active' && 
+        newImage?.status === 'active';
 
-    // Only process completion/abandonment events
-    if (!wasCompleted && !wasAbandoned && !wasRemoved) {
+    // Only process completion/abandonment/activation events
+    if (!wasCompleted && !wasAbandoned && !wasRemoved && !wasActivated) {
         return 'SKIPPED';
     }
 
@@ -223,8 +228,14 @@ async function processStreamRecord(
         eventName: record.eventName,
         wasCompleted,
         wasAbandoned,
-        wasRemoved
+        wasRemoved,
+        wasActivated
     });
+
+    // NEW: Handle call activation (create initial analytics for live endpoint)
+    if (wasActivated) {
+        return await handleCallActivation(callData, record);
+    }
 
     // Determine state transition for later deduplication
     const stateTransition = wasCompleted ? 'completed' : wasAbandoned ? 'abandoned' : 'removed';
@@ -299,6 +310,103 @@ async function processStreamRecord(
     }
 
     return stored ? 'PROCESSED' : 'DUPLICATE';
+}
+
+/**
+ * Handle call activation - create initial analytics record for live endpoint support
+ * This allows the /admin/analytics/live endpoint to return data during active calls
+ */
+async function handleCallActivation(
+    callData: any,
+    record: DynamoDBRecord
+): Promise<'PROCESSED' | 'SKIPPED' | 'DUPLICATE'> {
+    const callId = callData.callId;
+    
+    // Check if analytics already initialized for this call
+    const existingCheck = await ddb.send(new GetCommand({
+        TableName: ANALYTICS_TABLE,
+        Key: {
+            callId,
+            timestamp: Math.floor((callData.callStartTime || Date.now()) / 1000)
+        }
+    }));
+    
+    if (existingCheck.Item) {
+        console.log('[handleCallActivation] Analytics already exist for active call:', callId);
+        return 'DUPLICATE';
+    }
+    
+    // Create initial analytics record
+    const timestamp = Math.floor(Date.now() / 1000);
+    const ttl = timestamp + (90 * 24 * 60 * 60); // 90 days retention
+    
+    const initialAnalytics = {
+        // Primary keys
+        callId,
+        timestamp,
+        
+        // Call status
+        callStatus: 'active',
+        analyticsState: 'INITIALIZING', // Will transition to ACTIVE when Kinesis events arrive
+        
+        // Core metadata
+        clinicId: callData.clinicId || 'unknown',
+        agentId: callData.agentId || null,
+        direction: callData.direction || 'inbound',
+        customerPhone: callData.from || callData.to || 'unknown',
+        
+        // Timestamps
+        callStartTime: callData.callStartTime || new Date().toISOString(),
+        callStartTimestamp: callData.callStartTime || Date.now(),
+        
+        // Initial counts (will be updated by real-time analytics)
+        transcriptCount: 0,
+        latestTranscripts: [],
+        sentimentDataPoints: 0,
+        latestSentiment: [],
+        detectedIssues: [],
+        keywords: [],
+        keyPhrases: [],
+        entities: [],
+        
+        // Categorization
+        callCategory: 'uncategorized',
+        categoryScores: {},
+        
+        // Processing metadata
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        processedAt: new Date().toISOString(),
+        sourceEvent: 'call-activation',
+        ttl,
+        
+        // Flags
+        isLiveCall: true,
+        _note: 'Initial record for live analytics. Will be enriched with transcripts and sentiment in real-time.'
+    };
+    
+    try {
+        await ddb.send(new PutCommand({
+            TableName: ANALYTICS_TABLE,
+            Item: initialAnalytics,
+            ConditionExpression: 'attribute_not_exists(callId)'
+        }));
+        
+        console.log('[handleCallActivation] Created initial analytics for live call:', {
+            callId,
+            clinicId: initialAnalytics.clinicId,
+            agentId: initialAnalytics.agentId,
+            timestamp
+        });
+        
+        return 'PROCESSED';
+    } catch (err: any) {
+        if (err.name === 'ConditionalCheckFailedException') {
+            console.log('[handleCallActivation] Analytics already exist (race condition):', callId);
+            return 'DUPLICATE';
+        }
+        throw err;
+    }
 }
 
 /**

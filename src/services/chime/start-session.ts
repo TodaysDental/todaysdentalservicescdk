@@ -171,13 +171,36 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       clinicsCount: body.activeClinicIds.length
     });
 
-    // 1. Create Chime Meeting for the agent's session
+    // 1. Create Chime Meeting for the agent's session with media capture enabled
     const meetingId = randomUUID();
-    const meetingResponse = await chimeClient.send(new CreateMeetingCommand({
+    const enableMediaCapture = process.env.ENABLE_REAL_TIME_TRANSCRIPTION === 'true';
+    
+    const createMeetingParams: any = {
         ClientRequestToken: randomUUID(),
         MediaRegion: CHIME_MEDIA_REGION, // Use supported Chime region
         ExternalMeetingId: meetingId,
-    }));
+    };
+    
+    // Enable media capture for real-time transcription
+    if (enableMediaCapture) {
+        createMeetingParams.NotificationsConfiguration = {
+            // Enable media events for Media Pipeline integration
+            LambdaFunctionArn: undefined, // Optional: Lambda for meeting events
+            SnsTopicArn: undefined,       // Optional: SNS for meeting events
+            SqsQueueArn: undefined,       // Optional: SQS for meeting events
+        };
+        
+        // Configure media placement for capture
+        createMeetingParams.Tags = [
+            { Key: 'EnableMediaCapture', Value: 'true' },
+            { Key: 'AgentId', Value: agentId },
+            { Key: 'Clinics', Value: body.activeClinicIds.join(',') },
+        ];
+        
+        console.log('[start-session] Creating meeting with media capture enabled');
+    }
+    
+    const meetingResponse = await chimeClient.send(new CreateMeetingCommand(createMeetingParams));
 
     if (!meetingResponse.Meeting?.MeetingId) {
       console.error('[start-session] Meeting created but no MeetingId returned', { 

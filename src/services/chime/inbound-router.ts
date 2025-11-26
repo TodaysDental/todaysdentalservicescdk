@@ -9,6 +9,7 @@ import { randomUUID } from 'crypto';
 import { enrichCallContext, selectAgentsForCall } from './utils/agent-selection';
 import { buildBaseQueueItem, smartAssignCall } from './utils/parallel-assignment';
 import { generateUniqueCallPosition } from '../shared/utils/unique-id';
+import { startMediaPipeline, stopMediaPipeline, isRealTimeTranscriptionEnabled } from './utils/media-pipeline-manager';
 
 // This Lambda is the "brain" for call routing.
 // It is NOT triggered by API Gateway. It is triggered by the Chime SDK SIP Media Application.
@@ -797,6 +798,38 @@ export const handler = async (event: any): Promise<any> => {
                                     }
                                 }));
                                 console.log(`[CALL_ANSWERED] Agent ${assignedAgentId} status updated to OnCall`);
+                                
+                                // Start Media Insights Pipeline for real-time transcription
+                                if (isRealTimeTranscriptionEnabled()) {
+                                    const callRecord = callRecords[0];
+                                    startMediaPipeline({
+                                        callId,
+                                        meetingId,
+                                        clinicId,
+                                        agentId: assignedAgentId,
+                                        customerPhone: callRecord.from || callRecord.phoneNumber,
+                                        direction: callRecord.direction || 'inbound'
+                                    }).then(async pipelineId => {
+                                        if (pipelineId) {
+                                            // Store pipeline ID for cleanup when call ends
+                                            await ddb.send(new UpdateCommand({
+                                                TableName: CALL_QUEUE_TABLE_NAME,
+                                                Key: { clinicId, queuePosition },
+                                                UpdateExpression: 'SET mediaPipelineId = :pipelineId',
+                                                ExpressionAttributeValues: {
+                                                    ':pipelineId': pipelineId
+                                                }
+                                            })).catch(err => {
+                                                console.warn('[CALL_ANSWERED] Failed to store pipeline ID:', err.message);
+                                            });
+                                            
+                                            console.log('[CALL_ANSWERED] Media Pipeline started:', pipelineId);
+                                        }
+                                    }).catch(err => {
+                                        console.warn('[CALL_ANSWERED] Failed to start Media Pipeline (non-fatal):', err.message);
+                                        // Don't fail the call - Media Pipeline is optional
+                                    });
+                                }
                             }
                         } catch (queueErr) {
                             console.warn(`[CALL_ANSWERED] Failed to update call queue:`, queueErr);
@@ -1064,6 +1097,13 @@ export const handler = async (event: any): Promise<any> => {
                     
                     // *** CRITICAL FIX ***
                     // Only delete the meeting if it was a temporary "queue" meeting.
+                    // Clean up Media Pipeline if it was started for this call
+                    if (callRecord.mediaPipelineId) {
+                        stopMediaPipeline(callRecord.mediaPipelineId, callId).catch(pipelineErr => {
+                            console.warn(`[${eventType}] Failed to stop Media Pipeline:`, pipelineErr);
+                        });
+                    }
+                    
                     // Do NOT delete the meeting if it was an agent's session.
                     if (status === 'queued' && meetingInfo?.MeetingId) {
                         try {
