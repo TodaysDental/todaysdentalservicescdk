@@ -58,6 +58,7 @@ export class CommStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
     });
+    
     this.favorsTable.addGlobalSecondaryIndex({
       indexName: 'UserIndex',
       partitionKey: { name: 'userID', type: dynamodb.AttributeType.STRING },
@@ -112,18 +113,12 @@ this.favorsTable.addGlobalSecondaryIndex({
       ],
       removalPolicy: RemovalPolicy.DESTROY, // Use RETAIN in production
       autoDeleteObjects: true,
-      
-      // CRITICAL FIX: Removing blockPublicAccess to allow public access, as requested for troubleshooting 
-      // (This will allow signed URLs to work without issues from strong AWS default settings).
-      // Note: If account-level blocks exist, this still might not work, but this is the maximum change possible here.
-      // blockPublicAccess is now removed.
     });
 
     // ========================================
     // PUSH NOTIFICATIONS (SNS Topic)
     // ========================================
     // This topic will be published to by the 'Default' Lambda when a new message arrives.
-    // An external service (e.g., SES for emails, or a mobile platform) will subscribe to it.
     this.notificationsTopic = new sns.Topic(this, 'NewMessageNotificationsTopic', {
         topicName: `${this.stackName}-NewMessageNotifications`
     });
@@ -190,7 +185,14 @@ this.favorsTable.addGlobalSecondaryIndex({
       runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 512,
       timeout: Duration.seconds(30),
-      environment: defaultLambdaEnv,
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' }, // Use ESM bundling
+      environment: {
+          ...defaultLambdaEnv,
+          // NEW: Add environment variable for SES Source Email (Needs verification in SES)
+          SES_SOURCE_EMAIL: 'no-reply@todaysdentalinsights.com', 
+          // FIX: Pass User Pool ID to the default handler for Cognito lookup
+          USER_POOL_ID: props.userPoolId, 
+      },
     });
 
     // Grant permissions to the Default Lambda
@@ -199,6 +201,19 @@ this.favorsTable.addGlobalSecondaryIndex({
     this.favorsTable.grantReadWriteData(defaultFn);
     this.fileBucket.grantReadWrite(defaultFn); // For generating signed URLs
     this.notificationsTopic.grantPublish(defaultFn); // For push notifications
+    
+    // CRITICAL NEW FEATURE: Grant SES SendEmail permissions
+    defaultFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['ses:SendEmail', 'ses:SendRawEmail'],
+        resources: ['*'], 
+    }));
+    
+    // CRITICAL NEW FEATURE: Grant Cognito Read access to allow Lambda to look up recipient/sender email for SES
+    defaultFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['cognito-idp:AdminGetUser'],
+        resources: [props.userPoolArn],
+    }));
+
 
     // Grant Lambda permission to use the AWS API Gateway Management API (for sending messages back to client)
     const apiGatewayManagementPolicy = new iam.PolicyStatement({
@@ -266,7 +281,7 @@ this.favorsTable.addGlobalSecondaryIndex({
     });
     new CfnOutput(this, 'FileBucketName', {
       value: this.fileBucket.bucketName,
-      exportName: `${this.stackName}-FileBucketName`,
+      exportName: `${this.stackName}-FileBucketName`
     });
     new CfnOutput(this, 'NotificationsTopicArn', {
         value: this.notificationsTopic.topicArn,

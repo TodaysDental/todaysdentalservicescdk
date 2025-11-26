@@ -6,6 +6,9 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import { v4 as uuidv4 } from 'uuid';
+// UPDATED: Use SES V2 client and command
+import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
+import { CognitoIdentityProviderClient, AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 
 // Environment Variables
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -14,11 +17,17 @@ const MESSAGES_TABLE = process.env.MESSAGES_TABLE || '';
 const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
 const FILE_BUCKET_NAME = process.env.FILE_BUCKET_NAME || '';
 const NOTIFICATIONS_TOPIC_ARN = process.env.NOTICES_TOPIC_ARN || '';
+// Environment Variables for SES and Cognito (from comm-stack)
+const SES_SOURCE_EMAIL = process.env.SES_SOURCE_EMAIL || 'no-reply@todaysdentalinsights.com';
+const USER_POOL_ID = process.env.USER_POOL_ID || '';
 
 // SDK Clients
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
 const sns = new SNSClient({ region: REGION });
 const s3 = new S3Client({ region: REGION });
+// UPDATED: Initialize SES V2 Client
+const ses = new SESv2Client({ region: REGION });
+const cognito = new CognitoIdentityProviderClient({ region: REGION });
 
 // ========================================
 // TYPES
@@ -41,7 +50,8 @@ interface FavorRequest {
     // NEW: Fields for Feature Request
     requestType: 'General' | 'Assign Task' | 'Ask a Favor' | 'Other';
     unreadCount: number; // Count of unread messages for the user who is NOT the last sender
-    initialMessage: string; // <-- FIX: ADDED initialMessage
+    initialMessage: string; 
+    deadline?: string; // NEW: Optional deadline field (ISO String or similar format)
 }
 
 // NEW: Interface for storing rich file metadata
@@ -157,8 +167,9 @@ async function startFavorRequest(
     senderConnectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    // NEW: Destructure requestType
-    const { receiverID, initialMessage, requestType } = payload;
+    // UPDATED: Destructure requestType, initialMessage, receiverID AND deadline
+    const { receiverID, initialMessage, requestType, deadline } = payload;
+    
     if (!receiverID || !initialMessage || !requestType) {
         await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Missing receiverID, initialMessage, or requestType.' });
         return;
@@ -189,7 +200,9 @@ async function startFavorRequest(
         // NEW: Initialize Request Type and Unread Count
         requestType,
         unreadCount: 1, // The initial message is unread by the receiver
-        initialMessage: initialMessage, // <-- FIX: SAVE INITIAL MESSAGE TO FAVOR TABLE
+        initialMessage: initialMessage, 
+        // NEW: Save deadline if provided
+        ...(deadline && { deadline: String(deadline) }),
     };
 
     // 1. Create Favor Request Record
@@ -210,13 +223,23 @@ async function startFavorRequest(
     // 3. Save message and broadcast
     await _saveAndBroadcastMessage(messageData, apiGwManagement);
     
-    // 4. Send confirmation back to the sender
+    // 4. Send email notification (NEW STEP)
+    try {
+        // This is the core logic that triggers the email notification
+        await sendNewFavorNotificationEmail(senderID, receiverID, initialMessage, requestType, deadline);
+    } catch(e) {
+        // Log the failure but do not throw, as chat functionality is primary
+        console.error("Failed to send SES notification email:", e);
+    }
+    
+    // 5. Send confirmation back to the sender
     await sendToClient(apiGwManagement, senderConnectionId, { 
         type: 'favorRequestStarted', 
         favorRequestID, 
         receiverID,
         initialMessage,
-        requestType // Include new field in confirmation
+        requestType, // Include new field in confirmation
+        deadline, // Include new deadline field in confirmation
     });
 }
 
@@ -616,6 +639,128 @@ async function getSenderInfoByUserID(userID: string): Promise<SenderInfo | undef
     if (!item) return undefined;
     return { connectionId: item.connectionId, userID: item.userID };
 }
+
+/** Helper function to fetch user's first name and email from Cognito. */
+async function getUserDetails(userID: string): Promise<{ email?: string; fullName: string; }> {
+    if (!USER_POOL_ID) {
+        console.error("USER_POOL_ID is missing for user detail lookup.");
+        return { fullName: userID };
+    }
+
+    try {
+        const command = new AdminGetUserCommand({
+            UserPoolId: USER_POOL_ID,
+            Username: userID,
+        });
+        
+        const response = await cognito.send(command);
+
+        const emailAttr = response.UserAttributes?.find(attr => attr.Name === 'email')?.Value;
+        const givenNameAttr = response.UserAttributes?.find(attr => attr.Name === 'given_name')?.Value;
+        const familyNameAttr = response.UserAttributes?.find(attr => attr.Name === 'family_name')?.Value;
+
+        return {
+            email: emailAttr,
+            fullName: `${givenNameAttr || ''} ${familyNameAttr || ''}`.trim() || userID,
+        };
+    } catch (e) {
+        console.error(`Error fetching Cognito user details for ${userID}:`, e);
+        return { fullName: userID };
+    }
+}
+
+/**
+ * Sends an email notification to the receiver about a new favor request via SES.
+ */
+async function sendNewFavorNotificationEmail(
+    senderID: string, 
+    receiverID: string, 
+    messageContent: string, 
+    requestType: string, 
+    deadline?: string
+): Promise<void> {
+    if (!SES_SOURCE_EMAIL) {
+        console.warn('SES_SOURCE_EMAIL not configured. Skipping email notification.');
+        return;
+    }
+    
+    // 1. Get user details for Sender and Receiver
+    const [sender, receiver] = await Promise.all([
+        getUserDetails(senderID),
+        getUserDetails(receiverID),
+    ]);
+    
+    if (!receiver.email) {
+        console.warn(`Receiver ${receiverID} has no email address. Skipping email.`);
+        return;
+    }
+    
+    const formattedDeadline = deadline ? 
+        new Date(deadline).toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' }) : 
+        '';
+
+    const deadlineText = formattedDeadline ? 
+        `\n\n**Deadline:** ${formattedDeadline}` : 
+        '';
+
+    const emailHtmlBody = `
+        <html>
+            <body>
+                <h1 style="color: #0070f3;">New ${requestType} Notification</h1>
+                <p>Hello ${receiver.fullName},</p>
+                <p>You have a new <strong>${requestType}</strong> from <strong>${sender.fullName}</strong> waiting for your attention in the app.</p>
+                
+                <div style="border: 1px solid #eaeaea; padding: 15px; margin: 20px 0; border-radius: 8px;">
+                    <p style="font-weight: bold; margin-top: 0;">Initial Message:</p>
+                    <blockquote style="border-left: 4px solid #0070f3; margin: 0; padding-left: 10px; font-style: italic; color: #555;">${messageContent}</blockquote>
+                    
+                    ${formattedDeadline ? `<p style="margin-top: 15px; font-weight: bold; color: #d97706;">Deadline: ${formattedDeadline}</p>` : ''}
+                </div>
+                
+                <p>Please log in to the application to view and respond to this request.</p>
+                <p>Thank you,<br>The System Team</p>
+            </body>
+        </html>
+    `;
+    
+    const emailTextBody = `
+        New ${requestType} Notification
+        
+        Hello ${receiver.fullName},
+        
+        You have a new ${requestType} from ${sender.fullName} waiting for your attention in the app.
+        
+        Initial Message: "${messageContent}"
+        ${formattedDeadline ? `Deadline: ${formattedDeadline}` : ''}
+        
+        Please log in to the application to view and respond to this request.
+    `;
+
+    // 2. Send the email - UPDATED PAYLOAD FOR SES V2
+    await ses.send(new SendEmailCommand({
+        Destination: {
+            ToAddresses: [receiver.email as string], // Cast to string as we check for null/undefined earlier
+        },
+        // V2 uses Content wrapper for Simple or Raw message format
+        Content: {
+            Simple: {
+                Subject: {
+                    Data: `New ${requestType}: ${sender.fullName} Needs Your Attention`,
+                },
+                Body: {
+                    Text: { Data: emailTextBody },
+                    Html: { Data: emailHtmlBody },
+                },
+            },
+        },
+        // V2 uses FromEmailAddress for the sender address
+        FromEmailAddress: SES_SOURCE_EMAIL,
+    }));
+    
+    console.log(`SES Notification sent to ${receiver.email} for favor request from ${sender.fullName}.`);
+}
+
+
 async function fetchHistory(
     callerID: string,
     payload: any,
