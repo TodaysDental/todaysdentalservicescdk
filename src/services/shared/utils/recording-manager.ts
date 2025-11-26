@@ -195,6 +195,12 @@ export async function processRecordingIdempotent(
     ? new Date(callRecord.queueEntryTime).getTime()
     : Date.now();
 
+  // CRITICAL FIX: Extract segment identifier from S3 key for multi-segment recordings
+  // Format: recordings/.../timestamp_transactionId_callId.wav
+  const segmentMatch = key.match(/(\d+)_([^_]+)_[^/]+\.wav$/);
+  const segmentTimestamp = segmentMatch ? parseInt(segmentMatch[1]) : timestamp;
+  const segmentId = segmentMatch ? segmentMatch[2] : 'unknown';
+  
   // Store metadata with idempotent put
   const metadata: RecordingMetadata = {
     recordingId,
@@ -207,8 +213,12 @@ export async function processRecordingIdempotent(
     format: headResult.ContentType || 'audio/wav',
     uploadedAt: new Date().toISOString(),
     agentId: callRecord?.assignedAgentId,
-    ttl: Math.floor(Date.now() / 1000) + (2555 * 24 * 60 * 60) // 7 years retention
-  };
+    ttl: Math.floor(Date.now() / 1000) + (2555 * 24 * 60 * 60), // 7 years retention
+    // Additional metadata for multi-segment tracking
+    segmentTimestamp,
+    segmentId,
+    isMultiSegment: (callRecord?.recordingIds?.size || 0) > 0
+  } as any;
 
   try {
     await ddb.send(new PutCommand({

@@ -1,8 +1,18 @@
+// Type aliases for clarity and type safety
+export type EpochSeconds = number;
+export type EpochMilliseconds = number;
+
+// Call status type
+export type CallStatus = 'active' | 'completed' | 'abandoned' | 'failed';
+
 // DynamoDB Table Schema for Call Analytics
 export interface CallAnalyticsRecord {
   // Primary Key
   callId: string;  // Partition key
-  timestamp: number;  // Sort key (epoch seconds)
+  timestamp: EpochSeconds;  // Sort key (epoch seconds) - for historical queries
+  
+  // Call Status (CRITICAL: for live vs post-call filtering)
+  callStatus: CallStatus;  // 'active' during call, 'completed'/'abandoned'/'failed' after
   
   // Call Metadata
   clinicId: string;
@@ -12,7 +22,9 @@ export interface CallAnalyticsRecord {
   
   // Duration & Timing
   callStartTime: string;  // ISO string
+  callStartTimestamp?: EpochMilliseconds;  // For precise calculations
   callEndTime?: string;
+  callEndTimestamp?: EpochMilliseconds;  // For precise calculations
   totalDuration: number;  // seconds
   talkTime?: number;  // seconds agent was speaking
   holdTime?: number;  // seconds on hold
@@ -20,6 +32,7 @@ export interface CallAnalyticsRecord {
   // Transcription
   transcript?: CallTranscript[];
   fullTranscriptS3Key?: string;  // For large transcripts
+  transcriptCount?: number;  // Number of transcript segments (for live updates)
   
   // Sentiment Analysis
   overallSentiment?: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' | 'MIXED';
@@ -51,6 +64,11 @@ export interface CallAnalyticsRecord {
   detectedIssues?: string[];  // e.g., ["long-hold", "customer-frustration"]
   keywords?: string[];  // Important terms mentioned
   
+  // Finalization tracking
+  finalized?: boolean;
+  finalizedAt?: string;
+  finalizationScheduledAt?: EpochMilliseconds;
+  
   // Metadata
   recordingS3Key?: string;
   createdAt: string;
@@ -59,15 +77,15 @@ export interface CallAnalyticsRecord {
 }
 
 export interface CallTranscript {
-  timestamp: number;  // Milliseconds from call start
+  timestamp: EpochSeconds;  // Seconds from epoch
   speaker: 'AGENT' | 'CUSTOMER';
   text: string;
   sentiment?: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL';
-  confidence: number;
+  confidence?: number;
 }
 
 export interface SentimentDataPoint {
-  timestamp: number;
+  timestamp: EpochSeconds;
   sentiment: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' | 'MIXED';
   score: number;
 }
@@ -87,6 +105,11 @@ export const ANALYTICS_TABLE_GSI = {
   // Query by sentiment
   'overallSentiment-timestamp-index': {
     partitionKey: 'overallSentiment',
+    sortKey: 'timestamp'
+  },
+  // CRITICAL FIX: Query by call status for live vs post-call filtering
+  'callStatus-timestamp-index': {
+    partitionKey: 'callStatus',
     sortKey: 'timestamp'
   }
 };

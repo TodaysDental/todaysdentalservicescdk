@@ -213,7 +213,7 @@ const analyticsStack = new AnalyticsStack(app, 'TodaysDentalInsightsAnalyticsV1'
   userPoolId: coreStack.userPool.userPoolId,
   region: env.region || process.env.AWS_REGION || 'us-east-1',
   supervisorEmails: [], // Add supervisor emails for alerts
-  // Note: agentPresenceTableName will be set after ChimeStack is created
+  // Note: callQueueTableName and agentPresenceTableName will be passed from ChimeStack
 });
 
 const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV23', {

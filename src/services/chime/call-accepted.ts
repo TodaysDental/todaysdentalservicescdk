@@ -167,12 +167,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
+        // CRITICAL FIX: Reduced TTL from 10s to 3s to minimize orphaned lock impact
+        // If Lambda times out, call only blocked for 3s instead of 10s
         const lock = new DistributedLock(ddb, {
             tableName: LOCKS_TABLE_NAME,
             lockKey: `call-assignment-${callId}`,
-            ttlSeconds: 10,
-            maxRetries: 3,
-            retryDelayMs: 50
+            ttlSeconds: 3, // Reduced from 10 to minimize orphaned locks
+            maxRetries: 5, // Increased retries to compensate for shorter TTL
+            retryDelayMs: 100
         });
 
         const acquired = await lock.acquire();

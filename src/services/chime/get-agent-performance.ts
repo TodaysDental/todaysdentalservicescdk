@@ -205,17 +205,79 @@ async function getClinicAgentPerformance(
 
 /**
  * Get detailed call information for an agent
+ * CRITICAL FIX: Now properly implemented with pagination support
  */
 async function getAgentCallDetails(
   agentId: string,
   startDate?: string,
   endDate?: string
 ): Promise<any[]> {
-  // This would query the CallQueue table for calls handled by this agent
-  // Implementation depends on having an agentId-index on the CallQueue table
-  // For now, returning empty array - can be enhanced later
-  console.log('[GetAgentPerformance] Call details requested for agent:', agentId);
-  return [];
+  console.log('[GetAgentPerformance] Fetching call details for agent:', agentId);
+  
+  // Query the analytics table using agentId-timestamp-index
+  const ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE_NAME;
+  if (!ANALYTICS_TABLE) {
+    console.error('[GetAgentPerformance] CALL_ANALYTICS_TABLE_NAME not configured');
+    return [];
+  }
+  
+  try {
+    // Convert date strings to epoch seconds
+    const startTimestamp = startDate 
+      ? Math.floor(new Date(startDate).getTime() / 1000)
+      : Math.floor(Date.now() / 1000) - (7 * 24 * 60 * 60); // Default: last 7 days
+    
+    const endTimestamp = endDate
+      ? Math.floor(new Date(endDate).getTime() / 1000)
+      : Math.floor(Date.now() / 1000);
+    
+    const params: any = {
+      TableName: ANALYTICS_TABLE,
+      IndexName: 'agentId-timestamp-index',
+      KeyConditionExpression: 'agentId = :agentId AND #ts BETWEEN :start AND :end',
+      ExpressionAttributeNames: { '#ts': 'timestamp' },
+      ExpressionAttributeValues: {
+        ':agentId': agentId,
+        ':start': startTimestamp,
+        ':end': endTimestamp
+      },
+      Limit: 100 // Limit to 100 most recent calls for performance
+    };
+    
+    const result = await ddb.send(new QueryCommand(params));
+    
+    if (!result.Items || result.Items.length === 0) {
+      return [];
+    }
+    
+    // Map to detailed call records with only relevant fields
+    const callDetails = result.Items.map(item => ({
+      callId: item.callId,
+      timestamp: item.timestamp,
+      callStartTime: item.callStartTime,
+      callEndTime: item.callEndTime,
+      duration: item.totalDuration,
+      direction: item.direction,
+      customerPhone: item.customerPhone,
+      sentiment: item.overallSentiment,
+      category: item.callCategory,
+      issues: item.detectedIssues || [],
+      talkPercentage: item.speakerMetrics?.agentTalkPercentage,
+      holdTime: item.holdTime,
+      qualityScore: item.audioQuality?.qualityScore,
+      callStatus: item.callStatus || (item.callEndTime ? 'completed' : 'active')
+    }));
+    
+    console.log(`[GetAgentPerformance] Retrieved ${callDetails.length} call details for agent ${agentId}`);
+    return callDetails;
+    
+  } catch (error: any) {
+    console.error('[GetAgentPerformance] Error fetching call details:', {
+      agentId,
+      error: error.message
+    });
+    return [];
+  }
 }
 
 /**

@@ -123,12 +123,22 @@ async function processRecordingEvent(record: S3EventRecord): Promise<void> {
         const callMetrics = extractCallMetrics(callRecord);
         
         if (callMetrics) {
+          // **FIXED: Extract sentiment data from call record if available**
+          const sentiment = callRecord.overallSentiment && callRecord.averageSentiment ? {
+            sentiment: callRecord.overallSentiment,
+            score: callRecord.averageSentiment
+          } : undefined;
+          
           await trackCallCompletion(
             ddb,
             AGENT_PERFORMANCE_TABLE_NAME,
-            callMetrics
+            callMetrics,
+            sentiment // Pass sentiment data
           );
-          console.log('[RecordingProcessor] Updated agent performance for:', metadata.agentId);
+          console.log('[RecordingProcessor] Updated agent performance for:', {
+            agentId: metadata.agentId,
+            hasSentiment: !!sentiment
+          });
         }
       }
     } catch (err) {

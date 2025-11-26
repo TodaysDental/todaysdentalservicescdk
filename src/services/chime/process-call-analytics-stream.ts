@@ -13,9 +13,12 @@
  */
 
 import { DynamoDBStreamEvent, DynamoDBRecord, AttributeValue } from 'aws-lambda';
-import { DynamoDBDocumentClient, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { unmarshall } from '@aws-sdk/util-dynamodb';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
+import { checkAndMarkProcessed, getDedupTableName, shouldProcessAnalytics } from '../shared/utils/analytics-deduplication';
+import { getCircuitBreaker } from '../shared/utils/circuit-breaker';
+import { trackEnhancedCallMetrics } from '../shared/utils/enhanced-agent-metrics';
 import {
     searchPatientByPhone,
     getPatientByPatNum,
@@ -27,15 +30,21 @@ import {
 const ddb = getDynamoDBClient();
 // Use consistent environment variable naming
 const ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE_NAME;
-const DEDUP_TABLE = process.env.ANALYTICS_DEDUP_TABLE;
 
 if (!ANALYTICS_TABLE) {
   throw new Error('CALL_ANALYTICS_TABLE_NAME environment variable is required');
 }
 
-if (!DEDUP_TABLE) {
-  console.warn('[AnalyticsStream] ANALYTICS_DEDUP_TABLE not configured, deduplication will use derived name');
-}
+// CRITICAL FIX: Use unified deduplication strategy
+const DEDUP_TABLE = getDedupTableName(ANALYTICS_TABLE);
+
+// CRITICAL FIX: Circuit breaker for OpenDental API to prevent cascading failures
+const openDentalCircuitBreaker = getCircuitBreaker('OpenDentalAPI', {
+  failureThreshold: 5,      // Open circuit after 5 failures
+  successThreshold: 3,      // Need 3 successes to close
+  timeout: 120000,          // Wait 2 minutes before retry
+  monitoringPeriod: 300000  // Track failures over 5 minutes
+});
 
 interface CallAnalytics {
     callId: string;
@@ -122,9 +131,27 @@ export const handler = async (event: DynamoDBStreamEvent): Promise<void> => {
                 results.duplicates++;
             }
         } catch (err: any) {
+            // Extract callId from record for better error tracking
+            let callId = 'unknown';
+            try {
+                const newImage = record.dynamodb?.NewImage;
+                const oldImage = record.dynamodb?.OldImage;
+                const image = newImage || oldImage;
+                if (image) {
+                    const unmarshalled = unmarshall(image as any);
+                    callId = unmarshalled.callId || 'unknown';
+                }
+            } catch (unmarshalErr) {
+                // Ignore unmarshal errors for error logging
+            }
+            
             console.error('[AnalyticsStream] Error processing record:', {
                 error: err.message,
-                eventID: record.eventID
+                stack: err.stack,
+                eventID: record.eventID,
+                eventName: record.eventName,
+                callId,
+                timestamp: new Date().toISOString()
             });
             results.errors++;
             // Don't throw - let other records process
@@ -136,10 +163,24 @@ export const handler = async (event: DynamoDBStreamEvent): Promise<void> => {
 
 /**
  * Process a single DynamoDB Stream record
+ * CRITICAL FIX #9: Added comprehensive validation for call queue data flow
  */
 async function processStreamRecord(
     record: DynamoDBRecord
 ): Promise<'PROCESSED' | 'SKIPPED' | 'DUPLICATE'> {
+    // CRITICAL FIX #9: Validate record structure before processing
+    if (!record.dynamodb) {
+        console.error('[processStreamRecord] Missing dynamodb data in record');
+        return 'SKIPPED';
+    }
+    
+    const { NewImage, OldImage } = record.dynamodb;
+    
+    // CRITICAL FIX #9: Validate required fields exist
+    if (!NewImage) {
+        console.warn('[processStreamRecord] No NewImage in record, skipping');
+        return 'SKIPPED';
+    }
     // Only process MODIFY and REMOVE events
     if (record.eventName !== 'MODIFY' && record.eventName !== 'REMOVE') {
         return 'SKIPPED';
@@ -185,14 +226,72 @@ async function processStreamRecord(
         wasRemoved
     });
 
-    // Generate analytics
+    // Determine state transition for later deduplication
+    const stateTransition = wasCompleted ? 'completed' : wasAbandoned ? 'abandoned' : 'removed';
+
+    // Generate analytics FIRST (before deduplication)
+    // This ensures we don't mark as duplicate before successful processing
     const analytics = await generateCallAnalytics(callData, record);
 
     // Fetch patient data if available
     await enrichWithPatientData(analytics, callData);
 
-    // Store with deduplication
+    // Store with deduplication (includes its own "post-call" dedup check)
     const stored = await storeAnalyticsWithDedup(analytics, record.eventID!);
+    
+    // If storage failed due to duplicate, return early
+    if (!stored) {
+        console.log('[AnalyticsStream] Analytics already stored, skipping duplicate');
+        return 'DUPLICATE';
+    }
+
+    // CRITICAL FIX: Mark state transition as processed AFTER successful storage
+    // This prevents orphaned dedup records when errors occur during processing
+    try {
+        await checkAndMarkProcessed(
+            ddb,
+            DEDUP_TABLE,
+            callData.callId,
+            `post-call-${stateTransition}` as any
+        );
+    } catch (err: any) {
+        console.warn('[AnalyticsStream] Failed to mark state transition, but analytics stored:', {
+            callId: callData.callId,
+            error: err.message
+        });
+        // Don't fail - analytics are already stored successfully
+    }
+
+    // CRITICAL FIX: Track agent performance metrics using enhanced-agent-metrics only
+    if (stored && analytics.agentId) {
+        try {
+            await trackEnhancedCallMetrics(
+                ddb,
+                process.env.AGENT_PERFORMANCE_TABLE_NAME!,
+                {
+                    agentId: analytics.agentId,
+                    clinicId: analytics.clinicId,
+                    callId: analytics.callId,
+                    direction: analytics.direction,
+                    duration: analytics.totalDuration,
+                    talkTime: analytics.talkDuration,
+                    holdTime: analytics.holdDuration,
+                    sentiment: analytics.wasAbandoned ? 'NEGATIVE' : 'NEUTRAL',
+                    transferred: analytics.wasTransferred,
+                    escalated: false,
+                    issues: [],
+                    timestamp: callData.callEndTime || Date.now() // Use actual call end time
+                }
+            );
+        } catch (err: any) {
+            console.error('[AnalyticsStream] Failed to track agent metrics:', {
+                error: err.message,
+                callId: analytics.callId,
+                agentId: analytics.agentId
+            });
+            // Don't fail the entire process if metrics tracking fails
+        }
+    }
 
     // Create commlog in OpenDental if patient data is available
     if (stored && analytics.patientData) {
@@ -205,11 +304,54 @@ async function processStreamRecord(
 /**
  * Generate analytics from call data
  */
+/**
+ * Generate call analytics from call queue data
+ * CRITICAL FIX #9: Added validation for all required fields
+ */
 async function generateCallAnalytics(
     callData: any, 
     record: DynamoDBRecord
 ): Promise<CallAnalytics> {
+    // CRITICAL FIX #9: Validate required fields exist
+    if (!callData.callId) {
+        throw new Error('Missing required field: callId');
+    }
+    if (!callData.clinicId) {
+        throw new Error('Missing required field: clinicId');
+    }
+    
+    // CRITICAL FIX #9: Validate timestamp format and range
     const now = Date.now();
+    const oneYearAgo = now - (365 * 24 * 60 * 60 * 1000);
+    
+    let timestamp = parseTimestamp(callData.timestamp || callData.callStartTime || Date.now());
+    
+    if (timestamp && timestamp > now + 60000) { // Future timestamp (1 min grace for clock skew)
+        console.warn('[generateCallAnalytics] Future timestamp detected, using current time:', {
+            originalTimestamp: timestamp,
+            callId: callData.callId
+        });
+        timestamp = now;
+    }
+    
+    if (timestamp && timestamp < oneYearAgo) {
+        console.warn('[generateCallAnalytics] Very old timestamp (>1 year), may be invalid:', {
+            timestamp,
+            callId: callData.callId,
+            ageInDays: Math.floor((now - timestamp) / (24 * 60 * 60 * 1000))
+        });
+    }
+    
+    // CRITICAL FIX #9: Validate phone number format
+    if (callData.phoneNumber) {
+        const phoneRegex = /^\+?[1-9]\d{1,14}$/;
+        if (!phoneRegex.test(callData.phoneNumber)) {
+            console.warn('[generateCallAnalytics] Invalid phone number format:', {
+                phoneNumber: callData.phoneNumber,
+                callId: callData.callId
+            });
+        }
+    }
     const queueEntryTime = parseTimestamp(callData.queueEntryTime || callData.queueEntryTimeIso);
     const connectedAt = parseTimestamp(callData.connectedAt);
     const completedAt = parseTimestamp(callData.completedAt || callData.endedAtIso);
@@ -282,45 +424,60 @@ async function generateCallAnalytics(
 
 /**
  * Store analytics with deduplication
- * Uses conditional write to prevent duplicate processing
+ * CRITICAL FIX: Uses unified deduplication strategy across all processors
  */
 async function storeAnalyticsWithDedup(
     analytics: CallAnalytics,
     eventId: string
 ): Promise<boolean> {
-    // First, check deduplication
-    const dedupId = `${analytics.callId}-${analytics.timestamp}`;
-    const dedupTableName = DEDUP_TABLE || `${ANALYTICS_TABLE}-dedup`;
+    // Use unified deduplication for post-call analytics
+    const dedupResult = await checkAndMarkProcessed(
+        ddb,
+        DEDUP_TABLE,
+        analytics.callId,
+        'post-call',
+        eventId
+    );
+
+    if (dedupResult.isDuplicate) {
+        console.log('[AnalyticsStream] Duplicate post-call analytics event, skipping:', analytics.callId);
+        return false;
+    }
+
+    // Check if we should overwrite existing record
+    // (e.g., don't overwrite finalized records)
+    try {
+        const { Item: existingRecord } = await ddb.send(new GetCommand({
+            TableName: ANALYTICS_TABLE,
+            Key: { callId: analytics.callId, timestamp: analytics.timestamp }
+        }));
+
+        if (!shouldProcessAnalytics(existingRecord, 'post-call')) {
+            console.log('[AnalyticsStream] Skipping - record should not be processed:', analytics.callId);
+            return false;
+        }
+    } catch (err: any) {
+        console.warn('[AnalyticsStream] Error checking existing record:', err.message);
+        // Continue with write
+    }
 
     try {
-        // Atomic deduplication check
-        await ddb.send(new PutCommand({
-            TableName: dedupTableName,
-            Item: {
-                eventId: dedupId,
-                callId: analytics.callId,
-                processedAt: new Date().toISOString(),
-                streamEventId: eventId,
-                ttl: Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60) // 7 days
-            },
-            ConditionExpression: 'attribute_not_exists(eventId)'
-        }));
-
-        // If we get here, this is the first time seeing this event
-        // Now store the actual analytics
+        // Store the actual analytics with callStatus
         await ddb.send(new PutCommand({
             TableName: ANALYTICS_TABLE,
-            Item: analytics
+            Item: {
+                ...analytics,
+                callStatus: analytics.status === 'completed' ? 'completed' 
+                    : analytics.status === 'abandoned' ? 'abandoned' 
+                    : 'failed'
+            }
         }));
 
-        console.log('[AnalyticsStream] Stored analytics for call:', analytics.callId);
+        console.log('[AnalyticsStream] Stored post-call analytics for call:', analytics.callId);
         return true;
 
     } catch (err: any) {
-        if (err.name === 'ConditionalCheckFailedException') {
-            console.log('[AnalyticsStream] Duplicate event detected:', dedupId);
-            return false;
-        }
+        console.error('[AnalyticsStream] Error storing analytics:', err);
         throw err;
     }
 }
@@ -351,6 +508,7 @@ function parseTimestamp(value: any): number | null {
 
 /**
  * Enrich analytics with patient data from OpenDental
+ * CRITICAL FIX: Uses circuit breaker to prevent cascading failures
  */
 async function enrichWithPatientData(
     analytics: CallAnalytics,
@@ -362,6 +520,13 @@ async function enrichWithPatientData(
             return;
         }
 
+        // Check circuit breaker state before attempting OpenDental calls
+        const circuitState = openDentalCircuitBreaker.getState();
+        if (circuitState.state === 'OPEN') {
+            console.warn('[AnalyticsStream] OpenDental circuit breaker is OPEN, skipping patient enrichment');
+            return;
+        }
+
         // First, try to get PatNum from call metadata
         let patNum = extractPatNumFromCallData(callData);
         
@@ -369,13 +534,16 @@ async function enrichWithPatientData(
         if (!patNum && analytics.phoneNumber) {
             console.log(`[AnalyticsStream] Searching for patient by phone: ${analytics.phoneNumber}`);
             try {
-                const patient = await searchPatientByPhone(analytics.phoneNumber, analytics.clinicId);
+                const patient = await openDentalCircuitBreaker.execute(() => 
+                    searchPatientByPhone(analytics.phoneNumber!, analytics.clinicId)
+                );
                 if (patient?.PatNum) {
                     patNum = patient.PatNum;
                     console.log(`[AnalyticsStream] Found patient PatNum: ${patNum}`);
                 }
             } catch (err: any) {
                 console.warn('[AnalyticsStream] Error searching patient by phone:', err.message);
+                // Circuit breaker will track this failure
             }
         }
 
@@ -383,7 +551,9 @@ async function enrichWithPatientData(
         if (patNum) {
             console.log(`[AnalyticsStream] Fetching patient details for PatNum: ${patNum}`);
             try {
-                const patientDetails = await getPatientByPatNum(patNum, analytics.clinicId);
+                const patientDetails = await openDentalCircuitBreaker.execute(() =>
+                    getPatientByPatNum(patNum!, analytics.clinicId)
+                );
                 
                 // Store relevant patient data
                 analytics.patientData = {
@@ -407,6 +577,7 @@ async function enrichWithPatientData(
                 console.log(`[AnalyticsStream] Patient data enriched: ${patientDetails.FName} ${patientDetails.LName}`);
             } catch (err: any) {
                 console.error(`[AnalyticsStream] Error fetching patient details:`, err.message);
+                // Circuit breaker will track this failure
             }
         } else {
             console.log('[AnalyticsStream] No PatNum available, skipping patient data enrichment');
@@ -419,11 +590,19 @@ async function enrichWithPatientData(
 
 /**
  * Create a commlog entry in OpenDental for the call
+ * CRITICAL FIX: Uses circuit breaker to prevent cascading failures
  */
 async function createCallCommlog(analytics: CallAnalytics): Promise<void> {
     try {
         if (!analytics.patientData?.PatNum || !analytics.clinicId) {
             console.log('[AnalyticsStream] Missing PatNum or clinicId, skipping commlog creation');
+            return;
+        }
+
+        // Check circuit breaker before attempting commlog creation
+        const circuitState = openDentalCircuitBreaker.getState();
+        if (circuitState.state === 'OPEN') {
+            console.warn('[AnalyticsStream] OpenDental circuit breaker is OPEN, skipping commlog creation');
             return;
         }
 
@@ -435,16 +614,18 @@ async function createCallCommlog(analytics: CallAnalytics): Promise<void> {
             commType = 'ApptRelated';
         }
 
-        const commlog = await createCommlog(
-            analytics.patientData.PatNum,
-            note,
-            analytics.clinicId,
-            {
-                commType,
-                mode: 'Phone',
-                sentOrReceived: analytics.direction === 'inbound' ? 'Received' : 'Sent',
-                commDateTime: analytics.timestampIso,
-            }
+        const commlog = await openDentalCircuitBreaker.execute(() =>
+            createCommlog(
+                analytics.patientData!.PatNum,
+                note,
+                analytics.clinicId,
+                {
+                    commType,
+                    mode: 'Phone',
+                    sentOrReceived: analytics.direction === 'inbound' ? 'Received' : 'Sent',
+                    commDateTime: analytics.timestampIso,
+                }
+            )
         );
 
         analytics.commlogNum = commlog.CommlogNum;

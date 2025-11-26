@@ -31,14 +31,37 @@ export interface CallMetrics {
 
 /**
  * Update agent performance metrics when a call is completed
+ * FIXED: Now uses atomic DynamoDB ADD operations to prevent race conditions
  */
+/**
+ * CRITICAL FIX: Get date in clinic timezone to avoid boundary issues
+ */
+function getDateInTimezone(timestamp: Date | string, timezone: string = 'UTC'): string {
+  try {
+    const date = typeof timestamp === 'string' ? new Date(timestamp) : timestamp;
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(date);
+  } catch (err) {
+    // Fallback to UTC if timezone is invalid
+    console.warn('[getDateInTimezone] Invalid timezone, falling back to UTC:', timezone);
+    return new Date(timestamp).toISOString().split('T')[0];
+  }
+}
+
 export async function trackCallCompletion(
   ddb: DynamoDBDocumentClient,
   tableName: string,
-  metrics: CallMetrics
+  metrics: CallMetrics,
+  sentiment?: { sentiment: string; score: number }
 ): Promise<void> {
   try {
-    const periodDate = new Date(metrics.startTime).toISOString().split('T')[0]; // YYYY-MM-DD
+    // CRITICAL FIX: Use clinic timezone if available, otherwise UTC
+    const timezone = (metrics as any).timezone || 'UTC';
+    const periodDate = getDateInTimezone(metrics.startTime, timezone);
     
     console.log('[AgentPerformanceTracker] Tracking call completion:', {
       agentId: metrics.agentId,
@@ -47,18 +70,7 @@ export async function trackCallCompletion(
       wasCompleted: metrics.wasCompleted,
     });
 
-    // Get existing record to calculate new averages
-    const existing = await ddb.send(new GetCommand({
-      TableName: tableName,
-      Key: {
-        agentId: metrics.agentId,
-        periodDate,
-      },
-    }));
-
-    const existingData = existing.Item || {};
-
-    // Calculate increments
+    // Calculate increments (all atomic counters)
     const totalCallsIncrement = 1;
     const inboundIncrement = metrics.direction === 'inbound' ? 1 : 0;
     const outboundIncrement = metrics.direction === 'outbound' ? 1 : 0;
@@ -71,116 +83,232 @@ export async function trackCallCompletion(
     const holdTimeIncrement = metrics.holdTime || 0;
     const handleTimeIncrement = metrics.totalDuration || 0;
 
-    // Calculate new totals
-    const newTotalCalls = (existingData.totalCalls || 0) + totalCallsIncrement;
-    const newTotalTalkTime = (existingData.totalTalkTime || 0) + talkTimeIncrement;
-    const newTotalHoldTime = (existingData.totalHoldTime || 0) + holdTimeIncrement;
-    const newTotalHandleTime = (existingData.totalHandleTime || 0) + handleTimeIncrement;
+    // Build sentiment score increments if provided
+    const sentimentIncrements: any = {};
+    if (sentiment) {
+      switch (sentiment.sentiment.toUpperCase()) {
+        case 'POSITIVE':
+          sentimentIncrements[':sentimentPositiveInc'] = 1;
+          sentimentIncrements[':sentimentNeutralInc'] = 0;
+          sentimentIncrements[':sentimentNegativeInc'] = 0;
+          sentimentIncrements[':sentimentMixedInc'] = 0;
+          break;
+        case 'NEUTRAL':
+          sentimentIncrements[':sentimentPositiveInc'] = 0;
+          sentimentIncrements[':sentimentNeutralInc'] = 1;
+          sentimentIncrements[':sentimentNegativeInc'] = 0;
+          sentimentIncrements[':sentimentMixedInc'] = 0;
+          break;
+        case 'NEGATIVE':
+          sentimentIncrements[':sentimentPositiveInc'] = 0;
+          sentimentIncrements[':sentimentNeutralInc'] = 0;
+          sentimentIncrements[':sentimentNegativeInc'] = 1;
+          sentimentIncrements[':sentimentMixedInc'] = 0;
+          break;
+        case 'MIXED':
+          sentimentIncrements[':sentimentPositiveInc'] = 0;
+          sentimentIncrements[':sentimentNeutralInc'] = 0;
+          sentimentIncrements[':sentimentNegativeInc'] = 0;
+          sentimentIncrements[':sentimentMixedInc'] = 1;
+          break;
+        default:
+          sentimentIncrements[':sentimentPositiveInc'] = 0;
+          sentimentIncrements[':sentimentNeutralInc'] = 1;
+          sentimentIncrements[':sentimentNegativeInc'] = 0;
+          sentimentIncrements[':sentimentMixedInc'] = 0;
+      }
+    } else {
+      // Default to neutral if no sentiment provided
+      sentimentIncrements[':sentimentPositiveInc'] = 0;
+      sentimentIncrements[':sentimentNeutralInc'] = 1;
+      sentimentIncrements[':sentimentNegativeInc'] = 0;
+      sentimentIncrements[':sentimentMixedInc'] = 0;
+    }
 
-    // Calculate averages
-    const averageHandleTime = newTotalCalls > 0 ? Math.round(newTotalHandleTime / newTotalCalls) : 0;
-    const averageTalkTime = newTotalCalls > 0 ? Math.round(newTotalTalkTime / newTotalCalls) : 0;
+    // CRITICAL FIX #2: Enhanced atomic operations with conditional check to prevent duplicate call tracking
+    // This ensures concurrent updates don't lose data AND prevents same call from being counted twice
+    try {
+      await ddb.send(new UpdateCommand({
+        TableName: tableName,
+        Key: {
+          agentId: metrics.agentId,
+          periodDate,
+        },
+        UpdateExpression: `
+          SET clinicId = if_not_exists(clinicId, :clinicId),
+              lastUpdated = :now,
+              callIds = list_append(if_not_exists(callIds, :emptyList), :callId)
+          ADD totalCalls :totalInc,
+              inboundCalls :inboundInc,
+              outboundCalls :outboundInc,
+              missedCalls :missedInc,
+              rejectedCalls :rejectedInc,
+              callsTransferred :transferredInc,
+              callsCompleted :completedInc,
+              totalTalkTime :talkTimeInc,
+              totalHoldTime :holdTimeInc,
+              totalHandleTime :handleTimeInc,
+              sentimentScores.positive :sentimentPositiveInc,
+              sentimentScores.neutral :sentimentNeutralInc,
+              sentimentScores.negative :sentimentNegativeInc,
+              sentimentScores.mixed :sentimentMixedInc
+        `,
+        // CRITICAL FIX #2: Add condition to prevent duplicate call tracking
+        ConditionExpression: 'NOT contains(callIds, :callIdStr)',
+        ExpressionAttributeValues: {
+          ':clinicId': metrics.clinicId,
+          ':totalInc': totalCallsIncrement,
+          ':inboundInc': inboundIncrement,
+          ':outboundInc': outboundIncrement,
+          ':missedInc': missedIncrement,
+          ':rejectedInc': rejectedIncrement,
+          ':transferredInc': transferredIncrement,
+          ':completedInc': completedIncrement,
+          ':talkTimeInc': talkTimeIncrement,
+          ':holdTimeInc': holdTimeIncrement,
+          ':handleTimeInc': handleTimeIncrement,
+          ...sentimentIncrements,
+          ':now': new Date().toISOString(),
+          ':emptyList': [],
+          ':callId': [metrics.callId],
+          ':callIdStr': metrics.callId, // For condition check
+        },
+      }));
+    } catch (err: any) {
+      if (err.name === 'ConditionalCheckFailedException') {
+        // Call already tracked - this is a duplicate, skip silently
+        console.log('[AgentPerformanceTracker] Duplicate call detected, skipping:', {
+          callId: metrics.callId,
+          agentId: metrics.agentId,
+          periodDate
+        });
+        return; // Exit early, don't recalculate metrics
+      }
+      // Other errors should be thrown
+      throw err;
+    }
 
-    // Calculate performance metrics
-    const callsCompleted = (existingData.callsCompleted || 0) + completedIncrement;
-    const callsRejected = (existingData.rejectedCalls || 0) + rejectedIncrement;
-    const callsTransferredTotal = (existingData.callsTransferred || 0) + transferredIncrement;
-    const completionRate = newTotalCalls > 0 ? (callsCompleted / newTotalCalls) * 100 : 0;
-    const rejectionRate = newTotalCalls > 0 ? (callsRejected / newTotalCalls) * 100 : 0;
+    // After atomic update, recalculate derived metrics (averages, scores)
+    // This requires a separate read, but primary counters are now safe from race conditions
+    await recalculateDerivedMetrics(ddb, tableName, metrics.agentId, periodDate);
 
-    // FIXED FLAW #10: FCR should be (completed - transferred) / completed, not just completion rate
-    const fcrRate = callsCompleted > 0
-      ? ((callsCompleted - callsTransferredTotal) / callsCompleted) * 100
+    console.log('[AgentPerformanceTracker] Updated performance metrics for agent:', metrics.agentId);
+
+  } catch (error) {
+    console.error('[AgentPerformanceTracker] Error tracking call completion:', error);
+    throw error; // FIXED: Throw error so it can be caught and sent to DLQ
+  }
+}
+
+/**
+ * Recalculate derived metrics (averages and scores) after atomic updates
+ * This is done in a separate operation to keep atomic updates fast
+ */
+async function recalculateDerivedMetrics(
+  ddb: DynamoDBDocumentClient,
+  tableName: string,
+  agentId: string,
+  periodDate: string
+): Promise<void> {
+  try {
+    // Get current state after atomic updates
+    const result = await ddb.send(new GetCommand({
+      TableName: tableName,
+      Key: { agentId, periodDate },
+    }));
+
+    if (!result.Item) {
+      console.warn('[AgentPerformanceTracker] No record found for derived metrics calculation');
+      return;
+    }
+
+    const data = result.Item;
+    
+    // Calculate averages with zero-division protection
+    const totalCalls = data.totalCalls || 0;
+    const averageHandleTime = totalCalls > 0 
+      ? Math.round((data.totalHandleTime || 0) / totalCalls) 
+      : 0;
+    const averageTalkTime = totalCalls > 0 
+      ? Math.round((data.totalTalkTime || 0) / totalCalls) 
       : 0;
 
-    // FIXED FLAW #11: Recalculate sentiment based on updated totals, not reuse old value
-    const totalSentimentCalls =
-      (existingData.sentimentScores?.positive || 0) +
-      (existingData.sentimentScores?.neutral || 0) +
-      (existingData.sentimentScores?.negative || 0) +
-      (existingData.sentimentScores?.mixed || 0);
+    // Calculate rates
+    const callsCompleted = data.callsCompleted || 0;
+    const callsRejected = data.rejectedCalls || 0;
+    const callsTransferred = data.callsTransferred || 0;
+    
+    const completionRate = totalCalls > 0 
+      ? (callsCompleted / totalCalls) * 100 
+      : 0;
+    const rejectionRate = totalCalls > 0 
+      ? (callsRejected / totalCalls) * 100 
+      : 0;
 
-    const recalculatedSentiment = totalSentimentCalls > 0
-      ? ((existingData.sentimentScores.positive * 100 + existingData.sentimentScores.neutral * 50) / totalSentimentCalls)
+    // FCR calculation: Calls completed without transfer
+    const fcrRate = callsCompleted > 0
+      ? ((callsCompleted - callsTransferred) / callsCompleted) * 100
+      : 0;
+
+    // Calculate sentiment score
+    const sentimentScores = data.sentimentScores || { positive: 0, neutral: 0, negative: 0, mixed: 0 };
+    const totalSentimentCalls = 
+      sentimentScores.positive + 
+      sentimentScores.neutral + 
+      sentimentScores.negative + 
+      sentimentScores.mixed;
+    
+    const averageSentiment = totalSentimentCalls > 0
+      ? ((sentimentScores.positive * 100 + sentimentScores.neutral * 50 + sentimentScores.mixed * 50) / totalSentimentCalls)
       : 50;
 
-    // Performance score: weighted combination of metrics
-    // - Completion rate (40%)
-    // - Low rejection rate (20%)
-    // - Sentiment (40%)
+    // ENHANCED: Performance score now includes efficiency (AHT) and quality metrics
+    // - Completion rate (30%)
+    // - Low rejection rate (15%)
+    // - Sentiment (30%)
+    // - Efficiency (AHT, lower is better, capped at 600s = 10min target) (15%)
+    // - Low transfer rate (10%)
+    const ahtScore = Math.max(0, Math.min(100, 100 - ((averageHandleTime - 600) / 10)));
+    const transferRate = callsCompleted > 0 ? (callsTransferred / callsCompleted) * 100 : 0;
+    const transferScore = Math.max(0, 100 - transferRate);
+    
     const performanceScore = Math.round(
-      (completionRate * 0.4) +
-      ((100 - rejectionRate) * 0.2) +
-      (recalculatedSentiment * 0.4)
+      (completionRate * 0.30) +
+      ((100 - rejectionRate) * 0.15) +
+      (averageSentiment * 0.30) +
+      (ahtScore * 0.15) +
+      (transferScore * 0.10)
     );
 
-    // Update or create performance record
+    // Update derived metrics
     await ddb.send(new UpdateCommand({
       TableName: tableName,
-      Key: {
-        agentId: metrics.agentId,
-        periodDate,
-      },
+      Key: { agentId, periodDate },
       UpdateExpression: `
-        SET clinicId = if_not_exists(clinicId, :clinicId),
-            totalCalls = if_not_exists(totalCalls, :zero) + :totalInc,
-            inboundCalls = if_not_exists(inboundCalls, :zero) + :inboundInc,
-            outboundCalls = if_not_exists(outboundCalls, :zero) + :outboundInc,
-            missedCalls = if_not_exists(missedCalls, :zero) + :missedInc,
-            rejectedCalls = if_not_exists(rejectedCalls, :zero) + :rejectedInc,
-            callsTransferred = if_not_exists(callsTransferred, :zero) + :transferredInc,
-            callsCompleted = if_not_exists(callsCompleted, :zero) + :completedInc,
-            totalTalkTime = if_not_exists(totalTalkTime, :zero) + :talkTimeInc,
-            totalHoldTime = if_not_exists(totalHoldTime, :zero) + :holdTimeInc,
-            totalHandleTime = if_not_exists(totalHandleTime, :zero) + :handleTimeInc,
-            averageHandleTime = :avgHandleTime,
+        SET averageHandleTime = :avgHandleTime,
             averageTalkTime = :avgTalkTime,
             averageSentiment = :avgSentiment,
             firstCallResolutionRate = :fcrRate,
             performanceScore = :perfScore,
-            lastUpdated = :now,
-            callIds = list_append(if_not_exists(callIds, :emptyList), :callId),
-            sentimentScores = if_not_exists(sentimentScores, :initialSentiment)
+            completionRate = :completionRate,
+            rejectionRate = :rejectionRate,
+            transferRate = :transferRate
       `,
       ExpressionAttributeValues: {
-        ':clinicId': metrics.clinicId,
-        ':zero': 0,
-        ':totalInc': totalCallsIncrement,
-        ':inboundInc': inboundIncrement,
-        ':outboundInc': outboundIncrement,
-        ':missedInc': missedIncrement,
-        ':rejectedInc': rejectedIncrement,
-        ':transferredInc': transferredIncrement,
-        ':completedInc': completedIncrement,
-        ':talkTimeInc': talkTimeIncrement,
-        ':holdTimeInc': holdTimeIncrement,
-        ':handleTimeInc': handleTimeIncrement,
         ':avgHandleTime': averageHandleTime,
         ':avgTalkTime': averageTalkTime,
-        ':avgSentiment': recalculatedSentiment,
+        ':avgSentiment': averageSentiment,
         ':fcrRate': fcrRate,
         ':perfScore': performanceScore,
-        ':now': new Date().toISOString(),
-        ':emptyList': [],
-        ':callId': [metrics.callId],
-        ':initialSentiment': {
-          positive: 0,
-          neutral: 0,
-          negative: 0,
-          mixed: 0,
-        },
+        ':completionRate': completionRate,
+        ':rejectionRate': rejectionRate,
+        ':transferRate': transferRate,
       },
     }));
 
-    console.log('[AgentPerformanceTracker] Updated performance metrics for agent:', metrics.agentId, {
-      totalCalls: newTotalCalls,
-      averageHandleTime,
-      performanceScore,
-    });
-
   } catch (error) {
-    console.error('[AgentPerformanceTracker] Error tracking call completion:', error);
-    // Don't throw - performance tracking should not fail the main operation
+    console.error('[AgentPerformanceTracker] Error recalculating derived metrics:', error);
+    // Don't throw - derived metrics can be recalculated later
   }
 }
 
@@ -301,9 +429,11 @@ export async function getAgentDailyPerformance(
   ddb: DynamoDBDocumentClient,
   tableName: string,
   agentId: string,
-  date?: string
+  date?: string,
+  timezone?: string
 ): Promise<any> {
-  const periodDate = date || new Date().toISOString().split('T')[0];
+  // CRITICAL FIX: Use clinic timezone for consistent date aggregation
+  const periodDate = date || getDateInTimezone(new Date(), timezone || 'UTC');
 
   try {
     const result = await ddb.send(new GetCommand({

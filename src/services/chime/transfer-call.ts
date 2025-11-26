@@ -157,11 +157,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // FIX #3: Acquire distributed lock on target agent to prevent race conditions
+        // CRITICAL FIX: Reduced lock TTL to minimize orphaned lock impact
         const lock = new DistributedLock(ddb, {
             tableName: process.env.LOCKS_TABLE_NAME || 'ChimeLocks',
             lockKey: `agent-transfer-${toAgentId}`,
-            ttlSeconds: 30 // 30 second lock
+            ttlSeconds: 5 // Reduced from 30s to 5s to minimize orphaned locks
         });
 
         const lockAcquired = await lock.acquire();

@@ -79,11 +79,11 @@ async function attemptSingleAssignment(
     assignmentTimestamp: string
 ): Promise<{ success: boolean; error?: CallAssignmentError }> {
 
-    // Create lock for this call
+    // CRITICAL FIX: Reduced lock TTL to minimize orphaned lock impact
     const lock = new DistributedLock(ddb, {
         tableName: locksTableName,
         lockKey: `call-assignment:${callContext.callId}`,
-        ttlSeconds: 10
+        ttlSeconds: 3 // Reduced from 10s to 3s
     });
 
     const result = await lock.withLock(async () => {

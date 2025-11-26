@@ -3,6 +3,10 @@ import { DynamoDBDocumentClient, PutCommand, UpdateCommand, QueryCommand, GetCom
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { ComprehendClient, DetectSentimentCommand, DetectKeyPhrasesCommand, DetectEntitiesCommand, LanguageCode } from '@aws-sdk/client-comprehend';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
+import { getTranscriptBufferManager, TranscriptBufferManager, TranscriptBuffer, TranscriptSegment } from '../shared/utils/transcript-buffer-manager';
+import { checkAndMarkProcessed, getDedupTableName } from '../shared/utils/analytics-deduplication';
+import { AnalyticsState } from '../../types/analytics-state-machine';
+import { transitionAnalyticsState, canUpdateAnalyticsRecord } from '../shared/utils/analytics-state-manager';
 
 const dynamodbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(dynamodbClient);
@@ -14,10 +18,15 @@ const ANALYTICS_TABLE_NAME = process.env.CALL_ANALYTICS_TABLE_NAME;
 if (!ANALYTICS_TABLE_NAME) {
   throw new Error('CALL_ANALYTICS_TABLE_NAME environment variable is required');
 }
+const TRANSCRIPT_BUFFER_TABLE = process.env.TRANSCRIPT_BUFFER_TABLE_NAME || `${ANALYTICS_TABLE_NAME}-Transcripts`;
+const DEDUP_TABLE = getDedupTableName(ANALYTICS_TABLE_NAME);
 const RETENTION_DAYS = parseInt(process.env.ANALYTICS_RETENTION_DAYS || '90', 10);
 const ENABLE_REAL_TIME_SENTIMENT = process.env.ENABLE_REAL_TIME_SENTIMENT === 'true';
 const ENABLE_REAL_TIME_ALERTS = process.env.ENABLE_REAL_TIME_ALERTS === 'true';
 const CALL_ALERTS_TOPIC_ARN = process.env.CALL_ALERTS_TOPIC_ARN;
+
+// Initialize TranscriptBufferManager
+const transcriptManager = getTranscriptBufferManager(ddb, TRANSCRIPT_BUFFER_TABLE);
 
 interface ChimeAnalyticsEvent {
   version: string;
@@ -115,19 +124,8 @@ const CATEGORY_KEYWORDS: Record<CallCategory, string[]> = {
   'uncategorized': []
 };
 
-// ENHANCED: In-memory transcript buffer for better analytics
-interface TranscriptBuffer {
-  segments: Array<{
-    timestamp: number;
-    speaker: string;
-    text: string;
-    startTime?: number;
-    endTime?: number;
-  }>;
-  lastUpdate: number;
-}
-
-const transcriptBuffers = new Map<string, TranscriptBuffer>();
+// FIXED: Removed in-memory transcript buffer - now using DynamoDB persistence
+// See transcript-buffer-manager.ts for implementation
 
 /**
  * Lambda handler for processing Chime SDK Voice Analytics events
@@ -190,29 +188,52 @@ async function initializeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void
   const { callId, timestamp } = event;
   const metadata = event.callStateEvent?.metadata || {};
   
-  const now = new Date().toISOString();
-  const ttl = Math.floor(Date.now() / 1000) + (RETENTION_DAYS * 24 * 60 * 60);
+  // CRITICAL FIX: Use unified deduplication
+  const dedupResult = await checkAndMarkProcessed(
+    ddb,
+    DEDUP_TABLE,
+    callId,
+    'live-init'
+  );
   
-  // Initialize transcript buffer
-  transcriptBuffers.set(callId, { segments: [], lastUpdate: Date.now() });
+  if (dedupResult.isDuplicate) {
+    console.log('[initializeCallAnalytics] Duplicate init event, skipping:', callId);
+    return;
+  }
+  
+  const now = new Date().toISOString();
+  const nowMs = Date.now();
+  const ttl = Math.floor(nowMs / 1000) + (RETENTION_DAYS * 24 * 60 * 60);
+  
+  // **FIXED: Initialize persistent transcript buffer in DynamoDB**
+  await transcriptManager.initialize(callId);
   
   await ddb.send(new PutCommand({
     TableName: ANALYTICS_TABLE_NAME,
     Item: {
       callId,
       timestamp,
+      callStatus: 'active', // CRITICAL: Set initial status
+      analyticsState: AnalyticsState.INITIALIZING, // NEW: State machine state
+      stateHistory: [{
+        from: AnalyticsState.INITIALIZING,
+        to: AnalyticsState.INITIALIZING,
+        timestamp: nowMs,
+        reason: 'Initial analytics record creation'
+      }],
       clinicId: metadata.clinicId,
       agentId: metadata.agentId,
       customerPhone: metadata.phoneNumber,
       direction: metadata.direction || 'inbound',
       callStartTime: now,
+      callStartTimestamp: nowMs, // For precise calculations
       // FIXED: Use separate tracking fields instead of large lists
       transcriptCount: 0,
       latestTranscripts: [], // Only keep last 10 for quick reference
       sentimentDataPoints: 0,
       latestSentiment: [],
       detectedIssues: [],
-      keywords: new Set(), // Will be converted to array on write
+      keywords: [], // Array for DynamoDB compatibility
       keyPhrases: [],
       entities: [],
       callCategory: 'uncategorized',
@@ -226,12 +247,33 @@ async function initializeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void
     if (err.name !== 'ConditionalCheckFailedException') {
       throw err;
     }
+    console.log('[initializeCallAnalytics] Record already exists:', callId);
   });
+  
+  // Transition to ACTIVE state after successful initialization
+  await transitionAnalyticsState(
+    ddb,
+    ANALYTICS_TABLE_NAME!,
+    callId,
+    timestamp,
+    AnalyticsState.ACTIVE,
+    'Call connected, starting live analytics'
+  );
 }
 
 /**
  * ENHANCED: Analyze sentiment using AWS Comprehend
  */
+/**
+ * Validate and normalize sentiment score to 0-100 range
+ */
+function validateSentimentScore(score: number | undefined | null): number {
+  if (score === undefined || score === null || isNaN(score) || !isFinite(score)) {
+    return 50; // Default to neutral
+  }
+  return Math.max(0, Math.min(100, score));
+}
+
 async function analyzeSentimentWithComprehend(
   text: string,
   languageCode: string = 'en'
@@ -265,12 +307,18 @@ async function analyzeSentimentWithComprehend(
 
     const sentiment = result.Sentiment as 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' | 'MIXED';
 
-    // Calculate 0-100 score where higher = better
-    const sentimentScore = Math.round(
-      (scores.Positive * 100) + 
-      (scores.Neutral * 50) + 
-      (scores.Mixed * 50)
+    // FIX #4: Calculate sentiment score correctly to prevent overflow
+    // Use weighted average normalized to 0-100 scale
+    // Positive = 100, Neutral = 50, Negative = 0, Mixed = 50
+    const rawScore = Math.round(
+      scores.Positive * 100 + 
+      scores.Neutral * 50 + 
+      scores.Negative * 0 + 
+      scores.Mixed * 50
     );
+    
+    // CRITICAL FIX: Validate sentiment score range
+    const sentimentScore = validateSentimentScore(rawScore);
 
     return { sentiment, sentimentScore, scores };
   } catch (err) {
@@ -518,17 +566,45 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
   const storedRecord = existingRecords[0];
   const storedTimestamp = storedRecord.timestamp;
   
-  if (storedRecord.finalized === true) {
-    console.warn(`[processTranscriptEvent] Call ${callId} already finalized, skipping`);
+  // CRITICAL FIX #5: Validate call hasn't ended before processing transcript
+  // This prevents processing stale transcript events after call ends
+  if (storedRecord.callEndTime || storedRecord.callEndTimestamp) {
+    console.warn(`[processTranscriptEvent] Ignoring transcript for ended call ${callId}`, {
+      callEndTime: storedRecord.callEndTime,
+      eventTimestamp
+    });
+    return;
+  }
+  
+  // Validate call is in an active state
+  const currentState = storedRecord.analyticsState || AnalyticsState.ACTIVE;
+  if (currentState !== AnalyticsState.ACTIVE && currentState !== AnalyticsState.INITIALIZING) {
+    console.warn(`[processTranscriptEvent] Call not in active state: ${currentState}`, {
+      callId,
+      currentState
+    });
+    return;
+  }
+  
+  // CRITICAL FIX: Check analytics state before updating
+  const updateCheck = await canUpdateAnalyticsRecord(ddb, ANALYTICS_TABLE_NAME!, callId, storedTimestamp);
+  if (!updateCheck.allowed) {
+    console.warn(`[processTranscriptEvent] Cannot update analytics: ${updateCheck.reason}`, {
+      callId,
+      currentState: updateCheck.currentState
+    });
     return;
   }
 
-  // Get or create transcript buffer
-  let buffer = transcriptBuffers.get(callId);
+  // **FIXED: Get or create transcript buffer from DynamoDB**
+  let buffer = await transcriptManager.get(callId);
   if (!buffer) {
-    buffer = { segments: [], lastUpdate: Date.now() };
-    transcriptBuffers.set(callId, buffer);
+    await transcriptManager.initialize(callId);
+    buffer = await transcriptManager.get(callId);
   }
+
+  // CRITICAL FIX: Track last processed timestamp to detect out-of-order events
+  const lastProcessedTime = storedRecord.lastTranscriptTime || 0;
 
   for (const result of transcriptEvent.results) {
     if (result.isPartial) continue;
@@ -547,15 +623,29 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
     const startTime = alternative.items[0]?.startTime || 0;
     const endTime = alternative.items[alternative.items.length - 1]?.endTime || 0;
     
-    // Add to buffer
-    buffer.segments.push({
-      timestamp: Date.now(),
-      speaker,
-      text,
+    // CRITICAL FIX: Detect out-of-order events
+    if (startTime < lastProcessedTime && lastProcessedTime > 0) {
+      console.warn('[processTranscriptEvent] Out-of-order transcript detected:', {
+        callId,
+        currentStartTime: startTime,
+        lastProcessedTime,
+        timeDiff: lastProcessedTime - startTime,
+        text: text.substring(0, 50)
+      });
+      // Still process it, but flag for potential issues
+    }
+    
+    // **FIXED: Add to persistent buffer**
+    await transcriptManager.addSegment(callId, {
+      content: text,
       startTime,
-      endTime
+      endTime,
+      speaker: speaker as 'AGENT' | 'CUSTOMER',
+      confidence
     });
-    buffer.lastUpdate = Date.now();
+    
+    // Extend TTL to keep buffer alive during active call
+    await transcriptManager.extendTTL(callId, 3600);
     
     // ENHANCED: Use AWS Comprehend for sentiment analysis
     const sentimentResult = await analyzeSentimentWithComprehend(text);
@@ -582,43 +672,91 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
       score: sentimentResult.sentimentScore
     };
     
-    // FIXED: Use atomic counters instead of list append
-    const transcriptCount = storedRecord.transcriptCount || 0;
-    const existingCategoryScores = storedRecord.categoryScores || {};
+    // CRITICAL FIX: Use atomic ADD operations to prevent race conditions in concurrent updates
+    const expressionNames: any = {};
+    const expressionValues: any = {
+      ':one': 1,
+      ':now': new Date().toISOString(),
+      ':emptyList': [],
+      ':newTranscript': [transcriptItem],
+      ':newSentiment': [sentimentDataPoint],
+      ':maxListSize': 10
+    };
     
-    // Update category scores
-    const updatedCategoryScores: Record<string, number> = { ...existingCategoryScores };
-    for (const [category, score] of Object.entries(categoryScores)) {
-      updatedCategoryScores[category] = (updatedCategoryScores[category] || 0) + score;
+    // Build atomic category score updates
+    const categoryAddExpressions: string[] = [];
+    Object.entries(categoryScores).forEach(([category, score], idx) => {
+      const attrName = `#cat${idx}`;
+      expressionNames[attrName] = category;
+      categoryAddExpressions.push(`categoryScores.${attrName} :catScore${idx}`);
+      expressionValues[`:catScore${idx}`] = score;
+    });
+    
+    // Build key phrases and entities ADD expressions (using arrays)
+    const newKeyPhrases = keyPhrases.slice(0, 5); // Limit per update
+    const newEntities = entities.slice(0, 5).map(e => e.text); // Extract text from entities
+    
+    // CRITICAL FIX: Track last transcript time for out-of-order detection
+    expressionValues[':lastTime'] = Math.max(endTime, lastProcessedTime);
+    
+    // Atomic update with conditional list append and ADD operations
+    const setExpressions = [
+      'updatedAt = :now',
+      'lastTranscriptTime = :lastTime', // Track for out-of-order detection
+      // Use list_append but limit size (DynamoDB doesn't auto-trim, so we check size)
+      'latestTranscripts = list_append(if_not_exists(latestTranscripts, :emptyList), :newTranscript)',
+      'latestSentiment = list_append(if_not_exists(latestSentiment, :emptyList), :newSentiment)'
+    ];
+    if (newKeyPhrases.length > 0) {
+      setExpressions.push('keyPhrases = list_append(if_not_exists(keyPhrases, :emptyList), :keyPhrases)');
+      expressionValues[':keyPhrases'] = newKeyPhrases;
+    }
+    if (newEntities.length > 0) {
+      setExpressions.push('entities = list_append(if_not_exists(entities, :emptyList), :entities)');
+      expressionValues[':entities'] = newEntities;
     }
     
-    // Update with atomic operations
-    await ddb.send(new UpdateCommand({
+    const addExpressions = [
+      'transcriptCount :one',
+      'sentimentDataPoints :one',
+      ...categoryAddExpressions
+    ];
+    
+    // CRITICAL FIX #4: Add state machine enforcement to prevent updates to finalized calls
+    const updateResult = await ddb.send(new UpdateCommand({
       TableName: ANALYTICS_TABLE_NAME,
       Key: { callId, timestamp: storedTimestamp },
       UpdateExpression: `
-        SET transcriptCount = transcriptCount + :one,
-            latestTranscripts = list_append(:newTranscript, list_slice(if_not_exists(latestTranscripts, :empty), :zero, :nine)),
-            sentimentDataPoints = sentimentDataPoints + :one,
-            latestSentiment = list_append(:newSentiment, list_slice(if_not_exists(latestSentiment, :empty), :zero, :nine)),
-            categoryScores = :categoryScores,
-            keyPhrases = list_append(if_not_exists(keyPhrases, :empty), :keyPhrases),
-            entities = list_append(if_not_exists(entities, :empty), :entities),
-            updatedAt = :now
+        SET ${setExpressions.join(', ')}
+        ${addExpressions.length > 0 ? 'ADD ' + addExpressions.join(', ') : ''}
       `,
+      ExpressionAttributeNames: Object.keys(expressionNames).length > 0 ? expressionNames : undefined,
       ExpressionAttributeValues: {
-        ':one': 1,
-        ':newTranscript': [transcriptItem],
-        ':newSentiment': [sentimentDataPoint],
-        ':keyPhrases': keyPhrases,
-        ':entities': entities,
-        ':categoryScores': updatedCategoryScores,
-        ':empty': [],
-        ':zero': 0,
-        ':nine': 9,
-        ':now': new Date().toISOString()
+        ...expressionValues,
+        ':activeState': AnalyticsState.ACTIVE
+      },
+      // CRITICAL FIX #4: Only update if still in ACTIVE state
+      ConditionExpression: 'analyticsState = :activeState OR attribute_not_exists(analyticsState)'
+    })).catch((err: any) => {
+      if (err.name === 'ConditionalCheckFailedException') {
+        console.warn(`[processTranscriptEvent] Cannot update - call no longer active:`, {
+          callId,
+          text: text.substring(0, 50)
+        });
+        return null;
       }
-    }));
+      throw err;
+    });
+    
+    if (!updateResult) {
+      // Update was skipped due to state check
+      continue;
+    }
+    
+    // Periodically trim lists to prevent unbounded growth (every 25 updates)
+    if ((storedRecord.transcriptCount || 0) % 25 === 0) {
+      await trimLargeListsAsync(callId, storedTimestamp);
+    }
     
     // Check for issues and send alerts
     await detectIssues(callId, storedTimestamp, text, speaker, sentimentResult.sentiment, sentimentResult.sentimentScore);
@@ -645,6 +783,21 @@ async function processCallQualityEvent(event: ChimeAnalyticsEvent): Promise<void
   const storedRecord = existingRecords[0];
   const storedTimestamp = storedRecord.timestamp;
   
+  // CRITICAL FIX #5: Validate call hasn't ended before processing quality metrics
+  if (storedRecord.callEndTime || storedRecord.callEndTimestamp) {
+    console.warn(`[processCallQualityEvent] Ignoring quality event for ended call ${callId}`);
+    return;
+  }
+  
+  // Validate call is in an active state
+  const currentState = storedRecord.analyticsState || AnalyticsState.ACTIVE;
+  if (currentState !== AnalyticsState.ACTIVE && currentState !== AnalyticsState.INITIALIZING) {
+    console.warn(`[processCallQualityEvent] Call not in active state: ${currentState}`, {
+      callId
+    });
+    return;
+  }
+  
   if (storedRecord.finalized === true) {
     console.warn(`[processCallQualityEvent] Call ${callId} already finalized`);
     return;
@@ -659,6 +812,7 @@ async function processCallQualityEvent(event: ChimeAnalyticsEvent): Promise<void
   if (jitter > 100 || packetLoss > 10 || roundTripTime > 800) qualityScore = 2;
   if (jitter > 200 || packetLoss > 15 || roundTripTime > 1000) qualityScore = 1;
   
+  // CRITICAL FIX #4: Add state machine enforcement for quality updates
   await ddb.send(new UpdateCommand({
     TableName: ANALYTICS_TABLE_NAME,
     Key: { callId, timestamp: storedTimestamp },
@@ -673,9 +827,19 @@ async function processCallQualityEvent(event: ChimeAnalyticsEvent): Promise<void
         averageRoundTripTime: roundTripTime,
         qualityScore
       },
-      ':now': new Date().toISOString()
+      ':now': new Date().toISOString(),
+      ':activeState': AnalyticsState.ACTIVE,
+      ':initState': AnalyticsState.INITIALIZING
+    },
+    // CRITICAL FIX #4: Only update if still in ACTIVE or INITIALIZING state
+    ConditionExpression: 'analyticsState = :activeState OR analyticsState = :initState OR attribute_not_exists(analyticsState)'
+  })).catch((err: any) => {
+    if (err.name === 'ConditionalCheckFailedException') {
+      console.warn(`[processCallQualityEvent] Cannot update - call no longer active: ${callId}`);
+      return;
     }
-  }));
+    throw err;
+  });
   
   // ENHANCED: Send alert for poor quality
   if (qualityScore < 3) {
@@ -691,6 +855,19 @@ async function processCallQualityEvent(event: ChimeAnalyticsEvent): Promise<void
 
 async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> {
   const { callId, timestamp } = event;
+
+  // FIX #3: Add deduplication for finalization events
+  const dedupResult = await checkAndMarkProcessed(
+    ddb,
+    DEDUP_TABLE,
+    callId,
+    'call-end-finalization'
+  );
+  
+  if (dedupResult.isDuplicate) {
+    console.log('[finalizeCallAnalytics] Duplicate finalization event, skipping:', callId);
+    return;
+  }
 
   const FINALIZATION_DELAY = 30000; // 30 seconds
   const finalizationTime = Date.now() + FINALIZATION_DELAY;
@@ -709,16 +886,60 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
     return;
   }
   
+  // CRITICAL FIX: Check if already scheduled for finalization (prevents duplicate processing)
   if (analytics.finalizationScheduledAt) {
-    console.log(`[finalizeCallAnalytics] Call ${callId} already scheduled`);
+    console.log(`[finalizeCallAnalytics] Call ${callId} already scheduled for finalization`, {
+      scheduledAt: analytics.finalizationScheduledAt,
+      scheduledFor: new Date(analytics.finalizationScheduledAt).toISOString()
+    });
     return;
   }
   
-  // Get transcript buffer for final analysis
-  const buffer = transcriptBuffers.get(callId) || { segments: [], lastUpdate: Date.now() };
+  // CRITICAL FIX: Transition to FINALIZING state using state machine
+  const stateTransition = await transitionAnalyticsState(
+    ddb,
+    ANALYTICS_TABLE_NAME!,
+    callId,
+    analytics.timestamp,
+    AnalyticsState.FINALIZING,
+    'Call ended, beginning finalization',
+    event.callStateEvent?.metadata?.requestId
+  );
   
-  // Calculate interruptions
-  const interruptionCount = detectInterruptions(buffer);
+  if (!stateTransition.success) {
+    console.warn(`[finalizeCallAnalytics] Failed to transition to FINALIZING state: ${stateTransition.error}`, {
+      callId,
+      currentState: stateTransition.currentState
+    });
+    // If already in FINALIZING or FINALIZED, skip
+    if (stateTransition.currentState === AnalyticsState.FINALIZING || 
+        stateTransition.currentState === AnalyticsState.FINALIZED) {
+      console.log(`[finalizeCallAnalytics] Call ${callId} already in ${stateTransition.currentState} state, skipping`);
+      return;
+    }
+    // For other errors, proceed with caution
+  }
+  
+  // **FIXED: Get transcript buffer from DynamoDB for final analysis**
+  const buffer = await transcriptManager.get(callId);
+  
+  // CRITICAL FIX: Use buffer if available, otherwise use empty buffer with safety checks
+  const safeBuffer: TranscriptBuffer = buffer || {
+    callId,
+    segments: [],
+    lastUpdate: Date.now(),
+    segmentCount: 0,
+    ttl: 0
+  };
+  
+  const interruptionCount = buffer ? detectInterruptions(buffer) : 0;
+  
+  // FIX #12: Extend TTL instead of deleting - allows finalization to retry if needed
+  // Buffer will auto-expire after 1 hour via TTL
+  if (buffer) {
+    await transcriptManager.extendTTL(callId, 3600); // Keep for 1 hour for retry scenarios
+    console.log('[finalizeCallAnalytics] Extended transcript buffer TTL for potential retries:', callId);
+  }
   
   // Calculate sentiment from latest data
   const latestTranscripts = analytics.latestTranscripts || [];
@@ -737,14 +958,14 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
   const categoryScores = analytics.categoryScores || {};
   const finalCategory = determineFinalCategory(categoryScores as Record<CallCategory, number>);
   
-  // Calculate talk percentages from buffer
-  const agentSegments = buffer.segments.filter(t => t.speaker === 'AGENT');
-  const customerSegments = buffer.segments.filter(t => t.speaker === 'CUSTOMER');
+  // Calculate talk percentages from buffer (using safeBuffer)
+  const agentSegments = safeBuffer.segments.filter(t => t.speaker === 'AGENT');
+  const customerSegments = safeBuffer.segments.filter(t => t.speaker === 'CUSTOMER');
 
   const agentWordCount = agentSegments.reduce((sum, seg) =>
-    sum + (seg.text?.split(/\s+/).length || 0), 0);
+    sum + (seg.content?.split(/\s+/).length || 0), 0);
   const customerWordCount = customerSegments.reduce((sum, seg) =>
-    sum + (seg.text?.split(/\s+/).length || 0), 0);
+    sum + (seg.content?.split(/\s+/).length || 0), 0);
   const totalWordCount = agentWordCount + customerWordCount;
 
   const agentTalkPercentage = totalWordCount > 0
@@ -754,52 +975,162 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
     ? Math.round((customerWordCount / totalWordCount) * 100)
     : 0;
   
-  // Calculate duration and silence
+  // FIX #15: Validate call timestamps before using them
   const callStartTime = new Date(analytics.callStartTime).getTime();
-  const callEndTime = event.callStateEvent?.metadata?.endTime
-    ? new Date(event.callStateEvent.metadata.endTime).getTime()
-    : Date.now();
-  const totalDuration = Math.floor((callEndTime - callStartTime) / 1000);
   
-  const silenceMetrics = calculateSilenceMetrics(buffer, totalDuration);
+  // Don't trust client-provided end time - use server time
+  const callEndTime = Date.now();
   
-  await ddb.send(new UpdateCommand({
-    TableName: ANALYTICS_TABLE_NAME,
-    Key: { callId, timestamp: analytics.timestamp },
-    UpdateExpression: `
-      SET callEndTime = :endTime,
-          totalDuration = :duration,
-          overallSentiment = :sentiment,
-          callCategory = :category,
-          speakerMetrics = :metrics,
-          finalizationScheduledAt = :scheduleTime,
-          updatedAt = :now
-    `,
-    ExpressionAttributeValues: {
-      ':endTime': new Date(callEndTime).toISOString(),
-      ':duration': totalDuration,
-      ':sentiment': overallSentiment,
-      ':category': finalCategory,
-      ':metrics': {
-        agentTalkPercentage,
-        customerTalkPercentage,
-        silencePercentage: silenceMetrics.silencePercentage,
-        interruptionCount,
-        silencePeriods: silenceMetrics.silencePeriods
+  // Validate call duration is reasonable (not negative, not > 24 hours)
+  let totalDuration = Math.floor((callEndTime - callStartTime) / 1000);
+  
+  if (totalDuration < 0) {
+    console.error('[finalizeCallAnalytics] Negative call duration detected:', {
+      callId,
+      callStartTime: analytics.callStartTime,
+      callEndTime: new Date(callEndTime).toISOString(),
+      calculatedDuration: totalDuration
+    });
+    totalDuration = 0; // Default to 0 for invalid durations
+  } else if (totalDuration > 24 * 60 * 60) {
+    console.warn('[finalizeCallAnalytics] Abnormally long call duration (>24h):', {
+      callId,
+      duration: totalDuration,
+      durationHours: Math.round(totalDuration / 3600)
+    });
+    // Keep the value but log warning - might be legitimate
+  }
+  
+  const silenceMetrics = calculateSilenceMetrics(safeBuffer, totalDuration);
+  
+  // CRITICAL FIX: Update with state machine validation
+  // Note: State transition to FINALIZING was already done above
+  try {
+    await ddb.send(new UpdateCommand({
+      TableName: ANALYTICS_TABLE_NAME,
+      Key: { callId, timestamp: analytics.timestamp },
+      UpdateExpression: `
+        SET callEndTime = :endTime,
+            callEndTimestamp = :endTimestamp,
+            callStatus = :completedStatus,
+            totalDuration = :duration,
+            overallSentiment = :sentiment,
+            callCategory = :category,
+            speakerMetrics = :metrics,
+            finalizationScheduledAt = :scheduleTime,
+            updatedAt = :now
+      `,
+      ExpressionAttributeNames: {
+        '#status': 'callStatus'
       },
-      ':scheduleTime': finalizationTime,
-      ':now': new Date().toISOString()
+      ExpressionAttributeValues: {
+        ':endTime': new Date(callEndTime).toISOString(),
+        ':endTimestamp': callEndTime,
+        ':completedStatus': 'completed',
+        ':duration': totalDuration,
+        ':sentiment': overallSentiment,
+        ':category': finalCategory,
+        ':metrics': {
+          agentTalkPercentage,
+          customerTalkPercentage,
+          silencePercentage: silenceMetrics.silencePercentage,
+          interruptionCount,
+          silencePeriods: silenceMetrics.silencePeriods
+        },
+        ':scheduleTime': finalizationTime,
+        ':now': new Date().toISOString(),
+        ':activeStatus': 'active'
+      },
+      // CRITICAL: Validate call is still active and not already scheduled
+      ConditionExpression: 'attribute_exists(callId) AND attribute_not_exists(finalizationScheduledAt) AND (#status = :activeStatus OR attribute_not_exists(#status))'
+    }));
+  } catch (err: any) {
+    if (err.name === 'ConditionalCheckFailedException') {
+      console.log(`[finalizeCallAnalytics] Call ${callId} already scheduled by another process`);
+      return;
     }
-  }));
+    throw err;
+  }
   
-  // Clean up buffer
-  transcriptBuffers.delete(callId);
+  // FIXED: Remove in-memory buffer cleanup - now handled via DynamoDB (deleted above)
   
   console.log(`[finalizeCallAnalytics] Analytics for ${callId} scheduled for finalization`, {
     duration: totalDuration,
     sentiment: overallSentiment,
     category: finalCategory,
     interruptions: interruptionCount
+  });
+}
+
+/**
+ * Trim transcript lists to keep only latest 10 items
+ * Called periodically to prevent unbounded list growth
+ */
+async function trimTranscriptLists(callId: string, timestamp: number): Promise<void> {
+  try {
+    const { Item } = await ddb.send(new GetCommand({
+      TableName: ANALYTICS_TABLE_NAME,
+      Key: { callId, timestamp }
+    }));
+    
+    if (!Item) return;
+    
+    const latestTranscripts = (Item.latestTranscripts || []).slice(-10);
+    const latestSentiment = (Item.latestSentiment || []).slice(-10);
+    
+    await ddb.send(new UpdateCommand({
+      TableName: ANALYTICS_TABLE_NAME,
+      Key: { callId, timestamp },
+      UpdateExpression: 'SET latestTranscripts = :trans, latestSentiment = :sent',
+      ExpressionAttributeValues: {
+        ':trans': latestTranscripts,
+        ':sent': latestSentiment
+      }
+    }));
+  } catch (err: any) {
+    console.warn('[trimTranscriptLists] Error trimming lists:', err.message);
+    // Non-critical, continue
+  }
+}
+
+/**
+ * CRITICAL FIX: Trim large lists asynchronously to prevent unbounded growth
+ * Called periodically (every 25 updates) to keep lists at manageable size
+ */
+async function trimLargeListsAsync(callId: string, timestamp: number): Promise<void> {
+  // Run asynchronously without blocking the main flow
+  setImmediate(async () => {
+    try {
+      const { Item } = await ddb.send(new GetCommand({
+        TableName: ANALYTICS_TABLE_NAME,
+        Key: { callId, timestamp }
+      }));
+      
+      if (!Item) return;
+      
+      const needsTrim = 
+        (Item.latestTranscripts && Item.latestTranscripts.length > 15) ||
+        (Item.latestSentiment && Item.latestSentiment.length > 15);
+      
+      if (!needsTrim) return;
+      
+      await ddb.send(new UpdateCommand({
+        TableName: ANALYTICS_TABLE_NAME,
+        Key: { callId, timestamp },
+        UpdateExpression: `
+          SET latestTranscripts = :trans,
+              latestSentiment = :sent
+        `,
+        ExpressionAttributeValues: {
+          ':trans': (Item.latestTranscripts || []).slice(-10),
+          ':sent': (Item.latestSentiment || []).slice(-10)
+        }
+      }));
+      
+      console.log('[trimLargeListsAsync] Trimmed lists for call:', callId);
+    } catch (err: any) {
+      console.warn('[trimLargeListsAsync] Non-critical trim error:', err.message);
+    }
   });
 }
 

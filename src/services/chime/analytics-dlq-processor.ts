@@ -18,6 +18,14 @@ const errorTracker = new ErrorTracker();
 const ANALYTICS_TABLE = process.env.ANALYTICS_TABLE_NAME;
 const PERMANENT_FAILURES_TABLE = process.env.PERMANENT_FAILURES_TABLE;
 
+// Validate required environment variables
+if (!ANALYTICS_TABLE) {
+  throw new Error('ANALYTICS_TABLE_NAME environment variable is required');
+}
+if (!PERMANENT_FAILURES_TABLE) {
+  console.warn('[DLQ] PERMANENT_FAILURES_TABLE not configured - permanently failed events will only be logged');
+}
+
 /**
  * Process analytics events from DLQ
  */
