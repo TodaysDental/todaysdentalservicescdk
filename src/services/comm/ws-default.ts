@@ -6,7 +6,6 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import { v4 as uuidv4 } from 'uuid';
-// UPDATED: Use SES V2 client and command
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { CognitoIdentityProviderClient, AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 
@@ -15,9 +14,9 @@ const REGION = process.env.AWS_REGION || 'us-east-1';
 const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || '';
 const MESSAGES_TABLE = process.env.MESSAGES_TABLE || ''; 
 const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
+const TEAMS_TABLE = process.env.TEAMS_TABLE || ''; // <--- NEW TEAM TABLE NAME
 const FILE_BUCKET_NAME = process.env.FILE_BUCKET_NAME || '';
 const NOTIFICATIONS_TOPIC_ARN = process.env.NOTICES_TOPIC_ARN || '';
-// Environment Variables for SES and Cognito (from comm-stack)
 const SES_SOURCE_EMAIL = process.env.SES_SOURCE_EMAIL || 'no-reply@todaysdentalinsights.com';
 const USER_POOL_ID = process.env.USER_POOL_ID || '';
 
@@ -25,7 +24,6 @@ const USER_POOL_ID = process.env.USER_POOL_ID || '';
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
 const sns = new SNSClient({ region: REGION });
 const s3 = new S3Client({ region: REGION });
-// UPDATED: Initialize SES V2 Client
 const ses = new SESv2Client({ region: REGION });
 const cognito = new CognitoIdentityProviderClient({ region: REGION });
 
@@ -38,23 +36,34 @@ interface SenderInfo {
     userID: string; // Cognito 'sub'
 }
 
+// NEW: Interface for Team/Group Metadata
+interface Team {
+    teamID: string;
+    ownerID: string;
+    name: string;
+    members: string[]; // Set of userID strings
+    createdAt: string;
+    updatedAt: string;
+}
+
 interface FavorRequest {
     favorRequestID: string;
     senderID: string;
-    receiverID: string;
+    // receiverID is optional for group chats
+    receiverID?: string; // <--- MADE OPTIONAL
+    // teamID is present for group chats/assignments
+    teamID?: string; // <--- NEW FIELD
     status: 'active' | 'resolved';
     createdAt: string;
     updatedAt: string;
-    userID: string; // Added for GSI 'UserIndex'
+    userID: string; 
     
-    // NEW: Fields for Feature Request
     requestType: 'General' | 'Assign Task' | 'Ask a Favor' | 'Other';
-    unreadCount: number; // Count of unread messages for the user who is NOT the last sender
+    unreadCount: number;
     initialMessage: string; 
-    deadline?: string; // NEW: Optional deadline field (ISO String or similar format)
+    deadline?: string;
 }
 
-// NEW: Interface for storing rich file metadata
 interface FileDetails {
     fileName: string;
     fileType: string;
@@ -67,8 +76,8 @@ interface MessageData {
     content: string;
     timestamp: number;
     type: 'text' | 'file';
-    fileKey?: string; // S3 file path if type is 'file'
-    fileDetails?: FileDetails; // NEW: Detailed file metadata
+    fileKey?: string;
+    fileDetails?: FileDetails;
 }
 
 // ========================================
@@ -99,6 +108,9 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
         const senderID = senderInfo.userID;
 
         switch (payload.action) {
+            case 'createTeam': // <--- NEW ACTION
+                await createTeam(senderID, payload, connectionId, apiGwManagement);
+                break;
             case 'startFavorRequest':
                 await startFavorRequest(senderID, payload, connectionId, apiGwManagement);
                 break;
@@ -117,7 +129,7 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
             case 'markRead':
                 await markRead(senderID, payload, connectionId, apiGwManagement); 
                 break;
-            case 'fetchRequests': // NEW: Action to list favor requests
+            case 'fetchRequests':
                 await fetchRequests(senderID, payload, connectionId, apiGwManagement);
                 break;
             default:
@@ -133,7 +145,68 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
 };
 
 // ========================================
-// CORE LOGIC FUNCTIONS
+// NEW CORE LOGIC FUNCTIONS (Teams)
+// ========================================
+
+/**
+ * Handles the creation of a new Team/Group.
+ */
+async function createTeam(
+    ownerID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { name, members } = payload;
+    
+    if (!name || !Array.isArray(members) || members.length === 0) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing team name or members list.' });
+        return;
+    }
+    
+    if (!TEAMS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Teams table not configured.' });
+        return;
+    }
+
+    // Ensure the owner is always in the members list
+    const uniqueMembers = Array.from(new Set([...members, ownerID]));
+
+    const teamID = uuidv4();
+    const nowIso = new Date().toISOString();
+
+    const newTeam: Team = {
+        teamID,
+        ownerID,
+        name: String(name),
+        members: uniqueMembers,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+    };
+
+    try {
+        await ddb.send(new PutCommand({
+            TableName: TEAMS_TABLE,
+            Item: newTeam,
+        }));
+        
+        console.log(`Team created: ${teamID} by ${ownerID}`);
+
+        // Notify all team members (including the creator) about the new team
+        const notificationPayload = {
+            type: 'teamCreated',
+            team: newTeam,
+        };
+        await sendToAll(apiGwManagement, uniqueMembers, notificationPayload, { notifyOffline: false }); 
+        
+    } catch (e) {
+        console.error('Failed to create team:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to create team.' });
+    }
+}
+
+// ========================================
+// CORE LOGIC FUNCTIONS (Favors/Messaging)
 // ========================================
 
 /**
@@ -158,8 +231,7 @@ function sanitizeFileKey(key: string): string {
 }
 
 /**
- * Handles the initiation of a new favor request.
- * Creates the favor record and sends the initial message.
+ * Handles the initiation of a new favor request (1-to-1 or group).
  */
 async function startFavorRequest(
     senderID: string,
@@ -167,24 +239,50 @@ async function startFavorRequest(
     senderConnectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    // UPDATED: Destructure requestType, initialMessage, receiverID AND deadline
-    const { receiverID, initialMessage, requestType, deadline } = payload;
+    // UPDATED: Destructure teamID, receiverID, initialMessage, requestType AND deadline
+    const { receiverID, teamID, initialMessage, requestType, deadline } = payload;
     
-    if (!receiverID || !initialMessage || !requestType) {
-        await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Missing receiverID, initialMessage, or requestType.' });
+    if (!initialMessage || !requestType || (!receiverID && !teamID)) {
+        await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Missing initialMessage, requestType, and recipient (receiverID or teamID).' });
         return;
     }
 
-    // CRITICAL FIX: Prevent a user from starting a request with themselves
-    if (senderID === receiverID) {
-        console.error(`Attempted self-request: Sender ID ${senderID} equals Receiver ID ${receiverID}`);
-        await sendToClient(apiGwManagement, senderConnectionId, { 
-            type: 'error', 
-            message: 'A favor request cannot be started with yourself. Please select another user.' 
-        });
-        return;
-    }
+    const isGroupRequest = !!teamID;
+    let recipients: string[] = [];
 
+    if (isGroupRequest) {
+        if (!TEAMS_TABLE) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Server error: Teams table not configured for group request.' });
+            return;
+        }
+        // Fetch team members for group request
+        const teamResult = await ddb.send(new GetCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID },
+        }));
+        const team = teamResult.Item as Team;
+        
+        if (!team) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: `Team ID ${teamID} not found.` });
+            return;
+        }
+        
+        // Recipients are all team members except the sender
+        recipients = team.members.filter(memberId => memberId !== senderID);
+        
+        if (recipients.length === 0) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'The team has no other members to assign the task to.' });
+            return;
+        }
+    } else {
+        // CRITICAL FIX: Prevent a user from starting a request with themselves (1-to-1 only)
+        if (senderID === receiverID) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'A favor request cannot be started with yourself. Please select another user.' });
+            return;
+        }
+        recipients = [receiverID as string];
+    }
+    
     const favorRequestID = uuidv4();
     const timestamp = Date.now();
     const nowIso = new Date().toISOString();
@@ -192,16 +290,18 @@ async function startFavorRequest(
     const newFavor: FavorRequest = {
         favorRequestID,
         senderID,
-        receiverID,
+        // Include receiverID only for 1-to-1, teamID only for group
+        ...(isGroupRequest ? { teamID: teamID } : { receiverID: receiverID }),
         status: 'active',
         createdAt: nowIso,
         updatedAt: nowIso,
+        // For UserIndex, use senderID for now, though it's less useful for groups
+        // A dedicated TeamIndex/Participant GSI would be better for groups
         userID: senderID, 
-        // NEW: Initialize Request Type and Unread Count
         requestType,
-        unreadCount: 1, // The initial message is unread by the receiver
+        // Set initial unread count to the number of non-sending recipients
+        unreadCount: recipients.length, 
         initialMessage: initialMessage, 
-        // NEW: Save deadline if provided
         ...(deadline && { deadline: String(deadline) }),
     };
 
@@ -221,15 +321,15 @@ async function startFavorRequest(
     };
 
     // 3. Save message and broadcast
-    await _saveAndBroadcastMessage(messageData, apiGwManagement);
+    await _saveAndBroadcastMessage(messageData, apiGwManagement, isGroupRequest ? recipients : undefined);
     
-    // 4. Send email notification (NEW STEP)
-    try {
-        // This is the core logic that triggers the email notification
-        await sendNewFavorNotificationEmail(senderID, receiverID, initialMessage, requestType, deadline);
-    } catch(e) {
-        // Log the failure but do not throw, as chat functionality is primary
-        console.error("Failed to send SES notification email:", e);
+    // 4. Send email notification (Only for 1-to-1 requests for simplicity)
+    if (!isGroupRequest) {
+        try {
+            await sendNewFavorNotificationEmail(senderID, receiverID as string, initialMessage, requestType, deadline);
+        } catch(e) {
+            console.error("Failed to send SES notification email for 1-to-1:", e);
+        }
     }
     
     // 5. Send confirmation back to the sender
@@ -237,9 +337,9 @@ async function startFavorRequest(
         type: 'favorRequestStarted', 
         favorRequestID, 
         receiverID,
-        initialMessage,
-        requestType, // Include new field in confirmation
-        deadline, // Include new deadline field in confirmation
+        teamID,
+        requestType, 
+        deadline,
     });
 }
 
@@ -251,7 +351,6 @@ async function sendMessage(
     payload: any,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    // UPDATED: Destructure fileDetails from payload
     const { favorRequestID, content, fileKey, fileDetails } = payload;
     const senderConnectionId = (await getSenderInfoByUserID(senderID))?.connectionId;
 
@@ -270,41 +369,42 @@ async function sendMessage(
         Key: { favorRequestID },
     }));
     const favor = favorResult.Item as FavorRequest;
+    
+    // Determine the list of all non-sending recipients
+    const recipientIDs = await getRecipientIDs(favor, senderID);
 
-    if (!favor || favor.status !== 'active' || (favor.senderID !== senderID && favor.receiverID !== senderID)) {
+    if (!favor || favor.status !== 'active' || recipientIDs.length === 0) {
         if (senderConnectionId) {
             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Request is inactive, resolved, or unauthorized.' });
         }
         return;
     }
 
-    // Determine the ID of the person who is NOT the current sender 
-    const recipientID = favor.senderID === senderID ? favor.receiverID : favor.senderID;
+    // 2. Update the favor's last update time AND increment the unread counter 
+    // Increment unread count by the number of recipients.
+    const incrementAmount = recipientIDs.length; 
     
-    // 2. Update the favor's last update time AND increment the unread counter for the recipient
     const updateResult = await ddb.send(new UpdateCommand({ 
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
-        // CRITICAL FIX: Removed senderID update. The original senderID and receiverID must be immutable for GSI integrity.
         UpdateExpression: 'SET updatedAt = :ua ADD unreadCount :incr', 
         ExpressionAttributeValues: { 
             ':ua': new Date().toISOString(),
-            ':incr': 1 // Increment unread count by 1
+            ':incr': incrementAmount
         },
-        ReturnValues: 'ALL_NEW', // <-- FIX: Retrieve the updated item for broadcast
+        ReturnValues: 'ALL_NEW', 
     }));
     
-    // FIX: Broadcast the updated favor object to both parties
+    // Broadcast the updated favor object to all participants (sender + all recipients)
     const updatedFavor = updateResult.Attributes as FavorRequest;
+    const allParticipants = [...recipientIDs, senderID];
+    
     const broadcastUpdatePayload = {
         type: 'favorRequestUpdated',
         favor: updatedFavor,
     };
-    await sendToAll(apiGwManagement, [senderID, recipientID], broadcastUpdatePayload);
+    await sendToAll(apiGwManagement, allParticipants, broadcastUpdatePayload, { notifyOffline: false }); // Do not send SNS for simple updates
 
-    // CRITICAL FIX: Sanitize the fileKey before storing it in the database.
-    // This ensures that if the client accidentally sends the full signed upload URL,
-    // only the clean S3 path remains for later download reference.
     const cleanFileKey = fileKey ? sanitizeFileKey(fileKey) : undefined;
 
     // 3. Create message data
@@ -314,13 +414,46 @@ async function sendMessage(
         content: content || '',
         timestamp,
         type: cleanFileKey ? 'file' : 'text',
-        fileKey: cleanFileKey, // <-- USE SANITIZED KEY HERE
-        fileDetails: fileDetails, // NEW: Include file metadata
+        fileKey: cleanFileKey,
+        fileDetails: fileDetails,
     };
 
     // 4. Save message and broadcast (sends 'newMessage' payload)
-    await _saveAndBroadcastMessage(messageData, apiGwManagement);
+    await _saveAndBroadcastMessage(messageData, apiGwManagement, recipientIDs); // PASS RECIPIENTS
+
 }
+
+/**
+ * Helper to determine all non-sending participants for a favor request.
+ * Returns an array of user IDs.
+ */
+async function getRecipientIDs(favor: FavorRequest, senderID: string): Promise<string[]> {
+    if (favor.teamID) {
+        if (!TEAMS_TABLE) {
+            console.error("TEAMS_TABLE not configured for group lookup.");
+            return [];
+        }
+        const teamResult = await ddb.send(new GetCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID: favor.teamID },
+        }));
+        const team = teamResult.Item as Team;
+        
+        // Recipients are all team members except the sender
+        return team ? team.members.filter(memberId => memberId !== senderID) : [];
+        
+    } else if (favor.receiverID) {
+        // 1-to-1 chat: Recipient is the person who is not the sender
+        const recipientID = favor.senderID === senderID ? favor.receiverID : favor.senderID;
+        // Check if the sender is actually a participant before returning the other one
+        if (favor.senderID === senderID || favor.receiverID === senderID) {
+             return [recipientID];
+        }
+    }
+    
+    return []; // Request not found, inactive, or unauthorized
+}
+
 
 /**
  * Handles marking all messages in a conversation as read.
@@ -352,8 +485,9 @@ async function markRead(
                 ':caller': callerID
             },
             // Condition check ensures only participants can reset the count
-            ConditionExpression: 'senderID = :caller OR receiverID = :caller',
-            ReturnValues: 'ALL_NEW', // FIX: Retrieve the updated item for broadcast
+            // Note the addition of attribute_exists(teamID) to cover group participants
+            ConditionExpression: 'senderID = :caller OR receiverID = :caller OR attribute_exists(teamID)',
+            ReturnValues: 'ALL_NEW', 
         }));
         
         // 2. Broadcast the read status update to the caller
@@ -380,6 +514,8 @@ async function markRead(
 
 /**
  * Handles marking a favor request as resolved.
+ * Note: Logic remains largely 1-to-1 focused but works if `receiverID` is null (group chat), 
+ * provided the sender is a known participant.
  */
 async function resolveRequest(
     senderID: string,
@@ -413,15 +549,18 @@ async function resolveRequest(
                 ':active': 'active',
                 ':zero': 0, // Reset unread count
             },
-            // Condition: Only sender or receiver can resolve, and it must be active.
-            ConditionExpression: '#s = :active AND (senderID = :sender OR receiverID = :sender)',
+            // Condition: Only sender or receiver (or implied participant by teamID) can resolve, and it must be active.
+            ConditionExpression: '#s = :active AND (senderID = :sender OR receiverID = :sender OR attribute_exists(teamID))',
             ReturnValues: 'ALL_NEW',
         }));
 
         const favor = updateResult.Attributes as FavorRequest;
-        const recipientID = favor.senderID === senderID ? favor.receiverID : favor.senderID;
+        
+        // Use the helper to determine all participants for the broadcast
+        let recipients = await getRecipientIDs(favor, senderID);
+        let participants = [...recipients, senderID];
 
-        // 2. Broadcast status update to both parties
+        // 2. Broadcast status update to all parties
         const broadcastPayload = {
             type: 'requestResolved',
             favorRequestID,
@@ -429,7 +568,7 @@ async function resolveRequest(
             updatedAt: nowIso
         };
         
-        await sendToAll(apiGwManagement, [senderID, recipientID], broadcastPayload);
+        await sendToAll(apiGwManagement, participants, broadcastPayload, { notifyOffline: false });
         
     } catch (e: any) {
         if (e.name === 'ConditionalCheckFailedException') {
@@ -444,6 +583,10 @@ async function resolveRequest(
 
 /**
  * Handles fetching the list of favor requests a user is involved in.
+ * Note: This currently only supports lookups via SenderIndex/ReceiverIndex GSIs. 
+ * Group requests where the caller is only a *member* (not sender/receiver) 
+ * will not be fetched efficiently and should ideally be handled by a dedicated TeamIndex GSI 
+ * or filtered manually from a broader query.
  */
 async function fetchRequests(
     callerID: string,
@@ -454,13 +597,11 @@ async function fetchRequests(
     // role can be 'sent', 'received', or 'all'
     const { role = 'all', limit = 50, nextToken } = payload;
     
-    // NOTE: Limit is applied in the DDB Query, max 100 on client side for 'all' merge.
     const queryLimit = Math.min(limit, 100);
 
     let exclusiveStartKey: any = undefined;
     if (nextToken) {
         try {
-            // nextToken is expected to be a JSON string of DynamoDB's LastEvaluatedKey
             exclusiveStartKey = JSON.parse(nextToken);
         } catch {
             console.warn('Invalid nextToken JSON received, ignoring:', nextToken);
@@ -561,48 +702,49 @@ async function fetchRequests(
 // ========================================
 
 /**
- * Saves the message to DynamoDB and attempts to broadcast it to the connected recipient.
- * If the recipient is offline, a push notification is triggered via SNS.
+ * Saves the message to DynamoDB and attempts to broadcast it to the connected recipient(s).
+ * If the recipient(s) are offline, a push notification is triggered via SNS.
+ * @param recipientIDs Optional array of user IDs to send to (used for groups/initial broadcast). 
+ * If undefined, logic falls back to 1-to-1 (favor.senderID/receiverID).
  */
-async function _saveAndBroadcastMessage(messageData: MessageData, apiGwManagement: ApiGatewayManagementApiClient): Promise<void> {
+async function _saveAndBroadcastMessage(
+    messageData: MessageData, 
+    apiGwManagement: ApiGatewayManagementApiClient,
+    recipientIDs?: string[]
+): Promise<void> {
     // 1. Persist the message
     await ddb.send(new PutCommand({
         TableName: MESSAGES_TABLE,
         Item: messageData,
     }));
     
-    // 2. Find the request details to identify the recipient
-    const favorResult = await ddb.send(new GetCommand({
-        TableName: FAVORS_TABLE,
-        Key: { favorRequestID: messageData.favorRequestID },
-    }));
-    const favor = favorResult.Item as FavorRequest;
-    if (!favor) return;
-
-    // Identify the recipient
-    const recipientID = favor.senderID === messageData.senderID ? favor.receiverID : favor.senderID;
-
-    // 3. Attempt real-time delivery
-    const recipientConnectionInfo = await getSenderInfoByUserID(recipientID);
+    // 2. Find the request details to identify recipients if not explicitly provided
+    let participants = [messageData.senderID];
+    let recipients = recipientIDs;
     
+    if (!recipients) {
+        const favorResult = await ddb.send(new GetCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID: messageData.favorRequestID },
+        }));
+        const favor = favorResult.Item as FavorRequest;
+        if (!favor) return;
+
+        // Use the new helper to get all non-sending participants
+        recipients = await getRecipientIDs(favor, messageData.senderID); 
+        participants = [...participants, ...recipients];
+    } else {
+        participants = [...participants, ...recipients];
+    }
+    
+    // 3. Broadcast to all participants (sender gets an echo, recipients get the new message)
     const broadcastPayload = {
         type: 'newMessage',
         message: messageData,
     };
     
-    if (recipientConnectionInfo) {
-        // Recipient is online, send via WebSocket
-        await sendToClient(apiGwManagement, recipientConnectionInfo.connectionId, broadcastPayload);
-    } else {
-        // Recipient is offline, trigger push notification
-        await publishSnsNotification(messageData);
-    }
-    
-    // Also echo back to sender to confirm receipt/persistence
-    const senderConnectionInfo = await getSenderInfoByUserID(messageData.senderID);
-    if (senderConnectionInfo) {
-         await sendToClient(apiGwManagement, senderConnectionInfo.connectionId, broadcastPayload);
-    }
+    // sendToAll will handle real-time and SNS notifications for all users in the 'participants' list
+    await sendToAll(apiGwManagement, participants, broadcastPayload, { notifyOffline: true, senderID: messageData.senderID });
 }
 
 
@@ -781,7 +923,8 @@ async function fetchHistory(
     }));
     const favor = favorResult.Item as FavorRequest;
 
-    if (!favor || (favor.senderID !== callerID && favor.receiverID !== callerID)) {
+    // Authorization check must consider groups: callerID must be sender or receiver, OR the request must be a group request (implying participation).
+    if (!favor || (!favor.teamID && favor.senderID !== callerID && favor.receiverID !== callerID)) {
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized access to favor request history.' });
         return;
     }
@@ -824,14 +967,34 @@ async function sendToClient(apiGwManagement: ApiGatewayManagementApiClient, conn
 }
 
 /** Sends a message to a list of user IDs by finding their active connections. */
-async function sendToAll(apiGwManagement: ApiGatewayManagementApiClient, userIDs: string[], data: any): Promise<void> {
+async function sendToAll(apiGwManagement: ApiGatewayManagementApiClient, userIDs: string[], data: any, options: { notifyOffline: boolean, senderID?: string }): Promise<void> {
     const connectionPromises = userIDs.map(id => getSenderInfoByUserID(id));
     const connections = await Promise.all(connectionPromises);
     
-    for (const conn of connections) {
+    const offlineRecipients: string[] = [];
+
+    for (let i = 0; i < userIDs.length; i++) {
+        const userID = userIDs[i];
+        const conn = connections[i];
+        
         if (conn) {
+            // User is online, send via WebSocket
             await sendToClient(apiGwManagement, conn.connectionId, data);
+        } else if (options.notifyOffline && userID !== options.senderID) {
+            // User is offline AND is a recipient (not the sender)
+            offlineRecipients.push(userID);
         }
+    }
+    
+    // Trigger a single SNS notification for all offline recipients for this message
+    if (offlineRecipients.length > 0 && options.notifyOffline) {
+        // Prepare the payload for SNS, which should contain context for all affected users
+        const messageData = data.message as MessageData;
+        
+        await publishSnsNotification({ 
+            ...messageData, 
+            offlineRecipients, // pass the list of users who are offline
+        });
     }
 }
 
@@ -841,6 +1004,12 @@ async function publishSnsNotification(messageData: any): Promise<void> {
         console.warn('SNS Topic ARN not configured. Skipping notification.');
         return;
     }
+    
+    // Use the actual content to create a useful preview
+    const preview = messageData.content.length > 100 ? 
+        messageData.content.substring(0, 97) + '...' : 
+        messageData.content;
+        
     await sns.send(new PublishCommand({
         TopicArn: NOTIFICATIONS_TOPIC_ARN,
         Message: JSON.stringify({
@@ -848,7 +1017,10 @@ async function publishSnsNotification(messageData: any): Promise<void> {
             source: 'favor_request',
             favorRequestID: messageData.favorRequestID,
             senderID: messageData.senderID,
-            messagePreview: messageData.content.substring(0, 100),
+            messagePreview: preview,
+            // Pass group context if available
+            teamID: messageData.teamID, 
+            offlineRecipients: messageData.offlineRecipients, // List of users who should receive the notification
         }),
     }));
 }

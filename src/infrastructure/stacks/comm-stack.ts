@@ -21,9 +21,10 @@ export class CommStack extends Stack {
   public readonly messagesTable: dynamodb.Table;
   public readonly favorsTable: dynamodb.Table;
   public readonly connectionsTable: dynamodb.Table;
+  public readonly teamsTable: dynamodb.Table; // <--- NEW TABLE PROPERTY
   public readonly fileBucket: s3.Bucket;
   public readonly notificationsTopic: sns.Topic;
-  public readonly getFileFn: lambdaNode.NodejsFunction; // <-- Expose the new function
+  public readonly getFileFn: lambdaNode.NodejsFunction;
 
   constructor(scope: Construct, id: string, props: CommStackProps) {
     super(scope, id, props);
@@ -36,13 +37,12 @@ export class CommStack extends Stack {
     this.connectionsTable = new dynamodb.Table(this, 'ConnectionsTable', {
       tableName: `${this.stackName}-WsConnections`,
       partitionKey: { name: 'connectionId', type: dynamodb.AttributeType.STRING },
-      // Optional: Add TTL for connection cleanup
       timeToLiveAttribute: 'ttl',
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.DESTROY,
     });
     
-    // ** FIX: Add GSI for efficient user lookup by userID (required by ws-default.ts) **
+    // FIX: Add GSI for efficient user lookup by userID (required by ws-default.ts)
     this.connectionsTable.addGlobalSecondaryIndex({
       indexName: 'UserIDIndex',
       partitionKey: { name: 'userID', type: dynamodb.AttributeType.STRING },
@@ -52,9 +52,7 @@ export class CommStack extends Stack {
     // 2. Favor Requests Table (Stores request metadata)
     this.favorsTable = new dynamodb.Table(this, 'FavorRequestsTable', {
       tableName: `${this.stackName}-FavorRequests`,
-      // Partition Key: favorRequestID (UUID)
       partitionKey: { name: 'favorRequestID', type: dynamodb.AttributeType.STRING },
-      // Secondary Index: Query by user (sender or receiver)
       removalPolicy: RemovalPolicy.RETAIN,
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
     });
@@ -65,31 +63,27 @@ export class CommStack extends Stack {
       sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
-this.favorsTable.addGlobalSecondaryIndex({
-  indexName: 'SenderIndex',
-  partitionKey: { name: 'senderID', type: dynamodb.AttributeType.STRING },
-  sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
-  projectionType: dynamodb.ProjectionType.ALL,
-});
-
-this.favorsTable.addGlobalSecondaryIndex({
-  indexName: 'ReceiverIndex',
-  partitionKey: { name: 'receiverID', type: dynamodb.AttributeType.STRING },
-  sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
-  projectionType: dynamodb.ProjectionType.ALL,
-});
+    this.favorsTable.addGlobalSecondaryIndex({
+        indexName: 'SenderIndex',
+        partitionKey: { name: 'senderID', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+    });
+    this.favorsTable.addGlobalSecondaryIndex({
+        indexName: 'ReceiverIndex',
+        partitionKey: { name: 'receiverID', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+    });
 
     // 3. Messages Table (Stores each message in a separate row)
     this.messagesTable = new dynamodb.Table(this, 'MessagesTable', {
       tableName: `${this.stackName}-Messages`,
-      // Partition Key: favorRequestID (to group messages by favor)
       partitionKey: { name: 'favorRequestID', type: dynamodb.AttributeType.STRING },
-      // Sort Key: timestamp (to order messages chronologically)
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
       removalPolicy: RemovalPolicy.RETAIN,
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
     });
-    // Global Secondary Index: To query all messages sent by a user
     this.messagesTable.addGlobalSecondaryIndex({
       indexName: 'SenderIndex',
       partitionKey: { name: 'senderID', type: dynamodb.AttributeType.STRING },
@@ -97,12 +91,24 @@ this.favorsTable.addGlobalSecondaryIndex({
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // 4. Teams Table (Stores Group/Team Metadata) <--- NEW TABLE
+    this.teamsTable = new dynamodb.Table(this, 'TeamsTable', {
+        tableName: `${this.stackName}-Teams`,
+        partitionKey: { name: 'teamID', type: dynamodb.AttributeType.STRING },
+        // GSI: To look up teams by owner (e.g., "teams I manage")
+        sortKey: { name: 'ownerID', type: dynamodb.AttributeType.STRING }, 
+        removalPolicy: RemovalPolicy.RETAIN,
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+    });
+    // GSI: To look up teams a user is a member of (requires DynamoDB sets or a dedicated table/GSI for complex membership)
+    // For simplicity, we will query/filter in the Lambda if we need 'teams a user is in' rather than adding a complex GSI here.
+
+
     // ========================================
     // S3 BUCKET (for File Sharing)
     // ========================================
     this.fileBucket = new s3.Bucket(this, 'CommunicationFilesBucket', {
       bucketName: `comm-files-${this.account}-${this.region}`,
-      // Enable CORS for web uploads
       cors: [
         {
           allowedHeaders: ['*'],
@@ -111,14 +117,13 @@ this.favorsTable.addGlobalSecondaryIndex({
           exposedHeaders: ['ETag'],
         },
       ],
-      removalPolicy: RemovalPolicy.DESTROY, // Use RETAIN in production
+      removalPolicy: RemovalPolicy.DESTROY, 
       autoDeleteObjects: true,
     });
 
     // ========================================
     // PUSH NOTIFICATIONS (SNS Topic)
     // ========================================
-    // This topic will be published to by the 'Default' Lambda when a new message arrives.
     this.notificationsTopic = new sns.Topic(this, 'NewMessageNotificationsTopic', {
         topicName: `${this.stackName}-NewMessageNotifications`
     });
@@ -131,13 +136,13 @@ this.favorsTable.addGlobalSecondaryIndex({
       CONNECTIONS_TABLE: this.connectionsTable.tableName,
       MESSAGES_TABLE: this.messagesTable.tableName,
       FAVORS_TABLE: this.favorsTable.tableName,
+      TEAMS_TABLE: this.teamsTable.tableName, // <--- NEW ENVIRONMENT VARIABLE
       FILE_BUCKET_NAME: this.fileBucket.bucketName,
       NOTIFICATIONS_TOPIC_ARN: this.notificationsTopic.topicArn,
     };
     
     // ** S3 File Download Lambda Deployment (MOVED TO COMM/get-file.ts) **
     this.getFileFn = new lambdaNode.NodejsFunction(this, 'GetFileFn', {
-        // --- UPDATED PATH HERE ---
         entry: path.join(__dirname, '..', '..', 'services', 'comm', 'get-file.ts'),
         handler: 'handler',
         runtime: lambda.Runtime.NODEJS_20_X,
@@ -185,22 +190,21 @@ this.favorsTable.addGlobalSecondaryIndex({
       runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 512,
       timeout: Duration.seconds(30),
-      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' }, // Use ESM bundling
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' }, 
       environment: {
           ...defaultLambdaEnv,
-          // NEW: Add environment variable for SES Source Email (Needs verification in SES)
           SES_SOURCE_EMAIL: 'no-reply@todaysdentalinsights.com', 
-          // FIX: Pass User Pool ID to the default handler for Cognito lookup
           USER_POOL_ID: props.userPoolId, 
       },
     });
 
     // Grant permissions to the Default Lambda
-    this.connectionsTable.grantReadWriteData(defaultFn); // Read to find receiver's connectionId, Write to update
+    this.connectionsTable.grantReadWriteData(defaultFn);
     this.messagesTable.grantReadWriteData(defaultFn);
     this.favorsTable.grantReadWriteData(defaultFn);
-    this.fileBucket.grantReadWrite(defaultFn); // For generating signed URLs
-    this.notificationsTopic.grantPublish(defaultFn); // For push notifications
+    this.teamsTable.grantReadWriteData(defaultFn); // <--- GRANT PERMISSIONS TO NEW TABLE
+    this.fileBucket.grantReadWrite(defaultFn);
+    this.notificationsTopic.grantPublish(defaultFn);
     
     // CRITICAL NEW FEATURE: Grant SES SendEmail permissions
     defaultFn.addToRolePolicy(new iam.PolicyStatement({
@@ -240,10 +244,9 @@ this.favorsTable.addGlobalSecondaryIndex({
       defaultRouteOptions: {
         integration: new apigw2Integrations.WebSocketLambdaIntegration('DefaultIntegration', defaultFn),
       },
-      // Note: No $default route is explicitly needed here if using the DefaultRoute
     });
 
-    new apigw2.WebSocketStage(this, this.stackName + 'ProdStage', { // Ensure unique stage ID
+    new apigw2.WebSocketStage(this, this.stackName + 'ProdStage', { 
       webSocketApi: this.websocketApi,
       stageName: 'prod',
       autoDeploy: true,
@@ -266,6 +269,10 @@ this.favorsTable.addGlobalSecondaryIndex({
     // ========================================
     // OUTPUTS
     // ========================================
+    new CfnOutput(this, 'TeamsTableName', { // <--- NEW TABLE NAME OUTPUT
+        value: this.teamsTable.tableName,
+        exportName: `${this.stackName}-TeamsTableName`,
+    });
     new CfnOutput(this, 'WebSocketApiUrl', {
       value: this.websocketApi.apiEndpoint,
       description: 'The WebSocket API Endpoint',
@@ -287,7 +294,7 @@ this.favorsTable.addGlobalSecondaryIndex({
         value: this.notificationsTopic.topicArn,
         exportName: `${this.stackName}-NotificationsTopicArn`,
     });
-    new CfnOutput(this, 'FileDownloadFnArn', { // <-- NEW OUTPUT for AdminStack to use
+    new CfnOutput(this, 'FileDownloadFnArn', { 
         value: this.getFileFn.functionArn,
         description: 'ARN of the S3 Get File Download Lambda',
         exportName: `${this.stackName}-FileDownloadFnArn`,
