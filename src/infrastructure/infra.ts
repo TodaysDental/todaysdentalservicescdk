@@ -160,45 +160,45 @@ const coreStack = new CoreStack(app, 'TodaysDentalInsightsCoreV2', { env });
 // Templates service
 const templatesStack = new TemplatesStack(app, 'TodaysDentalInsightsTemplatesV3', {
  env,
- userPool: coreStack.userPool,
+ authorizer: coreStack.authorizer,
 });
 
 // *** NEW STACK ***
 // Consent Form Data service
 const consentFormDataStack = new ConsentFormDataStack(app, 'TodaysDentalInsightsConsentFormDataV1', {
  env,
- userPool: coreStack.userPool,
+ authorizer: coreStack.authorizer,
 });
 // *** END NEW STACK ***
 
 // Queries service
 const queriesStack = new QueriesStack(app, 'TodaysDentalInsightsQueriesV3', {
  env,
- userPool: coreStack.userPool,
+ authorizer: coreStack.authorizer,
 });
 
 // Clinic Pricing service
 const clinicPricingStack = new ClinicPricingStack(app, 'TodaysDentalInsightsClinicPricingV3', {
  env,
- userPool: coreStack.userPool,
+ authorizer: coreStack.authorizer,
 });
 
 // Clinic Insurance service
 const clinicInsuranceStack = new ClinicInsuranceStack(app, 'TodaysDentalInsightsClinicInsuranceV3', {
  env,
- userPool: coreStack.userPool,
+ authorizer: coreStack.authorizer,
 });
 
 // OpenDental service with SFTP resources
 const openDentalStack = new OpenDentalStack(app, 'TodaysDentalInsightsOpenDentalV2', {
  env,
- userPool: coreStack.userPool,
+ authorizer: coreStack.authorizer,
 });
 
 // Notifications service
 const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNotificationsV3', {
  env,
- userPool: coreStack.userPool,
+ authorizer: coreStack.authorizer,
  templatesTableName: templatesStack.templatesTable.tableName,
 });
 
@@ -210,7 +210,7 @@ const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNoti
 // ** ANALYTICS STACK INSTANTIATION (BEFORE CHIME) **
 const analyticsStack = new AnalyticsStack(app, 'TodaysDentalInsightsAnalyticsV1', {
   env,
-  userPoolId: coreStack.userPool.userPoolId,
+  authorizer: coreStack.authorizer,
   region: env.region || process.env.AWS_REGION || 'us-east-1',
   supervisorEmails: [], // Add supervisor emails for alerts
   // Note: callQueueTableName and agentPresenceTableName will be passed from ChimeStack
@@ -218,8 +218,7 @@ const analyticsStack = new AnalyticsStack(app, 'TodaysDentalInsightsAnalyticsV1'
 
 const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV23', {
  env,
- userPool: coreStack.userPool,
- userPoolId: coreStack.userPool.userPoolId,
+ authorizer: coreStack.authorizer,
  voiceConnectorTerminationCidrs,
  voiceConnectorOriginationRoutes,
  analyticsTableName: analyticsStack.analyticsTable.tableName,
@@ -231,16 +230,14 @@ const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV23', {
 // ** COMMUNICATIONS STACK INSTANTIATION **
 const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommV1', {
     env,
-    userPoolArn: coreStack.userPool.userPoolArn,
-    userPoolId: coreStack.userPool.userPoolId,
+    authorizer: coreStack.authorizer,
 });
 
 // Chatbot Stack - WebSocket-based dental assistant chatbot (depends on core and clinic data)
 // NOTE: Declared here before AdminStack because AdminStack needs chatbotStack.conversationsTable.tableName
 const chatbotStack = new ChatbotStack(app, 'TodaysDentalInsightsChatbotV2', {
  env,
- userPoolArn: coreStack.userPool.userPoolArn,
- userPoolId: coreStack.userPool.userPoolId,
+ authorizer: coreStack.authorizer,
  // Chatbot reads directly from DynamoDB tables - no API calls needed
  clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
  clinicPricingTableName: clinicPricingStack.clinicPricingTable.tableName,
@@ -252,9 +249,8 @@ const chatbotStack = new ChatbotStack(app, 'TodaysDentalInsightsChatbotV2', {
 // avoids the cyclic dependency we were seeing.
 const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminV3', {
  env,
- userPool: coreStack.userPool,
- userPoolArn: coreStack.userPool.userPoolArn,
- userPoolId: coreStack.userPool.userPoolId,
+ authorizer: coreStack.authorizer,
+ staffUserTableName: coreStack.staffUserTable.tableName,
  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
  favorsTableName: communicationsStack.favorsTable.tableName,
  clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
@@ -298,7 +294,7 @@ chimeStack.addDependency(coreStack);
 
 const hrStack = new HrStack(app, 'TodaysDentalInsightsHrV1', {
  env,
- userPool: coreStack.userPool,
+ authorizer: coreStack.authorizer,
  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
 });
 hrStack.addDependency(coreStack);
@@ -307,7 +303,7 @@ hrStack.addDependency(coreStack);
 // Schedules service (depends on other services for cross-table access)
 const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesV3', {
  env,
- userPool: coreStack.userPool,
+ authorizer: coreStack.authorizer,
  templatesTableName: templatesStack.templatesTable.tableName,
  queriesTableName: queriesStack.queriesTable.tableName,
  clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
@@ -316,28 +312,26 @@ const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesV3'
 
 const callbackStack = new CallbackStack(app, 'TodaysDentalInsightsCallbackV2', {
  env,
- userPoolArn: coreStack.userPool.userPoolArn,
- userPoolId: coreStack.userPool.userPoolId,
+ authorizer: coreStack.authorizer,
 });
 
 // 7. Patient Portal Stack - Dedicated patient portal API (depends on core and OpenDental)
 const patientPortalStack = new PatientPortalStack(app, 'TodaysDentalInsightsPatientPortalV2', {
  env,
- userPoolArn: coreStack.userPool.userPoolArn,
- userPoolId: coreStack.userPool.userPoolId,
+ authorizer: coreStack.authorizer,
  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
  consolidatedTransferServerBucket: openDentalStack.consolidatedSftpBucket.bucketName,
 });
 const patientPortalApptTypesStack = new PatientPortalApptTypesStack(app, 'TodaysDentalInsightsPatientPortalApptTypesV1', {
  env,
- userPool: coreStack.userPool,
+ authorizer: coreStack.authorizer,
 });
 patientPortalApptTypesStack.addDependency(coreStack);
 
 // Clinic Hours service
 const clinicHoursStack = new ClinicHoursStack(app, 'TodaysDentalInsightsClinicHoursV3', {
  env,
- userPool: coreStack.userPool,
+ authorizer: coreStack.authorizer,
 });
 
 // Add stack dependencies

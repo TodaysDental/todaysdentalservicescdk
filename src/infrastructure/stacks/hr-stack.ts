@@ -228,13 +228,13 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface HrStackProps extends StackProps {
-  userPool: any; // from coreStack
+  authorizer: apigw.RequestAuthorizer;
   staffClinicInfoTableName: string; // from coreStack
 }
 
 export class HrStack extends Stack {
   public readonly api: apigw.RestApi;
-  public readonly authorizer: apigw.CognitoUserPoolsAuthorizer;
+  public readonly authorizer: apigw.RequestAuthorizer;
   public readonly hrFn: lambdaNode.NodejsFunction;
   public readonly shiftsTable: dynamodb.Table;
   public readonly leaveTable: dynamodb.Table;
@@ -313,9 +313,7 @@ export class HrStack extends Stack {
       restApi: this.api, type: apigw.ResponseType.UNAUTHORIZED, responseHeaders: corsErrorHeaders,
     });
 
-    this.authorizer = new apigw.CognitoUserPoolsAuthorizer(this, 'CognitoAuthorizer', {
-      cognitoUserPools: [props.userPool],
-    });
+    this.authorizer = props.authorizer;
 
     // ========================================
     // LAMBDA FUNCTION (Unified Handler)

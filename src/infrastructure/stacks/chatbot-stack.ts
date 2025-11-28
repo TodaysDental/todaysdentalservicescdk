@@ -16,8 +16,7 @@ import clinicsJson from '../configs/clinics.json';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface ChatbotStackProps extends cdk.StackProps {
-  userPoolArn: string;
-  userPoolId: string;
+  authorizer: apigw.RequestAuthorizer;
   // Optional table names for existing DynamoDB tables - direct access, no API calls
   clinicHoursTableName?: string;
   clinicPricingTableName?: string;
@@ -288,9 +287,7 @@ export class ChatbotStack extends cdk.Stack {
     const userPool = cognito.UserPool.fromUserPoolId(this, 'ImportedUserPool', props.userPoolId);
 
     // Cognito Authorizer
-    const cognitoAuthorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'CognitoAuthorizer', {
-      cognitoUserPools: [userPool],
-    });
+    const cognitoAuthorizer = props.authorizer;
 
     // Add CORS error responses
     new apigateway.GatewayResponse(this, 'GatewayResponseDefault4XX', {

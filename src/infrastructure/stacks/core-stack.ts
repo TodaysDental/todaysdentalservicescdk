@@ -1,23 +1,20 @@
 import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
-import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
-import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 // Import the DynamoDB module
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
-import clinicsData from '../configs/clinics.json';
-import { Clinic } from '../configs/clinics';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export class CoreStack extends Stack {
-  public readonly userPool: cognito.UserPool;
-  public readonly userPoolClient: cognito.UserPoolClient;
   public readonly authApi: apigw.RestApi;
   public readonly staffClinicInfoTable: dynamodb.Table;
+  public readonly staffUserTable: dynamodb.Table;
+  public readonly authorizer: apigw.RequestAuthorizer;
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
@@ -25,6 +22,18 @@ export class CoreStack extends Stack {
     // DYNAMODB TABLES
     // ========================================
 
+    // Staff User Table - Main authentication and user management table
+    this.staffUserTable = new dynamodb.Table(this, 'StaffUserTable', {
+      tableName: 'StaffUser',
+      partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      pointInTimeRecovery: true, // Enable point-in-time recovery for security
+    });
+
+    // Note: GSIs removed because with per-clinic role structure (clinicRoles array),
+    // DynamoDB can't efficiently index nested array items. If needed, we can implement
+    // a separate index table or denormalize by maintaining top-level arrays.
 
     // Staff Clinic Info Table
     this.staffClinicInfoTable = new dynamodb.Table(this, 'StaffClinicInfoTable', {
@@ -38,109 +47,45 @@ export class CoreStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
-
     // ========================================
-    // COGNITO USER POOL
+    // JWT SECRET
     // ========================================
 
-    this.userPool = new cognito.UserPool(this, 'UserPool', {
-      selfSignUpEnabled: true,
-      signInAliases: { email: true },
-      mfa: cognito.Mfa.OFF,
-      removalPolicy: RemovalPolicy.RETAIN, // change to DESTROY for dev
-      standardAttributes: {
-        email: { required: true, mutable: true },
-        givenName: { required: false, mutable: true },
-        familyName: { required: false, mutable: true },
-      },
-      customAttributes: {
-        // compact flags for tokens
-        x_is_super_admin: new cognito.StringAttribute({ mutable: true }),
-        x_clinics: new cognito.StringAttribute({ mutable: true }),
-        x_rbc: new cognito.StringAttribute({ mutable: true }),
-        // Dental staff custom attributes (kept as potential defaults)
-        hourly_pay: new cognito.StringAttribute({ mutable: true }),
-        opendental_usernum: new cognito.StringAttribute({ mutable: true }),
-        opendental_username: new cognito.StringAttribute({ mutable: true }),
-        // ** NOTE: This attribute is now replaced by the StaffClinicInfo DynamoDB table. **
-        // It is commented out to prevent its creation and encourage use of the new table.
-        // open_dental_per_clinic: new cognito.StringAttribute({ mutable: true }),
+    // Create a secret for JWT signing
+    const jwtSecret = new secretsmanager.Secret(this, 'JWTSecret', {
+      secretName: 'todaysdentalinsights-jwt-secret',
+      description: 'JWT secret for custom authentication',
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({ secretKey: '' }),
+        generateStringKey: 'secretKey',
+        excludePunctuation: true,
+        passwordLength: 64,
       },
     });
 
-    // Custom auth requires a trigger Lambda; use multi-trigger handler
-    const triggersFn = new lambdaNode.NodejsFunction(this, 'CognitoTriggersFn', {
-      entry: path.join(__dirname, '..', '..', 'services', 'auth', 'index.ts'),
+    // ========================================
+    // CUSTOM LAMBDA AUTHORIZER
+    // ========================================
+
+    const authorizerFn = new lambdaNode.NodejsFunction(this, 'CustomAuthorizerFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'auth', 'authorizer.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 256,
       timeout: Duration.seconds(30),
-      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node20' },
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
-        APP_NAME: 'TodaysDentalInsights',
-        FROM_EMAIL: 'no-reply@todaysdentalinsights.com',
-        SES_REGION: 'us-east-1',
+        JWT_SECRET: jwtSecret.secretValue.unsafeUnwrap(),
       },
     });
 
-    // Allow SES + Cognito IDP actions from lambda
-    triggersFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: [
-        'ses:SendEmail',
-        'ses:SendRawEmail',
-        'cognito-idp:AdminUpdateUserAttributes',
-        'cognito-idp:AdminAddUserToGroup',
-        'cognito-idp:AdminRemoveUserFromGroup',
-        'cognito-idp:ListGroupsForUser',
-        'cognito-idp:AdminListGroupsForUser',
-      ],
-      resources: ['*'],
-    }));
+    // Grant the authorizer access to the JWT secret
+    jwtSecret.grantRead(authorizerFn);
 
-    this.userPool.addTrigger(cognito.UserPoolOperation.DEFINE_AUTH_CHALLENGE, triggersFn);
-    this.userPool.addTrigger(cognito.UserPoolOperation.CREATE_AUTH_CHALLENGE, triggersFn);
-    this.userPool.addTrigger(cognito.UserPoolOperation.VERIFY_AUTH_CHALLENGE_RESPONSE, triggersFn);
-    this.userPool.addTrigger(cognito.UserPoolOperation.PRE_TOKEN_GENERATION, triggersFn);
-    this.userPool.addTrigger(cognito.UserPoolOperation.PRE_AUTHENTICATION, triggersFn);
-    this.userPool.addTrigger(cognito.UserPoolOperation.CUSTOM_MESSAGE, triggersFn);
-
-    this.userPoolClient = new cognito.UserPoolClient(this, 'UserPoolClient', {
-      userPool: this.userPool,
-      authFlows: {
-        custom: true,
-        userSrp: true,
-        adminUserPassword: true,
-      },
-      supportedIdentityProviders: [
-        cognito.UserPoolClientIdentityProvider.COGNITO,
-      ],
-      preventUserExistenceErrors: true,
-      generateSecret: false,
-    });
-
-    // ========================================
-    // COGNITO GROUPS
-    // ========================================
-
-    // Global super admin
-    new cognito.CfnUserPoolGroup(this, 'GlobalSuperAdminGroup', {
-      userPoolId: this.userPool.userPoolId,
-      groupName: 'GLOBAL__SUPER_ADMIN',
-      description: 'Global super administrators',
-    });
-
-    // Create groups using IDs from clinic-config so names stay in sync (no clinic-level SUPER_ADMIN)
-    const roles = ['ADMIN', 'PROVIDER', 'MARKETING', 'USER'];
-    (clinicsData as Clinic[]).forEach((c) => {
-      const idFromConfig = String(c.clinicId);
-      const nameFromConfig = String(c.clinicName || c.clinicId);
-      roles.forEach((role) => {
-        new cognito.CfnUserPoolGroup(this, `Group_${idFromConfig}_${role}`, {
-          userPoolId: this.userPool.userPoolId,
-          groupName: `clinic_${idFromConfig}__${role}`,
-          description: `${nameFromConfig} - ${role}`,
-        });
-      });
+    this.authorizer = new apigw.RequestAuthorizer(this, 'CustomAuthorizer', {
+      handler: authorizerFn,
+      identitySources: [apigw.IdentitySource.header('Authorization')],
+      resultsCacheTtl: Duration.minutes(5),
     });
 
     // ========================================
@@ -182,73 +127,90 @@ export class CoreStack extends Stack {
       responseHeaders: corsErrorHeaders,
     });
 
-    // Auth endpoints (initiate and verify) - no authorizer
-    const initiateFn = new lambdaNode.NodejsFunction(this, 'AuthInitiateFn', {
-      entry: path.join(__dirname, '..', '..', 'services', 'auth', 'initiate.ts'),
+    // ========================================
+    // AUTH LAMBDA FUNCTIONS
+    // ========================================
+
+    // OTP Initiate endpoint - Sends OTP code to email
+    const initiateOtpFn = new lambdaNode.NodejsFunction(this, 'AuthInitiateOtpFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'auth', 'initiate-otp.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 256,
       timeout: Duration.seconds(30),
-      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node20' },
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
-        USER_POOL_CLIENT_ID: this.userPoolClient.userPoolClientId,
-        COGNITO_REGION: Stack.of(this).region,
+        STAFF_USER_TABLE: this.staffUserTable.tableName,
         CORS_ORIGIN: 'https://todaysdentalinsights.com',
+        FROM_EMAIL: 'no-reply@todaysdentalinsights.com',
+        SES_REGION: 'us-east-1',
+        APP_NAME: 'TodaysDentalInsights',
       },
     });
-    initiateFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['cognito-idp:InitiateAuth'],
+
+    this.staffUserTable.grantReadWriteData(initiateOtpFn);
+
+    // Grant SES permissions
+    initiateOtpFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:SendEmail', 'ses:SendRawEmail'],
       resources: ['*'],
     }));
 
-    const verifyFn = new lambdaNode.NodejsFunction(this, 'AuthVerifyFn', {
-      entry: path.join(__dirname, '..', '..', 'services', 'auth', 'verify.ts'),
+    // OTP Verify endpoint - Validates OTP and returns JWT tokens
+    const verifyOtpFn = new lambdaNode.NodejsFunction(this, 'AuthVerifyOtpFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'auth', 'verify-otp.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 256,
       timeout: Duration.seconds(30),
-      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node20' },
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
-        USER_POOL_CLIENT_ID: this.userPoolClient.userPoolClientId,
-        COGNITO_REGION: Stack.of(this).region,
+        STAFF_USER_TABLE: this.staffUserTable.tableName,
+        JWT_SECRET: jwtSecret.secretValue.unsafeUnwrap(),
         CORS_ORIGIN: 'https://todaysdentalinsights.com',
       },
     });
-    verifyFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['cognito-idp:RespondToAuthChallenge'],
-      resources: ['*'],
-    }));
 
-    // Auth API routes (base path mapping already set to "auth")
+    this.staffUserTable.grantReadWriteData(verifyOtpFn);
+    jwtSecret.grantRead(verifyOtpFn);
+
+    // Refresh token endpoint
+    const refreshFn = new lambdaNode.NodejsFunction(this, 'AuthRefreshFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'auth', 'refresh.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      environment: {
+        STAFF_USER_TABLE: this.staffUserTable.tableName,
+        JWT_SECRET: jwtSecret.secretValue.unsafeUnwrap(),
+        CORS_ORIGIN: 'https://todaysdentalinsights.com',
+      },
+    });
+
+    this.staffUserTable.grantReadData(refreshFn);
+    jwtSecret.grantRead(refreshFn);
+
+    // ========================================
+    // AUTH API ROUTES
+    // ========================================
+
+    // OTP-based authentication flow
     const initiateRes = this.authApi.root.addResource('initiate');
-    initiateRes.addMethod('POST', new apigw.LambdaIntegration(initiateFn), {
-      methodResponses: [{ statusCode: '200' }]
-    });
-    const verifyRes = this.authApi.root.addResource('verify');
-    verifyRes.addMethod('POST', new apigw.LambdaIntegration(verifyFn), {
+    initiateRes.addMethod('POST', new apigw.LambdaIntegration(initiateOtpFn), {
       methodResponses: [{ statusCode: '200' }]
     });
 
-    /*
-    // ========================================
-    // GRANT PERMISSIONS TO ADMIN API LAMBDA
-    // ========================================
-    //
-    // ** IMPORTANT: **
-    // You must grant the Admin API Lambda (which runs 'register.ts' and 'users.ts')
-    // permissions to the new DynamoDB table.
-    //
-    // Assuming you have a Lambda construct named 'adminApiFunction':
-    //
-    // 1. Grant Read/Write Permissions:
-    //    staffClinicInfoTable.grantReadWriteData(adminApiFunction);
-    //
-    // 2. Pass Table Name as Environment Variable:
-    //    adminApiFunction.addEnvironment(
-    //      'STAFF_CLINIC_INFO_TABLE',
-    //      staffClinicInfoTable.tableName
-    //    );
-    */
+    const verifyRes = this.authApi.root.addResource('verify');
+    verifyRes.addMethod('POST', new apigw.LambdaIntegration(verifyOtpFn), {
+      methodResponses: [{ statusCode: '200' }]
+    });
+
+    const refreshRes = this.authApi.root.addResource('refresh');
+    refreshRes.addMethod('POST', new apigw.LambdaIntegration(refreshFn), {
+      methodResponses: [{ statusCode: '200' }]
+    });
 
     // ========================================
     // CUSTOM DOMAIN SETUP
@@ -269,11 +231,14 @@ export class CoreStack extends Stack {
       stage: this.authApi.deploymentStage.stageName,
     });
 
-    new CfnOutput(this, 'UserPoolId', { value: this.userPool.userPoolId });
-    new CfnOutput(this, 'UserPoolArn', { value: this.userPool.userPoolArn });
-    new CfnOutput(this, 'UserPoolClientId', { value: this.userPoolClient.userPoolClientId });
     new CfnOutput(this, 'AuthApiUrl', { value: 'https://api.todaysdentalinsights.com/auth/' });
+    new CfnOutput(this, 'StaffUserTableName', { value: this.staffUserTable.tableName });
     new CfnOutput(this, 'StaffClinicInfoTableName', { value: this.staffClinicInfoTable.tableName });
+    new CfnOutput(this, 'AuthorizerArn', { 
+      value: authorizerFn.functionArn,
+      exportName: `${Stack.of(this).stackName}-AuthorizerArn`,
+      description: 'Custom Lambda Authorizer ARN'
+    });
     new CfnOutput(this, 'ApiDomainName', {
       value: 'api.todaysdentalinsights.com',
       exportName: `${Stack.of(this).stackName}-ApiDomainName`,

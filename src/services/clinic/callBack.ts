@@ -3,6 +3,7 @@ import { DynamoDBClient, PutItemCommand, ScanCommand, UpdateItemCommand } from '
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { SYSTEM_MODULES } from '../../shared/types/user';
 
 const REGION = process.env.REGION || process.env.AWS_REGION || 'us-east-1';
 const TABLE_PREFIX = process.env.TABLE_PREFIX || 'RequestCallBacks_';
@@ -10,6 +11,23 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://todaysdentalins
 const DEFAULT_TABLE = (process.env.DEFAULT_TABLE || 'todaysdentalinsights-callback-DefaultRequests').trim();
 
 const dynamo = new DynamoDBClient({ region: REGION });
+
+// Callback interface with module categorization
+interface CallbackRequest {
+  RequestID: string;
+  name: string;
+  phone: string;
+  email?: string;
+  message?: string;
+  module: string; // HR, Accounting, Operations, Finance, Marketing, Insurance, IT
+  clinicId: string;
+  calledBack: 'YES' | 'NO';
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy?: string;
+  source: string;
+}
 
 function getCorsHeaders(origin?: string) {
   const allowOrigin = origin && ALLOWED_ORIGINS.includes(origin) ? origin : 'https://todaysdentalinsights.com';
@@ -20,37 +38,97 @@ function getTableName(clinicId: string): string {
   return `${TABLE_PREFIX}${clinicId}`;
 }
 
-function getGroupsFromClaims(claims?: Record<string, any>): string[] {
-  if (!claims) return [];
-  const raw = (claims as any)['cognito:groups'] ?? (claims as any)['cognito:groups[]'];
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw as string[];
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    try {
-      const maybeArray = JSON.parse(trimmed);
-      if (Array.isArray(maybeArray)) return maybeArray as string[];
-    } catch {}
-    return trimmed.split(',').map((s) => s.trim()).filter(Boolean);
+/**
+ * Get user's clinic roles and permissions from custom authorizer
+ */
+function getUserPermissions(event: APIGatewayProxyEvent) {
+  const authorizer = event.requestContext?.authorizer;
+  if (!authorizer) return null;
+
+  try {
+    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
+    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
+    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
+    const email = authorizer.email || '';
+    const givenName = authorizer.givenName || '';
+
+    return {
+      email,
+      givenName,
+      clinicRoles,
+      isSuperAdmin,
+      isGlobalSuperAdmin,
+    };
+  } catch (err) {
+    console.error('Failed to parse user permissions:', err);
+    return null;
   }
-  return [];
 }
 
-function extractAllowedClinicIdsFromClaims(claims: Record<string, any>): Set<string> {
-  const groups = getGroupsFromClaims(claims);
-  const isSuperAdminClaim = String(claims['x_is_super_admin'] || '').toLowerCase() === 'true';
-  const isSuperAdminGroup = Array.isArray(groups) && groups.includes('GLOBAL__SUPER_ADMIN');
-  const isSuperAdmin = isSuperAdminClaim || isSuperAdminGroup;
-  const xClinics = String(claims['x_clinics'] || '').trim();
-  if (isSuperAdmin || xClinics === 'ALL') return new Set<string>(['*']);
-  const clinicIds: string[] = [];
-  if (xClinics) clinicIds.push(...xClinics.split(',').map((s) => s.trim()).filter(Boolean));
-  if (groups.length > 0) {
-    for (const g of groups) {
-      const m = /^clinic_([^_][^\s]*)__[A-Z_]+$/.exec(String(g));
-      if (m) clinicIds.push(m[1]);
+/**
+ * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
+ */
+function isAdminUser(
+  clinicRoles: any[],
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean
+): boolean {
+  // Check flags first
+  if (isGlobalSuperAdmin || isSuperAdmin) {
+    return true;
+  }
+
+  // Check if user has Admin or SuperAdmin role at any clinic
+  for (const cr of clinicRoles) {
+    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
+      return true;
     }
   }
+
+  return false;
+}
+
+/**
+ * Check if user has specific permission for a module at a clinic
+ */
+function hasModulePermission(
+  clinicRoles: any[],
+  clinicId: string,
+  module: string,
+  permission: 'read' | 'write' | 'put' | 'delete',
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean
+): boolean {
+  // Admin, SuperAdmin, and Global Super Admin have all permissions
+  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
+    return true;
+  }
+
+  // Check if user has the permission for this module at this clinic
+  const clinicAccess = clinicRoles.find((cr: any) => cr.clinicId === clinicId);
+  if (!clinicAccess) return false;
+
+  const moduleAccess = clinicAccess.moduleAccess?.find((ma: any) => ma.module === module);
+  if (!moduleAccess) return false;
+
+  return moduleAccess.permissions.includes(permission);
+}
+
+/**
+ * Get all clinic IDs user has access to
+ */
+function getAllowedClinicIds(
+  clinicRoles: any[],
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean
+): Set<string> {
+  // Super admins have access to all clinics
+  if (isGlobalSuperAdmin || isSuperAdmin) {
+    return new Set<string>(['*']);
+  }
+
+  // Extract clinic IDs from clinic roles
+  const clinicIds = clinicRoles.map((cr: any) => cr.clinicId);
   return new Set<string>(clinicIds);
 }
 
@@ -79,28 +157,42 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
   // POST (create) doesn't require authentication - public endpoint for website forms
   const requiresAuth = method !== 'POST';
+  
+  let userPerms: any = null;
   if (requiresAuth) {
-    const claims = (event.requestContext as any)?.authorizer?.claims;
-    if (!claims) {
+    userPerms = getUserPermissions(event);
+    if (!userPerms) {
       return { statusCode: 401, headers: corsHeaders, body: JSON.stringify({ error: 'Unauthorized' }) };
     }
-    const allowed = extractAllowedClinicIdsFromClaims(claims);
-    if (!(allowed.has('*') || allowed.has(clinicId))) {
-      return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ error: 'Forbidden: no access to this clinic' }) };
+
+    // Check if user has access to this clinic
+    const allowedClinics = getAllowedClinicIds(
+      userPerms.clinicRoles,
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin
+    );
+
+    if (!(allowedClinics.has('*') || allowedClinics.has(clinicId))) {
+      return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ 
+        error: 'Forbidden: no access to this clinic',
+      }) };
     }
+
+    // For GET and PUT, we'll check permissions when we know the callback's module
+    // For now, just verify clinic access
   }
 
   const tableName = getTableName(clinicId);
 
   try {
     if (method === 'GET') {
-      return await handleGet(tableName, corsHeaders, clinicId);
+      return await handleGet(tableName, corsHeaders, clinicId, userPerms);
     }
     if (method === 'POST') {
       return await handlePost(event, tableName, clinicId, corsHeaders);
     }
     if (method === 'PUT') {
-      return await handlePut(event, tableName, corsHeaders, clinicId);
+      return await handlePut(event, tableName, corsHeaders, clinicId, userPerms);
     }
     return { statusCode: 405, headers: corsHeaders, body: JSON.stringify({ message: 'Method Not Allowed. Supported methods: GET, POST, PUT.' }) };
   } catch (err) {
@@ -111,11 +203,32 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
 
 
-async function handleGet(tableName: string, headers: Record<string, string>, clinicId: string): Promise<APIGatewayProxyResult> {
+async function handleGet(tableName: string, headers: Record<string, string>, clinicId: string, userPerms: any): Promise<APIGatewayProxyResult> {
   try {
     const result = await dynamo.send(new ScanCommand({ TableName: tableName }));
-    const contacts = (result.Items || []).map((item) => unmarshall(item as any));
-    return { statusCode: 200, headers, body: JSON.stringify(contacts) };
+    const allContacts = (result.Items || []).map((item) => unmarshall(item as any));
+    
+    // Filter callbacks based on user's module permissions
+    const filteredContacts = filterCallbacksByModuleAccess(
+      allContacts,
+      userPerms.clinicRoles,
+      clinicId,
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin
+    );
+    
+    // Group by module
+    const callbacksByModule = groupCallbacksByModule(filteredContacts);
+    
+    return { 
+      statusCode: 200, 
+      headers, 
+      body: JSON.stringify({
+        callbacks: filteredContacts,
+        callbacksByModule,
+        totalCount: filteredContacts.length,
+      })
+    };
   } catch (error: any) {
     // Fallback to default table with clinic filtering if clinic-specific table doesn't exist
     if (error?.name === 'ResourceNotFoundException' && DEFAULT_TABLE) {
@@ -125,34 +238,78 @@ async function handleGet(tableName: string, headers: Record<string, string>, cli
           FilterExpression: 'clinicId = :clinicId',
           ExpressionAttributeValues: { ':clinicId': { S: clinicId } }
         }));
-        const contacts = (result.Items || []).map((item) => unmarshall(item as any));
-        return { statusCode: 200, headers, body: JSON.stringify(contacts) };
+        const allContacts = (result.Items || []).map((item) => unmarshall(item as any));
+        
+        const filteredContacts = filterCallbacksByModuleAccess(
+          allContacts,
+          userPerms.clinicRoles,
+          clinicId,
+          userPerms.isSuperAdmin,
+          userPerms.isGlobalSuperAdmin
+        );
+        
+        const callbacksByModule = groupCallbacksByModule(filteredContacts);
+        
+        return { 
+          statusCode: 200, 
+          headers, 
+          body: JSON.stringify({
+            callbacks: filteredContacts,
+            callbacksByModule,
+            totalCount: filteredContacts.length,
+          })
+        };
       } catch (innerErr) {
         console.error('Error accessing default table:', innerErr);
-        return { statusCode: 200, headers, body: JSON.stringify([]) };
+        return { 
+          statusCode: 200, 
+          headers, 
+          body: JSON.stringify({
+            callbacks: [],
+            callbacksByModule: {},
+            totalCount: 0,
+          })
+        };
       }
     }
     throw error;
   }
 }
 
-async function handlePut(event: APIGatewayProxyEvent, tableName: string, headers: Record<string, string>, clinicId: string): Promise<APIGatewayProxyResult> {
+async function handlePut(event: APIGatewayProxyEvent, tableName: string, headers: Record<string, string>, clinicId: string, userPerms: any): Promise<APIGatewayProxyResult> {
   const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body || {});
   const id = String(body?.RequestID || body?.id || '').trim();
   if (!id) {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'RequestID is required for updates.' }) };
   }
+  
+  // Validate module if provided in update
+  const module = body?.module;
+  if (module && !SYSTEM_MODULES.includes(module as any)) {
+    return { statusCode: 400, headers, body: JSON.stringify({ 
+      error: `Invalid module: ${module}`,
+      availableModules: Array.from(SYSTEM_MODULES),
+    }) };
+  }
+  
   const name = body?.name;
   const phone = body?.phone;
   const email = typeof body?.email === 'string' ? body.email : undefined;
   const message = typeof body?.message === 'string' ? body.message : undefined;
   const notes = typeof body?.notes === 'string' ? body.notes : undefined;
   const calledBackRaw = body?.calledBack ?? body?.called_back ?? body?.callback ?? body?.called;
-  const claims = (event.requestContext as any)?.authorizer?.claims || {};
-  // Prefer first name from Cognito standard claims
-  const rawName = String(claims?.given_name || claims?.name || '').trim();
-  const firstNameFromName = rawName ? rawName.split(/\s+/)[0] : '';
-  const updatedBy = String(firstNameFromName || claims?.preferred_username || '').trim();
+  
+  // Get user info from custom authorizer
+  const updatedBy = userPerms?.givenName || userPerms?.email || 'system';
+  
+  // Check if user has permission to update callbacks in the specified module
+  if (module) {
+    if (!hasModulePermission(userPerms.clinicRoles, clinicId, module, 'put', userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin)) {
+      return { statusCode: 403, headers, body: JSON.stringify({ 
+        error: `You do not have permission to update callbacks in the ${module} module`,
+      }) };
+    }
+  }
 
   function normalizeCalledBack(v: any): 'YES' | 'NO' | undefined {
     if (v === undefined || v === null) return undefined;
@@ -172,6 +329,7 @@ async function handlePut(event: APIGatewayProxyEvent, tableName: string, headers
   if (typeof email === 'string') { exprParts.push('#email = :email'); exprValues[':email'] = { S: email }; exprNames['#email'] = 'email'; }
   if (typeof message === 'string') { exprParts.push('#message = :message'); exprValues[':message'] = { S: message }; exprNames['#message'] = 'message'; }
   if (typeof notes === 'string') { exprParts.push('#notes = :notes'); exprValues[':notes'] = { S: notes }; exprNames['#notes'] = 'notes'; }
+  if (typeof module === 'string') { exprParts.push('#module = :module'); exprValues[':module'] = { S: module }; exprNames['#module'] = 'module'; }
   if (calledBack) { exprParts.push('#calledBack = :calledBack'); exprValues[':calledBack'] = { S: calledBack }; exprNames['#calledBack'] = 'calledBack'; }
   if (updatedBy) { exprParts.push('#updatedBy = :updatedBy'); exprValues[':updatedBy'] = { S: updatedBy }; exprNames['#updatedBy'] = 'updatedBy'; }
   exprParts.push('#updatedAt = :updatedAt');
@@ -217,9 +375,18 @@ async function handlePost(event: APIGatewayProxyEvent, tableName: string, clinic
   const phone = String(body?.phone || '').trim();
   const email = String(body?.email || '').trim();
   const message = String(body?.message || '').trim();
+  const module = String(body?.module || 'Operations').trim(); // Default to Operations
 
   if (!name || !phone) {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'Both name and phone are required.' }) };
+  }
+
+  // Validate module if provided
+  if (module && !SYSTEM_MODULES.includes(module as any)) {
+    return { statusCode: 400, headers, body: JSON.stringify({ 
+      error: `Invalid module: ${module}`,
+      availableModules: Array.from(SYSTEM_MODULES),
+    }) };
   }
 
   // Validate phone number (basic validation)
@@ -244,6 +411,7 @@ async function handlePost(event: APIGatewayProxyEvent, tableName: string, clinic
     name,
     phone,
     clinicId,
+    module, // Module categorization
     calledBack: 'NO', // Default status
     createdAt: now,
     updatedAt: now,
@@ -300,17 +468,23 @@ async function handleAdminEndpoints(event: APIGatewayProxyEvent, headers: Record
   const method = event.httpMethod || 'GET';
   const path = event.path || '';
 
-  // Verify admin access
-  const claims = (event.requestContext as any)?.authorizer?.claims;
-  if (!claims) {
+  // Verify admin access using custom authorizer
+  const userPerms = getUserPermissions(event);
+  if (!userPerms) {
     return { statusCode: 401, headers, body: JSON.stringify({ error: 'Unauthorized' }) };
   }
 
-  const allowed = extractAllowedClinicIdsFromClaims(claims);
-  const isSuperAdmin = allowed.has('*');
+  // Check if user is admin
+  const isAdmin = isAdminUser(
+    userPerms.clinicRoles,
+    userPerms.isSuperAdmin,
+    userPerms.isGlobalSuperAdmin
+  );
 
-  if (!isSuperAdmin) {
-    return { statusCode: 403, headers, body: JSON.stringify({ error: 'Admin access required' }) };
+  if (!isAdmin) {
+    return { statusCode: 403, headers, body: JSON.stringify({ 
+      error: 'Admin access required',
+    }) };
   }
 
   try {
@@ -438,4 +612,58 @@ async function bulkMarkCalled(tableName: string, requestIds: string[], headers: 
 async function bulkDelete(tableName: string, requestIds: string[], headers: Record<string, string>): Promise<APIGatewayProxyResult> {
   // Note: Implement delete functionality if needed
   return { statusCode: 501, headers, body: JSON.stringify({ error: 'Bulk delete not implemented yet' }) };
+}
+
+/**
+ * Filter callbacks based on user's module access
+ */
+function filterCallbacksByModuleAccess(
+  callbacks: any[],
+  clinicRoles: any[],
+  clinicId: string,
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean
+): any[] {
+  // Admins see all callbacks
+  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
+    return callbacks;
+  }
+
+  // Get clinic access
+  const clinicAccess = clinicRoles.find((cr: any) => cr.clinicId === clinicId);
+  if (!clinicAccess) return [];
+
+  // Get accessible modules (those with at least read permission)
+  const accessibleModules = new Set<string>();
+  if (clinicAccess.moduleAccess) {
+    for (const ma of clinicAccess.moduleAccess) {
+      if (ma.permissions.includes('read')) {
+        accessibleModules.add(ma.module);
+      }
+    }
+  }
+
+  // Filter callbacks to only show those in accessible modules
+  return callbacks.filter((callback: any) => {
+    // If callback has no module, treat as Operations (legacy)
+    const callbackModule = callback.module || 'Operations';
+    return accessibleModules.has(callbackModule);
+  });
+}
+
+/**
+ * Group callbacks by module
+ */
+function groupCallbacksByModule(callbacks: any[]): Record<string, any[]> {
+  const grouped: Record<string, any[]> = {};
+  
+  for (const callback of callbacks) {
+    const module = callback.module || 'Operations'; // Default to Operations for legacy
+    if (!grouped[module]) {
+      grouped[module] = [];
+    }
+    grouped[module].push(callback);
+  }
+  
+  return grouped;
 }

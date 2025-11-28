@@ -21,10 +21,8 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 
 export interface ChimeStackProps extends StackProps {
-  userPool: any;
-  userPoolId: string;
+  authorizer: apigw.RequestAuthorizer;
   api?: apigw.RestApi;
-  authorizer?: apigw.CognitoUserPoolsAuthorizer;
   /**
    * Optional list of CIDR blocks that are allowed to send SIP traffic to the
    * Amazon Chime Voice Connector termination endpoint. Each CIDR must have a

@@ -13,7 +13,7 @@ import { Clinic } from '../configs/clinics';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface OpenDentalStackProps extends StackProps {
-  userPool: any;
+  authorizer: apigw.RequestAuthorizer;
 }
 
 export class OpenDentalStack extends Stack {
@@ -23,7 +23,7 @@ export class OpenDentalStack extends Stack {
   public readonly consolidatedTransferAuthFn: lambdaNode.NodejsFunction;
   public readonly openDentalFn: lambdaNode.NodejsFunction;
   public readonly api: apigw.RestApi;
-  public readonly authorizer: apigw.CognitoUserPoolsAuthorizer;
+  public readonly authorizer: apigw.RequestAuthorizer;
 
   constructor(scope: Construct, id: string, props: OpenDentalStackProps) {
     super(scope, id, props);
@@ -203,9 +203,7 @@ export class OpenDentalStack extends Stack {
       responseHeaders: corsErrorHeaders,
     });
 
-    this.authorizer = new apigw.CognitoUserPoolsAuthorizer(this, 'CognitoAuthorizer', {
-      cognitoUserPools: [props.userPool],
-    });
+    this.authorizer = props.authorizer;
 
     // ========================================
     // LAMBDA FUNCTION

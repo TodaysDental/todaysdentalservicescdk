@@ -9,9 +9,8 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface AdminStackProps extends StackProps {
-  userPool: any;
-  userPoolArn: string;
-  userPoolId: string;
+  authorizer: apigw.RequestAuthorizer;
+  staffUserTableName: string;
   clinicHoursTableName: string;
   staffClinicInfoTableName?: string;
   agentPresenceTableName?: string;
@@ -54,7 +53,7 @@ export class AdminStack extends Stack {
   public readonly getDetailedAnalyticsFn?: lambdaNode.NodejsFunction; // ** NEW: Detailed Analytics Lambda **
   // ...existing code...
   public readonly api: apigw.RestApi;
-  public readonly authorizer: apigw.CognitoUserPoolsAuthorizer;
+  public readonly authorizer: apigw.RequestAuthorizer;
 
   constructor(scope: Construct, id: string, props: AdminStackProps) {
     super(scope, id, props);
@@ -101,9 +100,7 @@ export class AdminStack extends Stack {
       responseHeaders: corsErrorHeaders,
     });
 
-    this.authorizer = new apigw.CognitoUserPoolsAuthorizer(this, 'CognitoAuthorizer', {
-      cognitoUserPools: [props.userPool],
-    });
+    this.authorizer = props.authorizer;
 
 
     // ========================================
@@ -119,24 +116,20 @@ export class AdminStack extends Stack {
       timeout: Duration.seconds(30),
       bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
-        USER_POOL_ID: props.userPoolId,
-        COGNITO_REGION: Stack.of(this).region,
-        CORS_ORIGIN: 'https://todaysdentalinsights.com',
+        STAFF_USER_TABLE: props.staffUserTableName,
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName ?? '',
+        CORS_ORIGIN: 'https://todaysdentalinsights.com',
       },
     });
 
-    // Register Lambda permissions
-    this.registerFnV3.addToRolePolicy(new iam.PolicyStatement({
-      actions: [
-        'cognito-idp:AdminCreateUser',
-        'cognito-idp:AdminGetUser',
-        'cognito-idp:AdminAddUserToGroup',
-        'cognito-idp:AdminRemoveUserFromGroup',
-        'cognito-idp:ListGroups',
-      ],
-      resources: [props.userPoolArn],
-    }));
+    // Grant permissions to DynamoDB tables
+    const staffUserTable = dynamodb.Table.fromTableName(this, 'StaffUserTable', props.staffUserTableName);
+    staffUserTable.grantReadWriteData(this.registerFnV3);
+    
+    if (props.staffClinicInfoTableName) {
+      const staffClinicInfoTable = dynamodb.Table.fromTableName(this, 'StaffClinicInfoTableImport', props.staffClinicInfoTableName);
+      staffClinicInfoTable.grantReadWriteData(this.registerFnV3);
+    }
 
 
 
@@ -149,25 +142,19 @@ export class AdminStack extends Stack {
       timeout: Duration.seconds(30),
       bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
-        USER_POOL_ID: props.userPoolId,
-        COGNITO_REGION: Stack.of(this).region,
+        STAFF_USER_TABLE: props.staffUserTableName,
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName ?? '',
+        CORS_ORIGIN: 'https://todaysdentalinsights.com',
       },
     });
 
-    // Users Lambda permissions for Cognito operations
-    this.usersFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: [
-        'cognito-idp:ListUsers',
-        'cognito-idp:AdminListGroupsForUser',
-        'cognito-idp:AdminGetUser',
-        'cognito-idp:AdminUpdateUserAttributes',
-        'cognito-idp:AdminAddUserToGroup',
-        'cognito-idp:AdminRemoveUserFromGroup',
-        'cognito-idp:AdminDeleteUser',
-      ],
-      resources: [props.userPoolArn],
-    }));
+    // Grant permissions to DynamoDB tables
+    staffUserTable.grantReadWriteData(this.usersFn);
+    
+    if (props.staffClinicInfoTableName) {
+      const staffClinicInfoTable2 = dynamodb.Table.fromTableName(this, 'StaffClinicInfoTableImport2', props.staffClinicInfoTableName);
+      staffClinicInfoTable2.grantReadWriteData(this.usersFn);
+    }
     if (props.staffClinicInfoTableName) {
       this.usersFn.addToRolePolicy(new iam.PolicyStatement({
         actions: [

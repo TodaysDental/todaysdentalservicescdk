@@ -6,14 +6,12 @@ import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
-import * as cognito from 'aws-cdk-lib/aws-cognito';
 import clinicsJson from '../configs/clinics.json';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface CallbackStackProps extends StackProps {
-  // Reference to existing Cognito user pool for authorization
-  userPoolArn: string;
-  userPoolId: string;
+  // Reference to custom authorizer
+  authorizer: apigw.RequestAuthorizer;
 }
 
 export class CallbackStack extends Stack {
@@ -145,13 +143,8 @@ export class CallbackStack extends Stack {
       responseHeaders: corsErrorHeaders,
     });
 
-    // Import existing Cognito User Pool
-    const userPool = cognito.UserPool.fromUserPoolArn(this, 'ImportedUserPool', props.userPoolArn);
-    
-    // Create authorizer for this API
-    const authorizer = new apigw.CognitoUserPoolsAuthorizer(this, 'CallbackAuthorizer', {
-      cognitoUserPools: [userPool],
-    });
+    // Use the custom Lambda authorizer
+    const authorizer = props.authorizer;
 
     // Create callback endpoints: /{clinicId}
     const callbackResource = callbackApi.root.addResource('{clinicId}');
@@ -159,7 +152,7 @@ export class CallbackStack extends Stack {
     // Add specific methods
     callbackResource.addMethod('GET', new apigw.LambdaIntegration(callbackLambda), {
       authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [
         { statusCode: '200' },
         { statusCode: '401' },
@@ -181,7 +174,7 @@ export class CallbackStack extends Stack {
 
     callbackResource.addMethod('PUT', new apigw.LambdaIntegration(callbackLambda), {
       authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [
         { statusCode: '200' },
         { statusCode: '400' },
@@ -203,7 +196,7 @@ export class CallbackStack extends Stack {
     // List all callbacks across all clinics (admin only)
     adminCallbackResource.addMethod('GET', new apigw.LambdaIntegration(callbackLambda), {
       authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }],
     });
 
@@ -211,7 +204,7 @@ export class CallbackStack extends Stack {
     const bulkCallbackResource = adminCallbackResource.addResource('bulk');
     bulkCallbackResource.addMethod('POST', new apigw.LambdaIntegration(callbackLambda), {
       authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }],
     });
 

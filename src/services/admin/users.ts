@@ -1,549 +1,38 @@
-// import {
-//   CognitoIdentityProviderClient,
-//   AdminGetUserCommand,
-//   AdminUpdateUserAttributesCommand,
-//   AdminListGroupsForUserCommand,
-//   AdminAddUserToGroupCommand,
-//   AdminRemoveUserFromGroupCommand,
-//   AdminDeleteUserCommand,
-//   ListUsersCommand,
-//   ListUsersCommandOutput,
-// } from "@aws-sdk/client-cognito-identity-provider";
-
-// import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-// import { DynamoDBDocumentClient, QueryCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
-// import { buildCorsHeaders } from "../../shared/utils/cors";
-// import { createRemoteJWKSet, jwtVerify, JWTPayload } from "jose";
-
-// type ClinicRole = { clinicId: string | number; role: string };
-
-// // Defines the detailed staff info structure for a single clinic
-// type StaffClinicDetail = {
-//   clinicId: string;
-//   UserNum?: number;
-//   UserName?: string;
-//   EmployeeNum?: number;
-//   employeeName?: string;
-//   ProviderNum?: string;
-//   providerName?: string;
-//   ClinicNum?: string;
-//   hourlyPay?: string | number;
-// };
-
-// // Updated PutUserBody to use the new detailed array for DynamoDB
-// type PutUserBody = {
-//   givenName?: string;
-//   familyName?: string;
-//   clinics?: ClinicRole[];
-//   makeGlobalSuperAdmin?: boolean;
-//   staffDetails?: StaffClinicDetail[];
-//   openDentalPerClinic?: StaffClinicDetail[];
-// };
-
-// const cognito = new CognitoIdentityProviderClient({});
-// const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-
-// // Get table names from environment variables
-// const STAFF_INFO_TABLE = process.env.STAFF_CLINIC_INFO_TABLE;
-
-// export const handler = async (event: any) => {
-//   const corsHeaders = buildCorsHeaders({ allowMethods: ["OPTIONS", "GET", "PUT", "DELETE"] });
-//   if (event.httpMethod === "OPTIONS") {
-//     return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: true }) };
-//   }
-
-//   const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
-//   const verifyResult = await verifyIdToken(authz);
-//   if (!verifyResult.ok) {
-//     return httpErr(verifyResult.code, verifyResult.message);
-//   }
-//   const caller = callerAuthContextFromClaims(verifyResult.payload);
-//   if (!caller.isSuperAdmin && !hasAnyAdmin(caller.rolesByClinic)) {
-//     return httpErr(403, "forbidden: admin or super admin required");
-//   }
-
-//   const userPoolId = process.env.USER_POOL_ID ?? "";
-//   if (!userPoolId) {
-//     return httpErr(500, "USER_POOL_ID not configured");
-//   }
-
-//   const pathUsernameRaw = String(event?.pathParameters?.username || "");
-//   const pathUsername = pathUsernameRaw ? decodeURIComponent(pathUsernameRaw).trim().toLowerCase() : "";
-
-//   try {
-//     // Collection: GET /users
-//     const isUsersCollectionGet = event.httpMethod === 'GET' && (!pathUsername) && (String(event.resource || '').endsWith('/users') || String(event.path || '').endsWith('/users'));
-//     if (isUsersCollectionGet) {
-//       if (!caller.isSuperAdmin && !hasAnyAdmin(caller.rolesByClinic)) {
-//         return httpErr(403, "forbidden: admin or super admin required");
-//       }
-      
-//       // FIXED: Fetch ALL users with proper typing
-//       const allUsers: any[] = [];
-//       let paginationToken: string | undefined = undefined;
-      
-//       do {
-//         const listResp: ListUsersCommandOutput = await cognito.send(new ListUsersCommand({ 
-//           UserPoolId: userPoolId, 
-//           Limit: 60, // Max allowed by AWS
-//           PaginationToken: paginationToken 
-//         }));
-        
-//         allUsers.push(...(listResp.Users || []));
-//         paginationToken = listResp.PaginationToken;
-//       } while (paginationToken);
-
-//       // Build set of clinic IDs the caller can administer
-//       const allowedClinics = caller.isSuperAdmin ? undefined : new Set(Object.entries(caller.rolesByClinic).filter(([, code]) => code === 'S' || code === 'A').map(([cid]) => cid));
-
-//       const items: Array<Record<string, any>> = [];
-//       for (const u of allUsers) {
-//         const username = String(u.Username || '').toLowerCase();
-//         const attrs: Record<string, string> = Object.fromEntries((u.Attributes || []).map((a: any) => [a.Name, a.Value]));
-//         const email = attrs['email']?.toLowerCase() || '';
-
-//         // Get Cognito groups
-//         const groupsResp = await cognito.send(new AdminListGroupsForUserCommand({ UserPoolId: userPoolId, Username: username }));
-//         let groupNames = (groupsResp.Groups || []).map((g) => g.GroupName!).filter(Boolean) as string[];
-        
-//         // Get staff details from DynamoDB
-//         const staffDetails = STAFF_INFO_TABLE && email ? await getStaffInfoFromDynamoDB(email) : [];
-
-//         // Check visibility based on BOTH Cognito groups AND DynamoDB staffDetails
-//         if (allowedClinics) {
-//           // Filter Cognito groups to only show groups in allowed clinics
-//           const visibleGroups = groupNames.filter((g) => {
-//             if (g === 'GLOBAL__SUPER_ADMIN') return false;
-//             const m = /^clinic_([^_][^\s]*)__[A-Z_]+$/.exec(String(g));
-//             if (!m) return false;
-//             return allowedClinics.has(m[1]);
-//           });
-
-//           // Check if user has any staffDetails in allowed clinics
-//           const hasStaffDetailsInAllowedClinics = staffDetails.some(detail => 
-//             allowedClinics.has(String(detail.clinicId))
-//           );
-
-//           // Skip user only if they have NO visibility in ANY allowed clinic
-//           if (visibleGroups.length === 0 && !hasStaffDetailsInAllowedClinics) {
-//             continue;
-//           }
-
-//           // Use visible groups for response
-//           groupNames = visibleGroups;
-//         }
-
-//         const { clinics, rolesByClinic, isSuperAdmin } = deriveClinicsFromGroups(groupNames);
-        
-//         // Merge clinics from both Cognito groups and DynamoDB staffDetails
-//         const allClinicsSet = new Set<string>(clinics);
-//         staffDetails.forEach(detail => allClinicsSet.add(String(detail.clinicId)));
-//         const allClinics = Array.from(allClinicsSet);
-
-//         // Filter staffDetails to only show clinics the caller can see
-//         const visibleStaffDetails = allowedClinics 
-//           ? staffDetails.filter(detail => allowedClinics.has(String(detail.clinicId)))
-//           : staffDetails;
-
-//         items.push({
-//           username,
-//           email,
-//           givenName: String(attrs['given_name'] || ''),
-//           familyName: String(attrs['family_name'] || ''),
-//           groups: groupNames,
-//           clinics: allClinics,
-//           rolesByClinic,
-//           isSuperAdmin,
-//           staffDetails: visibleStaffDetails,
-//         });
-//       }
-//       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ items }) };
-//     }
-
-//     // GET /users/{username}
-//     if (event.httpMethod === "GET") {
-//       if (!pathUsername) return httpErr(400, "username required");
-      
-//       const user = await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
-//       const attrs: Record<string, string> = Object.fromEntries((user.UserAttributes || []).map((a: any) => [a.Name, a.Value]));
-//       const email = attrs['email']?.toLowerCase() || '';
-      
-//       const groupsResp = await cognito.send(new AdminListGroupsForUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
-//       const groupNames = (groupsResp.Groups || []).map((g) => g.GroupName!).filter(Boolean) as string[];
-//       const { clinics, rolesByClinic, isSuperAdmin } = deriveClinicsFromGroups(groupNames);
-      
-//       const staffDetails = STAFF_INFO_TABLE ? await getStaffInfoFromDynamoDB(email) : [];
-
-//       // Merge clinics from both sources
-//       const allClinicsSet = new Set<string>(clinics);
-//       staffDetails.forEach(detail => allClinicsSet.add(String(detail.clinicId)));
-//       const allClinics = Array.from(allClinicsSet);
-
-//       return httpOk({
-//         username: pathUsername,
-//         email,
-//         givenName: String(attrs['given_name'] || ''),
-//         familyName: String(attrs['family_name'] || ''),
-//         groups: groupNames,
-//         clinics: allClinics,
-//         rolesByClinic,
-//         isSuperAdmin,
-//         staffDetails,
-//       });
-//     }
-
-//     // PUT /users/{username}
-//     if (event.httpMethod === "PUT") {
-//       const body = parseBody(event.body) as PutUserBody;
-//       validatePutBody(body);
-
-//       // Authorization logic...
-//       if (body.makeGlobalSuperAdmin && !caller.isSuperAdmin) {
-//         return httpErr(403, "only super admin can grant GLOBAL__SUPER_ADMIN");
-//       }
-//       if (!body.makeGlobalSuperAdmin) {
-//         const clinics = Array.isArray(body.clinics) ? body.clinics : [];
-//         const authValidation = canAssignAll(clinics, caller);
-//         if (!authValidation.ok) {
-//           return httpErr(403, authValidation.message || "forbidden");
-//         }
-//       }
-
-//       // Update basic Cognito attributes
-//       const attribs: Array<{ Name: string; Value: string }> = [];
-//       if (body.givenName) attribs.push({ Name: "given_name", Value: String(body.givenName) });
-//       if (body.familyName) attribs.push({ Name: "family_name", Value: String(body.familyName) });
-//       if (attribs.length > 0) {
-//         await cognito.send(new AdminUpdateUserAttributesCommand({ UserPoolId: userPoolId, Username: pathUsername, UserAttributes: attribs }));
-//       }
-
-//       // Get user email
-//       const user = await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
-//       const email = (user.UserAttributes || []).find(a => a.Name === 'email')?.Value?.toLowerCase();
-
-//       if (!email) {
-//           return httpErr(404, "User email not found, cannot sync staff details");
-//       }
-      
-//       const staffDetailsToSync = body.openDentalPerClinic ?? body.staffDetails;
-
-//       if (STAFF_INFO_TABLE && staffDetailsToSync) { 
-//           await syncStaffInfoInDynamoDB(email, staffDetailsToSync);
-//       }
-
-//       // Sync Cognito groups
-//       const desiredGroups = body.makeGlobalSuperAdmin ? ["GLOBAL__SUPER_ADMIN"] : buildGroupNames(Array.isArray(body.clinics) ? body.clinics : []);
-//       const currentGroupsResp = await cognito.send(new AdminListGroupsForUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
-//       const currentGroups = (currentGroupsResp.Groups || []).map((g) => g.GroupName!).filter(Boolean) as string[];
-
-//       const managed = new Set<string>(["GLOBAL__SUPER_ADMIN", ...currentGroups.filter((g) => g.startsWith("clinic_"))]);
-//       const toRemove = Array.from(managed).filter((g) => !desiredGroups.includes(g));
-//       const toAdd = desiredGroups.filter((g) => !currentGroups.includes(g));
-
-//       for (const g of toRemove) await cognito.send(new AdminRemoveUserFromGroupCommand({ UserPoolId: userPoolId, Username: pathUsername, GroupName: g }));
-//       for (const g of toAdd) await cognito.send(new AdminAddUserToGroupCommand({ UserPoolId: userPoolId, Username: pathUsername, GroupName: g }));
-
-//       return httpOk({
-//         username: pathUsername,
-//         groupsAssigned: desiredGroups
-//       });
-//     }
-
-//     // DELETE /users/{username}
-//     if (event.httpMethod === "DELETE") {
-      
-//       // Get user email before deleting from Cognito
-//       let email: string | undefined;
-//       try {
-//         const user = await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
-//         email = (user.UserAttributes || []).find(a => a.Name === 'email')?.Value?.toLowerCase();
-//       } catch (e) {
-//         console.warn(`Could not find user ${pathUsername} to get email, may not be able to clean up DDB`, e);
-//       }
-
-//       // Delete from Cognito
-//       await cognito.send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
-      
-//       // Delete from DynamoDB using the email
-//       const deletedStaffInfo = (STAFF_INFO_TABLE && email) 
-//         ? await deleteStaffInfoFromDynamoDB(email)
-//         : { deleted: 0, enabled: false };
-
-//       return httpOk({ username: pathUsername, deleted: true, staffInfo: deletedStaffInfo });
-//     }
-
-//     return httpErr(405, "method not allowed");
-//   } catch (err: any) {
-//     return httpErr(500, err?.message || "internal error");
-//   }
-// };
-
-
-// // ========================================
-// // DYNAMODB HELPER FUNCTIONS
-// // ========================================
-
-// async function getStaffInfoFromDynamoDB(email: string): Promise<StaffClinicDetail[]> {
-//     if (!STAFF_INFO_TABLE) return [];
-//     if (!email) return [];
-//     try {
-//         const result = await ddb.send(new QueryCommand({
-//             TableName: STAFF_INFO_TABLE,
-//             KeyConditionExpression: 'email = :email',
-//             ExpressionAttributeValues: { ':email': email.toLowerCase() }
-//         }));
-//         return (result.Items || []) as StaffClinicDetail[];
-//     } catch (error) {
-//         console.error(`Failed to get staff info for ${email}:`, error);
-//         return [];
-//     }
-// }
-
-// async function syncStaffInfoInDynamoDB(email: string, details: StaffClinicDetail[]) {
-//     if (!STAFF_INFO_TABLE) return;
-//     const existingItems = await getStaffInfoFromDynamoDB(email);
-//     const desiredClinicIds = new Set(details.map(item => String(item.clinicId)));
-
-//     const writeRequests: { PutRequest?: any; DeleteRequest?: any; }[] = [];
-
-//     // Add PutRequests for all details in the request body (creates or updates)
-//     for (const detail of details) {
-//         if (!detail.clinicId) continue;
-//         writeRequests.push({
-//             PutRequest: {
-//                 Item: {
-//                     ...detail,
-//                     email,
-//                     clinicId: String(detail.clinicId),
-//                     updatedAt: new Date().toISOString()
-//                 }
-//             }
-//         });
-//     }
-
-//     // Add DeleteRequests for clinics no longer present in the request body
-//     for (const item of existingItems) {
-//         if (!desiredClinicIds.has(item.clinicId)) {
-//             writeRequests.push({
-//                 DeleteRequest: { Key: { email, clinicId: item.clinicId } }
-//             });
-//         }
-//     }
-
-//     if (writeRequests.length === 0) return;
-
-//     // Execute in batches
-//     for (let i = 0; i < writeRequests.length; i += 25) {
-//         const batch = writeRequests.slice(i, i + 25);
-//         await ddb.send(new BatchWriteCommand({
-//             RequestItems: { [STAFF_INFO_TABLE]: batch }
-//         }));
-//     }
-// }
-
-// async function deleteStaffInfoFromDynamoDB(email: string): Promise<Record<string, any>> {
-//     if (!STAFF_INFO_TABLE) return { deleted: 0, enabled: false };
-//     const itemsToDelete = await getStaffInfoFromDynamoDB(email);
-//     if (itemsToDelete.length === 0) return { deleted: 0 };
-
-//     const deleteRequests = itemsToDelete.map(item => ({
-//         DeleteRequest: { Key: { email, clinicId: item.clinicId } }
-//     }));
-
-//     for (let i = 0; i < deleteRequests.length; i += 25) {
-//         const batch = deleteRequests.slice(i, i + 25);
-//         await ddb.send(new BatchWriteCommand({
-//             RequestItems: { [STAFF_INFO_TABLE]: batch }
-//         }));
-//     }
-//     return { deleted: itemsToDelete.length };
-// }
-
-
-// // ========================================
-// // HELPER FUNCTIONS
-// // ========================================
-
-// function parseBody(body: any): Record<string, any> {
-//   if (!body) return {};
-//   try { return typeof body === "string" ? JSON.parse(body) : body; } catch { return {}; }
-// }
-
-// function validatePutBody(body: PutUserBody) {
-//   if (body.makeGlobalSuperAdmin) return;
-//   const allowedRoles = new Set([
-//     "SUPER_ADMIN", "ADMIN", "PROVIDER", "MARKETING", "USER",
-//     "DOCTOR", "HYGIENIST", "DENTAL_ASSISTANT", "TRAINEE", "PATIENT_COORDINATOR"
-//   ]);
-//   const clinics = Array.isArray(body.clinics) ? body.clinics : [];
-//   for (const c of clinics) {
-//     if (!c.clinicId) throw new Error("clinicId is required for each clinic mapping");
-//     if (!allowedRoles.has(String(c.role || "").toUpperCase())) throw new Error("invalid role in clinics");
-//   }
-// }
-
-// function buildGroupNames(clinics: ClinicRole[]): string[] {
-//   return clinics.map((c) => `clinic_${String(c.clinicId)}__${String(c.role).toUpperCase()}`);
-// }
-
-// function httpOk(data: Record<string, any>) {
-//   return { statusCode: 200, headers: buildCorsHeaders({ allowMethods: ["OPTIONS", "GET", "PUT", "DELETE"] }), body: JSON.stringify({ success: true, ...data }) };
-// }
-
-// function httpErr(code: number, message: string) {
-//   return { statusCode: code, headers: buildCorsHeaders({ allowMethods: ["OPTIONS", "GET", "PUT", "DELETE"] }), body: JSON.stringify({ success: false, message }) };
-// }
-
-// // Auth helpers
-// const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
-// const USER_POOL_ID = process.env.USER_POOL_ID;
-// const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
-// let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
-
-// async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; payload: JWTPayload } | { ok: false; code: number; message: string }> {
-//   if (!authorizationHeader || !authorizationHeader.toLowerCase().startsWith("bearer ")) {
-//     return { ok: false, code: 401, message: "missing bearer token" };
-//   }
-//   if (!ISSUER) {
-//     return { ok: false, code: 500, message: "issuer not configured" };
-//   }
-//   const token = authorizationHeader.slice(7).trim();
-//   try {
-//     JWKS = JWKS || createRemoteJWKSet(new URL(`${ISSUER}/.well-known/jwks.json`));
-//     const { payload } = await jwtVerify(token, JWKS, { issuer: ISSUER });
-//     if ((payload as any).token_use !== "id") {
-//       return { ok: false, code: 401, message: "id token required" };
-//     }
-//     return { ok: true, payload };
-//   } catch (_err) {
-//     return { ok: false, code: 401, message: "invalid token" };
-//   }
-// }
-
-// function callerAuthContextFromClaims(payload: JWTPayload): { isSuperAdmin: boolean; rolesByClinic: Record<string, string>; } {
-//   const ctx: { isSuperAdmin: boolean; rolesByClinic: Record<string, string>; } = { isSuperAdmin: false, rolesByClinic: {} };
-//   if (String((payload as any)["x_is_super_admin"]).toLowerCase() === "true" || String((payload as any)["x_clinics"]).toUpperCase() === "ALL") {
-//     ctx.isSuperAdmin = true;
-//     return ctx;
-//   }
-//   const rbc = String((payload as any)["x_rbc"] || "").trim();
-//   if (rbc) {
-//     for (const pair of rbc.split(",")) {
-//       const [clinicId, code] = pair.split(":");
-//       if (!clinicId || !code) continue;
-//       ctx.rolesByClinic[String(clinicId)] = String(code).toUpperCase();
-//     }
-//     return ctx;
-//   }
-//   const groups = Array.isArray((payload as any)["cognito:groups"]) ? ((payload as any)["cognito:groups"] as string[]) : [];
-//   for (const g of groups) {
-//     if (String(g) === "GLOBAL__SUPER_ADMIN") {
-//       ctx.isSuperAdmin = true;
-//       continue;
-//     }
-//     const m = /^clinic_([^_][^\s]*)__([A-Z_]+)$/.exec(String(g));
-//     if (!m) continue;
-//     const clinicId = m[1];
-//     const roleKey = m[2];
-//     const code = roleKeyToCode(roleKey);
-//     if (!code) continue;
-//     ctx.rolesByClinic[String(clinicId)] = code;
-//   }
-//   return ctx;
-// }
-
-// function hasAnyAdmin(rolesByClinic: Record<string, string>): boolean {
-//   return Object.values(rolesByClinic).some((code) => code === "S" || code === "A");
-// }
-
-// function canAssignAll(requestedClinics: ClinicRole[], caller: { isSuperAdmin: boolean; rolesByClinic: Record<string, string> }): { ok: boolean; message?: string } {
-//   const errors: string[] = [];
-//   for (const c of requestedClinics) {
-//     const clinicId = String(c.clinicId);
-//     const requestedRoleCode = roleKeyToCode(String(c.role).toUpperCase());
-//     if (requestedRoleCode === "S" && !caller.isSuperAdmin) {
-//       errors.push(`only super admin can assign SUPER_ADMIN role`);
-//       continue;
-//     }
-//     if (caller.isSuperAdmin) {
-//       continue;
-//     }
-//     const callerRole = caller.rolesByClinic[clinicId];
-//     if (!callerRole) {
-//       errors.push(`no admin access for clinic ${clinicId}`);
-//       continue;
-//     }
-//     if (callerRole === "S") {
-//       continue;
-//     }
-//     if (callerRole === "A") {
-//       if (!["A", "P", "M", "U", "D", "H", "DA", "TC", "PC"].includes(requestedRoleCode)) {
-//         errors.push(`admin cannot assign role ${c.role} for clinic ${clinicId}`);
-//       }
-//       continue;
-//     }
-//     errors.push(`insufficient role at clinic ${clinicId}`);
-//   }
-//   return errors.length ? { ok: false, message: errors.join("; ") } : { ok: true };
-// }
-
-// function roleKeyToCode(roleKey: string): string {
-//   switch (String(roleKey).toUpperCase()) {
-//     case "SUPER_ADMIN": return "S";
-//     case "ADMIN": return "A";
-//     case "PROVIDER": return "P";
-//     case "MARKETING": return "M";
-//     case "USER": return "U";
-//     case "DOCTOR": return "D";
-//     case "HYGIENIST": return "H";
-//     case "DENTAL_ASSISTANT": return "DA";
-//     case "TRAINEE": return "TC";
-//     case "PATIENT_COORDINATOR": return "PC";
-//     default: return "";
-//   }
-// }
-
-// function deriveClinicsFromGroups(groupNames: string[]): { clinics: string[]; rolesByClinic: Record<string, string>; isSuperAdmin: boolean } {
-//   const rolesByClinic: Record<string, string> = {};
-//   let isSuperAdmin = false;
-//   for (const g of groupNames || []) {
-//     if (String(g) === 'GLOBAL__SUPER_ADMIN') {
-//       isSuperAdmin = true;
-//       continue;
-//     }
-//     const m = /^clinic_([^_][^\s]*)__([A-Z_]+)$/.exec(String(g));
-//     if (!m) continue;
-//     const clinicId = m[1];
-//     const roleKey = m[2];
-//     const code = roleKeyToCode(roleKey);
-//     if (!code) continue;
-//     const existing = rolesByClinic[clinicId];
-//     const order: Record<string, number> = { S: 5, A: 4, P: 3, D: 3, H: 2, DA: 2, TC: 2, PC: 2, M: 1, U: 0 };
-//     if (existing === undefined || order[code] > (order[existing] ?? -1)) {
-//       rolesByClinic[clinicId] = code;
-//     }
-//   }
-//   return { clinics: Object.keys(rolesByClinic), rolesByClinic, isSuperAdmin };
-// }
-
-import {
-  CognitoIdentityProviderClient,
-  AdminGetUserCommand,
-  AdminUpdateUserAttributesCommand,
-  AdminListGroupsForUserCommand,
-  AdminAddUserToGroupCommand,
-  AdminRemoveUserFromGroupCommand,
-  AdminDeleteUserCommand,
-  ListUsersCommand,
-  ListUsersCommandOutput,
-} from "@aws-sdk/client-cognito-identity-provider";
-
+/**
+ * Admin API: User management endpoints
+ * Manages users in DynamoDB StaffUser table
+ * 
+ * Routes:
+ * - GET /users - List all users (admin only)
+ * - GET /users/self - Get current user info (authenticated users)
+ * - GET /users/{username} - Get specific user (admin only)
+ * - PUT /users/{username} - Update user (admin only)
+ * - DELETE /users/{username} - Delete user (admin only)
+ */
+
+import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, QueryCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
-import { buildCorsHeaders } from "../../shared/utils/cors";
-import { createRemoteJWKSet, jwtVerify, JWTPayload } from "jose";
+import { DynamoDBDocumentClient, ScanCommand, GetCommand, PutCommand, DeleteCommand, QueryCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { buildCorsHeaders } from '../../shared/utils/cors';
+import { StaffUser, UserRole, USER_ROLES, PublicStaffUser, ModuleAccess, SYSTEM_MODULES, MODULE_PERMISSIONS } from '../../shared/types/user';
+import { hashPassword } from '../../shared/utils/jwt';
 
-type ClinicRole = { clinicId: string | number; role: string };
+const ddbClient = new DynamoDBClient({});
+const ddb = DynamoDBDocumentClient.from(ddbClient);
+
+const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE || 'StaffUser';
+const STAFF_INFO_TABLE = process.env.STAFF_CLINIC_INFO_TABLE;
+
+type ModuleAccessInput = {
+  module: string;
+  permissions: string[];
+};
+
+type ClinicRoleAssignment = { 
+  clinicId: string; 
+  role: UserRole;
+  moduleAccess?: ModuleAccessInput[];
+};
 
 type StaffClinicDetail = {
   clinicId: string;
@@ -560,491 +49,527 @@ type StaffClinicDetail = {
 type PutUserBody = {
   givenName?: string;
   familyName?: string;
-  clinics?: ClinicRole[];
+  clinicRoles?: ClinicRoleAssignment[]; // Per-clinic role assignments
   makeGlobalSuperAdmin?: boolean;
+  isActive?: boolean;
+  password?: string;
   staffDetails?: StaffClinicDetail[];
   openDentalPerClinic?: StaffClinicDetail[];
 };
 
-const cognito = new CognitoIdentityProviderClient({});
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const STAFF_INFO_TABLE = process.env.STAFF_CLINIC_INFO_TABLE;
+/**
+ * Main handler for user management
+ */
+export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'GET', 'PUT', 'DELETE'] });
 
-export const handler = async (event: any) => {
-  const corsHeaders = buildCorsHeaders({ allowMethods: ["OPTIONS", "GET", "PUT", "DELETE"] });
-  if (event.httpMethod === "OPTIONS") {
+  if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: true }) };
   }
 
-  const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
-  const verifyResult = await verifyIdToken(authz);
-  if (!verifyResult.ok) {
-    return httpErr(verifyResult.code, verifyResult.message);
-  }
-  
-  // 1. Extract User Context
-  const caller = callerAuthContextFromClaims(verifyResult.payload);
-  const userPoolId = process.env.USER_POOL_ID ?? "";
-  
-  if (!userPoolId) {
-    return httpErr(500, "USER_POOL_ID not configured");
-  }
-
-  const pathUsernameRaw = String(event?.pathParameters?.username || "");
-  const pathUsername = pathUsernameRaw ? decodeURIComponent(pathUsernameRaw).trim().toLowerCase() : "";
-
   try {
+    // Get caller context from custom authorizer
+    const callerEmail = event.requestContext.authorizer?.email || '';
+    const callerClinicRoles = JSON.parse(event.requestContext.authorizer?.clinicRoles || '[]');
+    const callerIsSuperAdmin = event.requestContext.authorizer?.isSuperAdmin === 'true';
+    const callerIsGlobalSuperAdmin = event.requestContext.authorizer?.isGlobalSuperAdmin === 'true';
+    
+    // Extract caller's clinics for authorization checks
+    const callerClinics = callerClinicRoles.map((cr: any) => cr.clinicId);
+
+    const pathUsernameRaw = String(event?.pathParameters?.username || '');
+    const pathUsername = pathUsernameRaw ? decodeURIComponent(pathUsernameRaw).trim().toLowerCase() : '';
+
     // ==================================================================
-    // 2. CHECK FOR SELF-ACCESS FIRST (ALLOW NON-ADMINS)
+    // 1. GET /users/self - Get current user info (any authenticated user)
     // ==================================================================
-    // We check this BEFORE the admin gatekeeper.
     const isSelfRequest = (
       String(event.path || '').endsWith('/users/self') || 
       String(event.resource || '').endsWith('/users/self') ||
-      // Handle case where 'self' might be passed as the username parameter if routing is set up that way
       pathUsername === 'self' 
     );
 
     if (event.httpMethod === 'GET' && isSelfRequest) {
-      const currentUsername = caller.staffId; // Use the ID from the token
-      console.log('✅ Authorized Staff self-lookup for:', currentUsername);
-      
-      try {
-        const user = await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: currentUsername }));
-        const attrs: Record<string, string> = Object.fromEntries((user.UserAttributes || []).map((a: any) => [a.Name, a.Value]));
-        const email = attrs['email']?.toLowerCase() || '';
-        
-        const groupsResp = await cognito.send(new AdminListGroupsForUserCommand({ UserPoolId: userPoolId, Username: currentUsername }));
-        const groupNames = (groupsResp.Groups || []).map((g) => g.GroupName!).filter(Boolean) as string[];
-        const { clinics, rolesByClinic, isSuperAdmin } = deriveClinicsFromGroups(groupNames);
-        
-        const staffDetails = STAFF_INFO_TABLE && email ? await getStaffInfoFromDynamoDB(email) : [];
-
-        const allClinicsSet = new Set<string>(clinics);
-        staffDetails.forEach(detail => allClinicsSet.add(String(detail.clinicId)));
-
-        return httpOk({
-          username: currentUsername,
-          email,
-          givenName: String(attrs['given_name'] || ''),
-          familyName: String(attrs['family_name'] || ''),
-          groups: groupNames,
-          clinics: Array.from(allClinicsSet),
-          rolesByClinic,
-          isSuperAdmin,
-          staffDetails,
-        });
-      } catch (err: any) {
-        console.error('Error fetching self details:', err);
-        return httpErr(404, "User details not found");
-      }
+      return await handleGetSelf(callerEmail);
     }
 
     // ==================================================================
-    // 3. ADMIN GATEKEEPER (BLOCK EVERYONE ELSE)
+    // 2. Admin gatekeeper - All other routes require admin privileges
     // ==================================================================
-    // If the request was NOT for /users/self, we now enforce Admin/Super Admin rights.
-    if (!caller.isSuperAdmin && !hasAnyAdmin(caller.rolesByClinic)) {
-      console.warn(`⛔ Access Denied. User ${caller.staffId} tried to access admin route.`);
-      return httpErr(403, "forbidden: admin or super admin required");
+    const callerHasAdminRole = callerClinicRoles.some((cr: any) => 
+      ['Admin', 'SuperAdmin'].includes(cr.role)
+    );
+    const isAdmin = callerIsGlobalSuperAdmin || callerIsSuperAdmin || callerHasAdminRole;
+
+    if (!isAdmin) {
+      return httpErr(403, 'forbidden: admin or super admin required');
     }
 
     // ==================================================================
-    // 4. GET /users (Collection) - Admin Only
+    // 3. GET /users - List all users (admin only)
     // ==================================================================
-    const isUsersCollectionGet = event.httpMethod === 'GET' && (!pathUsername) && (String(event.resource || '').endsWith('/users') || String(event.path || '').endsWith('/users'));
-    
-    if (isUsersCollectionGet) {
-      const allUsers: any[] = [];
-      let paginationToken: string | undefined = undefined;
-      
-      do {
-        const listResp: ListUsersCommandOutput = await cognito.send(new ListUsersCommand({ 
-          UserPoolId: userPoolId, 
-          Limit: 60,
-          PaginationToken: paginationToken 
-        }));
-        allUsers.push(...(listResp.Users || []));
-        paginationToken = listResp.PaginationToken;
-      } while (paginationToken);
-
-      const allowedClinics = caller.isSuperAdmin ? undefined : new Set(Object.entries(caller.rolesByClinic).filter(([, code]) => code === 'S' || code === 'A').map(([cid]) => cid));
-      const items: Array<Record<string, any>> = [];
-
-      for (const u of allUsers) {
-        const username = String(u.Username || '').toLowerCase();
-        const attrs: Record<string, string> = Object.fromEntries((u.Attributes || []).map((a: any) => [a.Name, a.Value]));
-        const email = attrs['email']?.toLowerCase() || '';
-
-        const groupsResp = await cognito.send(new AdminListGroupsForUserCommand({ UserPoolId: userPoolId, Username: username }));
-        let groupNames = (groupsResp.Groups || []).map((g) => g.GroupName!).filter(Boolean) as string[];
-        const staffDetails = STAFF_INFO_TABLE && email ? await getStaffInfoFromDynamoDB(email) : [];
-
-        if (allowedClinics) {
-          const visibleGroups = groupNames.filter((g) => {
-            if (g === 'GLOBAL__SUPER_ADMIN') return false;
-            const m = /^clinic_([^_][^\s]*)__[A-Z_]+$/.exec(String(g));
-            return m && allowedClinics.has(m[1]);
-          });
-          const hasStaffDetailsInAllowedClinics = staffDetails.some(detail => allowedClinics.has(String(detail.clinicId)));
-
-          if (visibleGroups.length === 0 && !hasStaffDetailsInAllowedClinics) continue;
-          groupNames = visibleGroups;
-        }
-
-        const { clinics, rolesByClinic, isSuperAdmin } = deriveClinicsFromGroups(groupNames);
-        const allClinicsSet = new Set<string>(clinics);
-        staffDetails.forEach(detail => allClinicsSet.add(String(detail.clinicId)));
-        
-        const visibleStaffDetails = allowedClinics 
-          ? staffDetails.filter(detail => allowedClinics.has(String(detail.clinicId)))
-          : staffDetails;
-
-        items.push({
-          username,
-          email,
-          givenName: String(attrs['given_name'] || ''),
-          familyName: String(attrs['family_name'] || ''),
-          groups: groupNames,
-          clinics: Array.from(allClinicsSet),
-          rolesByClinic,
-          isSuperAdmin,
-          staffDetails: visibleStaffDetails,
-        });
-      }
-      return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ items }) };
+    if (event.httpMethod === 'GET' && !pathUsername) {
+      return await handleListUsers(callerIsGlobalSuperAdmin, callerIsSuperAdmin, callerClinics);
     }
 
     // ==================================================================
-    // 5. GET /users/{username} (Specific User) - Admin Only
+    // 4. GET /users/{username} - Get specific user (admin only)
     // ==================================================================
-    if (event.httpMethod === "GET") {
-      if (!pathUsername) return httpErr(400, "username required");
-      
-      const user = await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
-      const attrs: Record<string, string> = Object.fromEntries((user.UserAttributes || []).map((a: any) => [a.Name, a.Value]));
-      const email = attrs['email']?.toLowerCase() || '';
-      
-      const groupsResp = await cognito.send(new AdminListGroupsForUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
-      const groupNames = (groupsResp.Groups || []).map((g) => g.GroupName!).filter(Boolean) as string[];
-      const { clinics, rolesByClinic, isSuperAdmin } = deriveClinicsFromGroups(groupNames);
-      
-      const staffDetails = STAFF_INFO_TABLE ? await getStaffInfoFromDynamoDB(email) : [];
-      const allClinicsSet = new Set<string>(clinics);
-      staffDetails.forEach(detail => allClinicsSet.add(String(detail.clinicId)));
-
-      return httpOk({
-        username: pathUsername,
-        email,
-        givenName: String(attrs['given_name'] || ''),
-        familyName: String(attrs['family_name'] || ''),
-        groups: groupNames,
-        clinics: Array.from(allClinicsSet),
-        rolesByClinic,
-        isSuperAdmin,
-        staffDetails,
-      });
+    if (event.httpMethod === 'GET' && pathUsername) {
+      return await handleGetUser(pathUsername, callerIsGlobalSuperAdmin, callerIsSuperAdmin, callerClinics);
     }
 
     // ==================================================================
-    // 6. PUT /users/{username} - Admin Only
+    // 5. PUT /users/{username} - Update user (admin only)
     // ==================================================================
-    if (event.httpMethod === "PUT") {
+    if (event.httpMethod === 'PUT' && pathUsername) {
       const body = parseBody(event.body) as PutUserBody;
-      validatePutBody(body);
-
-      if (body.makeGlobalSuperAdmin && !caller.isSuperAdmin) {
-        return httpErr(403, "only super admin can grant GLOBAL__SUPER_ADMIN");
-      }
-      if (!body.makeGlobalSuperAdmin) {
-        const clinics = Array.isArray(body.clinics) ? body.clinics : [];
-        const authValidation = canAssignAll(clinics, caller);
-        if (!authValidation.ok) {
-          return httpErr(403, authValidation.message || "forbidden");
-        }
-      }
-
-      const attribs: Array<{ Name: string; Value: string }> = [];
-      if (body.givenName) attribs.push({ Name: "given_name", Value: String(body.givenName) });
-      if (body.familyName) attribs.push({ Name: "family_name", Value: String(body.familyName) });
-      if (attribs.length > 0) {
-        await cognito.send(new AdminUpdateUserAttributesCommand({ UserPoolId: userPoolId, Username: pathUsername, UserAttributes: attribs }));
-      }
-
-      const user = await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
-      const email = (user.UserAttributes || []).find(a => a.Name === 'email')?.Value?.toLowerCase();
-
-      if (!email) return httpErr(404, "User email not found");
-      
-      const staffDetailsToSync = body.openDentalPerClinic ?? body.staffDetails;
-      if (STAFF_INFO_TABLE && staffDetailsToSync) { 
-          await syncStaffInfoInDynamoDB(email, staffDetailsToSync);
-      }
-
-      const desiredGroups = body.makeGlobalSuperAdmin ? ["GLOBAL__SUPER_ADMIN"] : buildGroupNames(Array.isArray(body.clinics) ? body.clinics : []);
-      const currentGroupsResp = await cognito.send(new AdminListGroupsForUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
-      const currentGroups = (currentGroupsResp.Groups || []).map((g) => g.GroupName!).filter(Boolean) as string[];
-
-      const managed = new Set<string>(["GLOBAL__SUPER_ADMIN", ...currentGroups.filter((g) => g.startsWith("clinic_"))]);
-      const toRemove = Array.from(managed).filter((g) => !desiredGroups.includes(g));
-      const toAdd = desiredGroups.filter((g) => !currentGroups.includes(g));
-
-      for (const g of toRemove) await cognito.send(new AdminRemoveUserFromGroupCommand({ UserPoolId: userPoolId, Username: pathUsername, GroupName: g }));
-      for (const g of toAdd) await cognito.send(new AdminAddUserToGroupCommand({ UserPoolId: userPoolId, Username: pathUsername, GroupName: g }));
-
-      return httpOk({ username: pathUsername, groupsAssigned: desiredGroups });
+      return await handleUpdateUser(pathUsername, body, callerIsGlobalSuperAdmin, callerIsSuperAdmin, callerClinics);
     }
 
     // ==================================================================
-    // 7. DELETE /users/{username} - Admin Only
+    // 6. DELETE /users/{username} - Delete user (admin only)
     // ==================================================================
-    if (event.httpMethod === "DELETE") {
-      let email: string | undefined;
-      try {
-        const user = await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
-        email = (user.UserAttributes || []).find(a => a.Name === 'email')?.Value?.toLowerCase();
-      } catch (e) {
-        console.warn(`Could not find user ${pathUsername} to get email`, e);
-      }
-
-      await cognito.send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: pathUsername }));
-      
-      const deletedStaffInfo = (STAFF_INFO_TABLE && email) 
-        ? await deleteStaffInfoFromDynamoDB(email)
-        : { deleted: 0, enabled: false };
-
-      return httpOk({ username: pathUsername, deleted: true, staffInfo: deletedStaffInfo });
+    if (event.httpMethod === 'DELETE' && pathUsername) {
+      return await handleDeleteUser(pathUsername, callerIsGlobalSuperAdmin, callerIsSuperAdmin, callerClinics);
     }
 
-    return httpErr(405, "method not allowed");
+    return httpErr(404, 'route not found');
   } catch (err: any) {
-    return httpErr(500, err?.message || "internal error");
+    console.error('Error in users handler:', err);
+    return httpErr(500, err?.message || 'internal server error');
   }
 };
 
-// --- DYNAMODB HELPERS ---
+/**
+ * Handle GET /users/self
+ */
+async function handleGetSelf(email: string): Promise<APIGatewayProxyResult> {
+  const result = await ddb.send(new GetCommand({
+    TableName: STAFF_USER_TABLE,
+    Key: { email },
+  }));
+
+  const user = result.Item as StaffUser | undefined;
+
+  if (!user) {
+    return httpErr(404, 'user not found');
+  }
+
+  // Get staff clinic info
+  const staffDetails = STAFF_INFO_TABLE ? await getStaffInfoFromDynamoDB(email) : [];
+
+  const publicUser = toPublicUser(user);
+
+  return httpOk({
+    ...publicUser,
+    staffDetails,
+    rolesByClinic: buildRolesByClinic(staffDetails),
+  });
+}
+
+/**
+ * Handle GET /users - List all users
+ */
+async function handleListUsers(
+  isGlobalSuperAdmin: boolean,
+  isSuperAdmin: boolean,
+  callerClinics: string[]
+): Promise<APIGatewayProxyResult> {
+  // Scan all users
+  const result = await ddb.send(new ScanCommand({
+    TableName: STAFF_USER_TABLE,
+  }));
+
+  const users = (result.Items || []) as StaffUser[];
+
+  // Filter users based on caller's permissions
+  const allowedClinics = isGlobalSuperAdmin || isSuperAdmin 
+    ? undefined 
+    : new Set(callerClinics);
+
+  const items: Array<Record<string, any>> = [];
+
+  for (const user of users) {
+    // Get staff clinic info
+    const staffDetails = STAFF_INFO_TABLE ? await getStaffInfoFromDynamoDB(user.email) : [];
+
+    // Filter based on clinic access
+    if (allowedClinics) {
+      // Non-global admins can only see users in their clinics
+      const userClinicIds = user.clinicRoles.map(cr => cr.clinicId);
+      const hasAccessToUserClinics = userClinicIds.some(c => allowedClinics.has(c));
+      const hasAccessToStaffDetails = staffDetails.some(d => allowedClinics.has(String(d.clinicId)));
+
+      if (!hasAccessToUserClinics && !hasAccessToStaffDetails) {
+        continue; // Skip this user
+      }
+
+      // Filter staff details to only show allowed clinics
+      const filteredStaffDetails = staffDetails.filter(d => allowedClinics.has(String(d.clinicId)));
+
+      items.push({
+        ...toPublicUser(user),
+        staffDetails: filteredStaffDetails,
+        rolesByClinic: buildRolesByClinic(filteredStaffDetails),
+      });
+    } else {
+      // Super admins see everything
+      items.push({
+        ...toPublicUser(user),
+        staffDetails,
+        rolesByClinic: buildRolesByClinic(staffDetails),
+      });
+    }
+  }
+
+  return httpOk({ users: items });
+}
+
+/**
+ * Handle GET /users/{username}
+ */
+async function handleGetUser(
+  username: string,
+  isGlobalSuperAdmin: boolean,
+  isSuperAdmin: boolean,
+  callerClinics: string[]
+): Promise<APIGatewayProxyResult> {
+  const result = await ddb.send(new GetCommand({
+    TableName: STAFF_USER_TABLE,
+    Key: { email: username },
+  }));
+
+  const user = result.Item as StaffUser | undefined;
+
+  if (!user) {
+    return httpErr(404, 'user not found');
+  }
+
+  // Check if caller has permission to view this user
+  if (!isGlobalSuperAdmin && !isSuperAdmin) {
+    const userClinicIds = user.clinicRoles.map(cr => cr.clinicId);
+    const hasAccessToUserClinics = userClinicIds.some(c => callerClinics.includes(c));
+    if (!hasAccessToUserClinics) {
+      return httpErr(403, 'no access to this user');
+    }
+  }
+
+  // Get staff clinic info
+  const staffDetails = STAFF_INFO_TABLE ? await getStaffInfoFromDynamoDB(user.email) : [];
+
+  // Filter staff details based on caller's clinic access
+  const allowedClinics = isGlobalSuperAdmin || isSuperAdmin
+    ? undefined
+    : new Set(callerClinics);
+
+  const filteredStaffDetails = allowedClinics
+    ? staffDetails.filter(d => allowedClinics.has(String(d.clinicId)))
+    : staffDetails;
+
+  return httpOk({
+    ...toPublicUser(user),
+    staffDetails: filteredStaffDetails,
+    rolesByClinic: buildRolesByClinic(filteredStaffDetails),
+  });
+}
+
+/**
+ * Handle PUT /users/{username}
+ */
+async function handleUpdateUser(
+  username: string,
+  body: PutUserBody,
+  isGlobalSuperAdmin: boolean,
+  isSuperAdmin: boolean,
+  callerClinics: string[]
+): Promise<APIGatewayProxyResult> {
+  // Get existing user
+  const result = await ddb.send(new GetCommand({
+    TableName: STAFF_USER_TABLE,
+    Key: { email: username },
+  }));
+
+  const existingUser = result.Item as StaffUser | undefined;
+
+  if (!existingUser) {
+    return httpErr(404, 'user not found');
+  }
+
+  // Check permissions
+  if (body.makeGlobalSuperAdmin && !isGlobalSuperAdmin) {
+    return httpErr(403, 'only global super admin can grant Global super admin role');
+  }
+
+  // Non-global admins can only update users in their clinics
+  if (!isGlobalSuperAdmin && !isSuperAdmin) {
+    const existingUserClinicIds = existingUser.clinicRoles.map(cr => cr.clinicId);
+    const hasAccessToUserClinics = existingUserClinicIds.some(c => callerClinics.includes(c));
+    if (!hasAccessToUserClinics) {
+      return httpErr(403, 'no access to update this user');
+    }
+
+    // Check if trying to assign to clinics they don't have access to
+    if (body.clinicRoles) {
+      const newClinicIds = body.clinicRoles.map(cr => cr.clinicId);
+      const unauthorizedClinics = newClinicIds.filter(c => !callerClinics.includes(c));
+      if (unauthorizedClinics.length > 0) {
+        return httpErr(403, `no admin access for clinics: ${unauthorizedClinics.join(', ')}`);
+      }
+    }
+  }
+
+  // Build updated user object
+  const updatedUser: StaffUser = {
+    ...existingUser,
+    ...(body.givenName !== undefined && { givenName: body.givenName }),
+    ...(body.familyName !== undefined && { familyName: body.familyName }),
+    ...(body.clinicRoles !== undefined && { clinicRoles: body.clinicRoles }),
+    ...(body.isActive !== undefined && { isActive: body.isActive }),
+    ...(body.makeGlobalSuperAdmin !== undefined && { 
+      isGlobalSuperAdmin: body.makeGlobalSuperAdmin,
+      isSuperAdmin: body.makeGlobalSuperAdmin || existingUser.isSuperAdmin,
+    }),
+    ...(body.password && { passwordHash: hashPassword(body.password) }),
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Save updated user
+  await ddb.send(new PutCommand({
+    TableName: STAFF_USER_TABLE,
+    Item: updatedUser,
+  }));
+
+  // Update staff clinic info if provided
+  if (STAFF_INFO_TABLE && (body.staffDetails || body.openDentalPerClinic)) {
+    const detailsToSave = body.openDentalPerClinic || body.staffDetails || [];
+    
+    // First, delete existing staff info
+    await deleteStaffInfoFromDynamoDB(username);
+    
+    // Then save new staff info
+    await saveStaffInfoToDynamoDB(username, detailsToSave);
+  }
+
+  // Get updated staff details
+  const staffDetails = STAFF_INFO_TABLE ? await getStaffInfoFromDynamoDB(username) : [];
+
+  return httpOk({
+    ...toPublicUser(updatedUser),
+    staffDetails,
+    rolesByClinic: buildRolesByClinic(staffDetails),
+  });
+}
+
+/**
+ * Handle DELETE /users/{username}
+ */
+async function handleDeleteUser(
+  username: string,
+  isGlobalSuperAdmin: boolean,
+  isSuperAdmin: boolean,
+  callerClinics: string[]
+): Promise<APIGatewayProxyResult> {
+  // Get existing user
+  const result = await ddb.send(new GetCommand({
+    TableName: STAFF_USER_TABLE,
+    Key: { email: username },
+  }));
+
+  const existingUser = result.Item as StaffUser | undefined;
+
+  if (!existingUser) {
+    return httpErr(404, 'user not found');
+  }
+
+  // Check permissions
+  if (existingUser.isGlobalSuperAdmin && !isGlobalSuperAdmin) {
+    return httpErr(403, 'only global super admin can delete global super admin users');
+  }
+
+  // Non-global admins can only delete users in their clinics
+  if (!isGlobalSuperAdmin && !isSuperAdmin) {
+    const existingUserClinicIds = existingUser.clinicRoles.map(cr => cr.clinicId);
+    const hasAccessToUserClinics = existingUserClinicIds.some(c => callerClinics.includes(c));
+    if (!hasAccessToUserClinics) {
+      return httpErr(403, 'no access to delete this user');
+    }
+  }
+
+  // Delete user from StaffUser table
+  await ddb.send(new DeleteCommand({
+    TableName: STAFF_USER_TABLE,
+    Key: { email: username },
+  }));
+
+  // Delete associated staff info
+  if (STAFF_INFO_TABLE) {
+    await deleteStaffInfoFromDynamoDB(username);
+  }
+
+  return httpOk({ message: 'user deleted successfully', email: username });
+}
+
+/**
+ * Get staff clinic information from DynamoDB
+ */
 async function getStaffInfoFromDynamoDB(email: string): Promise<StaffClinicDetail[]> {
-    if (!STAFF_INFO_TABLE) return [];
-    if (!email) return [];
+  if (!STAFF_INFO_TABLE) return [];
+
+  try {
+    const result = await ddb.send(new QueryCommand({
+      TableName: STAFF_INFO_TABLE,
+      KeyConditionExpression: 'email = :email',
+      ExpressionAttributeValues: {
+        ':email': email.toLowerCase(),
+      },
+    }));
+
+    return (result.Items || []) as StaffClinicDetail[];
+  } catch (err) {
+    console.error(`Failed to get staff info for ${email}:`, err);
+    return [];
+  }
+}
+
+/**
+ * Save staff clinic information to DynamoDB
+ */
+async function saveStaffInfoToDynamoDB(
+  email: string,
+  details: StaffClinicDetail[]
+): Promise<void> {
+  if (!STAFF_INFO_TABLE || !details.length) return;
+
+  for (const detail of details) {
+    if (!detail.clinicId) continue;
+
+    const item = {
+      ...detail,
+      email: email.toLowerCase(),
+      clinicId: String(detail.clinicId),
+      updatedAt: new Date().toISOString(),
+    };
+
     try {
-        const result = await ddb.send(new QueryCommand({
-            TableName: STAFF_INFO_TABLE,
-            KeyConditionExpression: 'email = :email',
-            ExpressionAttributeValues: { ':email': email.toLowerCase() }
-        }));
-        return (result.Items || []) as StaffClinicDetail[];
-    } catch (error) {
-        console.error(`Failed to get staff info for ${email}:`, error);
-        return [];
+      await ddb.send(new PutCommand({
+        TableName: STAFF_INFO_TABLE,
+        Item: item,
+      }));
+    } catch (err) {
+      console.error(`Failed to save staff info for ${email} at clinic ${detail.clinicId}:`, err);
     }
+  }
 }
 
-async function syncStaffInfoInDynamoDB(email: string, details: StaffClinicDetail[]) {
-    if (!STAFF_INFO_TABLE) return;
-    const existingItems = await getStaffInfoFromDynamoDB(email);
-    const desiredClinicIds = new Set(details.map(item => String(item.clinicId)));
-    const writeRequests: { PutRequest?: any; DeleteRequest?: any; }[] = [];
+/**
+ * Delete staff clinic information from DynamoDB
+ */
+async function deleteStaffInfoFromDynamoDB(email: string): Promise<void> {
+  if (!STAFF_INFO_TABLE) return;
 
-    for (const detail of details) {
-        if (!detail.clinicId) continue;
-        writeRequests.push({
-            PutRequest: {
-                Item: {
-                    ...detail,
-                    email,
-                    clinicId: String(detail.clinicId),
-                    updatedAt: new Date().toISOString()
-                }
-            }
-        });
-    }
-    for (const item of existingItems) {
-        if (!desiredClinicIds.has(item.clinicId)) {
-            writeRequests.push({
-                DeleteRequest: { Key: { email, clinicId: item.clinicId } }
-            });
-        }
-    }
-    if (writeRequests.length === 0) return;
+  try {
+    // First, query all items for this email
+    const result = await ddb.send(new QueryCommand({
+      TableName: STAFF_INFO_TABLE,
+      KeyConditionExpression: 'email = :email',
+      ExpressionAttributeValues: {
+        ':email': email.toLowerCase(),
+      },
+    }));
 
-    for (let i = 0; i < writeRequests.length; i += 25) {
-        const batch = writeRequests.slice(i, i + 25);
-        await ddb.send(new BatchWriteCommand({ RequestItems: { [STAFF_INFO_TABLE]: batch } }));
+    const items = result.Items || [];
+
+    if (items.length === 0) return;
+
+    // Delete in batches of 25 (DynamoDB limit)
+    for (let i = 0; i < items.length; i += 25) {
+      const batch = items.slice(i, i + 25);
+
+      await ddb.send(new BatchWriteCommand({
+        RequestItems: {
+          [STAFF_INFO_TABLE]: batch.map(item => ({
+            DeleteRequest: {
+              Key: {
+                email: item.email,
+                clinicId: item.clinicId,
+              },
+            },
+          })),
+        },
+      }));
     }
+  } catch (err) {
+    console.error(`Failed to delete staff info for ${email}:`, err);
+  }
 }
 
-async function deleteStaffInfoFromDynamoDB(email: string): Promise<Record<string, any>> {
-    if (!STAFF_INFO_TABLE) return { deleted: 0, enabled: false };
-    const itemsToDelete = await getStaffInfoFromDynamoDB(email);
-    if (itemsToDelete.length === 0) return { deleted: 0 };
-    const deleteRequests = itemsToDelete.map(item => ({ DeleteRequest: { Key: { email, clinicId: item.clinicId } } }));
-
-    for (let i = 0; i < deleteRequests.length; i += 25) {
-        const batch = deleteRequests.slice(i, i + 25);
-        await ddb.send(new BatchWriteCommand({ RequestItems: { [STAFF_INFO_TABLE]: batch } }));
-    }
-    return { deleted: itemsToDelete.length };
+/**
+ * Convert StaffUser to PublicStaffUser (remove sensitive fields)
+ */
+function toPublicUser(user: StaffUser): PublicStaffUser {
+  return {
+    email: user.email,
+    givenName: user.givenName,
+    familyName: user.familyName,
+    roles: user.roles,
+    clinics: user.clinics,
+    isSuperAdmin: user.isSuperAdmin,
+    isGlobalSuperAdmin: user.isGlobalSuperAdmin,
+    isActive: user.isActive,
+    emailVerified: user.emailVerified,
+    lastLoginAt: user.lastLoginAt,
+    createdAt: user.createdAt,
+  };
 }
 
-// --- UTILS ---
+/**
+ * Build rolesByClinic map from staff details
+ */
+function buildRolesByClinic(staffDetails: StaffClinicDetail[]): Record<string, string> {
+  const rolesByClinic: Record<string, string> = {};
+
+  for (const detail of staffDetails) {
+    if (detail.clinicId) {
+      // You can add role logic here based on staff details
+      // For now, we just mark that they have access to this clinic
+      rolesByClinic[String(detail.clinicId)] = 'USER';
+    }
+  }
+
+  return rolesByClinic;
+}
+
+/**
+ * Parse request body
+ */
 function parseBody(body: any): Record<string, any> {
   if (!body) return {};
-  try { return typeof body === "string" ? JSON.parse(body) : body; } catch { return {}; }
-}
-
-function validatePutBody(body: PutUserBody) {
-  if (body.makeGlobalSuperAdmin) return;
-  const allowedRoles = new Set([
-    "SUPER_ADMIN", "ADMIN", "PROVIDER", "MARKETING", "USER",
-    "DOCTOR", "HYGIENIST", "DENTAL_ASSISTANT", "TRAINEE", "PATIENT_COORDINATOR"
-  ]);
-  const clinics = Array.isArray(body.clinics) ? body.clinics : [];
-  for (const c of clinics) {
-    if (!c.clinicId) throw new Error("clinicId is required for each clinic mapping");
-    if (!allowedRoles.has(String(c.role || "").toUpperCase())) throw new Error("invalid role in clinics");
-  }
-}
-
-function buildGroupNames(clinics: ClinicRole[]): string[] {
-  return clinics.map((c) => `clinic_${String(c.clinicId)}__${String(c.role).toUpperCase()}`);
-}
-
-function httpOk(data: Record<string, any>) {
-  return { statusCode: 200, headers: buildCorsHeaders({ allowMethods: ["OPTIONS", "GET", "PUT", "DELETE"] }), body: JSON.stringify({ success: true, ...data }) };
-}
-
-function httpErr(code: number, message: string) {
-  return { statusCode: code, headers: buildCorsHeaders({ allowMethods: ["OPTIONS", "GET", "PUT", "DELETE"] }), body: JSON.stringify({ success: false, message }) };
-}
-
-// --- AUTH ---
-const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
-const USER_POOL_ID = process.env.USER_POOL_ID;
-const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
-let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
-
-async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; payload: JWTPayload } | { ok: false; code: number; message: string }> {
-  if (!authorizationHeader || !authorizationHeader.toLowerCase().startsWith("bearer ")) {
-    return { ok: false, code: 401, message: "missing bearer token" };
-  }
-  if (!ISSUER) {
-    return { ok: false, code: 500, message: "issuer not configured" };
-  }
-  const token = authorizationHeader.slice(7).trim();
   try {
-    JWKS = JWKS || createRemoteJWKSet(new URL(`${ISSUER}/.well-known/jwks.json`));
-    const { payload } = await jwtVerify(token, JWKS, { issuer: ISSUER });
-    if ((payload as any).token_use !== "id") {
-      return { ok: false, code: 401, message: "id token required" };
-    }
-    return { ok: true, payload };
-  } catch (_err) {
-    return { ok: false, code: 401, message: "invalid token" };
+    return typeof body === 'string' ? JSON.parse(body) : body;
+  } catch {
+    return {};
   }
 }
 
-function callerAuthContextFromClaims(payload: JWTPayload): { staffId: string; email: string; isSuperAdmin: boolean; rolesByClinic: Record<string, string>; } {
-  const staffId = String(payload.sub || payload.username || '');
-  const email = String(payload.email || '').toLowerCase();
-  
-  const ctx: { staffId: string, email: string, isSuperAdmin: boolean; rolesByClinic: Record<string, string>; } = { 
-    staffId, 
-    email, 
-    isSuperAdmin: false, 
-    rolesByClinic: {} 
+/**
+ * HTTP success response
+ */
+function httpOk(data: Record<string, any>) {
+  return {
+    statusCode: 200,
+    headers: buildCorsHeaders({ allowMethods: ['OPTIONS', 'GET', 'PUT', 'DELETE'] }),
+    body: JSON.stringify({ success: true, ...data }),
   };
-  
-  const groups = Array.isArray((payload as any)["cognito:groups"]) ? ((payload as any)["cognito:groups"] as string[]) : [];
-  for (const g of groups) {
-    if (String(g) === "GLOBAL__SUPER_ADMIN") {
-      ctx.isSuperAdmin = true;
-      continue;
-    }
-    const m = /^clinic_([^_][^\s]*)__([A-Z_]+)$/.exec(String(g));
-    if (!m) continue;
-    const clinicId = m[1];
-    const roleKey = m[2];
-    const code = roleKeyToCode(roleKey);
-    if (!code) continue;
-    ctx.rolesByClinic[clinicId] = code;
-  }
-  
-  if (String((payload as any)["x_is_super_admin"]).toLowerCase() === "true" || String((payload as any)["x_clinics"]).toUpperCase() === "ALL") {
-    ctx.isSuperAdmin = true;
-  }
-  return ctx;
 }
 
-function hasAnyAdmin(rolesByClinic: Record<string, string>): boolean {
-  return Object.values(rolesByClinic).some((code) => code === "S" || code === "A");
-}
-
-function canAssignAll(requestedClinics: ClinicRole[], caller: { isSuperAdmin: boolean; rolesByClinic: Record<string, string> }): { ok: boolean; message?: string } {
-  const errors: string[] = [];
-  for (const c of requestedClinics) {
-    const clinicId = String(c.clinicId);
-    const requestedRoleCode = roleKeyToCode(String(c.role).toUpperCase());
-    if (requestedRoleCode === "S" && !caller.isSuperAdmin) {
-      errors.push(`only super admin can assign SUPER_ADMIN role`);
-      continue;
-    }
-    if (caller.isSuperAdmin) {
-      continue;
-    }
-    const callerRole = caller.rolesByClinic[clinicId];
-    if (!callerRole) {
-      errors.push(`no admin access for clinic ${clinicId}`);
-      continue;
-    }
-    if (callerRole === "S") {
-      continue;
-    }
-    if (callerRole === "A") {
-      if (!["A", "P", "M", "U", "D", "H", "DA", "TC", "PC"].includes(requestedRoleCode)) {
-        errors.push(`admin cannot assign role ${c.role} for clinic ${clinicId}`);
-      }
-      continue;
-    }
-    errors.push(`insufficient role at clinic ${clinicId}`);
-  }
-  return errors.length ? { ok: false, message: errors.join("; ") } : { ok: true };
-}
-
-function roleKeyToCode(roleKey: string): string {
-  switch (String(roleKey).toUpperCase()) {
-    case "SUPER_ADMIN": return "S";
-    case "ADMIN": return "A";
-    case "PROVIDER": return "P";
-    case "MARKETING": return "M";
-    case "USER": return "U";
-    case "DOCTOR": return "D";
-    case "HYGIENIST": return "H";
-    case "DENTAL_ASSISTANT": return "DA";
-    case "TRAINEE": return "TC";
-    case "PATIENT_COORDINATOR": return "PC";
-    default: return "";
-  }
-}
-
-function deriveClinicsFromGroups(groupNames: string[]): { clinics: string[]; rolesByClinic: Record<string, string>; isSuperAdmin: boolean } {
-  const rolesByClinic: Record<string, string> = {};
-  let isSuperAdmin = false;
-  for (const g of groupNames || []) {
-    if (String(g) === 'GLOBAL__SUPER_ADMIN') {
-      isSuperAdmin = true;
-      continue;
-    }
-    const m = /^clinic_([^_][^\s]*)__([A-Z_]+)$/.exec(String(g));
-    if (!m) continue;
-    const clinicId = m[1];
-    const roleKey = m[2];
-    const code = roleKeyToCode(roleKey);
-    if (!code) continue;
-    const existing = rolesByClinic[clinicId];
-    const order: Record<string, number> = { S: 5, A: 4, P: 3, D: 3, H: 2, DA: 2, TC: 2, PC: 2, M: 1, U: 0 };
-    if (existing === undefined || order[code] > (order[existing] ?? -1)) {
-      rolesByClinic[clinicId] = code;
-    }
-  }
-  return { clinics: Object.keys(rolesByClinic), rolesByClinic, isSuperAdmin };
+/**
+ * HTTP error response
+ */
+function httpErr(code: number, message: string) {
+  return {
+    statusCode: code,
+    headers: buildCorsHeaders({ allowMethods: ['OPTIONS', 'GET', 'PUT', 'DELETE'] }),
+    body: JSON.stringify({ success: false, message }),
+  };
 }

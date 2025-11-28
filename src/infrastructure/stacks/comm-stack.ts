@@ -11,9 +11,8 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sns from 'aws-cdk-lib/aws-sns';
 
 export interface CommStackProps extends StackProps {
-  // Required to authorize users against the existing Cognito User Pool
-  userPoolArn: string;
-  userPoolId: string;
+  // Custom Lambda authorizer
+  authorizer: apigw.RequestAuthorizer;
 }
 
 export class CommStack extends Stack {

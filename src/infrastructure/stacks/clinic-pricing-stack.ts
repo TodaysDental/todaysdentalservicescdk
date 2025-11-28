@@ -8,14 +8,14 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface ClinicPricingStackProps extends StackProps {
-  userPool: any;
+  authorizer: apigw.RequestAuthorizer;
 }
 
 export class ClinicPricingStack extends Stack {
   public readonly clinicPricingTable: dynamodb.Table;
   public readonly pricingCrudFn: lambdaNode.NodejsFunction;
   public readonly api: apigw.RestApi;
-  public readonly authorizer: apigw.CognitoUserPoolsAuthorizer;
+  public readonly authorizer: apigw.RequestAuthorizer;
 
   constructor(scope: Construct, id: string, props: ClinicPricingStackProps) {
     super(scope, id, props);
@@ -74,9 +74,7 @@ export class ClinicPricingStack extends Stack {
       responseHeaders: corsErrorHeaders,
     });
 
-    this.authorizer = new apigw.CognitoUserPoolsAuthorizer(this, 'CognitoAuthorizer', {
-      cognitoUserPools: [props.userPool],
-    });
+    this.authorizer = props.authorizer;
 
     // ========================================
     // LAMBDA FUNCTION

@@ -9,7 +9,7 @@ import * as path from 'path';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface PatientPortalApptTypesStackProps extends StackProps {
-  userPool: cognito.IUserPool;
+  authorizer: apigw.RequestAuthorizer;
 }
 
 export class PatientPortalApptTypesStack extends Stack {

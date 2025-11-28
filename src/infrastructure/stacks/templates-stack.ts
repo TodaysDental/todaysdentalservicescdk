@@ -8,14 +8,14 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface TemplatesStackProps extends StackProps {
-  userPool: any;
+  authorizer: apigw.RequestAuthorizer;
 }
 
 export class TemplatesStack extends Stack {
   public readonly templatesTable: dynamodb.Table;
   public readonly templatesFn: lambdaNode.NodejsFunction;
   public readonly api: apigw.RestApi;
-  public readonly authorizer: apigw.CognitoUserPoolsAuthorizer;
+  public readonly authorizer: apigw.RequestAuthorizer;
 
   constructor(scope: Construct, id: string, props: TemplatesStackProps) {
     super(scope, id, props);
@@ -73,9 +73,7 @@ export class TemplatesStack extends Stack {
       responseHeaders: corsErrorHeaders,
     });
 
-    this.authorizer = new apigw.CognitoUserPoolsAuthorizer(this, 'CognitoAuthorizer', {
-      cognitoUserPools: [props.userPool],
-    });
+    this.authorizer = props.authorizer;
 
     // ========================================
     // LAMBDA FUNCTION
@@ -102,24 +100,24 @@ export class TemplatesStack extends Stack {
     const templatesRes = this.api.root.addResource('templates');
     templatesRes.addMethod('GET', new apigw.LambdaIntegration(this.templatesFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }],
     });
     templatesRes.addMethod('POST', new apigw.LambdaIntegration(this.templatesFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '201' }, { statusCode: '400' }, { statusCode: '403' }],
     });
 
     const templateIdRes = templatesRes.addResource('{templateId}');
     templateIdRes.addMethod('PUT', new apigw.LambdaIntegration(this.templatesFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
     });
     templateIdRes.addMethod('DELETE', new apigw.LambdaIntegration(this.templatesFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '403' }],
     });
 

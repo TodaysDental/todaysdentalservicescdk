@@ -8,14 +8,14 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface ConsentFormDataStackProps extends StackProps {
-  userPool: any; // Cognito User Pool
+  authorizer: apigw.RequestAuthorizer;
 }
 
 export class ConsentFormDataStack extends Stack {
   public readonly consentFormDataTable: dynamodb.Table;
   public readonly consentFormDataFn: lambdaNode.NodejsFunction;
   public readonly api: apigw.RestApi;
-  public readonly authorizer: apigw.CognitoUserPoolsAuthorizer;
+  public readonly authorizer: apigw.RequestAuthorizer;
 
   constructor(scope: Construct, id: string, props: ConsentFormDataStackProps) {
     super(scope, id, props);
@@ -75,10 +75,8 @@ export class ConsentFormDataStack extends Stack {
       responseHeaders: corsErrorHeaders,
     });
 
-    // Setup Cognito Authorizer
-    this.authorizer = new apigw.CognitoUserPoolsAuthorizer(this, 'CognitoAuthorizer', {
-      cognitoUserPools: [props.userPool],
-    });
+    // Setup Custom Authorizer
+    this.authorizer = props.authorizer;
 
     // ========================================
     // LAMBDA FUNCTION

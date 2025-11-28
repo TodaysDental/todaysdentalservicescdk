@@ -12,9 +12,8 @@ import clinicsJson from '../configs/clinics.json';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface PatientPortalStackProps extends StackProps {
-  // Reference to existing Cognito user pool for authorization
-  userPoolArn: string;
-  userPoolId: string;
+  // Reference to custom authorizer
+  authorizer: apigw.RequestAuthorizer;
   // Transfer Family server info for SFTP document downloads
   consolidatedTransferServerId: string;
   consolidatedTransferServerBucket: string;

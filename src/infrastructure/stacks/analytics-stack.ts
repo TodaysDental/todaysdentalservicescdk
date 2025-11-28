@@ -20,7 +20,7 @@ import * as customResources from 'aws-cdk-lib/custom-resources';
 import * as quicksight from 'aws-cdk-lib/aws-quicksight';
 
 export interface AnalyticsStackProps extends StackProps {
-  userPoolId: string;
+  authorizer: apigw.RequestAuthorizer;
   region: string;
   callQueueTableStreamArn?: string; // Optional: will be passed from ChimeStack
   callQueueTableName?: string; // Optional: for reconciliation job

@@ -11,14 +11,14 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import { RemovalPolicy } from 'aws-cdk-lib';
 
 export interface NotificationsStackProps extends StackProps {
-  userPool: any;
+  authorizer: apigw.RequestAuthorizer;
   templatesTableName: string;
 }
 
 export class NotificationsStack extends Stack {
   public readonly notifyFn: lambdaNode.NodejsFunction;
   public readonly notificationsApi: apigw.RestApi;
-  public readonly authorizer: apigw.CognitoUserPoolsAuthorizer;
+  public readonly authorizer: apigw.RequestAuthorizer;
   public readonly notificationsTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: NotificationsStackProps) {
@@ -36,10 +36,8 @@ export class NotificationsStack extends Stack {
       tableName: `${id}-Notifications`,
     });
 
-    // Create the Cognito authorizer with custom auth scope
-    this.authorizer = new apigw.CognitoUserPoolsAuthorizer(this, 'NotificationsAuthorizer', {
-      cognitoUserPools: [props.userPool],
-      authorizerName: 'NotificationsCognitoAuthorizer',
+    // Use the custom Lambda authorizer
+    this.authorizer = props.authorizer;
       resultsCacheTtl: Duration.seconds(0), // Don't cache auth results
       identitySource: 'method.request.header.Authorization'
     });

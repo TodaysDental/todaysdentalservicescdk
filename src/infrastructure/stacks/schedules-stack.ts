@@ -14,7 +14,7 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface SchedulesStackProps extends StackProps {
-  userPool: any;
+  authorizer: apigw.RequestAuthorizer;
   templatesTableName: string;
   queriesTableName: string;
   clinicHoursTableName: string;
@@ -30,7 +30,7 @@ export class SchedulesStack extends Stack {
   public readonly schedulerQueue: sqs.Queue;
   public readonly schedulerDLQ: sqs.Queue;
   public readonly api: apigw.RestApi;
-  public readonly authorizer: apigw.CognitoUserPoolsAuthorizer;
+  public readonly authorizer: apigw.RequestAuthorizer;
 
   constructor(scope: Construct, id: string, props: SchedulesStackProps) {
     super(scope, id, props);
@@ -111,9 +111,7 @@ export class SchedulesStack extends Stack {
       responseHeaders: corsErrorHeaders,
     });
 
-    this.authorizer = new apigw.CognitoUserPoolsAuthorizer(this, 'CognitoAuthorizer', {
-      cognitoUserPools: [props.userPool],
-    });
+    this.authorizer = props.authorizer;
 
     // ========================================
     // LAMBDA FUNCTIONS

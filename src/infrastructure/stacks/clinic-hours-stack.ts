@@ -6,7 +6,13 @@ import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as events from 'aws-cdk-lib/aws-events'; // <-- NEW IMPORT
+import * as targets from 'aws-cdk-lib/aws-events-targets'; // <-- NEW IMPORT
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
+
+// Import clinic data to dynamically configure the scheduler
+// Assuming the path is relative to the CDK stack file location
+import * as clinicsData from '../../infrastructure/configs/clinics.json'; 
 
 export interface ClinicHoursStackProps extends StackProps {
   userPool: any;
@@ -35,6 +41,7 @@ export class ClinicHoursStack extends Stack {
     // ========================================
     // API GATEWAY SETUP
     // ========================================
+    // (Omitted for brevity - No changes here, remains as provided in original files)
 
     const corsConfig = getCdkCorsConfig();
     
@@ -79,9 +86,9 @@ export class ClinicHoursStack extends Stack {
     });
 
     // ========================================
-    // LAMBDA FUNCTION
+    // CRUD LAMBDA FUNCTION (For API Gateway)
     // ========================================
-
+    
     this.hoursCrudFn = new lambdaNode.NodejsFunction(this, 'ClinicHoursCrudFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'hoursCrud.ts'),
       handler: 'handler',
@@ -108,41 +115,73 @@ export class ClinicHoursStack extends Stack {
       },
     });
 
-    // DynamoDB permissions
+    // DynamoDB permissions for CRUD Fn (Omitted for brevity)
     this.hoursCrudFn.addToRolePolicy(new iam.PolicyStatement({
       actions: [
-        'dynamodb:GetItem',
-        'dynamodb:PutItem',
-        'dynamodb:UpdateItem',
-        'dynamodb:DeleteItem',
-        'dynamodb:Scan',
-        'dynamodb:Query'
+        'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:Scan', 'dynamodb:Query'
       ],
       resources: [this.clinicHoursTable.tableArn, `${this.clinicHoursTable.tableArn}/*`],
     }));
 
-
-    // Cognito permissions for token verification
+    // Cognito permissions for token verification (Omitted for brevity)
     this.hoursCrudFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: [
-        'cognito-idp:GetUser',
-        'cognito-idp:ListUsers',
-      ],
+      actions: [ 'cognito-idp:GetUser', 'cognito-idp:ListUsers' ],
       resources: [props.userPool.userPoolArn],
     }));
-
-    // CloudWatch permissions for logging
+    
+    // CloudWatch permissions for logging (Omitted for brevity)
     this.hoursCrudFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: [
-        'logs:CreateLogGroup',
-        'logs:CreateLogStream',
-        'logs:PutLogEvents',
-      ],
+      actions: [ 'logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents' ],
       resources: [`arn:aws:logs:${this.region}:${this.account}:*`],
     }));
 
+
     // ========================================
-    // API ROUTES
+    // HOURLY SCHEDULER LAMBDA (Direct DB Writer)
+    // ========================================
+    
+    // Dynamically generate a comma-separated list of clinic IDs from clinics.json
+    const allClinicIds = (clinicsData as any[]).map(c => c.clinicId).join(',');
+    const schedulesApiUrl = 'https://api.todaysdentalinsights.com/schedules'; // Placeholder for the Open Dental Schedules API
+
+    const hoursSchedulerFn = new lambdaNode.NodejsFunction(this, 'HoursSchedulerFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'hoursScheduler.ts'), // <-- New file
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(60), // Increased timeout for external API calls
+      bundling: {
+        format: lambdaNode.OutputFormat.ESM,
+        target: 'node22',
+        minify: false,
+        sourceMap: true,
+        externalModules: ['@aws-sdk/*'],
+        nodeModules: ['@aws-sdk/client-dynamodb', '@aws-sdk/lib-dynamodb', 'axios'], 
+      },
+      environment: {
+        NODE_OPTIONS: '--enable-source-maps',
+        CLINIC_HOURS_TABLE: this.clinicHoursTable.tableName,
+        SCHEDULES_API_URL: schedulesApiUrl, 
+        ALL_CLINIC_IDS: allClinicIds, // Dynamically populated with clinic IDs
+      },
+    });
+
+    // Grant read/write access to the DynamoDB table
+    this.clinicHoursTable.grantReadWriteData(hoursSchedulerFn); 
+    
+    // ========================================
+    // EVENTBRIDGE RULE (Runs every hour) 
+    // ========================================
+
+    const rule = new events.Rule(this, 'HourlyClinicHoursUpdateRule', {
+      schedule: events.Schedule.rate(Duration.hours(1)),
+      description: 'Triggers the Lambda to fetch OpenDental schedules and update ClinicHoursTable hourly.',
+    });
+
+    rule.addTarget(new targets.LambdaFunction(hoursSchedulerFn));
+
+    // ========================================
+    // API ROUTES (Existing code)
     // ========================================
 
     // Legacy hours routes
@@ -192,7 +231,7 @@ export class ClinicHoursStack extends Stack {
     });
 
     // ========================================
-    // DOMAIN MAPPING
+    // DOMAIN MAPPING (Omitted for brevity)
     // ========================================
 
     // Map to custom domain with service-specific base path
@@ -204,7 +243,7 @@ export class ClinicHoursStack extends Stack {
     });
 
     // ========================================
-    // OUTPUTS
+    // OUTPUTS (Omitted for brevity)
     // ========================================
 
     new CfnOutput(this, 'ClinicHoursTableName', {
