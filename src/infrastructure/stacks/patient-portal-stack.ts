@@ -12,8 +12,7 @@ import clinicsJson from '../configs/clinics.json';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface PatientPortalStackProps extends StackProps {
-  // Reference to custom authorizer
-  authorizer: apigw.RequestAuthorizer;
+  // No authorizer needed - public endpoints only
   // Transfer Family server info for SFTP document downloads
   consolidatedTransferServerId: string;
   consolidatedTransferServerBucket: string;
@@ -35,7 +34,7 @@ export class PatientPortalStack extends Stack {
     const smsLogTablePrefix = 'todaysdentalinsights-sms-logs-';
 
     const defaultSessionTable = new dynamodb.Table(this, 'DefaultSessionTable', {
-      tableName: 'todaysdentalinsights-patient-sessions-default-v2',
+      tableName: `${this.stackName}-PatientSessions`,
       partitionKey: { name: 'SessionId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
@@ -44,7 +43,7 @@ export class PatientPortalStack extends Stack {
     });
 
     const defaultSmsLogTable = new dynamodb.Table(this, 'DefaultSmsLogTable', {
-      tableName: 'todaysdentalinsights-sms-logs-default-v2',
+      tableName: `${this.stackName}-SmsLogs`,
       partitionKey: { name: 'LogId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
@@ -333,7 +332,7 @@ export class PatientPortalStack extends Stack {
 
     // Map this API under the existing custom domain as /patientportal
     new apigw.CfnBasePathMapping(this, 'PatientPortalBasePathMapping', {
-      domainName: 'api.todaysdentalinsights.com',
+      domainName: 'apig.todaysdentalinsights.com',
       basePath: 'patientportal',
       restApiId: patientPortalApi.restApiId,
       stage: patientPortalApi.deploymentStage.stageName,

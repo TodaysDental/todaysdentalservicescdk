@@ -3,6 +3,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, ScanCommand, QueryCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { SYSTEM_MODULES } from '../../shared/types/user';
 import clinicsData from '../../infrastructure/configs/clinics.json';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 
@@ -73,6 +74,86 @@ const CLINIC_EMAIL_MAP: Record<string, string> = (() => {
   return acc;
 })();
 
+/**
+ * Get user's clinic roles and permissions from custom authorizer
+ */
+const getUserPermissions = (event: APIGatewayProxyEvent) => {
+  const authorizer = event.requestContext?.authorizer;
+  if (!authorizer) return null;
+
+  try {
+    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
+    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
+    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
+    const email = authorizer.email || '';
+
+    return {
+      email,
+      clinicRoles,
+      isSuperAdmin,
+      isGlobalSuperAdmin,
+    };
+  } catch (err) {
+    console.error('Failed to parse user permissions:', err);
+    return null;
+  }
+};
+
+/**
+ * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
+ */
+const isAdminUser = (
+  clinicRoles: any[],
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean
+): boolean => {
+  // Check flags first
+  if (isGlobalSuperAdmin || isSuperAdmin) {
+    return true;
+  }
+
+  // Check if user has Admin or SuperAdmin role at any clinic
+  for (const cr of clinicRoles) {
+    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+/**
+ * Check if user has specific permission for a module at ANY clinic
+ */
+const hasModulePermission = (
+  clinicRoles: any[],
+  module: string,
+  permission: 'read' | 'write' | 'put' | 'delete',
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean,
+  clinicId?: string
+): boolean => {
+  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
+  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
+    return true;
+  }
+
+  // Check if user has the permission for this module at any clinic (or specific clinic)
+  for (const cr of clinicRoles) {
+    // If clinicId is specified, check only that clinic
+    if (clinicId && cr.clinicId !== clinicId) {
+      continue;
+    }
+
+    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === module);
+    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 // Dynamic CORS helper
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
 
@@ -82,30 +163,8 @@ function http(code: number, body: any, event: APIGatewayProxyEvent): APIGatewayP
 
 function parseBody(body: any): Record<string, any> { try { return typeof body === 'string' ? JSON.parse(body) : (body || {}); } catch { return {}; } }
 
-function getGroupsFromClaims(claims?: Record<string, any>): string[] {
-  if (!claims) return [];
-  const raw = (claims as any)['cognito:groups'] ?? (claims as any)['cognito:groups[]'];
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw as string[];
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    try { const parsed = JSON.parse(trimmed); if (Array.isArray(parsed)) return parsed as string[]; } catch {}
-    return trimmed.split(',').map((s) => s.trim()).filter(Boolean);
-  }
-  return [];
-}
 
-function isGlobalSuperAdmin(groups: string[]): boolean { return groups.includes('GLOBAL__SUPER_ADMIN'); }
 
-function getAuthorizedClinics(groups: string[]): string[] {
-  return groups
-    .filter(g => g.startsWith('clinic_') && g.includes('__'))
-    .map(g => {
-      const match = g.match(/^clinic_([^_]+)__/);
-      return match ? match[1] : null;
-    })
-    .filter(Boolean) as string[];
-}
 
 async function processNotification(event: APIGatewayProxyEvent, body: any, clinicId: string, sentBy: string): Promise<APIGatewayProxyResult> {
   // Normalize and validate input fields
@@ -161,25 +220,24 @@ async function processNotification(event: APIGatewayProxyEvent, body: any, clini
   }, event);
 }
 
-async function handleSendNotification(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
+async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: any): Promise<APIGatewayProxyResult> {
   const pathClinicId = event.pathParameters?.clinicId;
   if (!pathClinicId) return http(400, { error: 'Missing clinicId in path' }, event);
-  // Debug: log whether authorizer claims are present for POST
-  try {
-    // eslint-disable-next-line no-console
-    console.log('[handleSendNotification] authorizer:', JSON.stringify((event.requestContext as any)?.authorizer || {}));
-  } catch (err) { /* ignore logging errors */ }
 
-  // Check authorization
-  const authorizer = (event.requestContext as any)?.authorizer;
-  if (!authorizer) {
-    return http(401, { error: 'Unauthorized: Missing authorization context' }, event);
+  // Check if user has write permission for Marketing module at this clinic
+  if (!hasModulePermission(
+    userPerms.clinicRoles,
+    'Marketing',
+    'write',
+    userPerms.isSuperAdmin,
+    userPerms.isGlobalSuperAdmin,
+    pathClinicId
+  )) {
+    return http(403, { error: 'You do not have permission to send notifications for this clinic' }, event);
   }
 
-  // Any authenticated user (Cognito) is allowed to send notifications.
-  // Use caller identity from the JWT claims as the sender.
-  const claims = (authorizer.claims || {}) as Record<string, any>;
-  const sentBy = String(claims['cognito:username'] || claims['username'] || claims['sub'] || 'authenticated_user');
+  // Use the user's email as the sender identifier
+  const sentBy = userPerms.email || 'authenticated_user';
 
   const body = parseBody(event.body);
   const clinicId = pathClinicId;
@@ -295,179 +353,44 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
   if (event.httpMethod === 'OPTIONS') return http(200, { ok: true }, event);
 
+  // Get user permissions from custom authorizer
+  const userPerms = getUserPermissions(event);
+  if (!userPerms) {
+    return http(401, { error: 'Unauthorized - Invalid token' }, event);
+  }
+
+  // Check if user has access to Marketing module for read operations
+  if (!hasModulePermission(
+    userPerms.clinicRoles,
+    'Marketing',
+    'read',
+    userPerms.isSuperAdmin,
+    userPerms.isGlobalSuperAdmin
+  )) {
+    return http(403, { error: 'You do not have permission to access notifications in the Marketing module' }, event);
+  }
+
   const path = event.path || '';
   const isGetNotifications = path.endsWith('/notifications/notifications');
 
   if (event.httpMethod === 'GET' && isGetNotifications) {
-    return await handleGetNotifications(event);
+    return await handleGetNotifications(event, userPerms);
   }
 
   const isClinicNotification = path.match(/\/clinic\/([^\/]+)\/notification$/);
   if (event.httpMethod === 'POST' && isClinicNotification) {
-    return await handleSendNotification(event);
+    return await handleSendNotification(event, userPerms);
   }
 
   return http(405, { error: 'Method Not Allowed' }, event);
+}
 
-  const pathClinicId = event.pathParameters?.clinicId || '';
-  if (!pathClinicId) return http(400, { error: 'Missing clinicId in path' }, event);
-
-  // Check if authorization context exists
-  const authorizer = (event.requestContext as any)?.authorizer;
-  if (!authorizer) {
-    return http(401, { error: 'Unauthorized: Missing authorization context' }, event);
-  }
-
-  const groups = getGroupsFromClaims(authorizer.claims);
-  const isMemberOfClinic = groups.some((g) => g.startsWith(`clinic_${pathClinicId}__`));
-  if (!isGlobalSuperAdmin(groups) && !isMemberOfClinic) return http(403, { error: 'Forbidden' }, event);
-
-  const body = parseBody(event.body);
-  const query = event.queryStringParameters || {};
-  const clinicId = pathClinicId;
-  const patNum = String(body.PatNum || (event.queryStringParameters || {}).PatNum || '').trim();
-  const templateName = String(body.templateMessage || body.template_name || '').trim();
-  const notificationTypes: string[] = Array.isArray(body.notificationTypes) ? body.notificationTypes : [];
-  const fname = String(body.FName || '').trim();
-  const lname = String(body.LName || '').trim();
-  const sentBy = String(body.sent_by || 'system');
-
-  // Custom content (optional). If provided, overrides template.
-  const customEmailSubjectRaw = String(body.customEmailSubject || body.emailSubject || '').trim();
-  const customEmailHtmlRaw = String(body.customEmailHtml || body.emailBodyHtml || body.email_body || '').trim();
-  const customEmailTextRaw = String(body.customEmailText || body.emailBodyText || '').trim();
-  const customSmsTextRaw = String(body.customSmsText || body.textMessage || '').trim();
-
-  const overrideEmailRaw = String(body.toEmail || body.email || body.to || query.email || '').trim();
-  const overridePhoneRaw = String(
-    body.toPhone || body.phone || body.phoneNumber || body.sms || body.SMS ||
-    query.phone || query.sms || ''
-  ).trim();
-
-  if (!patNum || notificationTypes.length === 0) {
-    return http(400, { error: 'PatNum and notificationTypes are required' }, event);
-  }
-
-  // Load template
-  let template: any = null;
-  if (templateName) {
-    template = await fetchTemplateByName(templateName);
-    if (!template && !customEmailHtmlRaw && !customSmsTextRaw && !customEmailSubjectRaw && !customEmailTextRaw) {
-      return http(400, { error: `Template not found: ${templateName}` }, event);
-    }
-  }
-
-  // Resolve recipient email/phone from Open Dental patients (unless overridden)
-  const contact = await fetchPatientContact(clinicId, patNum);
-  if (!contact.email && !contact.phone) {
-    return http(400, { error: 'No email or phone found for patient' }, event);
-  }
-
-  const results: any = { email: null, sms: null };
-  const clinicCtx = buildClinicContext(clinicId);
-  const mergedCtx = { ...clinicCtx, FName: fname, LName: lname } as Record<string, string>;
-
-  if (notificationTypes.includes('EMAIL')) {
-    const toEmail = (overrideEmailRaw || contact.email || '').trim();
-    if (!toEmail || !toEmail.includes('@')) return http(400, { error: 'No email found for patient' }, event);
-    const subjectStr = renderTemplateString(customEmailSubjectRaw || String(template?.email_subject || 'Notification'), mergedCtx);
-    const htmlStr = renderTemplateString(customEmailHtmlRaw || String(template?.email_body || ''), mergedCtx);
-    const textAltStr = renderTemplateString(customEmailTextRaw || (htmlStr ? htmlStr.replace(/<[^>]+>/g, ' ') : ''), mergedCtx);
-    if (!htmlStr && !textAltStr) return http(400, { error: 'No email content provided (template or custom)' }, event);
-
-    try {
-      await sendEmail({ clinicId, to: toEmail, subject: subjectStr, html: htmlStr, text: textAltStr });
-      results.email = toEmail;
-
-      // Store notification in DynamoDB
-      await storeNotification({
-        patNum,
-        clinicId,
-        type: 'EMAIL',
-        email: toEmail,
-        subject: subjectStr,
-        message: htmlStr,
-        templateName: templateName,
-        sentBy,
-        status: 'SENT'
-      });
-    } catch (error) {
-      console.error('Failed to send email:', error);
-      await storeNotification({
-        patNum,
-        clinicId,
-        type: 'EMAIL',
-        email: toEmail,
-        subject: subjectStr,
-        message: htmlStr,
-        templateName: templateName,
-        sentBy,
-        status: 'FAILED'
-      });
-      return http(500, { error: 'Failed to send email notification' }, event);
-    }
-  }
-
-  if (notificationTypes.includes('SMS')) {
-    const toPhoneRaw = (overridePhoneRaw || contact.phone || '').trim();
-    const normalizedPhone = normalizePhone(toPhoneRaw);
-    if (!normalizedPhone) return http(400, { error: 'No phone found for patient' }, event);
-    const smsBody = renderTemplateString(customSmsTextRaw || String(template?.text_message || ''), mergedCtx);
-    if (!smsBody) return http(400, { error: 'No SMS content provided (template or custom)' }, event);
-
-    try {
-      const smsParams: { clinicId: string; to: string; body: string } = { 
-        clinicId, 
-        to: normalizedPhone!, 
-        body: smsBody 
-      };
-      await sendSms(smsParams);
-      results.sms = normalizedPhone;
-
-      // Store notification in DynamoDB
-      await storeNotification({
-        patNum,
-        clinicId,
-        type: 'SMS',
-        phone: normalizedPhone,
-        message: smsBody,
-        templateName: templateName,
-        sentBy,
-        status: 'SENT'
-      });
-    } catch (error) {
-      console.error('Failed to send SMS:', error);
-      await storeNotification({
-        patNum,
-        clinicId,
-        type: 'SMS',
-        phone: normalizedPhone,
-        message: smsBody,
-        templateName: templateName,
-        sentBy,
-        status: 'FAILED'
-      });
-      return http(500, { error: 'Failed to send SMS notification' }, event);
-    }
-  }
-
-  return http(200, { success: true, sent: results, clinicId, patNum, template: templateName, sent_by: sentBy }, event);
-};
-
-async function handleGetNotifications(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
-  // Check if authorization context exists
-  const authorizer = (event.requestContext as any)?.authorizer;
+async function handleGetNotifications(event: APIGatewayProxyEvent, userPerms: any): Promise<APIGatewayProxyResult> {
   // Debug: log whether authorizer claims are present for GET
   try {
     // eslint-disable-next-line no-console
-    console.log('[handleGetNotifications] authorizer:', JSON.stringify(authorizer || {}));
+    console.log('[handleGetNotifications] userPerms:', JSON.stringify(userPerms || {}));
   } catch (err) { /* ignore logging errors */ }
-
-  if (!authorizer) {
-    return http(401, { error: 'Unauthorized: Missing authorization context' }, event);
-  }
-
-  const groups = getGroupsFromClaims(authorizer.claims);
 
   const query = event.queryStringParameters || {};
   const patNum = String(query.PatNum || '').trim();
@@ -478,18 +401,18 @@ async function handleGetNotifications(event: APIGatewayProxyEvent): Promise<APIG
     return http(400, { error: 'PatNum query parameter is required' }, event);
   }
 
-  // Check if user has any clinic access or is super admin
-  const authorizedClinics = getAuthorizedClinics(groups);
-  const hasClinicAccess = authorizedClinics.length > 0 || isGlobalSuperAdmin(groups);
+  // Check if user has any clinic access or is admin
+  const isAdmin = isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
+  const authorizedClinics = userPerms.clinicRoles.map((cr: any) => cr.clinicId);
+  const hasClinicAccess = authorizedClinics.length > 0 || isAdmin;
 
   if (!hasClinicAccess) {
     return http(403, { error: 'Forbidden: no clinic access' }, event);
   }
 
   // Validate clinic access if specific clinicId is specified
-  if (clinicId && !isGlobalSuperAdmin(groups)) {
-    const isMemberOfClinic = groups.some((g) => g.startsWith(`clinic_${clinicId}__`));
-    if (!isMemberOfClinic) {
+  if (clinicId && !isAdmin) {
+    if (!authorizedClinics.includes(clinicId)) {
       return http(403, { error: 'Forbidden: not authorized for this clinic' }, event);
     }
   }
@@ -499,13 +422,13 @@ async function handleGetNotifications(event: APIGatewayProxyEvent): Promise<APIG
   if (clinicId) {
     // Query specific clinic notifications
     notifications = await getNotificationsForPatient(patNum, email, clinicId);
-  } else if (isGlobalSuperAdmin(groups)) {
-    // Super admin: query all clinics
+  } else if (isAdmin) {
+    // Admin: query all clinics
     notifications = await getNotificationsForPatient(patNum, email);
   } else {
     // Regular user: query only clinics they have access to
     // Query notifications for all authorized clinics
-    const clinicPromises = authorizedClinics.map(clinic =>
+    const clinicPromises = authorizedClinics.map((clinic: string) =>
       getNotificationsForPatient(patNum, email, clinic)
     );
     const clinicResults = await Promise.all(clinicPromises);

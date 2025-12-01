@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -10,8 +10,7 @@ import clinicsJson from '../configs/clinics.json';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface CallbackStackProps extends StackProps {
-  // Reference to custom authorizer
-  authorizer: apigw.RequestAuthorizer;
+  // Authorizer imported via CloudFormation export
 }
 
 export class CallbackStack extends Stack {
@@ -32,7 +31,7 @@ export class CallbackStack extends Stack {
 
     // Create a sample/default table for clinics that don't have specific tables yet
     const defaultCallbackTable = new dynamodb.Table(this, 'DefaultCallbackTable', {
-      tableName: 'todaysdentalinsights-callback-DefaultRequests-V3', // Updated to follow naming convention
+      tableName: `${this.stackName}-CallbackRequests`,
       partitionKey: { name: 'RequestID', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
@@ -143,8 +142,16 @@ export class CallbackStack extends Stack {
       responseHeaders: corsErrorHeaders,
     });
 
-    // Use the custom Lambda authorizer
-    const authorizer = props.authorizer;
+    // Import the authorizer function ARN from CoreStack's export
+    const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
+    const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
+    
+    // Create authorizer for this stack's API
+    const authorizer = new apigw.RequestAuthorizer(this, 'CallbackAuthorizer', {
+      handler: authorizerFn,
+      identitySources: [apigw.IdentitySource.header('Authorization')],
+      resultsCacheTtl: Duration.minutes(5),
+    });
 
     // Create callback endpoints: /{clinicId}
     const callbackResource = callbackApi.root.addResource('{clinicId}');
@@ -244,7 +251,7 @@ export class CallbackStack extends Stack {
 
     // Map this API under the existing custom domain as /callback
     new apigw.CfnBasePathMapping(this, 'CallbackBasePathMapping', {
-      domainName: 'api.todaysdentalinsights.com',
+      domainName: 'apig.todaysdentalinsights.com',
       basePath: 'callback',
       restApiId: callbackApi.restApiId,
       stage: callbackApi.deploymentStage.stageName,

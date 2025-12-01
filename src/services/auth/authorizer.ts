@@ -1,5 +1,12 @@
 import { APIGatewayRequestAuthorizerEvent, APIGatewayAuthorizerResult } from 'aws-lambda';
-import { verifyToken, JWTPayload } from '../../shared/utils/jwt';
+import { verifyToken, JWTPayload, hashToken } from '../../shared/utils/jwt';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
+
+const ddbClient = new DynamoDBClient({});
+const ddb = DynamoDBDocumentClient.from(ddbClient);
+
+const TOKEN_BLACKLIST_TABLE = process.env.TOKEN_BLACKLIST_TABLE || 'TokenBlacklist';
 
 /**
  * Lambda authorizer for API Gateway
@@ -25,6 +32,13 @@ export const handler = async (event: APIGatewayRequestAuthorizerEvent): Promise<
     }
 
     const token = tokenMatch[1];
+
+    // Check if token is blacklisted (logged out)
+    const isBlacklisted = await isTokenBlacklisted(token);
+    if (isBlacklisted) {
+      console.error('Token is blacklisted');
+      throw new Error('Unauthorized');
+    }
 
     // Verify the token
     const payload = await verifyToken(token);
@@ -71,10 +85,31 @@ function generatePolicy(
       email: payload.email,
       givenName: payload.givenName || '',
       familyName: payload.familyName || '',
-      clinicRoles: JSON.stringify(payload.clinicRoles),
+      clinicRoles: JSON.stringify([]), // clinicRoles fetched from DB by handler, not stored in JWT
       isSuperAdmin: String(payload.isSuperAdmin),
       isGlobalSuperAdmin: String(payload.isGlobalSuperAdmin),
     },
   };
+}
+
+/**
+ * Check if a token has been blacklisted (logged out)
+ */
+async function isTokenBlacklisted(token: string): Promise<boolean> {
+  try {
+    const tokenHash = hashToken(token);
+    
+    const result = await ddb.send(new GetCommand({
+      TableName: TOKEN_BLACKLIST_TABLE,
+      Key: { tokenHash },
+    }));
+
+    return !!result.Item;
+  } catch (error) {
+    console.error('Error checking token blacklist:', error);
+    // If blacklist check fails, allow the request (fail open)
+    // The token signature will still be verified
+    return false;
+  }
 }
 

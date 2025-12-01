@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -8,7 +8,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface QueriesStackProps extends StackProps {
-  authorizer: apigw.RequestAuthorizer;
+  // Authorizer imported via CloudFormation export
 }
 
 export class QueriesStack extends Stack {
@@ -28,7 +28,7 @@ export class QueriesStack extends Stack {
       partitionKey: { name: 'QueryName', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
-      tableName: 'todaysdentalinsights-SQLQueries-V4',
+      tableName: `${this.stackName}-SQLQueries`,
     });
 
     // ========================================
@@ -73,7 +73,16 @@ export class QueriesStack extends Stack {
       responseHeaders: corsErrorHeaders,
     });
 
-    this.authorizer = props.authorizer;
+    // Import the authorizer function ARN from CoreStack's export
+    const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
+    const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
+    
+    // Create authorizer for this stack's API
+    this.authorizer = new apigw.RequestAuthorizer(this, 'QueriesAuthorizer', {
+      handler: authorizerFn,
+      identitySources: [apigw.IdentitySource.header('Authorization')],
+      resultsCacheTtl: Duration.minutes(5),
+    });
 
     // ========================================
     // LAMBDA FUNCTION
@@ -100,29 +109,29 @@ export class QueriesStack extends Stack {
     const queriesRes = this.api.root.addResource('queries');
     queriesRes.addMethod('GET', new apigw.LambdaIntegration(this.queriesFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }],
     });
     queriesRes.addMethod('POST', new apigw.LambdaIntegration(this.queriesFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '201' }, { statusCode: '400' }, { statusCode: '403' }],
     });
 
     const queryNameRes = queriesRes.addResource('{queryName}');
     queryNameRes.addMethod('GET', new apigw.LambdaIntegration(this.queriesFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '404' }],
     });
     queryNameRes.addMethod('PUT', new apigw.LambdaIntegration(this.queriesFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
     });
     queryNameRes.addMethod('DELETE', new apigw.LambdaIntegration(this.queriesFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
     });
 
@@ -132,7 +141,7 @@ export class QueriesStack extends Stack {
 
     // Map to custom domain with service-specific base path
     new apigw.CfnBasePathMapping(this, 'QueriesApiBasePathMapping', {
-      domainName: 'api.todaysdentalinsights.com',
+      domainName: 'apig.todaysdentalinsights.com',
       basePath: 'queries',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
@@ -149,7 +158,7 @@ export class QueriesStack extends Stack {
     });
 
     new CfnOutput(this, 'QueriesApiUrl', {
-      value: 'https://api.todaysdentalinsights.com/queries/',
+      value: 'https://apig.todaysdentalinsights.com/queries/',
       description: 'Queries API Gateway URL',
       exportName: `${Stack.of(this).stackName}-QueriesApiUrl`,
     });

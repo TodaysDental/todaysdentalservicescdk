@@ -55,11 +55,25 @@ export interface ModuleAccess {
 }
 
 /**
+ * Work location configuration
+ */
+export interface WorkLocation {
+  isRemote: boolean;
+  isOnPremise: boolean;
+}
+
+/**
  * Clinic-specific role assignment with module permissions
  */
 export interface ClinicRoleAssignment {
   clinicId: string;
   role: UserRole;
+  basePay?: number; // Annual base pay in dollars
+  workLocation?: WorkLocation; // Remote/on-premise configuration
+  hourlyPay?: number; // Hourly pay rate in dollars
+  openDentalUserNum?: number; // Open Dental user number
+  openDentalUsername?: string; // Open Dental username
+  employeeNum?: number; // Employee number
   moduleAccess?: ModuleAccess[]; // Optional - granular module permissions per clinic
 }
 
@@ -81,6 +95,9 @@ export interface StaffUser {
   otpExpiry?: number; // Unix timestamp when OTP expires
   otpAttempts?: number; // Number of failed OTP attempts
   otpLastSent?: number; // Unix timestamp of last OTP sent (for rate limiting)
+  // Login rate limiting fields
+  loginAttempts?: number; // Number of failed password login attempts
+  lockoutUntil?: number; // Unix timestamp when account lockout expires
   // Legacy fields
   verificationCode?: string;
   verificationCodeExpiry?: number;

@@ -2,7 +2,12 @@ import { SignJWT, jwtVerify } from 'jose';
 import * as crypto from 'crypto';
 
 // JWT Configuration
-const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
+// CRITICAL: JWT_SECRET must be set in environment variables
+// Never use a fallback random secret as it causes token invalidation on Lambda cold starts
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  throw new Error('FATAL: JWT_SECRET environment variable is required but not set');
+}
 const JWT_ISSUER = 'TodaysDentalInsights';
 const JWT_AUDIENCE = 'api.todaysdentalinsights.com';
 
@@ -107,11 +112,33 @@ export function hashPassword(password: string): string {
 
 /**
  * Verify a password against a hash
+ * Uses constant-time comparison to prevent timing attacks
  */
 export function verifyPassword(password: string, storedHash: string): boolean {
-  const [salt, hash] = storedHash.split(':');
+  // Guard against invalid hash format
+  if (!storedHash || !storedHash.includes(':')) {
+    return false;
+  }
+  
+  const parts = storedHash.split(':');
+  if (parts.length !== 2) {
+    return false;
+  }
+  
+  const [salt, hash] = parts;
   const verifyHash = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
-  return hash === verifyHash;
+  
+  // Use constant-time comparison to prevent timing attacks
+  // This ensures the comparison takes the same time regardless of where strings differ
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(hash, 'hex'),
+      Buffer.from(verifyHash, 'hex')
+    );
+  } catch (error) {
+    // timingSafeEqual throws if buffers are different lengths
+    return false;
+  }
 }
 
 /**
@@ -119,5 +146,13 @@ export function verifyPassword(password: string, storedHash: string): boolean {
  */
 export function generateVerificationCode(): string {
   return crypto.randomInt(100000, 999999).toString();
+}
+
+/**
+ * Hash a token for blacklist storage
+ * Returns SHA-256 hash of the token
+ */
+export function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
 }
 

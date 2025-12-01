@@ -2,6 +2,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { SYSTEM_MODULES } from '../../shared/types/user';
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
@@ -11,41 +12,86 @@ const TABLE_NAME = process.env.CONVERSATIONS_TABLE || 'chatbot-conversations';
 // Use common CORS headers
 const corsHeaders = buildCorsHeaders();
 
-const getGroupsFromClaims = (claims?: Record<string, any>): string[] => {
-  if (!claims) return [];
-  const raw = (claims as any)['cognito:groups'] ?? (claims as any)['cognito:groups[]'];
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw as string[];
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    if ((trimmed.startsWith('[') && trimmed.endsWith(']')) || trimmed.startsWith('"')) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (Array.isArray(parsed)) return parsed as string[];
-      } catch {}
-    }
-    return trimmed.split(',').map((s) => s.trim()).filter(Boolean);
+/**
+ * Get user's clinic roles and permissions from custom authorizer
+ */
+const getUserPermissions = (event: APIGatewayProxyEvent) => {
+  const authorizer = event.requestContext?.authorizer;
+  if (!authorizer) return null;
+
+  try {
+    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
+    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
+    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
+    const email = authorizer.email || '';
+
+    return {
+      email,
+      clinicRoles,
+      isSuperAdmin,
+      isGlobalSuperAdmin,
+    };
+  } catch (err) {
+    console.error('Failed to parse user permissions:', err);
+    return null;
   }
-  return [];
 };
 
-const isAuthorized = (groups: string[], clinicId?: string): boolean => {
-  const isSuperAdmin = groups.some(g => 
-    g === 'superadmin' || 
-    g === 'global_admin' || 
-    g === 'GLOBAL__SUPER_ADMIN' ||
-    g === 'MARKETING' ||
-    g.toLowerCase().includes('super_admin') ||
-    g.toLowerCase().includes('global')
-  );
-  if (isSuperAdmin) return true;
-  
-  if (clinicId) {
-    return groups.some(g => g.startsWith(`clinic_${clinicId}__`));
+/**
+ * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
+ */
+const isAdminUser = (
+  clinicRoles: any[],
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean
+): boolean => {
+  // Check flags first
+  if (isGlobalSuperAdmin || isSuperAdmin) {
+    return true;
   }
-  
-  return groups.some(g => g.startsWith('clinic_'));
+
+  // Check if user has Admin or SuperAdmin role at any clinic
+  for (const cr of clinicRoles) {
+    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
+      return true;
+    }
+  }
+
+  return false;
 };
+
+/**
+ * Check if user has specific permission for a module at ANY clinic
+ */
+const hasModulePermission = (
+  clinicRoles: any[],
+  module: string,
+  permission: 'read' | 'write' | 'put' | 'delete',
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean,
+  clinicId?: string
+): boolean => {
+  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
+  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
+    return true;
+  }
+
+  // Check if user has the permission for this module at any clinic (or specific clinic)
+  for (const cr of clinicRoles) {
+    // If clinicId is specified, check only that clinic
+    if (clinicId && cr.clinicId !== clinicId) {
+      continue;
+    }
+
+    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === module);
+    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   console.log('Chat history request:', JSON.stringify(event, null, 2));
@@ -60,26 +106,46 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 
   try {
-    // Authorization check
-    const claims = (event.requestContext as any)?.authorizer?.claims;
-    const groups = getGroupsFromClaims(claims);
-    
-    if (!isAuthorized(groups)) {
+    // Get user permissions from custom authorizer
+    const userPerms = getUserPermissions(event);
+    if (!userPerms) {
+      return {
+        statusCode: 401,
+        headers: corsHeaders,
+        body: JSON.stringify({ error: 'Unauthorized - Invalid token' }),
+      };
+    }
+
+    // Check if user has read permission for Marketing module (chatbot functionality)
+    if (!hasModulePermission(
+      userPerms.clinicRoles,
+      'Marketing',
+      'read',
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin
+    )) {
       return {
         statusCode: 403,
         headers: corsHeaders,
-        body: JSON.stringify({ error: 'Forbidden: insufficient permissions' })
+        body: JSON.stringify({ error: 'You do not have permission to read chat history in the Marketing module' }),
       };
     }
 
     const { clinicId, startDate, endDate } = event.queryStringParameters || {};
-    
+
     // Validate clinic access if clinicId specified
-    if (clinicId && !isAuthorized(groups, clinicId)) {
+    if (clinicId && !hasModulePermission(
+      userPerms.clinicRoles,
+      'Marketing',
+      'read',
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin,
+      clinicId
+    )) {
       return {
         statusCode: 403,
         headers: corsHeaders,
-        body: JSON.stringify({ error: 'Forbidden: not authorized for this clinic' })
+        body: JSON.stringify({ error: 'You do not have permission to read chat history for this clinic' })
       };
     }
 
@@ -90,12 +156,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       conversations = await getConversationsByClinic(clinicId, startDate, endDate);
     } else {
       // Get conversations for all authorized clinics
-      const authorizedClinics = getAuthorizedClinics(groups);
+      const authorizedClinics = getAuthorizedClinics(userPerms);
       if (authorizedClinics.length === 0) {
         conversations = await getAllConversations(startDate, endDate);
       } else {
         // Get conversations for specific clinics the user has access to
-        const clinicPromises = authorizedClinics.map(clinic => 
+        const clinicPromises = authorizedClinics.map(clinic =>
           getConversationsByClinic(clinic, startDate, endDate)
         );
         const clinicResults = await Promise.all(clinicPromises);
@@ -276,12 +342,21 @@ async function getConversationDetail(sessionId: string, clinicId: string): Promi
   }
 }
 
-function getAuthorizedClinics(groups: string[]): string[] {
-  return groups
-    .filter(g => g.startsWith('clinic_') && g.includes('__'))
-    .map(g => {
-      const match = g.match(/^clinic_([^_]+)__/);
-      return match ? match[1] : null;
-    })
-    .filter(Boolean) as string[];
+function getAuthorizedClinics(userPerms: any): string[] {
+  // If user is admin, they have access to all clinics
+  if (isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin)) {
+    // For now, return empty array to get all conversations - in production you might want to limit this
+    return [];
+  }
+
+  // Get clinics where user has Marketing module access
+  const authorizedClinics: string[] = [];
+  for (const cr of userPerms.clinicRoles) {
+    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === 'Marketing');
+    if (moduleAccess && moduleAccess.permissions.includes('read')) {
+      authorizedClinics.push(cr.clinicId);
+    }
+  }
+
+  return authorizedClinics;
 }

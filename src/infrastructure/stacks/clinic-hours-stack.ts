@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -12,17 +12,17 @@ import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 // Import clinic data to dynamically configure the scheduler
 // Assuming the path is relative to the CDK stack file location
-import * as clinicsData from '../../infrastructure/configs/clinics.json'; 
+import clinicsData from '../configs/clinics.json'; 
 
 export interface ClinicHoursStackProps extends StackProps {
-  userPool: any;
+  // Authorizer imported via CloudFormation export
 }
 
 export class ClinicHoursStack extends Stack {
   public readonly clinicHoursTable: dynamodb.Table;
   public readonly hoursCrudFn: lambdaNode.NodejsFunction;
   public readonly api: apigw.RestApi;
-  public readonly authorizer: apigw.CognitoUserPoolsAuthorizer;
+  public readonly authorizer: apigw.RequestAuthorizer;
 
   constructor(scope: Construct, id: string, props: ClinicHoursStackProps) {
     super(scope, id, props);
@@ -32,7 +32,7 @@ export class ClinicHoursStack extends Stack {
     // ========================================
 
     this.clinicHoursTable = new dynamodb.Table(this, 'ClinicHoursTable', {
-      tableName: 'todaysdentalinsights-ClinicHoursV3',
+      tableName: `${this.stackName}-ClinicHours`,
       partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
@@ -81,8 +81,15 @@ export class ClinicHoursStack extends Stack {
       responseHeaders: corsErrorHeaders,
     });
 
-    this.authorizer = new apigw.CognitoUserPoolsAuthorizer(this, 'CognitoAuthorizer', {
-      cognitoUserPools: [props.userPool],
+    // Import the authorizer function ARN from CoreStack's export
+    const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
+    const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
+    
+    // Create authorizer for this stack's API
+    this.authorizer = new apigw.RequestAuthorizer(this, 'ClinicHoursAuthorizer', {
+      handler: authorizerFn,
+      identitySources: [apigw.IdentitySource.header('Authorization')],
+      resultsCacheTtl: Duration.minutes(5),
     });
 
     // ========================================
@@ -111,7 +118,6 @@ export class ClinicHoursStack extends Stack {
         NODE_OPTIONS: '--enable-source-maps',
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1',
         CLINIC_HOURS_TABLE: this.clinicHoursTable.tableName,
-        USER_POOL_ID: props.userPool.userPoolId,
       },
     });
 
@@ -123,11 +129,6 @@ export class ClinicHoursStack extends Stack {
       resources: [this.clinicHoursTable.tableArn, `${this.clinicHoursTable.tableArn}/*`],
     }));
 
-    // Cognito permissions for token verification (Omitted for brevity)
-    this.hoursCrudFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: [ 'cognito-idp:GetUser', 'cognito-idp:ListUsers' ],
-      resources: [props.userPool.userPoolArn],
-    }));
     
     // CloudWatch permissions for logging (Omitted for brevity)
     this.hoursCrudFn.addToRolePolicy(new iam.PolicyStatement({
@@ -142,7 +143,7 @@ export class ClinicHoursStack extends Stack {
     
     // Dynamically generate a comma-separated list of clinic IDs from clinics.json
     const allClinicIds = (clinicsData as any[]).map(c => c.clinicId).join(',');
-    const schedulesApiUrl = 'https://api.todaysdentalinsights.com/schedules'; // Placeholder for the Open Dental Schedules API
+    const schedulesApiUrl = 'https://apig.todaysdentalinsights.com/schedules'; // Placeholder for the Open Dental Schedules API
 
     const hoursSchedulerFn = new lambdaNode.NodejsFunction(this, 'HoursSchedulerFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'hoursScheduler.ts'), // <-- New file
@@ -186,48 +187,48 @@ export class ClinicHoursStack extends Stack {
 
     // Legacy hours routes
     const hoursRes = this.api.root.addResource('hours');
-    hoursRes.addMethod('GET', new apigw.LambdaIntegration(this.hoursCrudFn), { 
-      authorizer: this.authorizer, 
-      authorizationType: apigw.AuthorizationType.COGNITO, 
-      methodResponses: [{ statusCode: '200' }] 
+    hoursRes.addMethod('GET', new apigw.LambdaIntegration(this.hoursCrudFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }]
     });
-    hoursRes.addMethod('POST', new apigw.LambdaIntegration(this.hoursCrudFn), { 
-      authorizer: this.authorizer, 
-      authorizationType: apigw.AuthorizationType.COGNITO, 
-      methodResponses: [{ statusCode: '200' }] 
+    hoursRes.addMethod('POST', new apigw.LambdaIntegration(this.hoursCrudFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }]
     });
-    
+
     const hoursIdRes = hoursRes.addResource('{clinicId}');
-    hoursIdRes.addMethod('GET', new apigw.LambdaIntegration(this.hoursCrudFn), { 
-      authorizer: this.authorizer, 
-      authorizationType: apigw.AuthorizationType.COGNITO, 
-      methodResponses: [{ statusCode: '200' }, { statusCode: '404' }] 
+    hoursIdRes.addMethod('GET', new apigw.LambdaIntegration(this.hoursCrudFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }, { statusCode: '404' }]
     });
-    hoursIdRes.addMethod('PUT', new apigw.LambdaIntegration(this.hoursCrudFn), { 
-      authorizer: this.authorizer, 
-      authorizationType: apigw.AuthorizationType.COGNITO, 
-      methodResponses: [{ statusCode: '200' }] 
+    hoursIdRes.addMethod('PUT', new apigw.LambdaIntegration(this.hoursCrudFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }]
     });
-    hoursIdRes.addMethod('DELETE', new apigw.LambdaIntegration(this.hoursCrudFn), { 
-      authorizer: this.authorizer, 
-      authorizationType: apigw.AuthorizationType.COGNITO, 
-      methodResponses: [{ statusCode: '200' }] 
+    hoursIdRes.addMethod('DELETE', new apigw.LambdaIntegration(this.hoursCrudFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }]
     });
 
     // New format clinic hours routes
     const clinicsRes = this.api.root.addResource('clinics');
     const clinicIdRes = clinicsRes.addResource('{clinicId}');
     const clinicHoursRes = clinicIdRes.addResource('hours');
-    
-    clinicHoursRes.addMethod('GET', new apigw.LambdaIntegration(this.hoursCrudFn), { 
-      authorizer: this.authorizer, 
-      authorizationType: apigw.AuthorizationType.COGNITO, 
-      methodResponses: [{ statusCode: '200' }, { statusCode: '404' }] 
+
+    clinicHoursRes.addMethod('GET', new apigw.LambdaIntegration(this.hoursCrudFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }, { statusCode: '404' }]
     });
-    clinicHoursRes.addMethod('PUT', new apigw.LambdaIntegration(this.hoursCrudFn), { 
-      authorizer: this.authorizer, 
-      authorizationType: apigw.AuthorizationType.COGNITO, 
-      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }] 
+    clinicHoursRes.addMethod('PUT', new apigw.LambdaIntegration(this.hoursCrudFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }]
     });
 
     // ========================================
@@ -236,7 +237,7 @@ export class ClinicHoursStack extends Stack {
 
     // Map to custom domain with service-specific base path
     new apigw.CfnBasePathMapping(this, 'ClinicHoursApiBasePathMapping', {
-      domainName: 'api.todaysdentalinsights.com',
+      domainName: 'apig.todaysdentalinsights.com',
       basePath: 'clinic-hours',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
@@ -253,7 +254,7 @@ export class ClinicHoursStack extends Stack {
     });
 
     new CfnOutput(this, 'ClinicHoursApiUrl', {
-      value: 'https://api.todaysdentalinsights.com/clinic-hours/',
+      value: 'https://apig.todaysdentalinsights.com/clinic-hours/',
       description: 'Clinic Hours API Gateway URL',
       exportName: `${Stack.of(this).stackName}-ClinicHoursApiUrl`,
     });

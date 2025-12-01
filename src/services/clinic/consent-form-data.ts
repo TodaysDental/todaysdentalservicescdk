@@ -3,6 +3,7 @@ import { DynamoDBDocumentClient, ScanCommand, PutCommand, DeleteCommand, GetComm
 import { v4 as uuidv4 } from 'uuid';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { SYSTEM_MODULES } from '../../shared/types/user';
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
@@ -13,33 +14,86 @@ const TABLE_NAME = process.env.TABLE_NAME || 'ConsentFormData';
 // Dynamic CORS helper
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
 
-// Helper to get Cognito groups from claims
-const getGroupsFromClaims = (claims?: Record<string, any>): string[] => {
-  if (!claims) return [];
-  const raw = claims['cognito:groups'] ?? claims['cognito:groups[]'];
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw as string[];
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    if ((trimmed.startsWith('[') && trimmed.endsWith(']')) || trimmed.startsWith('"')) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (Array.isArray(parsed)) return parsed as string[];
-      } catch {
-        // fall through
-      }
-    }
-    return trimmed.split(',').map((s) => s.trim()).filter(Boolean);
+/**
+ * Get user's clinic roles and permissions from custom authorizer
+ */
+const getUserPermissions = (event: APIGatewayProxyEvent) => {
+  const authorizer = event.requestContext?.authorizer;
+  if (!authorizer) return null;
+
+  try {
+    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
+    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
+    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
+    const email = authorizer.email || '';
+
+    return {
+      email,
+      clinicRoles,
+      isSuperAdmin,
+      isGlobalSuperAdmin,
+    };
+  } catch (err) {
+    console.error('Failed to parse user permissions:', err);
+    return null;
   }
-  return [];
 };
 
-// Check if user is authorized to write
-const isWriteAuthorized = (groups: string[]): boolean => {
-  if (!groups || groups.length === 0) return false;
-  // Only global super admin can write
-  return groups.some((g) => g === 'GLOBAL__SUPER_ADMIN');
+/**
+ * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
+ */
+const isAdminUser = (
+  clinicRoles: any[],
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean
+): boolean => {
+  // Check flags first
+  if (isGlobalSuperAdmin || isSuperAdmin) {
+    return true;
+  }
+
+  // Check if user has Admin or SuperAdmin role at any clinic
+  for (const cr of clinicRoles) {
+    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
+      return true;
+    }
+  }
+
+  return false;
 };
+
+/**
+ * Check if user has specific permission for a module at ANY clinic
+ */
+const hasModulePermission = (
+  clinicRoles: any[],
+  module: string,
+  permission: 'read' | 'write' | 'put' | 'delete',
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean,
+  clinicId?: string
+): boolean => {
+  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
+  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
+    return true;
+  }
+
+  // Check if user has the permission for this module at any clinic (or specific clinic)
+  for (const cr of clinicRoles) {
+    // If clinicId is specified, check only that clinic
+    if (clinicId && cr.clinicId !== clinicId) {
+      continue;
+    }
+
+    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === module);
+    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const httpMethod = event.httpMethod;
@@ -62,14 +116,43 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     };
   }
 
-  // Check authorization for write operations
-  const groups = getGroupsFromClaims((event.requestContext as any)?.authorizer?.claims);
+  // Get user permissions from custom authorizer
+  const userPerms = getUserPermissions(event);
+  if (!userPerms) {
+    return {
+      statusCode: 401,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({ error: 'Unauthorized - Invalid token' }),
+    };
+  }
+
   const wantsWrite = httpMethod === 'POST' || httpMethod === 'PUT' || httpMethod === 'DELETE';
-  if (wantsWrite && !isWriteAuthorized(groups)) {
+  if (wantsWrite && !hasModulePermission(
+    userPerms.clinicRoles,
+    'Operations',
+    'write',
+    userPerms.isSuperAdmin,
+    userPerms.isGlobalSuperAdmin
+  )) {
     return {
       statusCode: 403,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ error: 'Forbidden' }),
+      body: JSON.stringify({ error: 'You do not have permission to modify consent forms in the Operations module' }),
+    };
+  }
+
+  // Check read permission for GET requests
+  if (httpMethod === 'GET' && !hasModulePermission(
+    userPerms.clinicRoles,
+    'Operations',
+    'read',
+    userPerms.isSuperAdmin,
+    userPerms.isGlobalSuperAdmin
+  )) {
+    return {
+      statusCode: 403,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({ error: 'You do not have permission to read consent forms in the Operations module' }),
     };
   }
 
@@ -80,21 +163,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // Route to the correct function based on path and method
     if (isRootPath && httpMethod === 'GET') {
-      return await listConsentForms(event);
+      return await listConsentForms(event, userPerms);
     }
     if (isRootPath && httpMethod === 'POST') {
-      return await createConsentForm(event);
+      return await createConsentForm(event, userPerms);
     }
     // Routes that require an ID
     if (consentFormId) {
       if (httpMethod === 'GET') {
-        return await getConsentForm(event, consentFormId); // NEW
+        return await getConsentForm(event, userPerms, consentFormId); // NEW
       }
       if (httpMethod === 'PUT') {
-        return await updateConsentForm(event, consentFormId);
+        return await updateConsentForm(event, userPerms, consentFormId);
       }
       if (httpMethod === 'DELETE') {
-        return await deleteConsentForm(event, consentFormId);
+        return await deleteConsentForm(event, userPerms, consentFormId);
       }
     }
     
@@ -116,7 +199,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 };
 
 // GET /consent-forms
-async function listConsentForms(event: APIGatewayProxyEvent) {
+async function listConsentForms(event: APIGatewayProxyEvent, userPerms: any) {
   const command = new ScanCommand({
     TableName: TABLE_NAME,
   });
@@ -132,7 +215,7 @@ async function listConsentForms(event: APIGatewayProxyEvent) {
 }
 
 // NEW FUNCTION: GET /consent-forms/{consentFormId}
-async function getConsentForm(event: APIGatewayProxyEvent, consentFormId: string) {
+async function getConsentForm(event: APIGatewayProxyEvent, userPerms: any, consentFormId: string) {
   const command = new GetCommand({
     TableName: TABLE_NAME,
     Key: {
@@ -158,7 +241,7 @@ async function getConsentForm(event: APIGatewayProxyEvent, consentFormId: string
 }
 
 // POST /consent-forms
-async function createConsentForm(event: APIGatewayProxyEvent) {
+async function createConsentForm(event: APIGatewayProxyEvent, userPerms: any) {
   const body = JSON.parse(event.body || '{}');
 
   // Validate payload based on your example
@@ -178,7 +261,7 @@ async function createConsentForm(event: APIGatewayProxyEvent) {
     templateName: body.templateName,
     elements: body.elements, // Store the full elements array
     modified_at: timestamp,
-    modified_by: (event.requestContext as any)?.authorizer?.claims?.email || 'system',
+    modified_by: userPerms.email,
   };
 
   const command = new PutCommand({
@@ -199,7 +282,7 @@ async function createConsentForm(event: APIGatewayProxyEvent) {
 }
 
 // PUT /consent-forms/{consentFormId}
-async function updateConsentForm(event: APIGatewayProxyEvent, consentFormId: string) {
+async function updateConsentForm(event: APIGatewayProxyEvent, userPerms: any, consentFormId: string) {
   const body = JSON.parse(event.body || '{}');
 
   // Validate payload
@@ -218,7 +301,7 @@ async function updateConsentForm(event: APIGatewayProxyEvent, consentFormId: str
     templateName: body.templateName,
     elements: body.elements,
     modified_at: timestamp,
-    modified_by: (event.requestContext as any)?.authorizer?.claims?.email || 'system',
+    modified_by: userPerms.email,
   };
 
   const command = new PutCommand({
@@ -239,7 +322,7 @@ async function updateConsentForm(event: APIGatewayProxyEvent, consentFormId: str
 }
 
 // DELETE /consent-forms/{consentFormId}
-async function deleteConsentForm(event: APIGatewayProxyEvent, consentFormId: string) {
+async function deleteConsentForm(event: APIGatewayProxyEvent, userPerms: any, consentFormId: string) {
   const command = new DeleteCommand({
     TableName: TABLE_NAME,
     Key: {

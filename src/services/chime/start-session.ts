@@ -4,7 +4,7 @@ import { ChimeSDKMeetingsClient, CreateMeetingCommand, CreateAttendeeCommand } f
 import { randomUUID } from 'crypto';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
-import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
+import { verifyIdToken, getUserId, isSuperAdmin } from '../../shared/utils/auth-helper';
 import { TTL_POLICY, calculateSessionExpiry } from './config/ttl-policy';
 
 const ddb = getDynamoDBClient();
@@ -24,61 +24,6 @@ const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 if (!CALL_QUEUE_TABLE_NAME) {
     throw new Error('CALL_QUEUE_TABLE_NAME environment variable is required');
 }
-// CRITICAL FIX #5: Use centralized TTL policy
-const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
-const USER_POOL_ID = process.env.USER_POOL_ID;
-const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
-let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
-
-// --- Auth Helpers (Adapted from your user.ts) ---
-async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; payload: JWTPayload } | { ok: false; code: number; message: string }> {
-  if (!authorizationHeader || !authorizationHeader.toLowerCase().startsWith("bearer ")) {
-    return { ok: false, code: 401, message: "Missing Bearer token" };
-  }
-  if (!ISSUER) {
-    return { ok: false, code: 500, message: "Issuer not configured" };
-  }
-  const token = authorizationHeader.slice(7).trim();
-  try {
-    JWKS = JWKS || createRemoteJWKSet(new URL(`${ISSUER}/.well-known/jwks.json`));
-    const { payload } = await jwtVerify(token, JWKS, { issuer: ISSUER });
-    if ((payload as any).token_use !== "id") {
-      return { ok: false, code: 401, message: "ID token required" };
-    }
-    return { ok: true, payload };
-  } catch (err: any) {
-    return { ok: false, code: 401, message: `Invalid token: ${err.message}` };
-  }
-}
-
-function getClinicsFromClaims(payload: JWTPayload): string[] {
-    const xClinics = String((payload as any)["x_clinics"] || "").trim();
-    if (xClinics === "ALL") return ["ALL"]; // Super admin case
-    if (xClinics) {
-      return xClinics.split(',').map((s) => s.trim()).filter(Boolean);
-    }
-    const xRbc = String((payload as any)["x_rbc"] || "").trim();
-     if (xRbc) {
-      return xRbc.split(',').map((pair) => pair.split(':')[0]).filter(Boolean);
-    }
-    
-    // Fallback: Extract clinic IDs from cognito:groups (e.g., clinic_dentistinperrysburg__ADMIN)
-    const groups = Array.isArray((payload as any)["cognito:groups"]) ? ((payload as any)["cognito:groups"] as string[]) : [];
-    if (groups.length > 0) {
-      const clinicIds = groups
-        .map((name) => {
-          const match = /^clinic_([^_][^\s]*)__[A-Z_]+$/.exec(String(name));
-          return match ? match[1] : '';
-        })
-        .filter(Boolean);
-      if (clinicIds.length > 0) {
-        return clinicIds;
-      }
-    }
-    
-    return [];
-}
-// --- End Auth Helpers ---
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   // Prefer the incoming Origin header so the Lambda echoes back the exact
@@ -122,18 +67,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         code: verifyResult.code,
         message: verifyResult.message 
       });
-      return { statusCode: verifyResult.code, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
+      return { statusCode: verifyResult.code || 401, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
     }
     
     console.log('[start-session] Auth verification successful');
 
-    const agentId = verifyResult.payload.sub; // Cognito User 'sub'
+    const agentId = getUserId(verifyResult.payload!); // User ID (email)
     if (!agentId) {
       console.error('[start-session] Missing subject claim in token');
       return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ message: 'Invalid token: missing sub' }) };
     }
     
-    const authorizedClinics = getClinicsFromClaims(verifyResult.payload);
+    // For custom auth, we need to fetch clinic roles from DynamoDB StaffClinicInfo table
+    // Super admins get access to all clinics
+    const authorizedClinics = isSuperAdmin(verifyResult.payload!) ? ['ALL'] : [];
     const body = JSON.parse(event.body || '{}') as { activeClinicIds: string[] };
 
     // Log agent and clinic authorization info (non-sensitive)

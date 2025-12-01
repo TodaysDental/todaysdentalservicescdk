@@ -2,6 +2,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { SYSTEM_MODULES } from '../../shared/types/user';
 import { randomUUID } from 'crypto';
 
 const ddbClient = new DynamoDBClient({});
@@ -12,27 +13,83 @@ const TABLE_NAME = process.env.SCHEDULER || process.env.TABLE_NAME || 'SCHEDULER
 // Dynamic CORS helper with custom headers
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({ allowHeaders: ['x-api-key'] }, event.headers?.origin);
 
-const getGroupsFromClaims = (claims?: Record<string, any>): string[] => {
-  if (!claims) return [];
-  const raw = (claims as any)['cognito:groups'] ?? (claims as any)['cognito:groups[]'];
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw as string[];
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    if ((trimmed.startsWith('[') && trimmed.endsWith(']')) || trimmed.startsWith('"')) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (Array.isArray(parsed)) return parsed as string[];
-      } catch {}
-    }
-    return trimmed.split(',').map((s) => s.trim()).filter(Boolean);
+/**
+ * Get user's clinic roles and permissions from custom authorizer
+ */
+const getUserPermissions = (event: APIGatewayProxyEvent) => {
+  const authorizer = event.requestContext?.authorizer;
+  if (!authorizer) return null;
+
+  try {
+    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
+    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
+    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
+    const email = authorizer.email || '';
+
+    return {
+      email,
+      clinicRoles,
+      isSuperAdmin,
+      isGlobalSuperAdmin,
+    };
+  } catch (err) {
+    console.error('Failed to parse user permissions:', err);
+    return null;
   }
-  return [];
 };
 
-const isWriteAuthorized = (groups: string[]): boolean => {
-  if (!groups || groups.length === 0) return false;
-  return groups.some((g) => g === 'GLOBAL__SUPER_ADMIN');
+/**
+ * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
+ */
+const isAdminUser = (
+  clinicRoles: any[],
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean
+): boolean => {
+  // Check flags first
+  if (isGlobalSuperAdmin || isSuperAdmin) {
+    return true;
+  }
+
+  // Check if user has Admin or SuperAdmin role at any clinic
+  for (const cr of clinicRoles) {
+    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+/**
+ * Check if user has specific permission for Operations module at ANY clinic
+ */
+const hasModulePermission = (
+  clinicRoles: any[],
+  permission: 'read' | 'write' | 'put' | 'delete',
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean,
+  clinicId?: string
+): boolean => {
+  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
+  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
+    return true;
+  }
+
+  // Check if user has the permission for Operations module at any clinic (or specific clinic)
+  for (const cr of clinicRoles) {
+    // If clinicId is specified, check only that clinic
+    if (clinicId && cr.clinicId !== clinicId) {
+      continue;
+    }
+
+    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === 'Operations');
+    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
+      return true;
+    }
+  }
+
+  return false;
 };
 
 const nowIso = (): string => new Date().toISOString();
@@ -99,10 +156,35 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const path = event.resource || event.path || '';
   const method = event.httpMethod || 'GET';
 
-  const groups = getGroupsFromClaims((event.requestContext as any)?.authorizer?.claims);
+  // Get user permissions from custom authorizer
+  const userPerms = getUserPermissions(event);
+  if (!userPerms) {
+    return { statusCode: 401, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Unauthorized - Invalid token' }) };
+  }
+
+  // Check authorization based on HTTP method
   const wantsWrite = method === 'POST' || method === 'PUT' || method === 'DELETE';
-  if (wantsWrite && !isWriteAuthorized(groups)) {
-    return { statusCode: 403, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Forbidden' }) };
+  if (wantsWrite) {
+    const canWrite = hasModulePermission(
+      userPerms.clinicRoles,
+      'write',
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin
+    );
+    if (!canWrite) {
+      return { statusCode: 403, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Forbidden - Insufficient permissions' }) };
+    }
+  } else if (method === 'GET') {
+    // For read operations, check read permission
+    const canRead = hasModulePermission(
+      userPerms.clinicRoles,
+      'read',
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin
+    );
+    if (!canRead) {
+      return { statusCode: 403, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Forbidden - Insufficient permissions' }) };
+    }
   }
 
   try {
@@ -152,7 +234,11 @@ async function handleGet(id?: string, event?: APIGatewayProxyEvent): Promise<API
 
 async function handleCreate(body: string, event?: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
   const payload = safeParseJson(body);
-  const schedule = normalizeSchedulePayload(payload, { isCreate: true });
+  const userPerms = getUserPermissions(event!);
+  const schedule = normalizeSchedulePayload({
+    ...payload,
+    modified_by: userPerms?.email || 'system'
+  }, { isCreate: true });
   await docClient.send(new PutCommand({ TableName: TABLE_NAME, Item: schedule }));
   return json(201, { schedule }, event);
 }
@@ -160,7 +246,12 @@ async function handleCreate(body: string, event?: APIGatewayProxyEvent): Promise
 async function handleUpdate(id: string | undefined, body: string, event?: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
   if (!id) return json(400, { message: 'Missing id' }, event);
   const payload = safeParseJson(body);
-  const normalized: any = normalizeSchedulePayload({ ...payload, id }, { isCreate: false });
+  const userPerms = getUserPermissions(event!);
+  const normalized: any = normalizeSchedulePayload({
+    ...payload,
+    id,
+    modified_by: userPerms?.email || 'system'
+  }, { isCreate: false });
 
   const updateExpr = [
     '#clinicId = :clinicId',

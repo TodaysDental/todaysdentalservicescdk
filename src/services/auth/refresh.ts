@@ -39,7 +39,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const body: RefreshRequest = JSON.parse(event.body);
-    const { refreshToken } = body;
+    
+    // Sanitize input
+    const refreshToken = body.refreshToken?.trim();
 
     if (!refreshToken) {
       return {

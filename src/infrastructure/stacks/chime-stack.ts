@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput, Fn } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -21,7 +21,7 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 
 export interface ChimeStackProps extends StackProps {
-  authorizer: apigw.RequestAuthorizer;
+  jwtSecret: string;
   api?: apigw.RestApi;
   /**
    * Optional list of CIDR blocks that are allowed to send SIP traffic to the
@@ -835,15 +835,8 @@ export class ChimeStack extends Stack {
       resources: ['*'],
     });
 
-    // Cognito policy for user lookup
-    const cognitoPolicy = new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        'cognito-idp:AdminGetUser',
-        'cognito-idp:ListUsers',
-      ],
-      resources: [props.userPool.userPoolArn],
-    });
+    // JWT Secret environment variable (for custom auth)
+    const jwtSecretValue = props.jwtSecret;
 
     // Lambda for POST /chime/start-session
     const startSessionFn = new lambdaNode.NodejsFunction(this, 'StartSessionFn', {
@@ -855,8 +848,7 @@ export class ChimeStack extends Stack {
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-        USER_POOL_ID: props.userPool.userPoolId,
-        COGNITO_REGION: this.region,
+        JWT_SECRET: jwtSecretValue,
         CHIME_MEDIA_REGION: 'us-east-1',
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
@@ -903,8 +895,7 @@ export class ChimeStack extends Stack {
       timeout: Duration.seconds(10),
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
-        USER_POOL_ID: props.userPool.userPoolId,
-        COGNITO_REGION: this.region,
+        JWT_SECRET: jwtSecretValue,
         CHIME_MEDIA_REGION: 'us-east-1',
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
@@ -932,14 +923,12 @@ export class ChimeStack extends Stack {
         SMA_ID_MAP: smaIdMapJson,
         VOICE_CONNECTOR_ID: voiceConnectorId,
         CHIME_MEDIA_REGION: 'us-east-1',
-        USER_POOL_ID: props.userPool.userPoolId,
-        COGNITO_REGION: this.region,
+        JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
     });
     outboundCallFn.addToRolePolicy(chimeSdkPolicy);
-    outboundCallFn.addToRolePolicy(cognitoPolicy);
     this.agentPresenceTable.grantReadWriteData(outboundCallFn);
     this.clinicsTable.grantReadData(outboundCallFn);
     this.callQueueTable.grantReadWriteData(outboundCallFn);
@@ -967,8 +956,7 @@ export class ChimeStack extends Stack {
         LOCKS_TABLE_NAME: this.locksTable.tableName,
         SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
-        USER_POOL_ID: props.userPool.userPoolId,
-        COGNITO_REGION: this.region,
+        JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
@@ -999,8 +987,7 @@ export class ChimeStack extends Stack {
         LOCKS_TABLE_NAME: this.locksTable.tableName,
         SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
-        USER_POOL_ID: props.userPool.userPoolId,
-        COGNITO_REGION: this.region,
+        JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
@@ -1031,8 +1018,7 @@ export class ChimeStack extends Stack {
         LOCKS_TABLE_NAME: this.locksTable.tableName,
         SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
-        USER_POOL_ID: props.userPool.userPoolId,
-        COGNITO_REGION: this.region,
+        JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
@@ -1063,8 +1049,7 @@ export class ChimeStack extends Stack {
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
-        USER_POOL_ID: props.userPool.userPoolId,
-        COGNITO_REGION: this.region,
+        JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
@@ -1093,8 +1078,7 @@ export class ChimeStack extends Stack {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         CHIME_MEDIA_REGION: 'us-east-1',
-        USER_POOL_ID: props.userPool.userPoolId,
-        COGNITO_REGION: this.region,
+        JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
@@ -1120,8 +1104,7 @@ export class ChimeStack extends Stack {
         LOCKS_TABLE_NAME: this.locksTable.tableName,
         SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
-        USER_POOL_ID: props.userPool.userPoolId,
-        COGNITO_REGION: this.region,
+        JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
@@ -1151,8 +1134,7 @@ export class ChimeStack extends Stack {
         LOCKS_TABLE_NAME: this.locksTable.tableName,
         SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
-        USER_POOL_ID: props.userPool.userPoolId,
-        COGNITO_REGION: this.region,
+        JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
@@ -1253,8 +1235,7 @@ export class ChimeStack extends Stack {
       timeout: Duration.seconds(10),
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
-        USER_POOL_ID: props.userPool.userPoolId,
-        COGNITO_REGION: this.region,
+        JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
@@ -1605,8 +1586,7 @@ export class ChimeStack extends Stack {
         environment: {
           RECORDINGS_BUCKET: recordingsBucket.bucketName,
           RECORDING_METADATA_TABLE: recordingMetadataTable.tableName,
-          USER_POOL_ID: props.userPoolId,
-          COGNITO_REGION: this.region,
+          JWT_SECRET: jwtSecretValue,
         },
       });
 
@@ -1625,8 +1605,7 @@ export class ChimeStack extends Stack {
         environment: {
           AGENT_PERFORMANCE_TABLE_NAME: this.agentPerformanceTable.tableName,
           CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-          USER_POOL_ID: props.userPoolId,
-          COGNITO_REGION: this.region,
+          JWT_SECRET: jwtSecretValue,
         },
       });
 

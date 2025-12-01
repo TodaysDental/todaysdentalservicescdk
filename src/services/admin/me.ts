@@ -35,7 +35,7 @@ type StaffClinicDetail = {
 /**
  * Main handler
  */
-export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
+export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const corsHeaders = buildCorsHeaders({}, event.headers?.origin);
 
   if (event.httpMethod === 'OPTIONS') {

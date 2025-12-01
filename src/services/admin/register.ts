@@ -8,7 +8,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { hashPassword } from '../../shared/utils/jwt';
-import { StaffUser, UserRole, USER_ROLES, ModuleAccess, SYSTEM_MODULES, MODULE_PERMISSIONS } from '../../shared/types/user';
+import { StaffUser, UserRole, USER_ROLES, ModuleAccess, SYSTEM_MODULES, MODULE_PERMISSIONS, WorkLocation } from '../../shared/types/user';
 
 const ddbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(ddbClient);
@@ -26,7 +26,14 @@ type RegisterModuleAccess = {
 type RegisterClinic = {
   clinicId: string | number;
   role: string; // REQUIRED - per-clinic role assignment
+  basePay?: number; // Annual base pay in dollars
+  workLocation?: WorkLocation; // Remote/on-premise configuration
+  hourlyPay?: number; // Hourly pay rate in dollars
+  openDentalUserNum?: number; // Open Dental user number
+  openDentalUsername?: string; // Open Dental username
+  employeeNum?: number; // Employee number
   moduleAccess?: RegisterModuleAccess[]; // Optional - module-level permissions
+  // Legacy fields for backward compatibility
   UserNum?: number;
   UserName?: string;
   EmployeeNum?: number;
@@ -34,7 +41,6 @@ type RegisterClinic = {
   ProviderNum?: string;
   providerName?: string;
   ClinicNum?: string;
-  hourlyPay?: string | number;
 };
 
 type StaffClinicDetail = {
@@ -115,7 +121,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
     }
 
-    const username = body.email.toLowerCase();
+    // Sanitize inputs
+    const username = body.email.trim().toLowerCase();
+    const givenName = body.givenName?.trim();
+    const familyName = body.familyName?.trim();
 
     // Check if user already exists
     const existingUser = await ddb.send(new GetCommand({
@@ -130,12 +139,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Generate password hash only if password is provided (optional for OTP-only users)
     const passwordHash = body.password ? hashPassword(body.password) : undefined;
 
-    // Build per-clinic role assignments with module permissions
+    // Build per-clinic role assignments with module permissions and additional fields
     const clinicRoles = body.makeGlobalSuperAdmin 
       ? [] 
       : body.clinics.map(c => ({
           clinicId: String(c.clinicId),
           role: c.role as UserRole,
+          basePay: c.basePay,
+          workLocation: c.workLocation,
+          hourlyPay: c.hourlyPay,
+          openDentalUserNum: c.openDentalUserNum || c.UserNum,
+          openDentalUsername: c.openDentalUsername || c.UserName,
+          employeeNum: c.employeeNum || c.EmployeeNum,
           moduleAccess: c.moduleAccess?.map(ma => ({
             module: ma.module,
             permissions: ma.permissions,
@@ -149,8 +164,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const newUser: StaffUser = {
       email: username,
       passwordHash,
-      givenName: body.givenName || '',
-      familyName: body.familyName || '',
+      givenName: givenName || '',
+      familyName: familyName || '',
       clinicRoles,
       isSuperAdmin: body.makeGlobalSuperAdmin || hasSuperAdminRole,
       isGlobalSuperAdmin: body.makeGlobalSuperAdmin || false,
@@ -252,6 +267,30 @@ function validateBody(body: RegisterBody) {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(body.email)) {
     throw new Error('invalid email format');
+  }
+
+  // Validate password complexity if password is provided
+  if (body.password) {
+    if (body.password.length < 8) {
+      throw new Error('password must be at least 8 characters long');
+    }
+    if (!/[A-Z]/.test(body.password)) {
+      throw new Error('password must contain at least one uppercase letter');
+    }
+    if (!/[a-z]/.test(body.password)) {
+      throw new Error('password must contain at least one lowercase letter');
+    }
+    if (!/[0-9]/.test(body.password)) {
+      throw new Error('password must contain at least one number');
+    }
+    if (!/[^A-Za-z0-9]/.test(body.password)) {
+      throw new Error('password must contain at least one special character');
+    }
+    // Check for common weak passwords
+    const weakPasswords = ['password', 'password123', '12345678', 'qwerty', 'abc123'];
+    if (weakPasswords.includes(body.password.toLowerCase())) {
+      throw new Error('password is too common, please choose a stronger password');
+    }
   }
 
   const isGlobal = !!body.makeGlobalSuperAdmin;

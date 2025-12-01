@@ -2,14 +2,13 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { buildCorsHeaders } from '../../shared/utils/cors';
-import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
+import { SYSTEM_MODULES } from '../../shared/types/user';
 import clinicsData from '../../infrastructure/configs/clinics.json';
 import { Clinic } from '../../infrastructure/configs/clinics';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const TABLE = process.env.CLINIC_HOURS_TABLE || 'ClinicHours';
-const USER_POOL_ID = process.env.USER_POOL_ID!;
 
 interface ClinicHoursData {
   clinicId: string;
@@ -25,37 +24,133 @@ interface ClinicHoursData {
   updatedBy: string;
 }
 
+/**
+ * Get user's clinic roles and permissions from custom authorizer
+ */
+const getUserPermissions = (event: APIGatewayProxyEvent) => {
+  const authorizer = event.requestContext?.authorizer;
+  if (!authorizer) return null;
+
+  try {
+    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
+    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
+    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
+    const email = authorizer.email || '';
+
+    return {
+      email,
+      clinicRoles,
+      isSuperAdmin,
+      isGlobalSuperAdmin,
+    };
+  } catch (err) {
+    console.error('Failed to parse user permissions:', err);
+    return null;
+  }
+};
+
+/**
+ * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
+ */
+const isAdminUser = (
+  clinicRoles: any[],
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean
+): boolean => {
+  // Check flags first
+  if (isGlobalSuperAdmin || isSuperAdmin) {
+    return true;
+  }
+
+  // Check if user has Admin or SuperAdmin role at any clinic
+  for (const cr of clinicRoles) {
+    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+/**
+ * Check if user has specific permission for a module at ANY clinic
+ */
+const hasModulePermission = (
+  clinicRoles: any[],
+  module: string,
+  permission: 'read' | 'write' | 'put' | 'delete',
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean,
+  clinicId?: string
+): boolean => {
+  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
+  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
+    return true;
+  }
+
+  // Check if user has the permission for this module at any clinic (or specific clinic)
+  for (const cr of clinicRoles) {
+    // If clinicId is specified, check only that clinic
+    if (clinicId && cr.clinicId !== clinicId) {
+      continue;
+    }
+
+    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === module);
+    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   if (event.httpMethod === 'OPTIONS') return ok({ ok: true }, event);
 
   try {
-    // Verify authentication
-    const authz = event?.headers?.authorization || event?.headers?.Authorization || '';
-    const verifyResult = await verifyIdToken(authz);
-    if (!verifyResult.ok) {
-      return err(401, verifyResult.message, event);
+    // Get user permissions from custom authorizer
+    const userPerms = getUserPermissions(event);
+    if (!userPerms) {
+      return err(401, 'Unauthorized - Invalid token', event);
     }
 
-    const caller = callerAuthContextFromClaims(verifyResult.payload!);
     const path = event.resource || '';
     const method = event.httpMethod;
     const clinicId = event.pathParameters?.clinicId;
 
-    // Check access control
-    if (clinicId && !hasClinicAccess(caller, clinicId)) {
-      return err(403, 'Access denied to this clinic', event);
+    // Check access control for Operations module
+    if (clinicId && !hasModulePermission(
+      userPerms.clinicRoles,
+      'Operations',
+      method === 'GET' ? 'read' : 'write',
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin,
+      clinicId
+    )) {
+      return err(403, 'You do not have permission to access clinic hours for this clinic', event);
+    }
+
+    // Check general access for list/create operations
+    if (!clinicId && method !== 'GET' && !hasModulePermission(
+      userPerms.clinicRoles,
+      'Operations',
+      'write',
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin
+    )) {
+      return err(403, 'You do not have permission to modify clinic hours', event);
     }
 
     // Legacy routes: /hours and /hours/{clinicId}
-    if (path.endsWith('/hours') && method === 'GET') return listHours(event, caller);
-    if (path.endsWith('/hours') && method === 'POST') return createHours(event, caller);
-    if (path.endsWith('/hours/{clinicId}') && method === 'GET') return getHours(event, caller, clinicId!);
-    if (path.endsWith('/hours/{clinicId}') && method === 'PUT') return updateHours(event, caller, clinicId!);
-    if (path.endsWith('/hours/{clinicId}') && method === 'DELETE') return deleteHours(event, caller, clinicId!);
+    if (path.endsWith('/hours') && method === 'GET') return listHours(event, userPerms);
+    if (path.endsWith('/hours') && method === 'POST') return createHours(event, userPerms);
+    if (path.endsWith('/hours/{clinicId}') && method === 'GET') return getHours(event, userPerms, clinicId!);
+    if (path.endsWith('/hours/{clinicId}') && method === 'PUT') return updateHours(event, userPerms, clinicId!);
+    if (path.endsWith('/hours/{clinicId}') && method === 'DELETE') return deleteHours(event, userPerms, clinicId!);
 
     // New routes: /clinics/{clinicId}/hours
-    if (path.includes('/clinics/') && path.endsWith('/hours') && method === 'GET') return getHours(event, caller, clinicId!);
-    if (path.includes('/clinics/') && path.endsWith('/hours') && method === 'PUT') return updateHours(event, caller, clinicId!);
+    if (path.includes('/clinics/') && path.endsWith('/hours') && method === 'GET') return getHours(event, userPerms, clinicId!);
+    if (path.includes('/clinics/') && path.endsWith('/hours') && method === 'PUT') return updateHours(event, userPerms, clinicId!);
 
     return err(404, 'not found', event);
   } catch (e: any) {
@@ -64,15 +159,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 };
 
-async function listHours(event: APIGatewayProxyEvent, caller: any): Promise<APIGatewayProxyResult> {
+async function listHours(event: APIGatewayProxyEvent, userPerms: any): Promise<APIGatewayProxyResult> {
   try {
     let resp;
-    if (caller.isSuperAdmin) {
-      // Super admin can see all clinic hours
+    if (isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin)) {
+      // Admin users can see all clinic hours
       resp = await ddb.send(new ScanCommand({ TableName: TABLE, Limit: 200 }));
     } else {
       // Regular users only see hours for clinics they have access to
-      const accessibleClinics = Object.keys(caller.rolesByClinic);
+      const accessibleClinics = userPerms.clinicRoles.map((cr: any) => cr.clinicId);
       if (accessibleClinics.length === 0) {
         return ok({ items: [] }, event);
       }
@@ -94,15 +189,22 @@ async function listHours(event: APIGatewayProxyEvent, caller: any): Promise<APIG
   }
 }
 
-async function createHours(event: APIGatewayProxyEvent, caller: any): Promise<APIGatewayProxyResult> {
+async function createHours(event: APIGatewayProxyEvent, userPerms: any): Promise<APIGatewayProxyResult> {
   try {
     const body = parse(event.body);
     const clinicId = String(body.clinicId || '').trim();
     if (!clinicId) return err(400, 'clinicId required', event);
 
-    // Check if user has access to this clinic
-    if (!hasClinicAccess(caller, clinicId)) {
-      return err(403, 'Access denied to this clinic', event);
+    // Check if user has write permission for Operations module at this clinic
+    if (!hasModulePermission(
+      userPerms.clinicRoles,
+      'Operations',
+      'write',
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin,
+      clinicId
+    )) {
+      return err(403, 'You do not have permission to create clinic hours for this clinic', event);
     }
 
     const clinic = (clinicsData as Clinic[]).find(c => c.clinicId === clinicId);
@@ -122,7 +224,7 @@ async function createHours(event: APIGatewayProxyEvent, caller: any): Promise<AP
       ...body,
       timeZone: clinic.timeZone || 'America/New_York',
       updatedAt: Date.now(),
-      updatedBy: caller.userId,
+      updatedBy: userPerms.email,
     };
 
     await ddb.send(new PutCommand({ TableName: TABLE, Item: item }));
@@ -137,7 +239,7 @@ async function createHours(event: APIGatewayProxyEvent, caller: any): Promise<AP
   }
 }
 
-async function getHours(event: APIGatewayProxyEvent, caller: any, clinicId: string): Promise<APIGatewayProxyResult> {
+async function getHours(event: APIGatewayProxyEvent, userPerms: any, clinicId: string): Promise<APIGatewayProxyResult> {
   try {
     const resp = await ddb.send(new GetCommand({ TableName: TABLE, Key: { clinicId } }));
     if (!resp.Item) return err(404, 'not found', event);
@@ -148,7 +250,7 @@ async function getHours(event: APIGatewayProxyEvent, caller: any, clinicId: stri
   }
 }
 
-async function updateHours(event: APIGatewayProxyEvent, caller: any, clinicId: string): Promise<APIGatewayProxyResult> {
+async function updateHours(event: APIGatewayProxyEvent, userPerms: any, clinicId: string): Promise<APIGatewayProxyResult> {
   try {
     const body = parse(event.body);
 
@@ -173,7 +275,7 @@ async function updateHours(event: APIGatewayProxyEvent, caller: any, clinicId: s
       ...body,
       timeZone: clinic.timeZone || 'America/New_York',
       updatedAt: Date.now(),
-      updatedBy: caller.userId,
+      updatedBy: userPerms.email,
     };
 
     await ddb.send(new PutCommand({ TableName: TABLE, Item: item }));
@@ -188,7 +290,7 @@ async function updateHours(event: APIGatewayProxyEvent, caller: any, clinicId: s
   }
 }
 
-async function deleteHours(event: APIGatewayProxyEvent, caller: any, clinicId: string): Promise<APIGatewayProxyResult> {
+async function deleteHours(event: APIGatewayProxyEvent, userPerms: any, clinicId: string): Promise<APIGatewayProxyResult> {
   try {
     // Delete from DynamoDB
     await ddb.send(new DeleteCommand({ TableName: TABLE, Key: { clinicId } }));
@@ -227,64 +329,12 @@ function validateHoursData(body: any): { valid: boolean; message: string } {
   return { valid: true, message: 'Valid hours data' };
 }
 
-function hasClinicAccess(caller: any, clinicId: string): boolean {
-  if (caller.isSuperAdmin) return true;
-  return Object.keys(caller.rolesByClinic).includes(clinicId);
-}
-
 function parse(body: any): any {
   try {
     return typeof body === 'string' ? JSON.parse(body) : (body || {});
   } catch {
     return {};
   }
-}
-
-async function verifyIdToken(token: string): Promise<{ ok: boolean; code: number; message: string; payload?: JWTPayload }> {
-  if (!token) return { ok: false, code: 401, message: 'No token provided' };
-
-  try {
-    const jwks = createRemoteJWKSet(new URL(`https://cognito-idp.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com/${USER_POOL_ID}/.well-known/jwks.json`));
-    const { payload } = await jwtVerify(token.replace('Bearer ', ''), jwks, {
-      issuer: `https://cognito-idp.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com/${USER_POOL_ID}`
-    });
-    return { ok: true, code: 200, message: 'Token verified', payload };
-  } catch (err: any) {
-    return { ok: false, code: 401, message: 'Invalid token: ' + err?.message };
-  }
-}
-
-function callerAuthContextFromClaims(claims: JWTPayload): any {
-  const groups = Array.isArray(claims['cognito:groups']) ? claims['cognito:groups'] : [];
-  const email = claims.email as string || '';
-  const userId = claims.sub as string || '';
-  const givenName = claims.given_name as string || '';
-  const familyName = claims.family_name as string || '';
-
-  return {
-    userId,
-    email,
-    givenName,
-    familyName,
-    groups,
-    isSuperAdmin: groups.includes('GLOBAL__SUPER_ADMIN'),
-    rolesByClinic: parseRolesFromGroups(groups),
-  };
-}
-
-function parseRolesFromGroups(groups: string[]): Record<string, string[]> {
-  const rolesByClinic: Record<string, string[]> = {};
-
-  groups.forEach(group => {
-    const match = /^clinic_([^_]+)__(.+)$/.exec(group);
-    if (match) {
-      const [, clinicId, role] = match;
-      if (!rolesByClinic[clinicId]) rolesByClinic[clinicId] = [];
-      rolesByClinic[clinicId].push(role);
-    }
-  });
-
-  return rolesByClinic;
 }
 
 function ok(data: any, event: APIGatewayProxyEvent): APIGatewayProxyResult {

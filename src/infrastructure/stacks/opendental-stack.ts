@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -13,7 +13,7 @@ import { Clinic } from '../configs/clinics';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface OpenDentalStackProps extends StackProps {
-  authorizer: apigw.RequestAuthorizer;
+  // Authorizer imported via CloudFormation export
 }
 
 export class OpenDentalStack extends Stack {
@@ -34,7 +34,7 @@ export class OpenDentalStack extends Stack {
 
     // Create single S3 bucket for all clinics with separate folders
     this.consolidatedSftpBucket = new s3.Bucket(this, 'ConsolidatedTransferBucket', {
-      bucketName: 'todaysdentalinsights-consolidated-sftp-v2',
+      bucketName: `${this.stackName.toLowerCase()}-sftp-${this.account}-${this.region}`,
       removalPolicy: RemovalPolicy.RETAIN,
       versioned: false,
       publicReadAccess: false,
@@ -203,7 +203,16 @@ export class OpenDentalStack extends Stack {
       responseHeaders: corsErrorHeaders,
     });
 
-    this.authorizer = props.authorizer;
+    // Import the authorizer function ARN from CoreStack's export
+    const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
+    const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
+    
+    // Create authorizer for this stack's API
+    this.authorizer = new apigw.RequestAuthorizer(this, 'OpenDentalAuthorizer', {
+      handler: authorizerFn,
+      identitySources: [apigw.IdentitySource.header('Authorization')],
+      resultsCacheTtl: Duration.minutes(5),
+    });
 
     // ========================================
     // LAMBDA FUNCTION
@@ -290,7 +299,7 @@ export class OpenDentalStack extends Stack {
 
     clinicProxy.addMethod('ANY', integration, {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [
         { 
           statusCode: '200',
@@ -347,14 +356,14 @@ export class OpenDentalStack extends Stack {
 
     // Map to custom domain with service-specific base path
     new apigw.CfnBasePathMapping(this, 'OpenDentalApiBasePathMapping', {
-      domainName: 'api.todaysdentalinsights.com',
+      domainName: 'apig.todaysdentalinsights.com',
       basePath: 'opendental',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
     });
 
     new CfnOutput(this, 'OpenDentalApiUrl', {
-      value: 'https://api.todaysdentalinsights.com/opendental/',
+      value: 'https://apig.todaysdentalinsights.com/opendental/',
       description: 'OpenDental API Gateway URL',
       exportName: `${Stack.of(this).stackName}-OpenDentalApiUrl`,
     });

@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -14,7 +14,6 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface SchedulesStackProps extends StackProps {
-  authorizer: apigw.RequestAuthorizer;
   templatesTableName: string;
   queriesTableName: string;
   clinicHoursTableName: string;
@@ -43,7 +42,7 @@ export class SchedulesStack extends Stack {
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
-      tableName: 'todaysdentalinsights-SCHEDULER-V3',
+      tableName: `${this.stackName}-Schedules`,
     });
 
     // ========================================
@@ -111,7 +110,16 @@ export class SchedulesStack extends Stack {
       responseHeaders: corsErrorHeaders,
     });
 
-    this.authorizer = props.authorizer;
+    // Import the authorizer function ARN from CoreStack's export
+    const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
+    const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
+    
+    // Create authorizer for this stack's API
+    this.authorizer = new apigw.RequestAuthorizer(this, 'SchedulesAuthorizer', {
+      handler: authorizerFn,
+      identitySources: [apigw.IdentitySource.header('Authorization')],
+      resultsCacheTtl: Duration.minutes(5),
+    });
 
     // ========================================
     // LAMBDA FUNCTIONS
@@ -265,29 +273,29 @@ export class SchedulesStack extends Stack {
     const schedulesRes = this.api.root.addResource('schedules');
     schedulesRes.addMethod('GET', new apigw.LambdaIntegration(this.schedulesFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }],
     });
     schedulesRes.addMethod('POST', new apigw.LambdaIntegration(this.schedulesFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '201' }, { statusCode: '400' }, { statusCode: '403' }],
     });
 
     const scheduleIdRes = schedulesRes.addResource('{id}');
     scheduleIdRes.addMethod('GET', new apigw.LambdaIntegration(this.schedulesFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '404' }],
     });
     scheduleIdRes.addMethod('PUT', new apigw.LambdaIntegration(this.schedulesFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
     });
     scheduleIdRes.addMethod('DELETE', new apigw.LambdaIntegration(this.schedulesFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
     });
 
@@ -295,14 +303,14 @@ export class SchedulesStack extends Stack {
     const createSchedulerRes = this.api.root.addResource('create-scheduler');
     createSchedulerRes.addMethod('POST', new apigw.LambdaIntegration(this.schedulesFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '201' }, { statusCode: '400' }, { statusCode: '403' }],
     });
 
     const deleteSchedulesRes = this.api.root.addResource('delete-schedules');
     deleteSchedulesRes.addMethod('POST', new apigw.LambdaIntegration(this.schedulesFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
     });
 
@@ -312,7 +320,7 @@ export class SchedulesStack extends Stack {
 
     // Map to custom domain with service-specific base path
     new apigw.CfnBasePathMapping(this, 'SchedulesApiBasePathMapping', {
-      domainName: 'api.todaysdentalinsights.com',
+      domainName: 'apig.todaysdentalinsights.com',
       basePath: 'schedules',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
@@ -363,7 +371,7 @@ export class SchedulesStack extends Stack {
     });
 
     new CfnOutput(this, 'SchedulesApiUrl', {
-      value: 'https://api.todaysdentalinsights.com/schedules/',
+      value: 'https://apig.todaysdentalinsights.com/schedules/',
       description: 'Schedules API Gateway URL',
       exportName: `${Stack.of(this).stackName}-SchedulesApiUrl`,
     });

@@ -5,16 +5,22 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 // Import the DynamoDB module
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as route53targets from 'aws-cdk-lib/aws-route53-targets';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export class CoreStack extends Stack {
   public readonly authApi: apigw.RestApi;
   public readonly staffClinicInfoTable: dynamodb.Table;
   public readonly staffUserTable: dynamodb.Table;
-  public readonly authorizer: apigw.RequestAuthorizer;
+  public readonly tokenBlacklistTable: dynamodb.Table;
+  public readonly authorizerFunction: lambdaNode.NodejsFunction; // Export the Lambda function
+  public readonly jwtSecretValue: string;
+  public readonly customDomain: apigw.DomainName; // Export the custom domain
+  
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
@@ -24,11 +30,11 @@ export class CoreStack extends Stack {
 
     // Staff User Table - Main authentication and user management table
     this.staffUserTable = new dynamodb.Table(this, 'StaffUserTable', {
-      tableName: 'StaffUser',
+      tableName: `${this.stackName}-StaffUser`,
       partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
-      pointInTimeRecovery: true, // Enable point-in-time recovery for security
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true }, // Enable point-in-time recovery for security
     });
 
     // Note: GSIs removed because with per-clinic role structure (clinicRoles array),
@@ -37,7 +43,7 @@ export class CoreStack extends Stack {
 
     // Staff Clinic Info Table
     this.staffClinicInfoTable = new dynamodb.Table(this, 'StaffClinicInfoTable', {
-      tableName: 'StaffClinicInfo',
+      tableName: `${this.stackName}-StaffClinicInfo`,
       // The user's email is the partition key
       partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
       // The clinic's ID is the sort key
@@ -47,27 +53,32 @@ export class CoreStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
+    // Token Blacklist Table - For logout functionality
+    // Stores hashed tokens that have been logged out to prevent reuse
+    this.tokenBlacklistTable = new dynamodb.Table(this, 'TokenBlacklistTable', {
+      tableName: `${this.stackName}-TokenBlacklist`,
+      partitionKey: { name: 'tokenHash', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY, // Can be destroyed, tokens expire anyway
+      timeToLiveAttribute: 'ttl', // Enable TTL for automatic cleanup of expired tokens
+    });
+
     // ========================================
-    // JWT SECRET
+    // JWT SECRET (from environment variable)
     // ========================================
 
-    // Create a secret for JWT signing
-    const jwtSecret = new secretsmanager.Secret(this, 'JWTSecret', {
-      secretName: 'todaysdentalinsights-jwt-secret',
-      description: 'JWT secret for custom authentication',
-      generateSecretString: {
-        secretStringTemplate: JSON.stringify({ secretKey: '' }),
-        generateStringKey: 'secretKey',
-        excludePunctuation: true,
-        passwordLength: 64,
-      },
-    });
+    // Get JWT secret from environment variable
+    // You should set this in your deployment environment:
+    // export JWT_SECRET="your-secret-key-here"
+    this.jwtSecretValue = process.env.JWT_SECRET || (() => {
+      throw new Error('JWT_SECRET environment variable is required for deployment');
+    })();
 
     // ========================================
     // CUSTOM LAMBDA AUTHORIZER
     // ========================================
 
-    const authorizerFn = new lambdaNode.NodejsFunction(this, 'CustomAuthorizerFn', {
+    this.authorizerFunction = new lambdaNode.NodejsFunction(this, 'CustomAuthorizerFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'auth', 'authorizer.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
@@ -75,18 +86,13 @@ export class CoreStack extends Stack {
       timeout: Duration.seconds(30),
       bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
-        JWT_SECRET: jwtSecret.secretValue.unsafeUnwrap(),
+        JWT_SECRET: this.jwtSecretValue,
+        TOKEN_BLACKLIST_TABLE: this.tokenBlacklistTable.tableName,
       },
     });
 
-    // Grant the authorizer access to the JWT secret
-    jwtSecret.grantRead(authorizerFn);
-
-    this.authorizer = new apigw.RequestAuthorizer(this, 'CustomAuthorizer', {
-      handler: authorizerFn,
-      identitySources: [apigw.IdentitySource.header('Authorization')],
-      resultsCacheTtl: Duration.minutes(5),
-    });
+    // Grant authorizer read access to token blacklist table
+    this.tokenBlacklistTable.grantReadData(this.authorizerFunction);
 
     // ========================================
     // AUTH API (MINIMAL)
@@ -106,6 +112,10 @@ export class CoreStack extends Stack {
         dataTraceEnabled: false,
       },
     });
+
+    // Note: No authorizer needed for CoreStack's auth API
+    // All auth endpoints (login, OTP) are public endpoints
+    // Other stacks create their own authorizers from authorizerFunction
 
     const corsErrorHeaders = getCorsErrorHeaders();
     
@@ -166,13 +176,12 @@ export class CoreStack extends Stack {
       bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
         STAFF_USER_TABLE: this.staffUserTable.tableName,
-        JWT_SECRET: jwtSecret.secretValue.unsafeUnwrap(),
+        JWT_SECRET: this.jwtSecretValue,
         CORS_ORIGIN: 'https://todaysdentalinsights.com',
       },
     });
 
     this.staffUserTable.grantReadWriteData(verifyOtpFn);
-    jwtSecret.grantRead(verifyOtpFn);
 
     // Refresh token endpoint
     const refreshFn = new lambdaNode.NodejsFunction(this, 'AuthRefreshFn', {
@@ -184,13 +193,31 @@ export class CoreStack extends Stack {
       bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
         STAFF_USER_TABLE: this.staffUserTable.tableName,
-        JWT_SECRET: jwtSecret.secretValue.unsafeUnwrap(),
+        JWT_SECRET: this.jwtSecretValue,
         CORS_ORIGIN: 'https://todaysdentalinsights.com',
       },
     });
 
     this.staffUserTable.grantReadData(refreshFn);
-    jwtSecret.grantRead(refreshFn);
+
+    // Logout endpoint - Revokes tokens and adds them to blacklist
+    const logoutFn = new lambdaNode.NodejsFunction(this, 'AuthLogoutFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'auth', 'logout.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      environment: {
+        STAFF_USER_TABLE: this.staffUserTable.tableName,
+        TOKEN_BLACKLIST_TABLE: this.tokenBlacklistTable.tableName,
+        JWT_SECRET: this.jwtSecretValue,
+        CORS_ORIGIN: 'https://todaysdentalinsights.com',
+      },
+    });
+
+    this.staffUserTable.grantReadWriteData(logoutFn);
+    this.tokenBlacklistTable.grantWriteData(logoutFn);
 
     // ========================================
     // AUTH API ROUTES
@@ -212,42 +239,99 @@ export class CoreStack extends Stack {
       methodResponses: [{ statusCode: '200' }]
     });
 
+    const logoutRes = this.authApi.root.addResource('logout');
+    logoutRes.addMethod('POST', new apigw.LambdaIntegration(logoutFn), {
+      methodResponses: [{ statusCode: '200' }]
+    });
+
     // ========================================
     // CUSTOM DOMAIN SETUP
     // ========================================
+    
+    // Certificate for apig.todaysdentalinsights.com
+    const certificateArn = 'arn:aws:acm:us-east-1:851620242036:certificate/8df14189-a210-4222-bd3f-0ff2cfc0e157';
+    const certificate = certificatemanager.Certificate.fromCertificateArn(
+      this,
+      'ApiGatewayCertificate',
+      certificateArn
+    );
 
-    // Note: The domain 'api.todaysdentalinsights.com' already exists from previous deployments
-    // We don't need to create or import it here since BasePathMapping can reference it directly
+    // Create the custom domain for API Gateway REST APIs
+    const customDomain = new apigw.DomainName(this, 'ApiGatewayDomain', {
+      domainName: 'apig.todaysdentalinsights.com',
+      certificate: certificate,
+      endpointType: apigw.EndpointType.REGIONAL,
+      securityPolicy: apigw.SecurityPolicy.TLS_1_2,
+    });
+
+    // Store the custom domain as a class property
+    this.customDomain = customDomain;
+
+    // Create Route53 A record to point to the custom domain
+    // Using direct hosted zone ID instead of lookup to avoid CloudFormation validation issues
+    const hostedZone = route53.HostedZone.fromHostedZoneAttributes(this, 'HostedZone', {
+      hostedZoneId: 'Z0782155122P6UMFMK24C',
+      zoneName: 'todaysdentalinsights.com',
+    });
+
+    new route53.ARecord(this, 'ApiGatewayAliasRecord', {
+      zone: hostedZone,
+      recordName: 'apig',
+      target: route53.RecordTarget.fromAlias(
+        new route53targets.ApiGatewayDomain(customDomain)
+      ),
+    });
 
     // ========================================
     // OUTPUTS
     // ========================================
 
     // Map Auth API to custom domain under /auth path
-    new apigw.CfnBasePathMapping(this, 'AuthApiBasePathMapping', {
-      domainName: 'api.todaysdentalinsights.com',
-      basePath: 'auth',
-      restApiId: this.authApi.restApiId,
-      stage: this.authApi.deploymentStage.stageName,
-    });
+    // COMMENTED OUT: The base path mapping is currently owned by TodaysDentalInsightsCoreV2 stack
+    // which cannot be deleted because 25+ stacks depend on its exports (UserPool, etc.)
+    // Once all stacks are migrated to V40 and V2 is deleted, uncomment this to create the mapping
+    // new apigw.CfnBasePathMapping(this, 'AuthApiBasePathMapping', {
+    //   domainName: 'apig.todaysdentalinsights.com',
+    //   basePath: 'auth',
+    //   restApiId: this.authApi.restApiId,
+    //   stage: this.authApi.deploymentStage.stageName,
+    // });
 
-    new CfnOutput(this, 'AuthApiUrl', { value: 'https://api.todaysdentalinsights.com/auth/' });
+    // Output the direct API Gateway URL (custom domain mapping owned by V2 stack for now)
+    new CfnOutput(this, 'AuthApiUrl', { 
+      value: `${this.authApi.url}`,
+      description: 'Auth API endpoint URL'
+    });
     new CfnOutput(this, 'StaffUserTableName', { value: this.staffUserTable.tableName });
     new CfnOutput(this, 'StaffClinicInfoTableName', { value: this.staffClinicInfoTable.tableName });
-    new CfnOutput(this, 'AuthorizerArn', { 
-      value: authorizerFn.functionArn,
-      exportName: `${Stack.of(this).stackName}-AuthorizerArn`,
-      description: 'Custom Lambda Authorizer ARN'
+    // Export the authorizer function ARN for cross-stack reference
+    new CfnOutput(this, 'AuthorizerFunctionArn', { 
+      value: this.authorizerFunction.functionArn,
+      exportName: 'AuthorizerFunctionArnN1',
+      description: 'Custom Lambda Authorizer Function ARN'
     });
+    
+    // Export the authorizer function name for cross-stack reference
+    new CfnOutput(this, 'AuthorizerFunctionName', { 
+      value: this.authorizerFunction.functionName,
+      exportName: 'AuthorizerFunctionNameN1',
+      description: 'Custom Lambda Authorizer Function Name'
+    });
+    // Custom domain outputs
     new CfnOutput(this, 'ApiDomainName', {
-      value: 'api.todaysdentalinsights.com',
+      value: 'apig.todaysdentalinsights.com',
       exportName: `${Stack.of(this).stackName}-ApiDomainName`,
       description: 'Custom domain name for API Gateway'
     });
+    new CfnOutput(this, 'ApiDomainRegionalDomainName', {
+      value: customDomain.domainNameAliasDomainName,
+      description: 'Regional domain name for the custom domain (for verification)'
+    });
     new CfnOutput(this, 'CertificateArn', {
-      value: 'arn:aws:acm:us-east-1:851620242036:certificate/7af77cc9-8c2e-4d1b-bd99-ac0087643686',
+      value: 'arn:aws:acm:us-east-1:851620242036:certificate/8df14189-a210-4222-bd3f-0ff2cfc0e157',
       exportName: `${Stack.of(this).stackName}-CertificateArn`,
       description: 'Certificate ARN for API custom domain'
     });
+  
   }
 }

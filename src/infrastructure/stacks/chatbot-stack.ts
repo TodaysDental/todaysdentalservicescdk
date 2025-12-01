@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import { Fn } from 'aws-cdk-lib';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
@@ -16,7 +17,6 @@ import clinicsJson from '../configs/clinics.json';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface ChatbotStackProps extends cdk.StackProps {
-  authorizer: apigw.RequestAuthorizer;
   // Optional table names for existing DynamoDB tables - direct access, no API calls
   clinicHoursTableName?: string;
   clinicPricingTableName?: string;
@@ -45,7 +45,7 @@ export class ChatbotStack extends cdk.Stack {
 
     // Conversations Table - stores all chat messages and sessions
     this.conversationsTable = new dynamodb.Table(this, 'ConversationsTable', {
-      tableName: 'chatbot-conversations',
+      tableName: `${this.stackName}-Conversations`,
       partitionKey: { name: 'sessionId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -283,11 +283,19 @@ export class ChatbotStack extends cdk.Stack {
       },
     });
 
-    // Import the existing User Pool
-    const userPool = cognito.UserPool.fromUserPoolId(this, 'ImportedUserPool', props.userPoolId);
+    // Import the existing User Pool - commented out as system now uses JWT auth
+    // const userPool = cognito.UserPool.fromUserPoolId(this, 'ImportedUserPool', props.userPoolId);
 
-    // Cognito Authorizer
-    const cognitoAuthorizer = props.authorizer;
+    // Import the authorizer function ARN from CoreStack's export
+    const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
+    const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
+    
+    // Create authorizer for this stack's API
+    const cognitoAuthorizer = new apigateway.RequestAuthorizer(this, 'ChatbotAuthorizer', {
+      handler: authorizerFn,
+      identitySources: [apigateway.IdentitySource.header('Authorization')],
+      resultsCacheTtl: cdk.Duration.minutes(5),
+    });
 
     // Add CORS error responses
     new apigateway.GatewayResponse(this, 'GatewayResponseDefault4XX', {
@@ -316,36 +324,36 @@ export class ChatbotStack extends cdk.Stack {
     
     chatHistoryResource.addMethod('GET', chatHistoryIntegration, {
       authorizer: cognitoAuthorizer,
-      authorizationType: apigateway.AuthorizationType.COGNITO,
+      authorizationType: apigateway.AuthorizationType.CUSTOM,
     });
 
     // Optional: Add endpoint for specific conversation details
     const conversationResource = chatHistoryResource.addResource('{sessionId}');
     conversationResource.addMethod('GET', chatHistoryIntegration, {
       authorizer: cognitoAuthorizer,
-      authorizationType: apigateway.AuthorizationType.COGNITO,
+      authorizationType: apigateway.AuthorizationType.CUSTOM,
     });
 
     // =========================================================================
     // Custom Domain Setup
     // =========================================================================
 
-    // Certificate for both api.todaysdentalinsights.com and ws.todaysdentalinsights.com
+    // Certificate for wss.todaysdentalinsights.com
     const certificateArn = this.node.tryGetContext('certificateArn') ?? 
       process.env.CERTIFICATE_ARN ?? 
-      'arn:aws:acm:us-east-1:851620242036:certificate/7af77cc9-8c2e-4d1b-bd99-ac0087643686';
+      'arn:aws:acm:us-east-1:851620242036:certificate/8df14189-a210-4222-bd3f-0ff2cfc0e157';
 
-    // Temporarily commented out to break dependency on old API stack
-    // Use existing domain with base path mapping for REST API
-    // new apigateway.CfnBasePathMapping(this, 'ChatbotRestApiBasePathMapping', {
-    //   domainName: 'api.todaysdentalinsights.com',
-    //   basePath: 'chatbot',
-    //   restApiId: this.restApi.restApiId,
-    //   stage: 'prod',
-    // });
+    // Use existing apig.todaysdentalinsights.com domain with base path mapping for REST API
+    // Domain is created in CoreStack, we just map our API to it
+    new apigateway.CfnBasePathMapping(this, 'ChatbotRestApiBasePathMapping', {
+      domainName: 'apig.todaysdentalinsights.com',
+      basePath: 'chatbot',
+      restApiId: this.restApi.restApiId,
+      stage: this.restApi.deploymentStage.stageName,
+    });
 
     // Create WebSocket domain on a subdomain (due to AWS limitation that WebSocket and REST can't share same domain)
-    const wsSubdomain = 'ws.todaysdentalinsights.com';
+    const wsSubdomain = 'wss.todaysdentalinsights.com';
     const wsDomain = new apigatewayv2.DomainName(this, 'WebSocketDomain', {
       domainName: wsSubdomain,
       certificate: certificatemanager.Certificate.fromCertificateArn(
@@ -364,13 +372,15 @@ export class ChatbotStack extends cdk.Stack {
     });
 
     // Route53 record for WebSocket subdomain
-    const hostedZone = route53.HostedZone.fromLookup(this, 'HostedZone', {
-      domainName: 'todaysdentalinsights.com',
+    // Using direct hosted zone attributes instead of lookup to avoid CloudFormation validation issues
+    const hostedZone = route53.HostedZone.fromHostedZoneAttributes(this, 'HostedZone', {
+      hostedZoneId: 'Z0782155122P6UMFMK24C',
+      zoneName: 'todaysdentalinsights.com',
     });
 
     new route53.ARecord(this, 'WebSocketRecord', {
       zone: hostedZone,
-      recordName: 'ws',
+      recordName: 'wss',
       target: route53.RecordTarget.fromAlias(new route53targets.ApiGatewayv2DomainProperties(
         wsDomain.regionalDomainName,
         wsDomain.regionalHostedZoneId
@@ -387,7 +397,7 @@ export class ChatbotStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, 'WebSocketCustomDomainEndpoint', {
-      value: 'wss://ws.todaysdentalinsights.com/chat',
+      value: 'wss://wss.todaysdentalinsights.com/chat',
       description: 'Custom domain WebSocket API endpoint for chatbot',
     });
 
@@ -397,7 +407,7 @@ export class ChatbotStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, 'RestCustomDomainEndpoint', {
-      value: 'https://api.todaysdentalinsights.com/chatbot',
+      value: 'https://apig.todaysdentalinsights.com/chatbot',
       description: 'Custom domain REST API endpoint for chatbot data management',
     });
 

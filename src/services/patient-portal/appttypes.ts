@@ -8,6 +8,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { buildCorsHeaders } from "../../shared/utils/cors";
+import { SYSTEM_MODULES } from "../../shared/types/user";
 
 const client = new DynamoDBClient({});
 const dynamo = DynamoDBDocumentClient.from(client);
@@ -28,6 +29,85 @@ const createResponse = (statusCode: number, body: any, requestOrigin?: string): 
   };
 };
 
+/**
+ * Get user's clinic roles and permissions from custom authorizer
+ */
+const getUserPermissions = (event: APIGatewayProxyEvent) => {
+  const authorizer = event.requestContext?.authorizer;
+  if (!authorizer) return null;
+
+  try {
+    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
+    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
+    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
+    const email = authorizer.email || '';
+
+    return {
+      email,
+      clinicRoles,
+      isSuperAdmin,
+      isGlobalSuperAdmin,
+    };
+  } catch (err) {
+    console.error('Failed to parse user permissions:', err);
+    return null;
+  }
+};
+
+/**
+ * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
+ */
+const isAdminUser = (
+  clinicRoles: any[],
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean
+): boolean => {
+  // Check flags first
+  if (isGlobalSuperAdmin || isSuperAdmin) {
+    return true;
+  }
+
+  // Check if user has Admin or SuperAdmin role at any clinic
+  for (const cr of clinicRoles) {
+    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+/**
+ * Check if user has specific permission for Operations module at ANY clinic
+ */
+const hasModulePermission = (
+  clinicRoles: any[],
+  permission: 'read' | 'write' | 'put' | 'delete',
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean,
+  clinicId?: string
+): boolean => {
+  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
+  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
+    return true;
+  }
+
+  // Check if user has the permission for Operations module at any clinic (or specific clinic)
+  for (const cr of clinicRoles) {
+    // If clinicId is specified, check only that clinic
+    if (clinicId && cr.clinicId !== clinicId) {
+      continue;
+    }
+
+    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === 'Operations');
+    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 const validateItem = (item: any): string[] => {
     // 'label' is now effectively checked twice (as SK and here), which is fine.
     const requiredFields = ['label', 'value', 'duration', 'opNum'];
@@ -37,19 +117,45 @@ const validateItem = (item: any): string[] => {
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   console.log("Request:", event.httpMethod, event.path, event.queryStringParameters);
-  
+
   const method = event.httpMethod;
   const pathParameters = event.pathParameters;
   const queryParameters = event.queryStringParameters;
   const requestOrigin = event.headers?.origin;
 
+  // Handle OPTIONS request for CORS preflight
+  if (method === 'OPTIONS') {
+    return createResponse(200, { message: 'CORS preflight response' }, requestOrigin);
+  }
+
+  // Get user permissions from custom authorizer
+  const userPerms = getUserPermissions(event);
+  if (!userPerms) {
+    return createResponse(401, { error: 'Unauthorized - Invalid token' }, requestOrigin);
+  }
+
   try {
     switch (method) {
-      case "GET":
+      case "GET": {
         if (!queryParameters || !queryParameters[PARTITION_KEY]) {
           return createResponse(400, { message: `Missing required query parameter: ${PARTITION_KEY}` }, requestOrigin);
         }
         const clinicId = queryParameters[PARTITION_KEY];
+
+        // Check if user has read permission for Operations module
+        const canRead = hasModulePermission(
+          userPerms.clinicRoles,
+          'read',
+          userPerms.isSuperAdmin,
+          userPerms.isGlobalSuperAdmin,
+          clinicId
+        );
+
+        if (!canRead) {
+          return createResponse(403, {
+            error: `You do not have permission to read appointment types for this clinic`,
+          }, requestOrigin);
+        }
 
         if (pathParameters && pathParameters.id) {
           // CASE 1: GET by ID (Label) -> /New%20Patient?clinicId=123
@@ -80,6 +186,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
           return createResponse(200, { appointmentTypes: data.Items || [] }, requestOrigin);
         }
+      }
 
       case "POST": {
         if (!event.body) return createResponse(400, { message: "Missing request body" }, requestOrigin);
@@ -87,6 +194,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         if (!item[PARTITION_KEY] || !item[SORT_KEY]) {
           return createResponse(400, { message: `Missing required Primary Keys: ${PARTITION_KEY} and ${SORT_KEY}` }, requestOrigin);
+        }
+
+        // Check if user has write permission for Operations module
+        const canCreate = hasModulePermission(
+          userPerms.clinicRoles,
+          'write',
+          userPerms.isSuperAdmin,
+          userPerms.isGlobalSuperAdmin,
+          item[PARTITION_KEY]
+        );
+
+        if (!canCreate) {
+          return createResponse(403, {
+            error: `You do not have permission to create appointment types for this clinic`,
+          }, requestOrigin);
         }
         
         const missingFields = validateItem(item);
@@ -133,6 +255,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           return createResponse(400, { message: `Missing required query parameter for PUT: ${PARTITION_KEY}` }, requestOrigin);
         }
 
+        const putClinicId = queryParameters[PARTITION_KEY];
+
+        // Check if user has put permission for Operations module
+        const canUpdate = hasModulePermission(
+          userPerms.clinicRoles,
+          'put',
+          userPerms.isSuperAdmin,
+          userPerms.isGlobalSuperAdmin,
+          putClinicId
+        );
+
+        if (!canUpdate) {
+          return createResponse(403, {
+            error: `You do not have permission to update appointment types for this clinic`,
+          }, requestOrigin);
+        }
+
         const labelId = decodeURIComponent(pathParameters.id);
         const bodyItem = JSON.parse(event.body);
         
@@ -158,13 +297,30 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return createResponse(200, { message: "Item updated", item }, requestOrigin);
       }
 
-      case "DELETE":
+      case "DELETE": {
         // DELETE /New%20Patient?clinicId=123
         if (!pathParameters || !pathParameters.id) {
           return createResponse(400, { message: "Missing ID (label) in path for DELETE" }, requestOrigin);
         }
         if (!queryParameters || !queryParameters[PARTITION_KEY]) {
           return createResponse(400, { message: `Missing required query parameter for DELETE: ${PARTITION_KEY}` }, requestOrigin);
+        }
+
+        const deleteClinicId = queryParameters[PARTITION_KEY];
+
+        // Check if user has delete permission for Operations module
+        const canDelete = hasModulePermission(
+          userPerms.clinicRoles,
+          'delete',
+          userPerms.isSuperAdmin,
+          userPerms.isGlobalSuperAdmin,
+          deleteClinicId
+        );
+
+        if (!canDelete) {
+          return createResponse(403, {
+            error: `You do not have permission to delete appointment types for this clinic`,
+          }, requestOrigin);
         }
 
         const labelToDelete = decodeURIComponent(pathParameters.id);
@@ -179,9 +335,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           })
         );
         return createResponse(200, { message: `Item '${labelToDelete}' deleted` }, requestOrigin);
-
-      // case "OPTIONS": // <-- REMOVED: Let API Gateway handle preflight requests.
-      //   return createResponse(200, {}, requestOrigin);
+      }
 
       default:
         return createResponse(405, { message: `Unsupported method "${method}"` }, requestOrigin);

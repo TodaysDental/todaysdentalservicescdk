@@ -52,7 +52,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const body: InitiateRequest = JSON.parse(event.body);
-    const { email } = body;
+    
+    // Sanitize and validate email input
+    const email = body.email?.trim().toLowerCase();
 
     if (!email) {
       return {
@@ -75,29 +77,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Get user from DynamoDB
     const result = await ddb.send(new GetCommand({
       TableName: STAFF_USER_TABLE,
-      Key: { email: email.toLowerCase() },
+      Key: { email },
     }));
 
     const user = result.Item;
 
-    if (!user) {
-      // Don't reveal if user exists or not (security best practice)
+    // Don't reveal if user exists or is inactive (security best practice - prevents user enumeration)
+    if (!user || !user.isActive) {
       return {
         statusCode: 200,
         headers,
         body: JSON.stringify({
           message: 'If an account exists with this email, an OTP code has been sent.',
-          email: email.toLowerCase(),
+          email,
         }),
-      };
-    }
-
-    // Check if user is active
-    if (!user.isActive) {
-      return {
-        statusCode: 403,
-        headers,
-        body: JSON.stringify({ error: 'Account is inactive' }),
       };
     }
 
@@ -134,8 +127,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // Send OTP via email
     try {
-      await sendOTPEmail(email.toLowerCase(), otpCode, user.givenName || 'User');
-      console.log(`OTP sent successfully to ${email.toLowerCase()}`);
+      await sendOTPEmail(email, otpCode, user.givenName || 'User');
+      console.log(`OTP sent successfully to ${email}`);
     } catch (emailError) {
       console.error('Failed to send OTP email:', emailError);
       // Even if email fails, we return success to avoid revealing user existence
@@ -146,7 +139,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       headers,
       body: JSON.stringify({
         message: 'OTP code sent to your email',
-        email: email.toLowerCase(),
+        email,
         expiresIn: OTP_EXPIRY_MINUTES * 60, // seconds
       }),
     };

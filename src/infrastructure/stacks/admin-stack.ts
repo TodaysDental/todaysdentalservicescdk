@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -9,7 +9,6 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface AdminStackProps extends StackProps {
-  authorizer: apigw.RequestAuthorizer;
   staffUserTableName: string;
   clinicHoursTableName: string;
   staffClinicInfoTableName?: string;
@@ -100,7 +99,16 @@ export class AdminStack extends Stack {
       responseHeaders: corsErrorHeaders,
     });
 
-    this.authorizer = props.authorizer;
+    // Import the authorizer function ARN from CoreStack's export
+    const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
+    const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
+    
+    // Create authorizer for this stack's API
+    this.authorizer = new apigw.RequestAuthorizer(this, 'AdminAuthorizer', {
+      handler: authorizerFn,
+      identitySources: [apigw.IdentitySource.header('Authorization')],
+      resultsCacheTtl: Duration.minutes(5),
+    });
 
 
     // ========================================
@@ -174,15 +182,16 @@ export class AdminStack extends Stack {
       timeout: Duration.seconds(10),
       bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
-        USER_POOL_ID: props.userPoolId,
+        // USER_POOL_ID removed - using JWT-based authentication now
       },
     });
 
     // *** Grant only ListUsers permission to the Directory Lambda ***
-    this.directoryLookupFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['cognito-idp:ListUsers'],
-      resources: [props.userPoolArn],
-    }));
+    // Commented out - Cognito User Pool no longer used, JWT-based auth instead
+    // this.directoryLookupFn.addToRolePolicy(new iam.PolicyStatement({
+    //   actions: ['cognito-idp:ListUsers'],
+    //   resources: [props.userPoolArn],
+    // }));
     
     // ** NEW: List Active Requests Lambda Deployment **
     this.listRequestsFn = new lambdaNode.NodejsFunction(this, 'ListRequestsFn', {
@@ -193,7 +202,7 @@ export class AdminStack extends Stack {
         timeout: Duration.seconds(10),
         bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
         environment: {
-            USER_POOL_ID: props.userPoolId,
+            // USER_POOL_ID removed - using JWT-based authentication now
             FAVORS_TABLE_NAME: props.favorsTableName, // Pass the table name
         },
     });
@@ -247,7 +256,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
       bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
         FRONTEND_DOMAIN: String(frontendDomain),
-        USER_POOL_ID: props.userPoolId,
+        // USER_POOL_ID removed - using JWT-based authentication now
         CLINIC_HOURS_TABLE: props.clinicHoursTableName,
       },
     });
@@ -288,7 +297,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         environment: {
           CALL_ANALYTICS_TABLE_NAME: props.analyticsTableName,
           COGNITO_REGION: Stack.of(this).region,
-          USER_POOL_ID: props.userPoolId,
+          // USER_POOL_ID removed - using JWT-based authentication now
         },
       });
 
@@ -318,7 +327,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
           CLINICS_TABLE_NAME: props.clinicsTableName || '',
           RECORDINGS_BUCKET_NAME: props.recordingsBucketName || '',
           COGNITO_REGION: Stack.of(this).region,
-          USER_POOL_ID: props.userPoolId,
+          // USER_POOL_ID removed - using JWT-based authentication now
         },
       });
 
@@ -381,7 +390,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
 
     // Map to custom domain with service-specific base path
     new apigw.CfnBasePathMapping(this, 'AdminApiBasePathMapping', {
-      domainName: 'api.todaysdentalinsights.com',
+      domainName: 'apig.todaysdentalinsights.com',
       basePath: 'admin',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
@@ -395,7 +404,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
     const registerRes = this.api.root.addResource('register');
     registerRes.addMethod('POST', new apigw.LambdaIntegration(this.registerFnV3), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }],
     });
 
@@ -404,26 +413,26 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
     const usernameRes = usersRes.addResource('{username}');
     usernameRes.addMethod('GET', new apigw.LambdaIntegration(this.usersFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
     });
     usernameRes.addMethod('PUT', new apigw.LambdaIntegration(this.usersFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
     });
     usernameRes.addMethod('DELETE', new apigw.LambdaIntegration(this.usersFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
     });
     usersRes.addMethod('GET', new apigw.LambdaIntegration(this.usersFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
     });
 
     // *** Directory Lookup Route for any authenticated user ***
     const directoryRes = this.api.root.addResource('directory');
     directoryRes.addMethod('GET', new apigw.LambdaIntegration(this.directoryLookupFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }],
     });
     
@@ -431,7 +440,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
     const requestsRes = this.api.root.addResource('requests');
     requestsRes.addMethod('GET', new apigw.LambdaIntegration(this.listRequestsFn), {
         authorizer: this.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
+        authorizationType: apigw.AuthorizationType.CUSTOM,
         methodResponses: [{ statusCode: '200' }],
     });
 
@@ -440,7 +449,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
     const meClinicsRes = meRes.addResource('clinics');
     meClinicsRes.addMethod('GET', new apigw.LambdaIntegration(this.meFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }],
     });
 
@@ -449,7 +458,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
       const mePresenceRes = meRes.addResource('presence');
       mePresenceRes.addMethod('GET', new apigw.LambdaIntegration(this.mePresenceFn), {
         authorizer: this.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
+        authorizationType: apigw.AuthorizationType.CUSTOM,
         methodResponses: [{ statusCode: '200' }],
       });
     }
@@ -463,7 +472,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
       const callIdRes = callRes.addResource('{callId}');
       callIdRes.addMethod('GET', new apigw.LambdaIntegration(this.getAnalyticsFn), {
         authorizer: this.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
+        authorizationType: apigw.AuthorizationType.CUSTOM,
         methodResponses: [{ statusCode: '200' }],
       });
       
@@ -472,7 +481,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
       const clinicIdRes = clinicRes.addResource('{clinicId}');
       clinicIdRes.addMethod('GET', new apigw.LambdaIntegration(this.getAnalyticsFn), {
         authorizer: this.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
+        authorizationType: apigw.AuthorizationType.CUSTOM,
         methodResponses: [{ statusCode: '200' }],
       });
       
@@ -481,7 +490,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
       const agentIdRes = agentRes.addResource('{agentId}');
       agentIdRes.addMethod('GET', new apigw.LambdaIntegration(this.getAnalyticsFn), {
         authorizer: this.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
+        authorizationType: apigw.AuthorizationType.CUSTOM,
         methodResponses: [{ statusCode: '200' }],
       });
       
@@ -489,7 +498,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
       const summaryRes = analyticsRes.addResource('summary');
       summaryRes.addMethod('GET', new apigw.LambdaIntegration(this.getAnalyticsFn), {
         authorizer: this.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
+        authorizationType: apigw.AuthorizationType.CUSTOM,
         methodResponses: [{ statusCode: '200' }],
       });
 
@@ -497,7 +506,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
       const liveRes = analyticsRes.addResource('live');
       liveRes.addMethod('GET', new apigw.LambdaIntegration(this.getAnalyticsFn), {
         authorizer: this.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
+        authorizationType: apigw.AuthorizationType.CUSTOM,
         methodResponses: [{ statusCode: '200' }],
       });
 
@@ -507,7 +516,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         const detailedCallIdRes = detailedRes.addResource('{callId}');
         detailedCallIdRes.addMethod('GET', new apigw.LambdaIntegration(this.getDetailedAnalyticsFn), {
           authorizer: this.authorizer,
-          authorizationType: apigw.AuthorizationType.COGNITO,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
           methodResponses: [{ statusCode: '200' }],
         });
       }
@@ -534,7 +543,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         const startSessionRes = chimeApiRoot.addResource('start-session');
         startSessionRes.addMethod('POST', new apigw.LambdaIntegration(importedStart, { proxy: true }), {
           authorizer: this.authorizer,
-          authorizationType: apigw.AuthorizationType.COGNITO,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
         });
       }
 
@@ -550,7 +559,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         const stopSessionRes = chimeApiRoot.addResource('stop-session');
         stopSessionRes.addMethod('POST', new apigw.LambdaIntegration(importedStop, { proxy: true }), {
           authorizer: this.authorizer,
-          authorizationType: apigw.AuthorizationType.COGNITO,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
         });
       }
 
@@ -566,7 +575,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         const outboundCallRes = chimeApiRoot.addResource('outbound-call');
         outboundCallRes.addMethod('POST', new apigw.LambdaIntegration(importedOutbound, { proxy: true }), {
           authorizer: this.authorizer,
-          authorizationType: apigw.AuthorizationType.COGNITO,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
         });
       }
 
@@ -582,7 +591,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         const transferCallRes = chimeApiRoot.addResource('transfer-call');
         transferCallRes.addMethod('POST', new apigw.LambdaIntegration(importedTransfer, { proxy: true }), {
           authorizer: this.authorizer,
-          authorizationType: apigw.AuthorizationType.COGNITO,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
         });
       }
 
@@ -598,7 +607,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         const callAcceptedRes = chimeApiRoot.addResource('call-accepted');
         callAcceptedRes.addMethod('POST', new apigw.LambdaIntegration(importedCallAccepted, { proxy: true }), {
           authorizer: this.authorizer,
-          authorizationType: apigw.AuthorizationType.COGNITO,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
         });
       }
 
@@ -614,7 +623,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         const callRejectedRes = chimeApiRoot.addResource('call-rejected');
         callRejectedRes.addMethod('POST', new apigw.LambdaIntegration(importedCallRejected, { proxy: true }), {
           authorizer: this.authorizer,
-          authorizationType: apigw.AuthorizationType.COGNITO,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
         });
       }
 
@@ -630,7 +639,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         const callHungupRes = chimeApiRoot.addResource('call-hungup');
         callHungupRes.addMethod('POST', new apigw.LambdaIntegration(importedCallHungup, { proxy: true }), {
           authorizer: this.authorizer,
-          authorizationType: apigw.AuthorizationType.COGNITO,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
         });
       }
 
@@ -646,7 +655,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         const leaveCallRes = chimeApiRoot.addResource('leave-call');
         leaveCallRes.addMethod('POST', new apigw.LambdaIntegration(importedLeaveCall, { proxy: true }), {
           authorizer: this.authorizer,
-          authorizationType: apigw.AuthorizationType.COGNITO,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
         });
       }
 
@@ -662,7 +671,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         const heartbeatRes = chimeApiRoot.addResource('heartbeat');
         heartbeatRes.addMethod('POST', new apigw.LambdaIntegration(importedHeartbeat, { proxy: true }), {
           authorizer: this.authorizer,
-          authorizationType: apigw.AuthorizationType.COGNITO,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
         });
       }
 
@@ -678,7 +687,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         const holdCallRes = chimeApiRoot.addResource('hold-call');
         holdCallRes.addMethod('POST', new apigw.LambdaIntegration(importedHoldCall, { proxy: true }), {
           authorizer: this.authorizer,
-          authorizationType: apigw.AuthorizationType.COGNITO,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
         });
       }
 
@@ -694,7 +703,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         const resumeCallRes = chimeApiRoot.addResource('resume-call');
         resumeCallRes.addMethod('POST', new apigw.LambdaIntegration(importedResumeCall, { proxy: true }), {
           authorizer: this.authorizer,
-          authorizationType: apigw.AuthorizationType.COGNITO,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
         });
       }
     }
@@ -722,7 +731,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
       const recordingIdRes = recordingsRes.addResource('{recordingId}');
       recordingIdRes.addMethod('GET', new apigw.LambdaIntegration(getRecordingFn), {
         authorizer: this.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
+        authorizationType: apigw.AuthorizationType.CUSTOM,
         methodResponses: [{ statusCode: '200' }]
       });
 
@@ -731,7 +740,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
       const callIdRecordingRes = callRecordingsRes.addResource('{callId}');
       callIdRecordingRes.addMethod('GET', new apigw.LambdaIntegration(getRecordingFn), {
         authorizer: this.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
+        authorizationType: apigw.AuthorizationType.CUSTOM,
         methodResponses: [{ statusCode: '200' }]
       });
 
@@ -740,12 +749,12 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
       const clinicIdRecordingRes = clinicRecordingsRes.addResource('{clinicId}');
       clinicIdRecordingRes.addMethod('GET', new apigw.LambdaIntegration(getRecordingFn), {
         authorizer: this.authorizer,
-        authorizationType: apigw.AuthorizationType.COGNITO,
+        authorizationType: apigw.AuthorizationType.CUSTOM,
         methodResponses: [{ statusCode: '200' }]
       });
 
       new CfnOutput(this, 'RecordingsApiUrl', {
-        value: 'https://api.todaysdentalinsights.com/admin/recordings',
+        value: 'https://apig.todaysdentalinsights.com/admin/recordings',
         description: 'Recordings API URL',
         exportName: `${Stack.of(this).stackName}-RecordingsApiUrl`
       });
@@ -756,7 +765,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
     // ========================================
 
     new CfnOutput(this, 'AdminApiUrl', {
-      value: 'https://api.todaysdentalinsights.com/admin/',
+      value: 'https://apig.todaysdentalinsights.com/admin/',
       description: 'Admin API Gateway URL',
       exportName: `${Stack.of(this).stackName}-AdminApiUrl`,
     });
@@ -768,13 +777,13 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
     });
     
     new CfnOutput(this, 'DirectoryApiUrl', {
-        value: 'https://api.todaysdentalinsights.com/admin/directory',
+        value: 'https://apig.todaysdentalinsights.com/admin/directory',
         description: 'User Directory Lookup API URL',
         exportName: `${Stack.of(this).stackName}-DirectoryApiUrl`,
     });
     
     new CfnOutput(this, 'RequestsApiUrl', {
-        value: 'https://api.todaysdentalinsights.com/admin/requests',
+        value: 'https://apig.todaysdentalinsights.com/admin/requests',
         description: 'Active Favor Requests List API URL',
         exportName: `${Stack.of(this).stackName}-RequestsApiUrl`,
     });

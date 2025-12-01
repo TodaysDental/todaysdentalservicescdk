@@ -654,7 +654,6 @@
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand, ScanCommand, PutCommand, DeleteCommand, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
-import { createRemoteJWKSet, jwtVerify, JWTPayload } from "jose";
 import { v4 as uuidv4 } from 'uuid';
 import {
   CognitoIdentityProviderClient,
@@ -662,6 +661,7 @@ import {
   ListUsersCommand,
 } from "@aws-sdk/client-cognito-identity-provider";
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2'; // <-- UPDATED: SESv2Client
+import { SYSTEM_MODULES } from '../../shared/types/user';
 
 // Environment Variables
 const SHIFTS_TABLE = process.env.SHIFTS_TABLE!;
@@ -671,14 +671,94 @@ const USER_POOL_ID = process.env.USER_POOL_ID;
 const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
 
 // --- NEW SES Environment Variables (must be added to hr-stack.ts) ---
-const APP_NAME = process.env.APP_NAME || 'TodaysDentalInsights'; 
-const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalinsights.com'; 
+const APP_NAME = process.env.APP_NAME || 'TodaysDentalInsights';
+const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalinsights.com';
 const SES_REGION = process.env.SES_REGION || 'us-east-1'; // Defaulting to us-east-1 as per core-stack.ts
 // --- END NEW ---
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const cognito = new CognitoIdentityProviderClient({});
 const ses = new SESv2Client({ region: SES_REGION }); // <-- UPDATED: Initialize SESv2Client
+
+/**
+ * Get user's clinic roles and permissions from custom authorizer
+ */
+const getUserPermissions = (event: any) => {
+  const authorizer = event.requestContext?.authorizer;
+  if (!authorizer) return null;
+
+  try {
+    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
+    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
+    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
+    const email = authorizer.email || '';
+
+    return {
+      email,
+      clinicRoles,
+      isSuperAdmin,
+      isGlobalSuperAdmin,
+    };
+  } catch (err) {
+    console.error('Failed to parse user permissions:', err);
+    return null;
+  }
+};
+
+/**
+ * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
+ */
+const isAdminUser = (
+  clinicRoles: any[],
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean
+): boolean => {
+  // Check flags first
+  if (isGlobalSuperAdmin || isSuperAdmin) {
+    return true;
+  }
+
+  // Check if user has Admin or SuperAdmin role at any clinic
+  for (const cr of clinicRoles) {
+    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+/**
+ * Check if user has specific permission for a module at ANY clinic
+ */
+const hasModulePermission = (
+  clinicRoles: any[],
+  module: string,
+  permission: 'read' | 'write' | 'put' | 'delete',
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean,
+  clinicId?: string
+): boolean => {
+  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
+  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
+    return true;
+  }
+
+  // Check if user has the permission for this module at any clinic (or specific clinic)
+  for (const cr of clinicRoles) {
+    // If clinicId is specified, check only that clinic
+    if (clinicId && cr.clinicId !== clinicId) {
+      continue;
+    }
+
+    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === module);
+    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
+      return true;
+    }
+  }
+
+  return false;
+};
 
 // ========================================
 // AUTH & ROUTING
@@ -697,77 +777,6 @@ const httpOk = (data: Record<string, any>) => ({
     statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true, ...data })
 });
 
-const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
-let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
-
-async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; payload: JWTPayload } | { ok: false; code: number; message: string }> {
-  if (!authorizationHeader || !authorizationHeader.toLowerCase().startsWith("bearer ")) {
-    return { ok: false, code: 401, message: "missing bearer token" };
-  }
-  if (!ISSUER) return { ok: false, code: 500, message: "issuer not configured" };
-  const token = authorizationHeader.slice(7).trim();
-  try {
-    JWKS = JWKS || createRemoteJWKSet(new URL(`${ISSUER}/.well-known/jwks.json`));
-    const { payload } = await jwtVerify(token, JWKS, { issuer: ISSUER });
-    if ((payload as any).token_use !== "id") {
-      return { ok: false, code: 401, message: "id token required" };
-    }
-    return { ok: true, payload };
-  } catch (_err) {
-    return { ok: false, code: 401, message: "invalid token" };
-  }
-}
-
-function callerAuthContextFromClaims(payload: JWTPayload): { staffId: string; email: string; isSuperAdmin: boolean; rolesByClinic: Record<string, string>; } {
-  const staffId = String(payload.sub || payload.username || '');
-  const email = String(payload.email || '').toLowerCase();
-  
-  const ctx: { staffId: string, email: string, isSuperAdmin: boolean; rolesByClinic: Record<string, string>; } = { 
-    staffId, 
-    email, 
-    isSuperAdmin: false, 
-    rolesByClinic: {} 
-  };
-  
-  const groups = Array.isArray((payload as any)["cognito:groups"]) ? ((payload as any)["cognito:groups"] as string[]) : [];
-  for (const g of groups) {
-    if (String(g) === "GLOBAL__SUPER_ADMIN") {
-      ctx.isSuperAdmin = true;
-      continue;
-    }
-    const m = /^clinic_([^_][^\s]*)__([A-Z_]+)$/.exec(String(g));
-    if (!m) continue;
-    const clinicId = m[1];
-    const roleKey = m[2];
-    const code = roleKeyToCode(roleKey);
-    if (!code) continue;
-    ctx.rolesByClinic[clinicId] = code;
-  }
-  
-  ctx.isSuperAdmin = ctx.isSuperAdmin || Object.values(ctx.rolesByClinic).includes("S");
-  return ctx;
-}
-
-function isRoleAdmin(caller: { isSuperAdmin: boolean; rolesByClinic: Record<string, string>; }): boolean {
-    if (caller.isSuperAdmin) return true;
-    return Object.values(caller.rolesByClinic).some(role => role === 'A' || role === 'S');
-}
-
-function roleKeyToCode(roleKey: string): string {
-  switch (String(roleKey).toUpperCase()) {
-    case "SUPER_ADMIN": return "S";
-    case "ADMIN": return "A";
-    case "PROVIDER": return "P";
-    case "MARKETING": return "M";
-    case "USER": return "U";
-    case "DOCTOR": return "D";
-    case "HYGIENIST": return "H";
-    case "DENTAL_ASSISTANT": return "DA";
-    case "TRAINEE": return "TC";
-    case "PATIENT_COORDINATOR": return "PC";
-    default: return "";
-  }
-}
 
 // ========================================
 // HELPER FUNCTIONS
@@ -908,31 +917,41 @@ export const handler = async (event: any) => {
     return { statusCode: 200, headers: corsHeaders, body: "OK" };
   }
 
-  const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
-  const verifyResult = await verifyIdToken(authz);
-  if (!verifyResult.ok) {
-    return httpErr(verifyResult.code, verifyResult.message);
+  // Get user permissions from custom authorizer
+  const userPerms = getUserPermissions(event);
+  if (!userPerms) {
+    return httpErr(401, 'Unauthorized - Invalid token');
   }
 
-  const caller = callerAuthContextFromClaims(verifyResult.payload);
-  const isAdmin = isRoleAdmin(caller);
+  // Check if user has access to HR module for read operations
+  if (!hasModulePermission(
+    userPerms.clinicRoles,
+    'HR',
+    'read',
+    userPerms.isSuperAdmin,
+    userPerms.isGlobalSuperAdmin
+  )) {
+    return httpErr(403, 'You do not have permission to access HR functionality');
+  }
+
+  const isAdmin = isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
 
   const method = event.httpMethod;
   const path = event.path.replace('/hr', '');
 
   try {
     if (method === 'GET' && path === '/dashboard') {
-      return getDashboard(caller, isAdmin);
+      return getDashboard(userPerms, isAdmin);
     }
-    
+
     if (method === 'GET' && path === '/clinics') {
-      const clinicIds = Object.keys(caller.rolesByClinic);
-      return httpOk({ clinics: clinicIds.map(id => ({ clinicId: id, clinicName: `Clinic ${id}` })) });
+      const clinicIds = userPerms.clinicRoles.map((cr: any) => cr.clinicId);
+      return httpOk({ clinics: clinicIds.map((id: string) => ({ clinicId: id, clinicName: `Clinic ${id}` })) });
     }
 
     // --- SHIFTS ---
     if (method === 'GET' && path === '/shifts') {
-      return getShifts(caller, isAdmin, event.queryStringParameters);
+      return getShifts(userPerms, isAdmin, event.queryStringParameters);
     }
     if (method === 'POST' && path === '/shifts') {
       if (!isAdmin) return httpErr(403, "Forbidden");
@@ -950,19 +969,19 @@ export const handler = async (event: any) => {
     }
     if (method === 'PUT' && path.match(/^\/shifts\/[^\/]+\/reject$/)) {
       const shiftId = path.split('/')[2];
-      return rejectShift(shiftId, caller.staffId);
+      return rejectShift(shiftId, userPerms.email); // Use email instead of staffId
     }
 
     // --- LEAVE ---
     if (method === 'GET' && path === '/leave') {
-      return getLeave(caller, isAdmin);
+      return getLeave(userPerms, isAdmin);
     }
     if (method === 'POST' && path === '/leave') {
-      return createLeave(caller.staffId, JSON.parse(event.body));
+      return createLeave(userPerms.email, JSON.parse(event.body)); // Use email instead of staffId
     }
     if (method === 'DELETE' && path.match(/^\/leave\/[^\/]+$/)) {
       const leaveId = path.split('/')[2];
-      return deleteLeave(leaveId, caller, isAdmin);
+      return deleteLeave(leaveId, userPerms, isAdmin);
     }
     if (method === 'PUT' && path.match(/^\/leave\/[^\/]+\/approve$/)) {
       if (!isAdmin) return httpErr(403, "Forbidden");
@@ -988,7 +1007,7 @@ export const handler = async (event: any) => {
 
 type CallerContext = { staffId: string; email: string; isSuperAdmin: boolean; rolesByClinic: Record<string, string>; };
 
-async function getDashboard(caller: CallerContext, isAdmin: boolean) {
+async function getDashboard(userPerms: any, isAdmin: boolean) {
   if (isAdmin) {
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -1001,9 +1020,9 @@ async function getDashboard(caller: CallerContext, isAdmin: boolean) {
       UserPoolId: USER_POOL_ID,
       Limit: 0
     }));
-    
-    const adminClinics = Object.keys(caller.rolesByClinic);
-    const shiftQueryPromises = adminClinics.map(clinicId =>
+
+    const adminClinics = userPerms.clinicRoles.map((cr: any) => cr.clinicId);
+    const shiftQueryPromises = adminClinics.map((clinicId: string) =>
       ddb.send(new QueryCommand({
         TableName: SHIFTS_TABLE,
         IndexName: 'byClinicAndDate',
@@ -1051,7 +1070,7 @@ async function getDashboard(caller: CallerContext, isAdmin: boolean) {
         FilterExpression: '#status = :completed',
         ExpressionAttributeNames: { '#status': 'status' },
         ExpressionAttributeValues: {
-          ':staffId': caller.staffId,
+          ':staffId': userPerms.email, // Use email instead of staffId
           ':completed': 'completed'
         }
     }));
@@ -1073,7 +1092,7 @@ async function getDashboard(caller: CallerContext, isAdmin: boolean) {
   }
 }
 
-async function getShifts(caller: CallerContext, isAdmin: boolean, queryParams: any) {
+async function getShifts(userPerms: any, isAdmin: boolean, queryParams: any) {
   const { clinicId, startDate, endDate, status } = queryParams || {};
 
   if (isAdmin) {
@@ -1094,14 +1113,14 @@ async function getShifts(caller: CallerContext, isAdmin: boolean, queryParams: a
 
   } else {
     let KeyConditionExpression = 'staffId = :staffId';
-    const ExpressionAttributeValues: Record<string, any> = { ':staffId': caller.staffId };
+    const ExpressionAttributeValues: Record<string, any> = { ':staffId': userPerms.email }; // Use email instead of staffId
 
     if (startDate && endDate) {
         KeyConditionExpression += ' AND startTime BETWEEN :startDate AND :endDate';
         ExpressionAttributeValues[':startDate'] = startDate;
         ExpressionAttributeValues[':endDate'] = endDate;
     }
-    
+
     let FilterExpression;
     if (status) {
         FilterExpression = '#status = :status';
@@ -1274,7 +1293,7 @@ async function rejectShift(shiftId: string, staffId: string) {
 }
 
 // --- LEAVE ---
-async function getLeave(caller: CallerContext, isAdmin: boolean) {
+async function getLeave(userPerms: any, isAdmin: boolean) {
     if (isAdmin) {
         const { Items } = await ddb.send(new ScanCommand({ TableName: LEAVE_TABLE }));
         return httpOk({ leaveRequests: Items || [] });
@@ -1283,7 +1302,7 @@ async function getLeave(caller: CallerContext, isAdmin: boolean) {
             TableName: LEAVE_TABLE,
             IndexName: 'byStaff',
             KeyConditionExpression: 'staffId = :staffId',
-            ExpressionAttributeValues: { ':staffId': caller.staffId }
+            ExpressionAttributeValues: { ':staffId': userPerms.email } // Use email instead of staffId
         }));
         return httpOk({ leaveRequests: Items || [] });
     }
@@ -1306,11 +1325,11 @@ async function createLeave(staffId: string, body: any) {
   return httpOk({ leaveId, message: "Leave request submitted" });
 }
 
-async function deleteLeave(leaveId: string, caller: CallerContext, isAdmin:boolean) {
+async function deleteLeave(leaveId: string, userPerms: any, isAdmin:boolean) {
     const { Item } = await ddb.send(new GetCommand({ TableName: LEAVE_TABLE, Key: { leaveId }}));
     if (!Item) return httpErr(404, "Leave request not found");
-    
-    if (!isAdmin && Item.staffId !== caller.staffId) {
+
+    if (!isAdmin && Item.staffId !== userPerms.email) { // Use email instead of staffId
         return httpErr(403, "Forbidden");
     }
 

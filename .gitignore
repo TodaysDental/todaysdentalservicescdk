@@ -30,3 +30,5 @@ Thumbs.db
 
 # Configuration files that may contain sensitive data
 src/infrastructure/configs/clinics.json
+# Environment variables
+.env

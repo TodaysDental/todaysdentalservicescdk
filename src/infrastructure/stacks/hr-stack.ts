@@ -1,6 +1,6 @@
 // // stacks/hr-stack.ts
 
-// import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy } from 'aws-cdk-lib';
+// import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn } from 'aws-cdk-lib';
 // import { Construct } from 'constructs';
 // import * as path from 'path';
 // import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -151,7 +151,7 @@
 //     const lambdaIntegration = new apigw.LambdaIntegration(this.hrFn);
 //     const authOptions = {
 //       authorizer: this.authorizer,
-//       authorizationType: apigw.AuthorizationType.COGNITO,
+//       authorizationType: apigw.AuthorizationType.CUSTOM,
 //     };
 
 //     // /dashboard
@@ -217,7 +217,7 @@
 // }
 // stacks/hr-stack.ts
 
-import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -228,7 +228,6 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface HrStackProps extends StackProps {
-  authorizer: apigw.RequestAuthorizer;
   staffClinicInfoTableName: string; // from coreStack
 }
 
@@ -248,7 +247,7 @@ export class HrStack extends Stack {
 
     // Table to store all shifts
     this.shiftsTable = new dynamodb.Table(this, 'ShiftsTable', {
-      tableName: 'todaysdentalinsights-HrShifts',
+      tableName: `${this.stackName}-Shifts`,
       partitionKey: { name: 'shiftId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
@@ -268,7 +267,7 @@ export class HrStack extends Stack {
 
     // Table to store all leave requests
     this.leaveTable = new dynamodb.Table(this, 'LeaveTable', {
-      tableName: 'todaysdentalinsights-HrLeaveRequests',
+      tableName: `${this.stackName}-LeaveRequests`,
       partitionKey: { name: 'leaveId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
@@ -313,7 +312,16 @@ export class HrStack extends Stack {
       restApi: this.api, type: apigw.ResponseType.UNAUTHORIZED, responseHeaders: corsErrorHeaders,
     });
 
-    this.authorizer = props.authorizer;
+    // Import the authorizer function ARN from CoreStack's export
+    const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
+    const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
+    
+    // Create authorizer for this stack's API
+    this.authorizer = new apigw.RequestAuthorizer(this, 'HrAuthorizer', {
+      handler: authorizerFn,
+      identitySources: [apigw.IdentitySource.header('Authorization')],
+      resultsCacheTtl: Duration.minutes(5),
+    });
 
     // ========================================
     // LAMBDA FUNCTION (Unified Handler)
@@ -327,8 +335,6 @@ export class HrStack extends Stack {
       timeout: Duration.seconds(30),
       bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
-        USER_POOL_ID: props.userPool.userPoolId,
-        COGNITO_REGION: Stack.of(this).region,
         SHIFTS_TABLE: this.shiftsTable.tableName,
         LEAVE_TABLE: this.leaveTable.tableName,
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName, // From CoreStack
@@ -353,14 +359,6 @@ export class HrStack extends Stack {
       ],
     }));
 
-    // Grant Cognito permissions
-    this.hrFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: [
-        'cognito-idp:ListUsers',
-        'cognito-idp:AdminGetUser'
-      ],
-      resources: [props.userPool.userPoolArn],
-    }));
     
     // --- UPDATED: SESv2 Permissions ---
     this.hrFn.addToRolePolicy(new iam.PolicyStatement({
@@ -378,7 +376,7 @@ export class HrStack extends Stack {
     const lambdaIntegration = new apigw.LambdaIntegration(this.hrFn);
     const authOptions = {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
     };
 
     // /dashboard
@@ -425,7 +423,7 @@ export class HrStack extends Stack {
     // ========================================
 
     new apigw.CfnBasePathMapping(this, 'HrApiBasePathMapping', {
-      domainName: 'api.todaysdentalinsights.com',
+      domainName: 'apig.todaysdentalinsights.com',
       basePath: 'hr', // This API will be available at /hr
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
@@ -436,7 +434,7 @@ export class HrStack extends Stack {
     // ========================================
 
     new CfnOutput(this, 'HrApiUrl', {
-      value: 'https://api.todaysdentalinsights.com/hr/',
+      value: 'https://apig.todaysdentalinsights.com/hr/',
       description: 'HR Module API Gateway URL',
       exportName: `${Stack.of(this).stackName}-HrApiUrl`,
     });

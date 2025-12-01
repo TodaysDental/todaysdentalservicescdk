@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn } from 'aws-cdk-lib';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as nodelambda from 'aws-cdk-lib/aws-lambda-nodejs';
@@ -9,14 +9,14 @@ import * as path from 'path';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface PatientPortalApptTypesStackProps extends StackProps {
-  authorizer: apigw.RequestAuthorizer;
+  // Authorizer imported via CloudFormation export
 }
 
 export class PatientPortalApptTypesStack extends Stack {
   public readonly apptTypesTable: dynamodb.Table;
   public readonly apptTypesFn: nodelambda.NodejsFunction;
   public readonly api: apigateway.RestApi;
-  public readonly authorizer: apigateway.CognitoUserPoolsAuthorizer;
+  public readonly authorizer: apigateway.RequestAuthorizer;
 
   constructor(scope: Construct, id: string, props: PatientPortalApptTypesStackProps) {
     super(scope, id, props);
@@ -30,7 +30,7 @@ export class PatientPortalApptTypesStack extends Stack {
       sortKey: { name: 'label', type: dynamodb.AttributeType.STRING }, // <-- CHANGED to label
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
-      tableName: 'todaysdentalinsights-PatientPortal-ApptTypes-V3',   // <-- CHANGED to V3
+      tableName: `${this.stackName}-ApptTypes`,
     });
 
     // ========================================
@@ -73,8 +73,15 @@ export class PatientPortalApptTypesStack extends Stack {
       responseHeaders: errorHeaders,
     });
 
-    this.authorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'CognitoAuthorizer', {
-      cognitoUserPools: [props.userPool],
+    // Import the authorizer function ARN from CoreStack's export
+    const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
+    const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
+    
+    // Create authorizer for this stack's API
+    this.authorizer = new apigateway.RequestAuthorizer(this, 'PatientPortalApptTypesAuthorizer', {
+      handler: authorizerFn,
+      identitySources: [apigateway.IdentitySource.header('Authorization')],
+      resultsCacheTtl: Duration.minutes(5),
     });
 
     // ========================================
@@ -107,12 +114,12 @@ export class PatientPortalApptTypesStack extends Stack {
     // Root methods
     this.api.root.addMethod('GET', integration, {
       authorizer: this.authorizer,
-      authorizationType: apigateway.AuthorizationType.COGNITO,
+      authorizationType: apigateway.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }],
     });
     this.api.root.addMethod('POST', integration, {
       authorizer: this.authorizer,
-      authorizationType: apigateway.AuthorizationType.COGNITO,
+      authorizationType: apigateway.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '201' }, { statusCode: '400' }, { statusCode: '403' }, { statusCode: '409' }],
     });
 
@@ -120,17 +127,17 @@ export class PatientPortalApptTypesStack extends Stack {
     const singleItem = this.api.root.addResource('{id}');
     singleItem.addMethod('GET', integration, {
       authorizer: this.authorizer,
-      authorizationType: apigateway.AuthorizationType.COGNITO,
+      authorizationType: apigateway.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '404' }],
     });
     singleItem.addMethod('PUT', integration, {
       authorizer: this.authorizer,
-      authorizationType: apigateway.AuthorizationType.COGNITO,
+      authorizationType: apigateway.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
     });
     singleItem.addMethod('DELETE', integration, {
       authorizer: this.authorizer,
-      authorizationType: apigateway.AuthorizationType.COGNITO,
+      authorizationType: apigateway.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '403' }],
     });
 
@@ -138,7 +145,7 @@ export class PatientPortalApptTypesStack extends Stack {
     // 5. DOMAIN MAPPING
     // ========================================
     new apigateway.CfnBasePathMapping(this, 'ApptTypesBasePathMapping', {
-      domainName: 'api.todaysdentalinsights.com',
+      domainName: 'apig.todaysdentalinsights.com',
       basePath: 'patient-portal-appttypes-v3', // <-- CHANGED basePath to v3
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
@@ -152,7 +159,7 @@ export class PatientPortalApptTypesStack extends Stack {
       exportName: `${Stack.of(this).stackName}-ApptTypesTableName`,
     });
     new CfnOutput(this, 'ApptTypesApiUrl', {
-      value: 'https://api.todaysdentalinsights.com/patient-portal-appttypes-v3', // <-- CHANGED URL to v3
+      value: 'https://apig.todaysdentalinsights.com/patient-portal-appttypes-v3', // <-- CHANGED URL to v3
       description: 'Full URL for this service via custom domain',
       exportName: `${Stack.of(this).stackName}-ApptTypesApiUrl`,
     });

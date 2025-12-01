@@ -48,7 +48,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const body: VerifyRequest = JSON.parse(event.body);
-    const { email, code } = body;
+    
+    // Sanitize and validate inputs
+    const email = body.email?.trim().toLowerCase();
+    const code = body.code?.trim();
 
     if (!email || !code) {
       return {
@@ -64,7 +67,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Get user from DynamoDB
     const result = await ddb.send(new GetCommand({
       TableName: STAFF_USER_TABLE,
-      Key: { email: email.toLowerCase() },
+      Key: { email },
     }));
 
     const user = result.Item as StaffUser | undefined;

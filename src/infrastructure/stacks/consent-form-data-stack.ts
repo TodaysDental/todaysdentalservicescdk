@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -8,7 +8,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface ConsentFormDataStackProps extends StackProps {
-  authorizer: apigw.RequestAuthorizer;
+  // No longer passing authorizerFunction - will import via CloudFormation export
 }
 
 export class ConsentFormDataStack extends Stack {
@@ -29,7 +29,7 @@ export class ConsentFormDataStack extends Stack {
       partitionKey: { name: 'consent_form_id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN, // Change to DESTROY for dev
-      tableName: 'todaysdentalinsights-ConsentFormData-V1',
+      tableName: `${this.stackName}-ConsentFormData`,
     });
 
     // ========================================
@@ -75,8 +75,16 @@ export class ConsentFormDataStack extends Stack {
       responseHeaders: corsErrorHeaders,
     });
 
-    // Setup Custom Authorizer
-    this.authorizer = props.authorizer;
+    // Import the authorizer function ARN from CoreStack's export
+    const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
+    const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
+    
+    // Create authorizer for this stack's API
+    this.authorizer = new apigw.RequestAuthorizer(this, 'ConsentFormDataAuthorizer', {
+      handler: authorizerFn,
+      identitySources: [apigw.IdentitySource.header('Authorization')],
+      resultsCacheTtl: Duration.minutes(5),
+    });
 
     // ========================================
     // LAMBDA FUNCTION
@@ -106,32 +114,32 @@ export class ConsentFormDataStack extends Stack {
     const consentFormsRes = this.api.root.addResource('consent-forms');
     consentFormsRes.addMethod('GET', new apigw.LambdaIntegration(this.consentFormDataFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }],
     });
     consentFormsRes.addMethod('POST', new apigw.LambdaIntegration(this.consentFormDataFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '201' }, { statusCode: '400' }, { statusCode: '403' }],
     });
 
     const consentFormIdRes = consentFormsRes.addResource('{consentFormId}');
-    
+
     // ADDED: GET method for a single item
     consentFormIdRes.addMethod('GET', new apigw.LambdaIntegration(this.consentFormDataFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '404' }], // Added 404
     });
 
     consentFormIdRes.addMethod('PUT', new apigw.LambdaIntegration(this.consentFormDataFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
     });
     consentFormIdRes.addMethod('DELETE', new apigw.LambdaIntegration(this.consentFormDataFn), {
       authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '403' }],
     });
 
@@ -141,7 +149,7 @@ export class ConsentFormDataStack extends Stack {
 
     // Map to custom domain with 'consent-forms' base path
     new apigw.CfnBasePathMapping(this, 'ConsentFormDataApiBasePathMapping', {
-      domainName: 'api.todaysdentalinsights.com',
+      domainName: 'apig.todaysdentalinsights.com',
       basePath: 'consent-forms',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
@@ -158,7 +166,7 @@ export class ConsentFormDataStack extends Stack {
     });
 
     new CfnOutput(this, 'ConsentFormDataApiUrl', {
-      value: 'https://api.todaysdentalinsights.com/consent-forms/',
+      value: 'https://apig.todaysdentalinsights.com/consent-forms/',
       description: 'Consent Form Data API Gateway URL',
       exportName: `${Stack.of(this).stackName}-ConsentFormDataApiUrl`,
     });

@@ -1,5 +1,11 @@
 #!/usr/bin/env node
 import 'source-map-support/register';
+import * as dotenv from 'dotenv';
+
+// Load environment variables from .env file in the project root
+// dotenv.config() looks for .env in the current working directory by default
+dotenv.config();
+
 import * as cdk from 'aws-cdk-lib';
 import { CoreStack } from './stacks/core-stack';
 import { CallbackStack } from './stacks/callback-stack';
@@ -152,54 +158,53 @@ if (voiceConnectorOriginationRoutes && voiceConnectorOriginationRoutes.length ==
 }
 
 // 1. Core Stack - Cognito and basic auth (minimal resources)
-const coreStack = new CoreStack(app, 'TodaysDentalInsightsCoreV2', { env });
+const coreStack = new CoreStack(app, 'TodaysDentalInsightsCoreN1', { env });
 
 
 // 3. Granular Service Stacks - Each service has its own stack with table and API endpoints
 
+// Clinic Hours service - MOVED HERE as it's used by ChatbotStack, AdminStack, and SchedulesStack
+const clinicHoursStack = new ClinicHoursStack(app, 'TodaysDentalInsightsClinicHoursN1', {
+  env,
+});
+
+// Clinic Pricing service
+const clinicPricingStack = new ClinicPricingStack(app, 'TodaysDentalInsightsClinicPricingN1', {
+  env,
+});
+
+// Clinic Insurance service
+const clinicInsuranceStack = new ClinicInsuranceStack(app, 'TodaysDentalInsightsClinicInsuranceN1', {
+  env,
+});
+
 // Templates service
-const templatesStack = new TemplatesStack(app, 'TodaysDentalInsightsTemplatesV3', {
- env,
- authorizer: coreStack.authorizer,
+const templatesStack = new TemplatesStack(app, 'TodaysDentalInsightsTemplatesN1', {
+  env,
+  // No longer passing authorizerFunction - will import via CloudFormation export
 });
 
 // *** NEW STACK ***
 // Consent Form Data service
-const consentFormDataStack = new ConsentFormDataStack(app, 'TodaysDentalInsightsConsentFormDataV1', {
- env,
- authorizer: coreStack.authorizer,
+const consentFormDataStack = new ConsentFormDataStack(app, 'TodaysDentalInsightsConsentFormDataN1', {
+  env,
 });
 // *** END NEW STACK ***
 
 // Queries service
-const queriesStack = new QueriesStack(app, 'TodaysDentalInsightsQueriesV3', {
- env,
- authorizer: coreStack.authorizer,
-});
-
-// Clinic Pricing service
-const clinicPricingStack = new ClinicPricingStack(app, 'TodaysDentalInsightsClinicPricingV3', {
- env,
- authorizer: coreStack.authorizer,
-});
-
-// Clinic Insurance service
-const clinicInsuranceStack = new ClinicInsuranceStack(app, 'TodaysDentalInsightsClinicInsuranceV3', {
- env,
- authorizer: coreStack.authorizer,
+const queriesStack = new QueriesStack(app, 'TodaysDentalInsightsQueriesN1', {
+  env,
 });
 
 // OpenDental service with SFTP resources
-const openDentalStack = new OpenDentalStack(app, 'TodaysDentalInsightsOpenDentalV2', {
- env,
- authorizer: coreStack.authorizer,
+const openDentalStack = new OpenDentalStack(app, 'TodaysDentalInsightsOpenDentalN1', {
+  env,
 });
 
 // Notifications service
-const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNotificationsV3', {
- env,
- authorizer: coreStack.authorizer,
- templatesTableName: templatesStack.templatesTable.tableName,
+const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNotificationsN1', {
+  env,
+  templatesTableName: templatesStack.templatesTable.tableName,
 });
 
 // Amazon Chime Voice Integration - create Chime stack first and export
@@ -208,17 +213,17 @@ const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNoti
 // cyclic CloudFormation references.
 
 // ** ANALYTICS STACK INSTANTIATION (BEFORE CHIME) **
-const analyticsStack = new AnalyticsStack(app, 'TodaysDentalInsightsAnalyticsV1', {
+const analyticsStack = new AnalyticsStack(app, 'TodaysDentalInsightsAnalyticsN1', {
   env,
-  authorizer: coreStack.authorizer,
+  jwtSecret: coreStack.jwtSecretValue,
   region: env.region || process.env.AWS_REGION || 'us-east-1',
   supervisorEmails: [], // Add supervisor emails for alerts
   // Note: callQueueTableName and agentPresenceTableName will be passed from ChimeStack
 });
 
-const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV23', {
+const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeN1', {
  env,
- authorizer: coreStack.authorizer,
+ jwtSecret: coreStack.jwtSecretValue,
  voiceConnectorTerminationCidrs,
  voiceConnectorOriginationRoutes,
  analyticsTableName: analyticsStack.analyticsTable.tableName,
@@ -228,33 +233,31 @@ const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeV23', {
  medicalVocabularyName: analyticsStack.medicalVocabularyName,
 });
 // ** COMMUNICATIONS STACK INSTANTIATION **
-const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommV1', {
+const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommN1', {
     env,
-    authorizer: coreStack.authorizer,
+    jwtSecret: coreStack.jwtSecretValue,
 });
 
 // Chatbot Stack - WebSocket-based dental assistant chatbot (depends on core and clinic data)
 // NOTE: Declared here before AdminStack because AdminStack needs chatbotStack.conversationsTable.tableName
-const chatbotStack = new ChatbotStack(app, 'TodaysDentalInsightsChatbotV2', {
- env,
- authorizer: coreStack.authorizer,
- // Chatbot reads directly from DynamoDB tables - no API calls needed
- clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
- clinicPricingTableName: clinicPricingStack.clinicPricingTable.tableName,
- clinicInsuranceTableName: clinicInsuranceStack.clinicInsuranceTable.tableName,
+const chatbotStack = new ChatbotStack(app, 'TodaysDentalInsightsChatbotN1', {
+  env,
+  // Chatbot reads directly from DynamoDB tables - no API calls needed
+  clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
+  clinicPricingTableName: clinicPricingStack.clinicPricingTable.tableName,
+  clinicInsuranceTableName: clinicInsuranceStack.clinicInsuranceTable.tableName,
 });
 
 // Admin services (AdminStack will import Chime lambda ARNs and wire API
 // methods). Importing the ARNs makes Admin depend on Chime (one-way), which
 // avoids the cyclic dependency we were seeing.
-const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminV3', {
+const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
  env,
- authorizer: coreStack.authorizer,
  staffUserTableName: coreStack.staffUserTable.tableName,
- staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
- favorsTableName: communicationsStack.favorsTable.tableName,
- clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
- analyticsTableName: analyticsStack.analyticsTable.tableName,
+  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+  favorsTableName: communicationsStack.favorsTable.tableName,
+  clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
+  analyticsTableName: analyticsStack.analyticsTable.tableName,
  // Additional table names for detailed analytics
  callQueueTableName: chimeStack.callQueueTable.tableName,
  recordingMetadataTableName: chimeStack.recordingMetadataTable?.tableName,
@@ -283,7 +286,7 @@ adminStack.addDependency(chimeStack);
 
 // 2. ChimeStack depends only on Core, not on AdminStack
 // This avoids the circular dependency where ChimeStack -> AdminStack -> ChimeStack
-chimeStack.addDependency(coreStack);
+// chimeStack.addDependency(coreStack); // Implicit through authorizerFunction
 
 // 3. Add a warning comment to prevent future circular dependencies
 // DO NOT add a dependency from ChimeStack to AdminStack as this would create a circular reference:
@@ -292,83 +295,79 @@ chimeStack.addDependency(coreStack);
 // The Admin stack now receives the agent presence table name via props,
 // so no additional configuration is needed here.
 
-const hrStack = new HrStack(app, 'TodaysDentalInsightsHrV1', {
+const hrStack = new HrStack(app, 'TodaysDentalInsightsHrN1', {
  env,
- authorizer: coreStack.authorizer,
  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
 });
-hrStack.addDependency(coreStack);
+// hrStack.addDependency(coreStack); // Implicit
 
 
 // Schedules service (depends on other services for cross-table access)
-const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesV3', {
+const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesN1', {
  env,
- authorizer: coreStack.authorizer,
  templatesTableName: templatesStack.templatesTable.tableName,
  queriesTableName: queriesStack.queriesTable.tableName,
- clinicHoursTableName: 'todaysdentalinsights-ClinicHoursV3',
+ clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
 });
 
-const callbackStack = new CallbackStack(app, 'TodaysDentalInsightsCallbackV2', {
+const callbackStack = new CallbackStack(app, 'TodaysDentalInsightsCallbackN1', {
  env,
- authorizer: coreStack.authorizer,
 });
 
 // 7. Patient Portal Stack - Dedicated patient portal API (depends on core and OpenDental)
-const patientPortalStack = new PatientPortalStack(app, 'TodaysDentalInsightsPatientPortalV2', {
+const patientPortalStack = new PatientPortalStack(app, 'TodaysDentalInsightsPatientPortalN1', {
  env,
- authorizer: coreStack.authorizer,
  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
  consolidatedTransferServerBucket: openDentalStack.consolidatedSftpBucket.bucketName,
 });
-const patientPortalApptTypesStack = new PatientPortalApptTypesStack(app, 'TodaysDentalInsightsPatientPortalApptTypesV1', {
+const patientPortalApptTypesStack = new PatientPortalApptTypesStack(app, 'TodaysDentalInsightsPatientPortalApptTypesN1', {
  env,
- authorizer: coreStack.authorizer,
 });
-patientPortalApptTypesStack.addDependency(coreStack);
+// patientPortalApptTypesStack.addDependency(coreStack); // Implicit
 
-// Clinic Hours service
-const clinicHoursStack = new ClinicHoursStack(app, 'TodaysDentalInsightsClinicHoursV3', {
- env,
- authorizer: coreStack.authorizer,
-});
+// Clinic Hours service - REMOVED FROM HERE, moved to top after coreStack
 
 // Add stack dependencies
 // Core dependencies
 
-// Service stack dependencies (each service only depends on core for user pool)
-templatesStack.addDependency(coreStack);
-consentFormDataStack.addDependency(coreStack); // Add dependency for the new stack
-queriesStack.addDependency(coreStack);
-clinicHoursStack.addDependency(coreStack);
-clinicPricingStack.addDependency(coreStack);
-clinicInsuranceStack.addDependency(coreStack);
-openDentalStack.addDependency(coreStack);
+// NOTE: When using Fn.importValue() for AuthorizerFunctionArn, dependencies are NOT implicit
+// Explicit dependencies are required to ensure CoreStack is deployed first
 
-communicationsStack.addDependency(coreStack); // <-- NEW DEPENDENCY ADDED HERE
+// Service stack dependencies - EXPLICIT because they import AuthorizerFunctionArn
+templatesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+consentFormDataStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+queriesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+clinicHoursStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+clinicPricingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+clinicInsuranceStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+openDentalStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+hrStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+
+communicationsStack.addDependency(coreStack); // Explicit - uses JWT secret
 
 // Analytics stack dependencies
-analyticsStack.addDependency(coreStack);
+// analyticsStack.addDependency(coreStack); // Implicit through jwtSecret
 
 // Cross-service dependencies for services that need data from other services
-notificationsStack.addDependency(coreStack);
-notificationsStack.addDependency(templatesStack);
-adminStack.addDependency(coreStack);
-schedulesStack.addDependency(coreStack);
-schedulesStack.addDependency(templatesStack);
-schedulesStack.addDependency(queriesStack);
-schedulesStack.addDependency(openDentalStack);
+notificationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+notificationsStack.addDependency(templatesStack); // Explicit - uses table name
+adminStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+schedulesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+schedulesStack.addDependency(templatesStack); // Explicit - uses table name
+schedulesStack.addDependency(queriesStack); // Explicit - uses table name
+schedulesStack.addDependency(openDentalStack); // Explicit - uses server ID
 
 
 
 // Other existing stack dependencies
-callbackStack.addDependency(coreStack);
-patientPortalStack.addDependency(coreStack);
-patientPortalStack.addDependency(openDentalStack);
-chatbotStack.addDependency(coreStack);
-chatbotStack.addDependency(clinicPricingStack);
-chatbotStack.addDependency(clinicInsuranceStack);
+callbackStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+patientPortalApptTypesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+// patientPortalStack.addDependency(coreStack); // Note: PatientPortalStack might not import it - verify
+patientPortalStack.addDependency(openDentalStack); // Explicit - uses SFTP resources
+chatbotStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+chatbotStack.addDependency(clinicPricingStack); // Explicit - uses table name
+chatbotStack.addDependency(clinicInsuranceStack); // Explicit - uses table name
 
 // Fluoride Automation Stack - Run automation for adding fluoride treatments every hour
 // const fluorideAutomationStack = new FluorideAutomationStack(app, 'TodaysDentalInsightsFluorideAutomationV1', {

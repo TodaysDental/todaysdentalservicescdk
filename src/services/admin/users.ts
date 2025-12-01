@@ -14,7 +14,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, ScanCommand, GetCommand, PutCommand, DeleteCommand, QueryCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { buildCorsHeaders } from '../../shared/utils/cors';
-import { StaffUser, UserRole, USER_ROLES, PublicStaffUser, ModuleAccess, SYSTEM_MODULES, MODULE_PERMISSIONS } from '../../shared/types/user';
+import { StaffUser, UserRole, USER_ROLES, PublicStaffUser, ModuleAccess, SYSTEM_MODULES, MODULE_PERMISSIONS, ClinicRoleAssignment as ClinicRoleAssignmentType, WorkLocation } from '../../shared/types/user';
 import { hashPassword } from '../../shared/utils/jwt';
 
 const ddbClient = new DynamoDBClient({});
@@ -22,17 +22,6 @@ const ddb = DynamoDBDocumentClient.from(ddbClient);
 
 const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE || 'StaffUser';
 const STAFF_INFO_TABLE = process.env.STAFF_CLINIC_INFO_TABLE;
-
-type ModuleAccessInput = {
-  module: string;
-  permissions: string[];
-};
-
-type ClinicRoleAssignment = { 
-  clinicId: string; 
-  role: UserRole;
-  moduleAccess?: ModuleAccessInput[];
-};
 
 type StaffClinicDetail = {
   clinicId: string;
@@ -49,7 +38,7 @@ type StaffClinicDetail = {
 type PutUserBody = {
   givenName?: string;
   familyName?: string;
-  clinicRoles?: ClinicRoleAssignment[]; // Per-clinic role assignments
+  clinicRoles?: ClinicRoleAssignmentType[]; // Per-clinic role assignments
   makeGlobalSuperAdmin?: boolean;
   isActive?: boolean;
   password?: string;
@@ -512,8 +501,7 @@ function toPublicUser(user: StaffUser): PublicStaffUser {
     email: user.email,
     givenName: user.givenName,
     familyName: user.familyName,
-    roles: user.roles,
-    clinics: user.clinics,
+    clinicRoles: user.clinicRoles,
     isSuperAdmin: user.isSuperAdmin,
     isGlobalSuperAdmin: user.isGlobalSuperAdmin,
     isActive: user.isActive,

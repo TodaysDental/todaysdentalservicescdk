@@ -1,5 +1,6 @@
 import https from 'https';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { SYSTEM_MODULES } from '../../shared/types/user';
 import clinicsData from '../../infrastructure/configs/clinics.json';
 import { APIGatewayProxyEvent, APIGatewayProxyResult, APIGatewayProxyEventQueryStringParameters } from 'aws-lambda';
 import { parse as parseCsv } from 'csv-parse/sync';
@@ -20,20 +21,86 @@ type ClinicCreds = {
 
 const corsHeaders = buildCorsHeaders({ allowMethods: ['GET', 'POST', 'PUT', 'OPTIONS'] });
 
-const getGroupsFromClaims = (claims?: Record<string, any>): string[] => {
-  if (!claims) return [];
-  const raw = (claims as any)['cognito:groups'] ?? (claims as any)['cognito:groups[]'];
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw as string[];
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    try { const parsed = JSON.parse(trimmed); if (Array.isArray(parsed)) return parsed as string[]; } catch {}
-    return trimmed.split(',').map((s) => s.trim()).filter(Boolean);
+/**
+ * Get user's clinic roles and permissions from custom authorizer
+ */
+const getUserPermissions = (event: APIGatewayProxyEvent) => {
+  const authorizer = event.requestContext?.authorizer;
+  if (!authorizer) return null;
+
+  try {
+    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
+    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
+    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
+    const email = authorizer.email || '';
+
+    return {
+      email,
+      clinicRoles,
+      isSuperAdmin,
+      isGlobalSuperAdmin,
+    };
+  } catch (err) {
+    console.error('Failed to parse user permissions:', err);
+    return null;
   }
-  return [];
 };
 
-const isGlobalSuperAdmin = (groups: string[]): boolean => groups.includes('GLOBAL__SUPER_ADMIN');
+/**
+ * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
+ */
+const isAdminUser = (
+  clinicRoles: any[],
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean
+): boolean => {
+  // Check flags first
+  if (isGlobalSuperAdmin || isSuperAdmin) {
+    return true;
+  }
+
+  // Check if user has Admin or SuperAdmin role at any clinic
+  for (const cr of clinicRoles) {
+    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+/**
+ * Check if user has specific permission for a module at ANY clinic
+ */
+const hasModulePermission = (
+  clinicRoles: any[],
+  module: string,
+  permission: 'read' | 'write' | 'put' | 'delete',
+  isSuperAdmin: boolean,
+  isGlobalSuperAdmin: boolean,
+  clinicId?: string
+): boolean => {
+  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
+  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
+    return true;
+  }
+
+  // Check if user has the permission for this module at any clinic (or specific clinic)
+  for (const cr of clinicRoles) {
+    // If clinicId is specified, check only that clinic
+    if (clinicId && cr.clinicId !== clinicId) {
+      continue;
+    }
+
+    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === module);
+    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 
 const API_HOST = 'api.opendental.com';
 const API_BASE = '/api/v1';
@@ -60,6 +127,12 @@ const CLINIC_CREDS: Record<string, ClinicCreds> = (() => {
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   try {
+    // Get user permissions from custom authorizer
+    const userPerms = getUserPermissions(event);
+    if (!userPerms) {
+      return httpErr(401, 'Unauthorized - Invalid token');
+    }
+
     const method = event.httpMethod;
     const proxy = event.pathParameters?.proxy || '';
     const clinicId = event.pathParameters?.clinicId || '';
@@ -74,17 +147,34 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return httpErr(400, 'Missing clinicId or proxy');
     }
 
+    // Check access control for Operations module
+    const isQueriesPost = method === 'POST' && proxy === 'queries';
+    if (!isQueriesPost && !hasModulePermission(
+      userPerms.clinicRoles,
+      'Operations',
+      'read',
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin,
+      clinicId
+    )) {
+      return httpErr(403, 'You do not have permission to access Open Dental data for this clinic');
+    }
+
+    // For queries POST, check write permission
+    if (isQueriesPost && !hasModulePermission(
+      userPerms.clinicRoles,
+      'Operations',
+      'write',
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin,
+      clinicId
+    )) {
+      return httpErr(403, 'You do not have permission to execute queries for this clinic');
+    }
+
     const creds = CLINIC_CREDS[clinicId];
     if (!creds) {
       return httpErr(400, `No Open Dental credentials configured for clinicId=${clinicId}`);
-    }
-
-    const groups = getGroupsFromClaims((event.requestContext as any)?.authorizer?.claims);
-    // Anyone authenticated can POST /{clinicId}/queries; enforce clinic membership for all other clinic routes
-    const isQueriesPost = method === 'POST' && proxy === 'queries';
-    const isMemberOfClinic = groups.some((g) => g.startsWith(`clinic_${clinicId}__`));
-    if (!isQueriesPost && !isGlobalSuperAdmin(groups) && !isMemberOfClinic) {
-      return httpErr(403, 'Forbidden: not authorized for this clinic');
     }
 
   // Handle Open Dental SQL queries with SFTP delivery FIRST

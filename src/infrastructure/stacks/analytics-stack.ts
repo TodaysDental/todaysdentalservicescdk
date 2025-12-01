@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput, Fn } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as kinesis from 'aws-cdk-lib/aws-kinesis';
@@ -18,9 +18,10 @@ import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import { KinesisEventSource, SqsEventSource, SqsDlq } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as customResources from 'aws-cdk-lib/custom-resources';
 import * as quicksight from 'aws-cdk-lib/aws-quicksight';
+import * as apigw from 'aws-cdk-lib/aws-apigateway';
 
 export interface AnalyticsStackProps extends StackProps {
-  authorizer: apigw.RequestAuthorizer;
+  jwtSecret: string;
   region: string;
   callQueueTableStreamArn?: string; // Optional: will be passed from ChimeStack
   callQueueTableName?: string; // Optional: for reconciliation job

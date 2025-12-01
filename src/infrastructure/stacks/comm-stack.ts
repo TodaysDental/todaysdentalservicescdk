@@ -9,10 +9,11 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sns from 'aws-cdk-lib/aws-sns';
+import * as apigw from 'aws-cdk-lib/aws-apigateway';
 
 export interface CommStackProps extends StackProps {
-  // Custom Lambda authorizer
-  authorizer: apigw.RequestAuthorizer;
+  // Authorizer imported via CloudFormation export
+  jwtSecret: string;
 }
 
 export class CommStack extends Stack {
@@ -107,7 +108,7 @@ export class CommStack extends Stack {
     // S3 BUCKET (for File Sharing)
     // ========================================
     this.fileBucket = new s3.Bucket(this, 'CommunicationFilesBucket', {
-      bucketName: `comm-files-${this.account}-${this.region}`,
+      bucketName: `${this.stackName.toLowerCase()}-comm-files-${this.account}-${this.region}`,
       cors: [
         {
           allowedHeaders: ['*'],
@@ -165,7 +166,7 @@ export class CommStack extends Stack {
       memorySize: 256,
       timeout: Duration.seconds(5),
       environment: {
-        USER_POOL_ID: props.userPoolId,
+        JWT_SECRET: props.jwtSecret,
         ...defaultLambdaEnv,
       },
     });
@@ -192,8 +193,8 @@ export class CommStack extends Stack {
       bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' }, 
       environment: {
           ...defaultLambdaEnv,
-          SES_SOURCE_EMAIL: 'no-reply@todaysdentalinsights.com', 
-          USER_POOL_ID: props.userPoolId, 
+          SES_SOURCE_EMAIL: 'no-reply@todaysdentalinsights.com',
+          STAFF_USER_TABLE: 'StaffUser', // For looking up user emails
       },
     });
 
@@ -211,10 +212,10 @@ export class CommStack extends Stack {
         resources: ['*'], 
     }));
     
-    // CRITICAL NEW FEATURE: Grant Cognito Read access to allow Lambda to look up recipient/sender email for SES
+    // CRITICAL NEW FEATURE: Grant DynamoDB Read access to StaffUser table for email lookups
     defaultFn.addToRolePolicy(new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminGetUser'],
-        resources: [props.userPoolArn],
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: ['arn:aws:dynamodb:*:*:table/StaffUser'],
     }));
 
 
