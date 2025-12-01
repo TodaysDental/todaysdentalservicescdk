@@ -79,6 +79,12 @@ export class NotificationsStack extends Stack {
       type: apigw.ResponseType.UNAUTHORIZED,
       responseHeaders: corsErrorHeaders,
     });
+    
+    new apigw.GatewayResponse(this, 'GatewayResponseAccessDenied', {
+      restApi: this.notificationsApi,
+      type: apigw.ResponseType.ACCESS_DENIED,
+      responseHeaders: corsErrorHeaders,
+    });
 
 
     // ========================================
@@ -153,6 +159,7 @@ export class NotificationsStack extends Stack {
           }
         },
         { statusCode: '400' },
+        { statusCode: '401' },
         { statusCode: '403' }
       ],
     });
@@ -179,6 +186,7 @@ export class NotificationsStack extends Stack {
           }
         },
         { statusCode: '400' },
+        { statusCode: '401' },
         { statusCode: '403' }
       ],
       requestModels: {

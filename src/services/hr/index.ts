@@ -652,6 +652,7 @@
 // }
 // services/hr/index.ts
 
+import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand, ScanCommand, PutCommand, DeleteCommand, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
@@ -661,7 +662,16 @@ import {
   ListUsersCommand,
 } from "@aws-sdk/client-cognito-identity-provider";
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2'; // <-- UPDATED: SESv2Client
-import { SYSTEM_MODULES } from '../../shared/types/user';
+import { buildCorsHeaders } from '../../shared/utils/cors';
+import {
+  getUserPermissions,
+  hasModulePermission,
+  isAdminUser,
+  getAllowedClinicIds,
+  hasClinicAccess,
+  PermissionType,
+  UserPermissions,
+} from '../../shared/utils/permissions-helper';
 
 // Environment Variables
 const SHIFTS_TABLE = process.env.SHIFTS_TABLE!;
@@ -679,102 +689,26 @@ const SES_REGION = process.env.SES_REGION || 'us-east-1'; // Defaulting to us-ea
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const cognito = new CognitoIdentityProviderClient({});
 const ses = new SESv2Client({ region: SES_REGION }); // <-- UPDATED: Initialize SESv2Client
-
-/**
- * Get user's clinic roles and permissions from custom authorizer
- */
-const getUserPermissions = (event: any) => {
-  const authorizer = event.requestContext?.authorizer;
-  if (!authorizer) return null;
-
-  try {
-    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
-    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
-    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
-    const email = authorizer.email || '';
-
-    return {
-      email,
-      clinicRoles,
-      isSuperAdmin,
-      isGlobalSuperAdmin,
-    };
-  } catch (err) {
-    console.error('Failed to parse user permissions:', err);
-    return null;
-  }
-};
-
-/**
- * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
- */
-const isAdminUser = (
-  clinicRoles: any[],
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean
-): boolean => {
-  // Check flags first
-  if (isGlobalSuperAdmin || isSuperAdmin) {
-    return true;
-  }
-
-  // Check if user has Admin or SuperAdmin role at any clinic
-  for (const cr of clinicRoles) {
-    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
-      return true;
-    }
-  }
-
-  return false;
-};
-
-/**
- * Check if user has specific permission for a module at ANY clinic
- */
-const hasModulePermission = (
-  clinicRoles: any[],
-  module: string,
-  permission: 'read' | 'write' | 'put' | 'delete',
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean,
-  clinicId?: string
-): boolean => {
-  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
-  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
-    return true;
-  }
-
-  // Check if user has the permission for this module at any clinic (or specific clinic)
-  for (const cr of clinicRoles) {
-    // If clinicId is specified, check only that clinic
-    if (clinicId && cr.clinicId !== clinicId) {
-      continue;
-    }
-
-    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === module);
-    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
-      return true;
-    }
-  }
-
-  return false;
+const MODULE_NAME = 'HR';
+const METHOD_PERMISSIONS: Record<string, PermissionType> = {
+  GET: 'read',
+  POST: 'write',
+  PUT: 'put',
+  DELETE: 'delete',
 };
 
 // ========================================
 // AUTH & ROUTING
 // ========================================
 
-const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-    'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
-};
+const corsHeaders = buildCorsHeaders(); // default fallback
+let currentCorsHeaders = corsHeaders;
 
 const httpErr = (code: number, message: string) => ({
-    statusCode: code, headers: corsHeaders, body: JSON.stringify({ success: false, message })
+    statusCode: code, headers: currentCorsHeaders, body: JSON.stringify({ success: false, message })
 });
 const httpOk = (data: Record<string, any>) => ({
-    statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true, ...data })
+    statusCode: 200, headers: currentCorsHeaders, body: JSON.stringify({ success: true, ...data })
 });
 
 
@@ -912,9 +846,11 @@ async function sendShiftNotificationEmail(recipientEmail: string, shiftDetails: 
 // MAIN HANDLER (ROUTER)
 // ========================================
 
-export const handler = async (event: any) => {
+export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  currentCorsHeaders = buildCorsHeaders({}, event.headers?.origin);
+
   if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 200, headers: corsHeaders, body: "OK" };
+    return { statusCode: 204, headers: currentCorsHeaders, body: "" };
   }
 
   // Get user permissions from custom authorizer
@@ -923,18 +859,19 @@ export const handler = async (event: any) => {
     return httpErr(401, 'Unauthorized - Invalid token');
   }
 
-  // Check if user has access to HR module for read operations
+  const requiredPermission: PermissionType = METHOD_PERMISSIONS[event.httpMethod] || 'read';
   if (!hasModulePermission(
     userPerms.clinicRoles,
-    'HR',
-    'read',
+    MODULE_NAME,
+    requiredPermission,
     userPerms.isSuperAdmin,
     userPerms.isGlobalSuperAdmin
   )) {
-    return httpErr(403, 'You do not have permission to access HR functionality');
+    return httpErr(403, `You do not have ${requiredPermission} permission for the ${MODULE_NAME} module`);
   }
 
   const isAdmin = isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
+  const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
 
   const method = event.httpMethod;
   const path = event.path.replace('/hr', '');
@@ -951,21 +888,25 @@ export const handler = async (event: any) => {
 
     // --- SHIFTS ---
     if (method === 'GET' && path === '/shifts') {
-      return getShifts(userPerms, isAdmin, event.queryStringParameters);
+      return getShifts(userPerms, isAdmin, event.queryStringParameters, allowedClinics);
     }
     if (method === 'POST' && path === '/shifts') {
       if (!isAdmin) return httpErr(403, "Forbidden");
-      return createShift(JSON.parse(event.body)); // <-- Will now send email
+      if (!event.body) return httpErr(400, "Missing request body");
+      const parsedBody = JSON.parse(event.body);
+      return createShift(parsedBody, allowedClinics); // <-- Will now send email
     }
     if (method === 'PUT' && path.match(/^\/shifts\/[^\/]+$/)) {
       if (!isAdmin) return httpErr(403, "Forbidden");
       const shiftId = path.split('/')[2];
-      return updateShift(shiftId, JSON.parse(event.body));
+      if (!event.body) return httpErr(400, "Missing request body");
+      const parsedBody = JSON.parse(event.body);
+      return updateShift(shiftId, parsedBody, allowedClinics);
     }
     if (method === 'DELETE' && path.match(/^\/shifts\/[^\/]+$/)) {
       if (!isAdmin) return httpErr(403, "Forbidden");
       const shiftId = path.split('/')[2];
-      return deleteShift(shiftId);
+      return deleteShift(shiftId, allowedClinics);
     }
     if (method === 'PUT' && path.match(/^\/shifts\/[^\/]+\/reject$/)) {
       const shiftId = path.split('/')[2];
@@ -977,7 +918,9 @@ export const handler = async (event: any) => {
       return getLeave(userPerms, isAdmin);
     }
     if (method === 'POST' && path === '/leave') {
-      return createLeave(userPerms.email, JSON.parse(event.body)); // Use email instead of staffId
+      if (!event.body) return httpErr(400, "Missing request body");
+      const parsedBody = JSON.parse(event.body);
+      return createLeave(userPerms.email, parsedBody); // Use email instead of staffId
     }
     if (method === 'DELETE' && path.match(/^\/leave\/[^\/]+$/)) {
       const leaveId = path.split('/')[2];
@@ -1092,12 +1035,15 @@ async function getDashboard(userPerms: any, isAdmin: boolean) {
   }
 }
 
-async function getShifts(userPerms: any, isAdmin: boolean, queryParams: any) {
+async function getShifts(userPerms: UserPermissions, isAdmin: boolean, queryParams: any, allowedClinics: Set<string>) {
   const { clinicId, startDate, endDate, status } = queryParams || {};
 
   if (isAdmin) {
     if (!clinicId || !startDate || !endDate) {
       return httpErr(400, "clinicId, startDate, and endDate are required for admin");
+    }
+    if (!hasClinicAccess(allowedClinics, clinicId)) {
+      return httpErr(403, "Forbidden: no access to this clinic");
     }
     const { Items } = await ddb.send(new QueryCommand({
         TableName: SHIFTS_TABLE,
@@ -1139,10 +1085,13 @@ async function getShifts(userPerms: any, isAdmin: boolean, queryParams: any) {
   }
 }
 
-async function createShift(body: any) {
+async function createShift(body: any, allowedClinics: Set<string>) {
   const { staffId, clinicId, startTime, endTime } = body;
   if (!staffId || !clinicId || !startTime || !endTime) {
     return httpErr(400, "staffId, clinicId, startTime, and endTime are required");
+  }
+  if (!hasClinicAccess(allowedClinics, clinicId)) {
+    return httpErr(403, "Forbidden: no access to this clinic");
   }
 
   const shiftDate = new Date(startTime);
@@ -1209,12 +1158,15 @@ async function createShift(body: any) {
   return httpOk({ shiftId, message: "Shift created successfully" });
 }
 
-async function updateShift(shiftId: string, body: any) {
+async function updateShift(shiftId: string, body: any, allowedClinics: Set<string>) {
     const { Item: oldShift } = await ddb.send(new GetCommand({ TableName: SHIFTS_TABLE, Key: { shiftId }}));
     if (!oldShift) return httpErr(404, "Shift not found");
 
     const staffId = body.staffId || oldShift.staffId;
     const clinicId = body.clinicId || oldShift.clinicId;
+    if (!hasClinicAccess(allowedClinics, clinicId)) {
+      return httpErr(403, "Forbidden: no access to this clinic");
+    }
     const startTime = body.startTime || oldShift.startTime;
 
     const shiftDate = new Date(startTime);
@@ -1270,7 +1222,13 @@ async function updateShift(shiftId: string, body: any) {
     return httpOk({ shiftId, message: "Shift updated successfully" });
 }
 
-async function deleteShift(shiftId: string) {
+async function deleteShift(shiftId: string, allowedClinics: Set<string>) {
+    const { Item } = await ddb.send(new GetCommand({ TableName: SHIFTS_TABLE, Key: { shiftId }}));
+    if (!Item) return httpErr(404, "Shift not found");
+    const clinicId = Item.clinicId;
+    if (clinicId && !hasClinicAccess(allowedClinics, clinicId)) {
+        return httpErr(403, "Forbidden: no access to this clinic");
+    }
     await ddb.send(new DeleteCommand({ TableName: SHIFTS_TABLE, Key: { shiftId } }));
     return httpOk({ message: "Shift deleted successfully" });
 }

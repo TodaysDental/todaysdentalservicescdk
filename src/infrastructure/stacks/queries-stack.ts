@@ -72,6 +72,12 @@ export class QueriesStack extends Stack {
       type: apigw.ResponseType.UNAUTHORIZED,
       responseHeaders: corsErrorHeaders,
     });
+    
+    new apigw.GatewayResponse(this, 'GatewayResponseAccessDenied', {
+      restApi: this.api,
+      type: apigw.ResponseType.ACCESS_DENIED,
+      responseHeaders: corsErrorHeaders,
+    });
 
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
@@ -110,29 +116,55 @@ export class QueriesStack extends Stack {
     queriesRes.addMethod('GET', new apigw.LambdaIntegration(this.queriesFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
-      methodResponses: [{ statusCode: '200' }],
+      methodResponses: [
+        { statusCode: '200' },
+        { statusCode: '401' },
+        { statusCode: '403' },
+      ],
     });
     queriesRes.addMethod('POST', new apigw.LambdaIntegration(this.queriesFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
-      methodResponses: [{ statusCode: '201' }, { statusCode: '400' }, { statusCode: '403' }],
+      methodResponses: [
+        { statusCode: '201' },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' },
+      ],
     });
 
     const queryNameRes = queriesRes.addResource('{queryName}');
     queryNameRes.addMethod('GET', new apigw.LambdaIntegration(this.queriesFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
-      methodResponses: [{ statusCode: '200' }, { statusCode: '404' }],
+      methodResponses: [
+        { statusCode: '200' },
+        { statusCode: '401' },
+        { statusCode: '403' },
+        { statusCode: '404' },
+      ],
     });
     queryNameRes.addMethod('PUT', new apigw.LambdaIntegration(this.queriesFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
-      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
+      methodResponses: [
+        { statusCode: '200' },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' },
+        { statusCode: '404' },
+      ],
     });
     queryNameRes.addMethod('DELETE', new apigw.LambdaIntegration(this.queriesFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
-      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
+      methodResponses: [
+        { statusCode: '200' },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' },
+        { statusCode: '404' },
+      ],
     });
 
     // ========================================

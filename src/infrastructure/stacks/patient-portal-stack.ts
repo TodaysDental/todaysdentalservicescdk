@@ -6,7 +6,6 @@ import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
-import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import clinicsJson from '../configs/clinics.json';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';

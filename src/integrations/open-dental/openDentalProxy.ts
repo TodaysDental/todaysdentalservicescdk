@@ -1,6 +1,14 @@
 import https from 'https';
 import { buildCorsHeaders } from '../../shared/utils/cors';
-import { SYSTEM_MODULES } from '../../shared/types/user';
+import {
+  getUserPermissions,
+  hasModulePermission,
+  isAdminUser,
+  getAllowedClinicIds,
+  hasClinicAccess,
+  PermissionType,
+  UserPermissions,
+} from '../../shared/utils/permissions-helper';
 import clinicsData from '../../infrastructure/configs/clinics.json';
 import { APIGatewayProxyEvent, APIGatewayProxyResult, APIGatewayProxyEventQueryStringParameters } from 'aws-lambda';
 import { parse as parseCsv } from 'csv-parse/sync';
@@ -19,87 +27,16 @@ type ClinicCreds = {
   sftpAddress?: string;
 };
 
-const corsHeaders = buildCorsHeaders({ allowMethods: ['GET', 'POST', 'PUT', 'OPTIONS'] });
-
-/**
- * Get user's clinic roles and permissions from custom authorizer
- */
-const getUserPermissions = (event: APIGatewayProxyEvent) => {
-  const authorizer = event.requestContext?.authorizer;
-  if (!authorizer) return null;
-
-  try {
-    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
-    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
-    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
-    const email = authorizer.email || '';
-
-    return {
-      email,
-      clinicRoles,
-      isSuperAdmin,
-      isGlobalSuperAdmin,
-    };
-  } catch (err) {
-    console.error('Failed to parse user permissions:', err);
-    return null;
-  }
+const MODULE_NAME = 'Operations';
+const METHOD_PERMISSIONS: Record<string, PermissionType> = {
+  GET: 'read',
+  POST: 'write',
+  PUT: 'put',
+  DELETE: 'delete',
 };
 
-/**
- * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
- */
-const isAdminUser = (
-  clinicRoles: any[],
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean
-): boolean => {
-  // Check flags first
-  if (isGlobalSuperAdmin || isSuperAdmin) {
-    return true;
-  }
-
-  // Check if user has Admin or SuperAdmin role at any clinic
-  for (const cr of clinicRoles) {
-    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
-      return true;
-    }
-  }
-
-  return false;
-};
-
-/**
- * Check if user has specific permission for a module at ANY clinic
- */
-const hasModulePermission = (
-  clinicRoles: any[],
-  module: string,
-  permission: 'read' | 'write' | 'put' | 'delete',
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean,
-  clinicId?: string
-): boolean => {
-  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
-  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
-    return true;
-  }
-
-  // Check if user has the permission for this module at any clinic (or specific clinic)
-  for (const cr of clinicRoles) {
-    // If clinicId is specified, check only that clinic
-    if (clinicId && cr.clinicId !== clinicId) {
-      continue;
-    }
-
-    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === module);
-    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
-      return true;
-    }
-  }
-
-  return false;
-};
+const getCorsHeaders = (event: APIGatewayProxyEvent) =>
+  buildCorsHeaders({ allowMethods: ['GET', 'POST', 'PUT', 'OPTIONS'] }, event.headers?.origin);
 
 
 const API_HOST = 'api.opendental.com';
@@ -126,11 +63,12 @@ const CLINIC_CREDS: Record<string, ClinicCreds> = (() => {
 })();
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  const corsHeaders = getCorsHeaders(event);
   try {
     // Get user permissions from custom authorizer
     const userPerms = getUserPermissions(event);
     if (!userPerms) {
-      return httpErr(401, 'Unauthorized - Invalid token');
+      return httpErr(event, 401, 'Unauthorized - Invalid token');
     }
 
     const method = event.httpMethod;
@@ -140,55 +78,51 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const body = event.body ? safeParse(event.body) : null;
 
     if (method === 'OPTIONS') {
-      return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: true }) };
+      return { statusCode: 204, headers: corsHeaders, body: '' };
     }
 
     if (!clinicId || !proxy) {
-      return httpErr(400, 'Missing clinicId or proxy');
+      return httpErr(event, 400, 'Missing clinicId or proxy');
+    }
+
+    const requiredPermission: PermissionType = METHOD_PERMISSIONS[method] || 'read';
+    const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
+    if (!hasClinicAccess(allowedClinics, clinicId)) {
+      return httpErr(event, 403, 'Forbidden: no access to this clinic');
     }
 
     // Check access control for Operations module
     const isQueriesPost = method === 'POST' && proxy === 'queries';
-    if (!isQueriesPost && !hasModulePermission(
+    const permissionToCheck = isQueriesPost ? 'write' : requiredPermission;
+    if (!hasModulePermission(
       userPerms.clinicRoles,
-      'Operations',
-      'read',
+      MODULE_NAME,
+      permissionToCheck,
       userPerms.isSuperAdmin,
       userPerms.isGlobalSuperAdmin,
       clinicId
     )) {
-      return httpErr(403, 'You do not have permission to access Open Dental data for this clinic');
-    }
-
-    // For queries POST, check write permission
-    if (isQueriesPost && !hasModulePermission(
-      userPerms.clinicRoles,
-      'Operations',
-      'write',
-      userPerms.isSuperAdmin,
-      userPerms.isGlobalSuperAdmin,
-      clinicId
-    )) {
-      return httpErr(403, 'You do not have permission to execute queries for this clinic');
+      const permLabel = permissionToCheck;
+      return httpErr(event, 403, `You do not have ${permLabel} permission for the ${MODULE_NAME} module`);
     }
 
     const creds = CLINIC_CREDS[clinicId];
     if (!creds) {
-      return httpErr(400, `No Open Dental credentials configured for clinicId=${clinicId}`);
+      return httpErr(event, 400, `No Open Dental credentials configured for clinicId=${clinicId}`);
     }
 
   // Handle Open Dental SQL queries with SFTP delivery FIRST
   if (proxy === 'queries' && method === 'POST') {
-    if (!body || !body.SqlCommand) return httpErr(400, 'Missing SqlCommand');
+    if (!body || !body.SqlCommand) return httpErr(event, 400, 'Missing SqlCommand');
 
     // Validate SFTP credentials are available
     if (!creds.sftpHost) {
       console.error('CONSOLIDATED_SFTP_HOST is not configured or empty');
-      return httpErr(500, 'SFTP configuration error: Host not available');
+      return httpErr(event, 500, 'SFTP configuration error: Host not available');
     }
     if (!creds.sftpPassword) {
       console.error('CONSOLIDATED_SFTP_PASSWORD is not configured or empty');
-      return httpErr(500, 'SFTP configuration error: Password not available');
+      return httpErr(event, 500, 'SFTP configuration error: Password not available');
     }
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -202,11 +136,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Validate components
     if (!host) {
       console.error('SFTP Host is empty after cleaning:', creds.sftpHost);
-      return httpErr(500, 'SFTP configuration error: Invalid host');
+      return httpErr(event, 500, 'SFTP configuration error: Invalid host');
     }
     if (!username) {
       console.error('SFTP Username is empty after cleaning:', creds.sftpUsername);
-      return httpErr(500, 'SFTP configuration error: Invalid username');
+      return httpErr(event, 500, 'SFTP configuration error: Invalid username');
     }
 
     // CRITICAL FIX: Open Dental expects SftpAddress in format "hostname/path/to/file"
@@ -255,7 +189,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     if (apiResponse.statusCode !== 201) {
       console.error('Open Dental API returned non-201 status');
-      return formatResponse(apiResponse);
+      return formatResponse(event, apiResponse);
     }
 
     // Wait a bit for Open Dental to write the file
@@ -303,12 +237,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const requestBody = (method === 'POST' || method === 'PUT') ? JSON.stringify(body) : null;
 
     const odRes = await makeOpenDentalRequest(method, fullPath, headers, requestBody);
-    return formatResponse(odRes);
+    return formatResponse(event, odRes);
   }
 
-  return httpErr(400, 'Unsupported request');
+  return httpErr(event, 400, 'Unsupported request');
   } catch (err: any) {
-    return httpErr(500, err?.message || 'Internal error');
+    return httpErr(event, 500, err?.message || 'Internal error');
   }
 };
 
@@ -332,10 +266,10 @@ async function makeOpenDentalRequest(method: string, path: string, headers: Reco
   });
 }
 
-function formatResponse(response: { statusCode: number; headers: any; body: string }) {
+function formatResponse(event: APIGatewayProxyEvent, response: { statusCode: number; headers: any; body: string }) {
   let responseBody: any;
   try { responseBody = JSON.parse(response.body); } catch { responseBody = response.body; }
-  return { statusCode: response.statusCode, headers: corsHeaders, body: JSON.stringify(responseBody) };
+  return { statusCode: response.statusCode, headers: getCorsHeaders(event), body: JSON.stringify(responseBody) };
 }
 
 function safeParse(str: string): any {
@@ -368,8 +302,8 @@ async function downloadLatestCsv(opts: { host: string; port: number; username: s
   });
 }
 
-function httpErr(code: number, message: string): APIGatewayProxyResult {
-  return { statusCode: code, headers: corsHeaders, body: JSON.stringify({ error: message }) };
+function httpErr(event: APIGatewayProxyEvent, code: number, message: string): APIGatewayProxyResult {
+  return { statusCode: code, headers: getCorsHeaders(event), body: JSON.stringify({ error: message }) };
 }
 
 function buildQueryString(q: APIGatewayProxyEventQueryStringParameters): string {
@@ -381,5 +315,3 @@ function buildQueryString(q: APIGatewayProxyEventQueryStringParameters): string 
   const s = params.toString();
   return s ? `?${s}` : '';
 }
-
-

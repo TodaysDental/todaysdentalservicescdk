@@ -2,28 +2,21 @@ import { APIGatewayProxyEvent } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { buildCorsHeaders } from '../../shared/utils/cors';
-import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
-
-// (Cognito imports/clients are removed from this file, as we only need Auth validation)
 
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const FAVORS_TABLE_NAME = process.env.FAVORS_TABLE_NAME || '';
-const USER_POOL_ID = process.env.USER_POOL_ID || '';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
 const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'GET'] });
 
-// Auth helpers (Copied from admin files for token validation)
-const ISSUER =
-    REGION && USER_POOL_ID
-        ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}`
-        : undefined;
-let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
-
 /**
  * GET /admin/requests
  *
+ * Lists favor requests for the authenticated user.
  * It queries both SenderIndex and ReceiverIndex GSIs in parallel and merges the results.
+ * 
+ * Note: This endpoint is protected by the JWT authorizer, which validates the token
+ * and provides user info via event.requestContext.authorizer.
  */
 export const handler = async (event: APIGatewayProxyEvent) => {
     if (event.httpMethod === 'OPTIONS') {
@@ -39,14 +32,9 @@ export const handler = async (event: APIGatewayProxyEvent) => {
     }
 
     try {
-        // 1. Get User ID from Authorization Token
-        const authz =
-            event?.headers?.Authorization || event?.headers?.authorization || '';
-        const verifyResult = await verifyIdToken(authz);
-        if (!verifyResult.ok) {
-            return httpErr(verifyResult.code, verifyResult.message);
-        }
-        const callerID = verifyResult.payload.sub; // Cognito 'sub'
+        // Get User ID from authorizer context (set by JWT authorizer)
+        const callerID = event.requestContext.authorizer?.email || 
+                         event.requestContext.authorizer?.sub;
 
         if (!callerID) {
             return httpErr(401, 'Could not determine authenticated user ID');
@@ -164,40 +152,6 @@ export const handler = async (event: APIGatewayProxyEvent) => {
         return httpErr(500, err?.message || 'Internal error fetching requests');
     }
 };
-
-// ==============================
-// AUTH HELPERS
-// ==============================
-
-async function verifyIdToken(
-    authorizationHeader: string
-): Promise<
-    | { ok: true; payload: JWTPayload }
-    | { ok: false; code: number; message: string }
-> {
-    if (
-        !authorizationHeader ||
-        !authorizationHeader.toLowerCase().startsWith('bearer ')
-    ) {
-        return { ok: false, code: 401, message: 'missing bearer token' };
-    }
-    if (!ISSUER) {
-        return { ok: false, code: 500, message: 'issuer not configured' };
-    }
-    const token = authorizationHeader.slice(7).trim();
-    try {
-        JWKS =
-            JWKS ||
-            createRemoteJWKSet(new URL(`${ISSUER}/.well-known/jwks.json`));
-        const { payload } = await jwtVerify(token, JWKS, { issuer: ISSUER });
-        if ((payload as any).token_use !== 'id') {
-            return { ok: false, code: 401, message: 'id token required' };
-        }
-        return { ok: true, payload };
-    } catch (_err) {
-        return { ok: false, code: 401, message: 'invalid token' };
-    }
-}
 
 // ==============================
 // HTTP RESPONSE HELPERS

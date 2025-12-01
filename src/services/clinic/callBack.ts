@@ -4,6 +4,16 @@ import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { SYSTEM_MODULES } from '../../shared/types/user';
+import {
+  getUserPermissions,
+  isAdminUser,
+  hasModulePermission,
+  getAllowedClinicIds,
+  hasClinicAccess,
+  filterByModuleAccess,
+  getUserDisplayName,
+  UserPermissions,
+} from '../../shared/utils/permissions-helper';
 
 const REGION = process.env.REGION || process.env.AWS_REGION || 'us-east-1';
 const TABLE_PREFIX = process.env.TABLE_PREFIX || 'RequestCallBacks_';
@@ -38,100 +48,6 @@ function getTableName(clinicId: string): string {
   return `${TABLE_PREFIX}${clinicId}`;
 }
 
-/**
- * Get user's clinic roles and permissions from custom authorizer
- */
-function getUserPermissions(event: APIGatewayProxyEvent) {
-  const authorizer = event.requestContext?.authorizer;
-  if (!authorizer) return null;
-
-  try {
-    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
-    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
-    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
-    const email = authorizer.email || '';
-    const givenName = authorizer.givenName || '';
-
-    return {
-      email,
-      givenName,
-      clinicRoles,
-      isSuperAdmin,
-      isGlobalSuperAdmin,
-    };
-  } catch (err) {
-    console.error('Failed to parse user permissions:', err);
-    return null;
-  }
-}
-
-/**
- * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
- */
-function isAdminUser(
-  clinicRoles: any[],
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean
-): boolean {
-  // Check flags first
-  if (isGlobalSuperAdmin || isSuperAdmin) {
-    return true;
-  }
-
-  // Check if user has Admin or SuperAdmin role at any clinic
-  for (const cr of clinicRoles) {
-    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/**
- * Check if user has specific permission for a module at a clinic
- */
-function hasModulePermission(
-  clinicRoles: any[],
-  clinicId: string,
-  module: string,
-  permission: 'read' | 'write' | 'put' | 'delete',
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean
-): boolean {
-  // Admin, SuperAdmin, and Global Super Admin have all permissions
-  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
-    return true;
-  }
-
-  // Check if user has the permission for this module at this clinic
-  const clinicAccess = clinicRoles.find((cr: any) => cr.clinicId === clinicId);
-  if (!clinicAccess) return false;
-
-  const moduleAccess = clinicAccess.moduleAccess?.find((ma: any) => ma.module === module);
-  if (!moduleAccess) return false;
-
-  return moduleAccess.permissions.includes(permission);
-}
-
-/**
- * Get all clinic IDs user has access to
- */
-function getAllowedClinicIds(
-  clinicRoles: any[],
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean
-): Set<string> {
-  // Super admins have access to all clinics
-  if (isGlobalSuperAdmin || isSuperAdmin) {
-    return new Set<string>(['*']);
-  }
-
-  // Extract clinic IDs from clinic roles
-  const clinicIds = clinicRoles.map((cr: any) => cr.clinicId);
-  return new Set<string>(clinicIds);
-}
-
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const method = event.httpMethod || 'GET';
   const origin = event.headers?.origin || event.headers?.Origin;
@@ -158,7 +74,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   // POST (create) doesn't require authentication - public endpoint for website forms
   const requiresAuth = method !== 'POST';
   
-  let userPerms: any = null;
+  let userPerms: UserPermissions | null = null;
   if (requiresAuth) {
     userPerms = getUserPermissions(event);
     if (!userPerms) {
@@ -172,7 +88,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       userPerms.isGlobalSuperAdmin
     );
 
-    if (!(allowedClinics.has('*') || allowedClinics.has(clinicId))) {
+    if (!hasClinicAccess(allowedClinics, clinicId)) {
       return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ 
         error: 'Forbidden: no access to this clinic',
       }) };
@@ -186,13 +102,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
   try {
     if (method === 'GET') {
-      return await handleGet(tableName, corsHeaders, clinicId, userPerms);
+      return await handleGet(tableName, corsHeaders, clinicId, userPerms!);
     }
     if (method === 'POST') {
       return await handlePost(event, tableName, clinicId, corsHeaders);
     }
     if (method === 'PUT') {
-      return await handlePut(event, tableName, corsHeaders, clinicId, userPerms);
+      return await handlePut(event, tableName, corsHeaders, clinicId, userPerms!);
     }
     return { statusCode: 405, headers: corsHeaders, body: JSON.stringify({ message: 'Method Not Allowed. Supported methods: GET, POST, PUT.' }) };
   } catch (err) {
@@ -201,20 +117,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 };
 
-
-
-async function handleGet(tableName: string, headers: Record<string, string>, clinicId: string, userPerms: any): Promise<APIGatewayProxyResult> {
+async function handleGet(tableName: string, headers: Record<string, string>, clinicId: string, userPerms: UserPermissions): Promise<APIGatewayProxyResult> {
   try {
     const result = await dynamo.send(new ScanCommand({ TableName: tableName }));
     const allContacts = (result.Items || []).map((item) => unmarshall(item as any));
     
     // Filter callbacks based on user's module permissions
-    const filteredContacts = filterCallbacksByModuleAccess(
+    const filteredContacts = filterByModuleAccess(
       allContacts,
       userPerms.clinicRoles,
       clinicId,
       userPerms.isSuperAdmin,
-      userPerms.isGlobalSuperAdmin
+      userPerms.isGlobalSuperAdmin,
+      'Operations' // Default module for legacy callbacks
     );
     
     // Group by module
@@ -240,12 +155,13 @@ async function handleGet(tableName: string, headers: Record<string, string>, cli
         }));
         const allContacts = (result.Items || []).map((item) => unmarshall(item as any));
         
-        const filteredContacts = filterCallbacksByModuleAccess(
+        const filteredContacts = filterByModuleAccess(
           allContacts,
           userPerms.clinicRoles,
           clinicId,
           userPerms.isSuperAdmin,
-          userPerms.isGlobalSuperAdmin
+          userPerms.isGlobalSuperAdmin,
+          'Operations'
         );
         
         const callbacksByModule = groupCallbacksByModule(filteredContacts);
@@ -276,7 +192,7 @@ async function handleGet(tableName: string, headers: Record<string, string>, cli
   }
 }
 
-async function handlePut(event: APIGatewayProxyEvent, tableName: string, headers: Record<string, string>, clinicId: string, userPerms: any): Promise<APIGatewayProxyResult> {
+async function handlePut(event: APIGatewayProxyEvent, tableName: string, headers: Record<string, string>, clinicId: string, userPerms: UserPermissions): Promise<APIGatewayProxyResult> {
   const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body || {});
   const id = String(body?.RequestID || body?.id || '').trim();
   if (!id) {
@@ -299,12 +215,12 @@ async function handlePut(event: APIGatewayProxyEvent, tableName: string, headers
   const notes = typeof body?.notes === 'string' ? body.notes : undefined;
   const calledBackRaw = body?.calledBack ?? body?.called_back ?? body?.callback ?? body?.called;
   
-  // Get user info from custom authorizer
-  const updatedBy = userPerms?.givenName || userPerms?.email || 'system';
+  // Get user display name for audit trail
+  const updatedBy = getUserDisplayName(userPerms);
   
   // Check if user has permission to update callbacks in the specified module
   if (module) {
-    if (!hasModulePermission(userPerms.clinicRoles, clinicId, module, 'put', userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin)) {
+    if (!hasModulePermission(userPerms.clinicRoles, module, 'put', userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin, clinicId)) {
       return { statusCode: 403, headers, body: JSON.stringify({ 
         error: `You do not have permission to update callbacks in the ${module} module`,
       }) };
@@ -489,11 +405,11 @@ async function handleAdminEndpoints(event: APIGatewayProxyEvent, headers: Record
 
   try {
     if (path.includes('/admin/callbacks/bulk') && method === 'POST') {
-      return await handleBulkOperations(event, headers);
+      return await handleBulkOperations(event, headers, userPerms);
     }
 
     if (path.includes('/admin/callbacks') && method === 'GET') {
-      return await handleAdminList(event, headers);
+      return await handleAdminList(event, headers, userPerms);
     }
 
     return { statusCode: 404, headers, body: JSON.stringify({ error: 'Admin endpoint not found' }) };
@@ -503,10 +419,22 @@ async function handleAdminEndpoints(event: APIGatewayProxyEvent, headers: Record
   }
 }
 
-async function handleAdminList(event: APIGatewayProxyEvent, headers: Record<string, string>): Promise<APIGatewayProxyResult> {
+async function handleAdminList(event: APIGatewayProxyEvent, headers: Record<string, string>, userPerms: UserPermissions): Promise<APIGatewayProxyResult> {
   const queryParams = event.queryStringParameters || {};
   const limit = parseInt(String(queryParams.limit || '50'), 10);
   const clinicId = String(queryParams.clinicId || '').trim();
+
+  // Check if user has access to the requested clinic (unless they're a global admin)
+  if (clinicId && !userPerms.isGlobalSuperAdmin && !userPerms.isSuperAdmin) {
+    const allowedClinics = getAllowedClinicIds(
+      userPerms.clinicRoles,
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin
+    );
+    if (!hasClinicAccess(allowedClinics, clinicId)) {
+      return { statusCode: 403, headers, body: JSON.stringify({ error: 'No access to this clinic' }) };
+    }
+  }
 
   // If specific clinic requested, scan that table
   if (clinicId) {
@@ -536,7 +464,7 @@ async function handleAdminList(event: APIGatewayProxyEvent, headers: Record<stri
   }) };
 }
 
-async function handleBulkOperations(event: APIGatewayProxyEvent, headers: Record<string, string>): Promise<APIGatewayProxyResult> {
+async function handleBulkOperations(event: APIGatewayProxyEvent, headers: Record<string, string>, userPerms: UserPermissions): Promise<APIGatewayProxyResult> {
   const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body || {});
   const operation = String(body?.operation || '').trim();
   const clinicId = String(body?.clinicId || '').trim();
@@ -546,11 +474,23 @@ async function handleBulkOperations(event: APIGatewayProxyEvent, headers: Record
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'operation and clinicId are required' }) };
   }
 
+  // Check if user has access to the requested clinic
+  if (!userPerms.isGlobalSuperAdmin && !userPerms.isSuperAdmin) {
+    const allowedClinics = getAllowedClinicIds(
+      userPerms.clinicRoles,
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin
+    );
+    if (!hasClinicAccess(allowedClinics, clinicId)) {
+      return { statusCode: 403, headers, body: JSON.stringify({ error: 'No access to this clinic' }) };
+    }
+  }
+
   const tableName = getTableName(clinicId);
 
   try {
     if (operation === 'markCalled') {
-      return await bulkMarkCalled(tableName, requestIds, headers);
+      return await bulkMarkCalled(tableName, requestIds, headers, userPerms);
     }
 
     if (operation === 'delete') {
@@ -564,7 +504,7 @@ async function handleBulkOperations(event: APIGatewayProxyEvent, headers: Record
   }
 }
 
-async function bulkMarkCalled(tableName: string, requestIds: string[], headers: Record<string, string>): Promise<APIGatewayProxyResult> {
+async function bulkMarkCalled(tableName: string, requestIds: string[], headers: Record<string, string>, userPerms: UserPermissions): Promise<APIGatewayProxyResult> {
   // Check if table exists first, fallback to default table if needed
   let effectiveTableName = tableName;
   try {
@@ -579,15 +519,18 @@ async function bulkMarkCalled(tableName: string, requestIds: string[], headers: 
     }
   }
 
+  const updatedBy = getUserDisplayName(userPerms);
+
   const updatePromises = requestIds.map(async (id) => {
     try {
       await dynamo.send(new UpdateItemCommand({
         TableName: effectiveTableName,
         Key: marshall({ RequestID: id }),
-        UpdateExpression: 'SET calledBack = :status, updatedAt = :updatedAt',
+        UpdateExpression: 'SET calledBack = :status, updatedAt = :updatedAt, updatedBy = :updatedBy',
         ExpressionAttributeValues: marshall({
           ':status': 'YES',
           ':updatedAt': new Date().toISOString(),
+          ':updatedBy': updatedBy,
         }),
       }));
       return { id, status: 'success' };
@@ -612,43 +555,6 @@ async function bulkMarkCalled(tableName: string, requestIds: string[], headers: 
 async function bulkDelete(tableName: string, requestIds: string[], headers: Record<string, string>): Promise<APIGatewayProxyResult> {
   // Note: Implement delete functionality if needed
   return { statusCode: 501, headers, body: JSON.stringify({ error: 'Bulk delete not implemented yet' }) };
-}
-
-/**
- * Filter callbacks based on user's module access
- */
-function filterCallbacksByModuleAccess(
-  callbacks: any[],
-  clinicRoles: any[],
-  clinicId: string,
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean
-): any[] {
-  // Admins see all callbacks
-  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
-    return callbacks;
-  }
-
-  // Get clinic access
-  const clinicAccess = clinicRoles.find((cr: any) => cr.clinicId === clinicId);
-  if (!clinicAccess) return [];
-
-  // Get accessible modules (those with at least read permission)
-  const accessibleModules = new Set<string>();
-  if (clinicAccess.moduleAccess) {
-    for (const ma of clinicAccess.moduleAccess) {
-      if (ma.permissions.includes('read')) {
-        accessibleModules.add(ma.module);
-      }
-    }
-  }
-
-  // Filter callbacks to only show those in accessible modules
-  return callbacks.filter((callback: any) => {
-    // If callback has no module, treat as Operations (legacy)
-    const callbackModule = callback.module || 'Operations';
-    return accessibleModules.has(callbackModule);
-  });
 }
 
 /**

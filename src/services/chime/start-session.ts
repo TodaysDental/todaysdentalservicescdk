@@ -4,7 +4,8 @@ import { ChimeSDKMeetingsClient, CreateMeetingCommand, CreateAttendeeCommand } f
 import { randomUUID } from 'crypto';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
-import { verifyIdToken, getUserId, isSuperAdmin } from '../../shared/utils/auth-helper';
+import { verifyIdToken } from '../../shared/utils/auth-helper';
+import { getUserIdFromJwt, isSuperAdminFromJwt } from '../../shared/utils/permissions-helper';
 import { TTL_POLICY, calculateSessionExpiry } from './config/ttl-policy';
 
 const ddb = getDynamoDBClient();
@@ -72,7 +73,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     
     console.log('[start-session] Auth verification successful');
 
-    const agentId = getUserId(verifyResult.payload!); // User ID (email)
+    const agentId = getUserIdFromJwt(verifyResult.payload!); // User ID (email)
     if (!agentId) {
       console.error('[start-session] Missing subject claim in token');
       return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ message: 'Invalid token: missing sub' }) };
@@ -80,7 +81,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     
     // For custom auth, we need to fetch clinic roles from DynamoDB StaffClinicInfo table
     // Super admins get access to all clinics
-    const authorizedClinics = isSuperAdmin(verifyResult.payload!) ? ['ALL'] : [];
+    const authorizedClinics = isSuperAdminFromJwt(verifyResult.payload!) ? ['ALL'] : [];
     const body = JSON.parse(event.body || '{}') as { activeClinicIds: string[] };
 
     // Log agent and clinic authorization info (non-sensitive)

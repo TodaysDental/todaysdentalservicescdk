@@ -3,7 +3,15 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, ScanCommand, QueryCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { buildCorsHeaders } from '../../shared/utils/cors';
-import { SYSTEM_MODULES } from '../../shared/types/user';
+import {
+  getUserPermissions,
+  hasModulePermission,
+  isAdminUser,
+  getAllowedClinicIds,
+  hasClinicAccess,
+  PermissionType,
+  UserPermissions,
+} from '../../shared/utils/permissions-helper';
 import clinicsData from '../../infrastructure/configs/clinics.json';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 
@@ -74,91 +82,19 @@ const CLINIC_EMAIL_MAP: Record<string, string> = (() => {
   return acc;
 })();
 
-/**
- * Get user's clinic roles and permissions from custom authorizer
- */
-const getUserPermissions = (event: APIGatewayProxyEvent) => {
-  const authorizer = event.requestContext?.authorizer;
-  if (!authorizer) return null;
-
-  try {
-    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
-    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
-    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
-    const email = authorizer.email || '';
-
-    return {
-      email,
-      clinicRoles,
-      isSuperAdmin,
-      isGlobalSuperAdmin,
-    };
-  } catch (err) {
-    console.error('Failed to parse user permissions:', err);
-    return null;
-  }
-};
-
-/**
- * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
- */
-const isAdminUser = (
-  clinicRoles: any[],
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean
-): boolean => {
-  // Check flags first
-  if (isGlobalSuperAdmin || isSuperAdmin) {
-    return true;
-  }
-
-  // Check if user has Admin or SuperAdmin role at any clinic
-  for (const cr of clinicRoles) {
-    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
-      return true;
-    }
-  }
-
-  return false;
-};
-
-/**
- * Check if user has specific permission for a module at ANY clinic
- */
-const hasModulePermission = (
-  clinicRoles: any[],
-  module: string,
-  permission: 'read' | 'write' | 'put' | 'delete',
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean,
-  clinicId?: string
-): boolean => {
-  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
-  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
-    return true;
-  }
-
-  // Check if user has the permission for this module at any clinic (or specific clinic)
-  for (const cr of clinicRoles) {
-    // If clinicId is specified, check only that clinic
-    if (clinicId && cr.clinicId !== clinicId) {
-      continue;
-    }
-
-    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === module);
-    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
-      return true;
-    }
-  }
-
-  return false;
-};
-
 // Dynamic CORS helper
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
+const MODULE_NAME = 'Marketing';
+const METHOD_PERMISSIONS: Record<string, PermissionType> = {
+  GET: 'read',
+  POST: 'write',
+  PUT: 'put',
+  DELETE: 'delete',
+};
 
 function http(code: number, body: any, event: APIGatewayProxyEvent): APIGatewayProxyResult {
-  return { statusCode: code, headers: getCorsHeaders(event), body: JSON.stringify(body) };
+  const payload = typeof body === 'string' ? body : JSON.stringify(body);
+  return { statusCode: code, headers: getCorsHeaders(event), body: payload };
 }
 
 function parseBody(body: any): Record<string, any> { try { return typeof body === 'string' ? JSON.parse(body) : (body || {}); } catch { return {}; } }
@@ -220,9 +156,13 @@ async function processNotification(event: APIGatewayProxyEvent, body: any, clini
   }, event);
 }
 
-async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: any): Promise<APIGatewayProxyResult> {
+async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: UserPermissions, allowedClinics: Set<string>): Promise<APIGatewayProxyResult> {
   const pathClinicId = event.pathParameters?.clinicId;
   if (!pathClinicId) return http(400, { error: 'Missing clinicId in path' }, event);
+
+  if (!hasClinicAccess(allowedClinics, pathClinicId)) {
+    return http(403, { error: 'Forbidden: no access to this clinic' }, event);
+  }
 
   // Check if user has write permission for Marketing module at this clinic
   if (!hasModulePermission(
@@ -351,7 +291,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     console.log('[NotifyHandler] requestContext.authorizer:', JSON.stringify((event.requestContext as any)?.authorizer || {}));
   } catch (err) { /* ignore logging errors */ }
 
-  if (event.httpMethod === 'OPTIONS') return http(200, { ok: true }, event);
+  if (event.httpMethod === 'OPTIONS') return http(204, '', event);
 
   // Get user permissions from custom authorizer
   const userPerms = getUserPermissions(event);
@@ -359,33 +299,41 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return http(401, { error: 'Unauthorized - Invalid token' }, event);
   }
 
-  // Check if user has access to Marketing module for read operations
+  const requiredPermission: PermissionType = METHOD_PERMISSIONS[event.httpMethod] || 'read';
   if (!hasModulePermission(
     userPerms.clinicRoles,
-    'Marketing',
-    'read',
+    MODULE_NAME,
+    requiredPermission,
     userPerms.isSuperAdmin,
     userPerms.isGlobalSuperAdmin
   )) {
-    return http(403, { error: 'You do not have permission to access notifications in the Marketing module' }, event);
+    return http(403, { error: `You do not have ${requiredPermission} permission for the ${MODULE_NAME} module` }, event);
   }
+
+  const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
+  const isAdmin = isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin) || allowedClinics.has('*');
 
   const path = event.path || '';
   const isGetNotifications = path.endsWith('/notifications/notifications');
 
   if (event.httpMethod === 'GET' && isGetNotifications) {
-    return await handleGetNotifications(event, userPerms);
+    return await handleGetNotifications(event, userPerms, allowedClinics, isAdmin);
   }
 
   const isClinicNotification = path.match(/\/clinic\/([^\/]+)\/notification$/);
   if (event.httpMethod === 'POST' && isClinicNotification) {
-    return await handleSendNotification(event, userPerms);
+    return await handleSendNotification(event, userPerms, allowedClinics);
   }
 
   return http(405, { error: 'Method Not Allowed' }, event);
 }
 
-async function handleGetNotifications(event: APIGatewayProxyEvent, userPerms: any): Promise<APIGatewayProxyResult> {
+async function handleGetNotifications(
+  event: APIGatewayProxyEvent,
+  userPerms: UserPermissions,
+  allowedClinics: Set<string>,
+  isAdmin: boolean
+): Promise<APIGatewayProxyResult> {
   // Debug: log whether authorizer claims are present for GET
   try {
     // eslint-disable-next-line no-console
@@ -401,20 +349,10 @@ async function handleGetNotifications(event: APIGatewayProxyEvent, userPerms: an
     return http(400, { error: 'PatNum query parameter is required' }, event);
   }
 
-  // Check if user has any clinic access or is admin
-  const isAdmin = isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
-  const authorizedClinics = userPerms.clinicRoles.map((cr: any) => cr.clinicId);
-  const hasClinicAccess = authorizedClinics.length > 0 || isAdmin;
-
-  if (!hasClinicAccess) {
-    return http(403, { error: 'Forbidden: no clinic access' }, event);
-  }
-
-  // Validate clinic access if specific clinicId is specified
-  if (clinicId && !isAdmin) {
-    if (!authorizedClinics.includes(clinicId)) {
-      return http(403, { error: 'Forbidden: not authorized for this clinic' }, event);
-    }
+  const hasAccess = allowedClinics.size > 0 || isAdmin;
+  if (!hasAccess) return http(403, { error: 'Forbidden: no clinic access' }, event);
+  if (clinicId && !isAdmin && !hasClinicAccess(allowedClinics, clinicId)) {
+    return http(403, { error: 'Forbidden: not authorized for this clinic' }, event);
   }
 
   let notifications: any[] = [];
@@ -427,10 +365,8 @@ async function handleGetNotifications(event: APIGatewayProxyEvent, userPerms: an
     notifications = await getNotificationsForPatient(patNum, email);
   } else {
     // Regular user: query only clinics they have access to
-    // Query notifications for all authorized clinics
-    const clinicPromises = authorizedClinics.map((clinic: string) =>
-      getNotificationsForPatient(patNum, email, clinic)
-    );
+    const clinicList = Array.from(allowedClinics);
+    const clinicPromises = clinicList.map((clinic: string) => getNotificationsForPatient(patNum, email, clinic));
     const clinicResults = await Promise.all(clinicPromises);
     notifications = clinicResults.flat();
   }

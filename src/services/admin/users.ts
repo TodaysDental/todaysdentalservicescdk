@@ -16,6 +16,13 @@ import { DynamoDBDocumentClient, ScanCommand, GetCommand, PutCommand, DeleteComm
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { StaffUser, UserRole, USER_ROLES, PublicStaffUser, ModuleAccess, SYSTEM_MODULES, MODULE_PERMISSIONS, ClinicRoleAssignment as ClinicRoleAssignmentType, WorkLocation } from '../../shared/types/user';
 import { hashPassword } from '../../shared/utils/jwt';
+import {
+  getUserPermissions,
+  isAdminUser,
+  getAllowedClinicIds,
+  hasClinicAccess,
+  UserPermissions,
+} from '../../shared/utils/permissions-helper';
 
 const ddbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(ddbClient);
@@ -57,14 +64,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 
   try {
-    // Get caller context from custom authorizer
-    const callerEmail = event.requestContext.authorizer?.email || '';
-    const callerClinicRoles = JSON.parse(event.requestContext.authorizer?.clinicRoles || '[]');
-    const callerIsSuperAdmin = event.requestContext.authorizer?.isSuperAdmin === 'true';
-    const callerIsGlobalSuperAdmin = event.requestContext.authorizer?.isGlobalSuperAdmin === 'true';
+    // Get caller context from custom authorizer using shared permissions-helper
+    const userPerms = getUserPermissions(event);
+    if (!userPerms) {
+      return httpErr(401, 'Unauthorized');
+    }
+
+    const callerEmail = userPerms.email;
+    const callerClinicRoles = userPerms.clinicRoles;
+    const callerIsSuperAdmin = userPerms.isSuperAdmin;
+    const callerIsGlobalSuperAdmin = userPerms.isGlobalSuperAdmin;
     
-    // Extract caller's clinics for authorization checks
-    const callerClinics = callerClinicRoles.map((cr: any) => cr.clinicId);
+    // Get allowed clinics using shared helper
+    const allowedClinics = getAllowedClinicIds(callerClinicRoles, callerIsSuperAdmin, callerIsGlobalSuperAdmin);
 
     const pathUsernameRaw = String(event?.pathParameters?.username || '');
     const pathUsername = pathUsernameRaw ? decodeURIComponent(pathUsernameRaw).trim().toLowerCase() : '';
@@ -85,10 +97,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ==================================================================
     // 2. Admin gatekeeper - All other routes require admin privileges
     // ==================================================================
-    const callerHasAdminRole = callerClinicRoles.some((cr: any) => 
-      ['Admin', 'SuperAdmin'].includes(cr.role)
-    );
-    const isAdmin = callerIsGlobalSuperAdmin || callerIsSuperAdmin || callerHasAdminRole;
+    const isAdmin = isAdminUser(callerClinicRoles, callerIsSuperAdmin, callerIsGlobalSuperAdmin);
 
     if (!isAdmin) {
       return httpErr(403, 'forbidden: admin or super admin required');
@@ -98,14 +107,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // 3. GET /users - List all users (admin only)
     // ==================================================================
     if (event.httpMethod === 'GET' && !pathUsername) {
-      return await handleListUsers(callerIsGlobalSuperAdmin, callerIsSuperAdmin, callerClinics);
+      return await handleListUsers(callerIsGlobalSuperAdmin, callerIsSuperAdmin, allowedClinics);
     }
 
     // ==================================================================
     // 4. GET /users/{username} - Get specific user (admin only)
     // ==================================================================
     if (event.httpMethod === 'GET' && pathUsername) {
-      return await handleGetUser(pathUsername, callerIsGlobalSuperAdmin, callerIsSuperAdmin, callerClinics);
+      return await handleGetUser(pathUsername, callerIsGlobalSuperAdmin, callerIsSuperAdmin, allowedClinics);
     }
 
     // ==================================================================
@@ -113,14 +122,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ==================================================================
     if (event.httpMethod === 'PUT' && pathUsername) {
       const body = parseBody(event.body) as PutUserBody;
-      return await handleUpdateUser(pathUsername, body, callerIsGlobalSuperAdmin, callerIsSuperAdmin, callerClinics);
+      return await handleUpdateUser(pathUsername, body, callerIsGlobalSuperAdmin, callerIsSuperAdmin, allowedClinics);
     }
 
     // ==================================================================
     // 6. DELETE /users/{username} - Delete user (admin only)
     // ==================================================================
     if (event.httpMethod === 'DELETE' && pathUsername) {
-      return await handleDeleteUser(pathUsername, callerIsGlobalSuperAdmin, callerIsSuperAdmin, callerClinics);
+      return await handleDeleteUser(pathUsername, callerIsGlobalSuperAdmin, callerIsSuperAdmin, allowedClinics);
     }
 
     return httpErr(404, 'route not found');
@@ -163,7 +172,7 @@ async function handleGetSelf(email: string): Promise<APIGatewayProxyResult> {
 async function handleListUsers(
   isGlobalSuperAdmin: boolean,
   isSuperAdmin: boolean,
-  callerClinics: string[]
+  allowedClinics: Set<string>
 ): Promise<APIGatewayProxyResult> {
   // Scan all users
   const result = await ddb.send(new ScanCommand({
@@ -172,10 +181,8 @@ async function handleListUsers(
 
   const users = (result.Items || []) as StaffUser[];
 
-  // Filter users based on caller's permissions
-  const allowedClinics = isGlobalSuperAdmin || isSuperAdmin 
-    ? undefined 
-    : new Set(callerClinics);
+  // Check if caller has access to all clinics (super admins)
+  const hasAllAccess = allowedClinics.has('*');
 
   const items: Array<Record<string, any>> = [];
 
@@ -184,30 +191,30 @@ async function handleListUsers(
     const staffDetails = STAFF_INFO_TABLE ? await getStaffInfoFromDynamoDB(user.email) : [];
 
     // Filter based on clinic access
-    if (allowedClinics) {
+    if (hasAllAccess) {
+      // Super admins see everything
+      items.push({
+        ...toPublicUser(user),
+        staffDetails,
+        rolesByClinic: buildRolesByClinic(staffDetails),
+      });
+    } else {
       // Non-global admins can only see users in their clinics
       const userClinicIds = user.clinicRoles.map(cr => cr.clinicId);
-      const hasAccessToUserClinics = userClinicIds.some(c => allowedClinics.has(c));
-      const hasAccessToStaffDetails = staffDetails.some(d => allowedClinics.has(String(d.clinicId)));
+      const hasAccessToUserClinics = userClinicIds.some(c => hasClinicAccess(allowedClinics, c));
+      const hasAccessToStaffDetails = staffDetails.some(d => hasClinicAccess(allowedClinics, String(d.clinicId)));
 
       if (!hasAccessToUserClinics && !hasAccessToStaffDetails) {
         continue; // Skip this user
       }
 
       // Filter staff details to only show allowed clinics
-      const filteredStaffDetails = staffDetails.filter(d => allowedClinics.has(String(d.clinicId)));
+      const filteredStaffDetails = staffDetails.filter(d => hasClinicAccess(allowedClinics, String(d.clinicId)));
 
       items.push({
         ...toPublicUser(user),
         staffDetails: filteredStaffDetails,
         rolesByClinic: buildRolesByClinic(filteredStaffDetails),
-      });
-    } else {
-      // Super admins see everything
-      items.push({
-        ...toPublicUser(user),
-        staffDetails,
-        rolesByClinic: buildRolesByClinic(staffDetails),
       });
     }
   }
@@ -222,7 +229,7 @@ async function handleGetUser(
   username: string,
   isGlobalSuperAdmin: boolean,
   isSuperAdmin: boolean,
-  callerClinics: string[]
+  allowedClinics: Set<string>
 ): Promise<APIGatewayProxyResult> {
   const result = await ddb.send(new GetCommand({
     TableName: STAFF_USER_TABLE,
@@ -235,10 +242,12 @@ async function handleGetUser(
     return httpErr(404, 'user not found');
   }
 
+  const hasAllAccess = allowedClinics.has('*');
+
   // Check if caller has permission to view this user
-  if (!isGlobalSuperAdmin && !isSuperAdmin) {
+  if (!hasAllAccess) {
     const userClinicIds = user.clinicRoles.map(cr => cr.clinicId);
-    const hasAccessToUserClinics = userClinicIds.some(c => callerClinics.includes(c));
+    const hasAccessToUserClinics = userClinicIds.some(c => hasClinicAccess(allowedClinics, c));
     if (!hasAccessToUserClinics) {
       return httpErr(403, 'no access to this user');
     }
@@ -248,13 +257,9 @@ async function handleGetUser(
   const staffDetails = STAFF_INFO_TABLE ? await getStaffInfoFromDynamoDB(user.email) : [];
 
   // Filter staff details based on caller's clinic access
-  const allowedClinics = isGlobalSuperAdmin || isSuperAdmin
-    ? undefined
-    : new Set(callerClinics);
-
-  const filteredStaffDetails = allowedClinics
-    ? staffDetails.filter(d => allowedClinics.has(String(d.clinicId)))
-    : staffDetails;
+  const filteredStaffDetails = hasAllAccess
+    ? staffDetails
+    : staffDetails.filter(d => hasClinicAccess(allowedClinics, String(d.clinicId)));
 
   return httpOk({
     ...toPublicUser(user),
@@ -271,7 +276,7 @@ async function handleUpdateUser(
   body: PutUserBody,
   isGlobalSuperAdmin: boolean,
   isSuperAdmin: boolean,
-  callerClinics: string[]
+  allowedClinics: Set<string>
 ): Promise<APIGatewayProxyResult> {
   // Get existing user
   const result = await ddb.send(new GetCommand({
@@ -285,15 +290,17 @@ async function handleUpdateUser(
     return httpErr(404, 'user not found');
   }
 
+  const hasAllAccess = allowedClinics.has('*');
+
   // Check permissions
   if (body.makeGlobalSuperAdmin && !isGlobalSuperAdmin) {
     return httpErr(403, 'only global super admin can grant Global super admin role');
   }
 
   // Non-global admins can only update users in their clinics
-  if (!isGlobalSuperAdmin && !isSuperAdmin) {
+  if (!hasAllAccess) {
     const existingUserClinicIds = existingUser.clinicRoles.map(cr => cr.clinicId);
-    const hasAccessToUserClinics = existingUserClinicIds.some(c => callerClinics.includes(c));
+    const hasAccessToUserClinics = existingUserClinicIds.some(c => hasClinicAccess(allowedClinics, c));
     if (!hasAccessToUserClinics) {
       return httpErr(403, 'no access to update this user');
     }
@@ -301,7 +308,7 @@ async function handleUpdateUser(
     // Check if trying to assign to clinics they don't have access to
     if (body.clinicRoles) {
       const newClinicIds = body.clinicRoles.map(cr => cr.clinicId);
-      const unauthorizedClinics = newClinicIds.filter(c => !callerClinics.includes(c));
+      const unauthorizedClinics = newClinicIds.filter(c => !hasClinicAccess(allowedClinics, c));
       if (unauthorizedClinics.length > 0) {
         return httpErr(403, `no admin access for clinics: ${unauthorizedClinics.join(', ')}`);
       }
@@ -357,7 +364,7 @@ async function handleDeleteUser(
   username: string,
   isGlobalSuperAdmin: boolean,
   isSuperAdmin: boolean,
-  callerClinics: string[]
+  allowedClinics: Set<string>
 ): Promise<APIGatewayProxyResult> {
   // Get existing user
   const result = await ddb.send(new GetCommand({
@@ -371,15 +378,17 @@ async function handleDeleteUser(
     return httpErr(404, 'user not found');
   }
 
+  const hasAllAccess = allowedClinics.has('*');
+
   // Check permissions
   if (existingUser.isGlobalSuperAdmin && !isGlobalSuperAdmin) {
     return httpErr(403, 'only global super admin can delete global super admin users');
   }
 
   // Non-global admins can only delete users in their clinics
-  if (!isGlobalSuperAdmin && !isSuperAdmin) {
+  if (!hasAllAccess) {
     const existingUserClinicIds = existingUser.clinicRoles.map(cr => cr.clinicId);
-    const hasAccessToUserClinics = existingUserClinicIds.some(c => callerClinics.includes(c));
+    const hasAccessToUserClinics = existingUserClinicIds.some(c => hasClinicAccess(allowedClinics, c));
     if (!hasAccessToUserClinics) {
       return httpErr(403, 'no access to delete this user');
     }

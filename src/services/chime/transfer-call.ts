@@ -15,7 +15,8 @@ import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getSmaIdForClinic } from './utils/sma-map';
 import { DistributedLock } from './utils/distributed-lock';
 import { validateStateTransition, CALL_STATE_MACHINE } from '../shared/utils/state-machine';
-import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
+import { verifyIdToken } from '../../shared/utils/auth-helper';
+import { getUserIdFromJwt, getClinicsFromJwtPayload } from '../../shared/utils/permissions-helper';
 import { randomUUID } from 'crypto';
 
 const ddb = getDynamoDBClient();
@@ -23,37 +24,13 @@ const chimeVoice = new ChimeSDKVoiceClient({});
 const chime = new ChimeSDKMeetingsClient({ region: process.env.CHIME_MEDIA_REGION || 'us-east-1' });
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
-const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
-const USER_POOL_ID = process.env.USER_POOL_ID;
-const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
-let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
+
 // FIX #31: Use centralized config for transfer note length
 import { CHIME_CONFIG } from './config';
 import { sanitizeText } from '../shared/utils/input-sanitization';
 
 const MAX_TRANSFER_NOTE_LENGTH = CHIME_CONFIG.TRANSFER.MAX_NOTE_LENGTH;
 const VALID_TRANSFER_NOTES_REGEX = /^[a-zA-Z0-9\s.,!?:;'"\-@#$/()&+]*$/;
-
-// Auth Helpers
-async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; payload: JWTPayload } | { ok: false; code: number; message: string }> {
-  if (!authorizationHeader || !authorizationHeader.toLowerCase().startsWith("bearer ")) {
-    return { ok: false, code: 401, message: "Missing Bearer token" };
-  }
-  if (!ISSUER) {
-    return { ok: false, code: 500, message: "Issuer not configured" };
-  }
-  const token = authorizationHeader.slice(7).trim();
-  try {
-    JWKS = JWKS || createRemoteJWKSet(new URL(`${ISSUER}/.well-known/jwks.json`));
-    const { payload } = await jwtVerify(token, JWKS, { issuer: ISSUER });
-    if ((payload as any).token_use !== "id") {
-      return { ok: false, code: 401, message: "ID token required" };
-    }
-    return { ok: true, payload };
-  } catch (err: any) {
-    return { ok: false, code: 401, message: `Invalid token: ${err.message}` };
-  }
-}
 
 // FIX #31: Enhanced transfer notes validation
 function sanitizeTransferNotes(input?: string): { sanitized?: string; error?: string } {
@@ -96,10 +73,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 code: verifyResult.code, 
                 message: verifyResult.message 
             });
-            return { statusCode: verifyResult.code, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
+            return { statusCode: verifyResult.code || 401, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
         }
         
-        const requestingAgentId = verifyResult.payload.sub;
+        const requestingAgentId = getUserIdFromJwt(verifyResult.payload!);
         console.log('[transfer-call] Auth verification successful', { requestingAgentId });
         
         const body = JSON.parse(event.body);
@@ -301,7 +278,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
         
         // CRITICAL FIX: Verify both agents have access to the same clinic
-        const sourceAgentClinics = verifyResult.payload['x_clinics'] || verifyResult.payload['cognito:groups'] || [];
+        const sourceAgentClinics = getClinicsFromJwtPayload(verifyResult.payload!);
         const targetAgentClinics = targetAgent.activeClinicIds || [];
         
         // Check if target agent has access to the call's clinic

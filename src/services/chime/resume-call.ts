@@ -5,8 +5,8 @@ import { ChimeSDKMeetingsClient, CreateAttendeeCommand, DeleteAttendeeCommand, G
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getSmaIdForClinic } from './utils/sma-map';
-import { verifyIdTokenCached } from '../shared/utils/jwt-verification';
-import { checkClinicAuthorization } from '../shared/utils/authorization';
+import { verifyIdToken } from '../../shared/utils/auth-helper';
+import { getUserIdFromJwt, checkClinicAuthorization } from '../../shared/utils/permissions-helper';
 
 const ddb = getDynamoDBClient();
 const chimeVoice = new ChimeSDKVoiceClient({});
@@ -17,8 +17,6 @@ const chimeClient = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
-const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
-const USER_POOL_ID = process.env.USER_POOL_ID;
 
 /**
  * Lambda handler for resuming a call from hold
@@ -32,16 +30,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     try {
         // CRITICAL FIX: Add JWT verification for security
         const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
-        const verifyResult = await verifyIdTokenCached(authz, REGION!, USER_POOL_ID!);
+        const verifyResult = await verifyIdToken(authz);
         if (!verifyResult.ok) {
             console.warn('[resume-call] Auth verification failed', { 
                 code: verifyResult.code, 
                 message: verifyResult.message 
             });
-            return { statusCode: verifyResult.code, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
+            return { statusCode: verifyResult.code || 401, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
         }
         
-        const requestingAgentId = verifyResult.payload.sub;
+        const requestingAgentId = getUserIdFromJwt(verifyResult.payload!);
         console.log('[resume-call] Auth verification successful', { requestingAgentId });
         
         if (!event.body) {
@@ -98,7 +96,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const { clinicId, queuePosition } = callRecord;
 
         // Check clinic authorization
-        const authzCheck = checkClinicAuthorization(verifyResult.payload, clinicId);
+        const authzCheck = checkClinicAuthorization(verifyResult.payload! as any, clinicId);
         if (!authzCheck.authorized) {
             console.warn('[resume-call] Authorization failed', {
                 agentId: requestingAgentId,

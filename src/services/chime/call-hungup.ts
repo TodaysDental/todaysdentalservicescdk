@@ -6,7 +6,8 @@ import { ChimeSDKMeetingsClient } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getSmaIdForClinic } from './utils/sma-map';
-import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
+import { verifyIdToken } from '../../shared/utils/auth-helper';
+import { getUserIdFromJwt } from '../../shared/utils/permissions-helper';
 import { createCheckQueueForWork } from './utils/check-queue-for-work';
 
 const ddb = getDynamoDBClient();
@@ -20,32 +21,7 @@ const checkQueueForWork = createCheckQueueForWork({
     agentPresenceTableName: AGENT_PRESENCE_TABLE_NAME,
     chime,
     chimeVoiceClient
-});
-const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
-const USER_POOL_ID = process.env.USER_POOL_ID;
-const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
-let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
-
-// Auth Helpers
-async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; payload: JWTPayload } | { ok: false; code: number; message: string }> {
-  if (!authorizationHeader || !authorizationHeader.toLowerCase().startsWith("bearer ")) {
-    return { ok: false, code: 401, message: "Missing Bearer token" };
-  }
-  if (!ISSUER) {
-    return { ok: false, code: 500, message: "Issuer not configured" };
-  }
-  const token = authorizationHeader.slice(7).trim();
-  try {
-    JWKS = JWKS || createRemoteJWKSet(new URL(`${ISSUER}/.well-known/jwks.json`));
-    const { payload } = await jwtVerify(token, JWKS, { issuer: ISSUER });
-    if ((payload as any).token_use !== "id") {
-      return { ok: false, code: 401, message: "ID token required" };
-    }
-    return { ok: true, payload };
-  } catch (err: any) {
-    return { ok: false, code: 401, message: `Invalid token: ${err.message}` };
-  }
-} 
+}); 
 
 
 /**
@@ -75,11 +51,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 code: verifyResult.code, 
                 message: verifyResult.message 
             });
-            return { statusCode: verifyResult.code, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
+            return { statusCode: verifyResult.code || 401, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
         }
         
         console.log('[call-hungup] Auth verification successful');
-        const requestingAgentId = verifyResult.payload.sub;
+        const requestingAgentId = getUserIdFromJwt(verifyResult.payload!);
         if (!requestingAgentId) {
             return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'Invalid token: missing subject claim' }) };
         }
@@ -135,7 +111,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             const holdStartTime = callMetadata.holdStartTime ? new Date(callMetadata.holdStartTime).getTime() : 0;
             const holdDuration = holdStartTime > 0 ? (Date.now() - holdStartTime) / 1000 : 0;
             const MAX_HOLD_DURATION = 30 * 60; // 30 minutes
-            const isSupervisor = requestingAgentId && verifyResult.payload['custom:role'] === 'supervisor';
+            const isSupervisor = requestingAgentId && verifyResult.payload && (verifyResult.payload.isSuperAdmin || verifyResult.payload.isGlobalSuperAdmin);
             
             if (holdDuration > MAX_HOLD_DURATION) {
                 console.warn('[call-hungup] Overriding stale hold', {

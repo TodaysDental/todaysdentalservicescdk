@@ -182,16 +182,12 @@ export class AdminStack extends Stack {
       timeout: Duration.seconds(10),
       bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
-        // USER_POOL_ID removed - using JWT-based authentication now
+        STAFF_USER_TABLE: props.staffUserTableName,
       },
     });
 
-    // *** Grant only ListUsers permission to the Directory Lambda ***
-    // Commented out - Cognito User Pool no longer used, JWT-based auth instead
-    // this.directoryLookupFn.addToRolePolicy(new iam.PolicyStatement({
-    //   actions: ['cognito-idp:ListUsers'],
-    //   resources: [props.userPoolArn],
-    // }));
+    // Grant read permissions to StaffUser table for directory lookup
+    staffUserTable.grantReadData(this.directoryLookupFn);
     
     // ** NEW: List Active Requests Lambda Deployment **
     this.listRequestsFn = new lambdaNode.NodejsFunction(this, 'ListRequestsFn', {
@@ -296,8 +292,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
         bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
         environment: {
           CALL_ANALYTICS_TABLE_NAME: props.analyticsTableName,
-          COGNITO_REGION: Stack.of(this).region,
-          // USER_POOL_ID removed - using JWT-based authentication now
+          AWS_REGION_OVERRIDE: Stack.of(this).region,
         },
       });
 
@@ -326,8 +321,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
           CHAT_HISTORY_TABLE_NAME: props.chatHistoryTableName || '',
           CLINICS_TABLE_NAME: props.clinicsTableName || '',
           RECORDINGS_BUCKET_NAME: props.recordingsBucketName || '',
-          COGNITO_REGION: Stack.of(this).region,
-          // USER_POOL_ID removed - using JWT-based authentication now
+          AWS_REGION_OVERRIDE: Stack.of(this).region,
         },
       });
 
@@ -366,11 +360,7 @@ this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
       }
     }
 
-    // Allow MeFn to look up user groups if claims are missing
-    this.meFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['cognito-idp:AdminListGroupsForUser'],
-      resources: ['*'],
-    }));
+    // Note: User roles are now stored in DynamoDB StaffUser table, not Cognito groups
 
     // Grant read access to tables for me API
     this.meFn.addToRolePolicy(new iam.PolicyStatement({

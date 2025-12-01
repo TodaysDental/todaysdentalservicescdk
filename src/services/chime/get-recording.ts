@@ -12,6 +12,12 @@ import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import {
+  getUserPermissions,
+  getAllowedClinicIds,
+  hasClinicAccess,
+} from '../../shared/utils/permissions-helper';
+import { buildCorsHeaders } from '../../shared/utils/cors';
 
 const ddbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(ddbClient);
@@ -19,13 +25,6 @@ const s3 = new S3Client({});
 
 const RECORDINGS_BUCKET = process.env.RECORDINGS_BUCKET!;
 const RECORDING_METADATA_TABLE = process.env.RECORDING_METADATA_TABLE!;
-const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
-const USER_POOL_ID = process.env.USER_POOL_ID!;
-
-// Import JWT verification from shared utilities
-import { verifyIdTokenCached } from '../shared/utils/jwt-verification';
-import { getClinicsFromClaims, hasClinicAccess } from '../shared/utils/authorization';
-import { buildCorsHeaders } from '../../shared/utils/cors';
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   console.log('[GetRecording] Function invoked', {
@@ -41,28 +40,28 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 
   try {
-    // Authenticate
-    const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
-    const verifyResult = await verifyIdTokenCached(authz, REGION!, USER_POOL_ID);
+    // Get user permissions from authorizer context
+    const userPerms = getUserPermissions(event);
     
-    if (!verifyResult.ok) {
+    if (!userPerms) {
       return { 
-        statusCode: verifyResult.code, 
+        statusCode: 401, 
         headers: corsHeaders, 
-        body: JSON.stringify({ message: verifyResult.message }) 
+        body: JSON.stringify({ message: 'Unauthorized' }) 
       };
     }
 
-    const authorizedClinics = getClinicsFromClaims(verifyResult.payload);
+    // Get allowed clinics from authorizer context
+    const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
     const path = event.path;
 
     // Route based on path
     if (path.includes('/recordings/call/')) {
-      return await getRecordingsForCall(event, authorizedClinics, corsHeaders);
+      return await getRecordingsForCall(event, allowedClinics, corsHeaders);
     } else if (path.includes('/recordings/clinic/')) {
-      return await listRecordingsForClinic(event, authorizedClinics, corsHeaders);
+      return await listRecordingsForClinic(event, allowedClinics, corsHeaders);
     } else if (path.includes('/recordings/')) {
-      return await getRecording(event, authorizedClinics, corsHeaders);
+      return await getRecording(event, allowedClinics, corsHeaders);
     }
 
     return {
@@ -86,7 +85,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
 async function getRecording(
   event: APIGatewayProxyEvent,
-  authorizedClinics: string[],
+  allowedClinics: Set<string>,
   corsHeaders: any
 ): Promise<APIGatewayProxyResult> {
   const recordingId = event.pathParameters?.recordingId;
@@ -118,7 +117,7 @@ async function getRecording(
   }
 
   // Check authorization
-  if (!hasClinicAccess(authorizedClinics, recording.clinicId)) {
+  if (!hasClinicAccess(allowedClinics, recording.clinicId)) {
     return {
       statusCode: 403,
       headers: corsHeaders,
@@ -156,7 +155,7 @@ async function getRecording(
 
 async function getRecordingsForCall(
   event: APIGatewayProxyEvent,
-  authorizedClinics: string[],
+  allowedClinics: Set<string>,
   corsHeaders: any
 ): Promise<APIGatewayProxyResult> {
   const callId = event.pathParameters?.callId;
@@ -186,7 +185,7 @@ async function getRecordingsForCall(
 
   // Check authorization (use first recording's clinic)
   const clinicId = recordings[0].clinicId;
-  if (!hasClinicAccess(authorizedClinics, clinicId)) {
+  if (!hasClinicAccess(allowedClinics, clinicId)) {
     return {
       statusCode: 403,
       headers: corsHeaders,
@@ -231,7 +230,7 @@ async function getRecordingsForCall(
 
 async function listRecordingsForClinic(
   event: APIGatewayProxyEvent,
-  authorizedClinics: string[],
+  allowedClinics: Set<string>,
   corsHeaders: any
 ): Promise<APIGatewayProxyResult> {
   const clinicId = event.pathParameters?.clinicId;
@@ -246,7 +245,7 @@ async function listRecordingsForClinic(
   }
 
   // Check authorization
-  if (!hasClinicAccess(authorizedClinics, clinicId)) {
+  if (!hasClinicAccess(allowedClinics, clinicId)) {
     return {
       statusCode: 403,
       headers: corsHeaders,

@@ -8,7 +8,13 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { buildCorsHeaders } from "../../shared/utils/cors";
-import { SYSTEM_MODULES } from "../../shared/types/user";
+import {
+  getUserPermissions,
+  hasModulePermission,
+  getAllowedClinicIds,
+  hasClinicAccess,
+  PermissionType,
+} from "../../shared/utils/permissions-helper";
 
 const client = new DynamoDBClient({});
 const dynamo = DynamoDBDocumentClient.from(client);
@@ -18,94 +24,21 @@ const PARTITION_KEY = process.env.PARTITION_KEY || "clinicId";
 const SORT_KEY = process.env.SORT_KEY || "label"; // <-- CHANGED default to label
 
 // Helper for uniform responses
-const createResponse = (statusCode: number, body: any, requestOrigin?: string): APIGatewayProxyResult => {
-  return {
-    statusCode,
-    headers: {
-      ...buildCorsHeaders({}, requestOrigin),
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  };
-};
+const createResponse = (statusCode: number, body: any, requestOrigin?: string): APIGatewayProxyResult => ({
+  statusCode,
+  headers: {
+    ...buildCorsHeaders({}, requestOrigin),
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify(body),
+});
 
-/**
- * Get user's clinic roles and permissions from custom authorizer
- */
-const getUserPermissions = (event: APIGatewayProxyEvent) => {
-  const authorizer = event.requestContext?.authorizer;
-  if (!authorizer) return null;
-
-  try {
-    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
-    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
-    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
-    const email = authorizer.email || '';
-
-    return {
-      email,
-      clinicRoles,
-      isSuperAdmin,
-      isGlobalSuperAdmin,
-    };
-  } catch (err) {
-    console.error('Failed to parse user permissions:', err);
-    return null;
-  }
-};
-
-/**
- * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
- */
-const isAdminUser = (
-  clinicRoles: any[],
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean
-): boolean => {
-  // Check flags first
-  if (isGlobalSuperAdmin || isSuperAdmin) {
-    return true;
-  }
-
-  // Check if user has Admin or SuperAdmin role at any clinic
-  for (const cr of clinicRoles) {
-    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
-      return true;
-    }
-  }
-
-  return false;
-};
-
-/**
- * Check if user has specific permission for Operations module at ANY clinic
- */
-const hasModulePermission = (
-  clinicRoles: any[],
-  permission: 'read' | 'write' | 'put' | 'delete',
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean,
-  clinicId?: string
-): boolean => {
-  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
-  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
-    return true;
-  }
-
-  // Check if user has the permission for Operations module at any clinic (or specific clinic)
-  for (const cr of clinicRoles) {
-    // If clinicId is specified, check only that clinic
-    if (clinicId && cr.clinicId !== clinicId) {
-      continue;
-    }
-
-    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === 'Operations');
-    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
-      return true;
-    }
-  }
-
-  return false;
+const MODULE_NAME = 'Operations';
+const METHOD_PERMISSIONS: Record<string, PermissionType> = {
+  GET: 'read',
+  POST: 'write',
+  PUT: 'put',
+  DELETE: 'delete',
 };
 
 const validateItem = (item: any): string[] => {
@@ -125,7 +58,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
   // Handle OPTIONS request for CORS preflight
   if (method === 'OPTIONS') {
-    return createResponse(200, { message: 'CORS preflight response' }, requestOrigin);
+    return createResponse(204, '', requestOrigin);
   }
 
   // Get user permissions from custom authorizer
@@ -133,6 +66,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   if (!userPerms) {
     return createResponse(401, { error: 'Unauthorized - Invalid token' }, requestOrigin);
   }
+
+  const requiredPermission: PermissionType = METHOD_PERMISSIONS[method] || 'read';
+  const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
 
   try {
     switch (method) {
@@ -142,10 +78,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
         const clinicId = queryParameters[PARTITION_KEY];
 
+        if (!hasClinicAccess(allowedClinics, clinicId)) {
+          return createResponse(403, { error: 'Forbidden: no access to this clinic' }, requestOrigin);
+        }
+
         // Check if user has read permission for Operations module
         const canRead = hasModulePermission(
           userPerms.clinicRoles,
-          'read',
+          MODULE_NAME,
+          requiredPermission,
           userPerms.isSuperAdmin,
           userPerms.isGlobalSuperAdmin,
           clinicId
@@ -195,11 +136,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         if (!item[PARTITION_KEY] || !item[SORT_KEY]) {
           return createResponse(400, { message: `Missing required Primary Keys: ${PARTITION_KEY} and ${SORT_KEY}` }, requestOrigin);
         }
+        if (!hasClinicAccess(allowedClinics, item[PARTITION_KEY])) {
+          return createResponse(403, { error: 'Forbidden: no access to this clinic' }, requestOrigin);
+        }
 
         // Check if user has write permission for Operations module
         const canCreate = hasModulePermission(
           userPerms.clinicRoles,
-          'write',
+          MODULE_NAME,
+          requiredPermission,
           userPerms.isSuperAdmin,
           userPerms.isGlobalSuperAdmin,
           item[PARTITION_KEY]
@@ -256,11 +201,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
 
         const putClinicId = queryParameters[PARTITION_KEY];
+        if (!hasClinicAccess(allowedClinics, putClinicId)) {
+          return createResponse(403, { error: 'Forbidden: no access to this clinic' }, requestOrigin);
+        }
 
         // Check if user has put permission for Operations module
         const canUpdate = hasModulePermission(
           userPerms.clinicRoles,
-          'put',
+          MODULE_NAME,
+          requiredPermission,
           userPerms.isSuperAdmin,
           userPerms.isGlobalSuperAdmin,
           putClinicId
@@ -307,11 +256,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
 
         const deleteClinicId = queryParameters[PARTITION_KEY];
+        if (!hasClinicAccess(allowedClinics, deleteClinicId)) {
+          return createResponse(403, { error: 'Forbidden: no access to this clinic' }, requestOrigin);
+        }
 
         // Check if user has delete permission for Operations module
         const canDelete = hasModulePermission(
           userPerms.clinicRoles,
-          'delete',
+          MODULE_NAME,
+          requiredPermission,
           userPerms.isSuperAdmin,
           userPerms.isGlobalSuperAdmin,
           deleteClinicId

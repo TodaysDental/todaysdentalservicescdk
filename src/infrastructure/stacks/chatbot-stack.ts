@@ -6,14 +6,12 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as route53targets from 'aws-cdk-lib/aws-route53-targets';
 import { Construct } from 'constructs';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as path from 'path';
-import clinicsJson from '../configs/clinics.json';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface ChatbotStackProps extends cdk.StackProps {
@@ -335,16 +333,9 @@ export class ChatbotStack extends cdk.Stack {
     });
 
     // =========================================================================
-    // Custom Domain Setup
+    // REST API Custom Domain Mapping
     // =========================================================================
-
-    // Certificate for wss.todaysdentalinsights.com
-    const certificateArn = this.node.tryGetContext('certificateArn') ?? 
-      process.env.CERTIFICATE_ARN ?? 
-      'arn:aws:acm:us-east-1:851620242036:certificate/8df14189-a210-4222-bd3f-0ff2cfc0e157';
-
-    // Use existing apig.todaysdentalinsights.com domain with base path mapping for REST API
-    // Domain is created in CoreStack, we just map our API to it
+    // Map this API under the existing custom domain created in CoreStack as /chatbot
     new apigateway.CfnBasePathMapping(this, 'ChatbotRestApiBasePathMapping', {
       domainName: 'apig.todaysdentalinsights.com',
       basePath: 'chatbot',
@@ -352,14 +343,19 @@ export class ChatbotStack extends cdk.Stack {
       stage: this.restApi.deploymentStage.stageName,
     });
 
-    // Create WebSocket domain on a subdomain (due to AWS limitation that WebSocket and REST can't share same domain)
-    const wsSubdomain = 'wss.todaysdentalinsights.com';
+    // =========================================================================
+    // WebSocket API Custom Domain Setup
+    // =========================================================================
+    // Certificate for ws.todaysdentalinsights.com
+    const wsCertificateArn = 'arn:aws:acm:us-east-1:851620242036:certificate/4609e555-88a2-403f-b053-9d0899a899b9';
+
+    // Create WebSocket custom domain (WebSocket APIs cannot share domain with REST APIs)
     const wsDomain = new apigatewayv2.DomainName(this, 'WebSocketDomain', {
-      domainName: wsSubdomain,
+      domainName: 'ws.todaysdentalinsights.com',
       certificate: certificatemanager.Certificate.fromCertificateArn(
         this,
-        'WsCertificate', 
-        certificateArn
+        'WsCertificate',
+        wsCertificateArn
       ),
     });
 
@@ -368,11 +364,10 @@ export class ChatbotStack extends cdk.Stack {
       api: this.websocketApi,
       domainName: wsDomain,
       stage: websocketStage,
-      apiMappingKey: 'chat', // This creates the /chat path
+      apiMappingKey: 'chat',
     });
 
     // Route53 record for WebSocket subdomain
-    // Using direct hosted zone attributes instead of lookup to avoid CloudFormation validation issues
     const hostedZone = route53.HostedZone.fromHostedZoneAttributes(this, 'HostedZone', {
       hostedZoneId: 'Z0782155122P6UMFMK24C',
       zoneName: 'todaysdentalinsights.com',
@@ -380,10 +375,10 @@ export class ChatbotStack extends cdk.Stack {
 
     new route53.ARecord(this, 'WebSocketRecord', {
       zone: hostedZone,
-      recordName: 'wss',
+      recordName: 'ws',
       target: route53.RecordTarget.fromAlias(new route53targets.ApiGatewayv2DomainProperties(
         wsDomain.regionalDomainName,
-        wsDomain.regionalHostedZoneId
+        wsDomain.regionalHostedZoneId 
       )),
     });
 
@@ -397,7 +392,7 @@ export class ChatbotStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, 'WebSocketCustomDomainEndpoint', {
-      value: 'wss://wss.todaysdentalinsights.com/chat',
+      value: 'wss://ws.todaysdentalinsights.com/chat',
       description: 'Custom domain WebSocket API endpoint for chatbot',
     });
 
@@ -414,11 +409,6 @@ export class ChatbotStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ConversationsTableName', {
       value: this.conversationsTable.tableName,
       description: 'DynamoDB table for conversation storage',
-    });
-
-    new cdk.CfnOutput(this, 'CertificateArn', {
-      value: certificateArn,
-      description: 'SSL Certificate ARN used for custom domain',
     });
 
     // Output imported table information

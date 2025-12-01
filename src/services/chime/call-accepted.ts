@@ -10,7 +10,8 @@ import {
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getSmaIdForClinic } from './utils/sma-map';
-import { verifyIdTokenCached } from '../shared/utils/jwt-verification';
+import { verifyIdToken } from '../../shared/utils/auth-helper';
+import { getUserIdFromJwt } from '../../shared/utils/permissions-helper';
 import { cleanupOrphanedCallResources } from './utils/resource-cleanup';
 import { randomUUID } from 'crypto';
 import { TTL_POLICY } from './config/ttl-policy';
@@ -24,8 +25,6 @@ const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
-const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
-const USER_POOL_ID = process.env.USER_POOL_ID;
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
     console.log('[call-accepted] Function invoked', {
@@ -48,13 +47,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         // 1. Authenticate the request
         const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
-        const verifyResult = await verifyIdTokenCached(authz, REGION!, USER_POOL_ID!);
+        const verifyResult = await verifyIdToken(authz);
         if (!verifyResult.ok) {
             console.warn('[call-accepted] Auth verification failed', { code: verifyResult.code, message: verifyResult.message });
-            return { statusCode: verifyResult.code, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
+            return { statusCode: verifyResult.code || 401, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
         }
         
-        const requestingAgentId = verifyResult.payload.sub;
+        const requestingAgentId = getUserIdFromJwt(verifyResult.payload!);
         if (!requestingAgentId) {
              return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'Invalid token: missing subject claim' }) };
         }

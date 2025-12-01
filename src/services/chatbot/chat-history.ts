@@ -2,7 +2,12 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { buildCorsHeaders } from '../../shared/utils/cors';
-import { SYSTEM_MODULES } from '../../shared/types/user';
+import {
+  getUserPermissions,
+  isAdminUser,
+  hasModulePermission,
+  UserPermissions,
+} from '../../shared/utils/permissions-helper';
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
@@ -11,86 +16,6 @@ const TABLE_NAME = process.env.CONVERSATIONS_TABLE || 'chatbot-conversations';
 
 // Use common CORS headers
 const corsHeaders = buildCorsHeaders();
-
-/**
- * Get user's clinic roles and permissions from custom authorizer
- */
-const getUserPermissions = (event: APIGatewayProxyEvent) => {
-  const authorizer = event.requestContext?.authorizer;
-  if (!authorizer) return null;
-
-  try {
-    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
-    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
-    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
-    const email = authorizer.email || '';
-
-    return {
-      email,
-      clinicRoles,
-      isSuperAdmin,
-      isGlobalSuperAdmin,
-    };
-  } catch (err) {
-    console.error('Failed to parse user permissions:', err);
-    return null;
-  }
-};
-
-/**
- * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
- */
-const isAdminUser = (
-  clinicRoles: any[],
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean
-): boolean => {
-  // Check flags first
-  if (isGlobalSuperAdmin || isSuperAdmin) {
-    return true;
-  }
-
-  // Check if user has Admin or SuperAdmin role at any clinic
-  for (const cr of clinicRoles) {
-    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
-      return true;
-    }
-  }
-
-  return false;
-};
-
-/**
- * Check if user has specific permission for a module at ANY clinic
- */
-const hasModulePermission = (
-  clinicRoles: any[],
-  module: string,
-  permission: 'read' | 'write' | 'put' | 'delete',
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean,
-  clinicId?: string
-): boolean => {
-  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
-  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
-    return true;
-  }
-
-  // Check if user has the permission for this module at any clinic (or specific clinic)
-  for (const cr of clinicRoles) {
-    // If clinicId is specified, check only that clinic
-    if (clinicId && cr.clinicId !== clinicId) {
-      continue;
-    }
-
-    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === module);
-    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
-      return true;
-    }
-  }
-
-  return false;
-};
 
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
@@ -342,7 +267,7 @@ async function getConversationDetail(sessionId: string, clinicId: string): Promi
   }
 }
 
-function getAuthorizedClinics(userPerms: any): string[] {
+function getAuthorizedClinics(userPerms: UserPermissions): string[] {
   // If user is admin, they have access to all clinics
   if (isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin)) {
     // For now, return empty array to get all conversations - in production you might want to limit this
@@ -352,7 +277,7 @@ function getAuthorizedClinics(userPerms: any): string[] {
   // Get clinics where user has Marketing module access
   const authorizedClinics: string[] = [];
   for (const cr of userPerms.clinicRoles) {
-    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === 'Marketing');
+    const moduleAccess = cr.moduleAccess?.find((ma) => ma.module === 'Marketing');
     if (moduleAccess && moduleAccess.permissions.includes('read')) {
       authorizedClinics.push(cr.clinicId);
     }

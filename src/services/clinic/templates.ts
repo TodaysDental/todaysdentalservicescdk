@@ -4,6 +4,13 @@ import { v4 as uuidv4 } from 'uuid';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { SYSTEM_MODULES } from '../../shared/types/user';
+import {
+  getUserPermissions,
+  hasModulePermission,
+  getAccessibleModules,
+  getUserDisplayName,
+  UserPermissions,
+} from '../../shared/utils/permissions-helper';
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
@@ -26,114 +33,6 @@ interface Template {
   created_at: string;
   clinic_id?: string; // Optional: clinic-specific templates
 }
-
-/**
- * Get user's clinic roles and permissions from custom authorizer
- */
-const getUserPermissions = (event: APIGatewayProxyEvent) => {
-  const authorizer = event.requestContext?.authorizer;
-  if (!authorizer) return null;
-
-  try {
-    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
-    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
-    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
-    const email = authorizer.email || '';
-
-    return {
-      email,
-      clinicRoles,
-      isSuperAdmin,
-      isGlobalSuperAdmin,
-    };
-  } catch (err) {
-    console.error('Failed to parse user permissions:', err);
-    return null;
-  }
-};
-
-/**
- * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
- */
-const isAdminUser = (
-  clinicRoles: any[],
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean
-): boolean => {
-  // Check flags first
-  if (isGlobalSuperAdmin || isSuperAdmin) {
-    return true;
-  }
-
-  // Check if user has Admin or SuperAdmin role at any clinic
-  for (const cr of clinicRoles) {
-    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
-      return true;
-    }
-  }
-
-  return false;
-};
-
-/**
- * Check if user has specific permission for a module at ANY clinic
- */
-const hasModulePermission = (
-  clinicRoles: any[],
-  module: string,
-  permission: 'read' | 'write' | 'put' | 'delete',
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean,
-  clinicId?: string
-): boolean => {
-  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
-  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
-    return true;
-  }
-
-  // Check if user has the permission for this module at any clinic (or specific clinic)
-  for (const cr of clinicRoles) {
-    // If clinicId is specified, check only that clinic
-    if (clinicId && cr.clinicId !== clinicId) {
-      continue;
-    }
-
-    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === module);
-    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
-      return true;
-    }
-  }
-
-  return false;
-};
-
-/**
- * Get all modules user has access to (with read permission at minimum)
- */
-const getUserAccessibleModules = (
-  clinicRoles: any[],
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean
-): string[] => {
-  // Admin, SuperAdmin, and Global Super Admin have access to all modules
-  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
-    return Array.from(SYSTEM_MODULES);
-  }
-
-  const accessibleModules = new Set<string>();
-
-  for (const cr of clinicRoles) {
-    if (cr.moduleAccess) {
-      for (const ma of cr.moduleAccess) {
-        if (ma.permissions && ma.permissions.length > 0) {
-          accessibleModules.add(ma.module);
-        }
-      }
-    }
-  }
-
-  return Array.from(accessibleModules);
-};
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const httpMethod = event.httpMethod;
@@ -193,7 +92,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 };
 
-async function listTemplates(event: APIGatewayProxyEvent, userPerms: any) {
+async function listTemplates(event: APIGatewayProxyEvent, userPerms: UserPermissions) {
   // Get all templates
   const command = new ScanCommand({
     TableName: TABLE_NAME,
@@ -203,7 +102,7 @@ async function listTemplates(event: APIGatewayProxyEvent, userPerms: any) {
   const allTemplates = response.Items || [];
 
   // Get modules user has access to
-  const accessibleModules = getUserAccessibleModules(
+  const accessibleModules = getAccessibleModules(
     userPerms.clinicRoles,
     userPerms.isSuperAdmin,
     userPerms.isGlobalSuperAdmin
@@ -240,7 +139,7 @@ async function listTemplates(event: APIGatewayProxyEvent, userPerms: any) {
   };
 }
 
-async function createTemplate(event: APIGatewayProxyEvent, userPerms: any) {
+async function createTemplate(event: APIGatewayProxyEvent, userPerms: UserPermissions) {
   const body = JSON.parse(event.body || '{}');
 
   // Validate required fields
@@ -297,6 +196,7 @@ async function createTemplate(event: APIGatewayProxyEvent, userPerms: any) {
 
   const templateId = uuidv4();
   const timestamp = new Date().toISOString();
+  const modifiedBy = getUserDisplayName(userPerms);
 
   const item: Template = {
     template_id: templateId,
@@ -307,7 +207,7 @@ async function createTemplate(event: APIGatewayProxyEvent, userPerms: any) {
     text_message: body.text_message || '',
     created_at: timestamp,
     modified_at: timestamp,
-    modified_by: userPerms.email,
+    modified_by: modifiedBy,
     clinic_id: body.clinic_id, // Optional: clinic-specific template
   };
 
@@ -329,7 +229,7 @@ async function createTemplate(event: APIGatewayProxyEvent, userPerms: any) {
   };
 }
 
-async function updateTemplate(event: APIGatewayProxyEvent, userPerms: any, templateId: string) {
+async function updateTemplate(event: APIGatewayProxyEvent, userPerms: UserPermissions, templateId: string) {
   const body = JSON.parse(event.body || '{}');
 
   // Validate required fields
@@ -374,6 +274,7 @@ async function updateTemplate(event: APIGatewayProxyEvent, userPerms: any, templ
   }
 
   const timestamp = new Date().toISOString();
+  const modifiedBy = getUserDisplayName(userPerms);
 
   const item: any = {
     template_id: templateId,
@@ -383,7 +284,7 @@ async function updateTemplate(event: APIGatewayProxyEvent, userPerms: any, templ
     email_body: body.email_body,
     text_message: body.text_message || '',
     modified_at: timestamp,
-    modified_by: userPerms.email,
+    modified_by: modifiedBy,
     clinic_id: body.clinic_id,
   };
 
@@ -410,7 +311,7 @@ async function updateTemplate(event: APIGatewayProxyEvent, userPerms: any, templ
   };
 }
 
-async function deleteTemplate(event: APIGatewayProxyEvent, userPerms: any, templateId: string) {
+async function deleteTemplate(event: APIGatewayProxyEvent, userPerms: UserPermissions, templateId: string) {
   // First, get the template to check its module
   const getCommand = new QueryCommand({
     TableName: TABLE_NAME,

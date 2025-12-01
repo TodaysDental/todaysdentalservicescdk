@@ -15,8 +15,8 @@ import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getSmaIdForClinic } from './utils/sma-map';
-import { verifyIdTokenCached } from '../shared/utils/jwt-verification';
-import { checkClinicAuthorization } from '../shared/utils/authorization';
+import { verifyIdToken } from '../../shared/utils/auth-helper';
+import { getUserIdFromJwt, checkClinicAuthorization } from '../../shared/utils/permissions-helper';
 import { validateStateTransition, CALL_STATE_MACHINE } from '../shared/utils/state-machine';
 import { randomUUID } from 'crypto';
 
@@ -30,8 +30,6 @@ const chimeClient = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 const COMPENSATING_ACTIONS_QUEUE_URL = process.env.COMPENSATING_ACTIONS_QUEUE_URL;
-const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
-const USER_POOL_ID = process.env.USER_POOL_ID;
 /**
  * Lambda handler for placing a call on hold
  * This is triggered by the frontend when an agent wants to put a customer on hold
@@ -44,13 +42,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     try {
         // Authenticate request
         const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
-        const verifyResult = await verifyIdTokenCached(authz, REGION!, USER_POOL_ID!);
+        const verifyResult = await verifyIdToken(authz);
         if (!verifyResult.ok) {
             console.warn('[hold-call] Auth verification failed', verifyResult);
-            return { statusCode: verifyResult.code, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
+            return { statusCode: verifyResult.code || 401, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
         }
 
-        const requestingAgentId = verifyResult.payload.sub;
+        const requestingAgentId = getUserIdFromJwt(verifyResult.payload!);
 
         if (!event.body) {
             return { 
@@ -118,7 +116,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
         
         // Check clinic authorization
-        const authzCheck = checkClinicAuthorization(verifyResult.payload, clinicId);
+        const authzCheck = checkClinicAuthorization(verifyResult.payload! as any, clinicId);
         if (!authzCheck.authorized) {
             console.warn('[hold-call] Authorization failed', {
                 agentId: requestingAgentId,

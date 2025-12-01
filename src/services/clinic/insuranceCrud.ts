@@ -2,90 +2,15 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand, ScanCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { buildCorsHeaders } from '../../shared/utils/cors';
-import { SYSTEM_MODULES } from '../../shared/types/user';
+import {
+  getUserPermissions,
+  isAdminUser,
+  hasModulePermission,
+  UserPermissions,
+} from '../../shared/utils/permissions-helper';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE = process.env.CLINIC_INSURANCE_TABLE || 'ClinicInsurance';
-
-/**
- * Get user's clinic roles and permissions from custom authorizer
- */
-const getUserPermissions = (event: APIGatewayProxyEvent) => {
-  const authorizer = event.requestContext?.authorizer;
-  if (!authorizer) return null;
-
-  try {
-    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
-    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
-    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
-    const email = authorizer.email || '';
-
-    return {
-      email,
-      clinicRoles,
-      isSuperAdmin,
-      isGlobalSuperAdmin,
-    };
-  } catch (err) {
-    console.error('Failed to parse user permissions:', err);
-    return null;
-  }
-};
-
-/**
- * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
- */
-const isAdminUser = (
-  clinicRoles: any[],
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean
-): boolean => {
-  // Check flags first
-  if (isGlobalSuperAdmin || isSuperAdmin) {
-    return true;
-  }
-
-  // Check if user has Admin or SuperAdmin role at any clinic
-  for (const cr of clinicRoles) {
-    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
-      return true;
-    }
-  }
-
-  return false;
-};
-
-/**
- * Check if user has specific permission for a module at ANY clinic
- */
-const hasModulePermission = (
-  clinicRoles: any[],
-  module: string,
-  permission: 'read' | 'write' | 'put' | 'delete',
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean,
-  clinicId?: string
-): boolean => {
-  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
-  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
-    return true;
-  }
-
-  // Check if user has the permission for this module at any clinic (or specific clinic)
-  for (const cr of clinicRoles) {
-    // If clinicId is specified, check only that clinic
-    if (clinicId && cr.clinicId !== clinicId) {
-      continue;
-    }
-
-    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === module);
-    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
-      return true;
-    }
-  }
-
-  return false;
-};
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   if (event.httpMethod === 'OPTIONS') return ok({ ok: true }, event);
@@ -136,7 +61,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 };
 
-async function getInsurance(event: APIGatewayProxyEvent, userPerms: any) {
+async function getInsurance(event: APIGatewayProxyEvent, userPerms: UserPermissions) {
   const clinicId = event.pathParameters?.clinicId || '';
   if (!clinicId) return err(400, 'clinicId required', event);
   
@@ -175,7 +100,7 @@ async function getInsurance(event: APIGatewayProxyEvent, userPerms: any) {
   return ok({ items: Array.from(groupedByProvider.values()) }, event);
 }
 
-async function createInsurance(event: APIGatewayProxyEvent, userPerms: any) {
+async function createInsurance(event: APIGatewayProxyEvent, userPerms: UserPermissions) {
   const clinicId = event.pathParameters?.clinicId || '';
   const body = parse(event.body);
   
@@ -234,7 +159,7 @@ async function createInsurance(event: APIGatewayProxyEvent, userPerms: any) {
   return ok({ clinicId, insuranceProvider: body.insuranceProvider }, event);
 }
 
-async function updateInsurance(event: APIGatewayProxyEvent, userPerms: any) {
+async function updateInsurance(event: APIGatewayProxyEvent, userPerms: UserPermissions) {
   const clinicId = event.pathParameters?.clinicId || '';
   const body = parse(event.body);
   
@@ -293,7 +218,7 @@ async function updateInsurance(event: APIGatewayProxyEvent, userPerms: any) {
   return ok({ clinicId, insuranceProvider: body.insuranceProvider }, event);
 }
 
-async function deleteInsurance(event: APIGatewayProxyEvent, userPerms: any) {
+async function deleteInsurance(event: APIGatewayProxyEvent, userPerms: UserPermissions) {
   const clinicId = event.pathParameters?.clinicId || '';
   const body = parse(event.body);
   

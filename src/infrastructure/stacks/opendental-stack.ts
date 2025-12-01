@@ -202,6 +202,11 @@ export class OpenDentalStack extends Stack {
       type: apigw.ResponseType.UNAUTHORIZED,
       responseHeaders: corsErrorHeaders,
     });
+    new apigw.GatewayResponse(this, 'GatewayResponseAccessDenied', {
+      restApi: this.api,
+      type: apigw.ResponseType.ACCESS_DENIED,
+      responseHeaders: corsErrorHeaders,
+    });
 
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
@@ -309,6 +314,12 @@ export class OpenDentalStack extends Stack {
         },
         { 
           statusCode: '400',
+          responseParameters: {
+            'method.response.header.Access-Control-Allow-Origin': true
+          }
+        },
+        { 
+          statusCode: '401',
           responseParameters: {
             'method.response.header.Access-Control-Allow-Origin': true
           }

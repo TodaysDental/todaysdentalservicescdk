@@ -1,9 +1,14 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, ScanCommand, PutCommand, DeleteCommand, GetCommand } from '@aws-sdk/lib-dynamodb'; // Import GetCommand
+import { DynamoDBDocumentClient, ScanCommand, PutCommand, DeleteCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { buildCorsHeaders } from '../../shared/utils/cors';
-import { SYSTEM_MODULES } from '../../shared/types/user';
+import {
+  getUserPermissions,
+  hasModulePermission,
+  getUserDisplayName,
+  UserPermissions,
+} from '../../shared/utils/permissions-helper';
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
@@ -13,86 +18,6 @@ const TABLE_NAME = process.env.TABLE_NAME || 'ConsentFormData';
 
 // Dynamic CORS helper
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
-
-/**
- * Get user's clinic roles and permissions from custom authorizer
- */
-const getUserPermissions = (event: APIGatewayProxyEvent) => {
-  const authorizer = event.requestContext?.authorizer;
-  if (!authorizer) return null;
-
-  try {
-    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
-    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
-    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
-    const email = authorizer.email || '';
-
-    return {
-      email,
-      clinicRoles,
-      isSuperAdmin,
-      isGlobalSuperAdmin,
-    };
-  } catch (err) {
-    console.error('Failed to parse user permissions:', err);
-    return null;
-  }
-};
-
-/**
- * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
- */
-const isAdminUser = (
-  clinicRoles: any[],
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean
-): boolean => {
-  // Check flags first
-  if (isGlobalSuperAdmin || isSuperAdmin) {
-    return true;
-  }
-
-  // Check if user has Admin or SuperAdmin role at any clinic
-  for (const cr of clinicRoles) {
-    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
-      return true;
-    }
-  }
-
-  return false;
-};
-
-/**
- * Check if user has specific permission for a module at ANY clinic
- */
-const hasModulePermission = (
-  clinicRoles: any[],
-  module: string,
-  permission: 'read' | 'write' | 'put' | 'delete',
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean,
-  clinicId?: string
-): boolean => {
-  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
-  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
-    return true;
-  }
-
-  // Check if user has the permission for this module at any clinic (or specific clinic)
-  for (const cr of clinicRoles) {
-    // If clinicId is specified, check only that clinic
-    if (clinicId && cr.clinicId !== clinicId) {
-      continue;
-    }
-
-    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === module);
-    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
-      return true;
-    }
-  }
-
-  return false;
-};
 
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
@@ -199,7 +124,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 };
 
 // GET /consent-forms
-async function listConsentForms(event: APIGatewayProxyEvent, userPerms: any) {
+async function listConsentForms(event: APIGatewayProxyEvent, userPerms: UserPermissions) {
   const command = new ScanCommand({
     TableName: TABLE_NAME,
   });
@@ -214,8 +139,8 @@ async function listConsentForms(event: APIGatewayProxyEvent, userPerms: any) {
   };
 }
 
-// NEW FUNCTION: GET /consent-forms/{consentFormId}
-async function getConsentForm(event: APIGatewayProxyEvent, userPerms: any, consentFormId: string) {
+// GET /consent-forms/{consentFormId}
+async function getConsentForm(event: APIGatewayProxyEvent, userPerms: UserPermissions, consentFormId: string) {
   const command = new GetCommand({
     TableName: TABLE_NAME,
     Key: {
@@ -241,7 +166,7 @@ async function getConsentForm(event: APIGatewayProxyEvent, userPerms: any, conse
 }
 
 // POST /consent-forms
-async function createConsentForm(event: APIGatewayProxyEvent, userPerms: any) {
+async function createConsentForm(event: APIGatewayProxyEvent, userPerms: UserPermissions) {
   const body = JSON.parse(event.body || '{}');
 
   // Validate payload based on your example
@@ -261,7 +186,7 @@ async function createConsentForm(event: APIGatewayProxyEvent, userPerms: any) {
     templateName: body.templateName,
     elements: body.elements, // Store the full elements array
     modified_at: timestamp,
-    modified_by: userPerms.email,
+    modified_by: getUserDisplayName(userPerms),
   };
 
   const command = new PutCommand({
@@ -282,7 +207,7 @@ async function createConsentForm(event: APIGatewayProxyEvent, userPerms: any) {
 }
 
 // PUT /consent-forms/{consentFormId}
-async function updateConsentForm(event: APIGatewayProxyEvent, userPerms: any, consentFormId: string) {
+async function updateConsentForm(event: APIGatewayProxyEvent, userPerms: UserPermissions, consentFormId: string) {
   const body = JSON.parse(event.body || '{}');
 
   // Validate payload
@@ -301,7 +226,7 @@ async function updateConsentForm(event: APIGatewayProxyEvent, userPerms: any, co
     templateName: body.templateName,
     elements: body.elements,
     modified_at: timestamp,
-    modified_by: userPerms.email,
+    modified_by: getUserDisplayName(userPerms),
   };
 
   const command = new PutCommand({
@@ -322,7 +247,7 @@ async function updateConsentForm(event: APIGatewayProxyEvent, userPerms: any, co
 }
 
 // DELETE /consent-forms/{consentFormId}
-async function deleteConsentForm(event: APIGatewayProxyEvent, userPerms: any, consentFormId: string) {
+async function deleteConsentForm(event: APIGatewayProxyEvent, userPerms: UserPermissions, consentFormId: string) {
   const command = new DeleteCommand({
     TableName: TABLE_NAME,
     Key: {

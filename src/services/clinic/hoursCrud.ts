@@ -2,7 +2,12 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { buildCorsHeaders } from '../../shared/utils/cors';
-import { SYSTEM_MODULES } from '../../shared/types/user';
+import {
+  getUserPermissions,
+  isAdminUser,
+  hasModulePermission,
+  UserPermissions,
+} from '../../shared/utils/permissions-helper';
 import clinicsData from '../../infrastructure/configs/clinics.json';
 import { Clinic } from '../../infrastructure/configs/clinics';
 
@@ -23,86 +28,6 @@ interface ClinicHoursData {
   updatedAt: number;
   updatedBy: string;
 }
-
-/**
- * Get user's clinic roles and permissions from custom authorizer
- */
-const getUserPermissions = (event: APIGatewayProxyEvent) => {
-  const authorizer = event.requestContext?.authorizer;
-  if (!authorizer) return null;
-
-  try {
-    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
-    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
-    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
-    const email = authorizer.email || '';
-
-    return {
-      email,
-      clinicRoles,
-      isSuperAdmin,
-      isGlobalSuperAdmin,
-    };
-  } catch (err) {
-    console.error('Failed to parse user permissions:', err);
-    return null;
-  }
-};
-
-/**
- * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
- */
-const isAdminUser = (
-  clinicRoles: any[],
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean
-): boolean => {
-  // Check flags first
-  if (isGlobalSuperAdmin || isSuperAdmin) {
-    return true;
-  }
-
-  // Check if user has Admin or SuperAdmin role at any clinic
-  for (const cr of clinicRoles) {
-    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
-      return true;
-    }
-  }
-
-  return false;
-};
-
-/**
- * Check if user has specific permission for a module at ANY clinic
- */
-const hasModulePermission = (
-  clinicRoles: any[],
-  module: string,
-  permission: 'read' | 'write' | 'put' | 'delete',
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean,
-  clinicId?: string
-): boolean => {
-  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
-  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
-    return true;
-  }
-
-  // Check if user has the permission for this module at any clinic (or specific clinic)
-  for (const cr of clinicRoles) {
-    // If clinicId is specified, check only that clinic
-    if (clinicId && cr.clinicId !== clinicId) {
-      continue;
-    }
-
-    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === module);
-    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
-      return true;
-    }
-  }
-
-  return false;
-};
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   if (event.httpMethod === 'OPTIONS') return ok({ ok: true }, event);
@@ -159,7 +84,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 };
 
-async function listHours(event: APIGatewayProxyEvent, userPerms: any): Promise<APIGatewayProxyResult> {
+async function listHours(event: APIGatewayProxyEvent, userPerms: UserPermissions): Promise<APIGatewayProxyResult> {
   try {
     let resp;
     if (isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin)) {
@@ -167,7 +92,7 @@ async function listHours(event: APIGatewayProxyEvent, userPerms: any): Promise<A
       resp = await ddb.send(new ScanCommand({ TableName: TABLE, Limit: 200 }));
     } else {
       // Regular users only see hours for clinics they have access to
-      const accessibleClinics = userPerms.clinicRoles.map((cr: any) => cr.clinicId);
+      const accessibleClinics = userPerms.clinicRoles.map((cr) => cr.clinicId);
       if (accessibleClinics.length === 0) {
         return ok({ items: [] }, event);
       }
@@ -189,7 +114,7 @@ async function listHours(event: APIGatewayProxyEvent, userPerms: any): Promise<A
   }
 }
 
-async function createHours(event: APIGatewayProxyEvent, userPerms: any): Promise<APIGatewayProxyResult> {
+async function createHours(event: APIGatewayProxyEvent, userPerms: UserPermissions): Promise<APIGatewayProxyResult> {
   try {
     const body = parse(event.body);
     const clinicId = String(body.clinicId || '').trim();
@@ -239,7 +164,7 @@ async function createHours(event: APIGatewayProxyEvent, userPerms: any): Promise
   }
 }
 
-async function getHours(event: APIGatewayProxyEvent, userPerms: any, clinicId: string): Promise<APIGatewayProxyResult> {
+async function getHours(event: APIGatewayProxyEvent, userPerms: UserPermissions, clinicId: string): Promise<APIGatewayProxyResult> {
   try {
     const resp = await ddb.send(new GetCommand({ TableName: TABLE, Key: { clinicId } }));
     if (!resp.Item) return err(404, 'not found', event);
@@ -250,7 +175,7 @@ async function getHours(event: APIGatewayProxyEvent, userPerms: any, clinicId: s
   }
 }
 
-async function updateHours(event: APIGatewayProxyEvent, userPerms: any, clinicId: string): Promise<APIGatewayProxyResult> {
+async function updateHours(event: APIGatewayProxyEvent, userPerms: UserPermissions, clinicId: string): Promise<APIGatewayProxyResult> {
   try {
     const body = parse(event.body);
 
@@ -290,7 +215,7 @@ async function updateHours(event: APIGatewayProxyEvent, userPerms: any, clinicId
   }
 }
 
-async function deleteHours(event: APIGatewayProxyEvent, userPerms: any, clinicId: string): Promise<APIGatewayProxyResult> {
+async function deleteHours(event: APIGatewayProxyEvent, userPerms: UserPermissions, clinicId: string): Promise<APIGatewayProxyResult> {
   try {
     // Delete from DynamoDB
     await ddb.send(new DeleteCommand({ TableName: TABLE, Key: { clinicId } }));

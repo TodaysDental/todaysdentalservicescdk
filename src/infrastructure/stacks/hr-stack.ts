@@ -311,6 +311,9 @@ export class HrStack extends Stack {
     new apigw.GatewayResponse(this, 'GatewayResponseUnauthorized', {
       restApi: this.api, type: apigw.ResponseType.UNAUTHORIZED, responseHeaders: corsErrorHeaders,
     });
+    new apigw.GatewayResponse(this, 'GatewayResponseAccessDenied', {
+      restApi: this.api, type: apigw.ResponseType.ACCESS_DENIED, responseHeaders: corsErrorHeaders,
+    });
 
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
@@ -378,45 +381,55 @@ export class HrStack extends Stack {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
     };
+    const defaultMethodResponses = [
+      { statusCode: '200' },
+      { statusCode: '201' },
+      { statusCode: '204' },
+      { statusCode: '400' },
+      { statusCode: '401' },
+      { statusCode: '403' },
+      { statusCode: '404' },
+      { statusCode: '500' },
+    ];
 
     // /dashboard
     const dashboardRes = this.api.root.addResource('dashboard');
-    dashboardRes.addMethod('GET', lambdaIntegration, authOptions);
+    dashboardRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
 
     // /clinics (utility endpoint to get clinic list)
     const clinicsRes = this.api.root.addResource('clinics');
-    clinicsRes.addMethod('GET', lambdaIntegration, authOptions);
+    clinicsRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
 
     // /shifts
     const shiftsRes = this.api.root.addResource('shifts');
-    shiftsRes.addMethod('GET', lambdaIntegration, authOptions);  // Get shifts (for Admin or Staff)
-    shiftsRes.addMethod('POST', lambdaIntegration, authOptions); // Create shift (Admin only)
+    shiftsRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });  // Get shifts (for Admin or Staff)
+    shiftsRes.addMethod('POST', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Create shift (Admin only)
 
     // /shifts/{shiftId}
     const shiftIdRes = shiftsRes.addResource('{shiftId}');
-    shiftIdRes.addMethod('PUT', lambdaIntegration, authOptions);    // Update shift (Admin only)
-    shiftIdRes.addMethod('DELETE', lambdaIntegration, authOptions); // Delete shift (Admin only)
+    shiftIdRes.addMethod('PUT', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });    // Update shift (Admin only)
+    shiftIdRes.addMethod('DELETE', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Delete shift (Admin only)
 
     // /shifts/{shiftId}/reject
     const shiftRejectRes = shiftIdRes.addResource('reject');
-    shiftRejectRes.addMethod('PUT', lambdaIntegration, authOptions); // Reject shift (Staff only)
+    shiftRejectRes.addMethod('PUT', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Reject shift (Staff only)
 
     // /leave
     const leaveRes = this.api.root.addResource('leave');
-    leaveRes.addMethod('GET', lambdaIntegration, authOptions);  // Get leave requests (Admin or Staff)
-    leaveRes.addMethod('POST', lambdaIntegration, authOptions); // Create leave request (Staff)
+    leaveRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });  // Get leave requests (Admin or Staff)
+    leaveRes.addMethod('POST', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Create leave request (Staff)
 
     // /leave/{leaveId}
     const leaveIdRes = leaveRes.addResource('{leaveId}');
-    leaveIdRes.addMethod('DELETE', lambdaIntegration, authOptions); // Delete leave request (Staff or Admin)
+    leaveIdRes.addMethod('DELETE', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Delete leave request (Staff or Admin)
 
     // /leave/{leaveId}/approve
     const leaveApproveRes = leaveIdRes.addResource('approve');
-    leaveApproveRes.addMethod('PUT', lambdaIntegration, authOptions); // Approve leave (Admin only)
+    leaveApproveRes.addMethod('PUT', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Approve leave (Admin only)
     
     // /leave/{leaveId}/deny
     const leaveDenyRes = leaveIdRes.addResource('deny');
-    leaveDenyRes.addMethod('PUT', lambdaIntegration, authOptions); // Deny leave (Admin only)
+    leaveDenyRes.addMethod('PUT', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Deny leave (Admin only)
 
     // ========================================
     // DOMAIN MAPPING

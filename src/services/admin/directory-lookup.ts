@@ -1,64 +1,61 @@
-import {
-  CognitoIdentityProviderClient,
-  ListUsersCommand,
-  UserType,
-} from "@aws-sdk/client-cognito-identity-provider";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, ScanCommand } from "@aws-sdk/lib-dynamodb";
 import { APIGatewayProxyEvent } from "aws-lambda";
 import { buildCorsHeaders } from "../../shared/utils/cors";
 
-const cognito = new CognitoIdentityProviderClient({});
+const ddbClient = new DynamoDBClient({});
+const ddb = DynamoDBDocumentClient.from(ddbClient);
 
-const USER_POOL_ID = process.env.USER_POOL_ID ?? "";
+const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE ?? "";
 const corsHeaders = buildCorsHeaders({ allowMethods: ["OPTIONS", "GET"] });
 
 /**
- * Lists all users from Cognito, primarily for selection in the "Favor Request" module.
- * This endpoint is secured by the Cognito Authorizer but requires no special admin privileges.
+ * Lists all active users from DynamoDB StaffUser table, primarily for selection in the "Favor Request" module.
+ * This endpoint is secured by the JWT Authorizer but requires no special admin privileges.
  */
 export const handler = async (event: APIGatewayProxyEvent) => {
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: true }) };
   }
 
-  if (!USER_POOL_ID) {
-    return httpErr(500, "USER_POOL_ID not configured");
+  if (!STAFF_USER_TABLE) {
+    return httpErr(500, "STAFF_USER_TABLE not configured");
   }
 
   try {
-    // 1. Remove limit input and set hardcoded limit to 60 (Cognito maximum)
-    // Client can still use nextToken for pagination if they exceed 60, but we default to 60.
-    const limit = 60;
+    // Extract pagination token if present
+    const nextToken = event.queryStringParameters?.nextToken;
     
-    // 2. Extract pagination token if present
-    const paginationToken = event.queryStringParameters?.nextToken;
+    // Scan StaffUser table for active users
+    const result = await ddb.send(new ScanCommand({
+      TableName: STAFF_USER_TABLE,
+      FilterExpression: "isActive = :active",
+      ExpressionAttributeValues: {
+        ":active": true,
+      },
+      ProjectionExpression: "email, givenName, familyName",
+      Limit: 100,
+      ...(nextToken && { ExclusiveStartKey: JSON.parse(Buffer.from(nextToken, 'base64').toString()) }),
+    }));
 
-    // 3. Prepare command inputs
-    const commandInput = {
-        UserPoolId: USER_POOL_ID,
-        Limit: limit,
-        // Pass the token if it exists to fetch the next page
-        ...(paginationToken && { PaginationToken: paginationToken }) 
-    };
+    const directory = (result.Items || [])
+      .map((user: any) => ({
+        userID: user.email, // Use email as the unique identifier
+        email: user.email || '',
+        givenName: user.givenName || '',
+        familyName: user.familyName || '',
+      }))
+      // Filter out users who might not have an email
+      .filter(u => u.email);
 
-    const listResp = await cognito.send(new ListUsersCommand(commandInput));
-
-    const directory = (listResp.Users || [])
-        .map((u: UserType) => {
-            const attrs: Record<string, string> = Object.fromEntries((u.Attributes || []).map((a: any) => [a.Name, a.Value]));
-            return {
-                userID: String(u.Username),
-                email: attrs['email'] || '',
-                givenName: attrs['given_name'] || '',
-                familyName: attrs['family_name'] || '',
-            };
-        })
-        // Filter out users who might not have an email or are incomplete
-        .filter(u => u.email);
+    // Encode LastEvaluatedKey as base64 for pagination
+    const responseNextToken = result.LastEvaluatedKey
+      ? Buffer.from(JSON.stringify(result.LastEvaluatedKey)).toString('base64')
+      : undefined;
 
     return httpOk({ 
-        items: directory,
-        // Return the token for the client to request the next page, or undefined if done
-        nextToken: listResp.PaginationToken || undefined 
+      items: directory,
+      nextToken: responseNextToken,
     });
   } catch (err: any) {
     console.error("Error listing users:", err);

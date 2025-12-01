@@ -88,11 +88,15 @@ export class CoreStack extends Stack {
       environment: {
         JWT_SECRET: this.jwtSecretValue,
         TOKEN_BLACKLIST_TABLE: this.tokenBlacklistTable.tableName,
+        STAFF_USER_TABLE: this.staffUserTable.tableName,
       },
     });
 
     // Grant authorizer read access to token blacklist table
     this.tokenBlacklistTable.grantReadData(this.authorizerFunction);
+    
+    // Grant authorizer read access to StaffUser table (to fetch clinicRoles)
+    this.staffUserTable.grantReadData(this.authorizerFunction);
 
     // ========================================
     // AUTH API (MINIMAL)
@@ -134,6 +138,12 @@ export class CoreStack extends Stack {
     new apigw.GatewayResponse(this, 'GatewayResponseUnauthorized', {
       restApi: this.authApi,
       type: apigw.ResponseType.UNAUTHORIZED,
+      responseHeaders: corsErrorHeaders,
+    });
+    
+    new apigw.GatewayResponse(this, 'GatewayResponseAccessDenied', {
+      restApi: this.authApi,
+      type: apigw.ResponseType.ACCESS_DENIED,
       responseHeaders: corsErrorHeaders,
     });
 

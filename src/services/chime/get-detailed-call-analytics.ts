@@ -10,8 +10,12 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBDocumentClient, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { verifyIdTokenCached } from '../shared/utils/jwt-verification';
-import { getClinicsFromClaims, hasClinicAccess } from '../shared/utils/authorization';
+import {
+  getUserPermissions,
+  getAllowedClinicIds,
+  hasClinicAccess,
+  UserPermissions,
+} from '../../shared/utils/permissions-helper';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 
 const dynamodbClient = new DynamoDBClient({});
@@ -22,8 +26,6 @@ const CALL_QUEUE_TABLE = process.env.CALL_QUEUE_TABLE_NAME;
 const RECORDING_METADATA_TABLE = process.env.RECORDING_METADATA_TABLE_NAME;
 const CHAT_HISTORY_TABLE = process.env.CHAT_HISTORY_TABLE_NAME;
 const CLINICS_TABLE = process.env.CLINICS_TABLE_NAME;
-const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
-const USER_POOL_ID = process.env.USER_POOL_ID;
 
 interface CallAnalyticsResponse {
   // Header Info
@@ -88,15 +90,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 
   try {
-    // Authenticate
-    const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
-    const verifyResult = await verifyIdTokenCached(authz, REGION!, USER_POOL_ID!);
+    // Get user permissions from authorizer context
+    const userPerms = getUserPermissions(event);
     
-    if (!verifyResult.ok) {
+    if (!userPerms) {
       return {
-        statusCode: verifyResult.code,
+        statusCode: 401,
         headers: corsHeaders,
-        body: JSON.stringify({ message: verifyResult.message })
+        body: JSON.stringify({ message: 'Unauthorized' })
       };
     }
 
@@ -119,9 +120,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    // Check authorization
-    const authorizedClinics = getClinicsFromClaims(verifyResult.payload);
-    if (!hasClinicAccess(authorizedClinics, callRecord.clinicId)) {
+    // Check authorization using authorizer context
+    const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
+    if (!hasClinicAccess(allowedClinics, callRecord.clinicId)) {
       return {
         statusCode: 403,
         headers: corsHeaders,

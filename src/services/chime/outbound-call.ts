@@ -4,9 +4,9 @@ import { ChimeSDKVoiceClient, CreateSipMediaApplicationCallCommand, CreateSipMed
 import { randomUUID } from 'crypto';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
-import { verifyIdTokenCached } from '../shared/utils/jwt-verification';
+import { verifyIdToken } from '../../shared/utils/auth-helper';
+import { getUserIdFromJwt, checkClinicAuthorization } from '../../shared/utils/permissions-helper';
 import { sanitizePhoneNumber } from '../shared/utils/input-sanitization';
-import { checkClinicAuthorization } from '../shared/utils/authorization';
 import { getSmaIdForClinic } from './utils/sma-map';
 import { TTL_POLICY } from './config/ttl-policy';
 
@@ -16,8 +16,6 @@ const chimeVoiceClient = new ChimeSDKVoiceClient({});
 const CLINICS_TABLE_NAME = process.env.CLINICS_TABLE_NAME;
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
-const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
-const USER_POOL_ID = process.env.USER_POOL_ID;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const parseNumberOr = (value: string | undefined, fallback: number) => {
@@ -50,15 +48,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
     console.log('[outbound-call] Verifying auth token');
     
-    const verifyResult = await verifyIdTokenCached(authz, REGION!, USER_POOL_ID!);
+    const verifyResult = await verifyIdToken(authz);
     if (!verifyResult.ok) {
       console.warn('[outbound-call] Auth verification failed', { code: verifyResult.code, message: verifyResult.message });
-      return { statusCode: verifyResult.code, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
+      return { statusCode: verifyResult.code || 401, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
     }
     
     console.log('[outbound-call] Auth verification successful');
 
-    agentId = verifyResult.payload.sub!; // Assign agentId for outer scope
+    agentId = getUserIdFromJwt(verifyResult.payload!); // Assign agentId for outer scope
     if (!agentId) {
       console.error('[outbound-call] Missing subject claim in token');
       return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'Invalid token: missing subject claim' }) };
@@ -85,7 +83,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const toPhoneNumber = phoneValidation.sanitized;
 
     // 1. Security Check: Validate clinicId against JWT claims
-    const authzCheck = checkClinicAuthorization(verifyResult.payload, body.fromClinicId);
+    const authzCheck = checkClinicAuthorization(verifyResult.payload! as any, body.fromClinicId);
     if (!authzCheck.authorized) {
         console.warn('[outbound-call] Authorization failed', {
             agentId,

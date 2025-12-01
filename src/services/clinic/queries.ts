@@ -2,103 +2,35 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, ScanCommand, PutCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { buildCorsHeaders } from '../../shared/utils/cors';
-import { SYSTEM_MODULES } from '../../shared/types/user';
+import {
+  getUserPermissions,
+  hasModulePermission,
+  PermissionType,
+  UserPermissions,
+} from '../../shared/utils/permissions-helper';
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
 
 const TABLE_NAME = process.env.TABLE_NAME || 'SQL_Queries';
+const MODULE_NAME = 'IT';
 
 // Dynamic CORS helper
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
 
-/**
- * Get user's clinic roles and permissions from custom authorizer
- */
-const getUserPermissions = (event: APIGatewayProxyEvent) => {
-  const authorizer = event.requestContext?.authorizer;
-  if (!authorizer) return null;
-
-  try {
-    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
-    const isSuperAdmin = authorizer.isSuperAdmin === 'true';
-    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
-    const email = authorizer.email || '';
-
-    return {
-      email,
-      clinicRoles,
-      isSuperAdmin,
-      isGlobalSuperAdmin,
-    };
-  } catch (err) {
-    console.error('Failed to parse user permissions:', err);
-    return null;
-  }
+const METHOD_PERMISSIONS: Record<string, PermissionType> = {
+  GET: 'read',
+  POST: 'write',
+  PUT: 'put',
+  DELETE: 'delete',
 };
-
-/**
- * Check if user has admin role (Admin, SuperAdmin, or Global Super Admin)
- */
-const isAdminUser = (
-  clinicRoles: any[],
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean
-): boolean => {
-  // Check flags first
-  if (isGlobalSuperAdmin || isSuperAdmin) {
-    return true;
-  }
-
-  // Check if user has Admin or SuperAdmin role at any clinic
-  for (const cr of clinicRoles) {
-    if (cr.role === 'Admin' || cr.role === 'SuperAdmin' || cr.role === 'Global super admin') {
-      return true;
-    }
-  }
-
-  return false;
-};
-
-/**
- * Check if user has specific permission for a module at ANY clinic
- */
-const hasModulePermission = (
-  clinicRoles: any[],
-  module: string,
-  permission: 'read' | 'write' | 'put' | 'delete',
-  isSuperAdmin: boolean,
-  isGlobalSuperAdmin: boolean,
-  clinicId?: string
-): boolean => {
-  // Admin, SuperAdmin, and Global Super Admin have all permissions for all modules
-  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
-    return true;
-  }
-
-  // Check if user has the permission for this module at any clinic (or specific clinic)
-  for (const cr of clinicRoles) {
-    // If clinicId is specified, check only that clinic
-    if (clinicId && cr.clinicId !== clinicId) {
-      continue;
-    }
-
-    const moduleAccess = cr.moduleAccess?.find((ma: any) => ma.module === module);
-    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
-      return true;
-    }
-  }
-
-  return false;
-};
-
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const httpMethod = event.httpMethod;
   const path = event.path || event.resource || '';
 
   if (httpMethod === 'OPTIONS') {
-    return { statusCode: 200, headers: getCorsHeaders(event), body: JSON.stringify({ message: 'CORS preflight response' }) };
+    return { statusCode: 204, headers: getCorsHeaders(event), body: '' };
   }
 
   // Get user permissions from custom authorizer
@@ -111,33 +43,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     };
   }
 
-  const wantsWrite = httpMethod === 'POST' || httpMethod === 'PUT' || httpMethod === 'DELETE';
-  if (wantsWrite && !hasModulePermission(
+  const requiredPermission: PermissionType = METHOD_PERMISSIONS[httpMethod] || 'read';
+  const hasAccess = hasModulePermission(
     userPerms.clinicRoles,
-    'IT',
-    'write',
+    MODULE_NAME,
+    requiredPermission,
     userPerms.isSuperAdmin,
     userPerms.isGlobalSuperAdmin
-  )) {
-    return {
-      statusCode: 403,
-      headers: getCorsHeaders(event),
-      body: JSON.stringify({ error: 'You do not have permission to modify queries in the IT module' }),
-    };
-  }
+  );
 
-  // Check read permission for GET requests
-  if (httpMethod === 'GET' && !hasModulePermission(
-    userPerms.clinicRoles,
-    'IT',
-    'read',
-    userPerms.isSuperAdmin,
-    userPerms.isGlobalSuperAdmin
-  )) {
+  if (!hasAccess) {
     return {
       statusCode: 403,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ error: 'You do not have permission to read queries in the IT module' }),
+      body: JSON.stringify({ error: `You do not have ${requiredPermission} permission for the ${MODULE_NAME} module` }),
     };
   }
 
@@ -172,19 +91,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 };
 
-async function listQueries(event: APIGatewayProxyEvent, userPerms: any): Promise<APIGatewayProxyResult> {
+async function listQueries(event: APIGatewayProxyEvent, _userPerms: UserPermissions): Promise<APIGatewayProxyResult> {
   const res = await docClient.send(new ScanCommand({ TableName: TABLE_NAME }));
   return { statusCode: 200, headers: getCorsHeaders(event), body: JSON.stringify(res.Items || []) };
 }
 
-async function getQuery(event: APIGatewayProxyEvent, userPerms: any, queryName: string): Promise<APIGatewayProxyResult> {
+async function getQuery(event: APIGatewayProxyEvent, _userPerms: UserPermissions, queryName: string): Promise<APIGatewayProxyResult> {
   if (!queryName) return { statusCode: 400, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'queryName required' }) };
   const res = await docClient.send(new GetCommand({ TableName: TABLE_NAME, Key: { QueryName: queryName } }));
   if (!res.Item) return { statusCode: 404, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Not Found' }) };
   return { statusCode: 200, headers: getCorsHeaders(event), body: JSON.stringify(res.Item) };
 }
 
-async function createQuery(event: APIGatewayProxyEvent, userPerms: any): Promise<APIGatewayProxyResult> {
+async function createQuery(event: APIGatewayProxyEvent, _userPerms: UserPermissions): Promise<APIGatewayProxyResult> {
   const body = parseBody(event.body);
   const required = ['QueryName', 'QueryDescription', 'Query'];
   if (!required.every((f) => f in body)) {
@@ -202,7 +121,7 @@ async function createQuery(event: APIGatewayProxyEvent, userPerms: any): Promise
   return { statusCode: 201, headers: getCorsHeaders(event), body: JSON.stringify({ message: 'Item created successfully' }) };
 }
 
-async function updateQuery(event: APIGatewayProxyEvent, userPerms: any, queryName: string): Promise<APIGatewayProxyResult> {
+async function updateQuery(event: APIGatewayProxyEvent, _userPerms: UserPermissions, queryName: string): Promise<APIGatewayProxyResult> {
   if (!queryName) return { statusCode: 400, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'queryName required' }) };
   const body = parseBody(event.body);
   await docClient.send(new UpdateCommand({
@@ -218,7 +137,7 @@ async function updateQuery(event: APIGatewayProxyEvent, userPerms: any, queryNam
   return { statusCode: 200, headers: getCorsHeaders(event), body: JSON.stringify({ message: 'Item updated successfully' }) };
 }
 
-async function deleteQuery(event: APIGatewayProxyEvent, userPerms: any, queryName: string): Promise<APIGatewayProxyResult> {
+async function deleteQuery(event: APIGatewayProxyEvent, _userPerms: UserPermissions, queryName: string): Promise<APIGatewayProxyResult> {
   if (!queryName) return { statusCode: 400, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'queryName required' }) };
   await docClient.send(new DeleteCommand({ TableName: TABLE_NAME, Key: { QueryName: queryName } }));
   return { statusCode: 200, headers: getCorsHeaders(event), body: JSON.stringify({ message: 'Item deleted successfully' }) };
@@ -228,5 +147,3 @@ function parseBody(body: any): Record<string, any> {
   if (!body) return {};
   try { return typeof body === 'string' ? JSON.parse(body) : body; } catch { return {}; }
 }
-
-

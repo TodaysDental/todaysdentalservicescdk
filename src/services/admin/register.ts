@@ -9,6 +9,13 @@ import { DynamoDBDocumentClient, PutCommand, GetCommand } from '@aws-sdk/lib-dyn
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { hashPassword } from '../../shared/utils/jwt';
 import { StaffUser, UserRole, USER_ROLES, ModuleAccess, SYSTEM_MODULES, MODULE_PERMISSIONS, WorkLocation } from '../../shared/types/user';
+import {
+  getUserPermissions,
+  isAdminUser,
+  getAllowedClinicIds,
+  hasClinicAccess,
+  UserPermissions,
+} from '../../shared/utils/permissions-helper';
 
 const ddbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(ddbClient);
@@ -77,22 +84,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 
   try {
-    // Get caller context from custom authorizer
-    const callerEmail = event.requestContext.authorizer?.email || '';
-    const callerClinicRoles = JSON.parse(event.requestContext.authorizer?.clinicRoles || '[]');
-    const callerIsSuperAdmin = event.requestContext.authorizer?.isSuperAdmin === 'true';
-    const callerIsGlobalSuperAdmin = event.requestContext.authorizer?.isGlobalSuperAdmin === 'true';
+    // Get caller context from custom authorizer using shared permissions-helper
+    const userPerms = getUserPermissions(event);
+    if (!userPerms) {
+      return httpErr(401, 'Unauthorized');
+    }
 
-    // Extract caller's clinics and check if they have admin role anywhere
-    const callerClinics = callerClinicRoles.map((cr: any) => cr.clinicId);
-    const callerHasAdminRole = callerClinicRoles.some((cr: any) => 
-      ['Admin', 'SuperAdmin'].includes(cr.role)
-    );
-
-    // Check if caller has admin privileges
-    if (!callerIsGlobalSuperAdmin && !callerIsSuperAdmin && !callerHasAdminRole) {
+    // Check if caller has admin privileges using shared helper
+    if (!isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin)) {
       return httpErr(403, 'forbidden: admin or super admin required');
     }
+
+    // For backward compatibility, extract these values
+    const callerIsGlobalSuperAdmin = userPerms.isGlobalSuperAdmin;
+    const callerIsSuperAdmin = userPerms.isSuperAdmin;
+    const callerClinicRoles = userPerms.clinicRoles;
+    const allowedClinics = getAllowedClinicIds(callerClinicRoles, callerIsSuperAdmin, callerIsGlobalSuperAdmin);
 
     // Parse request body
   const body = parseBody(event.body) as RegisterBody;
@@ -114,7 +121,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       
       // Non-global admins can only assign users to clinics they have access to
       if (!callerIsGlobalSuperAdmin && !callerIsSuperAdmin) {
-        const unauthorizedClinics = clinicIds.filter(cid => !callerClinics.includes(cid));
+        const unauthorizedClinics = clinicIds.filter(cid => !hasClinicAccess(allowedClinics, cid));
         if (unauthorizedClinics.length > 0) {
           return httpErr(403, `no admin access for clinics: ${unauthorizedClinics.join(', ')}`);
         }

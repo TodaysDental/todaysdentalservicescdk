@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 export interface FluorideAutomationStackProps extends StackProps {
-  userPool: any;
+  // No props needed - uses custom JWT authentication, not Cognito
 }
 
 export class FluorideAutomationStack extends Stack {

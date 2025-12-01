@@ -16,9 +16,10 @@ import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as kinesis from 'aws-cdk-lib/aws-kinesis';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
-import * as fs from 'fs';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import clinicsData from '../configs/clinics.json';
+import { Clinic } from '../configs/clinics';
 
 export interface ChimeStackProps extends StackProps {
   jwtSecret: string;
@@ -106,6 +107,36 @@ export class ChimeStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // ========================================
+    // Seed Clinics Table with data from clinics.json
+    // ========================================
+    (clinicsData as Clinic[]).forEach((clinic) => {
+      // Skip if no phone number defined
+      if (!clinic.phoneNumber) {
+        return;
+      }
+
+      new customResources.AwsCustomResource(this, `SeedClinic-${clinic.clinicId}`, {
+        onCreate: {
+          service: 'DynamoDB',
+          action: 'putItem',
+          parameters: {
+            TableName: this.clinicsTable.tableName,
+            Item: {
+              clinicId: { S: clinic.clinicId },
+              phoneNumber: { S: clinic.phoneNumber },
+              clinicName: { S: clinic.clinicName || clinic.clinicId },
+            },
+            // Only insert if item doesn't exist (don't overwrite existing data)
+            ConditionExpression: 'attribute_not_exists(clinicId)',
+          },
+          physicalResourceId: customResources.PhysicalResourceId.of(`SeedClinic-${clinic.clinicId}-v1`),
+        },
+        policy: customResources.AwsCustomResourcePolicy.fromSdkCalls({
+          resources: [this.clinicsTable.tableArn],
+        }),
+      });
+    });
 
     // Agent Presence table
     this.agentPresenceTable = new dynamodb.Table(this, 'AgentPresenceTable', {
@@ -598,16 +629,9 @@ export class ChimeStack extends Stack {
     // ========================================
     // Load clinic phone numbers from clinics.json
     // ========================================
-    const clinicsConfigPath = path.join(__dirname, '..', 'configs', 'clinics.json');
-    const clinicsData = JSON.parse(fs.readFileSync(clinicsConfigPath, 'utf-8'));
+    // Using the imported clinicsData from the top of the file
     
-    interface ClinicConfig {
-      clinicId: string;
-      phoneNumber?: string;
-      clinicName?: string;
-    }
-    
-    const clinicsWithPhones = (clinicsData as ClinicConfig[])
+    const clinicsWithPhones = (clinicsData as Clinic[])
       .filter(clinic => clinic.phoneNumber && clinic.phoneNumber.startsWith('+'))
       .map(clinic => ({
         clinicId: clinic.clinicId,
@@ -713,25 +737,13 @@ export class ChimeStack extends Stack {
 
       clinicSipRules[clinic.clinicId] = sipRule;
 
-      const smaLogging = new customResources.AwsCustomResource(this, `SmaLogging-${sanitizedId}`, {
-        onCreate: {
-          service: 'ChimeSDKVoice',
-          action: 'putSipMediaApplicationLoggingConfiguration',
-          parameters: {
-            SipMediaApplicationId: smaIdToken,
-            SipMediaApplicationLoggingConfiguration: {
-              EnableSipMediaApplicationMessageLogs: true
-            }
-          },
-          physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-${sanitizedId}-logging-config`),
-        },
-        role: chimeCustomResourceRole,
-      });
+      // NOTE: SMA logging configuration removed to avoid CloudWatch Logs resource policy 
+      // size limit (51,200 bytes). When many SMAs are created, each one adds to the shared
+      // CloudWatch Logs resource policy, eventually exceeding the limit.
+      // If SMA logging is needed, consider using a centralized approach or limiting
+      // the number of clinics with logging enabled.
 
-      smaLogging.node.addDependency(smaResource);
-      smaLogging.node.addDependency(sipRule);
-
-      previousClinicResource = smaLogging;
+      previousClinicResource = sipRule;
     });
 
     if (clinicsWithPhones.length > 0) {

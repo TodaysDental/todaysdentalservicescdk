@@ -3,7 +3,6 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as nodelambda from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
-import * as cognito from 'aws-cdk-lib/aws-cognito';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
@@ -72,6 +71,11 @@ export class PatientPortalApptTypesStack extends Stack {
       type: apigateway.ResponseType.UNAUTHORIZED,
       responseHeaders: errorHeaders,
     });
+    new apigateway.GatewayResponse(this, 'GatewayResponseAccessDenied', {
+      restApi: this.api,
+      type: apigateway.ResponseType.ACCESS_DENIED,
+      responseHeaders: errorHeaders,
+    });
 
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
@@ -115,12 +119,18 @@ export class PatientPortalApptTypesStack extends Stack {
     this.api.root.addMethod('GET', integration, {
       authorizer: this.authorizer,
       authorizationType: apigateway.AuthorizationType.CUSTOM,
-      methodResponses: [{ statusCode: '200' }],
+      methodResponses: [{ statusCode: '200' }, { statusCode: '401' }, { statusCode: '403' }],
     });
     this.api.root.addMethod('POST', integration, {
       authorizer: this.authorizer,
       authorizationType: apigateway.AuthorizationType.CUSTOM,
-      methodResponses: [{ statusCode: '201' }, { statusCode: '400' }, { statusCode: '403' }, { statusCode: '409' }],
+      methodResponses: [
+        { statusCode: '201' },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' },
+        { statusCode: '409' }
+      ],
     });
 
     // Single item methods (/{id} where id is now the LABEL)
@@ -128,17 +138,17 @@ export class PatientPortalApptTypesStack extends Stack {
     singleItem.addMethod('GET', integration, {
       authorizer: this.authorizer,
       authorizationType: apigateway.AuthorizationType.CUSTOM,
-      methodResponses: [{ statusCode: '200' }, { statusCode: '404' }],
+      methodResponses: [{ statusCode: '200' }, { statusCode: '401' }, { statusCode: '403' }, { statusCode: '404' }],
     });
     singleItem.addMethod('PUT', integration, {
       authorizer: this.authorizer,
       authorizationType: apigateway.AuthorizationType.CUSTOM,
-      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
+      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '401' }, { statusCode: '403' }],
     });
     singleItem.addMethod('DELETE', integration, {
       authorizer: this.authorizer,
       authorizationType: apigateway.AuthorizationType.CUSTOM,
-      methodResponses: [{ statusCode: '200' }, { statusCode: '403' }],
+      methodResponses: [{ statusCode: '200' }, { statusCode: '401' }, { statusCode: '403' }],
     });
 
     // ========================================

@@ -4,7 +4,8 @@ import { ChimeSDKVoiceClient } from '@aws-sdk/client-chime-sdk-voice';
 import { ChimeSDKMeetingsClient } from '@aws-sdk/client-chime-sdk-meetings'; 
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
-import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
+import { verifyIdToken } from '../../shared/utils/auth-helper';
+import { getUserIdFromJwt } from '../../shared/utils/permissions-helper';
 import { createCheckQueueForWork } from './utils/check-queue-for-work';
 import { RejectionTracker } from './utils/rejection-tracker';
 
@@ -25,33 +26,6 @@ const checkQueueForWork = createCheckQueueForWork({
     chime,
     chimeVoiceClient
 });
-
-const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
-const USER_POOL_ID = process.env.USER_POOL_ID;
-const ISSUER = REGION && USER_POOL_ID ? `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}` : undefined;
-let JWKS: ReturnType<typeof createRemoteJWKSet> | undefined;
-
-// --- Auth Helpers ---
-async function verifyIdToken(authorizationHeader: string): Promise<{ ok: true; payload: JWTPayload } | { ok: false; code: number; message: string }> {
-  if (!authorizationHeader || !authorizationHeader.toLowerCase().startsWith("bearer ")) {
-    return { ok: false, code: 401, message: "Missing Bearer token" };
-  }
-  if (!ISSUER) {
-    return { ok: false, code: 500, message: "Issuer not configured" };
-  }
-  const token = authorizationHeader.slice(7).trim();
-  try {
-    JWKS = JWKS || createRemoteJWKSet(new URL(`${ISSUER}/.well-known/jwks.json`));
-    const { payload } = await jwtVerify(token, JWKS, { issuer: ISSUER });
-    if ((payload as any).token_use !== "id") {
-      return { ok: false, code: 401, message: "ID token required" };
-    }
-    return { ok: true, payload };
-  } catch (err: any) {
-    return { ok: false, code: 401, message: `Invalid token: ${err.message}` };
-  }
-}
-// --- End Auth Helpers ---
 
 /**
  * Lambda handler for call rejection notification
@@ -75,10 +49,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const verifyResult = await verifyIdToken(authz);
         if (!verifyResult.ok) {
             console.warn('[call-rejected] Auth verification failed', { code: verifyResult.code, message: verifyResult.message });
-            return { statusCode: verifyResult.code, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
+            return { statusCode: verifyResult.code || 401, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
         }
         
-        const requestingAgentId = verifyResult.payload.sub;
+        const requestingAgentId = getUserIdFromJwt(verifyResult.payload!);
         if (!requestingAgentId) {
              return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'Invalid token: missing subject claim' }) };
         }

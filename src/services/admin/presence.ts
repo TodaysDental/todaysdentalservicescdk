@@ -2,6 +2,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { verifyIdToken, getUserId } from '../../shared/utils/auth-helper';
 
 const ddb = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(ddb);
@@ -14,8 +15,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 
   try {
-    const claims = (event.requestContext as any)?.authorizer?.claims || {};
-    const sub = claims.sub || claims['sub'] || '';
+    // Use JWT-based authentication
+    const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
+    const verifyResult = await verifyIdToken(authz);
+    
+    if (!verifyResult.ok) {
+      return { statusCode: verifyResult.code || 401, headers: corsHeaders, body: JSON.stringify({ error: verifyResult.message }) };
+    }
+
+    const sub = getUserId(verifyResult.payload!);
 
     if (!sub) {
       return { statusCode: 401, headers: corsHeaders, body: JSON.stringify({ error: 'Unauthorized: missing sub claim' }) };

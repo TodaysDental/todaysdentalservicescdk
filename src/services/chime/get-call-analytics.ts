@@ -1,8 +1,13 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBDocumentClient, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { verifyIdTokenCached } from '../shared/utils/jwt-verification';
-import { getClinicsFromClaims, hasClinicAccess } from '../shared/utils/authorization';
+import {
+  getUserPermissions,
+  getAllowedClinicIds,
+  hasClinicAccess,
+  isAdminUser,
+  UserPermissions,
+} from '../../shared/utils/permissions-helper';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { AnalyticsState, getFinalizationEstimate } from '../../types/analytics-state-machine';
 import { getAnalyticsState } from '../shared/utils/analytics-state-manager';
@@ -12,22 +17,11 @@ const ddb = DynamoDBDocumentClient.from(dynamodbClient);
 
 const ANALYTICS_TABLE_NAME = process.env.CALL_ANALYTICS_TABLE_NAME;
 const AGENT_PERFORMANCE_TABLE_NAME = process.env.AGENT_PERFORMANCE_TABLE_NAME; // Optional
-const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
-const USER_POOL_ID = process.env.USER_POOL_ID;
 
 // Validate required environment variables
 if (!ANALYTICS_TABLE_NAME) {
   throw new Error('CALL_ANALYTICS_TABLE_NAME environment variable is required');
 }
-if (!REGION) {
-  throw new Error('COGNITO_REGION or AWS_REGION environment variable is required');
-}
-if (!USER_POOL_ID) {
-  throw new Error('USER_POOL_ID environment variable is required');
-}
-
-// Authorization constants
-const ADMIN_CLINIC_ACCESS = 'ALL';
 
 /**
  * Validate time range parameters
@@ -126,16 +120,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 
   try {
-    // Authenticate request
-    const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
-    const verifyResult = await verifyIdTokenCached(authz, REGION, USER_POOL_ID);
+    // Get user permissions from authorizer context
+    const userPerms = getUserPermissions(event);
     
-    if (!verifyResult.ok) {
-      console.warn('[get-analytics] Auth verification failed', verifyResult);
+    if (!userPerms) {
+      console.warn('[get-analytics] No user permissions in authorizer context');
       return { 
-        statusCode: verifyResult.code, 
+        statusCode: 401, 
         headers: corsHeaders, 
-        body: JSON.stringify({ message: verifyResult.message }) 
+        body: JSON.stringify({ message: 'Unauthorized' }) 
       };
     }
     
@@ -143,15 +136,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     
     // Route to appropriate handler
     if (path.includes('/call/')) {
-      return await getCallAnalytics(event, verifyResult.payload, corsHeaders);
+      return await getCallAnalytics(event, userPerms, corsHeaders);
     } else if (path.includes('/live')) {
-      return await getLiveCallAnalytics(event, verifyResult.payload, corsHeaders);
+      return await getLiveCallAnalytics(event, userPerms, corsHeaders);
     } else if (path.includes('/clinic/')) {
-      return await getClinicAnalytics(event, verifyResult.payload, corsHeaders);
+      return await getClinicAnalytics(event, userPerms, corsHeaders);
     } else if (path.includes('/agent/')) {
-      return await getAgentAnalytics(event, verifyResult.payload, corsHeaders);
+      return await getAgentAnalytics(event, userPerms, corsHeaders);
     } else if (path.includes('/summary')) {
-      return await getAnalyticsSummary(event, verifyResult.payload, corsHeaders);
+      return await getAnalyticsSummary(event, userPerms, corsHeaders);
     }
     
     return {
@@ -175,7 +168,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
 async function getCallAnalytics(
   event: APIGatewayProxyEvent,
-  jwtPayload: any,
+  userPerms: UserPermissions,
   corsHeaders: any
 ): Promise<APIGatewayProxyResult> {
   const callId = event.pathParameters?.callId;
@@ -206,9 +199,9 @@ async function getCallAnalytics(
     };
   }
   
-  // Check authorization
-  const authorizedClinics = getClinicsFromClaims(jwtPayload);
-  if (!hasClinicAccess(authorizedClinics, analytics.clinicId)) {
+  // Check authorization using authorizer context
+  const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
+  if (!hasClinicAccess(allowedClinics, analytics.clinicId)) {
     return {
       statusCode: 403,
       headers: corsHeaders,
@@ -251,7 +244,7 @@ async function getCallAnalytics(
 
 async function getLiveCallAnalytics(
   event: APIGatewayProxyEvent,
-  jwtPayload: any,
+  userPerms: UserPermissions,
   corsHeaders: any
 ): Promise<APIGatewayProxyResult> {
   const callId = event.queryStringParameters?.callId;
@@ -288,9 +281,9 @@ async function getLiveCallAnalytics(
     };
   }
   
-  // Check authorization
-  const authorizedClinics = getClinicsFromClaims(jwtPayload);
-  if (!hasClinicAccess(authorizedClinics, analytics.clinicId)) {
+  // Check authorization using authorizer context
+  const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
+  if (!hasClinicAccess(allowedClinics, analytics.clinicId)) {
     return {
       statusCode: 403,
       headers: corsHeaders,
@@ -461,7 +454,7 @@ async function getLiveCallAnalytics(
 
 async function getClinicAnalytics(
   event: APIGatewayProxyEvent,
-  jwtPayload: any,
+  userPerms: UserPermissions,
   corsHeaders: any
 ): Promise<APIGatewayProxyResult> {
   const clinicId = event.pathParameters?.clinicId;
@@ -475,9 +468,9 @@ async function getClinicAnalytics(
     };
   }
   
-  // Check authorization
-  const authorizedClinics = getClinicsFromClaims(jwtPayload);
-  if (!hasClinicAccess(authorizedClinics, clinicId)) {
+  // Check authorization using authorizer context
+  const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
+  if (!hasClinicAccess(allowedClinics, clinicId)) {
     return {
       statusCode: 403,
       headers: corsHeaders,
@@ -661,7 +654,7 @@ async function getClinicAnalytics(
 
 async function getAgentAnalytics(
   event: APIGatewayProxyEvent,
-  jwtPayload: any,
+  userPerms: UserPermissions,
   corsHeaders: any
 ): Promise<APIGatewayProxyResult> {
   const agentId = event.pathParameters?.agentId;
@@ -675,18 +668,16 @@ async function getAgentAnalytics(
     };
   }
   
-  // **FIXED: Security check now properly validates admin access across all clinics**
-  const requestingAgentId = jwtPayload.sub;
-  const authorizedClinics = getClinicsFromClaims(jwtPayload);
-  
-  // Check if user has admin access to ANY clinic (not just first one)
-  const isAdmin = authorizedClinics.some((clinic: string) => clinic === ADMIN_CLINIC_ACCESS);
+  // Get allowed clinics and check admin status from authorizer context
+  const requestingAgentId = userPerms.email;
+  const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
+  const isAdmin = isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
   
   if (!isAdmin && requestingAgentId !== agentId) {
     console.warn('[getAgentAnalytics] Unauthorized access attempt', {
       requestingAgentId,
       requestedAgentId: agentId,
-      authorizedClinics
+      allowedClinics: Array.from(allowedClinics)
     });
     return {
       statusCode: 403,
@@ -703,7 +694,7 @@ async function getAgentAnalytics(
     // For admins, verify the target agent belongs to one of their authorized clinics
     // Query ALL of agent's calls and verify each clinic is authorized (handles clinic transfers)
     // FIX: Increased limit and use pagination to check all clinics agent has worked at
-    const agentClinics = new Set<string>();
+    const agentClinicsSet = new Set<string>();
     let lastEvaluatedKey: any = undefined;
     let pageCount = 0;
     const MAX_PAGES = 10; // Check up to 1000 calls (100 per page)
@@ -723,7 +714,7 @@ async function getAgentAnalytics(
       if (sampleQuery.Items) {
         sampleQuery.Items.forEach(item => {
           if (item.clinicId) {
-            agentClinics.add(item.clinicId);
+            agentClinicsSet.add(item.clinicId);
           }
         });
       }
@@ -733,7 +724,7 @@ async function getAgentAnalytics(
       
     } while (lastEvaluatedKey && pageCount < MAX_PAGES);
     
-    const sampleQuery = { Items: Array.from(agentClinics).map(clinicId => ({ clinicId })) };
+    const sampleQuery = { Items: Array.from(agentClinicsSet).map(clinicId => ({ clinicId })) };
     
     // SECURITY FIX: If agent has NO calls, check AgentPresence table for their clinic assignment
     if (!sampleQuery.Items || sampleQuery.Items.length === 0) {
@@ -753,12 +744,12 @@ async function getAgentAnalytics(
           
           if (presenceResult.Item && presenceResult.Item.clinicId) {
             const agentClinicId = presenceResult.Item.clinicId;
-            if (!hasClinicAccess(authorizedClinics, agentClinicId)) {
+            if (!hasClinicAccess(allowedClinics, agentClinicId)) {
               console.warn('[getAgentAnalytics] Admin attempted access to new agent in unauthorized clinic', {
                 requestingAgentId,
                 requestedAgentId: agentId,
                 agentClinicId,
-                authorizedClinics
+                allowedClinics: Array.from(allowedClinics)
               });
               return {
                 statusCode: 403,
@@ -790,12 +781,12 @@ async function getAgentAnalytics(
       const agentClinics = new Set(sampleQuery.Items.map(item => item.clinicId).filter(Boolean));
       
       for (const agentClinicId of agentClinics) {
-        if (!hasClinicAccess(authorizedClinics, agentClinicId)) {
+        if (!hasClinicAccess(allowedClinics, agentClinicId)) {
           console.warn('[getAgentAnalytics] Admin attempted cross-clinic access', {
             requestingAgentId,
             requestedAgentId: agentId,
             agentClinicId,
-            authorizedClinics,
+            allowedClinics: Array.from(allowedClinics),
             note: 'Agent has worked at multiple clinics'
           });
           return {
@@ -1022,7 +1013,7 @@ async function getAgentAnalytics(
 
 async function getAnalyticsSummary(
   event: APIGatewayProxyEvent,
-  jwtPayload: any,
+  userPerms: UserPermissions,
   corsHeaders: any
 ): Promise<APIGatewayProxyResult> {
   const queryParams = event.queryStringParameters || {};
@@ -1030,8 +1021,8 @@ async function getAnalyticsSummary(
   
   // Check authorization if clinicId specified
   if (clinicId) {
-    const authorizedClinics = getClinicsFromClaims(jwtPayload);
-    if (!hasClinicAccess(authorizedClinics, clinicId)) {
+    const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
+    if (!hasClinicAccess(allowedClinics, clinicId)) {
       return {
         statusCode: 403,
         headers: corsHeaders,
