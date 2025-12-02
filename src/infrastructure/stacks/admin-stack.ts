@@ -13,6 +13,7 @@ export interface AdminStackProps extends StackProps {
   clinicHoursTableName: string;
   staffClinicInfoTableName?: string;
   agentPresenceTableName?: string;
+  jwtSecretValue?: string;
   // ** NEW: Input for the Communications Module (Favor Requests Table Name) **
   favorsTableName: string;
   // ** NEW: Analytics Table Name **
@@ -110,6 +111,15 @@ export class AdminStack extends Stack {
       resultsCacheTtl: Duration.minutes(5),
     });
 
+    // Grant API Gateway permission to invoke the authorizer Lambda
+    // The authorizer sourceArn pattern is different from regular API method invocations
+    // Authorizer invocations use: arn:aws:execute-api:region:account:api-id/authorizers/*
+    new lambda.CfnPermission(this, 'AuthorizerInvokePermission', {
+      action: 'lambda:InvokeFunction',
+      functionName: authorizerFunctionArn,
+      principal: 'apigateway.amazonaws.com',
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${this.api.restApiId}/authorizers/*`,
+    });
 
     // ========================================
     // LAMBDA FUNCTIONS
@@ -127,6 +137,7 @@ export class AdminStack extends Stack {
         STAFF_USER_TABLE: props.staffUserTableName,
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName ?? '',
         CORS_ORIGIN: 'https://todaysdentalinsights.com',
+        JWT_SECRET: props.jwtSecretValue ?? '',
       },
     });
 

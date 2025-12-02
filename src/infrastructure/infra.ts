@@ -258,6 +258,7 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
   favorsTableName: communicationsStack.favorsTable.tableName,
   clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
   analyticsTableName: analyticsStack.analyticsTable.tableName,
+  jwtSecretValue: coreStack.jwtSecretValue,
  // Additional table names for detailed analytics
  callQueueTableName: chimeStack.callQueueTable.tableName,
  recordingMetadataTableName: chimeStack.recordingMetadataTable?.tableName,

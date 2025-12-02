@@ -297,19 +297,16 @@ export class CoreStack extends Stack {
     // ========================================
 
     // Map Auth API to custom domain under /auth path
-    // COMMENTED OUT: The base path mapping is currently owned by TodaysDentalInsightsCoreV2 stack
-    // which cannot be deleted because 25+ stacks depend on its exports (UserPool, etc.)
-    // Once all stacks are migrated to V40 and V2 is deleted, uncomment this to create the mapping
-    // new apigw.CfnBasePathMapping(this, 'AuthApiBasePathMapping', {
-    //   domainName: 'apig.todaysdentalinsights.com',
-    //   basePath: 'auth',
-    //   restApiId: this.authApi.restApiId,
-    //   stage: this.authApi.deploymentStage.stageName,
-    // });
+    new apigw.CfnBasePathMapping(this, 'AuthApiBasePathMapping', {
+      domainName: 'apig.todaysdentalinsights.com',
+      basePath: 'auth',
+      restApiId: this.authApi.restApiId,
+      stage: this.authApi.deploymentStage.stageName,
+    });
 
-    // Output the direct API Gateway URL (custom domain mapping owned by V2 stack for now)
+    // Output the Auth API URL with custom domain
     new CfnOutput(this, 'AuthApiUrl', { 
-      value: `${this.authApi.url}`,
+      value: 'https://apig.todaysdentalinsights.com/auth/',
       description: 'Auth API endpoint URL'
     });
     new CfnOutput(this, 'StaffUserTableName', { value: this.staffUserTable.tableName });

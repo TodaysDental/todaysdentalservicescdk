@@ -5,6 +5,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface TemplatesStackProps extends StackProps {
@@ -88,6 +89,16 @@ export class TemplatesStack extends Stack {
       handler: authorizerFn,
       identitySources: [apigw.IdentitySource.header('Authorization')],
       resultsCacheTtl: Duration.minutes(5),
+    });
+
+    // Grant API Gateway permission to invoke the authorizer Lambda
+    // The authorizer sourceArn pattern is different from regular API method invocations
+    // Authorizer invocations use: arn:aws:execute-api:region:account:api-id/authorizers/*
+    new lambda.CfnPermission(this, 'AuthorizerInvokePermission', {
+      action: 'lambda:InvokeFunction',
+      functionName: authorizerFunctionArn,
+      principal: 'apigateway.amazonaws.com',
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${this.api.restApiId}/authorizers/*`,
     });
 
     // ========================================

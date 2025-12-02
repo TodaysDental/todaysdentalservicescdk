@@ -314,7 +314,15 @@ export class ChatbotStack extends cdk.Stack {
       responseHeaders: corsErrorHeaders,
     });
 
-
+    // Grant API Gateway permission to invoke the authorizer Lambda
+    // The authorizer sourceArn pattern is different from regular API method invocations
+    // Authorizer invocations use: arn:aws:execute-api:region:account:api-id/authorizers/*
+    new lambda.CfnPermission(this, 'AuthorizerInvokePermission', {
+      action: 'lambda:InvokeFunction',
+      functionName: authorizerFunctionArn,
+      principal: 'apigateway.amazonaws.com',
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${this.restApi.restApiId}/authorizers/*`,
+    });
 
     // Chat history endpoint
     const chatHistoryResource = this.restApi.root.addResource('chat-history');

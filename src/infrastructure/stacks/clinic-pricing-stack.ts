@@ -85,6 +85,16 @@ export class ClinicPricingStack extends Stack {
       resultsCacheTtl: Duration.minutes(5),
     });
 
+    // Grant API Gateway permission to invoke the authorizer Lambda
+    // The authorizer sourceArn pattern is different from regular API method invocations
+    // Authorizer invocations use: arn:aws:execute-api:region:account:api-id/authorizers/*
+    new lambda.CfnPermission(this, 'AuthorizerInvokePermission', {
+      action: 'lambda:InvokeFunction',
+      functionName: authorizerFunctionArn,
+      principal: 'apigateway.amazonaws.com',
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${this.api.restApiId}/authorizers/*`,
+    });
+
     // ========================================
     // LAMBDA FUNCTION
     // ========================================
