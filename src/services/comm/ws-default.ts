@@ -108,8 +108,17 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
         const senderID = senderInfo.userID;
 
         switch (payload.action) {
-            case 'createTeam': // <--- NEW ACTION
+            case 'createTeam': // Create a new team/group
                 await createTeam(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'listTeams': // List all teams the user is a member of
+                await listTeams(senderID, connectionId, apiGwManagement);
+                break;
+            case 'addUserToTeam': // Add a user to an existing team (owner only)
+                await addUserToTeam(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'removeUserFromTeam': // Remove a user from a team (owner only)
+                await removeUserFromTeam(senderID, payload, connectionId, apiGwManagement);
                 break;
             case 'startFavorRequest':
                 await startFavorRequest(senderID, payload, connectionId, apiGwManagement);
@@ -205,6 +214,240 @@ async function createTeam(
     }
 }
 
+/**
+ * Lists all teams the caller is a member of.
+ * Note: This performs a full table scan and filters in-memory.
+ * For large-scale applications, consider using a GSI with inverted index pattern.
+ */
+async function listTeams(
+    callerID: string,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    if (!TEAMS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Teams table not configured.' });
+        return;
+    }
+
+    try {
+        // Scan the table and filter for teams where the caller is a member
+        // Note: For production with large datasets, use a GSI or inverted index pattern
+        const { ScanCommand } = await import('@aws-sdk/lib-dynamodb');
+        
+        const result = await ddb.send(new ScanCommand({
+            TableName: TEAMS_TABLE,
+            FilterExpression: 'contains(members, :callerID)',
+            ExpressionAttributeValues: {
+                ':callerID': callerID,
+            },
+        }));
+
+        const teams = (result.Items || []) as Team[];
+
+        // Sort by updatedAt descending (most recently updated first)
+        teams.sort((a, b) => {
+            const aTime = a.updatedAt || '';
+            const bTime = b.updatedAt || '';
+            if (aTime < bTime) return 1;
+            if (aTime > bTime) return -1;
+            return 0;
+        });
+
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'teamsList',
+            teams: teams.map(t => ({
+                teamID: t.teamID,
+                name: t.name,
+                ownerID: t.ownerID,
+                memberCount: t.members.length,
+                members: t.members,
+                createdAt: t.createdAt,
+                updatedAt: t.updatedAt,
+            })),
+        });
+
+    } catch (e) {
+        console.error('Failed to list teams:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to list teams.' });
+    }
+}
+
+/**
+ * Adds a user to an existing team. Only the team owner can perform this action.
+ */
+async function addUserToTeam(
+    callerID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { teamID, userID } = payload;
+
+    if (!teamID || !userID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing teamID or userID.' });
+        return;
+    }
+
+    if (!TEAMS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Teams table not configured.' });
+        return;
+    }
+
+    try {
+        // 1. Fetch the team to verify ownership
+        const teamResult = await ddb.send(new GetCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID },
+        }));
+        const team = teamResult.Item as Team;
+
+        if (!team) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Team not found.' });
+            return;
+        }
+
+        // 2. Check if caller is the owner
+        if (team.ownerID !== callerID) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the team owner can add members.' });
+            return;
+        }
+
+        // 3. Check if user is already a member
+        if (team.members.includes(userID)) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'User is already a member of this team.' });
+            return;
+        }
+
+        // 4. Add the user to the team
+        const nowIso = new Date().toISOString();
+        const updatedMembers = [...team.members, userID];
+
+        await ddb.send(new UpdateCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID },
+            UpdateExpression: 'SET members = :members, updatedAt = :updatedAt',
+            ExpressionAttributeValues: {
+                ':members': updatedMembers,
+                ':updatedAt': nowIso,
+            },
+        }));
+
+        console.log(`User ${userID} added to team ${teamID} by ${callerID}`);
+
+        // 5. Notify all team members (including the new member) about the update
+        const updatedTeam: Team = {
+            ...team,
+            members: updatedMembers,
+            updatedAt: nowIso,
+        };
+
+        const notificationPayload = {
+            type: 'teamMemberAdded',
+            team: updatedTeam,
+            addedUserID: userID,
+            addedBy: callerID,
+        };
+
+        await sendToAll(apiGwManagement, updatedMembers, notificationPayload, { notifyOffline: false });
+
+    } catch (e) {
+        console.error('Failed to add user to team:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to add user to team.' });
+    }
+}
+
+/**
+ * Removes a user from an existing team. Only the team owner can perform this action.
+ * The owner cannot remove themselves from the team.
+ */
+async function removeUserFromTeam(
+    callerID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { teamID, userID } = payload;
+
+    if (!teamID || !userID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing teamID or userID.' });
+        return;
+    }
+
+    if (!TEAMS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Teams table not configured.' });
+        return;
+    }
+
+    try {
+        // 1. Fetch the team to verify ownership
+        const teamResult = await ddb.send(new GetCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID },
+        }));
+        const team = teamResult.Item as Team;
+
+        if (!team) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Team not found.' });
+            return;
+        }
+
+        // 2. Check if caller is the owner
+        if (team.ownerID !== callerID) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the team owner can remove members.' });
+            return;
+        }
+
+        // 3. Prevent owner from removing themselves
+        if (userID === team.ownerID) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'The team owner cannot be removed from the team.' });
+            return;
+        }
+
+        // 4. Check if user is a member
+        if (!team.members.includes(userID)) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'User is not a member of this team.' });
+            return;
+        }
+
+        // 5. Remove the user from the team
+        const nowIso = new Date().toISOString();
+        const updatedMembers = team.members.filter(m => m !== userID);
+
+        await ddb.send(new UpdateCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID },
+            UpdateExpression: 'SET members = :members, updatedAt = :updatedAt',
+            ExpressionAttributeValues: {
+                ':members': updatedMembers,
+                ':updatedAt': nowIso,
+            },
+        }));
+
+        console.log(`User ${userID} removed from team ${teamID} by ${callerID}`);
+
+        // 6. Notify remaining team members about the update
+        const updatedTeam: Team = {
+            ...team,
+            members: updatedMembers,
+            updatedAt: nowIso,
+        };
+
+        const notificationPayload = {
+            type: 'teamMemberRemoved',
+            team: updatedTeam,
+            removedUserID: userID,
+            removedBy: callerID,
+        };
+
+        // Notify remaining members AND the removed user
+        await sendToAll(apiGwManagement, [...updatedMembers, userID], notificationPayload, { notifyOffline: false });
+
+    } catch (e) {
+        console.error('Failed to remove user from team:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to remove user from team.' });
+    }
+}
+
 // ========================================
 // CORE LOGIC FUNCTIONS (Favors/Messaging)
 // ========================================
@@ -264,6 +507,12 @@ async function startFavorRequest(
         
         if (!team) {
             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: `Team ID ${teamID} not found.` });
+            return;
+        }
+
+        // AUTHORIZATION: Verify the sender is a member of the team
+        if (!team.members.includes(senderID)) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Unauthorized: You are not a member of this team.' });
             return;
         }
         
@@ -370,12 +619,28 @@ async function sendMessage(
     }));
     const favor = favorResult.Item as FavorRequest;
     
+    if (!favor) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Favor request not found.' });
+        }
+        return;
+    }
+
+    // 2. Verify the sender is a participant in this request
+    const isParticipant = await isUserParticipant(favor, senderID);
+    if (!isParticipant) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this request.' });
+        }
+        return;
+    }
+    
     // Determine the list of all non-sending recipients
     const recipientIDs = await getRecipientIDs(favor, senderID);
 
-    if (!favor || favor.status !== 'active' || recipientIDs.length === 0) {
+    if (favor.status !== 'active' || recipientIDs.length === 0) {
         if (senderConnectionId) {
-            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Request is inactive, resolved, or unauthorized.' });
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Request is inactive, resolved, or has no recipients.' });
         }
         return;
     }
@@ -454,6 +719,58 @@ async function getRecipientIDs(favor: FavorRequest, senderID: string): Promise<s
     return []; // Request not found, inactive, or unauthorized
 }
 
+/**
+ * Helper to check if a user is a participant in a favor request.
+ * For 1-to-1 requests: checks if user is sender or receiver.
+ * For group requests: checks if user is a member of the team.
+ */
+async function isUserParticipant(favor: FavorRequest, userID: string): Promise<boolean> {
+    // For 1-to-1 requests
+    if (!favor.teamID) {
+        return favor.senderID === userID || favor.receiverID === userID;
+    }
+    
+    // For group requests, check team membership
+    if (!TEAMS_TABLE) {
+        console.error("TEAMS_TABLE not configured for participant check.");
+        return false;
+    }
+    
+    const teamResult = await ddb.send(new GetCommand({
+        TableName: TEAMS_TABLE,
+        Key: { teamID: favor.teamID },
+    }));
+    const team = teamResult.Item as Team;
+    
+    return team ? team.members.includes(userID) : false;
+}
+
+/**
+ * Helper to get all participants (including sender) for a favor request.
+ * Returns an array of all user IDs involved in the request.
+ */
+async function getAllParticipants(favor: FavorRequest): Promise<string[]> {
+    if (favor.teamID) {
+        if (!TEAMS_TABLE) {
+            console.error("TEAMS_TABLE not configured for participant lookup.");
+            return [favor.senderID];
+        }
+        const teamResult = await ddb.send(new GetCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID: favor.teamID },
+        }));
+        const team = teamResult.Item as Team;
+        return team ? team.members : [favor.senderID];
+    }
+    
+    // For 1-to-1 requests
+    const participants = [favor.senderID];
+    if (favor.receiverID) {
+        participants.push(favor.receiverID);
+    }
+    return participants;
+}
+
 
 /**
  * Handles marking all messages in a conversation as read.
@@ -465,16 +782,32 @@ async function markRead(
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
     const { favorRequestID } = payload;
-    const callerConnectionId = (await getSenderInfoByUserID(callerID))?.connectionId;
 
     if (!favorRequestID) {
-        if (callerConnectionId) {
-            await sendToClient(apiGwManagement, callerConnectionId, { type: 'error', message: 'Missing favorRequestID.' });
-        }
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID.' });
         return;
     }
 
-    // 1. Reset unreadCount to 0 for the specified request
+    // 1. Fetch the favor request first to check authorization
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+
+    if (!favor) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Favor request not found.' });
+        return;
+    }
+
+    // 2. Verify the caller is a participant
+    const isParticipant = await isUserParticipant(favor, callerID);
+    if (!isParticipant) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this request.' });
+        return;
+    }
+
+    // 3. Reset unreadCount to 0 for the specified request
     try {
         const updateResult = await ddb.send(new UpdateCommand({
             TableName: FAVORS_TABLE,
@@ -482,40 +815,28 @@ async function markRead(
             UpdateExpression: 'SET unreadCount = :zero',
             ExpressionAttributeValues: { 
                 ':zero': 0,
-                ':caller': callerID
             },
-            // Condition check ensures only participants can reset the count
-            // Note the addition of attribute_exists(teamID) to cover group participants
-            ConditionExpression: 'senderID = :caller OR receiverID = :caller OR attribute_exists(teamID)',
             ReturnValues: 'ALL_NEW', 
         }));
         
-        // 2. Broadcast the read status update to the caller
+        // 4. Send the read status update to the caller
         const updatedFavor = updateResult.Attributes as FavorRequest;
         const broadcastUpdatePayload = {
             type: 'favorRequestUpdated',
             favor: updatedFavor,
         };
 
-        if (callerConnectionId) {
-            await sendToClient(apiGwManagement, callerConnectionId, broadcastUpdatePayload);
-        }
+        await sendToClient(apiGwManagement, connectionId, broadcastUpdatePayload);
+
     } catch (e: any) {
-        if (e.name === 'ConditionalCheckFailedException') {
-            console.warn(`Mark read failed: Unauthorized or request not found: ${favorRequestID}`);
-        } else {
-            console.error('Error marking read:', e);
-            if (callerConnectionId) {
-                await sendToClient(apiGwManagement, callerConnectionId, { type: 'error', message: 'Failed to update read status.' });
-            }
-        }
+        console.error('Error marking read:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to update read status.' });
     }
 }
 
 /**
  * Handles marking a favor request as resolved.
- * Note: Logic remains largely 1-to-1 focused but works if `receiverID` is null (group chat), 
- * provided the sender is a known participant.
+ * Only participants can resolve a request.
  */
 async function resolveRequest(
     senderID: string,
@@ -531,12 +852,42 @@ async function resolveRequest(
         }
         return;
     }
+
+    // 1. Fetch the favor request first to check authorization
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+
+    if (!favor) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Favor request not found.' });
+        }
+        return;
+    }
+
+    // 2. Verify the sender is a participant
+    const isParticipant = await isUserParticipant(favor, senderID);
+    if (!isParticipant) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this request.' });
+        }
+        return;
+    }
+
+    if (favor.status !== 'active') {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Request is already resolved.' });
+        }
+        return;
+    }
     
     const nowIso = new Date().toISOString();
 
-    // 1. Update Favor Status
+    // 3. Update Favor Status
     try {
-        const updateResult = await ddb.send(new UpdateCommand({
+        await ddb.send(new UpdateCommand({
             TableName: FAVORS_TABLE,
             Key: { favorRequestID },
             // Also reset unread count on resolve
@@ -545,22 +896,14 @@ async function resolveRequest(
             ExpressionAttributeValues: {
                 ':resolved': 'resolved',
                 ':ua': nowIso,
-                ':sender': senderID,
-                ':active': 'active',
                 ':zero': 0, // Reset unread count
             },
-            // Condition: Only sender or receiver (or implied participant by teamID) can resolve, and it must be active.
-            ConditionExpression: '#s = :active AND (senderID = :sender OR receiverID = :sender OR attribute_exists(teamID))',
-            ReturnValues: 'ALL_NEW',
         }));
-
-        const favor = updateResult.Attributes as FavorRequest;
         
-        // Use the helper to determine all participants for the broadcast
-        let recipients = await getRecipientIDs(favor, senderID);
-        let participants = [...recipients, senderID];
+        // Get all participants for the broadcast
+        const participants = await getAllParticipants(favor);
 
-        // 2. Broadcast status update to all parties
+        // 4. Broadcast status update to all parties
         const broadcastPayload = {
             type: 'requestResolved',
             favorRequestID,
@@ -571,22 +914,18 @@ async function resolveRequest(
         await sendToAll(apiGwManagement, participants, broadcastPayload, { notifyOffline: false });
         
     } catch (e: any) {
-        if (e.name === 'ConditionalCheckFailedException') {
-             if (senderConnectionId) {
-                await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Request is already resolved or unauthorized.' });
-             }
-        } else {
-            throw e; // Re-throw other errors
+        console.error('Error resolving request:', e);
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Failed to resolve request.' });
         }
     }
 }
 
 /**
  * Handles fetching the list of favor requests a user is involved in.
- * Note: This currently only supports lookups via SenderIndex/ReceiverIndex GSIs. 
- * Group requests where the caller is only a *member* (not sender/receiver) 
- * will not be fetched efficiently and should ideally be handled by a dedicated TeamIndex GSI 
- * or filtered manually from a broader query.
+ * Includes:
+ * - 1-to-1 requests where the user is sender or receiver
+ * - Group requests where the user is a member of the team
  */
 async function fetchRequests(
     callerID: string,
@@ -594,7 +933,7 @@ async function fetchRequests(
     connectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    // role can be 'sent', 'received', or 'all'
+    // role can be 'sent', 'received', 'group', or 'all'
     const { role = 'all', limit = 50, nextToken } = payload;
     
     const queryLimit = Math.min(limit, 100);
@@ -612,6 +951,7 @@ async function fetchRequests(
     const queryByIndex = async (
         indexName: string,
         keyName: string,
+        keyValue: string,
         startKey?: any
     ) => {
         return ddb.send(
@@ -620,13 +960,42 @@ async function fetchRequests(
                 IndexName: indexName,
                 KeyConditionExpression: `${keyName} = :uid`,
                 ExpressionAttributeValues: {
-                    ':uid': callerID,
+                    ':uid': keyValue,
                 },
                 ScanIndexForward: false, // newest first
                 Limit: queryLimit,
                 ...(startKey ? { ExclusiveStartKey: startKey } : {}),
             })
         );
+    };
+
+    // Helper to get all team IDs the user is a member of
+    const getUserTeamIDs = async (): Promise<string[]> => {
+        if (!TEAMS_TABLE) return [];
+        
+        const { ScanCommand } = await import('@aws-sdk/lib-dynamodb');
+        const result = await ddb.send(new ScanCommand({
+            TableName: TEAMS_TABLE,
+            FilterExpression: 'contains(members, :callerID)',
+            ExpressionAttributeValues: {
+                ':callerID': callerID,
+            },
+            ProjectionExpression: 'teamID',
+        }));
+        
+        return (result.Items || []).map((item: any) => item.teamID);
+    };
+
+    // Helper to fetch group requests for given team IDs
+    const fetchGroupRequests = async (teamIDs: string[]): Promise<any[]> => {
+        if (teamIDs.length === 0) return [];
+        
+        const groupRequestPromises = teamIDs.map(teamID => 
+            queryByIndex('TeamIndex', 'teamID', teamID)
+        );
+        
+        const results = await Promise.all(groupRequestPromises);
+        return results.flatMap(r => r.Items || []);
     };
     
     let items: any[] = [];
@@ -637,6 +1006,7 @@ async function fetchRequests(
             const sentResult = await queryByIndex(
                 'SenderIndex',
                 'senderID',
+                callerID,
                 exclusiveStartKey
             );
             items = sentResult.Items || [];
@@ -646,18 +1016,45 @@ async function fetchRequests(
             const recvResult = await queryByIndex(
                 'ReceiverIndex',
                 'receiverID',
+                callerID,
                 exclusiveStartKey
             );
             items = recvResult.Items || [];
             newToken = recvResult.LastEvaluatedKey ? JSON.stringify(recvResult.LastEvaluatedKey) : undefined;
+
+        } else if (role === 'group') {
+            // Fetch only group requests where the user is a team member
+            const teamIDs = await getUserTeamIDs();
+            items = await fetchGroupRequests(teamIDs);
             
-        } else { // role = 'all' -> merge both (Default behavior, no robust DDB pagination)
-            const [sentResult, recvResult] = await Promise.all([
-                queryByIndex('SenderIndex', 'senderID'),
-                queryByIndex('ReceiverIndex', 'receiverID'),
+            // Sort by updatedAt desc
+            items.sort((a, b) => {
+                const aTime = a.updatedAt || '';
+                const bTime = b.updatedAt || '';
+                if (aTime < bTime) return 1;
+                if (aTime > bTime) return -1;
+                return 0;
+            });
+            
+            items = items.slice(0, queryLimit);
+            newToken = undefined;
+            
+        } else { // role = 'all' -> merge sent, received, and group requests
+            // Fetch 1-to-1 requests (sent and received)
+            const [sentResult, recvResult, teamIDs] = await Promise.all([
+                queryByIndex('SenderIndex', 'senderID', callerID),
+                queryByIndex('ReceiverIndex', 'receiverID', callerID),
+                getUserTeamIDs(),
             ]);
 
-            const allItems = [...(sentResult.Items || []), ...(recvResult.Items || [])];
+            // Fetch group requests
+            const groupItems = await fetchGroupRequests(teamIDs);
+
+            const allItems = [
+                ...(sentResult.Items || []), 
+                ...(recvResult.Items || []),
+                ...groupItems
+            ];
 
             // Deduplicate by favorRequestID
             const byId = new Map<string, any>();
@@ -916,20 +1313,26 @@ async function fetchHistory(
         return;
     }
 
-    // 1. Validate authorization (caller must be a participant)
+    // 1. Fetch the favor request to validate authorization
     const favorResult = await ddb.send(new GetCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
     }));
     const favor = favorResult.Item as FavorRequest;
 
-    // Authorization check must consider groups: callerID must be sender or receiver, OR the request must be a group request (implying participation).
-    if (!favor || (!favor.teamID && favor.senderID !== callerID && favor.receiverID !== callerID)) {
-        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized access to favor request history.' });
+    if (!favor) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Favor request not found.' });
         return;
     }
 
-    // 2. Query the MessagesTable (PK: favorRequestID, SK: timestamp)
+    // 2. Verify the caller is a participant (works for both 1-to-1 and group requests)
+    const isParticipant = await isUserParticipant(favor, callerID);
+    if (!isParticipant) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this request.' });
+        return;
+    }
+
+    // 3. Query the MessagesTable (PK: favorRequestID, SK: timestamp)
     const queryInput = {
         TableName: MESSAGES_TABLE,
         KeyConditionExpression: 'favorRequestID = :id',
@@ -941,7 +1344,7 @@ async function fetchHistory(
 
     const historyResult = await ddb.send(new QueryCommand(queryInput));
     
-    // 3. Send history back to the client
+    // 4. Send history back to the client
     await sendToClient(apiGwManagement, connectionId, {
         type: 'favorHistory',
         favorRequestID,

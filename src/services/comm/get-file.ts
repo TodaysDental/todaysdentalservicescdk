@@ -1,6 +1,5 @@
 import { APIGatewayEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { S3Client, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -10,25 +9,8 @@ const FILE_BUCKET_NAME = process.env.FILE_BUCKET_NAME || '';
 const s3 = new S3Client({ region: REGION });
 
 /**
- * Utility to guess MIME type based on file extension.
- */
-function getContentType(filename: string): string {
-    const extension = filename.split('.').pop()?.toLowerCase();
-    switch (extension) {
-        case 'png': return 'image/png';
-        case 'jpg':
-        case 'jpeg': return 'image/jpeg';
-        case 'gif': return 'image/gif';
-        case 'pdf': return 'application/pdf';
-        case 'txt': return 'text/plain';
-        case 'docx': return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-        case 'xlsx': return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-        default: return 'application/octet-stream';
-    }
-}
-
-/**
- * Generates an S3 Presigned URL for GetObject and redirects the user to it (HTTP 302).
+ * Redirects the user to the public S3 URL for the requested file.
+ * The S3 bucket is configured with public read access, so no authentication is required.
  * This function runs after the Admin API Gateway has authenticated the user.
  */
 export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyResult> => {
@@ -86,43 +68,49 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
         const filename = filenameMatch ? filenameMatch[1] : 'download';
         
         console.log('[INFO] Extracted filename:', filename);
-        
-        // Determine Content Type based on the filename
-        const contentType = getContentType(filename);
 
-        // 1. Define the GetObject command
-        const command = new GetObjectCommand({
-            Bucket: FILE_BUCKET_NAME,
-            Key: fileKey,
-            // Force download behavior and correct filename
-            ResponseContentDisposition: `attachment; filename="${filename}"`, 
-            // Ensure the browser is told the correct content type
-            ResponseContentType: contentType,
-        });
+        // 1. Verify the file exists by doing a HeadObject call
+        try {
+            await s3.send(new HeadObjectCommand({
+                Bucket: FILE_BUCKET_NAME,
+                Key: fileKey,
+            }));
+        } catch (headError: any) {
+            if (headError.name === 'NotFound' || headError.$metadata?.httpStatusCode === 404) {
+                console.log('[INFO] File not found:', fileKey);
+                return { 
+                    statusCode: 404, 
+                    headers: corsHeaders,
+                    body: JSON.stringify({ message: 'File not found.' }) 
+                };
+            }
+            throw headError;
+        }
 
-        // 2. Generate the presigned URL, valid for 5 minutes (300 seconds)
-        const presignedUrl = await getSignedUrl(s3, command, { expiresIn: 300 }); 
+        // 2. Build the direct public S3 URL
+        // The bucket is now public, so we can access files directly without presigned URLs
+        const publicS3Url = `https://${FILE_BUCKET_NAME}.s3.${REGION}.amazonaws.com/${encodeURIComponent(fileKey).replace(/%2F/g, '/')}`;
 
-        console.log('[SUCCESS] Generated presigned URL for file:', fileKey);
+        console.log('[SUCCESS] Redirecting to public S3 URL for file:', fileKey);
 
-        // 3. Return a 302 Found redirect to the Presigned URL with CORS headers
+        // 3. Return a 302 Found redirect to the public S3 URL with CORS headers
         return {
             statusCode: 302,
             headers: {
-                'Location': presignedUrl,
+                'Location': publicS3Url,
                 ...corsHeaders,
-                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Cache-Control': 'public, max-age=3600', // Cache for 1 hour since it's a public URL
             },
             body: '', 
         };
 
     } catch (e) {
-        console.error(`[ERROR] Error generating signed URL for download key ${fileKey}:`, e);
-        // Return 404 if the key is correct but the object is missing/deleted
+        console.error(`[ERROR] Error processing download for key ${fileKey}:`, e);
+        // Return 500 for other errors
         return { 
-            statusCode: 404, 
+            statusCode: 500, 
             headers: corsHeaders,
-            body: JSON.stringify({ message: 'File not found or access denied.' }) 
+            body: JSON.stringify({ message: 'Internal server error.' }) 
         };
     }
 };

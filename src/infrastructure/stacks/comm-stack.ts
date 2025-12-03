@@ -75,6 +75,13 @@ export class CommStack extends Stack {
         sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
         projectionType: dynamodb.ProjectionType.ALL,
     });
+    // GSI for team-based favor requests lookup
+    this.favorsTable.addGlobalSecondaryIndex({
+        indexName: 'TeamIndex',
+        partitionKey: { name: 'teamID', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+    });
 
     // 3. Messages Table (Stores each message in a separate row)
     this.messagesTable = new dynamodb.Table(this, 'MessagesTable', {
@@ -112,13 +119,21 @@ export class CommStack extends Stack {
       cors: [
         {
           allowedHeaders: ['*'],
-          allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.POST],
+          allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.POST, s3.HttpMethods.GET, s3.HttpMethods.HEAD],
           allowedOrigins: ['*'], // Restrict this to your frontend domain in production!
-          exposedHeaders: ['ETag'],
+          exposedHeaders: ['ETag', 'Content-Length', 'Content-Type'],
         },
       ],
       removalPolicy: RemovalPolicy.DESTROY, 
       autoDeleteObjects: true,
+      // Enable public read access - objects can be accessed without authentication
+      blockPublicAccess: new s3.BlockPublicAccess({
+        blockPublicAcls: false,
+        blockPublicPolicy: false,
+        ignorePublicAcls: false,
+        restrictPublicBuckets: false,
+      }),
+      publicReadAccess: true, // Automatically adds a bucket policy for public read
     });
 
     // ========================================
@@ -289,6 +304,11 @@ export class CommStack extends Stack {
     new CfnOutput(this, 'FileBucketName', {
       value: this.fileBucket.bucketName,
       exportName: `${this.stackName}-FileBucketName`
+    });
+    new CfnOutput(this, 'FileBucketPublicUrl', {
+      value: `https://${this.fileBucket.bucketName}.s3.${this.region}.amazonaws.com`,
+      description: 'Public URL for the S3 bucket (files can be accessed directly)',
+      exportName: `${this.stackName}-FileBucketPublicUrl`
     });
     new CfnOutput(this, 'NotificationsTopicArn', {
         value: this.notificationsTopic.topicArn,

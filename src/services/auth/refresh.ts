@@ -113,6 +113,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         accessToken: newAccessToken,
         refreshToken: newRefreshToken,
         expiresIn: 3600, // 1 hour in seconds
+        user: {
+          email: user.email,
+          givenName: user.givenName,
+          familyName: user.familyName,
+          clinicRoles: user.clinicRoles,
+          isSuperAdmin: user.isSuperAdmin,
+          isGlobalSuperAdmin: user.isGlobalSuperAdmin,
+          emailVerified: user.emailVerified,
+        },
       }),
     };
   } catch (error) {

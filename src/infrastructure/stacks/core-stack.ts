@@ -309,7 +309,11 @@ export class CoreStack extends Stack {
       value: 'https://apig.todaysdentalinsights.com/auth/',
       description: 'Auth API endpoint URL'
     });
-    new CfnOutput(this, 'StaffUserTableName', { value: this.staffUserTable.tableName });
+    new CfnOutput(this, 'StaffUserTableName', { 
+      value: this.staffUserTable.tableName,
+      exportName: 'CoreStack-StaffUserTableName',
+      description: 'StaffUser DynamoDB Table Name'
+    });
     new CfnOutput(this, 'StaffClinicInfoTableName', { value: this.staffClinicInfoTable.tableName });
     // Export the authorizer function ARN for cross-stack reference
     new CfnOutput(this, 'AuthorizerFunctionArn', { 

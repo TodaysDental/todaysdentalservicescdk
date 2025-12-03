@@ -16,6 +16,8 @@ export interface AdminStackProps extends StackProps {
   jwtSecretValue?: string;
   // ** NEW: Input for the Communications Module (Favor Requests Table Name) **
   favorsTableName: string;
+  // ** NEW: Teams table for group favor requests **
+  teamsTableName?: string;
   // ** NEW: Analytics Table Name **
   analyticsTableName?: string;
   // ** NEW: Additional table names for detailed analytics **
@@ -206,26 +208,37 @@ export class AdminStack extends Stack {
         handler: 'handler',
         runtime: lambda.Runtime.NODEJS_20_X,
         memorySize: 128,
-        timeout: Duration.seconds(10),
+        timeout: Duration.seconds(15), // Increased timeout for group request lookups
         bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
         environment: {
             // USER_POOL_ID removed - using JWT-based authentication now
             FAVORS_TABLE_NAME: props.favorsTableName, // Pass the table name
+            TEAMS_TABLE_NAME: props.teamsTableName || '', // Pass the teams table name for group requests
         },
     });
     
-    // ** NEW: Grant permission to query the Favors Table via the UserIndex **
-   // Grant permission to query the Favors Table via GSIs for sent/received lookups
-this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
-    actions: ['dynamodb:Query'],
-    resources: [
-        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}`,
-        // GSIs used by list-requests.ts
-        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/UserIndex`,
-        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/SenderIndex`,
-        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/ReceiverIndex`,
-    ],
-}));
+    // Grant permission to query the Favors Table via GSIs for sent/received/team lookups
+    this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:Query'],
+        resources: [
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}`,
+            // GSIs used by list-requests.ts
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/UserIndex`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/SenderIndex`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/ReceiverIndex`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/TeamIndex`,
+        ],
+    }));
+
+    // Grant permission to scan the Teams Table for member lookups (if configured)
+    if (props.teamsTableName) {
+        this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
+            actions: ['dynamodb:Scan'],
+            resources: [
+                `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.teamsTableName}`,
+            ],
+        }));
+    }
 
 
 

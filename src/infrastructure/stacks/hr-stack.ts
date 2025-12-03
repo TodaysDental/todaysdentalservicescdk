@@ -340,6 +340,9 @@ export class HrStack extends Stack {
     // LAMBDA FUNCTION (Unified Handler)
     // ========================================
 
+    // Import StaffUser table name from CoreStack
+    const staffUserTableName = Fn.importValue('CoreStack-StaffUserTableName');
+
     this.hrFn = new lambdaNode.NodejsFunction(this, 'HrFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'hr', 'index.ts'),
       handler: 'handler',
@@ -351,11 +354,11 @@ export class HrStack extends Stack {
         SHIFTS_TABLE: this.shiftsTable.tableName,
         LEAVE_TABLE: this.leaveTable.tableName,
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName, // From CoreStack
-        // --- NEW: SES ENVIRONMENT VARIABLES ---
-        APP_NAME: 'TodaysDentalInsights', // Hardcoded as in core-stack.ts
-        FROM_EMAIL: 'no-reply@todaysdentalinsights.com', // Hardcoded as in core-stack.ts
-        SES_REGION: 'us-east-1', // Hardcoded as in core-stack.ts
-        // --- END NEW ---
+        STAFF_USER_TABLE: staffUserTableName, // For user lookups (replaces Cognito)
+        // --- SES ENVIRONMENT VARIABLES ---
+        APP_NAME: 'TodaysDentalInsights',
+        FROM_EMAIL: 'no-reply@todaysdentalinsights.com',
+        SES_REGION: 'us-east-1',
       },
     });
 
@@ -369,6 +372,15 @@ export class HrStack extends Stack {
       resources: [
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.staffClinicInfoTableName}`,
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.staffClinicInfoTableName}/index/*`
+      ],
+    }));
+
+    // Grant READ permission to StaffUser table (for user lookups - replaces Cognito)
+    this.hrFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/*-StaffUser`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/*-StaffUser/index/*`
       ],
     }));
 

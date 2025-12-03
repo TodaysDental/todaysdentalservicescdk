@@ -230,9 +230,36 @@ Exchanges a valid refresh token for new access and refresh tokens.
 {
   "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "expiresIn": 3600
+  "expiresIn": 3600,
+  "user": {
+    "email": "user@example.com",
+    "givenName": "John",
+    "familyName": "Doe",
+    "clinicRoles": [
+      {
+        "clinicId": "clinic-123",
+        "role": "Admin",
+        "basePay": 75000,
+        "hourlyPay": 35,
+        "moduleAccess": [
+          { "module": "HR", "permissions": ["read", "write"] }
+        ]
+      }
+    ],
+    "isSuperAdmin": false,
+    "isGlobalSuperAdmin": false,
+    "emailVerified": true
+  }
 }
 ```
+
+**Response Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| accessToken | string | JWT access token (expires in 1 hour) |
+| refreshToken | string | JWT refresh token (expires in 30 days) |
+| expiresIn | number | Access token expiration in seconds |
+| user | object | User profile information (same as auth/verify) |
 
 **Error Responses:**
 

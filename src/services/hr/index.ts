@@ -656,12 +656,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand, ScanCommand, PutCommand, DeleteCommand, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
-import {
-  CognitoIdentityProviderClient,
-  AdminGetUserCommand,
-  ListUsersCommand,
-} from "@aws-sdk/client-cognito-identity-provider";
-import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2'; // <-- UPDATED: SESv2Client
+import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import {
   getUserPermissions,
@@ -677,18 +672,15 @@ import {
 const SHIFTS_TABLE = process.env.SHIFTS_TABLE!;
 const LEAVE_TABLE = process.env.LEAVE_TABLE!;
 const STAFF_INFO_TABLE = process.env.STAFF_CLINIC_INFO_TABLE!;
-const USER_POOL_ID = process.env.USER_POOL_ID;
-const REGION = process.env.COGNITO_REGION || process.env.AWS_REGION;
+const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE!; // DynamoDB table for user lookups (replaces Cognito)
 
-// --- NEW SES Environment Variables (must be added to hr-stack.ts) ---
+// SES Environment Variables
 const APP_NAME = process.env.APP_NAME || 'TodaysDentalInsights';
 const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalinsights.com';
-const SES_REGION = process.env.SES_REGION || 'us-east-1'; // Defaulting to us-east-1 as per core-stack.ts
-// --- END NEW ---
+const SES_REGION = process.env.SES_REGION || 'us-east-1';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const cognito = new CognitoIdentityProviderClient({});
-const ses = new SESv2Client({ region: SES_REGION }); // <-- UPDATED: Initialize SESv2Client
+const ses = new SESv2Client({ region: SES_REGION });
 const MODULE_NAME = 'HR';
 const METHOD_PERMISSIONS: Record<string, PermissionType> = {
   GET: 'read',
@@ -959,9 +951,12 @@ async function getDashboard(userPerms: any, isAdmin: boolean) {
     const weekStart = new Date(today.setDate(diff)).toISOString();
     const weekEnd = new Date(today.setDate(diff + 6)).toISOString();
 
-    const staffCountPromise = cognito.send(new ListUsersCommand({
-      UserPoolId: USER_POOL_ID,
-      Limit: 0
+    // Count active staff from DynamoDB StaffUser table instead of Cognito
+    const staffCountPromise = ddb.send(new ScanCommand({
+      TableName: STAFF_USER_TABLE,
+      FilterExpression: 'isActive = :active',
+      ExpressionAttributeValues: { ':active': true },
+      Select: 'COUNT',
     }));
 
     const adminClinics = userPerms.clinicRoles.map((cr: any) => cr.clinicId);
@@ -983,7 +978,7 @@ async function getDashboard(userPerms: any, isAdmin: boolean) {
       ...shiftQueryPromises
     ]);
     
-    const totalStaff = staffResponse.Users?.length || 0;
+    const totalStaff = staffResponse.Count || 0;
     const allShifts = shiftResponses.flatMap(res => res.Items || []);
     
     let estimatedHours = 0;
@@ -1100,20 +1095,27 @@ async function createShift(body: any, allowedClinics: Set<string>) {
     return httpErr(400, "Cannot schedule shift: Staff has approved leave on this date");
   }
 
-  let email: string | undefined;
-  let staffName: string | undefined; // NEW
+  // Look up user from DynamoDB StaffUser table (staffId is the email)
+  let email: string;
+  let staffName: string | undefined;
   try {
-    const user = await cognito.send(new AdminGetUserCommand({
-        UserPoolId: USER_POOL_ID,
-        Username: staffId 
+    const { Item: staffUser } = await ddb.send(new GetCommand({
+      TableName: STAFF_USER_TABLE,
+      Key: { email: staffId.toLowerCase() },
     }));
-    email = (user.UserAttributes || []).find(a => a.Name === 'email')?.Value?.toLowerCase();
-    const givenName = (user.UserAttributes || []).find(a => a.Name === 'given_name')?.Value;
-    const familyName = (user.UserAttributes || []).find(a => a.Name === 'family_name')?.Value;
-    staffName = `${givenName || ''} ${familyName || ''}`.trim(); // NEW
+    
+    if (!staffUser) {
+      console.error("Staff user not found in StaffUser table:", staffId);
+      return httpErr(404, "Staff user not found");
+    }
+    
+    email = staffUser.email?.toLowerCase();
+    const givenName = staffUser.givenName;
+    const familyName = staffUser.familyName;
+    staffName = `${givenName || ''} ${familyName || ''}`.trim();
   } catch (err) {
-    console.error("Cognito user lookup failed:", err);
-    return httpErr(404, "Staff user not found in Cognito");
+    console.error("StaffUser table lookup failed:", err);
+    return httpErr(500, "Error looking up staff user");
   }
 
   if (!email) {
@@ -1175,16 +1177,23 @@ async function updateShift(shiftId: string, body: any, allowedClinics: Set<strin
       return httpErr(400, "Cannot update shift: Staff has approved leave on this date");
     }
 
+    // Look up user from DynamoDB StaffUser table (staffId is the email)
     let email: string | undefined;
     try {
-        const user = await cognito.send(new AdminGetUserCommand({
-            UserPoolId: USER_POOL_ID,
-            Username: staffId
+        const { Item: staffUser } = await ddb.send(new GetCommand({
+            TableName: STAFF_USER_TABLE,
+            Key: { email: staffId.toLowerCase() },
         }));
-        email = (user.UserAttributes || []).find(a => a.Name === 'email')?.Value?.toLowerCase();
+        
+        if (!staffUser) {
+            console.error("Staff user not found in StaffUser table:", staffId);
+            return httpErr(404, "Staff user not found");
+        }
+        
+        email = staffUser.email?.toLowerCase();
     } catch (err) {
-        console.error("Cognito user lookup failed:", err);
-        return httpErr(404, "Staff user not found in Cognito");
+        console.error("StaffUser table lookup failed:", err);
+        return httpErr(500, "Error looking up staff user");
     }
 
     if (!email) {

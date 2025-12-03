@@ -256,6 +256,7 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
  staffUserTableName: coreStack.staffUserTable.tableName,
   staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
   favorsTableName: communicationsStack.favorsTable.tableName,
+  teamsTableName: communicationsStack.teamsTable.tableName, // For group favor requests
   clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
   analyticsTableName: analyticsStack.analyticsTable.tableName,
   jwtSecretValue: coreStack.jwtSecretValue,
