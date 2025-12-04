@@ -166,6 +166,7 @@ export class AdminStack extends Stack {
         STAFF_USER_TABLE: props.staffUserTableName,
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName ?? '',
         CORS_ORIGIN: 'https://todaysdentalinsights.com',
+        JWT_SECRET: props.jwtSecretValue ?? '',
       },
     });
 
@@ -292,6 +293,7 @@ export class AdminStack extends Stack {
       bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
         AGENT_PRESENCE_TABLE_NAME: props.agentPresenceTableName ?? '',
+        JWT_SECRET: props.jwtSecretValue ?? '',
       },
     });
 

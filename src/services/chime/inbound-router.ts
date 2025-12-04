@@ -716,8 +716,32 @@ export const handler = async (event: any): Promise<any> => {
                 console.log(`[NEW_OUTBOUND_CALL] Initiated for call ${callId}`, args);
                 // The outbound-call.ts Lambda has already created the call record
                 // and updated the agent's status to 'dialing'.
-                // This event just confirms the SMA is dialing. We let it dial.
-                // The logic will be picked up by CALL_ANSWERED.
+                
+                // Update agent presence to indicate outbound call is now ringing
+                // This allows the frontend to play a local ringback tone
+                const outboundAgentId = args.agentId;
+                if (outboundAgentId) {
+                    try {
+                        await ddb.send(new UpdateCommand({
+                            TableName: AGENT_PRESENCE_TABLE_NAME,
+                            Key: { agentId: outboundAgentId },
+                            UpdateExpression: 'SET dialingState = :ringing, dialingStartedAt = :now',
+                            ConditionExpression: '#status = :dialing',
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: {
+                                ':ringing': 'ringing',
+                                ':dialing': 'dialing',
+                                ':now': new Date().toISOString()
+                            }
+                        }));
+                        console.log(`[NEW_OUTBOUND_CALL] Updated agent ${outboundAgentId} dialingState to 'ringing'`);
+                    } catch (updateErr: any) {
+                        // Non-fatal - just log the error
+                        console.warn(`[NEW_OUTBOUND_CALL] Failed to update agent dialingState:`, updateErr.message);
+                    }
+                }
+                
+                // The logic will be picked up by CALL_ANSWERED or HANGUP if rejected.
                 return buildActions([]);
             }
             
@@ -1070,6 +1094,28 @@ export const handler = async (event: any): Promise<any> => {
             case 'CALL_ENDED': {
                 console.log(`[${eventType}] Call ${callId} ended. Cleaning up resources.`);
                 
+                // Extract SIP response code to determine why the call ended
+                // Common codes: 486 = Busy, 480 = No Answer, 603 = Decline, 487 = Request Terminated
+                const sipResponseCode = event?.CallDetails?.SipResponseCode || 
+                                        event?.ActionData?.Parameters?.SipResponseCode ||
+                                        '0';
+                const hangupSource = event?.ActionData?.Parameters?.Source || 'unknown';
+                
+                console.log(`[${eventType}] SIP Response Code: ${sipResponseCode}, Source: ${hangupSource}`);
+                
+                // Determine the reason for call end
+                let callEndReason = 'unknown';
+                switch (sipResponseCode?.toString()) {
+                    case '486': callEndReason = 'busy'; break;
+                    case '480': callEndReason = 'no_answer'; break;
+                    case '603': callEndReason = 'declined'; break;
+                    case '487': callEndReason = 'cancelled'; break;
+                    case '404': callEndReason = 'not_found'; break;
+                    case '408': callEndReason = 'timeout'; break;
+                    case '0': callEndReason = 'normal'; break;
+                    default: callEndReason = `sip_${sipResponseCode}`;
+                }
+                
                 // Stop recording if enabled (belt and suspenders - Chime auto-stops but this ensures it)
                 const recordingsBucket = process.env.RECORDINGS_BUCKET;
                 if (recordingsBucket && pstnLegCallId) {
@@ -1091,12 +1137,17 @@ export const handler = async (event: any): Promise<any> => {
 
                 if (callRecords && callRecords[0]) {
                     const callRecord = callRecords[0];
-                    const { clinicId, queuePosition, meetingInfo, assignedAgentId, agentIds, status } = callRecord;
+                    const { clinicId, queuePosition, meetingInfo, assignedAgentId, agentIds, status, direction } = callRecord;
                     
-                    console.log(`[${eventType}] Found call record`, { callId, status, assignedAgent: assignedAgentId, hasMeeting: !!meetingInfo?.MeetingId });
+                    console.log(`[${eventType}] Found call record`, { 
+                        callId, 
+                        status, 
+                        direction,
+                        assignedAgent: assignedAgentId, 
+                        hasMeeting: !!meetingInfo?.MeetingId,
+                        callEndReason 
+                    });
                     
-                    // *** CRITICAL FIX ***
-                    // Only delete the meeting if it was a temporary "queue" meeting.
                     // Clean up Media Pipeline if it was started for this call
                     if (callRecord.mediaPipelineId) {
                         stopMediaPipeline(callRecord.mediaPipelineId, callId).catch(pipelineErr => {
@@ -1104,27 +1155,36 @@ export const handler = async (event: any): Promise<any> => {
                         });
                     }
                     
-                    // Do NOT delete the meeting if it was an agent's session.
-                    if (status === 'queued' && meetingInfo?.MeetingId) {
+                    // *** CRITICAL FIX ***
+                    // Only delete the meeting if it was a temporary "queue" meeting for INBOUND calls.
+                    // For OUTBOUND calls, meetingInfo contains the AGENT'S SESSION meeting - DO NOT delete it!
+                    const isOutboundCall = direction === 'outbound' || status === 'dialing';
+                    
+                    if (status === 'queued' && meetingInfo?.MeetingId && !isOutboundCall) {
                         try {
                             await cleanupMeeting(meetingInfo.MeetingId);
                             console.log(`[${eventType}] Cleaned up QUEUE meeting ${meetingInfo.MeetingId}`);
                         } catch (meetingErr) {
                             console.warn(`[${eventType}] Failed to cleanup queue meeting:`, meetingErr);
                         }
-                    } else if ((status === 'dialing' || status === 'failed') && meetingInfo?.MeetingId) {
-                        try {
-                            await cleanupMeeting(meetingInfo.MeetingId);
-                            console.log(`[${eventType}] Cleaned up failed outbound meeting ${meetingInfo.MeetingId}`);
-                        } catch (meetingErr) {
-                            console.warn(`[${eventType}] Failed to cleanup outbound meeting:`, meetingErr);
-                        }
+                    } else if (isOutboundCall && meetingInfo?.MeetingId) {
+                        // *** FIX: Do NOT delete the agent's session meeting for outbound calls ***
+                        console.log(`[${eventType}] Outbound call ended. Agent session meeting ${meetingInfo.MeetingId} will NOT be deleted.`);
                     } else if (meetingInfo?.MeetingId) {
                         console.log(`[${eventType}] Call ended for agent session meeting ${meetingInfo.MeetingId}. Meeting will NOT be deleted.`);
                     }
                     
-                    // Update call status in the queue
-                    const finalStatus = (status === 'connected' || status === 'on_hold') ? 'completed' : 'abandoned';
+                    // Determine final status based on call state and end reason
+                    let finalStatus: string;
+                    if (status === 'connected' || status === 'on_hold') {
+                        finalStatus = 'completed';
+                    } else if (status === 'dialing') {
+                        // Outbound call that never connected
+                        finalStatus = callEndReason === 'normal' ? 'completed' : 'failed';
+                    } else {
+                        finalStatus = 'abandoned';
+                    }
+                    
                     const callDuration = callRecord.acceptedAt 
                         ? Math.floor(Date.now() / 1000) - Math.floor(new Date(callRecord.acceptedAt).getTime() / 1000)
                         : 0;
@@ -1133,13 +1193,14 @@ export const handler = async (event: any): Promise<any> => {
                         await ddb.send(new UpdateCommand({
                             TableName: CALL_QUEUE_TABLE_NAME,
                             Key: { clinicId, queuePosition },
-                            UpdateExpression: 'SET #status = :status, endedAt = :timestamp, endedAtIso = :timestampIso, callDuration = :duration REMOVE meetingInfo, customerAttendeeInfo, agentAttendeeInfo',
+                            UpdateExpression: 'SET #status = :status, endedAt = :timestamp, endedAtIso = :timestampIso, callDuration = :duration, callEndReason = :reason REMOVE customerAttendeeInfo, agentAttendeeInfo',
                             ExpressionAttributeNames: { '#status': 'status' },
                             ExpressionAttributeValues: {
                                 ':status': finalStatus,
                                 ':timestamp': Math.floor(Date.now() / 1000),
                                 ':timestampIso': new Date().toISOString(),
-                                ':duration': callDuration
+                                ':duration': callDuration,
+                                ':reason': callEndReason
                             }
                         }));
                         
@@ -1150,19 +1211,24 @@ export const handler = async (event: any): Promise<any> => {
                     // Update agent status if they were assigned
                     if (assignedAgentId) {
                         try {
+                            // *** FIX: Include callEndReason so frontend knows why call ended ***
+                            // For outbound calls that were rejected/unanswered, this is critical for UI feedback
+                            const wasDialingOutbound = status === 'dialing' && isOutboundCall;
+                            
                             await ddb.send(new UpdateCommand({
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
                                 Key: { agentId: assignedAgentId },
-                                UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp, lastCallEndedAt = :timestamp REMOVE currentCallId, callStatus, currentMeetingAttendeeId',
+                                UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp, lastCallEndedAt = :timestamp, lastCallEndReason = :reason, lastCallId = :callId REMOVE currentCallId, callStatus, currentMeetingAttendeeId, dialingState, dialingStartedAt',
                                 ConditionExpression: 'attribute_exists(agentId) AND (currentCallId = :callId OR attribute_not_exists(currentCallId))',
                                 ExpressionAttributeNames: { '#status': 'status' },
                                 ExpressionAttributeValues: {
                                     ':status': 'Online',
                                     ':timestamp': new Date().toISOString(),
-                                    ':callId': callId
+                                    ':callId': callId,
+                                    ':reason': wasDialingOutbound ? callEndReason : 'completed'
                                 }
                             }));
-                            console.log(`[${eventType}] Agent ${assignedAgentId} marked as available.`);
+                            console.log(`[${eventType}] Agent ${assignedAgentId} marked as available. Call end reason: ${callEndReason}`);
                         } catch (agentErr: any) {
                             if (agentErr.name === 'ConditionalCheckFailedException') {
                                 console.log(`[${eventType}] Agent ${assignedAgentId} was not on this call. Skipping cleanup.`);
