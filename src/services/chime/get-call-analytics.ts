@@ -11,12 +11,26 @@ import {
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { AnalyticsState, getFinalizationEstimate } from '../../types/analytics-state-machine';
 import { getAnalyticsState } from '../shared/utils/analytics-state-manager';
+import {
+  RankingCriteria,
+  RankingPeriod,
+  AgentRankingEntry,
+  AgentRankingsResponse,
+  AgentBadge,
+  AgentStatus,
+  AGENT_BADGES
+} from '../../types/analytics';
+import { ScanCommand, BatchGetCommand } from '@aws-sdk/lib-dynamodb';
+
+const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
+const STAFF_USER_TABLE_NAME = process.env.STAFF_USER_TABLE || 'StaffUser';
 
 const dynamodbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(dynamodbClient);
 
 const ANALYTICS_TABLE_NAME = process.env.CALL_ANALYTICS_TABLE_NAME;
 const AGENT_PERFORMANCE_TABLE_NAME = process.env.AGENT_PERFORMANCE_TABLE_NAME; // Optional
+const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME; // For queue calls endpoint
 
 // Validate required environment variables
 if (!ANALYTICS_TABLE_NAME) {
@@ -145,6 +159,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return await getAgentAnalytics(event, userPerms, corsHeaders);
     } else if (path.includes('/summary')) {
       return await getAnalyticsSummary(event, userPerms, corsHeaders);
+    } else if (path.includes('/rankings')) {
+      return await getAgentRankings(event, userPerms, corsHeaders);
+    } else if (path.includes('/queue')) {
+      return await getQueueCalls(event, userPerms, corsHeaders);
     }
     
     return {
@@ -1540,4 +1558,1213 @@ function aggregatePerformanceRecords(records: any[]): any {
     periodEnd: records[records.length - 1]?.periodDate,
     daysIncluded: records.length
   };
+}
+
+// ========================================
+// Agent Rankings Endpoint
+// ========================================
+
+/**
+ * GET /analytics/rankings
+ * Returns agent rankings for a clinic based on performance metrics
+ * 
+ * Query Parameters:
+ * - clinicId: Required. Clinic to get rankings for
+ * - period: Optional. 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' | 'custom' (default: 'weekly')
+ * - criteria: Optional. Ranking criteria (default: 'performanceScore')
+ * - startTime: Optional. Start timestamp for custom period
+ * - endTime: Optional. End timestamp for custom period
+ * - limit: Optional. Max agents to return (default: 50, max: 100)
+ * - includeInactive: Optional. Include agents with 0 calls (default: false)
+ */
+async function getAgentRankings(
+  event: APIGatewayProxyEvent,
+  userPerms: UserPermissions,
+  corsHeaders: any
+): Promise<APIGatewayProxyResult> {
+  const queryParams = event.queryStringParameters || {};
+  const clinicId = queryParams.clinicId;
+  
+  if (!clinicId) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({ 
+        message: 'clinicId query parameter is required',
+        error: 'MISSING_CLINIC_ID'
+      })
+    };
+  }
+  
+  // Check authorization
+  const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
+  if (!hasClinicAccess(allowedClinics, clinicId)) {
+    return {
+      statusCode: 403,
+      headers: corsHeaders,
+      body: JSON.stringify({ 
+        message: 'Forbidden: You do not have access to this clinic',
+        error: 'INSUFFICIENT_PERMISSIONS'
+      })
+    };
+  }
+  
+  // Parse ranking options
+  const period = (queryParams.period || 'weekly') as RankingPeriod;
+  const criteria = (queryParams.criteria || 'performanceScore') as RankingCriteria;
+  const limit = Math.min(parseInt(queryParams.limit || '50', 10), 100);
+  const includeInactive = queryParams.includeInactive === 'true';
+  
+  // Calculate time range based on period
+  const now = Math.floor(Date.now() / 1000);
+  let startTime: number;
+  let endTime = now;
+  let periodLabel: string;
+  
+  if (period === 'custom') {
+    startTime = queryParams.startTime ? parseInt(queryParams.startTime, 10) : now - (7 * 24 * 60 * 60);
+    endTime = queryParams.endTime ? parseInt(queryParams.endTime, 10) : now;
+    periodLabel = `Custom: ${new Date(startTime * 1000).toLocaleDateString()} - ${new Date(endTime * 1000).toLocaleDateString()}`;
+  } else {
+    const periodConfig = getPeriodConfig(period, now);
+    startTime = periodConfig.startTime;
+    endTime = periodConfig.endTime;
+    periodLabel = periodConfig.label;
+  }
+  
+  // Validate time range
+  const timeValidation = validateTimeRange(startTime, endTime);
+  if (!timeValidation.valid) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify(timeValidation.error)
+    };
+  }
+  
+  console.log('[getAgentRankings] Fetching rankings', {
+    clinicId,
+    period,
+    criteria,
+    startTime,
+    endTime,
+    limit
+  });
+  
+  try {
+    // Fetch all call analytics for the clinic in the time range
+    const allAnalytics = await fetchClinicCallAnalytics(clinicId, startTime, endTime);
+    
+    if (allAnalytics.length === 0) {
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          clinicId,
+          period: { type: period, startTime, endTime, label: periodLabel },
+          criteria,
+          rankings: [],
+          totalAgents: 0,
+          clinicStats: {
+            avgPerformanceScore: 0,
+            totalCalls: 0,
+            avgSentimentScore: 0,
+            avgHandleTime: 0
+          },
+          highlights: {
+            topPerformer: null,
+            mostImproved: null,
+            callLeader: null,
+            sentimentLeader: null
+          },
+          generatedAt: new Date().toISOString(),
+          dataCompleteness: 'complete'
+        } as AgentRankingsResponse)
+      };
+    }
+    
+    // Group analytics by agent
+    const agentAnalyticsMap = new Map<string, any[]>();
+    allAnalytics.forEach(record => {
+      if (!record.agentId) return;
+      
+      if (!agentAnalyticsMap.has(record.agentId)) {
+        agentAnalyticsMap.set(record.agentId, []);
+      }
+      agentAnalyticsMap.get(record.agentId)!.push(record);
+    });
+    
+    // Get today's timestamp range for today-specific metrics
+    const todayStart = getTodayStartTimestamp();
+    const todayEnd = now;
+    
+    // Fetch today's analytics for each agent
+    const todayAnalytics = await fetchClinicCallAnalytics(clinicId, todayStart, todayEnd);
+    const agentTodayMap = new Map<string, any[]>();
+    todayAnalytics.forEach(record => {
+      if (!record.agentId) return;
+      if (!agentTodayMap.has(record.agentId)) {
+        agentTodayMap.set(record.agentId, []);
+      }
+      agentTodayMap.get(record.agentId)!.push(record);
+    });
+    
+    // Fetch agent presence data (status)
+    const agentIds = Array.from(agentAnalyticsMap.keys());
+    const agentPresenceMap = await fetchAgentPresenceData(agentIds, clinicId);
+    
+    // Fetch agent names from staff table
+    const agentNamesMap = await fetchAgentNames(agentIds);
+    
+    // Calculate metrics for each agent
+    const agentMetrics: AgentRankingEntry[] = [];
+    
+    for (const [agentId, agentCalls] of agentAnalyticsMap.entries()) {
+      if (agentCalls.length === 0 && !includeInactive) continue;
+      
+      const todayCalls = agentTodayMap.get(agentId) || [];
+      const presence = agentPresenceMap.get(agentId);
+      const nameInfo = agentNamesMap.get(agentId);
+      
+      const metrics = calculateAgentRankingMetrics(
+        agentId, 
+        agentCalls, 
+        clinicId, 
+        todayCalls,
+        presence,
+        nameInfo
+      );
+      agentMetrics.push(metrics);
+    }
+    
+    // Sort by the specified criteria
+    const sortedMetrics = sortAgentsByCriteria(agentMetrics, criteria);
+    
+    // Assign ranks and rank labels
+    sortedMetrics.forEach((agent, index) => {
+      agent.rank = index + 1;
+      agent.rankLabel = formatRankLabel(index + 1);
+    });
+    
+    // Apply limit
+    const topAgents = sortedMetrics.slice(0, limit);
+    
+    // Assign badges
+    topAgents.forEach(agent => {
+      agent.badges = calculateAgentBadges(agent, sortedMetrics);
+    });
+    
+    // Calculate clinic-wide stats
+    const clinicStats = calculateClinicStats(allAnalytics);
+    
+    // Calculate highlights
+    const highlights = calculateHighlights(sortedMetrics);
+    
+    // Fetch previous period data for trend calculation
+    const previousPeriod = getPreviousPeriod(period, startTime, endTime);
+    const previousAnalytics = await fetchClinicCallAnalytics(clinicId, previousPeriod.startTime, previousPeriod.endTime);
+    
+    // Calculate trends
+    if (previousAnalytics.length > 0) {
+      const previousAgentMap = new Map<string, any[]>();
+      previousAnalytics.forEach(record => {
+        if (!record.agentId) return;
+        if (!previousAgentMap.has(record.agentId)) {
+          previousAgentMap.set(record.agentId, []);
+        }
+        previousAgentMap.get(record.agentId)!.push(record);
+      });
+      
+      const previousMetrics = Array.from(previousAgentMap.entries()).map(([agentId, calls]) => 
+        calculateAgentRankingMetrics(agentId, calls, clinicId)
+      );
+      const previousSorted = sortAgentsByCriteria(previousMetrics, criteria);
+      previousSorted.forEach((agent, index) => {
+        agent.rank = index + 1;
+      });
+      
+      // Update trends for current agents
+      topAgents.forEach(agent => {
+        const previousAgent = previousSorted.find(p => p.agentId === agent.agentId);
+        if (previousAgent) {
+          const rankChange = previousAgent.rank - agent.rank;
+          const scoreChange = agent.performanceScore - previousAgent.performanceScore;
+          
+          agent.trend = {
+            direction: rankChange > 0 ? 'up' : rankChange < 0 ? 'down' : 'stable',
+            changePercent: previousAgent.performanceScore > 0 
+              ? Math.round((scoreChange / previousAgent.performanceScore) * 100)
+              : 0,
+            previousRank: previousAgent.rank
+          };
+        }
+      });
+    }
+    
+    const response: AgentRankingsResponse = {
+      clinicId,
+      period: {
+        type: period,
+        startTime,
+        endTime,
+        label: periodLabel
+      },
+      criteria,
+      rankings: topAgents,
+      totalAgents: sortedMetrics.length,
+      clinicStats,
+      highlights,
+      generatedAt: new Date().toISOString(),
+      dataCompleteness: allAnalytics.length >= 2000 ? 'partial' : 'complete',
+      warning: allAnalytics.length >= 2000 
+        ? 'Large dataset - results may be incomplete. Consider using a shorter time period.'
+        : undefined
+    };
+    
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: JSON.stringify(response)
+    };
+    
+  } catch (error: any) {
+    console.error('[getAgentRankings] Error:', error);
+    return {
+      statusCode: 500,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        message: 'Failed to fetch agent rankings',
+        error: error.message
+      })
+    };
+  }
+}
+
+/**
+ * Fetch all call analytics for a clinic within a time range
+ */
+async function fetchClinicCallAnalytics(
+  clinicId: string,
+  startTime: number,
+  endTime: number
+): Promise<any[]> {
+  const allAnalytics: any[] = [];
+  let lastEvaluatedKey: any = undefined;
+  let pageCount = 0;
+  const MAX_PAGES = 20; // Safety limit
+  
+  do {
+    const queryResult = await ddb.send(new QueryCommand({
+      TableName: ANALYTICS_TABLE_NAME,
+      IndexName: 'clinicId-timestamp-index',
+      KeyConditionExpression: 'clinicId = :clinicId AND #ts BETWEEN :start AND :end',
+      ExpressionAttributeNames: { '#ts': 'timestamp' },
+      ExpressionAttributeValues: {
+        ':clinicId': clinicId,
+        ':start': startTime,
+        ':end': endTime
+      },
+      Limit: 100,
+      ExclusiveStartKey: lastEvaluatedKey
+    }));
+    
+    if (queryResult.Items) {
+      allAnalytics.push(...queryResult.Items);
+    }
+    
+    lastEvaluatedKey = queryResult.LastEvaluatedKey;
+    pageCount++;
+    
+  } while (lastEvaluatedKey && pageCount < MAX_PAGES);
+  
+  return allAnalytics;
+}
+
+/**
+ * Calculate ranking metrics for a single agent
+ */
+function calculateAgentRankingMetrics(
+  agentId: string,
+  calls: any[],
+  clinicId: string,
+  todayCalls: any[] = [],
+  presence?: { status: string; },
+  nameInfo?: { givenName?: string; familyName?: string; }
+): AgentRankingEntry {
+  const totalCalls = calls.length;
+  const completedCalls = calls.filter(c => c.callStatus === 'completed').length;
+  const missedCalls = calls.filter(c => c.callStatus === 'abandoned' || c.callStatus === 'failed').length;
+  
+  // Today's specific metrics
+  const callsToday = todayCalls.length;
+  const missedToday = todayCalls.filter(c => c.callStatus === 'abandoned' || c.callStatus === 'failed').length;
+  
+  // Duration metrics
+  const totalDuration = calls.reduce((sum, c) => sum + (c.totalDuration || 0), 0);
+  const totalTalkTime = calls.reduce((sum, c) => sum + (c.talkTime || c.speakerMetrics?.agentTalkPercentage / 100 * (c.totalDuration || 0) || 0), 0);
+  const totalHoldTime = calls.reduce((sum, c) => sum + (c.holdTime || 0), 0);
+  
+  // Sentiment breakdown
+  const sentimentCounts = { positive: 0, negative: 0, neutral: 0, mixed: 0 };
+  calls.forEach(c => {
+    const sentiment = c.overallSentiment?.toLowerCase() || 'neutral';
+    if (sentimentCounts[sentiment as keyof typeof sentimentCounts] !== undefined) {
+      sentimentCounts[sentiment as keyof typeof sentimentCounts]++;
+    }
+  });
+  
+  const totalSentimentCalls = sentimentCounts.positive + sentimentCounts.negative + sentimentCounts.neutral + sentimentCounts.mixed;
+  
+  // Calculate weighted sentiment score (0-100)
+  // Positive = 100, Neutral = 50, Mixed = 50, Negative = 0
+  const sentimentScore = totalSentimentCalls > 0
+    ? Math.round((
+        (sentimentCounts.positive * 100) +
+        (sentimentCounts.neutral * 50) +
+        (sentimentCounts.mixed * 50) +
+        (sentimentCounts.negative * 0)
+      ) / totalSentimentCalls)
+    : 50;
+  
+  // Calculate satisfaction rating (positive calls percentage with minimum threshold)
+  // Uses a slightly more generous formula: positive + (neutral * 0.7) to account for neutral being OK
+  const satisfactionRating = totalSentimentCalls > 0
+    ? Math.round(((sentimentCounts.positive + sentimentCounts.neutral * 0.7) / totalSentimentCalls) * 100)
+    : 50;
+  
+  // Issue count
+  const issueCount = calls.reduce((sum, c) => sum + (c.detectedIssues?.length || 0), 0);
+  
+  // Audio quality average
+  const qualityScores = calls
+    .filter(c => c.audioQuality?.qualityScore)
+    .map(c => c.audioQuality.qualityScore);
+  const qualityScore = qualityScores.length > 0
+    ? Math.round((qualityScores.reduce((a, b) => a + b, 0) / qualityScores.length) * 10) / 10
+    : 3; // Default to 3 (average)
+  
+  // Calculate performance score (0-100)
+  // Factors: completion rate (40%), sentiment (30%), efficiency (20%), quality (10%)
+  const completionRate = totalCalls > 0 ? (completedCalls / totalCalls) * 100 : 0;
+  const issueFreeFactor = totalCalls > 0 ? Math.max(0, 100 - (issueCount / totalCalls * 50)) : 100;
+  const qualityFactor = ((qualityScore - 1) / 4) * 100; // Convert 1-5 to 0-100
+  
+  const performanceScore = Math.round(
+    (completionRate * 0.4) +
+    (sentimentScore * 0.3) +
+    (issueFreeFactor * 0.2) +
+    (qualityFactor * 0.1)
+  );
+  
+  // Calculate average handle time
+  const avgHandleTime = totalCalls > 0 ? Math.round(totalDuration / totalCalls) : 0;
+  
+  // Format agent name and initials
+  const firstName = nameInfo?.givenName || '';
+  const lastName = nameInfo?.familyName || '';
+  const agentName = firstName && lastName 
+    ? `${firstName} ${lastName}` 
+    : firstName || lastName || agentId.split('@')[0];
+  const initials = getInitials(firstName, lastName, agentId);
+  
+  // Get agent status
+  const { status, statusLabel } = formatAgentStatus(presence?.status);
+  
+  return {
+    rank: 0, // Will be assigned after sorting
+    rankLabel: '', // Will be assigned after sorting
+    agentId,
+    agentName,
+    firstName,
+    lastName,
+    initials,
+    clinicId,
+    status,
+    statusLabel,
+    performanceScore: Math.min(100, Math.max(0, performanceScore)),
+    totalCalls,
+    completedCalls,
+    missedCalls,
+    callsToday,
+    missedToday,
+    sentimentScore,
+    satisfactionRating,
+    positiveCallsPercent: totalSentimentCalls > 0 ? Math.round((sentimentCounts.positive / totalSentimentCalls) * 100) : 0,
+    negativeCallsPercent: totalSentimentCalls > 0 ? Math.round((sentimentCounts.negative / totalSentimentCalls) * 100) : 0,
+    avgHandleTime,
+    avgHandleTimeFormatted: formatDuration(avgHandleTime),
+    avgTalkTime: totalCalls > 0 ? Math.round(totalTalkTime / totalCalls) : 0,
+    avgHoldTime: totalCalls > 0 ? Math.round(totalHoldTime / totalCalls) : 0,
+    issueCount,
+    qualityScore,
+    trend: {
+      direction: 'stable',
+      changePercent: 0
+    }
+  };
+}
+
+/**
+ * Sort agents by the specified criteria
+ */
+function sortAgentsByCriteria(agents: AgentRankingEntry[], criteria: RankingCriteria): AgentRankingEntry[] {
+  const sortFns: Record<RankingCriteria, (a: AgentRankingEntry, b: AgentRankingEntry) => number> = {
+    performanceScore: (a, b) => b.performanceScore - a.performanceScore,
+    callVolume: (a, b) => b.totalCalls - a.totalCalls,
+    sentimentScore: (a, b) => b.sentimentScore - a.sentimentScore,
+    avgHandleTime: (a, b) => a.avgHandleTime - b.avgHandleTime, // Lower is better
+    customerSatisfaction: (a, b) => b.positiveCallsPercent - a.positiveCallsPercent,
+    efficiency: (a, b) => {
+      // Efficiency = high completion rate + low issues + reasonable handle time
+      const efficiencyA = (a.completedCalls / Math.max(1, a.totalCalls)) * 100 - (a.issueCount * 5);
+      const efficiencyB = (b.completedCalls / Math.max(1, b.totalCalls)) * 100 - (b.issueCount * 5);
+      return efficiencyB - efficiencyA;
+    }
+  };
+  
+  return [...agents].sort(sortFns[criteria] || sortFns.performanceScore);
+}
+
+/**
+ * Calculate badges for an agent based on their performance
+ */
+function calculateAgentBadges(agent: AgentRankingEntry, allAgents: AgentRankingEntry[]): AgentBadge[] {
+  const badges: AgentBadge[] = [];
+  const earnedAt = new Date().toISOString();
+  
+  // Top Performer - Rank #1
+  if (agent.rank === 1) {
+    badges.push({ ...AGENT_BADGES.TOP_PERFORMER, earnedAt });
+  }
+  
+  // Call Champion - 100+ calls
+  if (agent.totalCalls >= 100) {
+    badges.push({ ...AGENT_BADGES.CALL_CHAMPION, earnedAt });
+  }
+  
+  // Sentiment Star - 90%+ positive
+  if (agent.positiveCallsPercent >= 90) {
+    badges.push({ ...AGENT_BADGES.SENTIMENT_STAR, earnedAt });
+  }
+  
+  // Speed Demon - Below average handle time with good quality
+  const avgHandleTime = allAgents.reduce((sum, a) => sum + a.avgHandleTime, 0) / allAgents.length;
+  if (agent.avgHandleTime < avgHandleTime * 0.8 && agent.qualityScore >= 3.5) {
+    badges.push({ ...AGENT_BADGES.SPEED_DEMON, earnedAt });
+  }
+  
+  // Rising Star - Improved 20%+
+  if (agent.trend.direction === 'up' && agent.trend.changePercent >= 20) {
+    badges.push({ ...AGENT_BADGES.RISING_STAR, earnedAt });
+  }
+  
+  // Zero Issues - Flawless
+  if (agent.totalCalls >= 10 && agent.issueCount === 0) {
+    badges.push({ ...AGENT_BADGES.ZERO_ISSUES, earnedAt });
+  }
+  
+  // Customer Favorite - 95%+ satisfaction
+  if (agent.positiveCallsPercent >= 95 && agent.totalCalls >= 20) {
+    badges.push({ ...AGENT_BADGES.CUSTOMER_FAVORITE, earnedAt });
+  }
+  
+  return badges;
+}
+
+/**
+ * Calculate clinic-wide statistics
+ */
+function calculateClinicStats(analytics: any[]): AgentRankingsResponse['clinicStats'] {
+  if (analytics.length === 0) {
+    return {
+      avgPerformanceScore: 0,
+      totalCalls: 0,
+      avgSentimentScore: 0,
+      avgHandleTime: 0
+    };
+  }
+  
+  const totalCalls = analytics.length;
+  const totalDuration = analytics.reduce((sum, c) => sum + (c.totalDuration || 0), 0);
+  
+  // Sentiment breakdown
+  const sentimentCounts = { positive: 0, negative: 0, neutral: 0, mixed: 0 };
+  analytics.forEach(c => {
+    const sentiment = c.overallSentiment?.toLowerCase() || 'neutral';
+    if (sentimentCounts[sentiment as keyof typeof sentimentCounts] !== undefined) {
+      sentimentCounts[sentiment as keyof typeof sentimentCounts]++;
+    }
+  });
+  
+  const totalSentimentCalls = Object.values(sentimentCounts).reduce((a, b) => a + b, 0);
+  const avgSentimentScore = totalSentimentCalls > 0
+    ? Math.round((
+        (sentimentCounts.positive * 100) +
+        (sentimentCounts.neutral * 50) +
+        (sentimentCounts.mixed * 50) +
+        (sentimentCounts.negative * 0)
+      ) / totalSentimentCalls)
+    : 50;
+  
+  // Calculate average performance (simplified - just use sentiment and completion)
+  const completedCalls = analytics.filter(c => c.callStatus === 'completed').length;
+  const completionRate = (completedCalls / totalCalls) * 100;
+  const avgPerformanceScore = Math.round((completionRate * 0.5) + (avgSentimentScore * 0.5));
+  
+  return {
+    avgPerformanceScore,
+    totalCalls,
+    avgSentimentScore,
+    avgHandleTime: Math.round(totalDuration / totalCalls)
+  };
+}
+
+/**
+ * Calculate leaderboard highlights
+ */
+function calculateHighlights(sortedAgents: AgentRankingEntry[]): AgentRankingsResponse['highlights'] {
+  if (sortedAgents.length === 0) {
+    return {
+      topPerformer: null,
+      mostImproved: null,
+      callLeader: null,
+      sentimentLeader: null
+    };
+  }
+  
+  // Top performer is already first in the sorted list
+  const topPerformer = sortedAgents[0];
+  
+  // Most improved - highest positive trend change
+  const mostImproved = [...sortedAgents]
+    .filter(a => a.trend.direction === 'up')
+    .sort((a, b) => b.trend.changePercent - a.trend.changePercent)[0] || null;
+  
+  // Call leader - most calls
+  const callLeader = [...sortedAgents]
+    .sort((a, b) => b.totalCalls - a.totalCalls)[0] || null;
+  
+  // Sentiment leader - highest sentiment score
+  const sentimentLeader = [...sortedAgents]
+    .sort((a, b) => b.sentimentScore - a.sentimentScore)[0] || null;
+  
+  return {
+    topPerformer,
+    mostImproved,
+    callLeader,
+    sentimentLeader
+  };
+}
+
+/**
+ * Get period configuration (start time, end time, label)
+ */
+function getPeriodConfig(period: RankingPeriod, now: number): { startTime: number; endTime: number; label: string } {
+  const nowDate = new Date(now * 1000);
+  
+  switch (period) {
+    case 'daily': {
+      const startOfDay = new Date(nowDate);
+      startOfDay.setHours(0, 0, 0, 0);
+      return {
+        startTime: Math.floor(startOfDay.getTime() / 1000),
+        endTime: now,
+        label: `Today (${nowDate.toLocaleDateString()})`
+      };
+    }
+    
+    case 'weekly': {
+      const startOfWeek = new Date(nowDate);
+      startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
+      startOfWeek.setHours(0, 0, 0, 0);
+      return {
+        startTime: Math.floor(startOfWeek.getTime() / 1000),
+        endTime: now,
+        label: `Week of ${startOfWeek.toLocaleDateString()}`
+      };
+    }
+    
+    case 'monthly': {
+      const startOfMonth = new Date(nowDate.getFullYear(), nowDate.getMonth(), 1);
+      return {
+        startTime: Math.floor(startOfMonth.getTime() / 1000),
+        endTime: now,
+        label: `${nowDate.toLocaleString('default', { month: 'long' })} ${nowDate.getFullYear()}`
+      };
+    }
+    
+    case 'quarterly': {
+      const quarter = Math.floor(nowDate.getMonth() / 3);
+      const startOfQuarter = new Date(nowDate.getFullYear(), quarter * 3, 1);
+      return {
+        startTime: Math.floor(startOfQuarter.getTime() / 1000),
+        endTime: now,
+        label: `Q${quarter + 1} ${nowDate.getFullYear()}`
+      };
+    }
+    
+    case 'yearly': {
+      const startOfYear = new Date(nowDate.getFullYear(), 0, 1);
+      return {
+        startTime: Math.floor(startOfYear.getTime() / 1000),
+        endTime: now,
+        label: `${nowDate.getFullYear()}`
+      };
+    }
+    
+    default:
+      // Default to weekly
+      const defaultStart = new Date(nowDate);
+      defaultStart.setDate(defaultStart.getDate() - 7);
+      return {
+        startTime: Math.floor(defaultStart.getTime() / 1000),
+        endTime: now,
+        label: `Last 7 days`
+      };
+  }
+}
+
+/**
+ * Get previous period for trend comparison
+ */
+function getPreviousPeriod(
+  period: RankingPeriod,
+  currentStart: number,
+  currentEnd: number
+): { startTime: number; endTime: number } {
+  const duration = currentEnd - currentStart;
+  
+  return {
+    startTime: currentStart - duration,
+    endTime: currentStart - 1
+  };
+}
+
+/**
+ * Get today's start timestamp (midnight local time)
+ */
+function getTodayStartTimestamp(): number {
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  return Math.floor(now.getTime() / 1000);
+}
+
+/**
+ * Fetch agent presence data for multiple agents
+ */
+async function fetchAgentPresenceData(
+  agentIds: string[],
+  clinicId: string
+): Promise<Map<string, { status: string }>> {
+  const presenceMap = new Map<string, { status: string }>();
+  
+  if (!AGENT_PRESENCE_TABLE_NAME || agentIds.length === 0) {
+    return presenceMap;
+  }
+  
+  try {
+    // Batch get presence data (DynamoDB BatchGetItem supports up to 100 items)
+    const batches: string[][] = [];
+    for (let i = 0; i < agentIds.length; i += 100) {
+      batches.push(agentIds.slice(i, i + 100));
+    }
+    
+    for (const batch of batches) {
+      const keys = batch.map(agentId => ({ agentId }));
+      
+      const result = await ddb.send(new BatchGetCommand({
+        RequestItems: {
+          [AGENT_PRESENCE_TABLE_NAME]: {
+            Keys: keys,
+            ProjectionExpression: 'agentId, #status',
+            ExpressionAttributeNames: { '#status': 'status' }
+          }
+        }
+      }));
+      
+      const responses = result.Responses?.[AGENT_PRESENCE_TABLE_NAME] || [];
+      responses.forEach((item: any) => {
+        presenceMap.set(item.agentId, { status: item.status || 'Offline' });
+      });
+    }
+    
+    // Set Offline for agents not found in presence table
+    agentIds.forEach(agentId => {
+      if (!presenceMap.has(agentId)) {
+        presenceMap.set(agentId, { status: 'Offline' });
+      }
+    });
+    
+  } catch (error: any) {
+    console.error('[fetchAgentPresenceData] Error:', error.message);
+    // Return empty map, agents will show as Offline
+  }
+  
+  return presenceMap;
+}
+
+/**
+ * Fetch agent names from staff user table
+ */
+async function fetchAgentNames(
+  agentIds: string[]
+): Promise<Map<string, { givenName?: string; familyName?: string }>> {
+  const namesMap = new Map<string, { givenName?: string; familyName?: string }>();
+  
+  if (!STAFF_USER_TABLE_NAME || agentIds.length === 0) {
+    return namesMap;
+  }
+  
+  try {
+    // Batch get staff user data
+    const batches: string[][] = [];
+    for (let i = 0; i < agentIds.length; i += 100) {
+      batches.push(agentIds.slice(i, i + 100));
+    }
+    
+    for (const batch of batches) {
+      const keys = batch.map(email => ({ email: email.toLowerCase() }));
+      
+      const result = await ddb.send(new BatchGetCommand({
+        RequestItems: {
+          [STAFF_USER_TABLE_NAME]: {
+            Keys: keys,
+            ProjectionExpression: 'email, givenName, familyName'
+          }
+        }
+      }));
+      
+      const responses = result.Responses?.[STAFF_USER_TABLE_NAME] || [];
+      responses.forEach((item: any) => {
+        namesMap.set(item.email, {
+          givenName: item.givenName,
+          familyName: item.familyName
+        });
+      });
+    }
+    
+  } catch (error: any) {
+    console.error('[fetchAgentNames] Error:', error.message);
+    // Return empty map, names will fall back to email
+  }
+  
+  return namesMap;
+}
+
+/**
+ * Format rank as ordinal (1st, 2nd, 3rd, #4, etc.)
+ */
+function formatRankLabel(rank: number): string {
+  if (rank === 1) return '1st';
+  if (rank === 2) return '2nd';
+  if (rank === 3) return '3rd';
+  return `#${rank}`;
+}
+
+/**
+ * Format duration in seconds to M:SS or H:MM:SS format
+ */
+function formatDuration(seconds: number): string {
+  if (seconds < 0) return '0:00';
+  
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }
+  return `${minutes}:${secs.toString().padStart(2, '0')}`;
+}
+
+/**
+ * Get initials from first name and last name
+ */
+function getInitials(firstName: string, lastName: string, email: string): string {
+  if (firstName && lastName) {
+    return `${firstName.charAt(0).toUpperCase()}${lastName.charAt(0).toUpperCase()}`;
+  }
+  if (firstName) {
+    return firstName.substring(0, 2).toUpperCase();
+  }
+  if (lastName) {
+    return lastName.substring(0, 2).toUpperCase();
+  }
+  // Fall back to email
+  const emailName = email.split('@')[0];
+  return emailName.substring(0, 2).toUpperCase();
+}
+
+/**
+ * Format agent status to display-friendly format
+ */
+function formatAgentStatus(status?: string): { status: AgentStatus; statusLabel: string } {
+  const normalizedStatus = status?.toLowerCase() || 'offline';
+  
+  switch (normalizedStatus) {
+    case 'online':
+      return { status: 'Available', statusLabel: 'Available' };
+    case 'oncall':
+    case 'on_call':
+      return { status: 'OnCall', statusLabel: 'On Call' };
+    case 'ringing':
+      return { status: 'ringing', statusLabel: 'Ringing' };
+    case 'dialing':
+      return { status: 'dialing', statusLabel: 'Dialing' };
+    case 'busy':
+      return { status: 'Busy', statusLabel: 'Busy' };
+    case 'offline':
+    default:
+      return { status: 'Offline', statusLabel: 'Offline' };
+  }
+}
+
+// ========================================
+// Queue Calls Endpoint
+// ========================================
+
+/**
+ * Queue call status types
+ */
+type QueueCallStatus = 'queued' | 'ringing' | 'connected' | 'active' | 'on_hold' | 'transferring';
+
+/**
+ * Individual call in queue
+ */
+interface QueueCallEntry {
+  callId: string;
+  phoneNumber: string;
+  callerName?: string;
+  queuePosition: number;
+  status: QueueCallStatus;
+  statusLabel: string;
+  priority: 'vip' | 'high' | 'normal' | 'low';
+  priorityLabel: string;
+  
+  // Time metrics
+  waitTime: number;  // seconds
+  waitTimeFormatted: string;  // "M:SS"
+  queuedAt: string;  // ISO date
+  
+  // Assignment info
+  assignedAgentId?: string;
+  assignedAgentName?: string;
+  
+  // Call metadata
+  direction: 'inbound' | 'outbound';
+  isVip: boolean;
+  callbackRequested?: boolean;
+}
+
+/**
+ * Queue calls response
+ */
+interface QueueCallsResponse {
+  clinicId: string;
+  
+  // Calls by status
+  queuedCalls: QueueCallEntry[];
+  ringingCalls: QueueCallEntry[];
+  activeCalls: QueueCallEntry[];
+  onHoldCalls: QueueCallEntry[];
+  
+  // Summary counts
+  summary: {
+    totalQueued: number;
+    totalRinging: number;
+    totalActive: number;
+    totalOnHold: number;
+    avgWaitTime: number;
+    avgWaitTimeFormatted: string;
+    longestWait: number;
+    longestWaitFormatted: string;
+  };
+  
+  // Metadata
+  generatedAt: string;
+}
+
+/**
+ * GET /analytics/queue
+ * Returns all calls in queue with their status and details
+ * 
+ * Query Parameters:
+ * - clinicId: Required. Clinic to get queue for
+ * - status: Optional. Filter by status ('queued', 'ringing', 'active', 'on_hold', 'all')
+ * - limit: Optional. Max calls to return (default: 100)
+ */
+async function getQueueCalls(
+  event: APIGatewayProxyEvent,
+  userPerms: UserPermissions,
+  corsHeaders: any
+): Promise<APIGatewayProxyResult> {
+  const queryParams = event.queryStringParameters || {};
+  const clinicId = queryParams.clinicId;
+  
+  if (!clinicId) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({ 
+        message: 'clinicId query parameter is required',
+        error: 'MISSING_CLINIC_ID'
+      })
+    };
+  }
+  
+  // Check authorization
+  const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
+  if (!hasClinicAccess(allowedClinics, clinicId)) {
+    return {
+      statusCode: 403,
+      headers: corsHeaders,
+      body: JSON.stringify({ 
+        message: 'Forbidden: You do not have access to this clinic',
+        error: 'INSUFFICIENT_PERMISSIONS'
+      })
+    };
+  }
+  
+  // Check if CallQueue table is configured
+  if (!CALL_QUEUE_TABLE_NAME) {
+    return {
+      statusCode: 500,
+      headers: corsHeaders,
+      body: JSON.stringify({ 
+        message: 'Call queue table not configured',
+        error: 'MISSING_CONFIGURATION'
+      })
+    };
+  }
+  
+  const statusFilter = queryParams.status || 'all';
+  const limit = Math.min(parseInt(queryParams.limit || '100', 10), 500);
+  
+  console.log('[getQueueCalls] Fetching queue calls', {
+    clinicId,
+    statusFilter,
+    limit
+  });
+  
+  try {
+    // Query all calls for this clinic from CallQueue table
+    const allCalls: any[] = [];
+    let lastEvaluatedKey: any = undefined;
+    
+    do {
+      const queryResult = await ddb.send(new QueryCommand({
+        TableName: CALL_QUEUE_TABLE_NAME,
+        KeyConditionExpression: 'clinicId = :clinicId',
+        ExpressionAttributeValues: {
+          ':clinicId': clinicId
+        },
+        Limit: 200,
+        ExclusiveStartKey: lastEvaluatedKey
+      }));
+      
+      if (queryResult.Items) {
+        allCalls.push(...queryResult.Items);
+      }
+      
+      lastEvaluatedKey = queryResult.LastEvaluatedKey;
+      
+      // Stop if we have enough calls
+      if (allCalls.length >= limit * 2) break;
+      
+    } while (lastEvaluatedKey);
+    
+    const now = Date.now();
+    
+    // Process and categorize calls
+    const queuedCalls: QueueCallEntry[] = [];
+    const ringingCalls: QueueCallEntry[] = [];
+    const activeCalls: QueueCallEntry[] = [];
+    const onHoldCalls: QueueCallEntry[] = [];
+    
+    let totalWaitTime = 0;
+    let waitingCount = 0;
+    let longestWait = 0;
+    
+    for (const call of allCalls) {
+      const callStatus = call.status?.toLowerCase() || 'unknown';
+      
+      // Skip completed/ended calls
+      if (['completed', 'ended', 'abandoned', 'failed', 'hungup'].includes(callStatus)) {
+        continue;
+      }
+      
+      // Calculate wait time
+      const queueEntryTime = call.queueEntryTime 
+        ? (typeof call.queueEntryTime === 'number' 
+            ? (call.queueEntryTime > 9999999999 ? call.queueEntryTime : call.queueEntryTime * 1000)
+            : new Date(call.queueEntryTime).getTime())
+        : call.queueEntryTimeIso 
+          ? new Date(call.queueEntryTimeIso).getTime() 
+          : now;
+      
+      const waitTime = Math.max(0, Math.floor((now - queueEntryTime) / 1000));
+      
+      // Determine priority
+      const isVip = call.isVip || call.priority === 'vip' || call.vipStatus === true;
+      const priority = isVip ? 'vip' : (call.priority || 'normal');
+      
+      const queueCall: QueueCallEntry = {
+        callId: call.callId,
+        phoneNumber: call.phoneNumber || call.callerPhone || 'Unknown',
+        callerName: call.callerName || call.customerName,
+        queuePosition: call.queuePosition || 0,
+        status: callStatus as QueueCallStatus,
+        statusLabel: formatQueueStatus(callStatus),
+        priority: priority as QueueCallEntry['priority'],
+        priorityLabel: formatPriority(priority),
+        waitTime,
+        waitTimeFormatted: formatDuration(waitTime),
+        queuedAt: call.queueEntryTimeIso || new Date(queueEntryTime).toISOString(),
+        assignedAgentId: call.assignedAgentId || call.agentId,
+        assignedAgentName: call.assignedAgentName,
+        direction: call.direction || 'inbound',
+        isVip,
+        callbackRequested: call.callbackRequested || false
+      };
+      
+      // Categorize by status
+      switch (callStatus) {
+        case 'queued':
+        case 'waiting':
+          queuedCalls.push(queueCall);
+          totalWaitTime += waitTime;
+          waitingCount++;
+          longestWait = Math.max(longestWait, waitTime);
+          break;
+        case 'ringing':
+          ringingCalls.push(queueCall);
+          break;
+        case 'connected':
+        case 'active':
+          activeCalls.push(queueCall);
+          break;
+        case 'on_hold':
+        case 'hold':
+          onHoldCalls.push(queueCall);
+          break;
+      }
+    }
+    
+    // Sort queued calls by position and priority
+    queuedCalls.sort((a, b) => {
+      // VIP calls first
+      if (a.isVip && !b.isVip) return -1;
+      if (!a.isVip && b.isVip) return 1;
+      // Then by queue position
+      return a.queuePosition - b.queuePosition;
+    });
+    
+    // Apply status filter if specified
+    let response: QueueCallsResponse;
+    
+    if (statusFilter !== 'all') {
+      const filteredCalls = {
+        queued: statusFilter === 'queued' ? queuedCalls.slice(0, limit) : [],
+        ringing: statusFilter === 'ringing' ? ringingCalls.slice(0, limit) : [],
+        active: statusFilter === 'active' ? activeCalls.slice(0, limit) : [],
+        on_hold: statusFilter === 'on_hold' ? onHoldCalls.slice(0, limit) : []
+      };
+      
+      response = {
+        clinicId,
+        queuedCalls: filteredCalls.queued,
+        ringingCalls: filteredCalls.ringing,
+        activeCalls: filteredCalls.active,
+        onHoldCalls: filteredCalls.on_hold,
+        summary: {
+          totalQueued: queuedCalls.length,
+          totalRinging: ringingCalls.length,
+          totalActive: activeCalls.length,
+          totalOnHold: onHoldCalls.length,
+          avgWaitTime: waitingCount > 0 ? Math.round(totalWaitTime / waitingCount) : 0,
+          avgWaitTimeFormatted: formatDuration(waitingCount > 0 ? Math.round(totalWaitTime / waitingCount) : 0),
+          longestWait,
+          longestWaitFormatted: formatDuration(longestWait)
+        },
+        generatedAt: new Date().toISOString()
+      };
+    } else {
+      response = {
+        clinicId,
+        queuedCalls: queuedCalls.slice(0, limit),
+        ringingCalls: ringingCalls.slice(0, limit),
+        activeCalls: activeCalls.slice(0, limit),
+        onHoldCalls: onHoldCalls.slice(0, limit),
+        summary: {
+          totalQueued: queuedCalls.length,
+          totalRinging: ringingCalls.length,
+          totalActive: activeCalls.length,
+          totalOnHold: onHoldCalls.length,
+          avgWaitTime: waitingCount > 0 ? Math.round(totalWaitTime / waitingCount) : 0,
+          avgWaitTimeFormatted: formatDuration(waitingCount > 0 ? Math.round(totalWaitTime / waitingCount) : 0),
+          longestWait,
+          longestWaitFormatted: formatDuration(longestWait)
+        },
+        generatedAt: new Date().toISOString()
+      };
+    }
+    
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: JSON.stringify(response)
+    };
+    
+  } catch (error: any) {
+    console.error('[getQueueCalls] Error:', error);
+    return {
+      statusCode: 500,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        message: 'Failed to fetch queue calls',
+        error: error.message
+      })
+    };
+  }
+}
+
+/**
+ * Format queue call status to display-friendly label
+ */
+function formatQueueStatus(status: string): string {
+  switch (status?.toLowerCase()) {
+    case 'queued':
+    case 'waiting':
+      return 'Waiting';
+    case 'ringing':
+      return 'Ringing';
+    case 'connected':
+    case 'active':
+      return 'Active';
+    case 'on_hold':
+    case 'hold':
+      return 'On Hold';
+    case 'transferring':
+      return 'Transferring';
+    default:
+      return status || 'Unknown';
+  }
+}
+
+/**
+ * Format priority to display-friendly label
+ */
+function formatPriority(priority: string): string {
+  switch (priority?.toLowerCase()) {
+    case 'vip':
+      return 'VIP';
+    case 'high':
+      return 'High';
+    case 'normal':
+      return 'Normal';
+    case 'low':
+      return 'Low';
+    default:
+      return 'Normal';
+  }
 }

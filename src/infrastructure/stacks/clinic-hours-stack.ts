@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn, Tags } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -8,6 +8,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as events from 'aws-cdk-lib/aws-events'; // <-- NEW IMPORT
 import * as targets from 'aws-cdk-lib/aws-events-targets'; // <-- NEW IMPORT
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 // Import clinic data to dynamically configure the scheduler
@@ -27,6 +28,60 @@ export class ClinicHoursStack extends Stack {
   constructor(scope: Construct, id: string, props: ClinicHoursStackProps) {
     super(scope, id, props);
 
+    // Tags & alarms helpers
+    const baseTags: Record<string, string> = {
+      Stack: Stack.of(this).stackName,
+      Service: 'ClinicHours',
+      ManagedBy: 'cdk',
+    };
+    const applyTags = (resource: Construct, extra?: Record<string, string>) => {
+      Object.entries(baseTags).forEach(([k, v]) => Tags.of(resource).add(k, v));
+      if (extra) Object.entries(extra).forEach(([k, v]) => Tags.of(resource).add(k, v));
+    };
+    applyTags(this);
+
+    const createLambdaErrorAlarm = (fn: lambda.IFunction, name: string) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}ErrorAlarm`, {
+        metric: fn.metricErrors({ period: Duration.minutes(1), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${name} Lambda has errors`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createLambdaThrottleAlarm = (fn: lambda.IFunction, name: string) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}ThrottleAlarm`, {
+        metric: fn.metricThrottles({ period: Duration.minutes(1), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${name} Lambda is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createLambdaDurationAlarm = (fn: lambda.IFunction, name: string, thresholdMs: number) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}DurationAlarm`, {
+        metric: fn.metricDuration({ period: Duration.minutes(5), statistic: 'Maximum' }),
+        threshold: thresholdMs,
+        evaluationPeriods: 2,
+        alarmDescription: `Alert when ${name} Lambda p99 duration exceeds ${thresholdMs}ms (~80% of timeout)`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createDynamoThrottleAlarm = (tableName: string, idSuffix: string) =>
+      new cloudwatch.Alarm(this, `${idSuffix}ThrottleAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/DynamoDB',
+          metricName: 'ThrottledRequests',
+          dimensionsMap: { TableName: tableName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when DynamoDB table ${tableName} is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
     // ========================================
     // DYNAMODB TABLE
     // ========================================
@@ -37,6 +92,7 @@ export class ClinicHoursStack extends Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
     });
+    applyTags(this.clinicHoursTable, { Table: 'clinic-hours' });
 
     // ========================================
     // API GATEWAY SETUP
@@ -130,6 +186,7 @@ export class ClinicHoursStack extends Stack {
         CLINIC_HOURS_TABLE: this.clinicHoursTable.tableName,
       },
     });
+    applyTags(this.hoursCrudFn, { Function: 'clinic-hours-crud' });
 
     // DynamoDB permissions for CRUD Fn (Omitted for brevity)
     this.hoursCrudFn.addToRolePolicy(new iam.PolicyStatement({
@@ -176,6 +233,7 @@ export class ClinicHoursStack extends Stack {
         ALL_CLINIC_IDS: allClinicIds, // Dynamically populated with clinic IDs
       },
     });
+    applyTags(hoursSchedulerFn, { Function: 'hours-scheduler' });
 
     // Grant read/write access to the DynamoDB table
     this.clinicHoursTable.grantReadWriteData(hoursSchedulerFn); 
@@ -190,6 +248,20 @@ export class ClinicHoursStack extends Stack {
     });
 
     rule.addTarget(new targets.LambdaFunction(hoursSchedulerFn));
+
+    // ========================================
+    // CloudWatch Alarms
+    // ========================================
+    [
+      { fn: this.hoursCrudFn, name: 'clinic-hours-crud', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
+      { fn: hoursSchedulerFn, name: 'hours-scheduler', durationMs: Math.floor(Duration.seconds(60).toMilliseconds() * 0.8) },
+    ].forEach(({ fn, name, durationMs }) => {
+      createLambdaErrorAlarm(fn, name);
+      createLambdaThrottleAlarm(fn, name);
+      createLambdaDurationAlarm(fn, name, durationMs);
+    });
+
+    createDynamoThrottleAlarm(this.clinicHoursTable.tableName, 'ClinicHoursTable');
 
     // ========================================
     // API ROUTES (Existing code)

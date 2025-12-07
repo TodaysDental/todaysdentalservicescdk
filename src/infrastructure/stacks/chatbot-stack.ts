@@ -1,5 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
-import { Fn } from 'aws-cdk-lib';
+import { Fn, Tags } from 'aws-cdk-lib';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
@@ -11,6 +11,7 @@ import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as route53targets from 'aws-cdk-lib/aws-route53-targets';
 import { Construct } from 'constructs';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as path from 'path';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
@@ -32,6 +33,82 @@ export class ChatbotStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: ChatbotStackProps) {
     super(scope, id, props);
 
+    // Tags + alarm helpers
+    const baseTags: Record<string, string> = {
+      Stack: cdk.Stack.of(this).stackName,
+      Service: 'Chatbot',
+      ManagedBy: 'cdk',
+    };
+    const applyTags = (resource: Construct, extra?: Record<string, string>) => {
+      Object.entries(baseTags).forEach(([k, v]) => Tags.of(resource).add(k, v));
+      if (extra) Object.entries(extra).forEach(([k, v]) => Tags.of(resource).add(k, v));
+    };
+    applyTags(this);
+
+    const createLambdaErrorAlarm = (fn: lambda.IFunction, name: string) => {
+      new cloudwatch.Alarm(this, `${fn.node.id}ErrorAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Lambda',
+          metricName: 'Errors',
+          dimensionsMap: { FunctionName: fn.functionName },
+          statistic: 'Sum',
+          period: cdk.Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${name} Lambda has errors`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    const createLambdaThrottleAlarm = (fn: lambda.IFunction, name: string) => {
+      new cloudwatch.Alarm(this, `${fn.node.id}ThrottleAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Lambda',
+          metricName: 'Throttles',
+          dimensionsMap: { FunctionName: fn.functionName },
+          statistic: 'Sum',
+          period: cdk.Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${name} Lambda is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    const createLambdaDurationAlarm = (fn: lambda.IFunction, name: string, thresholdMs: number) => {
+      new cloudwatch.Alarm(this, `${fn.node.id}DurationAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Lambda',
+          metricName: 'Duration',
+          dimensionsMap: { FunctionName: fn.functionName },
+          statistic: 'Maximum',
+          period: cdk.Duration.minutes(5),
+        }),
+        threshold: thresholdMs,
+        evaluationPeriods: 2,
+        alarmDescription: `Alert when ${name} Lambda p99 duration exceeds ${thresholdMs}ms (~80% of timeout)`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    const createDynamoThrottleAlarm = (tableName: string, idSuffix: string) => {
+      new cloudwatch.Alarm(this, `${idSuffix}ThrottleAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/DynamoDB',
+          metricName: 'ThrottledRequests',
+          dimensionsMap: { TableName: tableName },
+          statistic: 'Sum',
+          period: cdk.Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when DynamoDB table ${tableName} is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
     // Use common CORS configuration
     const corsConfig = getCdkCorsConfig();
     const corsErrorHeaders = getCorsErrorHeaders();
@@ -42,8 +119,9 @@ export class ChatbotStack extends cdk.Stack {
     // Note: Clinic configuration is read directly from clinics.json, not stored in database
 
     // Conversations Table - stores all chat messages and sessions
-    this.conversationsTable = new dynamodb.Table(this, 'ConversationsTable', {
-      tableName: `${this.stackName}-Conversations`,
+    // Note: Using 'ConversationsTableV2' logical ID to recreate table after state drift
+    this.conversationsTable = new dynamodb.Table(this, 'ConversationTableN1', {
+      tableName: `${this.stackName}-ConversationN1`,
       partitionKey: { name: 'sessionId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -51,6 +129,7 @@ export class ChatbotStack extends cdk.Stack {
       pointInTimeRecovery: true,
       timeToLiveAttribute: 'ttl', // Messages expire after 30 days
     });
+    applyTags(this.conversationsTable, { Table: 'conversations' });
 
     // Add GSI for clinic-based conversation queries
     this.conversationsTable.addGlobalSecondaryIndex({
@@ -91,6 +170,7 @@ export class ChatbotStack extends cdk.Stack {
         ALLOWED_ORIGINS: corsConfig.allowOrigins.join(','),
       },
     });
+    applyTags(connectHandler, { Function: 'websocket-connect' });
 
     // WebSocket Disconnect Handler
     const disconnectHandler = new NodejsFunction(this, 'WebSocketDisconnectHandler', {
@@ -104,6 +184,7 @@ export class ChatbotStack extends cdk.Stack {
         CONVERSATIONS_TABLE: this.conversationsTable.tableName,
       },
     });
+    applyTags(disconnectHandler, { Function: 'websocket-disconnect' });
 
     // Import existing DynamoDB tables from other stacks
     if (props.clinicHoursTableName) {
@@ -141,6 +222,7 @@ export class ChatbotStack extends cdk.Stack {
         CLINIC_INSURANCE_TABLE: this.clinicInsuranceTable?.tableName || 'ClinicInsurance',
       },
     });
+    applyTags(messageHandler, { Function: 'websocket-message' });
 
     // Note: Clinic data is accessed directly from DynamoDB tables in websocket-message.ts
     // No need for separate CRUD handlers since dedicated service stacks handle data management
@@ -158,6 +240,7 @@ export class ChatbotStack extends cdk.Stack {
         ALLOWED_ORIGINS: corsConfig.allowOrigins.join(','),
       },
     });
+    applyTags(chatHistoryHandler, { Function: 'chat-history' });
 
     // =========================================================================
     // IAM Permissions
@@ -339,6 +422,23 @@ export class ChatbotStack extends cdk.Stack {
       authorizer: cognitoAuthorizer,
       authorizationType: apigateway.AuthorizationType.CUSTOM,
     });
+
+    // CloudWatch alarms
+    const lambdaAlarmTargets: Array<{ fn: lambda.IFunction; name: string; durationMs: number }> = [
+      { fn: connectHandler, name: 'websocket-connect', durationMs: Math.floor(cdk.Duration.seconds(30).toMilliseconds() * 0.8) },
+      { fn: disconnectHandler, name: 'websocket-disconnect', durationMs: Math.floor(cdk.Duration.seconds(30).toMilliseconds() * 0.8) },
+      { fn: messageHandler, name: 'websocket-message', durationMs: Math.floor(cdk.Duration.minutes(5).toMilliseconds() * 0.8) },
+      { fn: chatHistoryHandler, name: 'chat-history', durationMs: Math.floor(cdk.Duration.seconds(30).toMilliseconds() * 0.8) },
+    ];
+
+    lambdaAlarmTargets.forEach(({ fn, name, durationMs }) => {
+      createLambdaErrorAlarm(fn, name);
+      createLambdaThrottleAlarm(fn, name);
+      createLambdaDurationAlarm(fn, name, durationMs);
+    });
+
+    createDynamoThrottleAlarm(this.conversationsTable.tableName, 'ConversationTableN1');
+
 
     // =========================================================================
     // REST API Custom Domain Mapping

@@ -1,12 +1,13 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBDocumentClient, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { ChimeSDKMeetingsClient, CreateMeetingCommand, CreateAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
+import { ChimeSDKMeetingsClient, CreateMeetingCommand, CreateAttendeeCommand, DeleteAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { randomUUID } from 'crypto';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { verifyIdToken } from '../../shared/utils/auth-helper';
 import { getUserIdFromJwt, isSuperAdminFromJwt } from '../../shared/utils/permissions-helper';
 import { TTL_POLICY, calculateSessionExpiry } from './config/ttl-policy';
+import { DistributedLock } from './utils/distributed-lock';
 
 const ddb = getDynamoDBClient();
 
@@ -24,6 +25,11 @@ if (!AGENT_PRESENCE_TABLE_NAME) {
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 if (!CALL_QUEUE_TABLE_NAME) {
     throw new Error('CALL_QUEUE_TABLE_NAME environment variable is required');
+}
+
+const LOCKS_TABLE_NAME = process.env.LOCKS_TABLE_NAME;
+if (!LOCKS_TABLE_NAME) {
+    throw new Error('LOCKS_TABLE_NAME environment variable is required');
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
@@ -277,64 +283,94 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             
             // Make sure the call has a valid meeting
             if (oldestCall.meetingInfo?.MeetingId) {
-              // Create an attendee for this agent in the call's meeting
-              const attendeeResponse = await chimeClient.send(new CreateAttendeeCommand({
-                MeetingId: oldestCall.meetingInfo.MeetingId,
-                ExternalUserId: agentId
-              }));
-              
-              if (!attendeeResponse.Attendee) {
-                console.error('[start-session] Failed to create attendee for queued call');
-                continue;
+              // FIX #1: Use distributed lock to prevent race conditions
+              const lock = new DistributedLock(ddb, {
+                tableName: LOCKS_TABLE_NAME,
+                lockKey: `queue-assignment-${oldestCall.callId}`,
+                ttlSeconds: 10, // Longer TTL for session start which may be slower
+                maxRetries: 3,
+                retryDelayMs: 100
+              });
+
+              const lockAcquired = await lock.acquire();
+              if (!lockAcquired) {
+                console.warn(`[start-session] Failed to acquire lock for call ${oldestCall.callId} - another agent may be claiming it`);
+                continue; // Try next queued call
               }
-              
-              // CRITICAL FIX: Atomic claim operation - only assign if still queued and not already assigned
+
+              let attendeeCreated: any = null;
               try {
+                // Create an attendee for this agent in the call's meeting
+                const attendeeResponse = await chimeClient.send(new CreateAttendeeCommand({
+                  MeetingId: oldestCall.meetingInfo.MeetingId,
+                  ExternalUserId: agentId
+                }));
+                
+                if (!attendeeResponse.Attendee) {
+                  console.error('[start-session] Failed to create attendee for queued call');
+                  await lock.release();
+                  continue;
+                }
+                attendeeCreated = attendeeResponse.Attendee;
+                
+                // CRITICAL FIX: Atomic claim operation - only assign if still queued and not already assigned
+                try {
+                  await ddb.send(new UpdateCommand({
+                    TableName: CALL_QUEUE_TABLE_NAME,
+                    Key: { 
+                      clinicId: oldestCall.clinicId, 
+                      queuePosition: oldestCall.queuePosition 
+                    },
+                    UpdateExpression: 'SET #status = :status, agentIds = :agentIds, claimedAt = :timestamp',
+                    ConditionExpression: '#status = :queuedStatus AND (attribute_not_exists(agentIds) OR size(agentIds) = :emptyArray)',
+                    ExpressionAttributeNames: { '#status': 'status' },
+                    ExpressionAttributeValues: {
+                      ':status': 'ringing',
+                      ':agentIds': [agentId],
+                      ':queuedStatus': 'queued',
+                      ':timestamp': new Date().toISOString(),
+                      ':emptyArray': 0
+                    }
+                  }));
+                } catch (claimErr: any) {
+                  if (claimErr.name === 'ConditionalCheckFailedException') {
+                    console.warn(`[start-session] Race condition - queued call ${oldestCall.callId} already claimed by another agent`);
+                    // Clean up the orphaned attendee we created
+                    if (attendeeCreated?.AttendeeId) {
+                      await chimeClient.send(new DeleteAttendeeCommand({
+                        MeetingId: oldestCall.meetingInfo.MeetingId,
+                        AttendeeId: attendeeCreated.AttendeeId
+                      })).catch(err => console.warn('[start-session] Failed to cleanup orphaned attendee:', err.message));
+                    }
+                    await lock.release();
+                    continue; // Try next queued call
+                  }
+                  throw claimErr;
+                }
+                
+                // Update agent's presence to show the ringing call
                 await ddb.send(new UpdateCommand({
-                  TableName: CALL_QUEUE_TABLE_NAME,
-                  Key: { 
-                    clinicId: oldestCall.clinicId, 
-                    queuePosition: oldestCall.queuePosition 
-                  },
-                  UpdateExpression: 'SET #status = :status, agentIds = :agentIds, claimedAt = :timestamp',
-                  ConditionExpression: '#status = :queuedStatus AND (attribute_not_exists(agentIds) OR size(agentIds) = :emptyArray)',
-                  ExpressionAttributeNames: { '#status': 'status' },
+                  TableName: AGENT_PRESENCE_TABLE_NAME,
+                  Key: { agentId },
+                  UpdateExpression: 'SET ringingCallId = :callId, callStatus = :status, ' + 
+                                   'inboundMeetingInfo = :meeting, inboundAttendeeInfo = :attendee, ' +
+                                   'ringingCallTime = :time',
                   ExpressionAttributeValues: {
+                    ':callId': oldestCall.callId,
                     ':status': 'ringing',
-                    ':agentIds': [agentId],
-                    ':queuedStatus': 'queued',
-                    ':timestamp': new Date().toISOString(),
-                    ':emptyArray': 0
+                    ':meeting': oldestCall.meetingInfo,
+                    ':attendee': attendeeCreated,
+                    ':time': new Date().toISOString()
                   }
                 }));
-              } catch (claimErr: any) {
-                if (claimErr.name === 'ConditionalCheckFailedException') {
-                  console.warn(`[start-session] Race condition - queued call ${oldestCall.callId} already claimed by another agent`);
-                  continue; // Try next queued call
-                }
-                throw claimErr;
+                
+                console.log(`[start-session] Assigned queued call ${oldestCall.callId} to agent ${agentId}`);
+                
+                // Only assign one call, even if there are multiple queued calls
+                break;
+              } finally {
+                await lock.release();
               }
-              
-              // Update agent's presence to show the ringing call
-              await ddb.send(new UpdateCommand({
-                TableName: AGENT_PRESENCE_TABLE_NAME,
-                Key: { agentId },
-                UpdateExpression: 'SET ringingCallId = :callId, callStatus = :status, ' + 
-                                 'inboundMeetingInfo = :meeting, inboundAttendeeInfo = :attendee, ' +
-                                 'ringingCallTime = :time',
-                ExpressionAttributeValues: {
-                  ':callId': oldestCall.callId,
-                  ':status': 'ringing',
-                  ':meeting': oldestCall.meetingInfo,
-                  ':attendee': attendeeResponse.Attendee,
-                  ':time': new Date().toISOString()
-                }
-              }));
-              
-              console.log(`[start-session] Assigned queued call ${oldestCall.callId} to agent ${agentId}`);
-              
-              // Only assign one call, even if there are multiple queued calls
-              break;
             } else {
               console.error('[start-session] Queued call has no valid meeting info:', oldestCall);
             }

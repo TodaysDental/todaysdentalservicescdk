@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn, Tags } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -6,6 +6,7 @@ import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface AdminStackProps extends StackProps {
@@ -40,6 +41,15 @@ export interface AdminStackProps extends StackProps {
   heartbeatFnArn?: string;
   holdCallFnArn?: string;
   resumeCallFnArn?: string;
+  // ** NEW: Add Call, DTMF, Notes, Conference **
+  addCallFnArn?: string;
+  sendDtmfFnArn?: string;
+  callNotesFnArn?: string;
+  conferenceCallFnArn?: string;
+  // ** NEW: Join Call Operations **
+  joinQueuedCallFnArn?: string;
+  joinActiveCallFnArn?: string;
+  getJoinableCallsFnArn?: string;
   // ** NEW: Call Recording **
   getRecordingFnArn?: string;
 }
@@ -53,12 +63,92 @@ export class AdminStack extends Stack {
   public readonly mePresenceFn?: lambdaNode.NodejsFunction;
   public readonly getAnalyticsFn?: lambdaNode.NodejsFunction; // ** NEW: Analytics Query Lambda **
   public readonly getDetailedAnalyticsFn?: lambdaNode.NodejsFunction; // ** NEW: Detailed Analytics Lambda **
+  public readonly getCallCenterDashboardFn?: lambdaNode.NodejsFunction; // ** NEW: Call Center Dashboard Lambda **
   // ...existing code...
   public readonly api: apigw.RestApi;
   public readonly authorizer: apigw.RequestAuthorizer;
 
   constructor(scope: Construct, id: string, props: AdminStackProps) {
     super(scope, id, props);
+
+    // Apply stack-wide tags for cost allocation and discovery
+    const baseTags: Record<string, string> = {
+      Stack: Stack.of(this).stackName,
+      Service: 'Admin',
+      ManagedBy: 'cdk',
+    };
+    const applyTags = (resource: Construct, extra?: Record<string, string>) => {
+      Object.entries(baseTags).forEach(([key, value]) => Tags.of(resource).add(key, value));
+      if (extra) {
+        Object.entries(extra).forEach(([key, value]) => Tags.of(resource).add(key, value));
+      }
+    };
+    applyTags(this);
+
+    // Helper functions for alarms
+    const createLambdaErrorAlarm = (fn: lambda.IFunction, displayName: string) => {
+      new cloudwatch.Alarm(this, `${fn.node.id}ErrorAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Lambda',
+          metricName: 'Errors',
+          dimensionsMap: { FunctionName: fn.functionName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${displayName} Lambda has errors`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    const createLambdaThrottleAlarm = (fn: lambda.IFunction, displayName: string) => {
+      new cloudwatch.Alarm(this, `${fn.node.id}ThrottleAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Lambda',
+          metricName: 'Throttles',
+          dimensionsMap: { FunctionName: fn.functionName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${displayName} Lambda is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    const createLambdaDurationAlarm = (fn: lambda.IFunction, displayName: string, thresholdMs: number) => {
+      new cloudwatch.Alarm(this, `${fn.node.id}DurationAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Lambda',
+          metricName: 'Duration',
+          dimensionsMap: { FunctionName: fn.functionName },
+          statistic: 'Maximum',
+          period: Duration.minutes(5),
+        }),
+        threshold: thresholdMs,
+        evaluationPeriods: 2,
+        alarmDescription: `Alert when ${displayName} Lambda p99 duration exceeds ${thresholdMs}ms (~80% of timeout)`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    const createDynamoThrottleAlarm = (tableName: string, idSuffix: string) => {
+      new cloudwatch.Alarm(this, `${idSuffix}ThrottleAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/DynamoDB',
+          metricName: 'ThrottledRequests',
+          dimensionsMap: { TableName: tableName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when DynamoDB table ${tableName} is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
 
     // ========================================
     // API GATEWAY SETUP
@@ -142,13 +232,16 @@ export class AdminStack extends Stack {
         JWT_SECRET: props.jwtSecretValue ?? '',
       },
     });
+    applyTags(this.registerFnV3, { Function: 'register' });
 
     // Grant permissions to DynamoDB tables
     const staffUserTable = dynamodb.Table.fromTableName(this, 'StaffUserTable', props.staffUserTableName);
+    applyTags(staffUserTable, { Table: 'staff-user' });
     staffUserTable.grantReadWriteData(this.registerFnV3);
     
     if (props.staffClinicInfoTableName) {
       const staffClinicInfoTable = dynamodb.Table.fromTableName(this, 'StaffClinicInfoTableImport', props.staffClinicInfoTableName);
+      applyTags(staffClinicInfoTable, { Table: 'staff-clinic-info' });
       staffClinicInfoTable.grantReadWriteData(this.registerFnV3);
     }
 
@@ -169,12 +262,14 @@ export class AdminStack extends Stack {
         JWT_SECRET: props.jwtSecretValue ?? '',
       },
     });
+    applyTags(this.usersFn, { Function: 'users' });
 
     // Grant permissions to DynamoDB tables
     staffUserTable.grantReadWriteData(this.usersFn);
     
     if (props.staffClinicInfoTableName) {
       const staffClinicInfoTable2 = dynamodb.Table.fromTableName(this, 'StaffClinicInfoTableImport2', props.staffClinicInfoTableName);
+      applyTags(staffClinicInfoTable2, { Table: 'staff-clinic-info' });
       staffClinicInfoTable2.grantReadWriteData(this.usersFn);
     }
     if (props.staffClinicInfoTableName) {
@@ -199,6 +294,7 @@ export class AdminStack extends Stack {
         STAFF_USER_TABLE: props.staffUserTableName,
       },
     });
+    applyTags(this.directoryLookupFn, { Function: 'directory-lookup' });
 
     // Grant read permissions to StaffUser table for directory lookup
     staffUserTable.grantReadData(this.directoryLookupFn);
@@ -217,6 +313,7 @@ export class AdminStack extends Stack {
             TEAMS_TABLE_NAME: props.teamsTableName || '', // Pass the teams table name for group requests
         },
     });
+    applyTags(this.listRequestsFn, { Function: 'list-requests' });
     
     // Grant permission to query the Favors Table via GSIs for sent/received/team lookups
     this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
@@ -281,6 +378,7 @@ export class AdminStack extends Stack {
         CLINIC_HOURS_TABLE: props.clinicHoursTableName,
       },
     });
+    applyTags(this.meFn, { Function: 'me' });
 
     // MePresence lambda owned by Admin stack. It will read AGENT_PRESENCE_TABLE_NAME
     // from its environment. infra.ts will set this env var to the proper table name.
@@ -296,6 +394,7 @@ export class AdminStack extends Stack {
         JWT_SECRET: props.jwtSecretValue ?? '',
       },
     });
+    applyTags(this.mePresenceFn, { Function: 'presence' });
 
     // Grant read permissions to the AgentPresence table if provided
     if (props.agentPresenceTableName) {
@@ -318,18 +417,54 @@ export class AdminStack extends Stack {
         bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
         environment: {
           CALL_ANALYTICS_TABLE_NAME: props.analyticsTableName,
+          CALL_QUEUE_TABLE_NAME: props.callQueueTableName || '',
+          AGENT_PRESENCE_TABLE_NAME: props.agentPresenceTableName || '',
+          STAFF_USER_TABLE: props.staffUserTableName || '',
           AWS_REGION_OVERRIDE: Stack.of(this).region,
         },
       });
+      applyTags(this.getAnalyticsFn, { Function: 'get-analytics' });
 
       // Grant read permissions to the analytics table
       this.getAnalyticsFn.addToRolePolicy(new iam.PolicyStatement({
-        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:BatchGetItem'],
         resources: [
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsTableName}`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsTableName}/index/*`,
         ],
       }));
+
+      // Grant read permissions to call queue table for queue endpoint
+      if (props.callQueueTableName) {
+        this.getAnalyticsFn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['dynamodb:Query', 'dynamodb:GetItem'],
+          resources: [
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.callQueueTableName}`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.callQueueTableName}/index/*`,
+          ],
+        }));
+      }
+
+      // Grant read permissions to agent presence table for rankings
+      if (props.agentPresenceTableName) {
+        this.getAnalyticsFn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['dynamodb:Query', 'dynamodb:GetItem', 'dynamodb:BatchGetItem'],
+          resources: [
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.agentPresenceTableName}`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.agentPresenceTableName}/index/*`,
+          ],
+        }));
+      }
+
+      // Grant read permissions to staff user table for agent names
+      if (props.staffUserTableName) {
+        this.getAnalyticsFn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['dynamodb:GetItem', 'dynamodb:BatchGetItem'],
+          resources: [
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.staffUserTableName}`,
+          ],
+        }));
+      }
     }
 
     // ** NEW: Detailed Analytics Lambda **
@@ -350,6 +485,7 @@ export class AdminStack extends Stack {
           AWS_REGION_OVERRIDE: Stack.of(this).region,
         },
       });
+      applyTags(this.getDetailedAnalyticsFn, { Function: 'get-detailed-analytics' });
 
       // Grant read permissions to all required tables
       const tableResources: string[] = [
@@ -386,6 +522,42 @@ export class AdminStack extends Stack {
       }
     }
 
+    // ** NEW: Call Center Dashboard Lambda **
+    // Provides unified dashboard metrics for call center operations
+    if (props.analyticsTableName && props.callQueueTableName && props.agentPresenceTableName) {
+      this.getCallCenterDashboardFn = new lambdaNode.NodejsFunction(this, 'GetCallCenterDashboardFn', {
+        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'get-call-center-dashboard.ts'),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_20_X,
+        memorySize: 256,
+        timeout: Duration.seconds(30),
+        bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+        environment: {
+          CALL_ANALYTICS_TABLE_NAME: props.analyticsTableName,
+          CALL_QUEUE_TABLE_NAME: props.callQueueTableName,
+          AGENT_PRESENCE_TABLE_NAME: props.agentPresenceTableName,
+          AWS_REGION_OVERRIDE: Stack.of(this).region,
+        },
+      });
+      applyTags(this.getCallCenterDashboardFn, { Function: 'get-call-center-dashboard' });
+
+      // Grant read permissions to all required tables
+      this.getCallCenterDashboardFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
+        resources: [
+          // Call Analytics table
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsTableName}/index/*`,
+          // Call Queue table
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.callQueueTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.callQueueTableName}/index/*`,
+          // Agent Presence table
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.agentPresenceTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.agentPresenceTableName}/index/*`,
+        ],
+      }));
+    }
+
     // Note: User roles are now stored in DynamoDB StaffUser table, not Cognito groups
 
     // Grant read access to tables for me API
@@ -399,6 +571,40 @@ export class AdminStack extends Stack {
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicHoursTableName}`,
       ],
     }));
+
+    // ========================================
+    // CloudWatch Alarms (Lambda + DynamoDB)
+    // ========================================
+    const lambdaAlarmTargets: Array<{ fn: lambda.IFunction; name: string; durationMs: number }> = [
+      { fn: this.registerFnV3, name: 'register', durationMs: Duration.seconds(24).toMilliseconds() },
+      { fn: this.usersFn, name: 'users', durationMs: Duration.seconds(24).toMilliseconds() },
+      { fn: this.directoryLookupFn, name: 'directory-lookup', durationMs: Duration.seconds(8).toMilliseconds() },
+      { fn: this.listRequestsFn, name: 'list-requests', durationMs: Duration.seconds(12).toMilliseconds() },
+      { fn: this.meFn, name: 'me', durationMs: Duration.seconds(8).toMilliseconds() },
+    ];
+
+    if (this.mePresenceFn) lambdaAlarmTargets.push({ fn: this.mePresenceFn, name: 'presence', durationMs: Duration.seconds(8).toMilliseconds() });
+    if (this.getAnalyticsFn) lambdaAlarmTargets.push({ fn: this.getAnalyticsFn, name: 'get-analytics', durationMs: Duration.seconds(24).toMilliseconds() });
+    if (this.getDetailedAnalyticsFn) lambdaAlarmTargets.push({ fn: this.getDetailedAnalyticsFn, name: 'get-detailed-analytics', durationMs: Duration.seconds(24).toMilliseconds() });
+    if (this.getCallCenterDashboardFn) lambdaAlarmTargets.push({ fn: this.getCallCenterDashboardFn, name: 'get-call-center-dashboard', durationMs: Duration.seconds(24).toMilliseconds() });
+
+    lambdaAlarmTargets.forEach(({ fn, name, durationMs }) => {
+      createLambdaErrorAlarm(fn, name);
+      createLambdaThrottleAlarm(fn, name);
+      createLambdaDurationAlarm(fn, name, durationMs);
+    });
+
+    // DynamoDB throttle alarms for imported tables
+    createDynamoThrottleAlarm(props.staffUserTableName, 'StaffUserTable');
+    if (props.staffClinicInfoTableName) createDynamoThrottleAlarm(props.staffClinicInfoTableName, 'StaffClinicInfoTable');
+    createDynamoThrottleAlarm(props.favorsTableName, 'FavorsTable');
+    if (props.teamsTableName) createDynamoThrottleAlarm(props.teamsTableName, 'TeamsTable');
+    createDynamoThrottleAlarm(props.clinicHoursTableName, 'ClinicHoursTable');
+    if (props.analyticsTableName) createDynamoThrottleAlarm(props.analyticsTableName, 'AnalyticsTable');
+    if (props.callQueueTableName) createDynamoThrottleAlarm(props.callQueueTableName, 'CallQueueTable');
+    if (props.recordingMetadataTableName) createDynamoThrottleAlarm(props.recordingMetadataTableName, 'RecordingMetadataTable');
+    if (props.chatHistoryTableName) createDynamoThrottleAlarm(props.chatHistoryTableName, 'ChatHistoryTable');
+    if (props.clinicsTableName) createDynamoThrottleAlarm(props.clinicsTableName, 'ClinicsTable');
 
     // ========================================
     // DOMAIN MAPPING
@@ -526,11 +732,37 @@ export class AdminStack extends Stack {
         methodResponses: [{ statusCode: '200' }],
       });
 
+      // GET /analytics/rankings?clinicId={clinicId} - Agent rankings/leaderboard
+      const rankingsRes = analyticsRes.addResource('rankings');
+      rankingsRes.addMethod('GET', new apigw.LambdaIntegration(this.getAnalyticsFn), {
+        authorizer: this.authorizer,
+        authorizationType: apigw.AuthorizationType.CUSTOM,
+        methodResponses: [{ statusCode: '200' }],
+      });
+
+      // GET /analytics/queue?clinicId={clinicId} - Get all calls in queue
+      const queueRes = analyticsRes.addResource('queue');
+      queueRes.addMethod('GET', new apigw.LambdaIntegration(this.getAnalyticsFn), {
+        authorizer: this.authorizer,
+        authorizationType: apigw.AuthorizationType.CUSTOM,
+        methodResponses: [{ statusCode: '200' }],
+      });
+
       // GET /analytics/detailed/{callId} - Comprehensive analytics with history, insights, and transcript
       if (this.getDetailedAnalyticsFn) {
         const detailedRes = analyticsRes.addResource('detailed');
         const detailedCallIdRes = detailedRes.addResource('{callId}');
         detailedCallIdRes.addMethod('GET', new apigw.LambdaIntegration(this.getDetailedAnalyticsFn), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
+          methodResponses: [{ statusCode: '200' }],
+        });
+      }
+
+      // GET /analytics/dashboard?clinicId={clinicId} - Unified call center dashboard metrics
+      if (this.getCallCenterDashboardFn) {
+        const dashboardRes = analyticsRes.addResource('dashboard');
+        dashboardRes.addMethod('GET', new apigw.LambdaIntegration(this.getCallCenterDashboardFn), {
           authorizer: this.authorizer,
           authorizationType: apigw.AuthorizationType.CUSTOM,
           methodResponses: [{ statusCode: '200' }],
@@ -544,7 +776,8 @@ export class AdminStack extends Stack {
     // create a circular dependency.
     if (props.startSessionFnArn || props.stopSessionFnArn || props.outboundCallFnArn || props.transferCallFnArn || 
         props.callAcceptedFnArn || props.callRejectedFnArn || props.callHungupFnArn || props.leaveCallFnArn || 
-        props.heartbeatFnArn || props.holdCallFnArn || props.resumeCallFnArn) {
+        props.heartbeatFnArn || props.holdCallFnArn || props.resumeCallFnArn ||
+        props.addCallFnArn || props.sendDtmfFnArn || props.callNotesFnArn || props.conferenceCallFnArn) {
       const chimeApiRoot = this.api.root.getResource('chime') ?? this.api.root.addResource('chime');
 
       if (props.startSessionFnArn) {
@@ -718,6 +951,180 @@ export class AdminStack extends Stack {
         
         const resumeCallRes = chimeApiRoot.addResource('resume-call');
         resumeCallRes.addMethod('POST', new apigw.LambdaIntegration(importedResumeCall, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+      }
+
+      // Add Call route (POST /chime/add-call)
+      if (props.addCallFnArn) {
+        const importedAddCall = lambda.Function.fromFunctionArn(
+          this,
+          'ImportedAddCallFn',
+          props.addCallFnArn
+        );
+        
+        importedAddCall.addPermission('ApiGatewayInvokeAddCall', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/add-call', '*')
+        });
+        
+        const addCallRes = chimeApiRoot.addResource('add-call');
+        addCallRes.addMethod('POST', new apigw.LambdaIntegration(importedAddCall, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+      }
+
+      // Send DTMF route (POST /chime/send-dtmf)
+      if (props.sendDtmfFnArn) {
+        const importedSendDtmf = lambda.Function.fromFunctionArn(
+          this,
+          'ImportedSendDtmfFn',
+          props.sendDtmfFnArn
+        );
+        
+        importedSendDtmf.addPermission('ApiGatewayInvokeSendDtmf', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/send-dtmf', '*')
+        });
+        
+        const sendDtmfRes = chimeApiRoot.addResource('send-dtmf');
+        sendDtmfRes.addMethod('POST', new apigw.LambdaIntegration(importedSendDtmf, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+      }
+
+      // Call Notes routes (GET, POST, PUT, DELETE /chime/call-notes)
+      if (props.callNotesFnArn) {
+        const importedCallNotes = lambda.Function.fromFunctionArn(
+          this,
+          'ImportedCallNotesFn',
+          props.callNotesFnArn
+        );
+        
+        importedCallNotes.addPermission('ApiGatewayInvokeCallNotes', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/call-notes', '*')
+        });
+        importedCallNotes.addPermission('ApiGatewayInvokeCallNotesWithId', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/call-notes/*', '*')
+        });
+        
+        const callNotesRes = chimeApiRoot.addResource('call-notes');
+        // GET all notes for current call
+        callNotesRes.addMethod('GET', new apigw.LambdaIntegration(importedCallNotes, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+        // POST create new note
+        callNotesRes.addMethod('POST', new apigw.LambdaIntegration(importedCallNotes, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+        // PUT update note
+        callNotesRes.addMethod('PUT', new apigw.LambdaIntegration(importedCallNotes, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+        // DELETE note
+        callNotesRes.addMethod('DELETE', new apigw.LambdaIntegration(importedCallNotes, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+        
+        // Notes with call ID path parameter
+        const callNotesWithIdRes = callNotesRes.addResource('{callId}');
+        callNotesWithIdRes.addMethod('GET', new apigw.LambdaIntegration(importedCallNotes, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+      }
+
+      // Conference Call route (POST /chime/conference-call)
+      if (props.conferenceCallFnArn) {
+        const importedConferenceCall = lambda.Function.fromFunctionArn(
+          this,
+          'ImportedConferenceCallFn',
+          props.conferenceCallFnArn
+        );
+        
+        importedConferenceCall.addPermission('ApiGatewayInvokeConferenceCall', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/conference-call', '*')
+        });
+        
+        const conferenceCallRes = chimeApiRoot.addResource('conference-call');
+        conferenceCallRes.addMethod('POST', new apigw.LambdaIntegration(importedConferenceCall, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+      }
+    }
+
+    // ========================================
+    // CALL CENTER JOIN OPERATIONS (Queue & Active Calls)
+    // ========================================
+    if (props.joinQueuedCallFnArn || props.joinActiveCallFnArn || props.getJoinableCallsFnArn) {
+      const callCenterRoot = this.api.root.getResource('call-center') ?? this.api.root.addResource('call-center');
+
+      // POST /call-center/join-queued-call - Manual call pickup from queue
+      if (props.joinQueuedCallFnArn) {
+        const importedJoinQueued = lambda.Function.fromFunctionArn(
+          this,
+          'ImportedJoinQueuedCallFn',
+          props.joinQueuedCallFnArn
+        );
+        
+        importedJoinQueued.addPermission('ApiGatewayInvokeJoinQueuedCall', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/call-center/join-queued-call', '*')
+        });
+        
+        const joinQueuedRes = callCenterRoot.addResource('join-queued-call');
+        joinQueuedRes.addMethod('POST', new apigw.LambdaIntegration(importedJoinQueued, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+      }
+
+      // POST /call-center/join-active-call - Supervisor monitoring/barge-in
+      if (props.joinActiveCallFnArn) {
+        const importedJoinActive = lambda.Function.fromFunctionArn(
+          this,
+          'ImportedJoinActiveCallFn',
+          props.joinActiveCallFnArn
+        );
+        
+        importedJoinActive.addPermission('ApiGatewayInvokeJoinActiveCall', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/call-center/join-active-call', '*')
+        });
+        
+        const joinActiveRes = callCenterRoot.addResource('join-active-call');
+        joinActiveRes.addMethod('POST', new apigw.LambdaIntegration(importedJoinActive, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+      }
+
+      // GET /call-center/get-joinable-calls - List queued & active calls
+      if (props.getJoinableCallsFnArn) {
+        const importedGetJoinable = lambda.Function.fromFunctionArn(
+          this,
+          'ImportedGetJoinableCallsFn',
+          props.getJoinableCallsFnArn
+        );
+        
+        importedGetJoinable.addPermission('ApiGatewayInvokeGetJoinableCalls', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/call-center/get-joinable-calls', '*')
+        });
+        
+        const getJoinableRes = callCenterRoot.addResource('get-joinable-calls');
+        getJoinableRes.addMethod('GET', new apigw.LambdaIntegration(importedGetJoinable, { proxy: true }), {
           authorizer: this.authorizer,
           authorizationType: apigw.AuthorizationType.CUSTOM,
         });

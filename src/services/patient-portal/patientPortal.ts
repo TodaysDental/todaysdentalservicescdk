@@ -2,7 +2,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { APIContracts, APIControllers, Constants } from 'authorizenet';
@@ -15,7 +15,8 @@ const {
     DEFAULT_SESSION_TABLE,
     DEFAULT_SMS_LOG_TABLE,
     TF_SFTP_HOST,
-    TF_SFTP_PASSWORD
+    TF_SFTP_PASSWORD,
+    PATIENT_PORTAL_METRICS_TABLE
 } = process.env;
 
 const API_BASE_URL = 'https://api.opendental.com/api/v1';
@@ -78,6 +79,31 @@ const docClient = DynamoDBDocumentClient.from(dynamoClient);
 const snsClient = new SNSClient({});
 const s3Client = new S3Client({});
 
+/**
+ * Increment a per-day portal metric for a clinic.
+ * Best-effort: failures are logged but do not block the main workflow.
+ */
+async function recordPortalMetric(clinicId: string, metric: PortalMetricKey, increment: number = 1) {
+    if (!PATIENT_PORTAL_METRICS_TABLE) return;
+
+    const metricDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD (UTC)
+
+    try {
+        await docClient.send(new UpdateCommand({
+            TableName: PATIENT_PORTAL_METRICS_TABLE,
+            Key: { clinicId, metricDate },
+            UpdateExpression: 'ADD #metric :inc SET lastUpdated = :now',
+            ExpressionAttributeNames: { '#metric': metric },
+            ExpressionAttributeValues: {
+                ':inc': increment,
+                ':now': new Date().toISOString(),
+            },
+        }));
+    } catch (err) {
+        console.error('Failed to record portal metric', { clinicId, metric, error: err });
+    }
+}
+
 interface Patient {
     PatNum: number;
     FName: string;
@@ -108,6 +134,16 @@ interface CardDetails {
     expirationDate: string;
     cardCode: string;
 }
+
+type PortalMetricKey =
+    | 'appointmentsBooked'
+    | 'appointmentFailures'
+    | 'newPatientRegistrations'
+    | 'registrationFailures'
+    | 'documentUploads'
+    | 'documentUploadFailures'
+    | 'paymentsSucceeded'
+    | 'paymentFailures';
 
 const validateSession = async (event: APIGatewayProxyEvent, clinicId: string): Promise<Patient> => {
     const authHeader = event.headers?.Authorization || event.headers?.authorization;
@@ -1493,7 +1529,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 break;
             case routeKey === 'POST /patients':
             case normalizedResource === '/patients' && httpMethod === 'POST':
-                response = await createPatient(body, clinicConfig);
+                try {
+                    response = await createPatient(body, clinicConfig);
+                    await recordPortalMetric(clinicId, 'newPatientRegistrations');
+                } catch (err) {
+                    await recordPortalMetric(clinicId, 'registrationFailures');
+                    throw err;
+                }
                 break;
 	    // GET /treatmentplans  (PatNum from query or session)
 case normalizedResource === '/treatmentplans' && httpMethod === 'GET': {
@@ -1674,7 +1716,13 @@ case normalizedResource === '/treatmentplans' && httpMethod === 'GET': {
             }
             case normalizedResource === '/appointments' && httpMethod === 'POST': {
                 patient = await validateSession(event, clinicId);
-                response = await createAppointment(body, patient, clinicConfig);
+                try {
+                    response = await createAppointment(body, patient, clinicConfig);
+                    await recordPortalMetric(clinicId, 'appointmentsBooked');
+                } catch (err) {
+                    await recordPortalMetric(clinicId, 'appointmentFailures');
+                    throw err;
+                }
                 break;
             }
             case normalizedResource === '/payments' && httpMethod === 'POST': {
@@ -1733,20 +1781,27 @@ case normalizedResource === '/treatmentplans' && httpMethod === 'GET': {
 
                 paymentData.PayAmt = parseFloat(amount.toFixed(2));
 
-                const paymentResult = await chargeCreditCard(body.cardDetails, amount, clinicConfig);
-                const openDentalPayment = await createPayment(paymentData, clinicConfig);
+                try {
+                    const paymentResult = await chargeCreditCard(body.cardDetails, amount, clinicConfig);
+                    const openDentalPayment = await createPayment(paymentData, clinicConfig);
 
-                response = {
-                    ...paymentResult,
-                    patNum,
-                    amountCharged: amount,
-                    openDentalPayment: {
-                        PayNum: openDentalPayment.PayNum,
-                        PayAmt: openDentalPayment.PayAmt,
-                        PayDate: openDentalPayment.PayDate,
-                        PatNum: openDentalPayment.PatNum
-                    }
-                };
+                    response = {
+                        ...paymentResult,
+                        patNum,
+                        amountCharged: amount,
+                        openDentalPayment: {
+                            PayNum: openDentalPayment.PayNum,
+                            PayAmt: openDentalPayment.PayAmt,
+                            PayDate: openDentalPayment.PayDate,
+                            PatNum: openDentalPayment.PatNum
+                        }
+                    };
+
+                    await recordPortalMetric(clinicId, 'paymentsSucceeded');
+                } catch (err) {
+                    await recordPortalMetric(clinicId, 'paymentFailures');
+                    throw err;
+                }
                 break;
             }
             case /\/documents\/\d+\/download$/.test(normalizedResource) && httpMethod === 'GET': {
@@ -1860,8 +1915,10 @@ case normalizedResource === '/treatmentplans' && httpMethod === 'GET': {
                     
                     console.log('Document uploaded successfully:', uploadResponse.data);
                     response = uploadResponse.data;
+                    await recordPortalMetric(clinicId, 'documentUploads');
                 } catch (err: any) {
                     console.error('Error uploading document:', err);
+                    await recordPortalMetric(clinicId, 'documentUploadFailures');
                     if (err.response?.status === 400) {
                         throw { status: 400, message: err.response?.data?.message || 'Invalid document data. Please check file format and try again.' };
                     }

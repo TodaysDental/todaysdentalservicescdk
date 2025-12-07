@@ -1,10 +1,11 @@
-import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn, Tags } from 'aws-cdk-lib';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as nodelambda from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import { Construct } from 'constructs';
 import * as path from 'path';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface PatientPortalApptTypesStackProps extends StackProps {
@@ -20,6 +21,60 @@ export class PatientPortalApptTypesStack extends Stack {
   constructor(scope: Construct, id: string, props: PatientPortalApptTypesStackProps) {
     super(scope, id, props);
 
+    // Tags & alarm helpers
+    const baseTags: Record<string, string> = {
+      Stack: Stack.of(this).stackName,
+      Service: 'PatientPortalApptTypes',
+      ManagedBy: 'cdk',
+    };
+    const applyTags = (resource: Construct, extra?: Record<string, string>) => {
+      Object.entries(baseTags).forEach(([k, v]) => Tags.of(resource).add(k, v));
+      if (extra) Object.entries(extra).forEach(([k, v]) => Tags.of(resource).add(k, v));
+    };
+    applyTags(this);
+
+    const createLambdaErrorAlarm = (fn: lambda.IFunction, name: string) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}ErrorAlarm`, {
+        metric: fn.metricErrors({ period: Duration.minutes(1), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${name} Lambda has errors`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createLambdaThrottleAlarm = (fn: lambda.IFunction, name: string) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}ThrottleAlarm`, {
+        metric: fn.metricThrottles({ period: Duration.minutes(1), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${name} Lambda is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createLambdaDurationAlarm = (fn: lambda.IFunction, name: string, thresholdMs: number) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}DurationAlarm`, {
+        metric: fn.metricDuration({ period: Duration.minutes(5), statistic: 'Maximum' }),
+        threshold: thresholdMs,
+        evaluationPeriods: 2,
+        alarmDescription: `Alert when ${name} Lambda p99 duration exceeds ${thresholdMs}ms (~80% of timeout)`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createDynamoThrottleAlarm = (tableName: string, idSuffix: string) =>
+      new cloudwatch.Alarm(this, `${idSuffix}ThrottleAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/DynamoDB',
+          metricName: 'ThrottledRequests',
+          dimensionsMap: { TableName: tableName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when DynamoDB table ${tableName} is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
     // ========================================
     // 1. DYNAMODB TABLE
     // ========================================
@@ -31,6 +86,7 @@ export class PatientPortalApptTypesStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
       tableName: `${this.stackName}-ApptTypes`,
     });
+    applyTags(this.apptTypesTable, { Table: 'appt-types' });
 
     // ========================================
     // 2. API GATEWAY SETUP (BASE)
@@ -117,6 +173,7 @@ export class PatientPortalApptTypesStack extends Stack {
         SORT_KEY: 'label', // <-- CHANGED to label
       },
     });
+    applyTags(this.apptTypesFn, { Function: 'appt-types' });
 
     this.apptTypesTable.grantReadWriteData(this.apptTypesFn);
 
@@ -160,6 +217,19 @@ export class PatientPortalApptTypesStack extends Stack {
       authorizationType: apigateway.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '401' }, { statusCode: '403' }],
     });
+
+    // ========================================
+    // CloudWatch Alarms
+    // ========================================
+    [
+      { fn: this.apptTypesFn, name: 'appt-types', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
+    ].forEach(({ fn, name, durationMs }) => {
+      createLambdaErrorAlarm(fn, name);
+      createLambdaThrottleAlarm(fn, name);
+      createLambdaDurationAlarm(fn, name, durationMs);
+    });
+
+    createDynamoThrottleAlarm(this.apptTypesTable.tableName, 'ApptTypesTable');
 
     // ========================================
     // 5. DOMAIN MAPPING

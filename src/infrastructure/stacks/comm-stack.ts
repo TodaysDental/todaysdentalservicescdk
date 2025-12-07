@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput, Tags } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -10,6 +10,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 
 export interface CommStackProps extends StackProps {
   // Authorizer imported via CloudFormation export
@@ -29,6 +30,60 @@ export class CommStack extends Stack {
   constructor(scope: Construct, id: string, props: CommStackProps) {
     super(scope, id, props);
 
+    // Tags & alarm helpers
+    const baseTags: Record<string, string> = {
+      Stack: Stack.of(this).stackName,
+      Service: 'Comm',
+      ManagedBy: 'cdk',
+    };
+    const applyTags = (resource: Construct, extra?: Record<string, string>) => {
+      Object.entries(baseTags).forEach(([k, v]) => Tags.of(resource).add(k, v));
+      if (extra) Object.entries(extra).forEach(([k, v]) => Tags.of(resource).add(k, v));
+    };
+    applyTags(this);
+
+    const createLambdaErrorAlarm = (fn: lambda.IFunction, name: string) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}ErrorAlarm`, {
+        metric: fn.metricErrors({ period: Duration.minutes(1), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${name} Lambda has errors`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createLambdaThrottleAlarm = (fn: lambda.IFunction, name: string) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}ThrottleAlarm`, {
+        metric: fn.metricThrottles({ period: Duration.minutes(1), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${name} Lambda is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createLambdaDurationAlarm = (fn: lambda.IFunction, name: string, thresholdMs: number) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}DurationAlarm`, {
+        metric: fn.metricDuration({ period: Duration.minutes(5), statistic: 'Maximum' }),
+        threshold: thresholdMs,
+        evaluationPeriods: 2,
+        alarmDescription: `Alert when ${name} Lambda p99 duration exceeds ${thresholdMs}ms (~80% of timeout)`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createDynamoThrottleAlarm = (tableName: string, idSuffix: string) =>
+      new cloudwatch.Alarm(this, `${idSuffix}ThrottleAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/DynamoDB',
+          metricName: 'ThrottledRequests',
+          dimensionsMap: { TableName: tableName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when DynamoDB table ${tableName} is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
     // ========================================
     // DYNAMODB TABLES
     // ========================================
@@ -41,6 +96,7 @@ export class CommStack extends Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.DESTROY,
     });
+    applyTags(this.connectionsTable, { Table: 'ws-connections' });
     
     // FIX: Add GSI for efficient user lookup by userID (required by ws-default.ts)
     this.connectionsTable.addGlobalSecondaryIndex({
@@ -56,6 +112,7 @@ export class CommStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
     });
+    applyTags(this.favorsTable, { Table: 'favor-requests' });
     
     this.favorsTable.addGlobalSecondaryIndex({
       indexName: 'UserIndex',
@@ -91,6 +148,7 @@ export class CommStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
     });
+    applyTags(this.messagesTable, { Table: 'messages' });
     this.messagesTable.addGlobalSecondaryIndex({
       indexName: 'SenderIndex',
       partitionKey: { name: 'senderID', type: dynamodb.AttributeType.STRING },
@@ -107,6 +165,7 @@ export class CommStack extends Stack {
         removalPolicy: RemovalPolicy.RETAIN,
         billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
     });
+    applyTags(this.teamsTable, { Table: 'teams' });
     // GSI: To look up teams a user is a member of (requires DynamoDB sets or a dedicated table/GSI for complex membership)
     // For simplicity, we will query/filter in the Lambda if we need 'teams a user is in' rather than adding a complex GSI here.
 
@@ -135,6 +194,7 @@ export class CommStack extends Stack {
       }),
       publicReadAccess: true, // Automatically adds a bucket policy for public read
     });
+    applyTags(this.fileBucket, { Bucket: 'comm-files' });
 
     // ========================================
     // PUSH NOTIFICATIONS (SNS Topic)
@@ -142,6 +202,7 @@ export class CommStack extends Stack {
     this.notificationsTopic = new sns.Topic(this, 'NewMessageNotificationsTopic', {
         topicName: `${this.stackName}-NewMessageNotifications`
     });
+    applyTags(this.notificationsTopic, { Topic: 'comm-notifications' });
 
     // ========================================
     // LAMBDA FUNCTIONS (WebSocket Handlers & REST utility)
@@ -168,6 +229,7 @@ export class CommStack extends Stack {
             FILE_BUCKET_NAME: this.fileBucket.bucketName, 
         },
     });
+    applyTags(this.getFileFn, { Function: 'get-file' });
 
     // Grant S3 read permission (GetObject) to the Lambda to generate a Presigned GET URL
     this.fileBucket.grantRead(this.getFileFn);
@@ -185,6 +247,7 @@ export class CommStack extends Stack {
         ...defaultLambdaEnv,
       },
     });
+    applyTags(connectFn, { Function: 'ws-connect' });
     this.connectionsTable.grantWriteData(connectFn);
 
     // $disconnect handler
@@ -196,6 +259,7 @@ export class CommStack extends Stack {
       timeout: Duration.seconds(5),
       environment: defaultLambdaEnv,
     });
+    applyTags(disconnectFn, { Function: 'ws-disconnect' });
     this.connectionsTable.grantWriteData(disconnectFn);
 
     // $default handler (main logic: send/receive messages, resolve)
@@ -212,6 +276,7 @@ export class CommStack extends Stack {
           STAFF_USER_TABLE: 'StaffUser', // For looking up user emails
       },
     });
+    applyTags(defaultFn, { Function: 'ws-default' });
 
     // Grant permissions to the Default Lambda
     this.connectionsTable.grantReadWriteData(defaultFn);
@@ -280,6 +345,25 @@ export class CommStack extends Stack {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: this.websocketApi.arnForExecuteApi(),
     });
+
+    // ========================================
+    // CloudWatch Alarms
+    // ========================================
+    [
+      { fn: this.getFileFn, name: 'get-file', durationMs: Math.floor(Duration.seconds(10).toMilliseconds() * 0.8) },
+      { fn: connectFn, name: 'ws-connect', durationMs: Math.floor(Duration.seconds(5).toMilliseconds() * 0.8) },
+      { fn: disconnectFn, name: 'ws-disconnect', durationMs: Math.floor(Duration.seconds(5).toMilliseconds() * 0.8) },
+      { fn: defaultFn, name: 'ws-default', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
+    ].forEach(({ fn, name, durationMs }) => {
+      createLambdaErrorAlarm(fn, name);
+      createLambdaThrottleAlarm(fn, name);
+      createLambdaDurationAlarm(fn, name, durationMs);
+    });
+
+    createDynamoThrottleAlarm(this.connectionsTable.tableName, 'ConnectionsTable');
+    createDynamoThrottleAlarm(this.favorsTable.tableName, 'FavorsTable');
+    createDynamoThrottleAlarm(this.messagesTable.tableName, 'MessagesTable');
+    createDynamoThrottleAlarm(this.teamsTable.tableName, 'TeamsTable');
 
     // ========================================
     // OUTPUTS

@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Tags } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -10,6 +10,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as route53targets from 'aws-cdk-lib/aws-route53-targets';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export class CoreStack extends Stack {
@@ -24,6 +25,60 @@ export class CoreStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
+    // Tags & alarm helpers
+    const baseTags: Record<string, string> = {
+      Stack: Stack.of(this).stackName,
+      Service: 'Core',
+      ManagedBy: 'cdk',
+    };
+    const applyTags = (resource: Construct, extra?: Record<string, string>) => {
+      Object.entries(baseTags).forEach(([k, v]) => Tags.of(resource).add(k, v));
+      if (extra) Object.entries(extra).forEach(([k, v]) => Tags.of(resource).add(k, v));
+    };
+    applyTags(this);
+
+    const createLambdaErrorAlarm = (fn: lambda.IFunction, name: string) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}ErrorAlarm`, {
+        metric: fn.metricErrors({ period: Duration.minutes(1), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${name} Lambda has errors`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createLambdaThrottleAlarm = (fn: lambda.IFunction, name: string) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}ThrottleAlarm`, {
+        metric: fn.metricThrottles({ period: Duration.minutes(1), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${name} Lambda is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createLambdaDurationAlarm = (fn: lambda.IFunction, name: string, thresholdMs: number) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}DurationAlarm`, {
+        metric: fn.metricDuration({ period: Duration.minutes(5), statistic: 'Maximum' }),
+        threshold: thresholdMs,
+        evaluationPeriods: 2,
+        alarmDescription: `Alert when ${name} Lambda p99 duration exceeds ${thresholdMs}ms (~80% of timeout)`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createDynamoThrottleAlarm = (tableName: string, idSuffix: string) =>
+      new cloudwatch.Alarm(this, `${idSuffix}ThrottleAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/DynamoDB',
+          metricName: 'ThrottledRequests',
+          dimensionsMap: { TableName: tableName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when DynamoDB table ${tableName} is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
     // ========================================
     // DYNAMODB TABLES
     // ========================================
@@ -36,6 +91,7 @@ export class CoreStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true }, // Enable point-in-time recovery for security
     });
+    applyTags(this.staffUserTable, { Table: 'staff-user' });
 
     // Note: GSIs removed because with per-clinic role structure (clinicRoles array),
     // DynamoDB can't efficiently index nested array items. If needed, we can implement
@@ -52,6 +108,7 @@ export class CoreStack extends Stack {
       // Use RETAIN for production to prevent accidental data loss
       removalPolicy: RemovalPolicy.RETAIN,
     });
+    applyTags(this.staffClinicInfoTable, { Table: 'staff-clinic-info' });
 
     // Token Blacklist Table - For logout functionality
     // Stores hashed tokens that have been logged out to prevent reuse
@@ -62,6 +119,7 @@ export class CoreStack extends Stack {
       removalPolicy: RemovalPolicy.DESTROY, // Can be destroyed, tokens expire anyway
       timeToLiveAttribute: 'ttl', // Enable TTL for automatic cleanup of expired tokens
     });
+    applyTags(this.tokenBlacklistTable, { Table: 'token-blacklist' });
 
     // ========================================
     // JWT SECRET (from environment variable)
@@ -91,6 +149,7 @@ export class CoreStack extends Stack {
         STAFF_USER_TABLE: this.staffUserTable.tableName,
       },
     });
+    applyTags(this.authorizerFunction, { Function: 'authorizer' });
 
     // Grant authorizer read access to token blacklist table
     this.tokenBlacklistTable.grantReadData(this.authorizerFunction);
@@ -167,6 +226,7 @@ export class CoreStack extends Stack {
         APP_NAME: 'TodaysDentalInsights',
       },
     });
+    applyTags(initiateOtpFn, { Function: 'auth-initiate-otp' });
 
     this.staffUserTable.grantReadWriteData(initiateOtpFn);
 
@@ -190,6 +250,7 @@ export class CoreStack extends Stack {
         CORS_ORIGIN: 'https://todaysdentalinsights.com',
       },
     });
+    applyTags(verifyOtpFn, { Function: 'auth-verify-otp' });
 
     this.staffUserTable.grantReadWriteData(verifyOtpFn);
 
@@ -207,6 +268,7 @@ export class CoreStack extends Stack {
         CORS_ORIGIN: 'https://todaysdentalinsights.com',
       },
     });
+    applyTags(refreshFn, { Function: 'auth-refresh' });
 
     this.staffUserTable.grantReadData(refreshFn);
 
@@ -225,9 +287,29 @@ export class CoreStack extends Stack {
         CORS_ORIGIN: 'https://todaysdentalinsights.com',
       },
     });
+    applyTags(logoutFn, { Function: 'auth-logout' });
 
     this.staffUserTable.grantReadWriteData(logoutFn);
     this.tokenBlacklistTable.grantWriteData(logoutFn);
+
+    // ========================================
+    // CloudWatch Alarms
+    // ========================================
+    [
+      { fn: this.authorizerFunction, name: 'authorizer', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
+      { fn: initiateOtpFn, name: 'auth-initiate-otp', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
+      { fn: verifyOtpFn, name: 'auth-verify-otp', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
+      { fn: refreshFn, name: 'auth-refresh', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
+      { fn: logoutFn, name: 'auth-logout', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
+    ].forEach(({ fn, name, durationMs }) => {
+      createLambdaErrorAlarm(fn, name);
+      createLambdaThrottleAlarm(fn, name);
+      createLambdaDurationAlarm(fn, name, durationMs);
+    });
+
+    createDynamoThrottleAlarm(this.staffUserTable.tableName, 'StaffUserTable');
+    createDynamoThrottleAlarm(this.staffClinicInfoTable.tableName, 'StaffClinicInfoTable');
+    createDynamoThrottleAlarm(this.tokenBlacklistTable.tableName, 'TokenBlacklistTable');
 
     // ========================================
     // AUTH API ROUTES

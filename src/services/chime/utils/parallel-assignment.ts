@@ -134,7 +134,7 @@ async function attemptSingleAssignment(
                         Update: {
                             TableName: agentPresenceTableName,
                             Key: { agentId },
-                            UpdateExpression: 'SET #status = :ringing, ringingCallId = :callId, ringingCallTime = :time, ringingCallFrom = :from, ringingCallPriority = :priority, lastActivityAt = :time',
+                            UpdateExpression: 'SET #status = :ringing, ringingCallId = :callId, ringingCallTime = :time, ringingCallFrom = :from, ringingCallPriority = :priority, ringingCallClinicId = :clinicId, lastActivityAt = :time',
                             ConditionExpression: '#status = :online',
                             ExpressionAttributeNames: { '#status': 'status' },
                             ExpressionAttributeValues: {
@@ -143,6 +143,7 @@ async function attemptSingleAssignment(
                                 ':time': assignmentTimestamp,
                                 ':from': callContext.phoneNumber,
                                 ':priority': callContext.priority || 'normal',
+                                ':clinicId': callContext.clinicId,
                                 ':online': 'Online'
                             }
                         }

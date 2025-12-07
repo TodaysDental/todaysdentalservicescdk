@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn, Tags } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -6,6 +6,7 @@ import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import clinicsJson from '../configs/clinics.json';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
@@ -19,6 +20,86 @@ export class CallbackStack extends Stack {
 
   constructor(scope: Construct, id: string, props: CallbackStackProps) {
     super(scope, id, props);
+
+    // ===========================================
+    // Tags and Alarm Helpers
+    // ===========================================
+    const baseTags: Record<string, string> = {
+      Stack: Stack.of(this).stackName,
+      Service: 'Callback',
+      ManagedBy: 'cdk',
+    };
+    const applyTags = (resource: Construct, extra?: Record<string, string>) => {
+      Object.entries(baseTags).forEach(([k, v]) => Tags.of(resource).add(k, v));
+      if (extra) {
+        Object.entries(extra).forEach(([k, v]) => Tags.of(resource).add(k, v));
+      }
+    };
+    applyTags(this);
+
+    const createLambdaErrorAlarm = (fn: lambda.IFunction, displayName: string) => {
+      new cloudwatch.Alarm(this, `${fn.node.id}ErrorAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Lambda',
+          metricName: 'Errors',
+          dimensionsMap: { FunctionName: fn.functionName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${displayName} Lambda has errors`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    const createLambdaThrottleAlarm = (fn: lambda.IFunction, displayName: string) => {
+      new cloudwatch.Alarm(this, `${fn.node.id}ThrottleAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Lambda',
+          metricName: 'Throttles',
+          dimensionsMap: { FunctionName: fn.functionName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${displayName} Lambda is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    const createLambdaDurationAlarm = (fn: lambda.IFunction, displayName: string, thresholdMs: number) => {
+      new cloudwatch.Alarm(this, `${fn.node.id}DurationAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Lambda',
+          metricName: 'Duration',
+          dimensionsMap: { FunctionName: fn.functionName },
+          statistic: 'Maximum',
+          period: Duration.minutes(5),
+        }),
+        threshold: thresholdMs,
+        evaluationPeriods: 2,
+        alarmDescription: `Alert when ${displayName} Lambda p99 duration exceeds ${thresholdMs}ms (~80% of timeout)`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    const createDynamoThrottleAlarm = (tableName: string, idSuffix: string) => {
+      new cloudwatch.Alarm(this, `${idSuffix}ThrottleAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/DynamoDB',
+          metricName: 'ThrottledRequests',
+          dimensionsMap: { TableName: tableName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when DynamoDB table ${tableName} is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
 
     // ===========================================
     // CALLBACK DYNAMODB TABLES
@@ -37,6 +118,7 @@ export class CallbackStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
       pointInTimeRecovery: true,
     });
+    applyTags(defaultCallbackTable, { Table: 'callback-default' });
 
     // Note: Legacy RequestCallBacks_* tables may exist from previous deployments
     // Lambda will use the wildcard permissions to access both old and new naming patterns
@@ -78,6 +160,7 @@ export class CallbackStack extends Stack {
         ].join(','),
       },
     });
+    applyTags(callbackLambda, { Function: 'callback' });
 
     this.callbackLambdaArn = callbackLambda.functionArn;
 
@@ -200,6 +283,21 @@ export class CallbackStack extends Stack {
         { statusCode: '404' }
       ],
     });
+
+    // ===========================================
+    // CloudWatch Alarms (Lambda + DynamoDB)
+    // ===========================================
+    const lambdaAlarmTargets: Array<{ fn: lambda.IFunction; name: string; durationMs: number }> = [
+      { fn: callbackLambda, name: 'callback', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
+    ];
+
+    lambdaAlarmTargets.forEach(({ fn, name, durationMs }) => {
+      createLambdaErrorAlarm(fn, name);
+      createLambdaThrottleAlarm(fn, name);
+      createLambdaDurationAlarm(fn, name, durationMs);
+    });
+
+    createDynamoThrottleAlarm(defaultCallbackTable.tableName, 'DefaultCallbackTable');
 
     // ===========================================
     // CALLBACK MANAGEMENT API

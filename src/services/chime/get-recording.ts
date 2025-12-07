@@ -23,20 +23,43 @@ const ddbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(ddbClient);
 const s3 = new S3Client({});
 
-const RECORDINGS_BUCKET = process.env.RECORDINGS_BUCKET!;
-const RECORDING_METADATA_TABLE = process.env.RECORDING_METADATA_TABLE!;
+const RECORDINGS_BUCKET = process.env.RECORDINGS_BUCKET || '';
+const RECORDING_METADATA_TABLE = process.env.RECORDING_METADATA_TABLE || '';
+
+// CRITICAL FIX: Check if recording is enabled via environment variable
+// This allows the Lambda to be deployed even when recording is disabled
+const RECORDING_ENABLED = process.env.RECORDING_ENABLED !== 'false';
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   console.log('[GetRecording] Function invoked', {
     httpMethod: event.httpMethod,
     path: event.path,
-    pathParameters: event.pathParameters
+    pathParameters: event.pathParameters,
+    recordingEnabled: RECORDING_ENABLED
   });
 
   const corsHeaders = buildCorsHeaders({ allowMethods: ['GET', 'OPTIONS'] });
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
+  }
+
+  // CRITICAL FIX: Return appropriate error if recording is disabled or not configured
+  if (!RECORDING_ENABLED || !RECORDINGS_BUCKET || !RECORDING_METADATA_TABLE) {
+    console.log('[GetRecording] Recording is disabled or not configured', {
+      recordingEnabled: RECORDING_ENABLED,
+      hasBucket: !!RECORDINGS_BUCKET,
+      hasTable: !!RECORDING_METADATA_TABLE
+    });
+    
+    return {
+      statusCode: 503,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        message: 'Call recording is not enabled for this deployment',
+        code: 'RECORDING_DISABLED'
+      })
+    };
   }
 
   try {

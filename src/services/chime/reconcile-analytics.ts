@@ -7,10 +7,13 @@
  * Process:
  * 1. Scan CallQueue for completed/abandoned calls from last 24 hours
  * 2. Check if analytics record exists
- * 3. If not, delete dedup records and trigger reprocessing
+ * 3. If not, directly create the analytics record (stream trigger is unreliable)
+ * 
+ * CRITICAL FIX: Changed from stream-based reprocessing to direct analytics creation.
+ * The stream processor only triggers on status field changes, not arbitrary field updates.
  */
 
-import { DynamoDBDocumentClient, ScanCommand, GetCommand, DeleteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, ScanCommand, GetCommand, DeleteCommand, UpdateCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getDedupTableName } from '../shared/utils/analytics-deduplication';
 
@@ -18,12 +21,15 @@ const ddb = getDynamoDBClient();
 
 const CALL_QUEUE_TABLE = process.env.CALL_QUEUE_TABLE_NAME;
 const ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE_NAME;
+// CRITICAL FIX: Use direct environment variable if provided, otherwise derive from analytics table
+const DEDUP_TABLE_ENV = process.env.ANALYTICS_DEDUP_TABLE_NAME;
 
 if (!CALL_QUEUE_TABLE || !ANALYTICS_TABLE) {
     throw new Error('Required environment variables not set');
 }
 
-const DEDUP_TABLE = getDedupTableName(ANALYTICS_TABLE);
+// Use direct env var if available, otherwise use derived name
+const DEDUP_TABLE = DEDUP_TABLE_ENV || getDedupTableName(ANALYTICS_TABLE);
 
 interface ReconciliationResult {
     scanned: number;
@@ -113,7 +119,11 @@ export const handler = async (): Promise<ReconciliationResult> => {
 };
 
 /**
- * Check if a call has analytics, and fix if missing
+ * Check if a call has analytics, and fix if missing by directly creating analytics record
+ * 
+ * CRITICAL FIX: Changed from stream-based reprocessing to direct analytics creation.
+ * The previous approach of updating `reconciledAt` field did not trigger stream reprocessing
+ * because the stream processor only responds to status field changes (completed/abandoned).
  */
 async function checkAndFixOrphanedCall(
     call: any,
@@ -145,23 +155,20 @@ async function checkAndFixOrphanedCall(
         
         result.missing++;
 
-        // Delete dedup records to allow reprocessing
+        // Delete dedup records to ensure clean state
         const stateTransition = call.status === 'completed' ? 'completed' : 'abandoned';
         const dedupKeys = [
             `${call.callId}#post-call-${stateTransition}`,
             `${call.callId}#post-call`
         ];
 
-        let deleted = false;
         for (const dedupKey of dedupKeys) {
             try {
                 await ddb.send(new DeleteCommand({
                     TableName: DEDUP_TABLE,
                     Key: { eventId: dedupKey }
                 }));
-                
                 console.log('[Reconciliation] Deleted dedup record:', dedupKey);
-                deleted = true;
             } catch (deleteErr: any) {
                 // Record might not exist - that's OK
                 if (deleteErr.name !== 'ResourceNotFoundException') {
@@ -173,9 +180,79 @@ async function checkAndFixOrphanedCall(
             }
         }
 
-        if (deleted) {
-            // Trigger reprocessing by updating the CallQueue record
-            // This will generate a DynamoDB Stream event
+        // CRITICAL FIX: Directly create the analytics record instead of relying on stream trigger
+        // The stream processor only responds to status changes, not arbitrary field updates
+        try {
+            const now = Date.now();
+            const queueEntryTime = parseTimestamp(call.queueEntryTime || call.queueEntryTimeIso);
+            const connectedAt = parseTimestamp(call.connectedAt);
+            const completedAt = parseTimestamp(call.completedAt || call.endedAtIso);
+            
+            const totalDuration = queueEntryTime && completedAt
+                ? Math.floor((completedAt - queueEntryTime) / 1000)
+                : 0;
+            const queueDuration = queueEntryTime && connectedAt
+                ? Math.floor((connectedAt - queueEntryTime) / 1000)
+                : 0;
+            const callDuration = connectedAt && completedAt
+                ? Math.floor((completedAt - connectedAt) / 1000)
+                : 0;
+            const holdDuration = call.holdDuration || 0;
+            const talkDuration = Math.max(0, callDuration - holdDuration);
+
+            const analyticsRecord = {
+                callId: call.callId,
+                timestamp: timestamp,
+                timestampIso: call.queueEntryTimeIso || new Date(timestamp * 1000).toISOString(),
+                clinicId: call.clinicId,
+                agentId: call.assignedAgentId,
+                status: call.status,
+                callStatus: call.status,
+                
+                // Durations
+                totalDuration,
+                queueDuration,
+                ringDuration: call.ringDuration || 0,
+                holdDuration,
+                talkDuration,
+                
+                // Characteristics
+                wasTransferred: !!call.transferredToAgentId || !!call.transferToAgentId,
+                wasAbandoned: call.status === 'abandoned',
+                wasCallback: !!call.isCallback,
+                wasVip: !!call.isVip,
+                
+                // Metadata
+                rejectionCount: call.rejectionCount || 0,
+                transferCount: call.transferCount || 0,
+                holdCount: call.holdCount || 0,
+                
+                // Source
+                phoneNumber: call.phoneNumber,
+                direction: call.direction || 'inbound',
+                
+                // Processing metadata
+                processedAt: new Date().toISOString(),
+                sourceEvent: 'RECONCILIATION_JOB',
+                reconciledAt: new Date().toISOString(),
+                ttl: Math.floor(now / 1000) + (90 * 24 * 60 * 60), // 90 days
+                
+                // Analytics state
+                analyticsState: 'FINALIZED',
+                finalized: true,
+                _note: 'Created by reconciliation job - original stream processing failed'
+            };
+
+            await ddb.send(new PutCommand({
+                TableName: ANALYTICS_TABLE,
+                Item: analyticsRecord,
+                ConditionExpression: 'attribute_not_exists(callId)'
+            }));
+
+            console.log('[Reconciliation] Created analytics record for call:', call.callId);
+            result.fixed++;
+
+            // Mark the original CallQueue record as reconciled
             try {
                 await ddb.send(new UpdateCommand({
                     TableName: CALL_QUEUE_TABLE,
@@ -188,13 +265,22 @@ async function checkAndFixOrphanedCall(
                         ':now': new Date().toISOString()
                     }
                 }));
-
-                console.log('[Reconciliation] Triggered reprocessing for call:', call.callId);
-                result.fixed++;
             } catch (updateErr: any) {
-                console.error('[Reconciliation] Failed to trigger reprocessing:', {
+                console.warn('[Reconciliation] Failed to mark call as reconciled:', {
                     callId: call.callId,
                     error: updateErr.message
+                });
+                // Non-fatal - analytics are already created
+            }
+
+        } catch (createErr: any) {
+            if (createErr.name === 'ConditionalCheckFailedException') {
+                console.log('[Reconciliation] Analytics already exist (race condition):', call.callId);
+                // Not an error - another process created the record
+            } else {
+                console.error('[Reconciliation] Failed to create analytics record:', {
+                    callId: call.callId,
+                    error: createErr.message
                 });
                 result.errors++;
             }
@@ -210,6 +296,26 @@ async function checkAndFixOrphanedCall(
         result.errors++;
         return false;
     }
+}
+
+/**
+ * Parse timestamp from various formats
+ */
+function parseTimestamp(value: any): number | null {
+    if (!value) return null;
+    
+    if (typeof value === 'number') {
+        // Detect if milliseconds or seconds based on magnitude
+        const YEAR_2010_SECONDS = 1262304000;
+        return value > YEAR_2010_SECONDS * 1000 ? value : value * 1000;
+    }
+    
+    if (typeof value === 'string') {
+        const parsed = Date.parse(value);
+        return isNaN(parsed) ? null : parsed;
+    }
+    
+    return null;
 }
 
 /**

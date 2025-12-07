@@ -587,7 +587,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                             Update: {
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
                                 Key: { agentId: toAgentId },
-                                UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp, rollbackId = :rollbackId REMOVE ringingCallId, inboundMeetingInfo, inboundAttendeeInfo, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
+                                UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp, rollbackId = :rollbackId REMOVE ringingCallId, inboundMeetingInfo, inboundAttendeeInfo, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
                                 ExpressionAttributeNames: { '#status': 'status' },
                                 ConditionExpression: 'ringingCallId = :callId',
                                 ExpressionAttributeValues: {

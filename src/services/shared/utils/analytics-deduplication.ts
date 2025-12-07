@@ -146,9 +146,11 @@ export function shouldProcessAnalytics(
 /**
  * Get the deduplication table name
  * Uses environment variable or derives from analytics table name
+ * CRITICAL FIX: Check both possible environment variable names
  */
 export function getDedupTableName(analyticsTableName?: string): string {
   return process.env.ANALYTICS_DEDUP_TABLE 
+    || process.env.ANALYTICS_DEDUP_TABLE_NAME
     || (analyticsTableName ? `${analyticsTableName}-Dedup` : 'CallAnalytics-Dedup');
 }
 

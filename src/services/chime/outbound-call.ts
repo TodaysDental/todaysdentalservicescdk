@@ -9,6 +9,7 @@ import { getUserIdFromJwt, checkClinicAuthorization } from '../../shared/utils/p
 import { sanitizePhoneNumber } from '../shared/utils/input-sanitization';
 import { getSmaIdForClinic } from './utils/sma-map';
 import { TTL_POLICY } from './config/ttl-policy';
+import { DistributedLock } from './utils/distributed-lock';
 
 const ddb = getDynamoDBClient();
 const chimeVoiceClient = new ChimeSDKVoiceClient({});
@@ -16,6 +17,7 @@ const chimeVoiceClient = new ChimeSDKVoiceClient({});
 const CLINICS_TABLE_NAME = process.env.CLINICS_TABLE_NAME;
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
+const LOCKS_TABLE_NAME = process.env.LOCKS_TABLE_NAME;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const parseNumberOr = (value: string | undefined, fallback: number) => {
@@ -62,7 +64,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'Invalid token: missing subject claim' }) };
     }
     
-    const body = JSON.parse(event.body || '{}') as { toPhoneNumber: string, fromClinicId: string };
+    // FIX #9: Safe JSON parsing with proper 400 error for malformed input
+    let body: { toPhoneNumber: string, fromClinicId: string };
+    try {
+        body = JSON.parse(event.body || '{}');
+    } catch (parseErr) {
+        console.error('[outbound-call] Invalid JSON in request body', { error: (parseErr as Error).message });
+        return { 
+            statusCode: 400, 
+            headers: corsHeaders, 
+            body: JSON.stringify({ message: 'Invalid JSON in request body' }) 
+        };
+    }
     console.log('[outbound-call] Parsed request body', { toPhoneNumber: body.toPhoneNumber, fromClinicId: body.fromClinicId });
 
     if (!body.toPhoneNumber || !body.fromClinicId) {
@@ -131,6 +144,31 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const agentMeeting = agentPresence.meetingInfo; // This is the agent's existing session
     console.log('[outbound-call] Agent ready, using existing meeting', { status: agentPresence.status, meetingId: agentMeeting.MeetingId });
     
+    // FIX #15: Use distributed lock to prevent double-dial race condition
+    // Rapid double-clicks before UI disables could both pass initial status check
+    if (!LOCKS_TABLE_NAME) {
+        console.error('[outbound-call] LOCKS_TABLE_NAME not configured');
+        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'System configuration error' }) };
+    }
+
+    const dialLock = new DistributedLock(ddb, {
+        tableName: LOCKS_TABLE_NAME,
+        lockKey: `outbound-dial-${agentId}`,
+        ttlSeconds: 10, // Short TTL - just needs to prevent double-click
+        maxRetries: 1,  // Don't retry - if locked, user already has a dial in progress
+        retryDelayMs: 0
+    });
+
+    const lockAcquired = await dialLock.acquire();
+    if (!lockAcquired) {
+        console.warn('[outbound-call] Failed to acquire dial lock - possible double-click', { agentId });
+        return { 
+            statusCode: 429, 
+            headers: corsHeaders, 
+            body: JSON.stringify({ message: 'Outbound call already in progress. Please wait.' }) 
+        };
+    }
+
     // 4. Set agent status to "dialing" atomically
     // This "locks" the agent to prevent them from receiving an inbound call
     const callReference = `outbound-${Date.now()}-${agentId}`;
@@ -149,6 +187,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             }
         }));
     } catch (err: any) {
+        await dialLock.release(); // Release lock on failure
         if (err.name === 'ConditionalCheckFailedException') {
             console.warn('[outbound-call] Agent status changed, aborting dial', { agentId });
             return { statusCode: 409, headers: corsHeaders, body: JSON.stringify({ message: 'Agent status changed. Please try again.' }) };
@@ -156,6 +195,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         console.error('[outbound-call] Failed to update agent status', { error: err.message });
         return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'Failed to update agent status' }) };
     }
+    
+    // Release dial lock immediately after status update succeeds
+    // The agent status itself now prevents double-dial
+    await dialLock.release();
     
     const smaId = getSmaIdForClinic(body.fromClinicId);
     if (!smaId) {

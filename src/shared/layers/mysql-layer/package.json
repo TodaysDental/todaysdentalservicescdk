@@ -1,0 +1,9 @@
+{
+  "name": "mysql-layer",
+  "version": "1.0.0",
+  "description": "MySQL2 client library for Lambda functions",
+  "dependencies": {
+    "mysql2": "^3.6.5"
+  }
+}
+

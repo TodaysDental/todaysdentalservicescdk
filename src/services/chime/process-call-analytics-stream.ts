@@ -315,6 +315,9 @@ async function processStreamRecord(
 /**
  * Handle call activation - create initial analytics record for live endpoint support
  * This allows the /admin/analytics/live endpoint to return data during active calls
+ * 
+ * CRITICAL FIX: Use consistent timestamp for both existence check and record creation
+ * to prevent race condition where GetCommand and PutCommand use different keys.
  */
 async function handleCallActivation(
     callData: any,
@@ -322,26 +325,43 @@ async function handleCallActivation(
 ): Promise<'PROCESSED' | 'SKIPPED' | 'DUPLICATE'> {
     const callId = callData.callId;
     
-    // Check if analytics already initialized for this call
+    // CRITICAL FIX: Calculate timestamp ONCE and use consistently throughout
+    // Use callStartTime if available, otherwise use current time
+    // Convert to epoch seconds for the partition key
+    const rawCallStartTime = callData.callStartTime || callData.queueEntryTime;
+    let timestamp: number;
+    
+    if (rawCallStartTime) {
+        // Parse the timestamp (could be ISO string or epoch)
+        const parsed = parseTimestamp(rawCallStartTime);
+        timestamp = parsed ? Math.floor(parsed / 1000) : Math.floor(Date.now() / 1000);
+    } else {
+        timestamp = Math.floor(Date.now() / 1000);
+    }
+    
+    const ttl = timestamp + (90 * 24 * 60 * 60); // 90 days retention
+    
+    // Check if analytics already initialized for this call using SAME timestamp
     const existingCheck = await ddb.send(new GetCommand({
         TableName: ANALYTICS_TABLE,
         Key: {
             callId,
-            timestamp: Math.floor((callData.callStartTime || Date.now()) / 1000)
+            timestamp // Use the consistent timestamp calculated above
         }
     }));
     
     if (existingCheck.Item) {
-        console.log('[handleCallActivation] Analytics already exist for active call:', callId);
+        console.log('[handleCallActivation] Analytics already exist for active call:', {
+            callId,
+            existingTimestamp: existingCheck.Item.timestamp,
+            queriedTimestamp: timestamp
+        });
         return 'DUPLICATE';
     }
     
-    // Create initial analytics record
-    const timestamp = Math.floor(Date.now() / 1000);
-    const ttl = timestamp + (90 * 24 * 60 * 60); // 90 days retention
-    
+    // Create initial analytics record using SAME timestamp
     const initialAnalytics = {
-        // Primary keys
+        // Primary keys - CRITICAL: Use same timestamp as the existence check
         callId,
         timestamp,
         
@@ -355,9 +375,9 @@ async function handleCallActivation(
         direction: callData.direction || 'inbound',
         customerPhone: callData.from || callData.to || 'unknown',
         
-        // Timestamps
-        callStartTime: callData.callStartTime || new Date().toISOString(),
-        callStartTimestamp: callData.callStartTime || Date.now(),
+        // Timestamps - use the consistent timestamp
+        callStartTime: new Date(timestamp * 1000).toISOString(),
+        callStartTimestamp: timestamp * 1000, // Convert back to milliseconds for consistency
         
         // Initial counts (will be updated by real-time analytics)
         transcriptCount: 0,
@@ -386,10 +406,15 @@ async function handleCallActivation(
     };
     
     try {
+        // CRITICAL FIX: Use conditional write with both callId AND timestamp
+        // This ensures atomicity and prevents duplicate records with same key
         await ddb.send(new PutCommand({
             TableName: ANALYTICS_TABLE,
             Item: initialAnalytics,
-            ConditionExpression: 'attribute_not_exists(callId)'
+            ConditionExpression: 'attribute_not_exists(callId) AND attribute_not_exists(#ts)',
+            ExpressionAttributeNames: {
+                '#ts': 'timestamp'
+            }
         }));
         
         console.log('[handleCallActivation] Created initial analytics for live call:', {

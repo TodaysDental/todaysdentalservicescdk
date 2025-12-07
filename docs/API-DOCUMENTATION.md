@@ -1640,7 +1640,413 @@ Retrieves aggregate metrics for a clinic.
 
 ---
 
-### 5.6 Get Detailed Call Analytics
+### 5.6 Get Agent Rankings (Leaderboard)
+
+Retrieves agent rankings/leaderboard for a clinic with performance metrics, badges, and trend data.
+
+**Endpoint:** `GET /admin/analytics/rankings`
+
+**Headers:**
+| Header | Type | Required | Description |
+|--------|------|----------|-------------|
+| Authorization | string | Yes | `Bearer <accessToken>` |
+
+**Query Parameters:**
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| clinicId | string | Yes | - | Target clinic identifier |
+| period | string | No | `weekly` | Ranking period: `daily`, `weekly`, `monthly`, `quarterly`, `yearly`, `custom` |
+| criteria | string | No | `performanceScore` | Sort criteria: `performanceScore`, `callVolume`, `sentimentScore`, `avgHandleTime`, `customerSatisfaction`, `efficiency` |
+| startTime | number | No | - | Start timestamp for custom period (epoch seconds) |
+| endTime | number | No | - | End timestamp for custom period (epoch seconds) |
+| limit | number | No | 50 | Max agents to return (max 100) |
+| includeInactive | boolean | No | false | Include agents with 0 calls |
+
+**Success Response (200):**
+```json
+{
+  "clinicId": "clinic-456",
+  "clinicName": "Sunshine Dental",
+  "period": {
+    "type": "weekly",
+    "startTime": 1701302400,
+    "endTime": 1701907200,
+    "label": "Week of Dec 1, 2025"
+  },
+  "criteria": "performanceScore",
+  "rankings": [
+    {
+      "rank": 1,
+      "rankLabel": "1st",
+      "agentId": "agent1@example.com",
+      "agentName": "Lisa Martinez",
+      "firstName": "Lisa",
+      "lastName": "Martinez",
+      "initials": "LM",
+      "clinicId": "clinic-456",
+      "status": "OnCall",
+      "statusLabel": "On Call",
+      "performanceScore": 92,
+      "totalCalls": 145,
+      "completedCalls": 142,
+      "missedCalls": 3,
+      "callsToday": 35,
+      "missedToday": 1,
+      "sentimentScore": 85,
+      "satisfactionRating": 98,
+      "positiveCallsPercent": 78,
+      "negativeCallsPercent": 5,
+      "avgHandleTime": 375,
+      "avgHandleTimeFormatted": "6:15",
+      "avgTalkTime": 340,
+      "avgHoldTime": 15,
+      "issueCount": 2,
+      "qualityScore": 4.5,
+      "trend": {
+        "direction": "up",
+        "changePercent": 8,
+        "previousRank": 2
+      },
+      "badges": [
+        {
+          "id": "top_performer",
+          "name": "Top Performer",
+          "icon": "🏆",
+          "description": "Ranked #1 in the clinic",
+          "earnedAt": "2025-12-04T10:00:00.000Z"
+        },
+        {
+          "id": "call_champion",
+          "name": "Call Champion",
+          "icon": "📞",
+          "description": "Handled 100+ calls this period",
+          "earnedAt": "2025-12-04T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "rank": 2,
+      "rankLabel": "2nd",
+      "agentId": "agent2@example.com",
+      "agentName": "Sarah Johnson",
+      "firstName": "Sarah",
+      "lastName": "Johnson",
+      "initials": "SJ",
+      "clinicId": "clinic-456",
+      "status": "Available",
+      "statusLabel": "Available",
+      "performanceScore": 88,
+      "totalCalls": 120,
+      "completedCalls": 115,
+      "missedCalls": 5,
+      "callsToday": 32,
+      "missedToday": 2,
+      "sentimentScore": 82,
+      "satisfactionRating": 96,
+      "positiveCallsPercent": 75,
+      "negativeCallsPercent": 8,
+      "avgHandleTime": 342,
+      "avgHandleTimeFormatted": "5:42",
+      "avgTalkTime": 310,
+      "avgHoldTime": 20,
+      "issueCount": 4,
+      "qualityScore": 4.2,
+      "trend": {
+        "direction": "stable",
+        "changePercent": 2,
+        "previousRank": 2
+      },
+      "badges": [
+        {
+          "id": "call_champion",
+          "name": "Call Champion",
+          "icon": "📞",
+          "description": "Handled 100+ calls this period",
+          "earnedAt": "2025-12-04T10:00:00.000Z"
+        }
+      ]
+    },
+    {
+      "rank": 3,
+      "rankLabel": "3rd",
+      "agentId": "agent3@example.com",
+      "agentName": "Olivia Brown",
+      "firstName": "Olivia",
+      "lastName": "Brown",
+      "initials": "OB",
+      "clinicId": "clinic-456",
+      "status": "Offline",
+      "statusLabel": "Offline",
+      "performanceScore": 85,
+      "totalCalls": 110,
+      "completedCalls": 107,
+      "missedCalls": 3,
+      "callsToday": 31,
+      "missedToday": 0,
+      "sentimentScore": 90,
+      "satisfactionRating": 97,
+      "positiveCallsPercent": 82,
+      "negativeCallsPercent": 3,
+      "avgHandleTime": 295,
+      "avgHandleTimeFormatted": "4:55",
+      "avgTalkTime": 270,
+      "avgHoldTime": 10,
+      "issueCount": 1,
+      "qualityScore": 4.6,
+      "trend": {
+        "direction": "up",
+        "changePercent": 5,
+        "previousRank": 4
+      },
+      "badges": []
+    }
+  ],
+  "totalAgents": 8,
+  "clinicStats": {
+    "avgPerformanceScore": 78,
+    "totalCalls": 650,
+    "avgSentimentScore": 72,
+    "avgHandleTime": 320
+  },
+  "highlights": {
+    "topPerformer": {
+      "rank": 1,
+      "agentId": "agent1@example.com",
+      "performanceScore": 92
+    },
+    "mostImproved": {
+      "rank": 4,
+      "agentId": "agent4@example.com",
+      "trend": {
+        "direction": "up",
+        "changePercent": 25,
+        "previousRank": 7
+      }
+    },
+    "callLeader": {
+      "rank": 1,
+      "agentId": "agent1@example.com",
+      "totalCalls": 145
+    },
+    "sentimentLeader": {
+      "rank": 3,
+      "agentId": "agent3@example.com",
+      "sentimentScore": 95
+    }
+  },
+  "generatedAt": "2025-12-04T10:00:00.000Z",
+  "dataCompleteness": "complete"
+}
+```
+
+**Ranking Criteria:**
+| Criteria | Description | Sort Order |
+|----------|-------------|------------|
+| `performanceScore` | Overall score (0-100) based on completion, sentiment, quality | Highest first |
+| `callVolume` | Total calls handled | Highest first |
+| `sentimentScore` | Weighted sentiment score (0-100) | Highest first |
+| `avgHandleTime` | Average call duration in seconds | Lowest first |
+| `customerSatisfaction` | Percentage of positive sentiment calls | Highest first |
+| `efficiency` | Completion rate minus issue penalty | Highest first |
+
+**Agent Status Values:**
+| Status | statusLabel | Description |
+|--------|-------------|-------------|
+| `Available` | "Available" | Agent is online and ready to take calls |
+| `OnCall` | "On Call" | Agent is currently on an active call |
+| `ringing` | "Ringing" | Agent has an incoming call ringing |
+| `dialing` | "Dialing" | Agent is making an outbound call |
+| `Busy` | "Busy" | Agent is busy/not available |
+| `Offline` | "Offline" | Agent is not logged in |
+
+**Key Response Fields:**
+| Field | Description | Example |
+|-------|-------------|---------|
+| `rank` | Numeric rank position | `1` |
+| `rankLabel` | Formatted rank | `"1st"`, `"2nd"`, `"3rd"`, `"#4"` |
+| `initials` | Agent initials for avatar | `"LM"` |
+| `callsToday` | Calls handled today | `35` |
+| `missedToday` | Missed calls today | `1` |
+| `satisfactionRating` | Customer satisfaction % | `98` |
+| `avgHandleTimeFormatted` | Avg time as M:SS | `"6:15"` |
+
+**Available Badges:**
+| Badge ID | Name | Icon | Criteria |
+|----------|------|------|----------|
+| `top_performer` | Top Performer | 🏆 | Ranked #1 in the clinic |
+| `call_champion` | Call Champion | 📞 | Handled 100+ calls this period |
+| `sentiment_star` | Sentiment Star | ⭐ | 90%+ positive sentiment score |
+| `speed_demon` | Speed Demon | ⚡ | Below average handle time with high quality |
+| `rising_star` | Rising Star | 🚀 | Improved 20%+ from previous period |
+| `consistency_king` | Consistency King | 👑 | Maintained top 3 for 3+ periods |
+| `zero_issues` | Flawless | 💎 | Zero detected issues this period |
+| `customer_favorite` | Customer Favorite | ❤️ | 95%+ customer satisfaction |
+
+**Trend Direction:**
+- `up` - Agent improved ranking compared to previous period
+- `down` - Agent dropped ranking compared to previous period
+- `stable` - Agent maintained same ranking
+
+**Error Responses:**
+
+| Status | Error | Description |
+|--------|-------|-------------|
+| 400 | `MISSING_CLINIC_ID` | Clinic ID not provided |
+| 400 | `INVALID_TIME_FORMAT` | Invalid time range parameters |
+| 400 | `TIME_RANGE_TOO_LARGE` | Time range exceeds 90 days |
+| 401 | `Unauthorized` | Missing or invalid token |
+| 403 | `INSUFFICIENT_PERMISSIONS` | User lacks access to clinic |
+
+---
+
+### 5.7 Get Queue Calls
+
+Retrieves all calls currently in the queue with their status, wait times, and details.
+
+**Endpoint:** `GET /admin/analytics/queue`
+
+**Headers:**
+| Header | Type | Required | Description |
+|--------|------|----------|-------------|
+| Authorization | string | Yes | `Bearer <accessToken>` |
+
+**Query Parameters:**
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| clinicId | string | Yes | - | Target clinic identifier |
+| status | string | No | `all` | Filter by status: `queued`, `ringing`, `active`, `on_hold`, `all` |
+| limit | number | No | 100 | Max calls to return per category (max 500) |
+
+**Success Response (200):**
+```json
+{
+  "clinicId": "clinic-456",
+  "queuedCalls": [
+    {
+      "callId": "call-abc123",
+      "phoneNumber": "+15551234567",
+      "callerName": "John Smith",
+      "queuePosition": 1,
+      "status": "queued",
+      "statusLabel": "Waiting",
+      "priority": "vip",
+      "priorityLabel": "VIP",
+      "waitTime": 45,
+      "waitTimeFormatted": "0:45",
+      "queuedAt": "2025-12-04T10:30:00.000Z",
+      "direction": "inbound",
+      "isVip": true,
+      "callbackRequested": false
+    },
+    {
+      "callId": "call-def456",
+      "phoneNumber": "+15559876543",
+      "callerName": "Jane Doe",
+      "queuePosition": 2,
+      "status": "queued",
+      "statusLabel": "Waiting",
+      "priority": "normal",
+      "priorityLabel": "Normal",
+      "waitTime": 23,
+      "waitTimeFormatted": "0:23",
+      "queuedAt": "2025-12-04T10:30:22.000Z",
+      "direction": "inbound",
+      "isVip": false,
+      "callbackRequested": false
+    }
+  ],
+  "ringingCalls": [
+    {
+      "callId": "call-ghi789",
+      "phoneNumber": "+15555551234",
+      "callerName": "Bob Wilson",
+      "queuePosition": 0,
+      "status": "ringing",
+      "statusLabel": "Ringing",
+      "priority": "normal",
+      "priorityLabel": "Normal",
+      "waitTime": 120,
+      "waitTimeFormatted": "2:00",
+      "queuedAt": "2025-12-04T10:28:00.000Z",
+      "assignedAgentId": "agent@example.com",
+      "assignedAgentName": "Sarah Johnson",
+      "direction": "inbound",
+      "isVip": false
+    }
+  ],
+  "activeCalls": [
+    {
+      "callId": "call-jkl012",
+      "phoneNumber": "+15558889999",
+      "callerName": "Alice Brown",
+      "queuePosition": 0,
+      "status": "connected",
+      "statusLabel": "Active",
+      "priority": "normal",
+      "priorityLabel": "Normal",
+      "waitTime": 180,
+      "waitTimeFormatted": "3:00",
+      "queuedAt": "2025-12-04T10:27:00.000Z",
+      "assignedAgentId": "agent2@example.com",
+      "assignedAgentName": "Mike Chen",
+      "direction": "inbound",
+      "isVip": false
+    }
+  ],
+  "onHoldCalls": [],
+  "summary": {
+    "totalQueued": 2,
+    "totalRinging": 1,
+    "totalActive": 1,
+    "totalOnHold": 0,
+    "avgWaitTime": 34,
+    "avgWaitTimeFormatted": "0:34",
+    "longestWait": 45,
+    "longestWaitFormatted": "0:45"
+  },
+  "generatedAt": "2025-12-04T10:30:45.000Z"
+}
+```
+
+**Call Status Values:**
+| Status | statusLabel | Description |
+|--------|-------------|-------------|
+| `queued` | "Waiting" | Call is waiting in queue for an agent |
+| `ringing` | "Ringing" | Call is ringing to an assigned agent |
+| `connected` / `active` | "Active" | Call is currently connected to an agent |
+| `on_hold` | "On Hold" | Call is on hold |
+| `transferring` | "Transferring" | Call is being transferred |
+
+**Priority Values:**
+| Priority | priorityLabel | Description |
+|----------|---------------|-------------|
+| `vip` | "VIP" | VIP customer, highest priority |
+| `high` | "High" | High priority call |
+| `normal` | "Normal" | Standard priority |
+| `low` | "Low" | Low priority call |
+
+**Response Fields:**
+| Field | Description |
+|-------|-------------|
+| `queuedCalls` | Array of calls waiting in queue |
+| `ringingCalls` | Array of calls currently ringing to agents |
+| `activeCalls` | Array of calls connected to agents |
+| `onHoldCalls` | Array of calls currently on hold |
+| `summary.avgWaitTime` | Average wait time in seconds for queued calls |
+| `summary.longestWait` | Current longest wait time in seconds |
+
+**Error Responses:**
+
+| Status | Error | Description |
+|--------|-------|-------------|
+| 400 | `MISSING_CLINIC_ID` | Clinic ID not provided |
+| 401 | `Unauthorized` | Missing or invalid token |
+| 403 | `INSUFFICIENT_PERMISSIONS` | User lacks access to clinic |
+| 500 | `MISSING_CONFIGURATION` | Call queue table not configured |
+
+---
+
+### 5.8 Get Detailed Call Analytics
 
 Retrieves comprehensive call information including call history, insights, and transcript.
 

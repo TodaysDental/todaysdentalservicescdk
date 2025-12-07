@@ -30,6 +30,8 @@ import { FluorideAutomationStack } from './stacks/fluoride-automation-stack';
 
 import { CommStack } from './stacks/comm-stack'; // <-- NEW IMPORT ADDED HERE
 import { AnalyticsStack } from './stacks/analytics-stack';
+import { ClinicImagesStack } from './stacks/clinic-images-stack';
+// import { DentalSoftwareStack } from './stacks/dental-software-stack';
 
 const app = new cdk.App();
 
@@ -212,16 +214,23 @@ const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNoti
 // Chime stack to avoid a two-way construct dependency which leads to
 // cyclic CloudFormation references.
 
+// Define ChimeStack name for consistent cross-stack references
+const CHIME_STACK_NAME = 'TodaysDentalInsightsChimeN1';
+
 // ** ANALYTICS STACK INSTANTIATION (BEFORE CHIME) **
+// CRITICAL FIX: Pass chimeStackName so AnalyticsStack can derive table names
+// This resolves the circular dependency where AnalyticsStack needs ChimeStack table names
+// but is created before ChimeStack
 const analyticsStack = new AnalyticsStack(app, 'TodaysDentalInsightsAnalyticsN1', {
   env,
   jwtSecret: coreStack.jwtSecretValue,
   region: env.region || process.env.AWS_REGION || 'us-east-1',
   supervisorEmails: [], // Add supervisor emails for alerts
-  // Note: callQueueTableName and agentPresenceTableName will be passed from ChimeStack
+  // CRITICAL FIX: Pass ChimeStack name for derived table name references
+  chimeStackName: CHIME_STACK_NAME,
 });
 
-const chimeStack = new ChimeStack(app, 'TodaysDentalInsightsChimeN1', {
+const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
  env,
  jwtSecret: coreStack.jwtSecretValue,
  voiceConnectorTerminationCidrs,
@@ -277,6 +286,17 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
  leaveCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-LeaveCallArn`),
  heartbeatFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-HeartbeatArn`),
  agentPresenceTableName: cdk.Fn.importValue(`${chimeStack.stackName}-AgentPresenceTableName`),
+ holdCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-HoldCallArn`),
+ resumeCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-ResumeCallArn`),
+ // New features: Add Call, DTMF, Notes, Conference
+ addCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-AddCallArn`),
+ sendDtmfFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-SendDtmfArn`),
+ callNotesFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallNotesArn`),
+ conferenceCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-ConferenceCallArn`),
+ // New features: Join Queue and Active Calls
+ joinQueuedCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-JoinQueuedCallArn`),
+ joinActiveCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-JoinActiveCallArn`),
+ getJoinableCallsFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-GetJoinableCallsArn`),
  // Call Recording
  getRecordingFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-GetRecordingFnArn`),
 });
@@ -328,6 +348,16 @@ const patientPortalApptTypesStack = new PatientPortalApptTypesStack(app, 'Todays
 });
 // patientPortalApptTypesStack.addDependency(coreStack); // Implicit
 
+// Clinic Images Stack - S3 bucket and API for clinic image management
+const clinicImagesStack = new ClinicImagesStack(app, 'TodaysDentalInsightsClinicImagesN1', {
+  env,
+});
+
+// Dental Software Stack - RDS MySQL database and S3 for clinic management
+// const dentalSoftwareStack = new DentalSoftwareStack(app, 'TodaysDentalInsightsDentalSoftwareN1', {
+//   env,
+// });
+
 // Clinic Hours service - REMOVED FROM HERE, moved to top after coreStack
 
 // Add stack dependencies
@@ -349,7 +379,8 @@ hrStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 communicationsStack.addDependency(coreStack); // Explicit - uses JWT secret
 
 // Analytics stack dependencies
-// analyticsStack.addDependency(coreStack); // Implicit through jwtSecret
+// CRITICAL FIX: Explicit dependency on CoreStack for jwtSecret
+analyticsStack.addDependency(coreStack);
 
 // Cross-service dependencies for services that need data from other services
 notificationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
@@ -365,6 +396,8 @@ schedulesStack.addDependency(openDentalStack); // Explicit - uses server ID
 // Other existing stack dependencies
 callbackStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 patientPortalApptTypesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+clinicImagesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+// dentalSoftwareStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 // patientPortalStack.addDependency(coreStack); // Note: PatientPortalStack might not import it - verify
 patientPortalStack.addDependency(openDentalStack); // Explicit - uses SFTP resources
 chatbotStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn

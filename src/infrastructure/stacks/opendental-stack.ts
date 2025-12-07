@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn, Tags } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -8,6 +8,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as transfer from 'aws-cdk-lib/aws-transfer';
 import * as cr from 'aws-cdk-lib/custom-resources';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import clinicsData from '../configs/clinics.json';
 import { Clinic } from '../configs/clinics';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
@@ -28,6 +29,60 @@ export class OpenDentalStack extends Stack {
   constructor(scope: Construct, id: string, props: OpenDentalStackProps) {
     super(scope, id, props);
 
+    // Tags & alarm helpers
+    const baseTags: Record<string, string> = {
+      Stack: Stack.of(this).stackName,
+      Service: 'OpenDental',
+      ManagedBy: 'cdk',
+    };
+    const applyTags = (resource: Construct, extra?: Record<string, string>) => {
+      Object.entries(baseTags).forEach(([k, v]) => Tags.of(resource).add(k, v));
+      if (extra) Object.entries(extra).forEach(([k, v]) => Tags.of(resource).add(k, v));
+    };
+    applyTags(this);
+
+    const createLambdaErrorAlarm = (fn: lambda.IFunction, name: string) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}ErrorAlarm`, {
+        metric: fn.metricErrors({ period: Duration.minutes(1), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${name} Lambda has errors`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createLambdaThrottleAlarm = (fn: lambda.IFunction, name: string) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}ThrottleAlarm`, {
+        metric: fn.metricThrottles({ period: Duration.minutes(1), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${name} Lambda is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createLambdaDurationAlarm = (fn: lambda.IFunction, name: string, thresholdMs: number) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}DurationAlarm`, {
+        metric: fn.metricDuration({ period: Duration.minutes(5), statistic: 'Maximum' }),
+        threshold: thresholdMs,
+        evaluationPeriods: 2,
+        alarmDescription: `Alert when ${name} Lambda p99 duration exceeds ${thresholdMs}ms (~80% of timeout)`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createDynamoThrottleAlarm = (tableName: string, idSuffix: string) =>
+      new cloudwatch.Alarm(this, `${idSuffix}ThrottleAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/DynamoDB',
+          metricName: 'ThrottledRequests',
+          dimensionsMap: { TableName: tableName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when DynamoDB table ${tableName} is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
     // ========================================
     // S3 BUCKETS AND TRANSFER FAMILY
     // ========================================
@@ -40,6 +95,7 @@ export class OpenDentalStack extends Stack {
       publicReadAccess: false,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
     });
+    applyTags(this.consolidatedSftpBucket, { Bucket: 'opendental-sftp' });
 
     // Seed expected S3 prefixes for each clinic so folders appear immediately after deploy
     (clinicsData as Clinic[]).forEach((c) => {
@@ -122,6 +178,7 @@ export class OpenDentalStack extends Stack {
         })
       }
     });
+    applyTags(this.consolidatedTransferRole, { Role: 'opendental-transfer' });
 
     // Extract only necessary clinic data for SFTP auth (to avoid env var size limits)
     const minimalClinicData = (clinicsData as any[]).map((clinic: any) => ({
@@ -145,6 +202,7 @@ export class OpenDentalStack extends Stack {
         CLINICS_CONFIG: JSON.stringify(minimalClinicData),
       },
     });
+    applyTags(this.consolidatedTransferAuthFn, { Function: 'consolidated-transfer-auth' });
 
     // Allow AWS Transfer service to invoke the auth lambda
     this.consolidatedTransferAuthFn.addPermission('AllowConsolidatedTransferInvoke', {
@@ -160,6 +218,7 @@ export class OpenDentalStack extends Stack {
       endpointType: 'PUBLIC',
       loggingRole: this.consolidatedTransferRole.roleArn,
     });
+    applyTags(this.consolidatedTransferServer, { Server: 'opendental-transfer' });
 
     // ========================================
     // API GATEWAY SETUP
@@ -257,6 +316,7 @@ export class OpenDentalStack extends Stack {
       },
       retryAttempts: 2
     });
+    applyTags(this.openDentalFn, { Function: 'opendental-proxy' });
 
     // Add explicit dependency on Transfer Server to ensure it exists before Lambda
     this.openDentalFn.node.addDependency(this.consolidatedTransferServer);
@@ -347,6 +407,18 @@ export class OpenDentalStack extends Stack {
           }
         }
       ]
+    });
+
+    // ========================================
+    // CloudWatch Alarms
+    // ========================================
+    [
+      { fn: this.consolidatedTransferAuthFn, name: 'consolidated-transfer-auth', durationMs: Math.floor(Duration.seconds(10).toMilliseconds() * 0.8) },
+      { fn: this.openDentalFn, name: 'opendental-proxy', durationMs: Math.floor(Duration.seconds(120).toMilliseconds() * 0.8) },
+    ].forEach(({ fn, name, durationMs }) => {
+      createLambdaErrorAlarm(fn, name);
+      createLambdaThrottleAlarm(fn, name);
+      createLambdaDurationAlarm(fn, name, durationMs);
     });
 
     // ========================================

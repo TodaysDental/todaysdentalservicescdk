@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput, Fn } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput, Fn, Tags } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -86,6 +86,18 @@ export class ChimeStack extends Stack {
   constructor(scope: Construct, id: string, props: ChimeStackProps) {
     super(scope, id, props);
 
+    // Stack-wide tagging helper
+    const baseTags: Record<string, string> = {
+      Stack: Stack.of(this).stackName,
+      Service: 'Chime',
+      ManagedBy: 'cdk',
+    };
+    const applyTags = (resource: Construct, extra?: Record<string, string>) => {
+      Object.entries(baseTags).forEach(([k, v]) => Tags.of(resource).add(k, v));
+      if (extra) Object.entries(extra).forEach(([k, v]) => Tags.of(resource).add(k, v));
+    };
+    applyTags(this);
+
     // ========================================
     // 1. DynamoDB Tables
     // ========================================
@@ -99,6 +111,7 @@ export class ChimeStack extends Stack {
       removalPolicy: RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
     });
+    applyTags(this.clinicsTable, { Table: 'clinics' });
 
     // Add GSI for phoneNumber lookups
     this.clinicsTable.addGlobalSecondaryIndex({
@@ -147,6 +160,7 @@ export class ChimeStack extends Stack {
       pointInTimeRecovery: true,
       timeToLiveAttribute: 'ttl',
     });
+    applyTags(this.agentPresenceTable, { Table: 'agent-presence' });
 
     // GSI for querying by clinic
     this.agentPresenceTable.addGlobalSecondaryIndex({
@@ -174,6 +188,7 @@ export class ChimeStack extends Stack {
       timeToLiveAttribute: 'ttl',
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES, // Enable streaming for call analytics
     });
+    applyTags(this.callQueueTable, { Table: 'call-queue' });
 
     // GSI for querying by callId
     this.callQueueTable.addGlobalSecondaryIndex({
@@ -214,6 +229,7 @@ export class ChimeStack extends Stack {
       removalPolicy: RemovalPolicy.DESTROY,
       timeToLiveAttribute: 'ttl',
     });
+    applyTags(this.locksTable, { Table: 'locks' });
 
     // Agent Performance table - tracks agent metrics and performance
     this.agentPerformanceTable = new dynamodb.Table(this, 'AgentPerformanceTable', {
@@ -225,6 +241,7 @@ export class ChimeStack extends Stack {
       pointInTimeRecovery: true,
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES, // Enable streaming for real-time analytics
     });
+    applyTags(this.agentPerformanceTable, { Table: 'agent-performance' });
 
     // GSI for querying by clinic and date
     this.agentPerformanceTable.addGlobalSecondaryIndex({
@@ -1059,6 +1076,7 @@ export class ChimeStack extends Stack {
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName, // CRITICAL FIX: Added for distributed locking
         SMA_ID_MAP: smaIdMapJson,
         CHIME_MEDIA_REGION: 'us-east-1',
         JWT_SECRET: jwtSecretValue,
@@ -1068,6 +1086,7 @@ export class ChimeStack extends Stack {
     });
     this.agentPresenceTable.grantReadWriteData(callHungupFn);
     this.callQueueTable.grantReadWriteData(callHungupFn);
+    this.locksTable.grantReadWriteData(callHungupFn); // CRITICAL FIX: Grant locks table access
     callHungupFn.addToRolePolicy(chimeSdkPolicy); 
     callHungupFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
@@ -1164,6 +1183,192 @@ export class ChimeStack extends Stack {
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
 
+    // Lambda for POST /chime/add-call
+    const addCallFn = new lambdaNode.NodejsFunction(this, 'AddCallFn', {
+      functionName: `${this.stackName}-AddCall`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'add-call.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(15),
+      environment: {
+        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        CLINICS_TABLE_NAME: this.clinicsTable.tableName,
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        SMA_ID_MAP: smaIdMapJson,
+        CHIME_MEDIA_REGION: 'us-east-1',
+        JWT_SECRET: jwtSecretValue,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    addCallFn.addToRolePolicy(chimeSdkPolicy);
+    this.agentPresenceTable.grantReadWriteData(addCallFn);
+    this.clinicsTable.grantReadData(addCallFn);
+    this.callQueueTable.grantReadWriteData(addCallFn);
+    addCallFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['chime:CreateSipMediaApplicationCall'],
+      resources: [`arn:aws:chime:${this.region}:${this.account}:sma/*`],
+    }));
+    addCallFn.addPermission('AdminApiInvokeAddCall', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
+    // Lambda for POST /chime/send-dtmf
+    const sendDtmfFn = new lambdaNode.NodejsFunction(this, 'SendDtmfFn', {
+      functionName: `${this.stackName}-SendDtmf`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'send-dtmf.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        SMA_ID_MAP: smaIdMapJson,
+        JWT_SECRET: jwtSecretValue,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    this.agentPresenceTable.grantReadData(sendDtmfFn);
+    this.callQueueTable.grantReadWriteData(sendDtmfFn);
+    sendDtmfFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['chime:UpdateSipMediaApplicationCall'],
+      resources: ['*'],
+    }));
+    sendDtmfFn.addPermission('AdminApiInvokeSendDtmf', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
+    // Lambda for /chime/call-notes (GET, POST, PUT, DELETE)
+    const callNotesFn = new lambdaNode.NodejsFunction(this, 'CallNotesFn', {
+      functionName: `${this.stackName}-CallNotes`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'call-notes.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        JWT_SECRET: jwtSecretValue,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    this.agentPresenceTable.grantReadData(callNotesFn);
+    this.callQueueTable.grantReadWriteData(callNotesFn);
+    callNotesFn.addPermission('AdminApiInvokeCallNotes', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
+    // Lambda for POST /chime/conference-call
+    const conferenceCallFn = new lambdaNode.NodejsFunction(this, 'ConferenceCallFn', {
+      functionName: `${this.stackName}-ConferenceCall`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'conference-call.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(15),
+      environment: {
+        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        SMA_ID_MAP: smaIdMapJson,
+        CHIME_MEDIA_REGION: 'us-east-1',
+        JWT_SECRET: jwtSecretValue,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    conferenceCallFn.addToRolePolicy(chimeSdkPolicy);
+    this.agentPresenceTable.grantReadWriteData(conferenceCallFn);
+    this.callQueueTable.grantReadWriteData(conferenceCallFn);
+    conferenceCallFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['chime:UpdateSipMediaApplicationCall'],
+      resources: ['*'],
+    }));
+    conferenceCallFn.addPermission('AdminApiInvokeConferenceCall', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
+    // Lambda for POST /call-center/join-queued-call
+    const joinQueuedCallFn = new lambdaNode.NodejsFunction(this, 'JoinQueuedCallFn', {
+      functionName: `${this.stackName}-JoinQueuedCall`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'join-queued-call.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(15),
+      environment: {
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        CLINICS_TABLE_NAME: this.clinicsTable.tableName,
+        CHIME_MEDIA_REGION: 'us-east-1',
+        JWT_SECRET: jwtSecretValue,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    joinQueuedCallFn.addToRolePolicy(chimeSdkPolicy);
+    this.callQueueTable.grantReadWriteData(joinQueuedCallFn);
+    this.agentPresenceTable.grantReadWriteData(joinQueuedCallFn);
+    this.clinicsTable.grantReadData(joinQueuedCallFn);
+    joinQueuedCallFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['chime-sdk-voice:UpdateSipMediaApplicationCall'],
+      resources: ['*'],
+    }));
+    joinQueuedCallFn.addPermission('AdminApiInvokeJoinQueuedCall', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
+    // Lambda for POST /call-center/join-active-call
+    const joinActiveCallFn = new lambdaNode.NodejsFunction(this, 'JoinActiveCallFn', {
+      functionName: `${this.stackName}-JoinActiveCall`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'join-active-call.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(15),
+      environment: {
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        CHIME_MEDIA_REGION: 'us-east-1',
+        JWT_SECRET: jwtSecretValue,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    joinActiveCallFn.addToRolePolicy(chimeSdkPolicy);
+    this.callQueueTable.grantReadWriteData(joinActiveCallFn);
+    this.agentPresenceTable.grantReadWriteData(joinActiveCallFn);
+    joinActiveCallFn.addPermission('AdminApiInvokeJoinActiveCall', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
+    // Lambda for GET /call-center/get-joinable-calls
+    const getJoinableCallsFn = new lambdaNode.NodejsFunction(this, 'GetJoinableCallsFn', {
+      functionName: `${this.stackName}-GetJoinableCalls`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'get-joinable-calls.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        JWT_SECRET: jwtSecretValue,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    this.callQueueTable.grantReadData(getJoinableCallsFn);
+    this.agentPresenceTable.grantReadData(getJoinableCallsFn);
+    getJoinableCallsFn.addPermission('AdminApiInvokeGetJoinableCalls', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
     // ========================================
     // 4. API Gateway Routes
     // ========================================
@@ -1222,6 +1427,34 @@ export class ChimeStack extends Stack {
     new CfnOutput(this, 'ResumeCallFnArn', {
       value: resumeCallFn.functionArn,
       exportName: `${this.stackName}-ResumeCallArn`,
+    });
+    new CfnOutput(this, 'AddCallFnArn', {
+      value: addCallFn.functionArn,
+      exportName: `${this.stackName}-AddCallArn`,
+    });
+    new CfnOutput(this, 'SendDtmfFnArn', {
+      value: sendDtmfFn.functionArn,
+      exportName: `${this.stackName}-SendDtmfArn`,
+    });
+    new CfnOutput(this, 'CallNotesFnArn', {
+      value: callNotesFn.functionArn,
+      exportName: `${this.stackName}-CallNotesArn`,
+    });
+    new CfnOutput(this, 'ConferenceCallFnArn', {
+      value: conferenceCallFn.functionArn,
+      exportName: `${this.stackName}-ConferenceCallArn`,
+    });
+    new CfnOutput(this, 'JoinQueuedCallFnArn', {
+      value: joinQueuedCallFn.functionArn,
+      exportName: `${this.stackName}-JoinQueuedCallArn`,
+    });
+    new CfnOutput(this, 'JoinActiveCallFnArn', {
+      value: joinActiveCallFn.functionArn,
+      exportName: `${this.stackName}-JoinActiveCallArn`,
+    });
+    new CfnOutput(this, 'GetJoinableCallsFnArn', {
+      value: getJoinableCallsFn.functionArn,
+      exportName: `${this.stackName}-GetJoinableCallsArn`,
     });
     new CfnOutput(this, 'AgentPresenceTableNameExport', {
       value: this.agentPresenceTable.tableName,
@@ -1287,7 +1520,16 @@ export class ChimeStack extends Stack {
     
     cleanupMonitorFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['chime:DeleteMeeting', 'chime:ListMeetings'],
+      actions: [
+        'chime:DeleteMeeting', 
+        'chime:ListMeetings',
+        'chime:DeleteAttendee',      // CRITICAL FIX: Added to cleanup orphaned attendees
+        'chime:ListAttendees',       // CRITICAL FIX: Added to find attendees to cleanup
+        'chime-sdk-meetings:DeleteMeeting',
+        'chime-sdk-meetings:ListMeetings',
+        'chime-sdk-meetings:DeleteAttendee',
+        'chime-sdk-meetings:ListAttendees',
+      ],
       resources: ['*'], 
     }));
 
@@ -1322,9 +1564,34 @@ export class ChimeStack extends Stack {
 
     let recordingsBucket: s3.Bucket | undefined;
     let recordingsKey: kms.Key | undefined;
-    let getRecordingFn: lambdaNode.NodejsFunction | undefined;
+    
+    // CRITICAL FIX: Always create getRecordingFn to ensure export exists
+    // This prevents CloudFormation failures when AdminStack imports the ARN
+    const recordingEnabled = props.enableCallRecording !== false;
+    
+    // Create getRecordingFn outside conditional to ensure export always exists
+    const getRecordingFn = new lambdaNode.NodejsFunction(this, 'GetRecordingFn', {
+      functionName: `${this.stackName}-GetRecording`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'get-recording.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      memorySize: 256,
+      environment: {
+        RECORDINGS_BUCKET: '', // Will be updated if recording enabled
+        RECORDING_METADATA_TABLE: '', // Will be updated if recording enabled
+        JWT_SECRET: jwtSecretValue,
+        RECORDING_ENABLED: recordingEnabled ? 'true' : 'false',
+      },
+    });
+    
+    // Always export the ARN to prevent CloudFormation import failures
+    new CfnOutput(this, 'GetRecordingFnArn', {
+      value: getRecordingFn.functionArn,
+      exportName: `${this.stackName}-GetRecordingFnArn`,
+    });
 
-    if (props.enableCallRecording !== false) { // Default to enabled
+    if (recordingEnabled) { // Default to enabled
       console.log('[ChimeStack] Setting up call recording infrastructure');
 
       // 1. KMS Key for encryption at rest (HIPAA compliance)
@@ -1483,6 +1750,7 @@ export class ChimeStack extends Stack {
         pointInTimeRecovery: true,
         timeToLiveAttribute: 'ttl', // Auto-cleanup old metadata
       });
+      applyTags(this.recordingMetadataTable, { Table: 'recording-metadata' });
       const recordingMetadataTable = this.recordingMetadataTable; // Keep local reference for backward compatibility
 
       // GSI: Query by callId
@@ -1587,21 +1855,11 @@ export class ChimeStack extends Stack {
       recordingsBucket.grantWrite(smaHandler);
       recordingsKey.grantEncrypt(smaHandler);
 
-      // 6. API Lambda for retrieving recordings
-      getRecordingFn = new lambdaNode.NodejsFunction(this, 'GetRecordingFn', {
-        functionName: `${this.stackName}-GetRecording`,
-        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'get-recording.ts'),
-        handler: 'handler',
-        runtime: lambda.Runtime.NODEJS_20_X,
-        timeout: Duration.seconds(30),
-        memorySize: 256,
-        environment: {
-          RECORDINGS_BUCKET: recordingsBucket.bucketName,
-          RECORDING_METADATA_TABLE: recordingMetadataTable.tableName,
-          JWT_SECRET: jwtSecretValue,
-        },
-      });
-
+      // 6. Update getRecordingFn with actual bucket/table names (created outside conditional)
+      getRecordingFn.addEnvironment('RECORDINGS_BUCKET', recordingsBucket.bucketName);
+      getRecordingFn.addEnvironment('RECORDING_METADATA_TABLE', recordingMetadataTable.tableName);
+      
+      // Grant permissions to getRecordingFn
       recordingsBucket.grantRead(getRecordingFn);
       recordingMetadataTable.grantReadData(getRecordingFn);
       recordingsKey.grantDecrypt(getRecordingFn);
@@ -1694,10 +1952,7 @@ export class ChimeStack extends Stack {
         exportName: `${this.stackName}-RecordingMetadataTable`,
       });
 
-      new CfnOutput(this, 'GetRecordingFnArn', {
-        value: getRecordingFn.functionArn,
-        exportName: `${this.stackName}-GetRecordingFnArn`,
-      });
+      // NOTE: GetRecordingFnArn export moved outside conditional block to prevent import failures
 
       new CfnOutput(this, 'GetAgentPerformanceFnArn', {
         value: getAgentPerformanceFn.functionArn,
@@ -1732,12 +1987,17 @@ export class ChimeStack extends Stack {
         environment: {
           CALL_ANALYTICS_TABLE_NAME: props.analyticsTableName,
           ANALYTICS_DEDUP_TABLE: props.analyticsDedupTableName,
+          // CRITICAL FIX: Pass agent performance table name for metrics tracking
+          AGENT_PERFORMANCE_TABLE_NAME: this.agentPerformanceTable.tableName,
         },
         logRetention: logs.RetentionDays.ONE_WEEK,
       });
 
       // Grant read access to CallQueue table's stream
       this.callQueueTable.grantStreamRead(callQueueStreamProcessor);
+      
+      // CRITICAL FIX: Grant write access to agent performance table for metrics tracking
+      this.agentPerformanceTable.grantReadWriteData(callQueueStreamProcessor);
 
       // Grant write access to analytics tables (cross-stack permissions)
       callQueueStreamProcessor.addToRolePolicy(new iam.PolicyStatement({

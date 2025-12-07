@@ -1,264 +1,306 @@
 /**
- * CRITICAL FIX: Agent Performance DLQ Processor with Exponential Backoff Retry
+ * Agent Performance DLQ Processor
  * 
- * Processes failed agent performance metric tracking events from DLQ
- * Implements exponential backoff retry strategy
+ * Processes failed agent performance tracking messages from the DLQ.
+ * Attempts to retry the failed operations and logs permanent failures
+ * to the failures table for manual review.
  * 
- * Triggered by: SQS AgentPerformanceDLQ
- * 
- * Retry Strategy:
- * - Attempt 1: Immediate (from DLQ)
- * - Attempt 2: After 30 seconds
- * - Attempt 3: After 2 minutes
- * - After 3 attempts: Mark as permanent failure and alert
+ * Triggered by: SQS event source from agent-performance-dlq
  */
 
-import { SQSEvent, SQSRecord } from 'aws-lambda';
-import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { SQSEvent, SQSRecord, SQSBatchResponse, SQSBatchItemFailure } from 'aws-lambda';
+import { DynamoDBDocumentClient, PutCommand, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { trackEnhancedCallMetrics } from '../shared/utils/enhanced-agent-metrics';
-import {
-  AgentPerformanceFailure,
-  processPerformanceDLQBatch,
-  sendPerformanceAlert,
-  storePermanentFailure,
-  sendToPerformanceDLQ
-} from '../shared/utils/agent-performance-dlq';
-import { dynamoDBCircuitBreaker } from '../shared/utils/circuit-breaker';
 
 const ddb = getDynamoDBClient();
+const sns = new SNSClient({});
 
 const AGENT_PERFORMANCE_TABLE = process.env.AGENT_PERFORMANCE_TABLE_NAME;
-const PERMANENT_FAILURES_TABLE = process.env.PERMANENT_FAILURES_TABLE_NAME;
-const DLQ_URL = process.env.AGENT_PERFORMANCE_DLQ_URL;
+const FAILURES_TABLE = process.env.AGENT_PERFORMANCE_FAILURES_TABLE_NAME;
+const ALERT_TOPIC_ARN = process.env.ALERT_TOPIC_ARN;
 
-if (!AGENT_PERFORMANCE_TABLE) {
-  throw new Error('AGENT_PERFORMANCE_TABLE_NAME environment variable is required');
+// Maximum retry attempts before marking as permanent failure
+const MAX_RETRY_ATTEMPTS = 3;
+
+interface AgentPerformanceFailure {
+  callId: string;
+  agentId: string;
+  clinicId: string;
+  error: {
+    message: string;
+    stack?: string;
+    code?: string;
+  };
+  metrics: {
+    direction: string;
+    duration: number;
+    sentiment?: string;
+    sentimentScore?: number;
+  };
+  timestamp: string;
+  attemptCount: number;
 }
 
 /**
- * Main Lambda handler for processing DLQ messages
+ * Main handler for DLQ processing
+ * Uses partial batch response to handle individual message failures
  */
-export const handler = async (event: SQSEvent): Promise<void> => {
-  console.log('[AgentPerformanceDLQ] Processing batch', {
-    recordCount: event.Records.length
+export const handler = async (event: SQSEvent): Promise<SQSBatchResponse> => {
+  console.log('[DLQProcessor] Processing batch', {
+    recordCount: event.Records.length,
+    timestamp: new Date().toISOString()
   });
 
-  // Parse failures from SQS messages
-  const failures: AgentPerformanceFailure[] = [];
-  
+  const batchItemFailures: SQSBatchItemFailure[] = [];
+  const results = {
+    retried: 0,
+    permanentFailures: 0,
+    errors: 0
+  };
+
   for (const record of event.Records) {
     try {
-      const failure = JSON.parse(record.body) as AgentPerformanceFailure;
+      const processed = await processRecord(record);
       
-      // Apply exponential backoff delay before retry
-      const shouldRetry = await applyExponentialBackoff(failure, record);
-      
-      if (shouldRetry) {
-        failures.push(failure);
-      } else {
-        console.log('[AgentPerformanceDLQ] Skipping - backoff delay not met:', {
-          callId: failure.callId,
-          attemptCount: failure.attemptCount
-        });
+      if (processed === 'RETRIED') {
+        results.retried++;
+      } else if (processed === 'PERMANENT_FAILURE') {
+        results.permanentFailures++;
       }
     } catch (err: any) {
-      console.error('[AgentPerformanceDLQ] Error parsing message:', err);
-    }
-  }
-
-  if (failures.length === 0) {
-    console.log('[AgentPerformanceDLQ] No failures to process after backoff filter');
-    return;
-  }
-
-  // Process failures with retry handler
-  const results = await processPerformanceDLQBatch(failures, retryAgentPerformanceTracking);
-
-  console.log('[AgentPerformanceDLQ] Batch processed:', results);
-
-  // Handle permanent failures
-  if (results.permanent.length > 0) {
-    for (const failure of results.permanent) {
-      // Store for manual review
-      if (PERMANENT_FAILURES_TABLE) {
-        await storePermanentFailure(failure, PERMANENT_FAILURES_TABLE, ddb);
-      }
-
-      // Send alert
-      await sendPerformanceAlert(failure);
-
-      console.error('[AgentPerformanceDLQ] PERMANENT FAILURE - Manual review required:', {
-        callId: failure.callId,
-        agentId: failure.agentId,
-        error: failure.error.message,
-        attempts: failure.attemptCount
+      console.error('[DLQProcessor] Error processing record:', {
+        messageId: record.messageId,
+        error: err.message,
+        stack: err.stack
       });
-    }
-  }
-
-  // Re-queue failures that haven't reached max attempts (with incremented attempt count)
-  for (const failure of failures) {
-    if (failure.attemptCount < 3 && results.failed > 0) {
-      // Increment attempt count and re-queue
-      const updatedFailure: AgentPerformanceFailure = {
-        ...failure,
-        attemptCount: failure.attemptCount + 1,
-        timestamp: new Date().toISOString() // Update timestamp for backoff calculation
-      };
-
-      await sendToPerformanceDLQ(updatedFailure, DLQ_URL);
       
-      console.log('[AgentPerformanceDLQ] Re-queued for retry:', {
-        callId: failure.callId,
-        attemptCount: updatedFailure.attemptCount
+      // Add to batch failures for retry
+      batchItemFailures.push({
+        itemIdentifier: record.messageId
       });
+      results.errors++;
     }
   }
+
+  console.log('[DLQProcessor] Batch complete:', results);
+
+  return {
+    batchItemFailures
+  };
 };
 
 /**
- * CRITICAL FIX: Exponential backoff implementation
- * 
- * Delays processing based on attempt count:
- * - Attempt 1: Immediate (0 seconds)
- * - Attempt 2: 30 seconds
- * - Attempt 3: 2 minutes (120 seconds)
+ * Process a single DLQ record
  */
-async function applyExponentialBackoff(
-  failure: AgentPerformanceFailure,
-  record: SQSRecord
-): Promise<boolean> {
-  const attemptCount = failure.attemptCount;
+async function processRecord(record: SQSRecord): Promise<'RETRIED' | 'PERMANENT_FAILURE' | 'SKIPPED'> {
+  let failure: AgentPerformanceFailure;
   
-  // Attempt 1: Process immediately
-  if (attemptCount === 1) {
-    return true;
-  }
-
-  // Calculate required delay in milliseconds
-  const baseDelay = 30000; // 30 seconds base
-  const backoffMultiplier = Math.pow(2, attemptCount - 2); // Exponential: 1, 2, 4, 8...
-  const requiredDelayMs = baseDelay * backoffMultiplier;
-
-  // Get message timestamp
-  const messageTimestamp = failure.timestamp ? new Date(failure.timestamp).getTime() : 0;
-  const now = Date.now();
-  const timeSinceFailure = now - messageTimestamp;
-
-  // Check if enough time has passed
-  if (timeSinceFailure >= requiredDelayMs) {
-    console.log('[AgentPerformanceDLQ] Backoff delay met, processing:', {
-      callId: failure.callId,
-      attemptCount,
-      requiredDelayMs,
-      timeSinceFailure
+  try {
+    failure = JSON.parse(record.body);
+  } catch (parseErr) {
+    console.error('[DLQProcessor] Failed to parse message body:', {
+      messageId: record.messageId,
+      body: record.body
     });
-    return true;
+    // Store as permanent failure with parse error
+    await storePermanentFailure({
+      callId: 'unknown',
+      agentId: 'unknown',
+      clinicId: 'unknown',
+      error: {
+        message: 'Failed to parse DLQ message',
+        code: 'PARSE_ERROR'
+      },
+      metrics: {
+        direction: 'unknown',
+        duration: 0
+      },
+      timestamp: new Date().toISOString(),
+      attemptCount: 999
+    }, 'PARSE_ERROR', record.body);
+    return 'PERMANENT_FAILURE';
   }
 
-  // Not enough time has passed - calculate remaining delay
-  const remainingDelay = requiredDelayMs - timeSinceFailure;
-  const visibilityTimeout = Math.ceil(remainingDelay / 1000);
+  const receiveCount = parseInt(record.attributes?.ApproximateReceiveCount || '1', 10);
+  const totalAttempts = (failure.attemptCount || 0) + receiveCount;
 
-  console.log('[AgentPerformanceDLQ] Backoff delay not met, extending visibility:', {
+  console.log('[DLQProcessor] Processing failure:', {
     callId: failure.callId,
-    attemptCount,
-    requiredDelayMs,
-    timeSinceFailure,
-    remainingDelay,
-    visibilityTimeout
+    agentId: failure.agentId,
+    originalAttempts: failure.attemptCount,
+    dlqReceiveCount: receiveCount,
+    totalAttempts
   });
 
-  // Return false to skip processing this message
-  // SQS will re-deliver it after visibility timeout
-  return false;
-}
+  // Check if we should retry or mark as permanent failure
+  if (totalAttempts >= MAX_RETRY_ATTEMPTS) {
+    console.log('[DLQProcessor] Max retries exceeded, storing permanent failure:', failure.callId);
+    await storePermanentFailure(failure, 'MAX_RETRIES_EXCEEDED');
+    await sendAlert(failure, 'MAX_RETRIES_EXCEEDED');
+    return 'PERMANENT_FAILURE';
+  }
 
-/**
- * Retry handler for agent performance tracking
- * Returns true if successful, false if failed
- */
-async function retryAgentPerformanceTracking(
-  failure: AgentPerformanceFailure
-): Promise<boolean> {
+  // Validate required data
+  if (!failure.agentId || !failure.clinicId || !AGENT_PERFORMANCE_TABLE) {
+    console.error('[DLQProcessor] Missing required data:', {
+      hasAgentId: !!failure.agentId,
+      hasClinicId: !!failure.clinicId,
+      hasTable: !!AGENT_PERFORMANCE_TABLE
+    });
+    await storePermanentFailure(failure, 'MISSING_DATA');
+    return 'PERMANENT_FAILURE';
+  }
+
+  // Attempt to retry the metrics tracking
   try {
-    console.log('[AgentPerformanceDLQ] Retrying agent performance tracking:', {
+    await trackEnhancedCallMetrics(ddb, AGENT_PERFORMANCE_TABLE, {
+      agentId: failure.agentId,
+      clinicId: failure.clinicId,
+      callId: failure.callId,
+      direction: failure.metrics.direction as 'inbound' | 'outbound',
+      duration: failure.metrics.duration || 0,
+      talkTime: failure.metrics.duration || 0,
+      holdTime: 0,
+      sentiment: failure.metrics.sentiment,
+      sentimentScore: failure.metrics.sentimentScore,
+      transferred: false,
+      escalated: false,
+      issues: [],
+      timestamp: new Date(failure.timestamp).getTime()
+    });
+
+    console.log('[DLQProcessor] Successfully retried metrics tracking:', {
       callId: failure.callId,
       agentId: failure.agentId,
-      attemptCount: failure.attemptCount,
-      circuitState: dynamoDBCircuitBreaker.getState()
+      attempt: totalAttempts
     });
 
-    // CRITICAL FIX: Check circuit breaker before attempting retry
-    if (dynamoDBCircuitBreaker.isOpen()) {
-      console.warn('[AgentPerformanceDLQ] Circuit breaker OPEN, skipping retry:', {
-        callId: failure.callId,
-        circuitState: dynamoDBCircuitBreaker.getState()
-      });
-      // Return false to requeue for later attempt
-      return false;
-    }
+    return 'RETRIED';
 
-    // Extract metrics from failure
-    const metrics = failure.metrics;
-
-    // CRITICAL FIX: Wrap operation with circuit breaker
-    await dynamoDBCircuitBreaker.execute(async () => {
-      return trackEnhancedCallMetrics(ddb, AGENT_PERFORMANCE_TABLE!, {
-        agentId: failure.agentId,
-        clinicId: failure.clinicId,
-        callId: failure.callId,
-        direction: metrics.direction || 'inbound',
-        duration: metrics.duration || 0,
-        talkTime: metrics.talkTime || 0,
-        holdTime: metrics.holdTime || 0,
-        sentiment: metrics.sentiment,
-        sentimentScore: metrics.sentimentScore,
-        transferred: metrics.transferred || false,
-        escalated: metrics.escalated || false,
-        issues: metrics.issues || [],
-        speakerMetrics: metrics.speakerMetrics
-      });
-    });
-
-    console.log('[AgentPerformanceDLQ] Successfully retried:', {
+  } catch (retryErr: any) {
+    console.error('[DLQProcessor] Retry failed:', {
       callId: failure.callId,
-      agentId: failure.agentId,
-      circuitState: dynamoDBCircuitBreaker.getState()
+      error: retryErr.message
     });
 
-    return true;
+    // Update failure with new error and re-throw to trigger SQS retry
+    failure.error = {
+      message: retryErr.message,
+      stack: retryErr.stack,
+      code: retryErr.code || retryErr.name
+    };
+    failure.attemptCount = totalAttempts;
 
-  } catch (err: any) {
-    console.error('[AgentPerformanceDLQ] Retry failed:', {
-      callId: failure.callId,
-      agentId: failure.agentId,
-      error: err.message,
-      attemptCount: failure.attemptCount,
-      circuitState: dynamoDBCircuitBreaker.getState()
-    });
-
-    return false;
+    throw retryErr;
   }
 }
 
 /**
- * Check if error is transient (retriable) or permanent
+ * Store a permanent failure record for manual review
  */
-function isTransientError(error: any): boolean {
-  const transientErrors = [
-    'ProvisionedThroughputExceededException',
-    'ThrottlingException',
-    'ServiceUnavailable',
-    'InternalServerError',
-    'RequestTimeout'
-  ];
+async function storePermanentFailure(
+  failure: AgentPerformanceFailure,
+  reason: string,
+  rawBody?: string
+): Promise<void> {
+  if (!FAILURES_TABLE) {
+    console.error('[DLQProcessor] FAILURES_TABLE not configured, logging to CloudWatch');
+    console.error('PERMANENT_FAILURE', JSON.stringify({
+      ...failure,
+      permanentFailureReason: reason,
+      rawBody
+    }));
+    return;
+  }
 
-  return transientErrors.some(errCode => 
-    error.name === errCode || 
-    error.code === errCode ||
-    error.message?.includes(errCode)
-  );
+  const failureId = `${failure.callId}-${Date.now()}`;
+  const ttl = Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60); // 90 days
+
+  try {
+    await ddb.send(new PutCommand({
+      TableName: FAILURES_TABLE,
+      Item: {
+        failureId,
+        callId: failure.callId,
+        agentId: failure.agentId,
+        clinicId: failure.clinicId,
+        error: failure.error,
+        metrics: failure.metrics,
+        originalTimestamp: failure.timestamp,
+        permanentFailureReason: reason,
+        attemptCount: failure.attemptCount,
+        storedAt: new Date().toISOString(),
+        rawBody: rawBody,
+        ttl
+      }
+    }));
+
+    console.log('[DLQProcessor] Stored permanent failure:', {
+      failureId,
+      callId: failure.callId,
+      reason
+    });
+
+  } catch (err: any) {
+    console.error('[DLQProcessor] Failed to store permanent failure:', {
+      error: err.message,
+      callId: failure.callId
+    });
+    
+    // Last resort: log to CloudWatch
+    console.error('PERMANENT_FAILURE_UNRECOVERABLE', JSON.stringify({
+      ...failure,
+      permanentFailureReason: reason,
+      storeError: err.message
+    }));
+  }
 }
 
+/**
+ * Send alert for permanent failures
+ */
+async function sendAlert(failure: AgentPerformanceFailure, reason: string): Promise<void> {
+  if (!ALERT_TOPIC_ARN) {
+    console.warn('[DLQProcessor] ALERT_TOPIC_ARN not configured, skipping alert');
+    return;
+  }
+
+  try {
+    await sns.send(new PublishCommand({
+      TopicArn: ALERT_TOPIC_ARN,
+      Subject: `[ALERT] Agent Performance Tracking Failure - ${failure.agentId}`,
+      Message: JSON.stringify({
+        alertType: 'AGENT_PERFORMANCE_TRACKING_FAILURE',
+        severity: 'HIGH',
+        callId: failure.callId,
+        agentId: failure.agentId,
+        clinicId: failure.clinicId,
+        reason,
+        error: failure.error.message,
+        attemptCount: failure.attemptCount,
+        timestamp: new Date().toISOString(),
+        action: 'Manual review required. Check AgentPerformanceFailures table for details.'
+      }, null, 2),
+      MessageAttributes: {
+        alertType: {
+          DataType: 'String',
+          StringValue: 'AGENT_PERFORMANCE_TRACKING_FAILURE'
+        },
+        severity: {
+          DataType: 'String',
+          StringValue: 'HIGH'
+        }
+      }
+    }));
+
+    console.log('[DLQProcessor] Alert sent for failure:', failure.callId);
+
+  } catch (err: any) {
+    console.error('[DLQProcessor] Failed to send alert:', {
+      error: err.message,
+      callId: failure.callId
+    });
+  }
+}

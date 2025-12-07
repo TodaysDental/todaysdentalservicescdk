@@ -172,7 +172,7 @@ export class StateTimeoutManager {
           TableName: this.agentPresenceTable,
           Key: { agentId },
           UpdateExpression: 'SET #status = :online, lastActivityAt = :now ' +
-                           'REMOVE ringingCallId, ringingCallTime, ringingCallFrom',
+                           'REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId',
           ConditionExpression: 'ringingCallId = :callId',
           ExpressionAttributeNames: { '#status': 'status' },
           ExpressionAttributeValues: {

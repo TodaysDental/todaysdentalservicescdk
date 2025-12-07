@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput, Fn } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput, Fn, Tags } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as kinesis from 'aws-cdk-lib/aws-kinesis';
@@ -23,21 +23,166 @@ import * as apigw from 'aws-cdk-lib/aws-apigateway';
 export interface AnalyticsStackProps extends StackProps {
   jwtSecret: string;
   region: string;
-  callQueueTableStreamArn?: string; // Optional: will be passed from ChimeStack
-  callQueueTableName?: string; // Optional: for reconciliation job
-  supervisorEmails?: string[]; // Optional: emails for critical alert notifications
-  agentPresenceTableName?: string; // Optional: for real-time coaching
-  agentPerformanceTableName?: string; // Optional: for enhanced metrics
+  /**
+   * Name of the ChimeStack for deriving table names.
+   * Table names will be constructed as: ${chimeStackName}-TableSuffix
+   * Required for cross-stack references when AnalyticsStack is created before ChimeStack.
+   * 
+   * IMPORTANT: This must match the exact stack name used for ChimeStack instantiation.
+   * If ChimeStack naming convention changes, update this or provide explicit table names.
+   */
+  chimeStackName: string;
+  /**
+   * @deprecated Use ChimeStack's stream processor instead.
+   * The CallQueue stream processor is now created in ChimeStack, not AnalyticsStack.
+   * This prop is kept for backward compatibility but is ignored.
+   */
+  callQueueTableStreamArn?: string;
+  /**
+   * Explicit CallQueue table name. If not provided, derived as: ${chimeStackName}-CallQueueV2
+   */
+  callQueueTableName?: string;
+  /**
+   * Email addresses to receive critical alert notifications
+   */
+  supervisorEmails?: string[];
+  /**
+   * Explicit AgentPresence table name. If not provided, derived as: ${chimeStackName}-AgentPresence
+   */
+  agentPresenceTableName?: string;
+  /**
+   * Explicit AgentPerformance table name. If not provided, derived as: ${chimeStackName}-AgentPerformance
+   */
+  agentPerformanceTableName?: string;
+  /**
+   * Name of the transcript buffer table.
+   * Defaults to ${stackName}-TranscriptBuffersV2
+   */
+  transcriptBufferTableName?: string;
 }
 
 export class AnalyticsStack extends Stack {
   public readonly analyticsTable: dynamodb.Table;
   public readonly analyticsDedupTable: dynamodb.Table;
+  public readonly transcriptBufferTable: dynamodb.Table;
   public readonly callAlertsTopic: sns.Topic;
   public readonly medicalVocabularyName: string;
+  
+  // Derived table names from ChimeStack for cross-stack references
+  public readonly derivedCallQueueTableName: string;
+  public readonly derivedAgentPresenceTableName: string;
+  public readonly derivedAgentPerformanceTableName: string;
 
   constructor(scope: Construct, id: string, props: AnalyticsStackProps) {
     super(scope, id, props);
+
+    // ========================================
+    // Stack-wide tagging helpers
+    // ========================================
+    const baseTags: Record<string, string> = {
+      Stack: Stack.of(this).stackName,
+      Service: 'Analytics',
+      ManagedBy: 'cdk',
+    };
+    const applyTags = (resource: Construct, extra?: Record<string, string>) => {
+      Object.entries(baseTags).forEach(([k, v]) => Tags.of(resource).add(k, v));
+      if (extra) Object.entries(extra).forEach(([k, v]) => Tags.of(resource).add(k, v));
+    };
+    applyTags(this);
+
+    // ========================================
+    // Alarm helpers
+    // ========================================
+    const createLambdaErrorAlarm = (fn: lambda.IFunction, displayName: string) => {
+      new cloudwatch.Alarm(this, `${fn.node.id}ErrorAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Lambda',
+          metricName: 'Errors',
+          dimensionsMap: { FunctionName: fn.functionName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${displayName} Lambda has errors`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    const createLambdaThrottleAlarm = (fn: lambda.IFunction, displayName: string) => {
+      new cloudwatch.Alarm(this, `${fn.node.id}ThrottleAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Lambda',
+          metricName: 'Throttles',
+          dimensionsMap: { FunctionName: fn.functionName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${displayName} Lambda is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    const createLambdaDurationAlarm = (fn: lambda.IFunction, displayName: string, thresholdMs: number) => {
+      new cloudwatch.Alarm(this, `${fn.node.id}DurationAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Lambda',
+          metricName: 'Duration',
+          dimensionsMap: { FunctionName: fn.functionName },
+          statistic: 'Maximum',
+          period: Duration.minutes(5),
+        }),
+        threshold: thresholdMs,
+        evaluationPeriods: 2,
+        alarmDescription: `Alert when ${displayName} Lambda p99 duration exceeds ${thresholdMs}ms (~80% of timeout)`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    const createDynamoThrottleAlarm = (tableName: string, idSuffix: string) => {
+      new cloudwatch.Alarm(this, `${idSuffix}ThrottleAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/DynamoDB',
+          metricName: 'ThrottledRequests',
+          dimensionsMap: { TableName: tableName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when DynamoDB table ${tableName} is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+    
+    // ========================================
+    // CRITICAL FIX: Derive and Validate ChimeStack Table Names
+    // ========================================
+    // This allows AnalyticsStack to reference ChimeStack tables even when created before ChimeStack.
+    // WARNING: These names must match the naming convention in ChimeStack exactly.
+    // If ChimeStack changes its table naming, these derivations must be updated.
+    
+    if (!props.chimeStackName) {
+      throw new Error('chimeStackName is required for AnalyticsStack to derive ChimeStack table names');
+    }
+    
+    // Validate chimeStackName format (should match CDK stack naming conventions)
+    if (!/^[A-Za-z][A-Za-z0-9-]*$/.test(props.chimeStackName)) {
+      throw new Error(`Invalid chimeStackName format: ${props.chimeStackName}. Must start with letter and contain only alphanumeric characters and hyphens.`);
+    }
+    
+    this.derivedCallQueueTableName = props.callQueueTableName || `${props.chimeStackName}-CallQueueV2`;
+    this.derivedAgentPresenceTableName = props.agentPresenceTableName || `${props.chimeStackName}-AgentPresence`;
+    this.derivedAgentPerformanceTableName = props.agentPerformanceTableName || `${props.chimeStackName}-AgentPerformance`;
+    
+    // Log derived table names for debugging during synth
+    console.log('[AnalyticsStack] Derived ChimeStack table names:', {
+      callQueueTable: this.derivedCallQueueTableName,
+      agentPresenceTable: this.derivedAgentPresenceTableName,
+      agentPerformanceTable: this.derivedAgentPerformanceTableName,
+    });
 
     // ========================================
     // 1. Analytics DynamoDB Table
@@ -53,6 +198,7 @@ export class AnalyticsStack extends Stack {
       timeToLiveAttribute: 'ttl',
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES, // Enable streams for real-time coaching
     });
+    applyTags(this.analyticsTable, { Table: 'analytics' });
 
     // GSI: Query by clinic and date range
     this.analyticsTable.addGlobalSecondaryIndex({
@@ -87,8 +233,6 @@ export class AnalyticsStack extends Stack {
     });
 
     // GSI: Query by call category
-    // NOTE: DynamoDB only allows adding one GSI at a time. Deploy this first,
-    // then uncomment the second GSI (clinicId-callCategory-index) and deploy again.
     this.analyticsTable.addGlobalSecondaryIndex({
       indexName: 'callCategory-timestamp-index',
       partitionKey: { name: 'callCategory', type: dynamodb.AttributeType.STRING },
@@ -96,7 +240,7 @@ export class AnalyticsStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
-    // SECOND GSI - Uncomment after first GSI is deployed successfully
+    // GSI: Query by clinic and call category for filtered analytics
     this.analyticsTable.addGlobalSecondaryIndex({
       indexName: 'clinicId-callCategory-index',
       partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
@@ -121,6 +265,7 @@ export class AnalyticsStack extends Stack {
       pointInTimeRecovery: true,
       timeToLiveAttribute: 'ttl',
     });
+    applyTags(analyticsFailuresTable, { Table: 'analytics-failures' });
 
     // Deduplication table for preventing duplicate analytics processing
     this.analyticsDedupTable = new dynamodb.Table(this, 'AnalyticsDedupTable', {
@@ -130,15 +275,18 @@ export class AnalyticsStack extends Stack {
       removalPolicy: RemovalPolicy.DESTROY,
       timeToLiveAttribute: 'ttl', // Auto-cleanup after 7 days
     });
+    applyTags(this.analyticsDedupTable, { Table: 'analytics-dedup' });
 
     // **NEW: Transcript Buffer table for persistent transcript storage**
-    const transcriptBufferTable = new dynamodb.Table(this, 'TranscriptBufferTable', {
-      tableName: `${this.stackName}-TranscriptBuffersV2`,
+    // CRITICAL FIX: Expose as public property so it can be referenced by other stacks/lambdas
+    this.transcriptBufferTable = new dynamodb.Table(this, 'TranscriptBufferTable', {
+      tableName: props.transcriptBufferTableName || `${this.stackName}-TranscriptBuffersV2`,
       partitionKey: { name: 'callId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.DESTROY,
       timeToLiveAttribute: 'ttl', // Auto-cleanup after call ends
     });
+    applyTags(this.transcriptBufferTable, { Table: 'transcript-buffer' });
 
     // **NEW: Agent Performance Failures table for permanent failure storage**
     const agentPerformanceFailuresTable = new dynamodb.Table(this, 'AgentPerformanceFailuresTable', {
@@ -149,6 +297,7 @@ export class AnalyticsStack extends Stack {
       pointInTimeRecovery: true,
       timeToLiveAttribute: 'ttl', // Keep failures for 90 days
     });
+    applyTags(agentPerformanceFailuresTable, { Table: 'agent-performance-failures' });
 
 
     // ========================================
@@ -197,6 +346,7 @@ export class AnalyticsStack extends Stack {
       retentionPeriod: Duration.days(14), // Keep failures for 14 days
       visibilityTimeout: Duration.minutes(5),
     });
+    applyTags(agentPerformanceDLQ, { Queue: 'agent-performance-dlq' });
 
     // Create CloudWatch alarm for DLQ depth
     const dlqAlarm = new cloudwatch.Alarm(this, 'AgentPerformanceDLQAlarm', {
@@ -211,6 +361,45 @@ export class AnalyticsStack extends Stack {
 
     // Send alarm to SNS topic
     dlqAlarm.addAlarmAction(new cloudwatchActions.SnsAction(agentPerformanceAlertTopic));
+
+    // CRITICAL FIX: Add DLQ processor Lambda to handle failed agent performance tracking
+    const dlqProcessorFn = new lambdaNode.NodejsFunction(this, 'AgentPerformanceDLQProcessor', {
+      functionName: `${this.stackName}-AgentPerformanceDLQProcessor`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'process-agent-performance-dlq.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.minutes(5),
+      memorySize: 256,
+      environment: {
+        AGENT_PERFORMANCE_TABLE_NAME: this.derivedAgentPerformanceTableName,
+        AGENT_PERFORMANCE_FAILURES_TABLE_NAME: agentPerformanceFailuresTable.tableName,
+        ALERT_TOPIC_ARN: agentPerformanceAlertTopic.topicArn,
+      },
+      logRetention: logs.RetentionDays.ONE_WEEK,
+    });
+    applyTags(dlqProcessorFn, { Function: 'agent-performance-dlq-processor' });
+
+    // Grant permissions to DLQ processor
+    agentPerformanceFailuresTable.grantReadWriteData(dlqProcessorFn);
+    agentPerformanceAlertTopic.grantPublish(dlqProcessorFn);
+    
+    // Grant permission to ChimeStack agent performance table
+    dlqProcessorFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'dynamodb:UpdateItem',
+        'dynamodb:GetItem',
+      ],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${this.derivedAgentPerformanceTableName}`,
+      ],
+    }));
+
+    // Add SQS event source to process DLQ messages
+    dlqProcessorFn.addEventSource(new SqsEventSource(agentPerformanceDLQ, {
+      batchSize: 10,
+      maxBatchingWindow: Duration.seconds(30),
+    }));
 
     // ========================================
     // 2.6. Custom Vocabulary for Medical/Dental Terms
@@ -298,67 +487,23 @@ export class AnalyticsStack extends Stack {
 
 
     // ========================================
-    // 5.5. CallQueue Stream Processor (DynamoDB Streams)
+    // 5.5. CallQueue Stream Processor - REMOVED (DEAD CODE)
     // ========================================
-
-    // Only create if callQueueTableStreamArn is provided
-    if (props.callQueueTableStreamArn) {
-      const callQueueStreamProcessor = new lambdaNode.NodejsFunction(this, 'CallQueueStreamProcessor', {
-        functionName: `${this.stackName}-CallQueueStreamProcessor`,
-        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'process-call-analytics-stream.ts'),
-        handler: 'handler',
-        runtime: lambda.Runtime.NODEJS_20_X,
-        timeout: Duration.seconds(60),
-        memorySize: 512,
-        environment: {
-          CALL_ANALYTICS_TABLE_NAME: this.analyticsTable.tableName,
-          ANALYTICS_DEDUP_TABLE: this.analyticsDedupTable.tableName,
-        },
-        bundling: {
-          format: lambdaNode.OutputFormat.CJS,
-          target: 'node20',
-          externalModules: ['@aws-sdk/*'],
-          nodeModules: [],
-          // Ensure clinic configuration JSON is included
-          loader: {
-            '.json': 'copy',
-          },
-        },
-        logRetention: logs.RetentionDays.ONE_WEEK,
-      });
-
-      // Grant permissions
-      this.analyticsTable.grantReadWriteData(callQueueStreamProcessor);
-      this.analyticsDedupTable.grantReadWriteData(callQueueStreamProcessor);
-
-      // Add DynamoDB Stream event source
-      callQueueStreamProcessor.addEventSource(
-        new lambdaEventSources.DynamoEventSource(
-          // Import the stream from ARN
-          dynamodb.Table.fromTableAttributes(this, 'ImportedCallQueueTable', {
-            tableStreamArn: props.callQueueTableStreamArn,
-          }) as any,
-          {
-            startingPosition: lambda.StartingPosition.LATEST,
-            batchSize: 100,
-            bisectBatchOnError: true,
-            retryAttempts: 3,
-            maxRecordAge: Duration.hours(24),
-            parallelizationFactor: 1,
-          }
-        )
-      );
-
-      new CfnOutput(this, 'CallQueueStreamProcessorArn', {
-        value: callQueueStreamProcessor.functionArn,
-        description: 'Lambda processing CallQueue DynamoDB Stream events',
-      });
-
-      new CfnOutput(this, 'AnalyticsDedupTableName', {
-        value: this.analyticsDedupTable.tableName,
-        description: 'Deduplication table for analytics events',
-      });
-    }
+    // NOTE: The CallQueue stream processor is now ONLY created in ChimeStack.
+    // This prevents duplicate stream processors and confusion about which is authoritative.
+    // 
+    // The ChimeStack creates the stream processor when analyticsTableName/analyticsDedupTableName
+    // are passed from infra.ts (see ChimeStack lines 1938-1992).
+    //
+    // DO NOT ADD a stream processor here - it will create duplicate processing.
+    // If you need to modify stream processing, update ChimeStack.
+    
+    // Always export dedup table name for cross-stack references
+    new CfnOutput(this, 'AnalyticsDedupTableName', {
+      value: this.analyticsDedupTable.tableName,
+      description: 'Deduplication table for analytics events',
+      exportName: `${this.stackName}-AnalyticsDedupTableName`,
+    });
 
     // ========================================
     // 6. Analytics Finalization Lambda
@@ -373,27 +518,36 @@ export class AnalyticsStack extends Stack {
       memorySize: 512, // Increased for enhanced metrics processing
       environment: {
         CALL_ANALYTICS_TABLE_NAME: this.analyticsTable.tableName,
-        AGENT_PERFORMANCE_TABLE_NAME: props.agentPerformanceTableName || '',
+        // CRITICAL FIX: Pass all required table names derived from ChimeStack
+        AGENT_PERFORMANCE_TABLE_NAME: this.derivedAgentPerformanceTableName,
+        AGENT_PRESENCE_TABLE_NAME: this.derivedAgentPresenceTableName,
+        TRANSCRIPT_BUFFER_TABLE_NAME: this.transcriptBufferTable.tableName,
       },
       logRetention: logs.RetentionDays.ONE_WEEK,
     });
+    applyTags(finalizeAnalyticsFn, { Function: 'finalize-analytics' });
 
     // Grant permissions
     this.analyticsTable.grantReadWriteData(finalizeAnalyticsFn);
+    this.transcriptBufferTable.grantReadWriteData(finalizeAnalyticsFn);
 
-    // Grant permission to update agent performance table if provided
-    if (props.agentPerformanceTableName) {
-      finalizeAnalyticsFn.addToRolePolicy(new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          'dynamodb:UpdateItem',
-          'dynamodb:GetItem',
-        ],
-        resources: [
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.agentPerformanceTableName}`,
-        ],
-      }));
-    }
+    // CRITICAL FIX: Grant permission to ChimeStack tables using derived names
+    // These permissions are required for agent validation and metrics tracking
+    finalizeAnalyticsFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'dynamodb:UpdateItem',
+        'dynamodb:GetItem',
+        'dynamodb:Query',
+      ],
+      resources: [
+        // Agent Performance table
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${this.derivedAgentPerformanceTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${this.derivedAgentPerformanceTableName}/index/*`,
+        // Agent Presence table (for agent validation)
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${this.derivedAgentPresenceTableName}`,
+      ],
+    }));
 
     // Schedule to run every minute
     const finalizationRule = new events.Rule(this, 'AnalyticsFinalizationRule', {
@@ -424,6 +578,7 @@ export class AnalyticsStack extends Stack {
       pointInTimeRecovery: true,
       timeToLiveAttribute: 'ttl',
     });
+    applyTags(reconciliationTable, { Table: 'reconciliation' });
 
     // Create SNS topic for reconciliation alerts
     const reconciliationAlertTopic = new sns.Topic(this, 'ReconciliationAlertTopic', {
@@ -449,32 +604,33 @@ export class AnalyticsStack extends Stack {
       memorySize: 1024, // Need memory for large scans
       environment: {
         CALL_ANALYTICS_TABLE_NAME: this.analyticsTable.tableName,
-        AGENT_PERFORMANCE_TABLE_NAME: props.agentPerformanceTableName || '',
+        // CRITICAL FIX: Use derived table names instead of optional props
+        AGENT_PERFORMANCE_TABLE_NAME: this.derivedAgentPerformanceTableName,
         RECONCILIATION_TABLE_NAME: reconciliationTable.tableName,
         RECONCILIATION_ALERT_TOPIC_ARN: reconciliationAlertTopic.topicArn,
       },
       logRetention: logs.RetentionDays.ONE_MONTH,
     });
+    applyTags(reconciliationJobFn, { Function: 'reconciliation-job' });
 
     // Grant permissions
     this.analyticsTable.grantReadData(reconciliationJobFn);
     reconciliationTable.grantReadWriteData(reconciliationJobFn);
     reconciliationAlertTopic.grantPublish(reconciliationJobFn);
 
-    if (props.agentPerformanceTableName) {
-      reconciliationJobFn.addToRolePolicy(new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          'dynamodb:GetItem',
-          'dynamodb:Query',
-          'dynamodb:Scan',
-        ],
-        resources: [
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.agentPerformanceTableName}`,
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.agentPerformanceTableName}/index/*`,
-        ],
-      }));
-    }
+    // CRITICAL FIX: Always grant permissions to derived ChimeStack tables
+    reconciliationJobFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'dynamodb:GetItem',
+        'dynamodb:Query',
+        'dynamodb:Scan',
+      ],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${this.derivedAgentPerformanceTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${this.derivedAgentPerformanceTableName}/index/*`,
+      ],
+    }));
 
     // Schedule daily reconciliation at 2 AM UTC
     const reconciliationRule = new events.Rule(this, 'ReconciliationScheduleRule', {
@@ -507,6 +663,29 @@ export class AnalyticsStack extends Stack {
     new CfnOutput(this, 'MedicalVocabularyName', {
       value: this.medicalVocabularyName,
       description: 'Custom vocabulary for medical/dental transcription',
+    });
+
+    // CRITICAL FIX: Export transcript buffer table name for cross-stack references
+    new CfnOutput(this, 'TranscriptBufferTableName', {
+      value: this.transcriptBufferTable.tableName,
+      description: 'DynamoDB table for transcript buffers',
+      exportName: `${this.stackName}-TranscriptBufferTableName`,
+    });
+
+    // Export derived table names for validation
+    new CfnOutput(this, 'DerivedCallQueueTableName', {
+      value: this.derivedCallQueueTableName,
+      description: 'Derived CallQueue table name from ChimeStack',
+    });
+
+    new CfnOutput(this, 'DerivedAgentPresenceTableName', {
+      value: this.derivedAgentPresenceTableName,
+      description: 'Derived AgentPresence table name from ChimeStack',
+    });
+
+    new CfnOutput(this, 'DerivedAgentPerformanceTableName', {
+      value: this.derivedAgentPerformanceTableName,
+      description: 'Derived AgentPerformance table name from ChimeStack',
     });
 
     // ========================================
@@ -546,10 +725,7 @@ export class AnalyticsStack extends Stack {
     // Runs periodically to fix orphaned calls (dedup records without analytics)
     // Fixes the race condition when errors occur during analytics processing
 
-    // Use imported call queue table name from ChimeStack
-    // ChimeStack exports this value as "${ChimeStackName}-CallQueueTableName"
-    const callQueueTableName = props.callQueueTableName || 'TodaysDentalInsightsChimeV23-CallQueueV2';
-    
+    // CRITICAL FIX: Use derived call queue table name from ChimeStack instead of hardcoded fallback
     const reconcileAnalyticsFn = new lambdaNode.NodejsFunction(this, 'ReconcileAnalyticsFunction', {
       functionName: `${this.stackName}-ReconcileAnalytics`,
       entry: path.join(__dirname, '..', '..', 'services', 'chime', 'reconcile-analytics.ts'),
@@ -558,11 +734,36 @@ export class AnalyticsStack extends Stack {
       timeout: Duration.minutes(15), // Long-running job
       memorySize: 512,
       environment: {
-        CALL_QUEUE_TABLE_NAME: callQueueTableName,
+        CALL_QUEUE_TABLE_NAME: this.derivedCallQueueTableName,
         CALL_ANALYTICS_TABLE_NAME: this.analyticsTable.tableName,
+        ANALYTICS_DEDUP_TABLE_NAME: this.analyticsDedupTable.tableName,
       },
       logRetention: logs.RetentionDays.ONE_WEEK,
     });
+    applyTags(reconcileAnalyticsFn, { Function: 'reconcile-analytics' });
+
+    // ========================================
+    // CloudWatch Alarms (Lambda + DynamoDB)
+    // ========================================
+    const lambdaAlarmTargets: Array<{ fn: lambda.IFunction; name: string; durationMs: number }> = [
+      { fn: dlqProcessorFn, name: 'agent-performance-dlq-processor', durationMs: Math.floor(Duration.minutes(5).toMilliseconds() * 0.8) },
+      { fn: finalizeAnalyticsFn, name: 'finalize-analytics', durationMs: Math.floor(Duration.seconds(60).toMilliseconds() * 0.8) },
+      { fn: reconciliationJobFn, name: 'reconciliation-job', durationMs: Math.floor(Duration.minutes(15).toMilliseconds() * 0.8) },
+      { fn: reconcileAnalyticsFn, name: 'reconcile-analytics', durationMs: Math.floor(Duration.minutes(15).toMilliseconds() * 0.8) },
+    ];
+
+    lambdaAlarmTargets.forEach(({ fn, name, durationMs }) => {
+      createLambdaErrorAlarm(fn, name);
+      createLambdaThrottleAlarm(fn, name);
+      createLambdaDurationAlarm(fn, name, durationMs);
+    });
+
+    createDynamoThrottleAlarm(this.analyticsTable.tableName, 'AnalyticsTable');
+    createDynamoThrottleAlarm(this.analyticsDedupTable.tableName, 'AnalyticsDedupTable');
+    createDynamoThrottleAlarm(this.transcriptBufferTable.tableName, 'TranscriptBufferTable');
+    createDynamoThrottleAlarm(analyticsFailuresTable.tableName, 'AnalyticsFailuresTable');
+    createDynamoThrottleAlarm(agentPerformanceFailuresTable.tableName, 'AgentPerformanceFailuresTable');
+    createDynamoThrottleAlarm(reconciliationTable.tableName, 'ReconciliationTable');
 
     // Grant permissions
     this.analyticsTable.grantReadData(reconcileAnalyticsFn);
@@ -577,7 +778,7 @@ export class AnalyticsStack extends Stack {
         'dynamodb:UpdateItem',
       ],
       resources: [
-        `arn:aws:dynamodb:${this.region}:${this.account}:table/${callQueueTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${this.derivedCallQueueTableName}`,
       ],
     }));
 

@@ -1,5 +1,5 @@
 import { ScheduledEvent } from 'aws-lambda';
-import { DynamoDBDocumentClient, ScanCommand, UpdateCommand, QueryCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, ScanCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKMeetingsClient, DeleteMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
@@ -141,9 +141,9 @@ async function cleanupStaleAgentPresence(stats: any): Promise<void> {
         if (staleAgents && staleAgents.length > 0) {
             console.log(`[cleanup-monitor] Found ${staleAgents.length} stale agent presence records`);
             
-            // **FLAW #8 FIX: Use BatchWriteCommand instead of individual UpdateCommand calls**
-            // Instead of 1000 API calls for 1000 agents, batch into groups of 25
-            // Reduces from 1000 calls to 40 calls (~25x reduction)
+            // FIX #4: Use parallel UpdateCommand calls in batches of 25
+            // Instead of 1000 sequential calls, we batch into groups processed in parallel
+            // Reduces latency significantly while respecting DynamoDB throughput
             await batchCleanupStaleAgents(staleAgents, stats);
         } else {
             console.log('[cleanup-monitor] No stale agent presence records found');
@@ -435,7 +435,7 @@ async function cleanupAbandonedCalls(stats: any): Promise<void> {
                         try {
                             const updateExpr = call.status === 'dialing'
                                 ? 'SET #s = :online, lastActivityAt = :now REMOVE currentCallId, callStatus'
-                                : 'SET #s = :online, lastActivityAt = :now REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode';
+                                : 'SET #s = :online, lastActivityAt = :now REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode';
                                 
                             await ddb.send(new UpdateCommand({
                                 TableName: AGENT_PRESENCE_TABLE_NAME!,
@@ -475,13 +475,13 @@ async function cleanupAbandonedCalls(stats: any): Promise<void> {
 }
 
 /**
- * **FLAW #8 FIX: Batch cleanup using BatchWriteCommand**
+ * FIX #4: Corrected batch cleanup using parallel UpdateCommand calls
  * 
- * Instead of sending 1 UpdateCommand per agent (1000 agents = 1000 API calls),
- * batch updates into groups of 25 using BatchWriteCommand (1000 agents = 40 API calls).
+ * BatchWriteItem only supports Put and Delete operations, NOT Update.
+ * Instead, we use Promise.all with UpdateCommand for parallel execution.
  * 
- * DynamoDB BatchWriteItem allows up to 25 requests per batch, each batch = 1 API call.
- * This reduces cost by 25x and improves performance by reducing latency.
+ * We still batch into groups of 25 to avoid overwhelming DynamoDB with
+ * too many concurrent requests, but each batch uses parallel UpdateCommand calls.
  */
 async function batchCleanupStaleAgents(staleAgents: any[], stats: any): Promise<void> {
     if (!AGENT_PRESENCE_TABLE_NAME) {
@@ -489,22 +489,23 @@ async function batchCleanupStaleAgents(staleAgents: any[], stats: any): Promise<
         return;
     }
 
-    const BATCH_SIZE = 25; // DynamoDB BatchWriteItem limit
+    const BATCH_SIZE = 25; // Process 25 agents concurrently per batch
     const now = new Date().toISOString();
 
-    // Group agents into batches of 25
+    // Group agents into batches of 25 for parallel processing
     for (let i = 0; i < staleAgents.length; i += BATCH_SIZE) {
         const batch = staleAgents.slice(i, i + BATCH_SIZE);
         
         try {
-            // Build batch write requests for this group
-            const writeRequests = batch.map(agent => ({
-                Update: {
+            // FIX #4: Use parallel UpdateCommand calls instead of BatchWriteCommand
+            // BatchWriteItem does NOT support Update operations
+            const updatePromises = batch.map(agent =>
+                ddb.send(new UpdateCommand({
                     TableName: AGENT_PRESENCE_TABLE_NAME,
                     Key: { agentId: agent.agentId },
                     UpdateExpression: 'SET #s = :offline, lastActivityAt = :now, cleanupReason = :reason ' + 
                                       'REMOVE ringingCallId, currentCallId, callStatus, inboundMeetingInfo, ' + 
-                                      'inboundAttendeeInfo, ringingCallTime, ringingCallFrom, ringingCallNotes, ' +
+                                      'inboundAttendeeInfo, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallNotes, ' +
                                       'ringingCallTransferAgentId, ringingCallTransferMode, currentMeetingAttendeeId, ' +
                                       'heldCallMeetingId, heldCallId, heldCallAttendeeId',
                     ExpressionAttributeNames: { '#s': 'status' },
@@ -513,25 +514,32 @@ async function batchCleanupStaleAgents(staleAgents: any[], stats: any): Promise<
                         ':now': now,
                         ':reason': `stale_${agent.status}_cleanup`
                     }
-                }
-            }));
+                })).then(() => ({ success: true, agentId: agent.agentId }))
+                  .catch(err => ({ success: false, agentId: agent.agentId, error: err.message }))
+            );
 
-            // Send batch (all 25 updates in single API call)
-            await ddb.send(new BatchWriteCommand({
-                RequestItems: {
-                    [AGENT_PRESENCE_TABLE_NAME]: writeRequests
-                }
-            }));
-
-            stats.staleAgents += batch.length;
-            console.log(`[cleanup-monitor] Batch cleaned ${batch.length} stale agents (batch ${Math.floor(i / BATCH_SIZE) + 1})`);
+            // Execute all updates in parallel
+            const results = await Promise.all(updatePromises);
+            
+            const successCount = results.filter(r => r.success).length;
+            const failedResults = results.filter(r => !r.success);
+            
+            stats.staleAgents += successCount;
+            
+            if (failedResults.length > 0) {
+                console.warn(`[cleanup-monitor] ${failedResults.length} agent updates failed in batch:`, 
+                    failedResults.map(r => ({ agentId: r.agentId, error: (r as any).error })));
+                stats.errors += failedResults.length;
+            }
+            
+            console.log(`[cleanup-monitor] Batch cleaned ${successCount}/${batch.length} stale agents (batch ${Math.floor(i / BATCH_SIZE) + 1})`);
             
         } catch (batchErr) {
             console.error(`[cleanup-monitor] Error cleaning batch of agents starting at index ${i}:`, batchErr);
-            stats.errors++;
+            stats.errors += batch.length;
             // Continue processing remaining batches
         }
     }
 
-    console.log(`[cleanup-monitor] Completed batch cleanup of ${staleAgents.length} stale agents in ${Math.ceil(staleAgents.length / BATCH_SIZE)} API calls`);
+    console.log(`[cleanup-monitor] Completed cleanup of ${stats.staleAgents} stale agents in ${Math.ceil(staleAgents.length / BATCH_SIZE)} batches`);
 }

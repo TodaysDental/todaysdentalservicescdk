@@ -16,17 +16,97 @@ import { AnalyticsState } from '../../types/analytics-state-machine';
 import { transitionAnalyticsState, acquireAnalyticsLock, releaseAnalyticsLock, cleanupExpiredLock } from '../shared/utils/analytics-state-manager';
 import { getTranscriptBufferManager } from '../shared/utils/transcript-buffer-manager';
 
-// FIX #8: Circuit breaker state for DLQ failures
-interface CircuitBreakerState {
+// CRITICAL FIX #8: Persistent circuit breaker state using DynamoDB
+// In-memory circuit breaker state is lost on Lambda cold starts, defeating its purpose.
+// This implementation stores state in DynamoDB for persistence across invocations.
+
+const CIRCUIT_BREAKER_THRESHOLD = 5; // Open after 5 consecutive failures
+const CIRCUIT_BREAKER_TIMEOUT = 60000; // 1 minute cooldown
+const CIRCUIT_BREAKER_TABLE = process.env.CALL_ANALYTICS_TABLE_NAME; // Reuse analytics table with special key
+
+interface PersistentCircuitBreakerState {
   failures: number;
   lastFailure: number;
   isOpen: boolean;
+  lastUpdated: number;
 }
 
-const circuitBreakers = new Map<string, CircuitBreakerState>();
-const CIRCUIT_BREAKER_THRESHOLD = 5; // Open after 5 consecutive failures
-const CIRCUIT_BREAKER_TIMEOUT = 60000; // 1 minute cooldown
-const CIRCUIT_BREAKER_HALF_OPEN_ATTEMPTS = 1; // Allow 1 attempt when half-open
+/**
+ * Get circuit breaker state from DynamoDB
+ * Uses a special key pattern to store state in the analytics table
+ */
+async function getCircuitBreakerState(breakerKey: string): Promise<PersistentCircuitBreakerState> {
+  const defaultState: PersistentCircuitBreakerState = {
+    failures: 0,
+    lastFailure: 0,
+    isOpen: false,
+    lastUpdated: Date.now()
+  };
+  
+  if (!CIRCUIT_BREAKER_TABLE) {
+    console.warn('[CircuitBreaker] No table configured, using default state');
+    return defaultState;
+  }
+  
+  try {
+    const result = await ddb.send(new GetCommand({
+      TableName: CIRCUIT_BREAKER_TABLE,
+      Key: {
+        callId: `__circuit_breaker__${breakerKey}`,
+        timestamp: 0 // Fixed timestamp for circuit breaker entries
+      }
+    }));
+    
+    if (result.Item) {
+      return {
+        failures: result.Item.failures || 0,
+        lastFailure: result.Item.lastFailure || 0,
+        isOpen: result.Item.isOpen || false,
+        lastUpdated: result.Item.lastUpdated || Date.now()
+      };
+    }
+  } catch (err: any) {
+    console.warn('[CircuitBreaker] Failed to read state:', err.message);
+  }
+  
+  return defaultState;
+}
+
+/**
+ * Update circuit breaker state in DynamoDB
+ */
+async function updateCircuitBreakerState(
+  breakerKey: string, 
+  state: PersistentCircuitBreakerState
+): Promise<void> {
+  if (!CIRCUIT_BREAKER_TABLE) {
+    return;
+  }
+  
+  try {
+    await ddb.send(new UpdateCommand({
+      TableName: CIRCUIT_BREAKER_TABLE,
+      Key: {
+        callId: `__circuit_breaker__${breakerKey}`,
+        timestamp: 0
+      },
+      UpdateExpression: 'SET failures = :failures, lastFailure = :lastFailure, isOpen = :isOpen, lastUpdated = :lastUpdated, #ttl = :ttl',
+      ExpressionAttributeNames: {
+        '#ttl': 'ttl'
+      },
+      ExpressionAttributeValues: {
+        ':failures': state.failures,
+        ':lastFailure': state.lastFailure,
+        ':isOpen': state.isOpen,
+        ':lastUpdated': Date.now(),
+        ':ttl': Math.floor(Date.now() / 1000) + (24 * 60 * 60) // Expire after 24 hours
+      }
+    }));
+  } catch (err: any) {
+    console.warn('[CircuitBreaker] Failed to update state:', err.message);
+    // Non-fatal - continue with operation
+  }
+}
 
 async function sendToPerformanceDLQWithCircuitBreaker(
   failure: AgentPerformanceFailure,
@@ -35,12 +115,9 @@ async function sendToPerformanceDLQWithCircuitBreaker(
   clinicId: string
 ): Promise<void> {
   const breakerKey = `dlq-${agentId}`;
-  let breaker = circuitBreakers.get(breakerKey);
   
-  if (!breaker) {
-    breaker = { failures: 0, lastFailure: 0, isOpen: false };
-    circuitBreakers.set(breakerKey, breaker);
-  }
+  // CRITICAL FIX: Load state from DynamoDB instead of in-memory map
+  let breaker = await getCircuitBreakerState(breakerKey);
   
   // Check if circuit is open
   if (breaker.isOpen) {
@@ -74,6 +151,7 @@ async function sendToPerformanceDLQWithCircuitBreaker(
     // Timeout expired - move to half-open
     console.log('[finalize-analytics] Circuit breaker entering HALF-OPEN state:', { agentId });
     breaker.isOpen = false;
+    await updateCircuitBreakerState(breakerKey, breaker);
   }
   
   // Attempt to send to DLQ
@@ -83,6 +161,8 @@ async function sendToPerformanceDLQWithCircuitBreaker(
     // Success - reset circuit breaker
     breaker.failures = 0;
     breaker.lastFailure = 0;
+    breaker.isOpen = false;
+    await updateCircuitBreakerState(breakerKey, breaker);
     console.log('[finalize-analytics] DLQ send successful, circuit breaker reset:', { agentId });
     
   } catch (dlqErr: any) {
@@ -105,6 +185,9 @@ async function sendToPerformanceDLQWithCircuitBreaker(
         threshold: CIRCUIT_BREAKER_THRESHOLD
       });
     }
+    
+    // Persist the updated state
+    await updateCircuitBreakerState(breakerKey, breaker);
     
     // Last resort: Log to CloudWatch for recovery
     console.error('PERFORMANCE_METRICS_LOSS', JSON.stringify({
@@ -129,10 +212,30 @@ async function sendToPerformanceDLQWithCircuitBreaker(
 const ddb = getDynamoDBClient();
 const ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE_NAME;
 const AGENT_PERFORMANCE_TABLE = process.env.AGENT_PERFORMANCE_TABLE_NAME;
-const TRANSCRIPT_BUFFER_TABLE = process.env.TRANSCRIPT_BUFFER_TABLE_NAME || (ANALYTICS_TABLE ? `${ANALYTICS_TABLE}-Transcripts` : '');
 
-// Initialize transcript buffer manager for cleanup
-const transcriptManager = getTranscriptBufferManager(ddb, TRANSCRIPT_BUFFER_TABLE);
+// CRITICAL FIX: The transcript buffer table name must match AnalyticsStack's naming convention.
+// AnalyticsStack uses: ${stackName}-TranscriptBuffersV2
+// The fallback logic was incorrect - it was using ANALYTICS_TABLE-Transcripts which doesn't exist.
+// Now we derive from the stack name pattern or require explicit configuration.
+const TRANSCRIPT_BUFFER_TABLE = process.env.TRANSCRIPT_BUFFER_TABLE_NAME || (() => {
+  // Derive from ANALYTICS_TABLE by replacing the table suffix with TranscriptBuffersV2
+  // ANALYTICS_TABLE format: TodaysDentalInsightsAnalyticsN1-CallAnalyticsV2
+  // TRANSCRIPT_BUFFER_TABLE should be: TodaysDentalInsightsAnalyticsN1-TranscriptBuffersV2
+  if (ANALYTICS_TABLE) {
+    const parts = ANALYTICS_TABLE.split('-');
+    if (parts.length >= 2) {
+      parts[parts.length - 1] = 'TranscriptBuffersV2';
+      return parts.join('-');
+    }
+  }
+  console.warn('[finalize-analytics] Could not derive TRANSCRIPT_BUFFER_TABLE_NAME from ANALYTICS_TABLE');
+  return '';
+})();
+
+// Initialize transcript buffer manager for cleanup (only if table is configured)
+const transcriptManager = TRANSCRIPT_BUFFER_TABLE 
+  ? getTranscriptBufferManager(ddb, TRANSCRIPT_BUFFER_TABLE)
+  : null;
 
 if (!ANALYTICS_TABLE) {
   throw new Error('CALL_ANALYTICS_TABLE_NAME environment variable is required');
@@ -140,6 +243,9 @@ if (!ANALYTICS_TABLE) {
 // AGENT_PERFORMANCE_TABLE is optional - enhanced metrics won't be tracked if not configured
 if (!AGENT_PERFORMANCE_TABLE) {
   console.warn('[finalize-analytics] AGENT_PERFORMANCE_TABLE_NAME not configured - enhanced agent metrics will not be tracked');
+}
+if (!TRANSCRIPT_BUFFER_TABLE) {
+  console.warn('[finalize-analytics] TRANSCRIPT_BUFFER_TABLE_NAME not configured - transcript cleanup will be skipped');
 }
 
 interface AnalyticsRecord {
@@ -558,15 +664,19 @@ async function finalizeRecord(callId: string, timestamp: number): Promise<void> 
     
     // CRITICAL FIX #3: Cleanup transcript buffer after successful finalization
     // This prevents DynamoDB from accumulating old transcript data
-    try {
-      await transcriptManager.delete(callId);
-      console.log(`[finalize-analytics] Cleaned up transcript buffer for ${callId}`);
-    } catch (cleanupErr: any) {
-      console.error('[finalize-analytics] Error cleaning up transcript buffer:', {
-        callId,
-        error: cleanupErr.message
-      });
-      // Non-fatal error - buffer will be cleaned up by TTL
+    if (transcriptManager) {
+      try {
+        await transcriptManager.delete(callId);
+        console.log(`[finalize-analytics] Cleaned up transcript buffer for ${callId}`);
+      } catch (cleanupErr: any) {
+        console.error('[finalize-analytics] Error cleaning up transcript buffer:', {
+          callId,
+          error: cleanupErr.message
+        });
+        // Non-fatal error - buffer will be cleaned up by TTL
+      }
+    } else {
+      console.log(`[finalize-analytics] Skipping transcript cleanup - manager not configured`);
     }
     
     console.log(`[finalize-analytics] Finalized analytics for call ${callId}`, {

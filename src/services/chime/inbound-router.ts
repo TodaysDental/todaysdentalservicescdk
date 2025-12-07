@@ -51,16 +51,21 @@ type CallStatus =
     | 'failed';             // Call failed for technical reasons
 
 // Valid call state transitions
+// FIX #13: Removed backward transitions that could bypass queue logic
+// State machine should be forward-only except for explicit retry scenarios
 const VALID_STATE_TRANSITIONS: Record<CallStatus, CallStatus[]> = {
     'queued': ['ringing', 'abandoned', 'timeout', 'no_agents_available'],
-    'ringing': ['connected', 'queued', 'abandoned', 'no_agents_available', 'timeout'],
+    'ringing': ['connected', 'queued', 'abandoned', 'no_agents_available', 'timeout'], // queued allowed for rejection/re-queue
     'dialing': ['connected', 'timeout', 'abandoned', 'failed'],
     'connected': ['on_hold', 'completed', 'abandoned'],
     'on_hold': ['connected', 'abandoned', 'completed'],
     'timeout': [],
     'completed': [],
     'abandoned': [],
-    'no_agents_available': ['ringing', 'abandoned', 'queued'],
+    // FIX #13: no_agents_available can only transition to ringing (agent became available) or abandoned
+    // Removed 'queued' to prevent regression - once no_agents_available, call should either
+    // ring an agent or be abandoned, not go back to queue
+    'no_agents_available': ['ringing', 'abandoned'],
     'failed': []
 };
 
@@ -94,11 +99,31 @@ interface QueueEntry {
 }
 
 /**
- * FIX #4: Queue Position Conflicts
- * Uses unique ID generation to prevent collisions
+ * FIX #4 & #7: Queue Position Conflicts and Duplicate Prevention
+ * Uses unique ID generation to prevent collisions and checks for existing callId
  */
 async function addToQueue(clinicId: string, callId: string, phoneNumber: string): Promise<QueueEntry> {
     const now = Math.floor(Date.now() / 1000);
+    
+    // FIX #7: First check if this call already exists in the queue
+    // This prevents duplicate entries if addToQueue is called multiple times for the same call
+    const { Items: existingCalls } = await ddb.send(new QueryCommand({
+        TableName: CALL_QUEUE_TABLE_NAME,
+        IndexName: 'callId-index',
+        KeyConditionExpression: 'callId = :callId',
+        ExpressionAttributeValues: { ':callId': callId }
+    }));
+    
+    if (existingCalls && existingCalls.length > 0) {
+        const existingEntry = existingCalls[0];
+        console.warn('[addToQueue] Call already exists in queue - returning existing entry', { 
+            clinicId, 
+            callId, 
+            existingStatus: existingEntry.status,
+            existingPosition: existingEntry.queuePosition
+        });
+        return existingEntry as QueueEntry;
+    }
     
     // FIX #4: Use unique position generation
     const { queuePosition, uniquePositionId } = generateUniqueCallPosition();
@@ -125,7 +150,20 @@ async function addToQueue(clinicId: string, callId: string, phoneNumber: string)
         }));
     } catch (err: any) {
         if (err.name === 'ConditionalCheckFailedException') {
-            console.error('[addToQueue] Duplicate queue entry detected - regenerating position', { clinicId, callId, queuePosition });
+            console.error('[addToQueue] Position collision - regenerating position', { clinicId, callId, queuePosition });
+            
+            // FIX #7: Re-check if call already exists (might have been added by parallel request)
+            const { Items: recheck } = await ddb.send(new QueryCommand({
+                TableName: CALL_QUEUE_TABLE_NAME,
+                IndexName: 'callId-index',
+                KeyConditionExpression: 'callId = :callId',
+                ExpressionAttributeValues: { ':callId': callId }
+            }));
+            
+            if (recheck && recheck.length > 0) {
+                console.warn('[addToQueue] Call was added by parallel request - returning existing entry', { callId });
+                return recheck[0] as QueueEntry;
+            }
             
             // FIX #4: Regenerate with new unique position
             const retryPosition = generateUniqueCallPosition();
@@ -150,29 +188,62 @@ async function addToQueue(clinicId: string, callId: string, phoneNumber: string)
     return entry;
 }
 
+// FIX #11: VIP cache with TTL-based refresh
 let vipPhoneNumbersCache: Set<string> | null = null;
+let vipCacheLastRefresh: number = 0;
+const VIP_CACHE_TTL_MS = 5 * 60 * 1000; // Refresh every 5 minutes
 
 function getVipPhoneNumbers(): Set<string> {
-    if (vipPhoneNumbersCache) {
+    const now = Date.now();
+    
+    // FIX #11: Check if cache needs refresh based on TTL
+    if (vipPhoneNumbersCache && (now - vipCacheLastRefresh) < VIP_CACHE_TTL_MS) {
         return vipPhoneNumbersCache;
     }
+    
+    // Cache is stale or doesn't exist - refresh it
     try {
         const raw = process.env.VIP_PHONE_NUMBERS;
         if (!raw) {
             vipPhoneNumbersCache = new Set<string>();
+            vipCacheLastRefresh = now;
             return vipPhoneNumbersCache;
         }
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-            vipPhoneNumbersCache = new Set<string>(parsed.map((v) => String(v)));
+            const newCache = new Set<string>(parsed.map((v) => String(v)));
+            
+            // Log if cache changed
+            if (vipPhoneNumbersCache && !setsEqual(vipPhoneNumbersCache, newCache)) {
+                console.log('[inbound-router] VIP phone numbers cache refreshed', { 
+                    previous: vipPhoneNumbersCache.size,
+                    current: newCache.size
+                });
+            }
+            
+            vipPhoneNumbersCache = newCache;
         } else {
             vipPhoneNumbersCache = new Set<string>();
         }
+        vipCacheLastRefresh = now;
     } catch (err) {
         console.warn('[inbound-router] Failed to parse VIP_PHONE_NUMBERS:', err);
-        vipPhoneNumbersCache = new Set<string>();
+        // Keep existing cache if parse fails, or create empty set
+        if (!vipPhoneNumbersCache) {
+            vipPhoneNumbersCache = new Set<string>();
+        }
+        vipCacheLastRefresh = now;
     }
     return vipPhoneNumbersCache;
+}
+
+// Helper function to compare two sets
+function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
+    if (a.size !== b.size) return false;
+    for (const item of a) {
+        if (!b.has(item)) return false;
+    }
+    return true;
 }
 
 async function getQueuePosition(clinicId: string, callId: string): Promise<{ position: number, estimatedWaitTime: number } | null> {
@@ -438,23 +509,77 @@ async function cleanupMeeting(meetingId: string) {
 }
 
 // --- Phone Number Parser ---
+// FIX #10: E.164 format validation regex
+// Valid E.164: + followed by 1-15 digits (country code + subscriber number)
+const E164_REGEX = /^\+[1-9]\d{1,14}$/;
+
 function parsePhoneNumber(sipUri: string): string | null {
     try {
         const match = sipUri.match(/sip:(\+\d+)@/);
-        return match ? match[1] : null;
+        if (!match) return null;
+        
+        const phoneNumber = match[1];
+        
+        // FIX #10: Validate E.164 format
+        if (!E164_REGEX.test(phoneNumber)) {
+            console.warn('[parsePhoneNumber] Invalid E.164 format detected', { 
+                raw: phoneNumber,
+                reason: phoneNumber.length > 16 ? 'too long' : 
+                        phoneNumber.length < 2 ? 'too short' : 
+                        'invalid format'
+            });
+            return null;
+        }
+        
+        return phoneNumber;
     } catch {
         return null;
     }
 }
 
+/**
+ * FIX #10: Validate E.164 phone number format
+ * Returns true if valid, false otherwise
+ */
+function isValidE164(phoneNumber: string): boolean {
+    return E164_REGEX.test(phoneNumber);
+}
+
+/**
+ * FIX #14: Improved PSTN leg detection
+ * Priority: LEG-A tag > PSTN call leg type > undefined (no fallback to random participant)
+ */
 function getPstnLegCallId(event: any): string | undefined {
     const participants = event?.CallDetails?.Participants;
     if (!Array.isArray(participants) || participants.length === 0) {
         return undefined;
     }
 
+    // First priority: Look for LEG-A (the inbound PSTN caller)
     const legAParticipant = participants.find((participant: any) => participant.ParticipantTag === 'LEG-A');
-    return legAParticipant?.CallId || participants[0]?.CallId;
+    if (legAParticipant?.CallId) {
+        return legAParticipant.CallId;
+    }
+    
+    // FIX #14: Second priority - look for PSTN leg type specifically
+    // Don't fall back to participants[0] as it might be a WebRTC/SIP leg
+    const pstnParticipant = participants.find((participant: any) => 
+        participant.ParticipantTag === 'LEG-B' || // Outbound PSTN is typically LEG-B
+        participant.Direction === 'Outbound' ||
+        participant.CallLegType === 'PSTN'
+    );
+    if (pstnParticipant?.CallId) {
+        return pstnParticipant.CallId;
+    }
+    
+    // FIX #14: Only return undefined, do NOT fall back to random participant
+    // This prevents operations being performed on wrong call leg
+    console.warn('[getPstnLegCallId] No PSTN leg found in participants', { 
+        participantCount: participants.length,
+        tags: participants.map((p: any) => p.ParticipantTag),
+        types: participants.map((p: any) => p.CallLegType)
+    });
+    return undefined;
 }
 
 // --- Main Handler ---
@@ -717,31 +842,117 @@ export const handler = async (event: any): Promise<any> => {
                 // The outbound-call.ts Lambda has already created the call record
                 // and updated the agent's status to 'dialing'.
                 
-                // Update agent presence to indicate outbound call is now ringing
-                // This allows the frontend to play a local ringback tone
                 const outboundAgentId = args.agentId;
+                const meetingId = args.meetingId;
+                const clinicId = args.fromClinicId;
+                
+                // Update agent presence with enhanced outbound call tracking
                 if (outboundAgentId) {
                     try {
                         await ddb.send(new UpdateCommand({
                             TableName: AGENT_PRESENCE_TABLE_NAME,
                             Key: { agentId: outboundAgentId },
-                            UpdateExpression: 'SET dialingState = :ringing, dialingStartedAt = :now',
+                            UpdateExpression: 'SET dialingState = :initiated, dialingStartedAt = :now, outboundCallId = :callId, outboundToNumber = :toNumber',
                             ConditionExpression: '#status = :dialing',
                             ExpressionAttributeNames: { '#status': 'status' },
                             ExpressionAttributeValues: {
-                                ':ringing': 'ringing',
+                                ':initiated': 'initiated',
                                 ':dialing': 'dialing',
-                                ':now': new Date().toISOString()
+                                ':now': new Date().toISOString(),
+                                ':callId': callId,
+                                ':toNumber': args.toPhoneNumber || ''
                             }
                         }));
-                        console.log(`[NEW_OUTBOUND_CALL] Updated agent ${outboundAgentId} dialingState to 'ringing'`);
+                        console.log(`[NEW_OUTBOUND_CALL] Updated agent ${outboundAgentId} with outbound call details`);
                     } catch (updateErr: any) {
-                        // Non-fatal - just log the error
-                        console.warn(`[NEW_OUTBOUND_CALL] Failed to update agent dialingState:`, updateErr.message);
+                        console.warn(`[NEW_OUTBOUND_CALL] Failed to update agent state:`, updateErr.message);
+                    }
+                }
+
+                // Update call queue with SMA initiated timestamp
+                if (clinicId) {
+                    try {
+                        const { Items: callRecords } = await ddb.send(new QueryCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            IndexName: 'callId-index',
+                            KeyConditionExpression: 'callId = :callId',
+                            ExpressionAttributeValues: { ':callId': callId }
+                        }));
+
+                        if (callRecords && callRecords[0]) {
+                            await ddb.send(new UpdateCommand({
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                Key: { clinicId: callRecords[0].clinicId, queuePosition: callRecords[0].queuePosition },
+                                UpdateExpression: 'SET smaInitiatedAt = :now, pstnCallId = :pstnCallId',
+                                ExpressionAttributeValues: {
+                                    ':now': new Date().toISOString(),
+                                    ':pstnCallId': pstnLegCallId || callId
+                                }
+                            }));
+                        }
+                    } catch (err) {
+                        console.warn('[NEW_OUTBOUND_CALL] Failed to update call record:', err);
                     }
                 }
                 
-                // The logic will be picked up by CALL_ANSWERED or HANGUP if rejected.
+                // The logic will be picked up by RINGING, CALL_ANSWERED, or HANGUP
+                return buildActions([]);
+            }
+
+            // Case 2b: Outbound call is ringing at far end
+            case 'RINGING': {
+                console.log(`[RINGING] Call ${callId} is ringing at far end`, args);
+
+                // Get the call record to determine if this is an outbound call
+                const { Items: callRecords } = await ddb.send(new QueryCommand({
+                    TableName: CALL_QUEUE_TABLE_NAME,
+                    IndexName: 'callId-index',
+                    KeyConditionExpression: 'callId = :callId',
+                    ExpressionAttributeValues: { ':callId': callId }
+                }));
+
+                if (callRecords && callRecords[0]) {
+                    const callRecord = callRecords[0];
+                    const { clinicId, queuePosition, assignedAgentId, direction, status } = callRecord;
+
+                    // For outbound calls that are now ringing
+                    if (direction === 'outbound' && status === 'dialing' && assignedAgentId) {
+                        console.log(`[RINGING] Outbound call ${callId} is now ringing - updating agent ${assignedAgentId}`);
+
+                        // Update agent presence - this triggers frontend to show "Ringing..." and play ringback tone
+                        try {
+                            await ddb.send(new UpdateCommand({
+                                TableName: AGENT_PRESENCE_TABLE_NAME,
+                                Key: { agentId: assignedAgentId },
+                                UpdateExpression: 'SET dialingState = :ringing, ringingStartedAt = :now',
+                                ExpressionAttributeValues: {
+                                    ':ringing': 'ringing',
+                                    ':now': new Date().toISOString()
+                                }
+                            }));
+                            console.log(`[RINGING] Agent ${assignedAgentId} dialingState updated to 'ringing'`);
+                        } catch (updateErr: any) {
+                            console.warn(`[RINGING] Failed to update agent:`, updateErr.message);
+                        }
+
+                        // Update call queue status to reflect ringing
+                        try {
+                            await ddb.send(new UpdateCommand({
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                Key: { clinicId, queuePosition },
+                                UpdateExpression: 'SET dialStatus = :ringing, ringingStartedAt = :now',
+                                ExpressionAttributeValues: {
+                                    ':ringing': 'ringing',
+                                    ':now': new Date().toISOString()
+                                }
+                            }));
+                        } catch (err) {
+                            console.warn('[RINGING] Failed to update call record:', err);
+                        }
+                    }
+                }
+
+                // Return empty actions - just acknowledgment
                 return buildActions([]);
             }
             
@@ -1003,7 +1214,7 @@ export const handler = async (event: any): Promise<any> => {
                             await ddb.send(new UpdateCommand({
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
                                 Key: { agentId },
-                                UpdateExpression: 'SET ringingCallId = :callId, #status = :ringingStatus, ringingCallTime = :time, ringingCallFrom = :from',
+                                UpdateExpression: 'SET ringingCallId = :callId, #status = :ringingStatus, ringingCallTime = :time, ringingCallFrom = :from, ringingCallClinicId = :clinicId',
                                 ConditionExpression: 'attribute_exists(agentId) AND #status = :onlineStatus AND attribute_not_exists(ringingCallId)',
                                 ExpressionAttributeNames: { '#status': 'status' },
                                 ExpressionAttributeValues: {
@@ -1011,6 +1222,7 @@ export const handler = async (event: any): Promise<any> => {
                                     ':ringingStatus': 'ringing',
                                     ':time': new Date().toISOString(),
                                     ':from': callRecord.phoneNumber || 'Unknown',
+                                    ':clinicId': callRecord.clinicId,
                                     ':onlineStatus': 'Online'
                                 }
                             }));
@@ -1100,20 +1312,83 @@ export const handler = async (event: any): Promise<any> => {
                                         event?.ActionData?.Parameters?.SipResponseCode ||
                                         '0';
                 const hangupSource = event?.ActionData?.Parameters?.Source || 'unknown';
+                const participants = event?.CallDetails?.Participants || [];
+                const sipHeaders = event?.CallDetails?.SipHeaders || {};
                 
-                console.log(`[${eventType}] SIP Response Code: ${sipResponseCode}, Source: ${hangupSource}`);
+                // Check for voicemail indicators
+                const isVoicemailLikely = 
+                    sipHeaders['X-Voicemail'] === 'true' ||
+                    sipHeaders['X-Answer-Machine'] === 'true' ||
+                    (sipResponseCode === '200' && participants.some((p: any) => 
+                        p.CallLegType === 'PSTN' && 
+                        (p.Duration && p.Duration < 3000) // Call answered but very short
+                    ));
                 
-                // Determine the reason for call end
+                console.log(`[${eventType}] SIP Response Code: ${sipResponseCode}, Source: ${hangupSource}, VoicemailLikely: ${isVoicemailLikely}`);
+                
+                // Determine the reason for call end with more specific reasons
                 let callEndReason = 'unknown';
+                let callEndUserFriendly = '';
+                
                 switch (sipResponseCode?.toString()) {
-                    case '486': callEndReason = 'busy'; break;
-                    case '480': callEndReason = 'no_answer'; break;
-                    case '603': callEndReason = 'declined'; break;
-                    case '487': callEndReason = 'cancelled'; break;
-                    case '404': callEndReason = 'not_found'; break;
-                    case '408': callEndReason = 'timeout'; break;
-                    case '0': callEndReason = 'normal'; break;
-                    default: callEndReason = `sip_${sipResponseCode}`;
+                    case '486': 
+                        callEndReason = 'busy'; 
+                        callEndUserFriendly = 'Line is busy';
+                        break;
+                    case '480': 
+                        callEndReason = 'no_answer'; 
+                        callEndUserFriendly = 'No answer - call timed out';
+                        break;
+                    case '603': 
+                        callEndReason = 'declined'; 
+                        callEndUserFriendly = 'Call was declined';
+                        break;
+                    case '487': 
+                        callEndReason = 'cancelled'; 
+                        callEndUserFriendly = 'Call was cancelled';
+                        break;
+                    case '404': 
+                        callEndReason = 'invalid_number'; 
+                        callEndUserFriendly = 'Number not found or invalid';
+                        break;
+                    case '408': 
+                        callEndReason = 'timeout'; 
+                        callEndUserFriendly = 'Call timed out';
+                        break;
+                    case '484':
+                        callEndReason = 'incomplete_number';
+                        callEndUserFriendly = 'Incomplete phone number';
+                        break;
+                    case '503':
+                        callEndReason = 'service_unavailable';
+                        callEndUserFriendly = 'Service temporarily unavailable';
+                        break;
+                    case '502':
+                    case '504':
+                        callEndReason = 'network_error';
+                        callEndUserFriendly = 'Network error - please try again';
+                        break;
+                    case '606':
+                        callEndReason = 'not_acceptable';
+                        callEndUserFriendly = 'Call could not be completed';
+                        break;
+                    case '0': 
+                        callEndReason = isVoicemailLikely ? 'voicemail' : 'normal'; 
+                        callEndUserFriendly = isVoicemailLikely ? 'Went to voicemail' : 'Call ended normally';
+                        break;
+                    case '200':
+                        // 200 means call was answered - check if it went to voicemail
+                        if (isVoicemailLikely) {
+                            callEndReason = 'voicemail';
+                            callEndUserFriendly = 'Went to voicemail';
+                        } else {
+                            callEndReason = 'normal';
+                            callEndUserFriendly = 'Call ended normally';
+                        }
+                        break;
+                    default: 
+                        callEndReason = `sip_${sipResponseCode}`;
+                        callEndUserFriendly = `Call ended (code: ${sipResponseCode})`;
                 }
                 
                 // Stop recording if enabled (belt and suspenders - Chime auto-stops but this ensures it)
@@ -1160,12 +1435,18 @@ export const handler = async (event: any): Promise<any> => {
                     // For OUTBOUND calls, meetingInfo contains the AGENT'S SESSION meeting - DO NOT delete it!
                     const isOutboundCall = direction === 'outbound' || status === 'dialing';
                     
-                    if (status === 'queued' && meetingInfo?.MeetingId && !isOutboundCall) {
+                    // FIX #6: Also cleanup meetings for 'ringing' calls that were abandoned
+                    // Previously only 'queued' status triggered cleanup, leaving orphaned meetings
+                    const shouldCleanupMeeting = (status === 'queued' || status === 'ringing') && 
+                                                  meetingInfo?.MeetingId && 
+                                                  !isOutboundCall;
+                    
+                    if (shouldCleanupMeeting) {
                         try {
                             await cleanupMeeting(meetingInfo.MeetingId);
-                            console.log(`[${eventType}] Cleaned up QUEUE meeting ${meetingInfo.MeetingId}`);
+                            console.log(`[${eventType}] Cleaned up ${status.toUpperCase()} meeting ${meetingInfo.MeetingId}`);
                         } catch (meetingErr) {
-                            console.warn(`[${eventType}] Failed to cleanup queue meeting:`, meetingErr);
+                            console.warn(`[${eventType}] Failed to cleanup ${status} meeting:`, meetingErr);
                         }
                     } else if (isOutboundCall && meetingInfo?.MeetingId) {
                         // *** FIX: Do NOT delete the agent's session meeting for outbound calls ***
@@ -1193,16 +1474,20 @@ export const handler = async (event: any): Promise<any> => {
                         await ddb.send(new UpdateCommand({
                             TableName: CALL_QUEUE_TABLE_NAME,
                             Key: { clinicId, queuePosition },
-                            UpdateExpression: 'SET #status = :status, endedAt = :timestamp, endedAtIso = :timestampIso, callDuration = :duration, callEndReason = :reason REMOVE customerAttendeeInfo, agentAttendeeInfo',
+                            UpdateExpression: 'SET #status = :status, endedAt = :timestamp, endedAtIso = :timestampIso, callDuration = :duration, callEndReason = :reason, callEndMessage = :message, sipResponseCode = :sipCode REMOVE customerAttendeeInfo, agentAttendeeInfo',
                             ExpressionAttributeNames: { '#status': 'status' },
                             ExpressionAttributeValues: {
                                 ':status': finalStatus,
                                 ':timestamp': Math.floor(Date.now() / 1000),
                                 ':timestampIso': new Date().toISOString(),
                                 ':duration': callDuration,
-                                ':reason': callEndReason
+                                ':reason': callEndReason,
+                                ':message': callEndUserFriendly,
+                                ':sipCode': sipResponseCode?.toString() || 'unknown'
                             }
                         }));
+                        
+                        console.log(`[${eventType}] Call ${callId} record updated with end reason: ${callEndReason} - ${callEndUserFriendly}`);
                         
                     } catch (updateErr) {
                         console.error(`[${eventType}] Failed to update call record:`, updateErr);
@@ -1211,24 +1496,38 @@ export const handler = async (event: any): Promise<any> => {
                     // Update agent status if they were assigned
                     if (assignedAgentId) {
                         try {
-                            // *** FIX: Include callEndReason so frontend knows why call ended ***
-                            // For outbound calls that were rejected/unanswered, this is critical for UI feedback
+                            // *** FIX: Include callEndReason and user-friendly message for UI feedback ***
+                            // For outbound calls that were rejected/unanswered, this is critical for UI
                             const wasDialingOutbound = status === 'dialing' && isOutboundCall;
+                            const dialingFailed = wasDialingOutbound && callEndReason !== 'normal' && callEndReason !== 'completed';
                             
+                            // Enhanced update with detailed call end info
                             await ddb.send(new UpdateCommand({
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
                                 Key: { agentId: assignedAgentId },
-                                UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp, lastCallEndedAt = :timestamp, lastCallEndReason = :reason, lastCallId = :callId REMOVE currentCallId, callStatus, currentMeetingAttendeeId, dialingState, dialingStartedAt',
-                                ConditionExpression: 'attribute_exists(agentId) AND (currentCallId = :callId OR attribute_not_exists(currentCallId))',
+                                UpdateExpression: `SET #status = :status, lastActivityAt = :timestamp, lastCallEndedAt = :timestamp, 
+                                    lastCallEndReason = :reason, lastCallEndMessage = :message, lastCallId = :callId,
+                                    lastCallWasOutbound = :wasOutbound, lastDialingFailed = :dialFailed
+                                    REMOVE currentCallId, callStatus, currentMeetingAttendeeId, dialingState, dialingStartedAt, 
+                                    ringingStartedAt, outboundCallId, outboundToNumber`,
+                                ConditionExpression: 'attribute_exists(agentId) AND (currentCallId = :callId OR outboundCallId = :callId OR attribute_not_exists(currentCallId))',
                                 ExpressionAttributeNames: { '#status': 'status' },
                                 ExpressionAttributeValues: {
                                     ':status': 'Online',
                                     ':timestamp': new Date().toISOString(),
                                     ':callId': callId,
-                                    ':reason': wasDialingOutbound ? callEndReason : 'completed'
+                                    ':reason': wasDialingOutbound ? callEndReason : 'completed',
+                                    ':message': wasDialingOutbound ? callEndUserFriendly : 'Call completed',
+                                    ':wasOutbound': isOutboundCall,
+                                    ':dialFailed': dialingFailed
                                 }
                             }));
-                            console.log(`[${eventType}] Agent ${assignedAgentId} marked as available. Call end reason: ${callEndReason}`);
+                            
+                            if (dialingFailed) {
+                                console.log(`[${eventType}] Agent ${assignedAgentId} outbound call FAILED. Reason: ${callEndReason} - ${callEndUserFriendly}`);
+                            } else {
+                                console.log(`[${eventType}] Agent ${assignedAgentId} marked as available. Call end reason: ${callEndReason}`);
+                            }
                         } catch (agentErr: any) {
                             if (agentErr.name === 'ConditionalCheckFailedException') {
                                 console.log(`[${eventType}] Agent ${assignedAgentId} was not on this call. Skipping cleanup.`);
@@ -1245,7 +1544,7 @@ export const handler = async (event: any): Promise<any> => {
                             ddb.send(new UpdateCommand({
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
                                 Key: { agentId },
-                                UpdateExpression: 'SET #status = :online, lastActivityAt = :timestamp REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
+                                UpdateExpression: 'SET #status = :online, lastActivityAt = :timestamp REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
                                 ConditionExpression: 'attribute_exists(agentId) AND ringingCallId = :callId',
                                 ExpressionAttributeNames: {
                                     '#status': 'status'
@@ -1267,9 +1566,219 @@ export const handler = async (event: any): Promise<any> => {
                 console.log(`[${eventType}] Call ${callId} cleanup completed.`);
                 return buildActions([]);
             }
+
+            // Case 8: Send DTMF tones - triggered by send-dtmf.ts API
+            case 'SEND_DTMF': {
+                if (args.action === 'SEND_DTMF' && args.digits) {
+                    const { digits, durationMs, gapMs, agentId } = args;
+                    console.log(`[SEND_DTMF] Sending DTMF digits for call ${callId}`, { 
+                        digitsLength: digits?.length,
+                        durationMs,
+                        gapMs,
+                        agentId 
+                    });
+
+                    // Build SendDigits action for DTMF
+                    const sendDigitsAction = {
+                        Type: 'SendDigits',
+                        Parameters: {
+                            CallId: pstnLegCallId || callId,
+                            Digits: digits,
+                            ToneDurationInMilliseconds: parseInt(durationMs || '250', 10),
+                            ToneGapInMilliseconds: parseInt(gapMs || '50', 10)
+                        }
+                    };
+
+                    return buildActions([sendDigitsAction]);
+                }
+                console.warn('[SEND_DTMF] Event without proper action');
+                return buildActions([]);
+            }
+
+            // Case 9: Add Call events - for secondary call connection
+            case 'ADD_CALL_CONNECTED': {
+                if (args.callType === 'AddCall' && args.primaryCallId) {
+                    const { primaryCallId, agentId, meetingId, holdPrimaryCall } = args;
+                    console.log(`[ADD_CALL_CONNECTED] Secondary call ${callId} connected for agent ${agentId}`, { 
+                        primaryCallId, 
+                        meetingId,
+                        holdPrimaryCall 
+                    });
+
+                    // Join the secondary call participant to the agent's meeting
+                    if (meetingId && pstnLegCallId) {
+                        // Create attendee for the secondary call participant
+                        try {
+                            const attendeeResponse = await chime.send(new CreateAttendeeCommand({
+                                MeetingId: meetingId,
+                                ExternalUserId: `secondary-${callId}`
+                            }));
+
+                            if (attendeeResponse.Attendee) {
+                                // Update call record with attendee info
+                                const { Items: callRecords } = await ddb.send(new QueryCommand({
+                                    TableName: CALL_QUEUE_TABLE_NAME,
+                                    IndexName: 'callId-index',
+                                    KeyConditionExpression: 'callId = :callId',
+                                    ExpressionAttributeValues: { ':callId': callId }
+                                }));
+
+                                if (callRecords && callRecords[0]) {
+                                    const callRecord = callRecords[0];
+                                    await ddb.send(new UpdateCommand({
+                                        TableName: CALL_QUEUE_TABLE_NAME,
+                                        Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
+                                        UpdateExpression: 'SET #status = :connected, customerAttendeeInfo = :attendee, connectedAt = :now',
+                                        ExpressionAttributeNames: { '#status': 'status' },
+                                        ExpressionAttributeValues: {
+                                            ':connected': 'connected',
+                                            ':attendee': attendeeResponse.Attendee,
+                                            ':now': new Date().toISOString()
+                                        }
+                                    }));
+                                }
+
+                                return buildActions([
+                                    buildSpeakAction('Connecting your second call.'),
+                                    buildJoinChimeMeetingAction(
+                                        pstnLegCallId,
+                                        { MeetingId: meetingId },
+                                        attendeeResponse.Attendee
+                                    )
+                                ]);
+                            }
+                        } catch (err) {
+                            console.error('[ADD_CALL_CONNECTED] Failed to create attendee:', err);
+                            return buildActions([buildSpeakAction('Failed to connect the call.')]);
+                        }
+                    }
+                }
+                return buildActions([]);
+            }
+
+            // Case 10: Conference merge - merge two calls into a 3-way conference
+            case 'CONFERENCE_MERGE': {
+                if (args.action === 'CONFERENCE_MERGE' && args.conferenceId && args.meetingId) {
+                    const { conferenceId, meetingId, agentId, role, otherCallId } = args;
+                    console.log(`[CONFERENCE_MERGE] Merging call ${callId} into conference ${conferenceId}`, { 
+                        role, 
+                        meetingId,
+                        otherCallId 
+                    });
+
+                    // Join this call's participant to the conference meeting
+                    if (pstnLegCallId) {
+                        try {
+                            // Create attendee for this call's participant
+                            const attendeeResponse = await chime.send(new CreateAttendeeCommand({
+                                MeetingId: meetingId,
+                                ExternalUserId: `conference-${conferenceId}-${callId}`
+                            }));
+
+                            if (attendeeResponse.Attendee) {
+                                // Update call record with conference info
+                                const { Items: callRecords } = await ddb.send(new QueryCommand({
+                                    TableName: CALL_QUEUE_TABLE_NAME,
+                                    IndexName: 'callId-index',
+                                    KeyConditionExpression: 'callId = :callId',
+                                    ExpressionAttributeValues: { ':callId': callId }
+                                }));
+
+                                if (callRecords && callRecords[0]) {
+                                    const callRecord = callRecords[0];
+                                    await ddb.send(new UpdateCommand({
+                                        TableName: CALL_QUEUE_TABLE_NAME,
+                                        Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
+                                        UpdateExpression: 'SET conferenceAttendeeInfo = :attendee, conferenceJoinedAt = :now',
+                                        ExpressionAttributeValues: {
+                                            ':attendee': attendeeResponse.Attendee,
+                                            ':now': new Date().toISOString()
+                                        }
+                                    }));
+                                }
+
+                                return buildActions([
+                                    buildSpeakAction('You are now in a conference call.'),
+                                    buildJoinChimeMeetingAction(
+                                        pstnLegCallId,
+                                        { MeetingId: meetingId },
+                                        attendeeResponse.Attendee
+                                    )
+                                ]);
+                            }
+                        } catch (err) {
+                            console.error('[CONFERENCE_MERGE] Failed to join conference:', err);
+                            return buildActions([buildSpeakAction('Failed to join the conference.')]);
+                        }
+                    }
+                }
+                return buildActions([]);
+            }
+
+            // Case 11: Conference add - add a new participant to conference
+            case 'CONFERENCE_ADD': {
+                if (args.action === 'CONFERENCE_ADD' && args.conferenceId && args.meetingId) {
+                    const { conferenceId, meetingId, agentId } = args;
+                    console.log(`[CONFERENCE_ADD] Adding call ${callId} to conference ${conferenceId}`);
+
+                    if (pstnLegCallId) {
+                        try {
+                            const attendeeResponse = await chime.send(new CreateAttendeeCommand({
+                                MeetingId: meetingId,
+                                ExternalUserId: `conference-add-${conferenceId}-${callId}`
+                            }));
+
+                            if (attendeeResponse.Attendee) {
+                                return buildActions([
+                                    buildSpeakAction('Adding you to the conference.'),
+                                    buildJoinChimeMeetingAction(
+                                        pstnLegCallId,
+                                        { MeetingId: meetingId },
+                                        attendeeResponse.Attendee
+                                    )
+                                ]);
+                            }
+                        } catch (err) {
+                            console.error('[CONFERENCE_ADD] Failed to add to conference:', err);
+                            return buildActions([buildSpeakAction('Failed to join the conference.')]);
+                        }
+                    }
+                }
+                return buildActions([]);
+            }
+
+            // Case 12: Conference remove - remove a participant from conference (hang up that leg)
+            case 'CONFERENCE_REMOVE': {
+                if (args.action === 'CONFERENCE_REMOVE' && args.conferenceId) {
+                    const { conferenceId, agentId } = args;
+                    console.log(`[CONFERENCE_REMOVE] Removing call ${callId} from conference ${conferenceId}`);
+
+                    return buildActions([
+                        buildSpeakAction('You have been removed from the conference. Goodbye.'),
+                        buildPauseAction(500),
+                        { Type: 'Hangup', Parameters: { SipResponseCode: '0' } }
+                    ]);
+                }
+                return buildActions([]);
+            }
+
+            // Case 13: Conference end - end the entire conference
+            case 'CONFERENCE_END': {
+                if (args.action === 'CONFERENCE_END' && args.conferenceId) {
+                    const { conferenceId, agentId } = args;
+                    console.log(`[CONFERENCE_END] Ending conference ${conferenceId} for call ${callId}`);
+
+                    return buildActions([
+                        buildSpeakAction('The conference has ended. Goodbye.'),
+                        buildPauseAction(500),
+                        { Type: 'Hangup', Parameters: { SipResponseCode: '0' } }
+                    ]);
+                }
+                return buildActions([]);
+            }
             
             // --- Informational events ---
-            case 'RINGING':
+            // Note: RINGING is now handled above with outbound call tracking
             case 'ACTION_SUCCESSFUL':
             case 'INVALID_LAMBDA_RESPONSE': {
                 console.log(`Received informational event type: ${eventType}, returning empty actions.`);

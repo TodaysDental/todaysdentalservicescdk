@@ -311,7 +311,7 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
                                 Update: {
                                     TableName: agentPresenceTableName,
                                     Key: { agentId },
-                                    UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallPriority',
+                                    UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallPriority',
                                     ExpressionAttributeNames: { '#status': 'status' },
                                     ExpressionAttributeValues: {
                                         ':online': 'Online'

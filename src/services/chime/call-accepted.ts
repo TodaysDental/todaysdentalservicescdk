@@ -11,7 +11,7 @@ import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getSmaIdForClinic } from './utils/sma-map';
 import { verifyIdToken } from '../../shared/utils/auth-helper';
-import { getUserIdFromJwt } from '../../shared/utils/permissions-helper';
+import { getUserIdFromJwt, checkClinicAuthorization } from '../../shared/utils/permissions-helper';
 import { cleanupOrphanedCallResources } from './utils/resource-cleanup';
 import { randomUUID } from 'crypto';
 import { TTL_POLICY } from './config/ttl-policy';
@@ -114,7 +114,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
              await ddb.send(new UpdateCommand({
                 TableName: AGENT_PRESENCE_TABLE_NAME,
                 Key: { agentId },
-                UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
+                UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
                 ConditionExpression: 'ringingCallId = :callId',
                 ExpressionAttributeNames: {'#status': 'status'},
                 ExpressionAttributeValues: { ':online': 'Online', ':callId': callId }
@@ -130,6 +130,26 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const callRecord = callRecords[0];
         const { clinicId, queuePosition } = callRecord;
 
+        // FIX #8: Verify agent is authorized for this clinic before proceeding
+        const authzCheck = checkClinicAuthorization(verifyResult.payload! as any, clinicId);
+        if (!authzCheck.authorized) {
+            console.warn('[call-accepted] Agent not authorized for call clinic', {
+                agentId,
+                callId,
+                clinicId,
+                reason: authzCheck.reason
+            });
+            return {
+                statusCode: 403,
+                headers: corsHeaders,
+                body: JSON.stringify({ 
+                    message: 'You are not authorized to accept calls for this clinic',
+                    reason: authzCheck.reason
+                })
+            };
+        }
+        console.log('[call-accepted] Clinic authorization verified', { agentId, clinicId });
+
         const smaId = getSmaIdForClinic(clinicId);
 
         // RACE CONDITION CHECK: Ensure call is still ringing
@@ -140,7 +160,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             await ddb.send(new UpdateCommand({
                 TableName: AGENT_PRESENCE_TABLE_NAME,
                 Key: { agentId },
-                UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
+                UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
                 ConditionExpression: 'ringingCallId = :callId',
                 ExpressionAttributeNames: {'#status': 'status'},
                 ExpressionAttributeValues: { ':online': 'Online', ':callId': callId }
@@ -166,14 +186,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // CRITICAL FIX: Reduced TTL from 10s to 3s to minimize orphaned lock impact
-        // If Lambda times out, call only blocked for 3s instead of 10s
+        // FIX #2: Increased TTL to 15s to handle Lambda cold starts + Chime API latency
+        // Trade-off: If Lambda fails, call is blocked for 15s, but prevents race conditions
+        // Note: Lambda timeout should be configured to < 15s for this function
         const lock = new DistributedLock(ddb, {
             tableName: LOCKS_TABLE_NAME,
             lockKey: `call-assignment-${callId}`,
-            ttlSeconds: 3, // Reduced from 10 to minimize orphaned locks
-            maxRetries: 5, // Increased retries to compensate for shorter TTL
-            retryDelayMs: 100
+            ttlSeconds: 15, // Increased to handle cold start + API latency
+            maxRetries: 10, // More retries with exponential backoff
+            retryDelayMs: 150 // Slightly longer initial delay
         });
 
         const acquired = await lock.acquire();
@@ -231,7 +252,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                         Key: { agentId },
                         UpdateExpression: 'SET #status = :onCall, currentCallId = :callId, callStatus = :connected, ' +
                                          'lastActivityAt = :timestamp ' +
-                                         'REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ' +
+                                         'REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallNotes, ' +
                                          'ringingCallTransferAgentId, ringingCallTransferMode',
                         ConditionExpression: 'ringingCallId = :callId', // Ensure agent was ringing for this call
                         ExpressionAttributeNames: { '#status': 'status' },
@@ -423,7 +444,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                         ddb.send(new UpdateCommand({
                             TableName: AGENT_PRESENCE_TABLE_NAME,
                             Key: { agentId: otherId },
-                            UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
+                            UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
                             ConditionExpression: 'ringingCallId = :callId',
                             ExpressionAttributeNames: { '#status': 'status' },
                             ExpressionAttributeValues: { ':online': 'Online', ':callId': callId }
@@ -438,14 +459,35 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 console.error('[call-accepted] CRITICAL: Failed to notify SMA of agent acceptance:', smaErr);
                 // CRITICAL FIX #2: Rollback the acceptance since we can't bridge the call
                 
-                // Delete the orphaned attendee
-                try {
-                    await chime.send(new DeleteAttendeeCommand({
-                        MeetingId: agentMeeting.MeetingId,
-                        AttendeeId: customerAttendee.AttendeeId!
-                    }));
-                } catch (deleteErr) {
-                    console.error('[call-accepted] Failed to delete orphaned attendee:', deleteErr);
+                // FIX #5: Delete the orphaned attendee with retry logic
+                const MAX_DELETE_RETRIES = 3;
+                for (let attempt = 1; attempt <= MAX_DELETE_RETRIES; attempt++) {
+                    try {
+                        await chime.send(new DeleteAttendeeCommand({
+                            MeetingId: agentMeeting.MeetingId,
+                            AttendeeId: customerAttendee.AttendeeId!
+                        }));
+                        console.log('[call-accepted] Successfully deleted orphaned attendee on attempt', attempt);
+                        break;
+                    } catch (deleteErr: any) {
+                        if (deleteErr.name === 'NotFoundException') {
+                            // Attendee already deleted or never existed - no action needed
+                            console.log('[call-accepted] Attendee already deleted or not found');
+                            break;
+                        }
+                        console.error(`[call-accepted] Failed to delete orphaned attendee (attempt ${attempt}/${MAX_DELETE_RETRIES}):`, deleteErr);
+                        if (attempt < MAX_DELETE_RETRIES) {
+                            // Exponential backoff: 100ms, 200ms, 400ms
+                            await new Promise(resolve => setTimeout(resolve, 100 * Math.pow(2, attempt - 1)));
+                        } else {
+                            // Final attempt failed - log for manual cleanup
+                            console.error('[call-accepted] ORPHANED ATTENDEE REQUIRES MANUAL CLEANUP:', {
+                                meetingId: agentMeeting.MeetingId,
+                                attendeeId: customerAttendee.AttendeeId,
+                                callId
+                            });
+                        }
+                    }
                 }
                 
                 // Rollback database state
