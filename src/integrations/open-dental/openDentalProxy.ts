@@ -215,7 +215,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(jsonResult) };
   }
 
-  if (['GET', 'POST', 'PUT'].includes(method) && /^(patients|appointments|queries|operatories|providers|appointmenttypes|schedules|clockevents|userods|employees)(\/|$)/.test(proxy)) {
+  if (['GET', 'POST', 'PUT'].includes(method) && /^(patients|appointments|queries|operatories|providers|appointmenttypes|schedules|clockevents|userods|employees|accountmodules|adjustments|allergies|allergydefs|apptfields|apptfielddefs|asapcomms|autonotecontrols|autonotes|benefits|carriers|chartmodules|claimforms|claimpayments|claimprocs|claims|claimtrackings|codegroups|commlogs|computers|covcats|covspans|definitions|discountplans|discountplansubs|diseasedefs|diseases|documents|ehrpatients|employers|eobattaches|etrans|etransmessagetexts|etranss|familymodules|fees|feescheds|histappointments|insplans|inssubs|insverifies|labcases|laboratories|labturnarounds|medicationpats|medications|patfielddefs|patfields|patientnotes|patientraces|patplans|payments|payplancharges|payplans|paysplits|pharmacies|periomeasures|popups|preferences|procedurecodes|procnotes|proctps|quickpastecats|quickpastenotes|recalls|recalltypes|refattaches|referrals|reports|rxpats|scheduleops|securityperms|securitylogs|sheetdefs|sheets|sheetfields|signalods|statements|subscriptions|substitutionlinks|tasklists|tasknotes|tasks|toothinitials|treatplanattaches|treatplans|usergroupattaches|usergroups)(\/|$)/.test(proxy)) {
     let fullPath: string;
     // This special path logic is likely only for GET, but we'll keep it for compatibility.
     // POST/PUT requests will fall through to the else block.
