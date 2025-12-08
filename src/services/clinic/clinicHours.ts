@@ -16,10 +16,30 @@ import { Clinic } from '../../infrastructure/configs/clinics';
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TABLE_NAME = process.env.CLINIC_HOURS_TABLE || 'ClinicHours';
 
-// We get the BASE URL from env (e.g., https://apig.todaysdentalinsights.com)
-// The specific path is constructed in the scheduler handler
-const SCHEDULES_API_BASE_URL = process.env.SCHEDULES_API_URL || 'https://apig.todaysdentalinsights.com';
+// OpenDental API configuration - call directly instead of through the authenticated proxy
+const OPEN_DENTAL_API_HOST = 'https://api.opendental.com';
+const OPEN_DENTAL_API_BASE = '/api/v1';
 const ALL_CLINIC_IDS = process.env.ALL_CLINIC_IDS?.split(',').map(id => id.trim()).filter(id => id.length > 0) || [];
+
+// Build clinic credentials map from imported clinic data
+interface ClinicCredentials {
+  developerKey: string;
+  customerKey: string;
+  timeZone: string;
+}
+
+const CLINIC_CREDENTIALS: Record<string, ClinicCredentials> = (() => {
+  const acc: Record<string, ClinicCredentials> = {};
+  (clinicsData as any[]).forEach((c: any) => {
+    acc[String(c.clinicId)] = {
+      developerKey: c.developerKey,
+      customerKey: c.customerKey,
+      // JSON uses lowercase 'timezone', interface uses camelCase 'timeZone'
+      timeZone: c.timezone || c.timeZone || 'America/New_York',
+    };
+  });
+  return acc;
+})();
 
 // --- INTERFACES ---
 
@@ -61,27 +81,42 @@ export const schedulerHandler = async (): Promise<APIGatewayProxyResult> => {
     const daysOfWeek = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
     const closedHoursDefault = { open: '', close: '', closed: true };
 
+    let successCount = 0;
+    let errorCount = 0;
+
     for (const clinicId of ALL_CLINIC_IDS) {
         if (!clinicId) continue;
         
         try {
             console.log(`Processing clinic: ${clinicId}`);
 
-            // UPDATED URL STRUCTURE:
-            // Uses base url + /opendental/api/clinic/{clinicId}/schedules with date parameters
-            const schedulesUrl = `${SCHEDULES_API_BASE_URL}/opendental/api/clinic/${clinicId}/schedules?dateStart=${dateStart}&dateEnd=${dateEnd}`;
+            // Get clinic credentials for direct OpenDental API call
+            const creds = CLINIC_CREDENTIALS[clinicId];
+            if (!creds || !creds.developerKey || !creds.customerKey) {
+                console.warn(`No OpenDental credentials found for clinic: ${clinicId}. Skipping.`);
+                errorCount++;
+                continue;
+            }
+
+            // Call OpenDental API directly with ODFHIR authentication
+            const schedulesPath = `${OPEN_DENTAL_API_BASE}/schedules?dateStart=${dateStart}&dateEnd=${dateEnd}`;
+            const response = await axios.get(`${OPEN_DENTAL_API_HOST}${schedulesPath}`, {
+                headers: {
+                    'Authorization': `ODFHIR ${creds.developerKey}/${creds.customerKey}`,
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                },
+                timeout: 30000, // 30 second timeout
+            });
             
-            // NOTE: Ensure your Lambda has the correct API Key/Auth headers if required by this endpoint
-            const response = await axios.get(schedulesUrl);
-            
-            const fullWeekScheduleData: ScheduleBlock[] = response.data.items || response.data || []; 
+            const fullWeekScheduleData: ScheduleBlock[] = response.data || []; 
 
             // Initialize DynamoDB item with defaults
             let finalHoursItem: ClinicHoursItem = {
                 clinicId,
                 updatedAt: Date.now(),
                 updatedBy: 'AutomatedScheduler',
-                timeZone: 'America/New_York', 
+                timeZone: creds.timeZone || 'America/New_York', 
             };
             
             // Set all days to closed by default
@@ -116,15 +151,24 @@ export const schedulerHandler = async (): Promise<APIGatewayProxyResult> => {
             }));
 
             console.log(`Successfully updated clinic hours for ${clinicId}`);
+            successCount++;
 
         } catch (error: any) {
-            console.error(`Failed to update clinic hours for ${clinicId}. Error:`, error.message);
+            errorCount++;
+            const errorDetails = error.response?.data || error.message;
+            console.error(`Failed to update clinic hours for ${clinicId}. Error:`, JSON.stringify(errorDetails));
         }
     }
 
+    console.log(`Clinic hours update finished. Success: ${successCount}, Errors: ${errorCount}`);
     return {
         statusCode: 200,
-        body: JSON.stringify({ message: `Clinic hours update finished.` }),
+        body: JSON.stringify({ 
+            message: `Clinic hours update finished.`,
+            successCount,
+            errorCount,
+            totalClinics: ALL_CLINIC_IDS.length 
+        }),
     };
 };
 

@@ -17,6 +17,7 @@ import { TemplatesStack } from './stacks/templates-stack';
 import { ConsentFormDataStack } from './stacks/consent-form-data-stack';
 import { SchedulesStack } from './stacks/schedules-stack';
 import { QueriesStack } from './stacks/queries-stack';
+import { ReportsStack } from './stacks/reports-stack';
 import { ClinicHoursStack } from './stacks/clinic-hours-stack';
 import { ClinicPricingStack } from './stacks/clinic-pricing-stack';
 import { ClinicInsuranceStack } from './stacks/clinic-insurance-stack';
@@ -195,6 +196,11 @@ const consentFormDataStack = new ConsentFormDataStack(app, 'TodaysDentalInsights
 
 // Queries service
 const queriesStack = new QueriesStack(app, 'TodaysDentalInsightsQueriesN1', {
+  env,
+});
+
+// Reports service
+const reportsStack = new ReportsStack(app, 'TodaysDentalInsightsReportsN1', {
   env,
 });
 
@@ -379,6 +385,7 @@ const clinicImagesStack = new ClinicImagesStack(app, 'TodaysDentalInsightsClinic
 templatesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 consentFormDataStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 queriesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+reportsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 clinicHoursStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 clinicPricingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 clinicInsuranceStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
