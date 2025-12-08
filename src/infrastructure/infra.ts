@@ -217,6 +217,12 @@ const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNoti
 // Define ChimeStack name for consistent cross-stack references
 const CHIME_STACK_NAME = 'TodaysDentalInsightsChimeN1';
 
+// Define ChatbotStack name for consistent cross-stack references
+// CRITICAL: This avoids CloudFormation export/import which causes UPDATE_ROLLBACK_IN_PROGRESS issues
+const CHATBOT_STACK_NAME = 'TodaysDentalInsightsChatbotN1';
+// The conversations table name follows the pattern: ${stackName}-ConversationN1
+const CHATBOT_CONVERSATIONS_TABLE_NAME = `${CHATBOT_STACK_NAME}-ConversationN1`;
+
 // ** ANALYTICS STACK INSTANTIATION (BEFORE CHIME) **
 // CRITICAL FIX: Pass chimeStackName so AnalyticsStack can derive table names
 // This resolves the circular dependency where AnalyticsStack needs ChimeStack table names
@@ -248,8 +254,8 @@ const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommN1', {
 });
 
 // Chatbot Stack - WebSocket-based dental assistant chatbot (depends on core and clinic data)
-// NOTE: Declared here before AdminStack because AdminStack needs chatbotStack.conversationsTable.tableName
-const chatbotStack = new ChatbotStack(app, 'TodaysDentalInsightsChatbotN1', {
+// NOTE: Use CHATBOT_STACK_NAME constant for consistent naming and to avoid cross-stack reference issues
+const chatbotStack = new ChatbotStack(app, CHATBOT_STACK_NAME, {
   env,
   // Chatbot reads directly from DynamoDB tables - no API calls needed
   clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
@@ -272,7 +278,10 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
  // Additional table names for detailed analytics
  callQueueTableName: chimeStack.callQueueTable.tableName,
  recordingMetadataTableName: chimeStack.recordingMetadataTable?.tableName,
- chatHistoryTableName: chatbotStack.conversationsTable.tableName,
+ // CRITICAL FIX: Use constant table name instead of cross-stack reference
+ // This avoids CloudFormation export/import which causes UPDATE_ROLLBACK_IN_PROGRESS issues
+ // when the exporting stack (ChatbotStack) tries to rollback while AdminStack still references the export
+ chatHistoryTableName: CHATBOT_CONVERSATIONS_TABLE_NAME,
  clinicsTableName: chimeStack.clinicsTable.tableName,
  recordingsBucketName: chimeStack.recordingsBucket?.bucketName,
  // Import ARNs exported by the Chime stack
