@@ -158,6 +158,8 @@ export class ClinicHoursStack extends Stack {
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${this.api.restApiId}/authorizers/*`,
     });
 
+    const schedulesApiUrl = 'https://apig.todaysdentalinsights.com/schedules'; // Placeholder for the Open Dental Schedules API
+
     // ========================================
     // CRUD LAMBDA FUNCTION (For API Gateway)
     // ========================================
@@ -178,12 +180,14 @@ export class ClinicHoursStack extends Stack {
           '@aws-sdk/client-dynamodb',
           '@aws-sdk/lib-dynamodb',
           'jose',
+          'axios',
         ],
       },
       environment: {
         NODE_OPTIONS: '--enable-source-maps',
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1',
         CLINIC_HOURS_TABLE: this.clinicHoursTable.tableName,
+        SCHEDULES_API_URL: schedulesApiUrl,
       },
     });
     applyTags(this.hoursCrudFn, { Function: 'clinic-hours-crud' });
@@ -210,7 +214,6 @@ export class ClinicHoursStack extends Stack {
     
     // Dynamically generate a comma-separated list of clinic IDs from clinics.json
     const allClinicIds = (clinicsData as any[]).map(c => c.clinicId).join(',');
-    const schedulesApiUrl = 'https://apig.todaysdentalinsights.com/schedules'; // Placeholder for the Open Dental Schedules API
 
     const hoursSchedulerFn = new lambdaNode.NodejsFunction(this, 'HoursSchedulerFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'hoursScheduler.ts'), // <-- New file

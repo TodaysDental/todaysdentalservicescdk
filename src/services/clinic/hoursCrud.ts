@@ -1,6 +1,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import axios from 'axios';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import {
   getUserPermissions,
@@ -14,6 +15,10 @@ import { Clinic } from '../../infrastructure/configs/clinics';
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const TABLE = process.env.CLINIC_HOURS_TABLE || 'ClinicHours';
+const SCHEDULES_API_URL = process.env.SCHEDULES_API_URL;
+const DEFAULT_TIME_ZONE = 'America/New_York';
+const SCHEDULE_DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+const CLOSED_HOURS = { open: '', close: '', closed: true };
 
 interface ClinicHoursData {
   clinicId: string;
@@ -27,6 +32,14 @@ interface ClinicHoursData {
   timeZone?: string;
   updatedAt: number;
   updatedBy: string;
+}
+
+interface ScheduleBlock {
+  ScheduleNum: string;
+  SchedDate: string; // e.g., "2025-11-29"
+  StartTime: string; // e.g., "07:00:00"
+  StopTime: string;  // e.g., "15:00:00"
+  [key: string]: any;
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
@@ -137,8 +150,20 @@ async function createHours(event: APIGatewayProxyEvent, userPerms: UserPermissio
       return err(404, 'Clinic not found', event);
     }
 
+    const shouldPopulate = wantsSchedulePopulate(body, event);
+    let populatedBody = body;
+
+    if (shouldPopulate) {
+      try {
+        populatedBody = await populateClinicHoursFromSchedules(clinicId, body);
+      } catch (populateErr: any) {
+        console.error('Failed to populate hours from schedules API:', populateErr?.message || populateErr);
+        return err(502, 'Failed to populate clinic hours from schedules', event);
+      }
+    }
+
     // Validate hours data
-    const hoursData = validateHoursData(body);
+    const hoursData = validateHoursData(populatedBody);
     if (!hoursData.valid) {
       return err(400, hoursData.message, event);
     }
@@ -146,8 +171,8 @@ async function createHours(event: APIGatewayProxyEvent, userPerms: UserPermissio
     // Save to DynamoDB
     const item: ClinicHoursData = {
       clinicId,
-      ...body,
-      timeZone: clinic.timeZone || 'America/New_York',
+      ...stripControlFields(populatedBody),
+      timeZone: clinic.timeZone || DEFAULT_TIME_ZONE,
       updatedAt: Date.now(),
       updatedBy: userPerms.email,
     };
@@ -179,8 +204,20 @@ async function updateHours(event: APIGatewayProxyEvent, userPerms: UserPermissio
   try {
     const body = parse(event.body);
 
+    const shouldPopulate = wantsSchedulePopulate(body, event);
+    let populatedBody = body;
+
+    if (shouldPopulate) {
+      try {
+        populatedBody = await populateClinicHoursFromSchedules(clinicId, body);
+      } catch (populateErr: any) {
+        console.error('Failed to populate hours from schedules API:', populateErr?.message || populateErr);
+        return err(502, 'Failed to populate clinic hours from schedules', event);
+      }
+    }
+
     // Validate hours data
-    const hoursData = validateHoursData(body);
+    const hoursData = validateHoursData(populatedBody);
     if (!hoursData.valid) {
       return err(400, hoursData.message, event);
     }
@@ -197,8 +234,8 @@ async function updateHours(event: APIGatewayProxyEvent, userPerms: UserPermissio
     // Update DynamoDB
     const item: ClinicHoursData = {
       clinicId,
-      ...body,
-      timeZone: clinic.timeZone || 'America/New_York',
+      ...stripControlFields(populatedBody),
+      timeZone: clinic.timeZone || DEFAULT_TIME_ZONE,
       updatedAt: Date.now(),
       updatedBy: userPerms.email,
     };
@@ -252,6 +289,122 @@ function validateHoursData(body: any): { valid: boolean; message: string } {
   }
 
   return { valid: true, message: 'Valid hours data' };
+}
+
+function wantsSchedulePopulate(body: any, event: APIGatewayProxyEvent): boolean {
+  const qs = event.queryStringParameters || {};
+  return Boolean(
+    body?.populateFromSchedules ||
+    body?.autoPopulate ||
+    qs.populateFromSchedules === 'true' ||
+    qs.autoPopulate === 'true'
+  );
+}
+
+async function populateClinicHoursFromSchedules(
+  clinicId: string,
+  body: any
+): Promise<any> {
+  if (!SCHEDULES_API_URL) {
+    throw new Error('SCHEDULES_API_URL is not configured');
+  }
+
+  try {
+    const { dateStart, dateEnd } = getCurrentWeekBounds();
+    const schedulesUrl = `${SCHEDULES_API_URL}/${clinicId}?dateStart=${dateStart}&dateEnd=${dateEnd}`;
+
+    const response = await axios.get(schedulesUrl);
+    const scheduleBlocks: ScheduleBlock[] = response.data.items || response.data || [];
+
+    const finalHours: Record<string, any> = {};
+    SCHEDULE_DAYS.forEach(day => {
+      finalHours[day] = { ...CLOSED_HOURS };
+    });
+
+    if (scheduleBlocks.length > 0) {
+      const grouped = scheduleBlocks.reduce((acc, block) => {
+        const dateKey = block.SchedDate;
+        if (!acc[dateKey]) acc[dateKey] = [];
+        acc[dateKey].push(block);
+        return acc;
+      }, {} as Record<string, ScheduleBlock[]>);
+
+      for (const date of Object.keys(grouped)) {
+        const dailyBlocks = grouped[date];
+        const { dayName, hours } = deriveDailyHours(dailyBlocks, date);
+        if (hours) {
+          finalHours[dayName] = hours;
+        }
+      }
+    }
+
+    // Merge derived hours over the inbound body so manual overrides are still possible
+    return { ...body, ...finalHours };
+  } catch (error: any) {
+    console.error('Failed to populate hours from schedules API:', error?.message || error);
+    throw new Error('Failed to fetch schedules to populate clinic hours');
+  }
+}
+
+function deriveDailyHours(
+  dailyScheduleBlocks: ScheduleBlock[],
+  date: string
+): { dayName: string; hours?: { open: string; close: string; closed?: boolean } } {
+  let minOpenTime: string | null = null;
+  let maxCloseTime: string | null = null;
+
+  const dayName = new Date(date).toLocaleString('en-us', { weekday: 'long' }).toLowerCase();
+
+  for (const block of dailyScheduleBlocks) {
+    const startTime = block.StartTime;
+    const stopTime = block.StopTime;
+    if (!startTime || !stopTime) continue;
+
+    if (minOpenTime === null || startTime < minOpenTime) {
+      minOpenTime = startTime;
+    }
+
+    if (maxCloseTime === null || stopTime > maxCloseTime) {
+      maxCloseTime = stopTime;
+    }
+  }
+
+  if (minOpenTime && maxCloseTime) {
+    return {
+      dayName,
+      hours: {
+        open: minOpenTime.substring(0, 5),
+        close: maxCloseTime.substring(0, 5),
+        closed: false,
+      },
+    };
+  }
+
+  return { dayName, hours: { ...CLOSED_HOURS } };
+}
+
+function getCurrentWeekBounds() {
+  const today = new Date();
+  const dayOfWeek = today.getDay();
+  const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - diffToMonday);
+
+  const saturday = new Date(monday);
+  saturday.setDate(monday.getDate() + 5);
+
+  const formatDate = (date: Date) => date.toISOString().split('T')[0];
+
+  return {
+    dateStart: formatDate(monday),
+    dateEnd: formatDate(saturday),
+  };
+}
+
+function stripControlFields(body: any) {
+  const { populateFromSchedules, autoPopulate, ...rest } = body || {};
+  return rest;
 }
 
 function parse(body: any): any {
