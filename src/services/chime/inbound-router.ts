@@ -5,6 +5,7 @@ import {
     CreateAttendeeCommand, 
     DeleteMeetingCommand
 } from '@aws-sdk/client-chime-sdk-meetings';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { randomUUID } from 'crypto';
 import { enrichCallContext, selectAgentsForCall } from './utils/agent-selection';
 import { buildBaseQueueItem, smartAssignCall } from './utils/parallel-assignment';
@@ -15,6 +16,7 @@ import { startMediaPipeline, stopMediaPipeline, isRealTimeTranscriptionEnabled }
 // It is NOT triggered by API Gateway. It is triggered by the Chime SDK SIP Media Application.
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const lambdaClient = new LambdaClient({});
 // Chime meetings must be created in a supported media region
 const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
 const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
@@ -27,6 +29,13 @@ const MAX_RING_AGENTS = Math.max(1, Number.parseInt(process.env.MAX_RING_AGENTS 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ENABLE_PARALLEL_ASSIGNMENT = process.env.ENABLE_PARALLEL_ASSIGNMENT !== 'false';
 const PARALLEL_AGENT_COUNT = Math.max(1, Number.parseInt(process.env.PARALLEL_AGENT_COUNT || '3', 10));
+
+// Voice AI configuration
+const VOICE_AI_LAMBDA_ARN = process.env.VOICE_AI_LAMBDA_ARN;
+const CLINIC_HOURS_TABLE = process.env.CLINIC_HOURS_TABLE;
+const AI_AGENTS_TABLE = process.env.AI_AGENTS_TABLE;
+const VOICE_CONFIG_TABLE = process.env.VOICE_CONFIG_TABLE;
+const ENABLE_AFTER_HOURS_AI = process.env.ENABLE_AFTER_HOURS_AI === 'true';
 
 function isValidTransactionId(value: unknown): value is string {
     return typeof value === 'string' && UUID_REGEX.test(value);
@@ -508,6 +517,204 @@ async function cleanupMeeting(meetingId: string) {
     }
 }
 
+// ========================================================================
+// VOICE AI INTEGRATION HELPERS
+// ========================================================================
+
+interface ClinicHours {
+    clinicId: string;
+    timezone: string;
+    hours: {
+        [day: string]: {
+            open: string;
+            close: string;
+            closed?: boolean;
+        };
+    };
+}
+
+/**
+ * Check if a clinic is currently open based on their configured hours
+ */
+async function isClinicOpen(clinicId: string): Promise<boolean> {
+    if (!CLINIC_HOURS_TABLE) {
+        console.warn('[isClinicOpen] CLINIC_HOURS_TABLE not configured - assuming open');
+        return true;
+    }
+
+    try {
+        const { Item } = await ddb.send(new GetCommand({
+            TableName: CLINIC_HOURS_TABLE,
+            Key: { clinicId },
+        }));
+
+        const clinicHours = Item as ClinicHours | undefined;
+        if (!clinicHours?.hours) {
+            // No hours defined = use default (always use AI for after-hours)
+            console.log('[isClinicOpen] No hours configured for clinic - defaulting to AI');
+            return false;
+        }
+
+        const now = new Date();
+        const timezone = clinicHours.timezone || 'America/New_York';
+        
+        // Get current time in clinic's timezone
+        const options: Intl.DateTimeFormatOptions = {
+            timeZone: timezone,
+            weekday: 'long',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+        };
+        
+        const formatter = new Intl.DateTimeFormat('en-US', options);
+        const parts = formatter.formatToParts(now);
+        
+        const dayOfWeek = parts.find(p => p.type === 'weekday')?.value?.toLowerCase() || '';
+        const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0');
+        const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0');
+        const currentTime = hour * 60 + minute; // Minutes since midnight
+
+        const todayHours = clinicHours.hours[dayOfWeek];
+        if (!todayHours || todayHours.closed) {
+            console.log('[isClinicOpen] Clinic is closed today', { clinicId, dayOfWeek });
+            return false;
+        }
+
+        const [openHour, openMin] = todayHours.open.split(':').map(Number);
+        const [closeHour, closeMin] = todayHours.close.split(':').map(Number);
+        const openTime = openHour * 60 + openMin;
+        const closeTime = closeHour * 60 + closeMin;
+
+        const isOpen = currentTime >= openTime && currentTime < closeTime;
+        console.log('[isClinicOpen] Clinic hours check', { 
+            clinicId, 
+            dayOfWeek, 
+            currentTime: `${hour}:${minute}`,
+            openTime: todayHours.open,
+            closeTime: todayHours.close,
+            isOpen 
+        });
+        
+        return isOpen;
+    } catch (error) {
+        console.error('[isClinicOpen] Error checking clinic hours:', error);
+        return true; // Default to open (human agents) if error
+    }
+}
+
+/**
+ * Get the configured voice AI agent for a clinic
+ */
+async function getVoiceAiAgentForClinic(clinicId: string): Promise<{ agentId: string; bedrockAgentId: string; bedrockAgentAliasId: string } | null> {
+    if (!VOICE_CONFIG_TABLE || !AI_AGENTS_TABLE) {
+        console.warn('[getVoiceAiAgentForClinic] Voice config tables not configured');
+        return null;
+    }
+
+    try {
+        // First check VoiceAgentConfig for explicitly configured agent
+        const { Item: config } = await ddb.send(new GetCommand({
+            TableName: VOICE_CONFIG_TABLE,
+            Key: { clinicId },
+        }));
+
+        let agentId = config?.inboundAgentId;
+
+        // If no explicit config, find default voice agent for clinic
+        if (!agentId) {
+            const { Items: agents } = await ddb.send(new QueryCommand({
+                TableName: AI_AGENTS_TABLE,
+                IndexName: 'ClinicIndex',
+                KeyConditionExpression: 'clinicId = :cid',
+                FilterExpression: 'isActive = :active AND isVoiceEnabled = :voice AND bedrockAgentStatus = :status',
+                ExpressionAttributeValues: {
+                    ':cid': clinicId,
+                    ':active': true,
+                    ':voice': true,
+                    ':status': 'PREPARED',
+                },
+                Limit: 1,
+            }));
+
+            if (agents && agents.length > 0) {
+                agentId = agents[0].agentId;
+            }
+        }
+
+        if (!agentId) {
+            console.log('[getVoiceAiAgentForClinic] No voice AI agent found for clinic', { clinicId });
+            return null;
+        }
+
+        // Get the full agent details
+        const { Item: agent } = await ddb.send(new GetCommand({
+            TableName: AI_AGENTS_TABLE,
+            Key: { agentId },
+        }));
+
+        if (!agent || !agent.bedrockAgentId || !agent.bedrockAgentAliasId || agent.bedrockAgentStatus !== 'PREPARED') {
+            console.warn('[getVoiceAiAgentForClinic] Agent not ready', { agentId, status: agent?.bedrockAgentStatus });
+            return null;
+        }
+
+        console.log('[getVoiceAiAgentForClinic] Found voice AI agent', { 
+            clinicId, 
+            agentId, 
+            agentName: agent.name 
+        });
+
+        return {
+            agentId: agent.agentId,
+            bedrockAgentId: agent.bedrockAgentId,
+            bedrockAgentAliasId: agent.bedrockAgentAliasId,
+        };
+    } catch (error) {
+        console.error('[getVoiceAiAgentForClinic] Error getting voice agent:', error);
+        return null;
+    }
+}
+
+/**
+ * Invoke the Voice AI Lambda to handle an AI call
+ */
+async function invokeVoiceAiHandler(event: {
+    eventType: 'NEW_CALL' | 'TRANSCRIPT' | 'CALL_ENDED' | 'DTMF';
+    callId: string;
+    clinicId: string;
+    callerNumber?: string;
+    transcript?: string;
+    dtmfDigits?: string;
+    sessionId?: string;
+    aiAgentId?: string;
+    purpose?: string;
+    customMessage?: string;
+}): Promise<{ action: string; text?: string; sessionId?: string }[]> {
+    if (!VOICE_AI_LAMBDA_ARN) {
+        console.error('[invokeVoiceAiHandler] VOICE_AI_LAMBDA_ARN not configured');
+        return [{ action: 'SPEAK', text: 'Voice AI is not configured. Please try again during business hours.' }];
+    }
+
+    try {
+        const response = await lambdaClient.send(new InvokeCommand({
+            FunctionName: VOICE_AI_LAMBDA_ARN,
+            InvocationType: 'RequestResponse',
+            Payload: Buffer.from(JSON.stringify(event)),
+        }));
+
+        if (response.Payload) {
+            const result = JSON.parse(Buffer.from(response.Payload).toString());
+            console.log('[invokeVoiceAiHandler] Voice AI response:', result);
+            return Array.isArray(result) ? result : [result];
+        }
+
+        return [{ action: 'CONTINUE' }];
+    } catch (error) {
+        console.error('[invokeVoiceAiHandler] Error invoking Voice AI:', error);
+        return [{ action: 'SPEAK', text: 'I apologize, but I am having trouble processing your request. Please try calling back during office hours.' }];
+    }
+}
+
 // --- Phone Number Parser ---
 // FIX #10: E.164 format validation regex
 // Valid E.164: + followed by 1-15 digits (country code + subscriber number)
@@ -649,6 +856,113 @@ export const handler = async (event: any): Promise<any> => {
                     const clinicId = clinics[0].clinicId;
                     console.log(`[NEW_INBOUND_CALL] Call is for clinic ${clinicId}`);
 
+                    // ========== AFTER-HOURS AI CHECK ==========
+                    // Check if clinic is closed and Voice AI should handle the call
+                    if (ENABLE_AFTER_HOURS_AI) {
+                        const clinicOpen = await isClinicOpen(clinicId);
+                        
+                        if (!clinicOpen) {
+                            console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED - checking for Voice AI agent`);
+                            
+                            const voiceAiAgent = await getVoiceAiAgentForClinic(clinicId);
+                            
+                            if (voiceAiAgent) {
+                                console.log(`[NEW_INBOUND_CALL] Routing after-hours call to Voice AI`, {
+                                    callId,
+                                    clinicId,
+                                    aiAgentId: voiceAiAgent.agentId,
+                                    callerNumber: fromPhoneNumber
+                                });
+
+                                // Invoke Voice AI handler for after-hours greeting
+                                const voiceAiResponse = await invokeVoiceAiHandler({
+                                    eventType: 'NEW_CALL',
+                                    callId,
+                                    clinicId,
+                                    callerNumber: fromPhoneNumber,
+                                    aiAgentId: voiceAiAgent.agentId,
+                                });
+
+                                // Build actions from Voice AI response
+                                const actions: any[] = [];
+                                
+                                for (const response of voiceAiResponse) {
+                                    switch (response.action) {
+                                        case 'SPEAK':
+                                            if (response.text) {
+                                                actions.push(buildSpeakAction(response.text));
+                                            }
+                                            break;
+                                        case 'HANG_UP':
+                                            actions.push({ Type: 'Hangup', Parameters: { SipResponseCode: '0' } });
+                                            break;
+                                        case 'TRANSFER':
+                                            // Transfer to voicemail or emergency line
+                                            actions.push(buildSpeakAction('Please hold while I transfer your call.'));
+                                            break;
+                                        case 'CONTINUE':
+                                            // Continue listening for user input
+                                            actions.push(buildPauseAction(500));
+                                            actions.push(buildPlayAudioAndGetDigitsAction('ai-listening-prompt.wav', 1, 30));
+                                            break;
+                                    }
+                                }
+
+                                // If no actions, default to AI greeting and listening
+                                if (actions.length === 0) {
+                                    actions.push(buildSpeakAction(
+                                        "Thank you for calling. Our office is currently closed, but I'm ToothFairy, your AI dental assistant. " +
+                                        "I can help you schedule appointments, answer questions, or take a message. How can I help you today?"
+                                    ));
+                                    actions.push(buildPauseAction(500));
+                                }
+
+                                // Store AI call session in queue for tracking
+                                try {
+                                    const { queuePosition, uniquePositionId } = generateUniqueCallPosition();
+                                    const now = Math.floor(Date.now() / 1000);
+                                    
+                                    await ddb.send(new PutCommand({
+                                        TableName: CALL_QUEUE_TABLE_NAME,
+                                        Item: {
+                                            clinicId,
+                                            callId,
+                                            phoneNumber: fromPhoneNumber,
+                                            queuePosition,
+                                            queueEntryTime: now,
+                                            queueEntryTimeIso: new Date().toISOString(),
+                                            uniquePositionId,
+                                            status: 'connected',
+                                            ttl: now + QUEUE_TIMEOUT,
+                                            direction: 'inbound',
+                                            isAiCall: true,
+                                            aiAgentId: voiceAiAgent.agentId,
+                                            aiSessionId: voiceAiResponse[0]?.sessionId || randomUUID(),
+                                        }
+                                    }));
+                                } catch (err) {
+                                    console.warn('[NEW_INBOUND_CALL] Failed to create AI call record:', err);
+                                }
+
+                                return buildActions(actions);
+                            } else {
+                                console.log(`[NEW_INBOUND_CALL] No Voice AI agent configured - using standard after-hours message`);
+                                // No AI agent configured - play standard closed message
+                                return buildActions([
+                                    buildSpeakAction(
+                                        "Thank you for calling. Our office is currently closed. " +
+                                        "Our regular hours are Monday through Friday, 9 AM to 5 PM. " +
+                                        "Please call back during business hours, or leave a message after the tone."
+                                    ),
+                                    buildPauseAction(500),
+                                    { Type: 'Hangup', Parameters: { SipResponseCode: '0' } }
+                                ]);
+                            }
+                        }
+                        
+                        console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is OPEN - proceeding with human agent routing`);
+                    }
+
                     // 2. Build call context (priority, VIP, etc.)
                     const callContext = await enrichCallContext(
                         ddb,
@@ -765,7 +1079,56 @@ export const handler = async (event: any): Promise<any> => {
                         return buildActions(actions);
                     }
 
-                    console.log(`[NEW_INBOUND_CALL] No available Online agents for clinic ${clinicId} or assignment failed. Adding to queue.`);
+                    console.log(`[NEW_INBOUND_CALL] No available Online agents for clinic ${clinicId} or assignment failed.`);
+
+                    // ========== AI FALLBACK WHEN NO AGENTS AVAILABLE ==========
+                    // If enabled, offer AI assistance while waiting
+                    if (ENABLE_AFTER_HOURS_AI) {
+                        const voiceAiAgent = await getVoiceAiAgentForClinic(clinicId);
+                        
+                        if (voiceAiAgent) {
+                            console.log(`[NEW_INBOUND_CALL] Offering AI assistance while no agents available`, {
+                                callId,
+                                clinicId,
+                                aiAgentId: voiceAiAgent.agentId
+                            });
+
+                            // Add to queue AND offer AI assistance
+                            try {
+                                const queueEntry = await addToQueue(clinicId, callId, fromPhoneNumber);
+                                
+                                // Update queue entry with AI info
+                                await ddb.send(new UpdateCommand({
+                                    TableName: CALL_QUEUE_TABLE_NAME,
+                                    Key: { clinicId, queuePosition: queueEntry.queuePosition },
+                                    UpdateExpression: 'SET aiAssistAvailable = :true, aiAgentId = :agentId',
+                                    ExpressionAttributeValues: {
+                                        ':true': true,
+                                        ':agentId': voiceAiAgent.agentId
+                                    }
+                                }));
+
+                                const queueInfo = await getQueuePosition(clinicId, callId);
+                                const waitMinutes = Math.ceil((queueInfo?.estimatedWaitTime || 120) / 60);
+
+                                return buildActions([
+                                    buildSpeakAction(
+                                        `All of our agents are currently assisting other customers. ` +
+                                        `Your estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
+                                        `While you wait, I can connect you with ToothFairy, our AI assistant, who can help with scheduling or answer common questions. ` +
+                                        `Press 1 to speak with the AI assistant, or stay on the line to wait for a human agent.`
+                                    ),
+                                    buildPlayAudioAndGetDigitsAction('hold-music-short.wav', 1, 15),
+                                ]);
+                            } catch (err) {
+                                console.warn('[NEW_INBOUND_CALL] Error setting up AI fallback:', err);
+                                // Continue to normal queue handling
+                            }
+                        }
+                    }
+
+                    // Standard queue handling
+                    console.log(`[NEW_INBOUND_CALL] Adding call to queue.`);
                     try {
                         const queueEntry = await addToQueue(clinicId, callId, fromPhoneNumber);
                         console.log('[NEW_INBOUND_CALL] Call added to queue', { clinicId, callId, queueEntry });
@@ -835,16 +1198,57 @@ export const handler = async (event: any): Promise<any> => {
 
                 }
 
-            // Case 2: A new call *from* our system (agent outbound call)
-            // This is triggered by outbound-call.ts
+            // Case 2: A new call *from* our system (agent outbound call OR AI outbound call)
+            // This is triggered by outbound-call.ts (human agent) or outbound-call-scheduler.ts (AI)
             case 'NEW_OUTBOUND_CALL': {
                 console.log(`[NEW_OUTBOUND_CALL] Initiated for call ${callId}`, args);
+                
+                const callType = args.callType;
+                const clinicId = args.fromClinicId || args.clinicId;
+                
+                // ========== AI OUTBOUND CALL ==========
+                // Scheduled AI-initiated call (e.g., appointment reminders)
+                if (callType === 'AiOutbound') {
+                    const { scheduledCallId, aiAgentId, patientName, purpose, customMessage } = args;
+                    console.log(`[NEW_OUTBOUND_CALL] AI Outbound call initiated`, {
+                        callId,
+                        scheduledCallId,
+                        aiAgentId,
+                        clinicId,
+                        purpose
+                    });
+
+                    // Update scheduled call record with SMA transaction ID
+                    if (scheduledCallId) {
+                        try {
+                            const SCHEDULED_CALLS_TABLE = process.env.SCHEDULED_CALLS_TABLE;
+                            if (SCHEDULED_CALLS_TABLE) {
+                                await ddb.send(new UpdateCommand({
+                                    TableName: SCHEDULED_CALLS_TABLE,
+                                    Key: { callId: scheduledCallId },
+                                    UpdateExpression: 'SET chimeTransactionId = :txId, smaInitiatedAt = :now',
+                                    ExpressionAttributeValues: {
+                                        ':txId': callId,
+                                        ':now': new Date().toISOString(),
+                                    }
+                                }));
+                            }
+                        } catch (err) {
+                            console.warn('[NEW_OUTBOUND_CALL] Failed to update scheduled call record:', err);
+                        }
+                    }
+
+                    // AI outbound calls just wait for CALL_ANSWERED to connect to Voice AI
+                    // Play ringback tone while waiting
+                    return buildActions([]);
+                }
+                
+                // ========== HUMAN AGENT OUTBOUND CALL ==========
                 // The outbound-call.ts Lambda has already created the call record
                 // and updated the agent's status to 'dialing'.
                 
                 const outboundAgentId = args.agentId;
                 const meetingId = args.meetingId;
-                const clinicId = args.fromClinicId;
                 
                 // Update agent presence with enhanced outbound call tracking
                 if (outboundAgentId) {
@@ -956,10 +1360,80 @@ export const handler = async (event: any): Promise<any> => {
                 return buildActions([]);
             }
             
-            // Case 3: Customer answers an outbound call
+            // Case 3: Customer answers an outbound call (human agent OR AI)
             case 'CALL_ANSWERED': {
                 console.log(`[CALL_ANSWERED] Received for call ${callId}.`, args);
 
+                // ========== AI OUTBOUND CALL ANSWERED ==========
+                // Check if this is an AI-initiated outbound call
+                if (args.callType === 'AiOutbound') {
+                    const { scheduledCallId, aiAgentId, clinicId, patientName, purpose, customMessage } = args;
+                    console.log(`[CALL_ANSWERED] AI Outbound call answered`, {
+                        callId,
+                        scheduledCallId,
+                        aiAgentId,
+                        clinicId,
+                        patientName,
+                        purpose
+                    });
+
+                    // Generate greeting based on purpose
+                    let greeting = "Hello";
+                    if (patientName) greeting = `Hello ${patientName}`;
+                    
+                    switch (purpose) {
+                        case 'appointment_reminder':
+                            greeting += ". This is ToothFairy, your AI dental assistant, calling with a reminder about your upcoming appointment.";
+                            break;
+                        case 'follow_up':
+                            greeting += ". This is ToothFairy from your dental office. I'm calling to check in on you after your recent visit.";
+                            break;
+                        case 'payment_reminder':
+                            greeting += ". This is ToothFairy from your dental office calling about your account.";
+                            break;
+                        case 'reengagement':
+                            greeting += ". This is ToothFairy from your dental office. It's been a while since your last visit, and we wanted to help you schedule an appointment.";
+                            break;
+                        default:
+                            if (customMessage) {
+                                greeting += `. ${customMessage}`;
+                            } else {
+                                greeting += ". This is ToothFairy, your AI dental assistant. How can I help you today?";
+                            }
+                    }
+
+                    // Update scheduled call record
+                    const SCHEDULED_CALLS_TABLE = process.env.SCHEDULED_CALLS_TABLE;
+                    if (SCHEDULED_CALLS_TABLE && scheduledCallId) {
+                        try {
+                            await ddb.send(new UpdateCommand({
+                                TableName: SCHEDULED_CALLS_TABLE,
+                                Key: { callId: scheduledCallId },
+                                UpdateExpression: 'SET #status = :status, answeredAt = :now, outcome = :outcome',
+                                ExpressionAttributeNames: { '#status': 'status' },
+                                ExpressionAttributeValues: {
+                                    ':status': 'in_progress',
+                                    ':now': new Date().toISOString(),
+                                    ':outcome': 'answered',
+                                }
+                            }));
+                        } catch (err) {
+                            console.warn('[CALL_ANSWERED] Failed to update scheduled call:', err);
+                        }
+                    }
+
+                    // Start AI conversation with greeting
+                    // The Voice AI handler will be invoked for subsequent speech
+                    return buildActions([
+                        buildSpeakAction(greeting),
+                        buildPauseAction(500),
+                        // Continue listening for response - will trigger DIGITS_RECEIVED or we need speech recognition
+                        // For now, add a prompt for user response
+                        buildSpeakAction("How can I assist you today? Press 1 to confirm your appointment, 2 to reschedule, or stay on the line to speak with me."),
+                    ]);
+                }
+
+                // ========== HUMAN AGENT OUTBOUND CALL ANSWERED ==========
                 // Query DDB to get call details for this TransactionId
                 const { Items: callRecords } = await ddb.send(new QueryCommand({
                     TableName: CALL_QUEUE_TABLE_NAME,
@@ -1564,6 +2038,119 @@ export const handler = async (event: any): Promise<any> => {
                 }
 
                 console.log(`[${eventType}] Call ${callId} cleanup completed.`);
+                return buildActions([]);
+            }
+
+            // Case 7b: Digits received from customer (e.g., AI interaction menu)
+            case 'DIGITS_RECEIVED':
+            case 'ACTION_SUCCESSFUL': {
+                // Check if this is a digit input response
+                const receivedDigits = event?.ActionData?.ReceivedDigits;
+                const actionType = event?.ActionData?.Type;
+                
+                if (actionType === 'PlayAudioAndGetDigits' && receivedDigits) {
+                    console.log(`[DIGITS_RECEIVED] Customer entered digits: ${receivedDigits} for call ${callId}`);
+
+                    // Get call record to check if AI assist is available
+                    const { Items: callRecords } = await ddb.send(new QueryCommand({
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        IndexName: 'callId-index',
+                        KeyConditionExpression: 'callId = :callId',
+                        ExpressionAttributeValues: { ':callId': callId }
+                    }));
+
+                    if (callRecords && callRecords[0]) {
+                        const callRecord = callRecords[0];
+                        const { clinicId, aiAgentId, aiAssistAvailable, isAiCall } = callRecord;
+
+                        // Customer pressed 1 to speak with AI
+                        if (receivedDigits === '1' && (aiAssistAvailable || isAiCall) && aiAgentId) {
+                            console.log(`[DIGITS_RECEIVED] Connecting customer to AI assistant`, { callId, aiAgentId });
+
+                            // Invoke Voice AI handler
+                            const voiceAiResponse = await invokeVoiceAiHandler({
+                                eventType: 'NEW_CALL',
+                                callId,
+                                clinicId,
+                                callerNumber: callRecord.phoneNumber,
+                                aiAgentId,
+                            });
+
+                            // Update call record to mark as AI-handled
+                            await ddb.send(new UpdateCommand({
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
+                                UpdateExpression: 'SET isAiCall = :true, aiConnectedAt = :now',
+                                ExpressionAttributeValues: {
+                                    ':true': true,
+                                    ':now': new Date().toISOString()
+                                }
+                            }));
+
+                            // Build actions from Voice AI response
+                            const actions: any[] = [];
+                            for (const response of voiceAiResponse) {
+                                if (response.action === 'SPEAK' && response.text) {
+                                    actions.push(buildSpeakAction(response.text));
+                                }
+                            }
+
+                            if (actions.length === 0) {
+                                actions.push(buildSpeakAction(
+                                    "Hi! I'm ToothFairy, your AI dental assistant. How can I help you today?"
+                                ));
+                            }
+
+                            actions.push(buildPauseAction(500));
+                            return buildActions(actions);
+                        }
+
+                        // Customer pressed 2 to stay on hold (or any other digit)
+                        if (receivedDigits === '2' || !aiAssistAvailable) {
+                            console.log(`[DIGITS_RECEIVED] Customer chose to wait for human agent`, { callId });
+                            return buildActions([
+                                buildSpeakAction("No problem. Please stay on the line and an agent will be with you shortly."),
+                                buildPauseAction(500),
+                                buildPlayAudioAction('hold-music.wav', 999)
+                            ]);
+                        }
+
+                        // For AI calls, handle DTMF as user input
+                        if (isAiCall && aiAgentId) {
+                            const voiceAiResponse = await invokeVoiceAiHandler({
+                                eventType: 'DTMF',
+                                callId,
+                                clinicId,
+                                dtmfDigits: receivedDigits,
+                                sessionId: callRecord.aiSessionId,
+                                aiAgentId,
+                            });
+
+                            const actions: any[] = [];
+                            for (const response of voiceAiResponse) {
+                                if (response.action === 'SPEAK' && response.text) {
+                                    actions.push(buildSpeakAction(response.text));
+                                } else if (response.action === 'HANG_UP') {
+                                    actions.push(buildSpeakAction("Thank you for calling. Goodbye!"));
+                                    actions.push({ Type: 'Hangup', Parameters: { SipResponseCode: '0' } });
+                                }
+                            }
+
+                            if (actions.length === 0) {
+                                actions.push(buildPauseAction(100));
+                            }
+
+                            return buildActions(actions);
+                        }
+                    }
+                }
+
+                // For other ACTION_SUCCESSFUL events, just acknowledge
+                if (eventType === 'ACTION_SUCCESSFUL') {
+                    console.log(`[ACTION_SUCCESSFUL] Action completed for call ${callId}`, { actionType });
+                    return buildActions([]);
+                }
+
                 return buildActions([]);
             }
 

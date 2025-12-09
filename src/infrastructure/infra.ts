@@ -233,18 +233,61 @@ const CHATBOT_STACK_NAME = 'TodaysDentalInsightsChatbotN1';
 // The conversations table name follows the pattern: ${stackName}-ConversationN1
 const CHATBOT_CONVERSATIONS_TABLE_NAME = `${CHATBOT_STACK_NAME}-ConversationN1`;
 
+// Define AI Agents stack name for consistent cross-stack references
+const AI_AGENTS_STACK_NAME = 'TodaysDentalInsightsAiAgentsN1';
+
 // ** ANALYTICS STACK INSTANTIATION (BEFORE CHIME) **
-// CRITICAL FIX: Pass chimeStackName so AnalyticsStack can derive table names
-// This resolves the circular dependency where AnalyticsStack needs ChimeStack table names
-// but is created before ChimeStack
+// ========================================
+// NOTE ON CIRCULAR DEPENDENCY RESOLUTION:
+// ========================================
+// There's a 3-way dependency: AnalyticsStack <-> ChimeStack <-> AiAgentsStack
+// 
+// Solution: Deploy in phases
+// Phase 1 (first deploy): AnalyticsStack (no Voice AI) -> ChimeStack -> AiAgentsStack
+// Phase 2 (second deploy): Update AnalyticsStack with Voice AI tables from AiAgentsStack
+//
+// For Phase 1, ENABLE_VOICE_AI_ANALYTICS should be false
+// For Phase 2, set ENABLE_VOICE_AI_ANALYTICS=true after AiAgentsStack is deployed
+
+const ENABLE_VOICE_AI_ANALYTICS = process.env.ENABLE_VOICE_AI_ANALYTICS === 'true';
+
 const analyticsStack = new AnalyticsStack(app, 'TodaysDentalInsightsAnalyticsN1', {
   env,
   jwtSecret: coreStack.jwtSecretValue,
   region: env.region || process.env.AWS_REGION || 'us-east-1',
   supervisorEmails: [], // Add supervisor emails for alerts
-  // CRITICAL FIX: Pass ChimeStack name for derived table name references
+  // ========================================
+  // CHIME STACK INTEGRATION
+  // ========================================
+  // Pass ChimeStack name for deriving table references
+  // NOTE: Explicit table names will be passed after ChimeStack is created
+  // (see post-ChimeStack configuration below)
   chimeStackName: CHIME_STACK_NAME,
+  // Table names will be dynamically imported from ChimeStack exports
+  // This avoids fragile hardcoded table name derivation
+  
+  // ========================================
+  // VOICE AI INTEGRATION (Phase 2 Deployment)
+  // ========================================
+  // Requires AiAgentsStack to be deployed first
+  // Set ENABLE_VOICE_AI_ANALYTICS=true after initial deployment
+  voiceSessionsTableName: ENABLE_VOICE_AI_ANALYTICS 
+    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceSessionsTableName`) 
+    : undefined,
+  voiceSessionsTableArn: ENABLE_VOICE_AI_ANALYTICS 
+    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceSessionsTableArn`) 
+    : undefined,
+  aiAgentsTableName: ENABLE_VOICE_AI_ANALYTICS 
+    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableName`) 
+    : undefined,
+  aiAgentsTableArn: ENABLE_VOICE_AI_ANALYTICS 
+    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableArn`) 
+    : undefined,
 });
+
+// Flag to enable after-hours AI routing (requires AiAgentsStack to be deployed first)
+// Set to true after initial deployment of AiAgentsStack
+const ENABLE_AFTER_HOURS_AI = process.env.ENABLE_AFTER_HOURS_AI === 'true';
 
 const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
  env,
@@ -256,6 +299,15 @@ const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
  enableCallRecording: true, // Enable call recording by default
  recordingRetentionDays: 2555, // ~7 years for compliance
  medicalVocabularyName: analyticsStack.medicalVocabularyName,
+ // Voice AI integration (from AiAgentsStack)
+ // NOTE: Set ENABLE_AFTER_HOURS_AI=true after AiAgentsStack is deployed
+ enableAfterHoursAi: ENABLE_AFTER_HOURS_AI,
+ voiceAiLambdaArn: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceAiFunctionArn`) : undefined,
+ clinicHoursTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-ClinicHoursTableName`) : undefined,
+ aiAgentsTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableName`) : undefined,
+ voiceConfigTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceConfigTableName`) : undefined,
+ scheduledCallsTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-ScheduledCallsTableName`) : undefined,
+ // NOTE: ChimeStack creates the recordings bucket - it will be shared with AiAgentsStack
 });
 // ** COMMUNICATIONS STACK INSTANTIATION **
 const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommN1', {
@@ -373,9 +425,42 @@ const clinicImagesStack = new ClinicImagesStack(app, 'TodaysDentalInsightsClinic
 });
 
 // AI Agents Stack - Customizable AI agents with 3-level prompt system
-const aiAgentsStack = new AiAgentsStack(app, 'TodaysDentalInsightsAiAgentsN1', {
+// Integrates with existing Chime infrastructure for voice AI
+// CRITICAL FIX: Uses shared CallAnalytics table from AnalyticsStack to avoid data fragmentation
+const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   env,
+  // ========================================
+  // CHIME STACK INTEGRATION (REQUIRED)
+  // ========================================
+  // CRITICAL FIX: Pass all required props explicitly to avoid fragile hardcoded defaults
+  clinicsTableName: chimeStack.clinicsTable.tableName,
+  clinicsTableArn: chimeStack.clinicsTable.tableArn,
+  // SMA ID Map for initiating outbound calls via correct SIP Media Application
+  smaIdMap: cdk.Fn.importValue(`${CHIME_STACK_NAME}-SmaIdMap`),
+  chimeStackName: CHIME_STACK_NAME,
+  
+  // ========================================
+  // UNIFIED ANALYTICS (REQUIRED)
+  // ========================================
+  // Use shared CallAnalytics table from AnalyticsStack
+  // This ensures Voice AI call records go to the same table as Chime stream records,
+  // making dashboards and reconciliation jobs see all data in one place.
+  // Schema: PK=callId (String), SK=timestamp (Number)
+  callAnalyticsTableName: analyticsStack.analyticsTable.tableName,
+  callAnalyticsTableArn: analyticsStack.analyticsTable.tableArn,
+  
+  // ========================================
+  // SHARED RECORDINGS BUCKET
+  // ========================================
+  // Use ChimeStack's recordings bucket to avoid data fragmentation
+  // between AI calls and human calls
+  sharedRecordingsBucketName: chimeStack.recordingsBucket?.bucketName,
+  sharedRecordingsBucketArn: chimeStack.recordingsBucket?.bucketArn,
 });
+
+// Add dependencies so AI Agents stack deploys after Chime and Analytics
+aiAgentsStack.addDependency(chimeStack);
+aiAgentsStack.addDependency(analyticsStack);
 
 // Dental Software Stack - RDS MySQL database and S3 for clinic management
 // const dentalSoftwareStack = new DentalSoftwareStack(app, 'TodaysDentalInsightsDentalSoftwareN1', {
