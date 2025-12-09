@@ -32,6 +32,7 @@ import { MarketingStack } from './stacks/marketing-stack';
 import { CommStack } from './stacks/comm-stack'; // <-- NEW IMPORT ADDED HERE
 import { AnalyticsStack } from './stacks/analytics-stack';
 import { ClinicImagesStack } from './stacks/clinic-images-stack';
+import { AiAgentsStack } from './stacks/ai-agents-stack';
 // import { DentalSoftwareStack } from './stacks/dental-software-stack';
 
 const app = new cdk.App();
@@ -371,6 +372,11 @@ const clinicImagesStack = new ClinicImagesStack(app, 'TodaysDentalInsightsClinic
   env,
 });
 
+// AI Agents Stack - Customizable AI agents with 3-level prompt system
+const aiAgentsStack = new AiAgentsStack(app, 'TodaysDentalInsightsAiAgentsN1', {
+  env,
+});
+
 // Dental Software Stack - RDS MySQL database and S3 for clinic management
 // const dentalSoftwareStack = new DentalSoftwareStack(app, 'TodaysDentalInsightsDentalSoftwareN1', {
 //   env,
@@ -416,6 +422,7 @@ schedulesStack.addDependency(openDentalStack); // Explicit - uses server ID
 callbackStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 patientPortalApptTypesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 clinicImagesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+aiAgentsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 // dentalSoftwareStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 // patientPortalStack.addDependency(coreStack); // Note: PatientPortalStack might not import it - verify
 patientPortalStack.addDependency(openDentalStack); // Explicit - uses SFTP resources

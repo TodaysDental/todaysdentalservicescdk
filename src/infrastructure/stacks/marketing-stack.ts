@@ -35,11 +35,11 @@ export class MarketingStack extends Stack {
     // 3. Lambdas
     const envVars = {
         MARKETING_CONFIG_TABLE: this.marketingConfigTable.tableName,
-        AYRSHARE_API_KEY: process.env.AYRSHARE_API_KEY || '',
+        AYRSHARE_API_KEY: 'A7DD2620-39C046C1-ABAAA24C-64B16202',
     };
 
     const managerFn = new lambdaNode.NodejsFunction(this, 'MarketingManagerFn', {
-      entry: path.join(__dirname, '..', 'services', 'marketing', 'manager.ts'),
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'manager.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
@@ -47,7 +47,7 @@ export class MarketingStack extends Stack {
     });
 
     const publisherFn = new lambdaNode.NodejsFunction(this, 'MarketingPublisherFn', {
-      entry: path.join(__dirname, '..', 'services', 'marketing', 'publisher.ts'),
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'publisher.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(60),
@@ -62,7 +62,7 @@ export class MarketingStack extends Stack {
     this.api = new apigw.RestApi(this, 'MarketingApi', {
       restApiName: 'MarketingApi',
       defaultCorsPreflightOptions: {
-        allowOrigins: ['https://todaysdentalinsights.com', 'http://localhost:3000', 'null'], // 'null' for local html testing
+        allowOrigins: ['https://todaysdentalinsights.com'], // 'null' for local html testing
         allowMethods: apigw.Cors.ALL_METHODS,
         allowHeaders: ['Content-Type', 'Authorization'],
       },
