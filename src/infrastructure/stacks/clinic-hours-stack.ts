@@ -203,10 +203,6 @@ export class ClinicHoursStack extends Stack {
     // ================================================================
     
     const allClinicIds = (clinicsData as any[]).map(c => c.clinicId).join(',');
-    
-    // UPDATED: We only provide the BASE URL here. 
-    // The Lambda (clinicHours.ts) appends /opendental/api/clinic/{id}/schedules...
-    const schedulesApiBaseUrl = 'https://apig.todaysdentalinsights.com';
 
     const hoursSchedulerFn = new lambdaNode.NodejsFunction(this, 'HoursSchedulerFn', {
       // Point to the MERGED file
@@ -227,8 +223,7 @@ export class ClinicHoursStack extends Stack {
       environment: {
         NODE_OPTIONS: '--enable-source-maps',
         CLINIC_HOURS_TABLE: this.clinicHoursTable.tableName,
-        // Pass the base URL; the Lambda constructs the full path
-        SCHEDULES_API_URL: schedulesApiBaseUrl, 
+        // Clinic IDs for the scheduler - credentials are bundled from clinics.json
         ALL_CLINIC_IDS: allClinicIds,
       },
     });

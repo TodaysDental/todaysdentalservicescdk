@@ -1,0 +1,4328 @@
+TABLE_NAME	COLUMN_NAME	DATA_TYPE	IS_NULLABLE	COLUMN_KEY	Parent_Table	Parent_Column
+account	AccountNum	bigint	NO	PRI		
+account	Description	varchar	NO			
+account	AcctType	tinyint	NO			
+account	BankNumber	varchar	NO			
+account	Inactive	tinyint	NO			
+account	AccountColor	int	NO			
+account	IsRetainedEarnings	tinyint	NO			
+accountingautopay	AccountingAutoPayNum	bigint	NO	PRI		
+accountingautopay	PayType	bigint	NO			
+accountingautopay	PickList	varchar	YES			
+activeinstance	ActiveInstanceNum	bigint	NO	PRI		
+activeinstance	ComputerNum	bigint	NO	MUL		
+activeinstance	UserNum	bigint	NO	MUL		
+activeinstance	ProcessId	bigint	NO	MUL		
+activeinstance	DateTimeLastActive	datetime	NO			
+activeinstance	DateTRecorded	datetime	NO			
+activeinstance	ConnectionType	tinyint	NO			
+adjustment	AdjNum	bigint	NO	PRI		
+adjustment	AdjDate	date	NO	MUL		
+adjustment	AdjAmt	double	NO			
+adjustment	PatNum	bigint	NO	MUL		
+adjustment	AdjType	bigint	NO			
+adjustment	ProvNum	bigint	NO	MUL		
+adjustment	AdjNote	text	YES			
+adjustment	ProcDate	date	NO			
+adjustment	ProcNum	bigint	NO	MUL		
+adjustment	DateEntry	date	NO			
+adjustment	ClinicNum	bigint	NO	MUL		
+adjustment	StatementNum	bigint	NO	MUL		
+adjustment	SecUserNumEntry	bigint	NO	MUL		
+adjustment	SecDateTEdit	timestamp	NO	MUL		
+adjustment	TaxTransID	bigint	NO	MUL		
+alertcategory	AlertCategoryNum	bigint	NO	PRI		
+alertcategory	IsHQCategory	tinyint	NO			
+alertcategory	InternalName	varchar	NO			
+alertcategory	Description	varchar	NO			
+alertcategorylink	AlertCategoryLinkNum	bigint	NO	PRI		
+alertcategorylink	AlertCategoryNum	bigint	NO	MUL		
+alertcategorylink	AlertType	tinyint	NO			
+alertitem	AlertItemNum	bigint	NO	PRI		
+alertitem	ClinicNum	bigint	NO	MUL		
+alertitem	Description	varchar	NO			
+alertitem	Type	tinyint	NO			
+alertitem	Severity	tinyint	NO			
+alertitem	Actions	tinyint	NO			
+alertitem	FormToOpen	tinyint	NO			
+alertitem	FKey	bigint	NO	MUL		
+alertitem	ItemValue	varchar	NO			
+alertitem	UserNum	bigint	NO	MUL		
+alertitem	SecDateTEntry	datetime	NO			
+alertread	AlertReadNum	bigint	NO	PRI		
+alertread	AlertItemNum	bigint	NO	MUL		
+alertread	UserNum	bigint	NO	MUL		
+alertsub	AlertSubNum	bigint	NO	PRI		
+alertsub	UserNum	bigint	NO	MUL		
+alertsub	ClinicNum	bigint	NO	MUL		
+alertsub	Type	tinyint	NO			
+alertsub	AlertCategoryNum	bigint	NO	MUL		
+allergy	AllergyNum	bigint	NO	PRI		
+allergy	AllergyDefNum	bigint	NO	MUL		
+allergy	PatNum	bigint	NO	MUL		
+allergy	Reaction	varchar	NO			
+allergy	StatusIsActive	tinyint	NO			
+allergy	DateTStamp	timestamp	NO			
+allergy	DateAdverseReaction	date	NO			
+allergy	SnomedReaction	varchar	NO			
+allergydef	AllergyDefNum	bigint	NO	PRI		
+allergydef	Description	varchar	NO			
+allergydef	IsHidden	tinyint	NO			
+allergydef	DateTStamp	timestamp	NO			
+allergydef	SnomedType	tinyint	YES			
+allergydef	MedicationNum	bigint	NO	MUL		
+allergydef	UniiCode	varchar	NO			
+apikey	APIKeyNum	bigint	NO	PRI		
+apikey	CustApiKey	varchar	NO			
+apikey	DevName	varchar	NO			
+apisubscription	ApiSubscriptionNum	bigint	NO	PRI		
+apisubscription	EndPointUrl	varchar	NO			
+apisubscription	Workstation	varchar	NO			
+apisubscription	CustomerKey	varchar	NO			
+apisubscription	WatchTable	varchar	NO			
+apisubscription	PollingSeconds	int	NO	MUL		
+apisubscription	UiEventType	varchar	NO			
+apisubscription	DateTimeStart	datetime	NO			
+apisubscription	DateTimeStop	datetime	NO			
+apisubscription	Note	varchar	NO			
+appointment	AptNum	bigint	NO	PRI		
+appointment	PatNum	bigint	NO	MUL		
+appointment	AptStatus	tinyint	NO	MUL		
+appointment	Pattern	varchar	YES			
+appointment	Confirmed	bigint	NO			
+appointment	TimeLocked	tinyint	NO			
+appointment	Op	bigint	NO	MUL		
+appointment	Note	text	YES			
+appointment	ProvNum	bigint	NO	MUL		
+appointment	ProvHyg	bigint	NO	MUL		
+appointment	AptDateTime	datetime	NO	MUL		
+appointment	NextAptNum	bigint	NO	MUL		
+appointment	UnschedStatus	bigint	NO	MUL		
+appointment	IsNewPatient	tinyint	NO			
+appointment	ProcDescript	text	YES			
+appointment	Assistant	bigint	NO			
+appointment	ClinicNum	bigint	NO	MUL		
+appointment	IsHygiene	tinyint	NO			
+appointment	DateTStamp	timestamp	NO	MUL		
+appointment	DateTimeArrived	datetime	NO	MUL		
+appointment	DateTimeSeated	datetime	NO			
+appointment	DateTimeDismissed	datetime	NO			
+appointment	InsPlan1	bigint	NO	MUL		
+appointment	InsPlan2	bigint	NO	MUL		
+appointment	DateTimeAskedToArrive	datetime	NO			
+appointment	ProcsColored	text	NO			
+appointment	ColorOverride	int	NO			
+appointment	AppointmentTypeNum	bigint	NO	MUL		
+appointment	SecUserNumEntry	bigint	NO	MUL		
+appointment	SecDateTEntry	datetime	NO			
+appointment	Priority	tinyint	NO	MUL		
+appointment	ProvBarText	varchar	NO			
+appointment	PatternSecondary	varchar	NO			
+appointment	SecurityHash	varchar	NO			
+appointment	ItemOrderPlanned	int	NO			
+appointmentrule	AppointmentRuleNum	bigint	NO	PRI		
+appointmentrule	RuleDesc	varchar	YES			
+appointmentrule	CodeStart	varchar	YES			
+appointmentrule	CodeEnd	varchar	YES			
+appointmentrule	IsEnabled	tinyint	NO			
+appointmenttype	AppointmentTypeNum	bigint	NO	PRI		
+appointmenttype	AppointmentTypeName	varchar	NO			
+appointmenttype	AppointmentTypeColor	int	NO			
+appointmenttype	ItemOrder	int	NO			
+appointmenttype	IsHidden	tinyint	NO			
+appointmenttype	Pattern	varchar	NO			
+appointmenttype	CodeStr	varchar	NO			
+appointmenttype	CodeStrRequired	varchar	NO			
+appointmenttype	RequiredProcCodesNeeded	tinyint	NO			
+appointmenttype	BlockoutTypes	varchar	NO			
+apptfield	ApptFieldNum	bigint	NO	PRI		
+apptfield	AptNum	bigint	NO	MUL		
+apptfield	FieldName	varchar	NO			
+apptfield	FieldValue	text	NO			
+apptfielddef	ApptFieldDefNum	bigint	NO	PRI		
+apptfielddef	FieldName	varchar	NO			
+apptfielddef	FieldType	tinyint	NO			
+apptfielddef	PickList	text	NO			
+apptfielddef	ItemOrder	int	NO			
+apptgeneralmessagesent	ApptGeneralMessageSentNum	bigint	NO	PRI		
+apptgeneralmessagesent	ApptNum	bigint	NO	MUL		
+apptgeneralmessagesent	PatNum	bigint	NO	MUL		
+apptgeneralmessagesent	ClinicNum	bigint	NO	MUL		
+apptgeneralmessagesent	DateTimeEntry	datetime	NO			
+apptgeneralmessagesent	TSPrior	bigint	NO			
+apptgeneralmessagesent	ApptReminderRuleNum	bigint	NO	MUL		
+apptgeneralmessagesent	SendStatus	tinyint	NO			
+apptgeneralmessagesent	ApptDateTime	datetime	NO			
+apptgeneralmessagesent	MessageType	tinyint	NO			
+apptgeneralmessagesent	MessageFk	bigint	NO	MUL		
+apptgeneralmessagesent	DateTimeSent	datetime	NO			
+apptgeneralmessagesent	ResponseDescript	text	NO			
+apptnewpatthankyousent	ApptNewPatThankYouSentNum	bigint	NO	PRI		
+apptnewpatthankyousent	ApptNum	bigint	NO	MUL		
+apptnewpatthankyousent	ApptDateTime	datetime	NO			
+apptnewpatthankyousent	ApptSecDateTEntry	datetime	NO			
+apptnewpatthankyousent	TSPrior	bigint	NO	MUL		
+apptnewpatthankyousent	ApptReminderRuleNum	bigint	NO	MUL		
+apptnewpatthankyousent	ClinicNum	bigint	NO	MUL		
+apptnewpatthankyousent	PatNum	bigint	NO	MUL		
+apptnewpatthankyousent	ResponseDescript	text	NO			
+apptnewpatthankyousent	DateTimeNewPatThankYouTransmit	datetime	NO			
+apptnewpatthankyousent	ShortGUID	varchar	NO			
+apptnewpatthankyousent	SendStatus	tinyint	NO			
+apptnewpatthankyousent	MessageType	tinyint	NO			
+apptnewpatthankyousent	MessageFk	bigint	NO	MUL		
+apptnewpatthankyousent	DateTimeEntry	datetime	NO			
+apptnewpatthankyousent	DateTimeSent	datetime	NO			
+apptreminderrule	ApptReminderRuleNum	bigint	NO	PRI		
+apptreminderrule	TypeCur	tinyint	NO			
+apptreminderrule	TSPrior	bigint	NO	MUL		
+apptreminderrule	SendOrder	varchar	NO			
+apptreminderrule	IsSendAll	tinyint	NO			
+apptreminderrule	TemplateSMS	text	NO			
+apptreminderrule	TemplateEmailSubject	text	NO			
+apptreminderrule	TemplateEmail	text	NO			
+apptreminderrule	ClinicNum	bigint	NO	MUL		
+apptreminderrule	TemplateSMSAggShared	text	NO			
+apptreminderrule	TemplateSMSAggPerAppt	text	NO			
+apptreminderrule	TemplateEmailSubjAggShared	text	NO			
+apptreminderrule	TemplateEmailAggShared	text	NO			
+apptreminderrule	TemplateEmailAggPerAppt	text	NO			
+apptreminderrule	DoNotSendWithin	bigint	NO			
+apptreminderrule	IsEnabled	tinyint	NO			
+apptreminderrule	TemplateAutoReply	text	NO			
+apptreminderrule	TemplateAutoReplyAgg	text	NO			
+apptreminderrule	IsAutoReplyEnabled	tinyint	NO			
+apptreminderrule	Language	varchar	NO			
+apptreminderrule	TemplateComeInMessage	text	NO			
+apptreminderrule	EmailTemplateType	varchar	NO			
+apptreminderrule	AggEmailTemplateType	varchar	NO			
+apptreminderrule	IsSendForMinorsBirthday	tinyint	NO			
+apptreminderrule	EmailHostingTemplateNum	bigint	NO	MUL		
+apptreminderrule	MinorAge	int	NO			
+apptreminderrule	TemplateFailureAutoReply	text	NO			
+apptreminderrule	SendMultipleInvites	tinyint	NO			
+apptreminderrule	TimeSpanMultipleInvites	bigint	NO			
+apptremindersent	ApptReminderSentNum	bigint	NO	PRI		
+apptremindersent	ApptNum	bigint	NO	MUL		
+apptremindersent	ApptDateTime	datetime	NO			
+apptremindersent	DateTimeSent	datetime	NO			
+apptremindersent	TSPrior	bigint	NO	MUL		
+apptremindersent	ApptReminderRuleNum	bigint	NO	MUL		
+apptremindersent	PatNum	bigint	NO	MUL		
+apptremindersent	ClinicNum	bigint	NO	MUL		
+apptremindersent	SendStatus	tinyint	NO			
+apptremindersent	MessageType	tinyint	NO			
+apptremindersent	MessageFk	bigint	NO	MUL		
+apptremindersent	DateTimeEntry	datetime	NO			
+apptremindersent	ResponseDescript	text	NO			
+apptthankyousent	ApptThankYouSentNum	bigint	NO	PRI		
+apptthankyousent	ApptNum	bigint	NO	MUL		
+apptthankyousent	ApptDateTime	datetime	NO	MUL		
+apptthankyousent	ApptSecDateTEntry	datetime	NO			
+apptthankyousent	TSPrior	bigint	NO	MUL		
+apptthankyousent	ApptReminderRuleNum	bigint	NO	MUL		
+apptthankyousent	ClinicNum	bigint	NO	MUL		
+apptthankyousent	PatNum	bigint	NO	MUL		
+apptthankyousent	ResponseDescript	text	NO			
+apptthankyousent	DateTimeThankYouTransmit	datetime	NO			
+apptthankyousent	ShortGUID	varchar	NO			
+apptthankyousent	SendStatus	tinyint	NO			
+apptthankyousent	DoNotResend	tinyint	NO			
+apptthankyousent	MessageType	tinyint	NO			
+apptthankyousent	MessageFk	bigint	NO	MUL		
+apptthankyousent	DateTimeEntry	datetime	NO			
+apptthankyousent	DateTimeSent	datetime	NO			
+apptview	ApptViewNum	bigint	NO	PRI		
+apptview	Description	varchar	YES			
+apptview	ItemOrder	smallint	NO			
+apptview	RowsPerIncr	tinyint	NO			
+apptview	OnlyScheduledProvs	tinyint	NO			
+apptview	OnlySchedBeforeTime	time	NO			
+apptview	OnlySchedAfterTime	time	NO			
+apptview	StackBehavUR	tinyint	NO			
+apptview	StackBehavLR	tinyint	NO			
+apptview	ClinicNum	bigint	NO	MUL		
+apptview	ApptTimeScrollStart	time	NO			
+apptview	IsScrollStartDynamic	tinyint	NO			
+apptview	IsApptBubblesDisabled	tinyint	NO			
+apptview	WidthOpMinimum	smallint	NO			
+apptview	WaitingRmName	tinyint	NO			
+apptview	OnlyScheduledProvDays	tinyint	NO			
+apptviewitem	ApptViewItemNum	bigint	NO	PRI		
+apptviewitem	ApptViewNum	bigint	NO			
+apptviewitem	OpNum	bigint	NO	MUL		
+apptviewitem	ProvNum	bigint	NO	MUL		
+apptviewitem	ElementDesc	varchar	YES			
+apptviewitem	ElementOrder	tinyint	NO			
+apptviewitem	ElementColor	int	NO			
+apptviewitem	ElementAlignment	tinyint	NO			
+apptviewitem	ApptFieldDefNum	bigint	NO			
+apptviewitem	PatFieldDefNum	bigint	NO			
+apptviewitem	IsMobile	tinyint	NO			
+asapcomm	AsapCommNum	bigint	NO	PRI		
+asapcomm	FKey	bigint	NO	MUL		
+asapcomm	FKeyType	tinyint	NO			
+asapcomm	ScheduleNum	bigint	NO	MUL		
+asapcomm	PatNum	bigint	NO	MUL		
+asapcomm	ClinicNum	bigint	NO	MUL		
+asapcomm	ShortGUID	varchar	NO	MUL		
+asapcomm	DateTimeEntry	datetime	NO			
+asapcomm	DateTimeExpire	datetime	NO			
+asapcomm	DateTimeSmsScheduled	datetime	NO			
+asapcomm	SmsSendStatus	tinyint	NO	MUL		
+asapcomm	EmailSendStatus	tinyint	NO	MUL		
+asapcomm	DateTimeSmsSent	datetime	NO			
+asapcomm	DateTimeEmailSent	datetime	NO			
+asapcomm	EmailMessageNum	bigint	NO	MUL		
+asapcomm	ResponseStatus	tinyint	NO			
+asapcomm	DateTimeOrig	datetime	NO			
+asapcomm	TemplateText	text	NO			
+asapcomm	TemplateEmail	text	NO			
+asapcomm	TemplateEmailSubj	varchar	NO			
+asapcomm	Note	text	NO			
+asapcomm	GuidMessageToMobile	text	NO			
+asapcomm	EmailTemplateType	varchar	NO			
+autocode	AutoCodeNum	bigint	NO	PRI		
+autocode	Description	varchar	YES			
+autocode	IsHidden	tinyint	NO			
+autocode	LessIntrusive	tinyint	NO			
+autocodecond	AutoCodeCondNum	bigint	NO	PRI		
+autocodecond	AutoCodeItemNum	bigint	NO			
+autocodecond	Cond	tinyint	NO			
+autocodeitem	AutoCodeItemNum	bigint	NO	PRI		
+autocodeitem	AutoCodeNum	bigint	NO			
+autocodeitem	OldCode	varchar	NO			
+autocodeitem	CodeNum	bigint	NO			
+autocommexcludedate	AutoCommExcludeDateNum	bigint	NO	PRI		
+autocommexcludedate	ClinicNum	bigint	NO			
+autocommexcludedate	DateExclude	datetime	NO			
+automation	AutomationNum	bigint	NO	PRI		
+automation	Description	text	NO			
+automation	Autotrigger	tinyint	NO			
+automation	ProcCodes	text	NO			
+automation	AutoAction	tinyint	NO			
+automation	SheetDefNum	bigint	NO			
+automation	CommType	bigint	NO			
+automation	MessageContent	text	NO			
+automation	AptStatus	tinyint	NO			
+automation	AppointmentTypeNum	bigint	NO	MUL		
+automation	PatStatus	tinyint	NO			
+automationcondition	AutomationConditionNum	bigint	NO	PRI		
+automationcondition	AutomationNum	bigint	NO	MUL		
+automationcondition	CompareField	tinyint	NO			
+automationcondition	Comparison	tinyint	NO			
+automationcondition	CompareString	varchar	NO			
+autonote	AutoNoteNum	bigint	NO	PRI		
+autonote	AutoNoteName	varchar	YES			
+autonote	MainText	text	YES			
+autonote	Category	bigint	NO	MUL		
+autonotecontrol	AutoNoteControlNum	bigint	NO	PRI		
+autonotecontrol	Descript	varchar	YES			
+autonotecontrol	ControlType	varchar	YES			
+autonotecontrol	ControlLabel	varchar	YES			
+autonotecontrol	ControlOptions	text	YES			
+benefit	BenefitNum	bigint	NO	PRI		
+benefit	PlanNum	bigint	NO	MUL		
+benefit	PatPlanNum	bigint	NO	MUL		
+benefit	CovCatNum	bigint	NO	MUL		
+benefit	BenefitType	tinyint	NO	MUL		
+benefit	Percent	tinyint	NO	MUL		
+benefit	MonetaryAmt	double	NO	MUL		
+benefit	TimePeriod	tinyint	NO	MUL		
+benefit	QuantityQualifier	tinyint	NO	MUL		
+benefit	Quantity	tinyint	NO	MUL		
+benefit	CodeNum	bigint	NO	MUL		
+benefit	CoverageLevel	int	NO	MUL		
+benefit	SecDateTEntry	datetime	NO	MUL		
+benefit	SecDateTEdit	timestamp	NO	MUL		
+benefit	CodeGroupNum	bigint	NO	MUL		
+benefit	TreatArea	tinyint	NO			
+canadiannetwork	CanadianNetworkNum	bigint	NO	PRI		
+canadiannetwork	Abbrev	varchar	YES			
+canadiannetwork	Descript	varchar	YES			
+canadiannetwork	CanadianTransactionPrefix	varchar	NO			
+canadiannetwork	CanadianIsRprHandler	tinyint	NO			
+carecreditwebresponse	CareCreditWebResponseNum	bigint	NO	PRI		
+carecreditwebresponse	PatNum	bigint	NO	MUL		
+carecreditwebresponse	PayNum	bigint	NO	MUL		
+carecreditwebresponse	RefNumber	varchar	NO			
+carecreditwebresponse	Amount	double	NO			
+carecreditwebresponse	WebToken	varchar	NO			
+carecreditwebresponse	ProcessingStatus	varchar	NO	MUL		
+carecreditwebresponse	DateTimeEntry	datetime	NO			
+carecreditwebresponse	DateTimePending	datetime	NO			
+carecreditwebresponse	DateTimeCompleted	datetime	NO			
+carecreditwebresponse	DateTimeExpired	datetime	NO			
+carecreditwebresponse	DateTimeLastError	datetime	NO			
+carecreditwebresponse	LastResponseStr	text	NO			
+carecreditwebresponse	ClinicNum	bigint	NO	MUL		
+carecreditwebresponse	ServiceType	varchar	NO			
+carecreditwebresponse	TransType	varchar	NO			
+carecreditwebresponse	MerchantNumber	varchar	NO			
+carecreditwebresponse	HasLogged	tinyint	NO			
+carrier	CarrierNum	bigint	NO	PRI		
+carrier	CarrierName	varchar	YES			
+carrier	Address	varchar	YES			
+carrier	Address2	varchar	YES			
+carrier	City	varchar	YES			
+carrier	State	varchar	YES			
+carrier	Zip	varchar	YES			
+carrier	Phone	varchar	YES			
+carrier	ElectID	varchar	YES			
+carrier	NoSendElect	tinyint	NO			
+carrier	IsCDA	tinyint	NO			
+carrier	CDAnetVersion	varchar	YES			
+carrier	CanadianNetworkNum	bigint	NO	MUL		
+carrier	IsHidden	tinyint	NO			
+carrier	CanadianEncryptionMethod	tinyint	NO			
+carrier	CanadianSupportedTypes	int	NO			
+carrier	SecUserNumEntry	bigint	NO	MUL		
+carrier	SecDateEntry	date	NO			
+carrier	SecDateTEdit	timestamp	NO			
+carrier	TIN	varchar	NO			
+carrier	CarrierGroupName	bigint	NO	MUL		
+carrier	ApptTextBackColor	int	NO			
+carrier	IsCoinsuranceInverted	tinyint	NO			
+carrier	TrustedEtransFlags	tinyint	NO			
+carrier	CobInsPaidBehaviorOverride	tinyint	NO			
+carrier	EraAutomationOverride	tinyint	NO			
+carrier	OrthoInsPayConsolidate	tinyint	NO			
+cdcrec	CdcrecNum	bigint	NO	PRI		
+cdcrec	CdcrecCode	varchar	NO	MUL		
+cdcrec	HeirarchicalCode	varchar	NO			
+cdcrec	Description	varchar	NO			
+cdspermission	CDSPermissionNum	bigint	NO	PRI		
+cdspermission	UserNum	bigint	NO	MUL		
+cdspermission	SetupCDS	tinyint	NO			
+cdspermission	ShowCDS	tinyint	NO			
+cdspermission	ShowInfobutton	tinyint	NO			
+cdspermission	EditBibliography	tinyint	NO			
+cdspermission	ProblemCDS	tinyint	NO			
+cdspermission	MedicationCDS	tinyint	NO			
+cdspermission	AllergyCDS	tinyint	NO			
+cdspermission	DemographicCDS	tinyint	NO			
+cdspermission	LabTestCDS	tinyint	NO			
+cdspermission	VitalCDS	tinyint	NO			
+centralconnection	CentralConnectionNum	bigint	NO	PRI		
+centralconnection	ServerName	varchar	NO			
+centralconnection	DatabaseName	varchar	NO			
+centralconnection	MySqlUser	varchar	NO			
+centralconnection	MySqlPassword	varchar	NO			
+centralconnection	ServiceURI	varchar	NO			
+centralconnection	OdUser	varchar	NO			
+centralconnection	OdPassword	varchar	NO			
+centralconnection	Note	text	NO			
+centralconnection	ItemOrder	int	NO			
+centralconnection	WebServiceIsEcw	tinyint	NO			
+centralconnection	ConnectionStatus	varchar	NO			
+centralconnection	HasClinicBreakdownReports	tinyint	NO			
+cert	CertNum	bigint	NO	PRI		
+cert	Description	varchar	NO			
+cert	WikiPageLink	varchar	NO			
+cert	ItemOrder	int	NO			
+cert	IsHidden	tinyint	NO			
+cert	CertCategoryNum	bigint	NO			
+certemployee	CertEmployeeNum	bigint	NO	PRI		
+certemployee	CertNum	bigint	NO	MUL		
+certemployee	EmployeeNum	bigint	NO	MUL		
+certemployee	DateCompleted	date	NO			
+certemployee	Note	varchar	NO			
+certemployee	UserNum	bigint	NO	MUL		
+chartview	ChartViewNum	bigint	NO	PRI		
+chartview	Description	varchar	NO			
+chartview	ItemOrder	int	NO			
+chartview	ProcStatuses	tinyint	NO			
+chartview	ObjectTypes	smallint	NO			
+chartview	ShowProcNotes	tinyint	NO			
+chartview	IsAudit	tinyint	NO			
+chartview	SelectedTeethOnly	tinyint	NO			
+chartview	OrionStatusFlags	int	NO			
+chartview	DatesShowing	tinyint	NO			
+chartview	IsTpCharting	tinyint	NO			
+claim	ClaimNum	bigint	NO	PRI		
+claim	PatNum	bigint	NO	MUL		
+claim	DateService	date	NO	MUL		
+claim	DateSent	date	NO			
+claim	ClaimStatus	char	YES	MUL		
+claim	DateReceived	date	NO			
+claim	PlanNum	bigint	NO	MUL		
+claim	ProvTreat	bigint	NO	MUL		
+claim	ClaimFee	double	NO			
+claim	InsPayEst	double	NO			
+claim	InsPayAmt	double	NO			
+claim	DedApplied	double	NO			
+claim	PreAuthString	varchar	YES			
+claim	IsProsthesis	char	YES			
+claim	PriorDate	date	NO			
+claim	ReasonUnderPaid	varchar	YES			
+claim	ClaimNote	varchar	YES			
+claim	ClaimType	varchar	YES			
+claim	ProvBill	bigint	NO	MUL		
+claim	ReferringProv	bigint	NO			
+claim	RefNumString	varchar	YES			
+claim	PlaceService	tinyint	NO			
+claim	AccidentRelated	char	YES			
+claim	AccidentDate	date	NO			
+claim	AccidentST	varchar	YES			
+claim	EmployRelated	tinyint	NO			
+claim	IsOrtho	tinyint	NO			
+claim	OrthoRemainM	tinyint	NO			
+claim	OrthoDate	date	NO			
+claim	PatRelat	tinyint	NO			
+claim	PlanNum2	bigint	NO			
+claim	PatRelat2	tinyint	NO			
+claim	WriteOff	double	NO			
+claim	Radiographs	tinyint	NO			
+claim	ClinicNum	bigint	NO	MUL		
+claim	ClaimForm	bigint	NO			
+claim	AttachedImages	int	NO			
+claim	AttachedModels	int	NO			
+claim	AttachedFlags	varchar	YES			
+claim	AttachmentID	varchar	YES			
+claim	CanadianMaterialsForwarded	varchar	NO			
+claim	CanadianReferralProviderNum	varchar	NO			
+claim	CanadianReferralReason	tinyint	NO			
+claim	CanadianIsInitialLower	varchar	NO			
+claim	CanadianDateInitialLower	date	NO			
+claim	CanadianMandProsthMaterial	tinyint	NO			
+claim	CanadianIsInitialUpper	varchar	NO			
+claim	CanadianDateInitialUpper	date	NO			
+claim	CanadianMaxProsthMaterial	tinyint	NO			
+claim	InsSubNum	bigint	NO	MUL		
+claim	InsSubNum2	bigint	NO	MUL		
+claim	CanadaTransRefNum	varchar	NO			
+claim	CanadaEstTreatStartDate	date	NO			
+claim	CanadaInitialPayment	double	NO			
+claim	CanadaPaymentMode	tinyint	NO			
+claim	CanadaTreatDuration	tinyint	NO			
+claim	CanadaNumAnticipatedPayments	tinyint	NO			
+claim	CanadaAnticipatedPayAmount	double	NO			
+claim	PriorAuthorizationNumber	varchar	NO			
+claim	SpecialProgramCode	tinyint	NO			
+claim	UniformBillType	varchar	NO			
+claim	MedType	tinyint	NO			
+claim	AdmissionTypeCode	varchar	NO			
+claim	AdmissionSourceCode	varchar	NO			
+claim	PatientStatusCode	varchar	NO			
+claim	CustomTracking	bigint	NO	MUL		
+claim	DateResent	date	NO			
+claim	CorrectionType	tinyint	NO			
+claim	ClaimIdentifier	varchar	NO	MUL		
+claim	OrigRefNum	varchar	NO			
+claim	ProvOrderOverride	bigint	NO	MUL		
+claim	OrthoTotalM	tinyint	NO			
+claim	ShareOfCost	double	NO			
+claim	SecUserNumEntry	bigint	NO	MUL		
+claim	SecDateEntry	date	NO			
+claim	SecDateTEdit	timestamp	NO			
+claim	OrderingReferralNum	bigint	NO	MUL		
+claim	DateSentOrig	date	NO			
+claim	DateIllnessInjuryPreg	date	NO			
+claim	DateIllnessInjuryPregQualifier	smallint	NO			
+claim	DateOther	date	NO			
+claim	DateOtherQualifier	smallint	NO			
+claim	IsOutsideLab	tinyint	NO			
+claim	SecurityHash	varchar	NO			
+claim	Narrative	text	NO			
+claimattach	ClaimAttachNum	bigint	NO	PRI		
+claimattach	ClaimNum	bigint	NO	MUL		
+claimattach	DisplayedFileName	varchar	YES			
+claimattach	ActualFileName	varchar	YES			
+claimattach	ImageReferenceId	int	NO			
+claimcondcodelog	ClaimCondCodeLogNum	bigint	NO	PRI		
+claimcondcodelog	ClaimNum	bigint	NO			
+claimcondcodelog	Code0	varchar	YES			
+claimcondcodelog	Code1	varchar	YES			
+claimcondcodelog	Code2	varchar	YES			
+claimcondcodelog	Code3	varchar	YES			
+claimcondcodelog	Code4	varchar	YES			
+claimcondcodelog	Code5	varchar	YES			
+claimcondcodelog	Code6	varchar	YES			
+claimcondcodelog	Code7	varchar	YES			
+claimcondcodelog	Code8	varchar	YES			
+claimcondcodelog	Code9	varchar	YES			
+claimcondcodelog	Code10	varchar	YES			
+claimform	ClaimFormNum	bigint	NO	PRI		
+claimform	Description	varchar	YES			
+claimform	IsHidden	tinyint	NO			
+claimform	FontName	varchar	YES			
+claimform	FontSize	float	NO			
+claimform	UniqueID	varchar	YES			
+claimform	PrintImages	tinyint	NO			
+claimform	OffsetX	smallint	NO			
+claimform	OffsetY	smallint	NO			
+claimform	Width	int	NO			
+claimform	Height	int	NO			
+claimformitem	ClaimFormItemNum	bigint	NO	PRI		
+claimformitem	ClaimFormNum	bigint	NO			
+claimformitem	ImageFileName	varchar	YES			
+claimformitem	FieldName	varchar	YES			
+claimformitem	FormatString	varchar	YES			
+claimformitem	XPos	float	NO			
+claimformitem	YPos	float	NO			
+claimformitem	Width	float	NO			
+claimformitem	Height	float	NO			
+claimpayment	ClaimPaymentNum	bigint	NO	PRI		
+claimpayment	CheckDate	date	NO	MUL		
+claimpayment	CheckAmt	double	NO			
+claimpayment	CheckNum	varchar	YES			
+claimpayment	BankBranch	varchar	YES			
+claimpayment	Note	varchar	YES			
+claimpayment	ClinicNum	bigint	NO	MUL		
+claimpayment	DepositNum	bigint	NO	MUL		
+claimpayment	CarrierName	varchar	YES			
+claimpayment	DateIssued	date	NO			
+claimpayment	IsPartial	tinyint	NO			
+claimpayment	PayType	bigint	NO	MUL		
+claimpayment	SecUserNumEntry	bigint	NO	MUL		
+claimpayment	SecDateEntry	date	NO			
+claimpayment	SecDateTEdit	timestamp	NO			
+claimpayment	PayGroup	bigint	NO	MUL		
+claimproc	ClaimProcNum	bigint	NO	PRI		
+claimproc	ProcNum	bigint	NO	MUL		
+claimproc	ClaimNum	bigint	NO	MUL		
+claimproc	PatNum	bigint	NO	MUL		
+claimproc	ProvNum	bigint	NO	MUL		
+claimproc	FeeBilled	double	NO			
+claimproc	InsPayEst	double	NO			
+claimproc	DedApplied	double	NO			
+claimproc	Status	tinyint	NO	MUL		
+claimproc	InsPayAmt	double	NO			
+claimproc	Remarks	varchar	YES			
+claimproc	ClaimPaymentNum	bigint	NO	MUL		
+claimproc	PlanNum	bigint	NO	MUL		
+claimproc	DateCP	date	NO	MUL		
+claimproc	WriteOff	double	NO			
+claimproc	CodeSent	varchar	YES			
+claimproc	AllowedOverride	double	NO			
+claimproc	Percentage	tinyint	NO			
+claimproc	PercentOverride	tinyint	NO			
+claimproc	CopayAmt	double	NO			
+claimproc	NoBillIns	tinyint	NO			
+claimproc	PaidOtherIns	double	NO			
+claimproc	BaseEst	double	NO			
+claimproc	CopayOverride	double	NO			
+claimproc	ProcDate	date	NO			
+claimproc	DateEntry	date	NO			
+claimproc	LineNumber	tinyint	NO			
+claimproc	DedEst	double	NO			
+claimproc	DedEstOverride	double	NO			
+claimproc	InsEstTotal	double	NO			
+claimproc	InsEstTotalOverride	double	NO			
+claimproc	PaidOtherInsOverride	double	NO			
+claimproc	EstimateNote	varchar	NO			
+claimproc	WriteOffEst	double	NO			
+claimproc	WriteOffEstOverride	double	NO			
+claimproc	ClinicNum	bigint	NO	MUL		
+claimproc	InsSubNum	bigint	NO	MUL		
+claimproc	PaymentRow	int	NO			
+claimproc	PayPlanNum	bigint	NO	MUL		
+claimproc	ClaimPaymentTracking	bigint	NO	MUL		
+claimproc	SecUserNumEntry	bigint	NO	MUL		
+claimproc	SecDateEntry	date	NO			
+claimproc	SecDateTEdit	timestamp	NO	MUL		
+claimproc	DateSuppReceived	date	NO	MUL		
+claimproc	DateInsFinalized	date	NO			
+claimproc	IsTransfer	tinyint	NO			
+claimproc	ClaimAdjReasonCodes	varchar	NO			
+claimproc	IsOverpay	tinyint	NO			
+claimproc	SecurityHash	varchar	NO			
+claimsnapshot	ClaimSnapshotNum	bigint	NO	PRI		
+claimsnapshot	ProcNum	bigint	NO	MUL		
+claimsnapshot	ClaimType	varchar	NO			
+claimsnapshot	Writeoff	double	NO			
+claimsnapshot	InsPayEst	double	NO			
+claimsnapshot	Fee	double	NO			
+claimsnapshot	DateTEntry	datetime	NO			
+claimsnapshot	ClaimProcNum	bigint	NO	MUL		
+claimsnapshot	SnapshotTrigger	tinyint	NO			
+claimtracking	ClaimTrackingNum	bigint	NO	PRI		
+claimtracking	ClaimNum	bigint	NO	MUL		
+claimtracking	TrackingType	varchar	NO			
+claimtracking	UserNum	bigint	NO	MUL		
+claimtracking	DateTimeEntry	timestamp	NO			
+claimtracking	Note	text	NO			
+claimtracking	TrackingDefNum	bigint	NO	MUL		
+claimtracking	TrackingErrorDefNum	bigint	NO	MUL		
+claimvalcodelog	ClaimValCodeLogNum	bigint	NO	PRI		
+claimvalcodelog	ClaimNum	bigint	NO			
+claimvalcodelog	ClaimField	varchar	NO			
+claimvalcodelog	ValCode	char	NO			
+claimvalcodelog	ValAmount	double	NO			
+claimvalcodelog	Ordinal	int	NO			
+clearinghouse	ClearinghouseNum	bigint	NO	PRI		
+clearinghouse	Description	varchar	YES			
+clearinghouse	ExportPath	text	YES			
+clearinghouse	Payors	text	YES			
+clearinghouse	Eformat	tinyint	NO			
+clearinghouse	ISA05	varchar	YES			
+clearinghouse	SenderTIN	varchar	YES			
+clearinghouse	ISA07	varchar	YES			
+clearinghouse	ISA08	varchar	YES			
+clearinghouse	ISA15	varchar	YES			
+clearinghouse	Password	varchar	YES			
+clearinghouse	ResponsePath	varchar	YES			
+clearinghouse	CommBridge	tinyint	NO			
+clearinghouse	ClientProgram	varchar	YES			
+clearinghouse	LastBatchNumber	smallint	NO			
+clearinghouse	ModemPort	tinyint	NO			
+clearinghouse	LoginID	varchar	YES			
+clearinghouse	SenderName	varchar	YES			
+clearinghouse	SenderTelephone	varchar	YES			
+clearinghouse	GS03	varchar	YES			
+clearinghouse	ISA02	varchar	NO			
+clearinghouse	ISA04	varchar	NO			
+clearinghouse	ISA16	varchar	NO			
+clearinghouse	SeparatorData	varchar	NO			
+clearinghouse	SeparatorSegment	varchar	NO			
+clearinghouse	ClinicNum	bigint	NO	MUL		
+clearinghouse	HqClearinghouseNum	bigint	NO	MUL		
+clearinghouse	IsEraDownloadAllowed	tinyint	NO			
+clearinghouse	IsClaimExportAllowed	tinyint	NO			
+clearinghouse	IsAttachmentSendAllowed	tinyint	NO			
+clearinghouse	LocationID	varchar	NO			
+clinic	ClinicNum	bigint	NO	PRI		
+clinic	Description	varchar	YES			
+clinic	Address	varchar	YES			
+clinic	Address2	varchar	YES			
+clinic	City	varchar	YES			
+clinic	State	varchar	YES			
+clinic	Zip	varchar	YES			
+clinic	Phone	varchar	YES			
+clinic	BankNumber	varchar	YES			
+clinic	DefaultPlaceService	tinyint	NO			
+clinic	InsBillingProv	bigint	NO	MUL		
+clinic	Fax	varchar	NO			
+clinic	EmailAddressNum	bigint	NO	MUL		
+clinic	DefaultProv	bigint	NO	MUL		
+clinic	SmsContractDate	datetime	NO			
+clinic	SmsMonthlyLimit	double	NO			
+clinic	IsMedicalOnly	tinyint	NO			
+clinic	BillingAddress	varchar	NO			
+clinic	BillingAddress2	varchar	NO			
+clinic	BillingCity	varchar	NO			
+clinic	BillingState	varchar	NO			
+clinic	BillingZip	varchar	NO			
+clinic	PayToAddress	varchar	NO			
+clinic	PayToAddress2	varchar	NO			
+clinic	PayToCity	varchar	NO			
+clinic	PayToState	varchar	NO			
+clinic	PayToZip	varchar	NO			
+clinic	UseBillAddrOnClaims	tinyint	NO			
+clinic	Region	bigint	NO	MUL		
+clinic	ItemOrder	int	NO			
+clinic	IsInsVerifyExcluded	tinyint	NO			
+clinic	Abbr	varchar	NO			
+clinic	MedLabAccountNum	varchar	NO			
+clinic	IsConfirmEnabled	tinyint	NO			
+clinic	IsConfirmDefault	tinyint	NO			
+clinic	IsNewPatApptExcluded	tinyint	NO			
+clinic	IsHidden	tinyint	NO			
+clinic	ExternalID	bigint	NO	MUL		
+clinic	SchedNote	varchar	NO			
+clinic	HasProcOnRx	tinyint	NO			
+clinic	TimeZone	varchar	NO			
+clinic	EmailAliasOverride	varchar	NO			
+clinicerx	ClinicErxNum	bigint	NO	PRI		
+clinicerx	PatNum	bigint	NO	MUL		
+clinicerx	ClinicDesc	varchar	NO			
+clinicerx	ClinicNum	bigint	NO	MUL		
+clinicerx	EnabledStatus	tinyint	NO			
+clinicerx	ClinicId	varchar	NO			
+clinicerx	ClinicKey	varchar	NO			
+clinicerx	AccountId	varchar	NO			
+clinicerx	RegistrationKeyNum	bigint	NO	MUL		
+clinicpref	ClinicPrefNum	bigint	NO	PRI		
+clinicpref	ClinicNum	bigint	NO	MUL		
+clinicpref	PrefName	varchar	NO			
+clinicpref	ValueString	text	NO			
+clockevent	ClockEventNum	bigint	NO	PRI		
+clockevent	EmployeeNum	bigint	NO	MUL		
+clockevent	TimeEntered1	datetime	NO			
+clockevent	TimeDisplayed1	datetime	NO	MUL		
+clockevent	ClockStatus	tinyint	NO			
+clockevent	Note	text	YES			
+clockevent	TimeEntered2	datetime	NO			
+clockevent	TimeDisplayed2	datetime	NO			
+clockevent	OTimeHours	time	NO			
+clockevent	OTimeAuto	time	NO			
+clockevent	Adjust	time	NO			
+clockevent	AdjustAuto	time	NO			
+clockevent	AdjustIsOverridden	tinyint	NO			
+clockevent	Rate2Hours	time	NO			
+clockevent	Rate2Auto	time	NO			
+clockevent	ClinicNum	bigint	NO	MUL		
+clockevent	Rate3Hours	time	NO			
+clockevent	Rate3Auto	time	NO			
+clockevent	IsWorkingHome	tinyint	NO			
+cloudaddress	CloudAddressNum	bigint	NO	PRI		
+cloudaddress	IpAddress	varchar	NO			
+cloudaddress	UserNumLastConnect	bigint	NO	MUL		
+cloudaddress	DateTimeLastConnect	datetime	NO			
+codegroup	CodeGroupNum	bigint	NO	PRI		
+codegroup	GroupName	varchar	NO			
+codegroup	ProcCodes	text	NO			
+codegroup	ItemOrder	int	NO			
+codegroup	CodeGroupFixed	tinyint	NO			
+codegroup	IsHidden	tinyint	NO			
+codegroup	ShowInAgeLimit	tinyint	NO			
+codegroup	ShowInFrequency	tinyint	NO			
+codesystem	CodeSystemNum	bigint	NO	PRI		
+codesystem	CodeSystemName	varchar	NO	MUL		
+codesystem	VersionCur	varchar	NO			
+codesystem	VersionAvail	varchar	NO			
+codesystem	HL7OID	varchar	NO			
+codesystem	Note	varchar	NO			
+commlog	CommlogNum	bigint	NO	PRI		
+commlog	PatNum	bigint	NO	MUL		
+commlog	CommDateTime	datetime	NO	MUL		
+commlog	CommType	bigint	NO	MUL		
+commlog	Note	text	YES			
+commlog	Mode_	tinyint	NO			
+commlog	SentOrReceived	tinyint	NO			
+commlog	UserNum	bigint	NO	MUL		
+commlog	Signature	text	NO			
+commlog	SigIsTopaz	tinyint	NO			
+commlog	DateTStamp	timestamp	NO			
+commlog	DateTimeEnd	datetime	NO			
+commlog	CommSource	tinyint	YES			
+commlog	ProgramNum	bigint	NO	MUL		
+commlog	DateTEntry	datetime	NO			
+commlog	ReferralNum	bigint	NO	MUL		
+commlog	CommReferralBehavior	tinyint	NO			
+commoptout	CommOptOutNum	bigint	NO	PRI		
+commoptout	PatNum	bigint	NO	MUL		
+commoptout	OptOutSms	int	NO			
+commoptout	OptOutEmail	int	NO			
+computer	ComputerNum	bigint	NO	PRI		
+computer	CompName	varchar	YES			
+computer	LastHeartBeat	datetime	NO			
+computerpref	ComputerPrefNum	bigint	NO	PRI		
+computerpref	ComputerName	varchar	NO			
+computerpref	GraphicsUseHardware	tinyint	NO			
+computerpref	GraphicsSimple	tinyint	NO			
+computerpref	SensorType	varchar	YES			
+computerpref	SensorBinned	tinyint	NO			
+computerpref	SensorPort	int	YES			
+computerpref	SensorExposure	int	YES			
+computerpref	GraphicsDoubleBuffering	tinyint	NO			
+computerpref	PreferredPixelFormatNum	int	YES			
+computerpref	AtoZpath	varchar	YES			
+computerpref	TaskKeepListHidden	tinyint	NO			
+computerpref	TaskDock	int	NO			
+computerpref	TaskX	int	NO			
+computerpref	TaskY	int	NO			
+computerpref	DirectXFormat	varchar	YES			
+computerpref	ScanDocSelectSource	tinyint	NO			
+computerpref	ScanDocShowOptions	tinyint	NO			
+computerpref	ScanDocDuplex	tinyint	NO			
+computerpref	ScanDocGrayscale	tinyint	NO			
+computerpref	ScanDocResolution	int	NO			
+computerpref	ScanDocQuality	tinyint	NO			
+computerpref	ClinicNum	bigint	NO	MUL		
+computerpref	ApptViewNum	bigint	NO	MUL		
+computerpref	RecentApptView	tinyint	NO			
+computerpref	PatSelectSearchMode	tinyint	NO			
+computerpref	NoShowLanguage	tinyint	NO			
+computerpref	NoShowDecimal	tinyint	NO			
+computerpref	ComputerOS	varchar	NO			
+computerpref	HelpButtonXAdjustment	double	NO			
+computerpref	GraphicsUseDirectX11	tinyint	NO			
+computerpref	Zoom	int	NO			
+computerpref	VideoRectangle	varchar	NO			
+computerpref	CreditCardTerminalId	varchar	NO			
+confirmationrequest	ConfirmationRequestNum	bigint	NO	PRI		
+confirmationrequest	ClinicNum	bigint	NO	MUL		
+confirmationrequest	PatNum	bigint	NO	MUL		
+confirmationrequest	ApptNum	bigint	NO	MUL		
+confirmationrequest	DateTimeConfirmExpire	datetime	NO			
+confirmationrequest	ShortGUID	varchar	NO			
+confirmationrequest	ConfirmCode	varchar	NO			
+confirmationrequest	DateTimeEntry	datetime	NO			
+confirmationrequest	DateTimeConfirmTransmit	datetime	NO			
+confirmationrequest	DateTimeRSVP	datetime	NO			
+confirmationrequest	RSVPStatus	tinyint	NO			
+confirmationrequest	ResponseDescript	text	NO			
+confirmationrequest	GuidMessageFromMobile	text	NO			
+confirmationrequest	ApptDateTime	datetime	NO			
+confirmationrequest	TSPrior	bigint	NO	MUL		
+confirmationrequest	DoNotResend	tinyint	NO			
+confirmationrequest	SendStatus	tinyint	NO			
+confirmationrequest	ApptReminderRuleNum	bigint	NO	MUL		
+confirmationrequest	MessageType	tinyint	NO			
+confirmationrequest	MessageFk	bigint	NO	MUL		
+confirmationrequest	DateTimeSent	datetime	NO			
+connectiongroup	ConnectionGroupNum	bigint	NO	PRI		
+connectiongroup	Description	varchar	NO			
+conngroupattach	ConnGroupAttachNum	bigint	NO	PRI		
+conngroupattach	ConnectionGroupNum	bigint	NO	MUL		
+conngroupattach	CentralConnectionNum	bigint	NO	MUL		
+contact	ContactNum	bigint	NO	PRI		
+contact	LName	varchar	YES			
+contact	FName	varchar	YES			
+contact	WkPhone	varchar	YES			
+contact	Fax	varchar	YES			
+contact	Category	bigint	NO			
+contact	Notes	text	YES			
+county	CountyNum	bigint	NO	PRI		
+county	CountyName	varchar	NO			
+county	CountyCode	varchar	YES			
+covcat	CovCatNum	bigint	NO	PRI		
+covcat	Description	varchar	YES			
+covcat	DefaultPercent	smallint	NO			
+covcat	CovOrder	int	NO			
+covcat	IsHidden	tinyint	NO			
+covcat	EbenefitCat	tinyint	NO			
+covspan	CovSpanNum	bigint	NO	PRI		
+covspan	CovCatNum	bigint	NO	MUL		
+covspan	FromCode	varchar	YES			
+covspan	ToCode	varchar	YES			
+cpt	CptNum	bigint	NO	PRI		
+cpt	CptCode	varchar	NO	MUL		
+cpt	Description	varchar	NO			
+cpt	VersionIDs	varchar	NO			
+creditcard	CreditCardNum	bigint	NO	PRI		
+creditcard	PatNum	bigint	NO	MUL		
+creditcard	Address	varchar	YES			
+creditcard	Zip	varchar	YES			
+creditcard	XChargeToken	varchar	YES			
+creditcard	CCNumberMasked	varchar	YES			
+creditcard	CCExpiration	date	NO			
+creditcard	ItemOrder	int	NO			
+creditcard	ChargeAmt	double	NO			
+creditcard	DateStart	date	NO			
+creditcard	DateStop	date	NO			
+creditcard	Note	varchar	NO			
+creditcard	PayPlanNum	bigint	NO	MUL		
+creditcard	PayConnectToken	varchar	NO			
+creditcard	PayConnectTokenExp	date	NO			
+creditcard	Procedures	text	NO			
+creditcard	CCSource	tinyint	NO			
+creditcard	ClinicNum	bigint	NO	MUL		
+creditcard	ExcludeProcSync	tinyint	NO			
+creditcard	PaySimpleToken	varchar	NO			
+creditcard	ChargeFrequency	varchar	NO			
+creditcard	CanChargeWhenNoBal	tinyint	NO			
+creditcard	PaymentType	bigint	NO	MUL		
+creditcard	IsRecurringActive	tinyint	NO			
+creditcard	Nickname	varchar	NO			
+creditcard	CardHolderName	varchar	NO			
+custrefentry	CustRefEntryNum	bigint	NO	PRI		
+custrefentry	PatNumCust	bigint	NO	MUL		
+custrefentry	PatNumRef	bigint	NO	MUL		
+custrefentry	DateEntry	date	NO			
+custrefentry	Note	varchar	NO			
+custreference	CustReferenceNum	bigint	NO	PRI		
+custreference	PatNum	bigint	NO	MUL		
+custreference	DateMostRecent	date	NO			
+custreference	Note	varchar	NO			
+custreference	IsBadRef	tinyint	NO			
+cvx	CvxNum	bigint	NO	PRI		
+cvx	CvxCode	varchar	NO	MUL		
+cvx	Description	varchar	NO			
+cvx	IsActive	varchar	NO			
+dashboardar	DashboardARNum	bigint	NO	PRI		
+dashboardar	DateCalc	date	NO			
+dashboardar	BalTotal	double	NO			
+dashboardar	InsEst	double	NO			
+dashboardcell	DashboardCellNum	bigint	NO	PRI		
+dashboardcell	DashboardLayoutNum	bigint	NO	MUL		
+dashboardcell	CellRow	int	NO			
+dashboardcell	CellColumn	int	NO			
+dashboardcell	CellType	varchar	NO			
+dashboardcell	CellSettings	text	NO			
+dashboardcell	LastQueryTime	datetime	NO			
+dashboardcell	LastQueryData	text	NO			
+dashboardcell	RefreshRateSeconds	int	NO			
+dashboardlayout	DashboardLayoutNum	bigint	NO	PRI		
+dashboardlayout	UserNum	bigint	NO	MUL		
+dashboardlayout	UserGroupNum	bigint	NO	MUL		
+dashboardlayout	DashboardTabName	varchar	NO			
+dashboardlayout	DashboardTabOrder	int	NO			
+dashboardlayout	DashboardRows	int	NO			
+dashboardlayout	DashboardColumns	int	NO			
+dashboardlayout	DashboardGroupName	varchar	NO			
+databasemaintenance	DatabaseMaintenanceNum	bigint	NO	PRI		
+databasemaintenance	MethodName	varchar	NO			
+databasemaintenance	IsHidden	tinyint	NO			
+databasemaintenance	IsOld	tinyint	NO			
+databasemaintenance	DateLastRun	datetime	NO			
+dbmlog	DbmLogNum	bigint	NO	PRI		
+dbmlog	UserNum	bigint	NO	MUL		
+dbmlog	FKey	bigint	NO	MUL		
+dbmlog	FKeyType	tinyint	NO			
+dbmlog	ActionType	tinyint	NO			
+dbmlog	DateTimeEntry	datetime	NO	MUL		
+dbmlog	MethodName	varchar	NO	MUL		
+dbmlog	LogText	text	NO			
+definition	DefNum	bigint	NO	PRI		
+definition	Category	tinyint	NO			
+definition	ItemOrder	smallint	NO			
+definition	ItemName	varchar	YES			
+definition	ItemValue	varchar	YES			
+definition	ItemColor	int	NO			
+definition	IsHidden	tinyint	NO			
+deflink	DefLinkNum	bigint	NO	PRI		
+deflink	DefNum	bigint	NO	MUL		
+deflink	FKey	bigint	NO	MUL		
+deflink	LinkType	tinyint	NO			
+deletedobject	DeletedObjectNum	bigint	NO	PRI		
+deletedobject	ObjectNum	bigint	NO			
+deletedobject	ObjectType	int	NO			
+deletedobject	DateTStamp	timestamp	NO			
+dental_patients	Email	varchar	YES			
+dental_patients	CellPhone	varchar	YES			
+dental_patients	HomePhone	varchar	YES			
+dental_patients	WorkPhone	varchar	YES			
+dental_patients	FirstName	varchar	YES			
+dental_patients	LastName	varchar	YES			
+dental_patients	City	varchar	YES			
+dental_patients	State	varchar	YES			
+dental_patients	Zip	varchar	YES			
+dental_patients	BirthDate	date	YES			
+dental_patients	BirthYear	varchar	YES			
+dental_patients	Gender	varchar	YES			
+dental_patients	AgeAtFirstVisit	varchar	YES			
+dental_patients	FirstVisitDate	date	YES			
+dental_patients	patnum	int	YES			
+dental_pt_list	patnum	bigint	YES			
+dental_pt_list	Email	varchar	YES			
+dental_pt_list	CellPhone	varchar	YES			
+dental_pt_list	HomePhone	varchar	YES			
+dental_pt_list	WorkPhone	varchar	YES			
+dental_pt_list	FirstName	varchar	YES			
+dental_pt_list	LastName	varchar	YES			
+dental_pt_list	City	varchar	YES			
+dental_pt_list	State	varchar	YES			
+dental_pt_list	Zip	varchar	YES			
+dental_pt_list	BirthYear	varchar	YES			
+dental_pt_list	Gender	varchar	YES			
+dental_pt_list	AgeAtFirstVisit	varchar	YES			
+deposit	DepositNum	bigint	NO	PRI		
+deposit	DateDeposit	date	NO			
+deposit	BankAccountInfo	text	YES			
+deposit	Amount	double	NO			
+deposit	Memo	varchar	NO			
+deposit	Batch	varchar	NO			
+deposit	DepositAccountNum	bigint	NO	MUL		
+deposit	IsSentToQuickBooksOnline	tinyint	NO			
+dictcustom	DictCustomNum	bigint	NO	PRI		
+dictcustom	WordText	varchar	NO			
+discountplan	DiscountPlanNum	bigint	NO	PRI		
+discountplan	Description	varchar	NO			
+discountplan	FeeSchedNum	bigint	NO	MUL		
+discountplan	DefNum	bigint	NO	MUL		
+discountplan	IsHidden	tinyint	NO			
+discountplan	PlanNote	text	NO			
+discountplan	ExamFreqLimit	int	NO			
+discountplan	XrayFreqLimit	int	NO			
+discountplan	ProphyFreqLimit	int	NO			
+discountplan	FluorideFreqLimit	int	NO			
+discountplan	PerioFreqLimit	int	NO			
+discountplan	LimitedExamFreqLimit	int	NO			
+discountplan	PAFreqLimit	int	NO			
+discountplan	AnnualMax	double	NO			
+discountplansub	DiscountSubNum	bigint	NO	PRI		
+discountplansub	DiscountPlanNum	bigint	NO	MUL		
+discountplansub	PatNum	bigint	NO	MUL		
+discountplansub	DateEffective	date	NO			
+discountplansub	DateTerm	date	NO			
+discountplansub	SubNote	text	NO			
+disease	DiseaseNum	bigint	NO	PRI		
+disease	PatNum	bigint	NO	MUL		
+disease	DiseaseDefNum	bigint	NO	MUL		
+disease	PatNote	text	YES			
+disease	DateTStamp	timestamp	NO			
+disease	ProbStatus	tinyint	NO			
+disease	DateStart	date	NO			
+disease	DateStop	date	NO			
+disease	SnomedProblemType	varchar	NO			
+disease	FunctionStatus	tinyint	NO			
+diseasedef	DiseaseDefNum	bigint	NO	PRI		
+diseasedef	DiseaseName	varchar	YES			
+diseasedef	ItemOrder	smallint	NO			
+diseasedef	IsHidden	tinyint	NO			
+diseasedef	DateTStamp	timestamp	NO			
+diseasedef	ICD9Code	varchar	NO	MUL		
+diseasedef	SnomedCode	varchar	NO	MUL		
+diseasedef	Icd10Code	varchar	NO	MUL		
+displayfield	DisplayFieldNum	bigint	NO	PRI		
+displayfield	InternalName	varchar	YES			
+displayfield	ItemOrder	int	NO			
+displayfield	Description	varchar	YES			
+displayfield	ColumnWidth	int	NO			
+displayfield	Category	int	NO			
+displayfield	ChartViewNum	bigint	NO	MUL		
+displayfield	PickList	text	NO			
+displayfield	DescriptionOverride	varchar	NO			
+displayreport	DisplayReportNum	bigint	NO	PRI		
+displayreport	InternalName	varchar	NO			
+displayreport	ItemOrder	int	NO			
+displayreport	Description	varchar	NO			
+displayreport	Category	tinyint	NO			
+displayreport	IsHidden	tinyint	NO			
+displayreport	IsVisibleInSubMenu	tinyint	NO			
+dispsupply	DispSupplyNum	bigint	NO	PRI		
+dispsupply	SupplyNum	bigint	NO	MUL		
+dispsupply	ProvNum	bigint	NO	MUL		
+dispsupply	DateDispensed	date	NO			
+dispsupply	DispQuantity	float	NO			
+dispsupply	Note	text	NO			
+document	DocNum	bigint	NO	PRI		
+document	Description	varchar	YES			
+document	DateCreated	datetime	NO			
+document	DocCategory	bigint	NO			
+document	PatNum	bigint	NO	MUL		
+document	FileName	varchar	YES			
+document	ImgType	tinyint	NO			
+document	IsFlipped	tinyint	NO			
+document	DegreesRotated	float	NO			
+document	ToothNumbers	varchar	YES			
+document	Note	mediumtext	NO			
+document	SigIsTopaz	tinyint	NO			
+document	Signature	text	YES			
+document	CropX	int	NO			
+document	CropY	int	NO			
+document	CropW	int	NO			
+document	CropH	int	NO			
+document	WindowingMin	int	NO			
+document	WindowingMax	int	NO			
+document	MountItemNum	bigint	NO	MUL		
+document	DateTStamp	timestamp	NO			
+document	RawBase64	mediumtext	NO			
+document	Thumbnail	text	NO			
+document	ExternalGUID	varchar	NO			
+document	ExternalSource	varchar	NO			
+document	ProvNum	bigint	NO			
+document	IsCropOld	tinyint	NO			
+document	OcrResponseData	text	NO			
+document	ImageCaptureType	tinyint	NO			
+document	PrintHeading	tinyint	NO			
+document	ChartLetterStatus	tinyint	NO			
+document	UserNum	bigint	NO			
+document	ChartLetterHash	varchar	NO			
+documentmisc	DocMiscNum	bigint	NO	PRI		
+documentmisc	DateCreated	date	NO			
+documentmisc	FileName	varchar	NO			
+documentmisc	DocMiscType	tinyint	NO			
+documentmisc	RawBase64	longtext	NO			
+drugmanufacturer	DrugManufacturerNum	bigint	NO	PRI		
+drugmanufacturer	ManufacturerName	varchar	NO			
+drugmanufacturer	ManufacturerCode	varchar	NO			
+drugunit	DrugUnitNum	bigint	NO	PRI		
+drugunit	UnitIdentifier	varchar	NO			
+drugunit	UnitText	varchar	NO			
+dunning	DunningNum	bigint	NO	PRI		
+dunning	DunMessage	text	YES			
+dunning	BillingType	bigint	NO			
+dunning	AgeAccount	tinyint	NO			
+dunning	InsIsPending	tinyint	NO			
+dunning	MessageBold	text	YES			
+dunning	EmailSubject	varchar	NO			
+dunning	EmailBody	mediumtext	NO			
+dunning	DaysInAdvance	int	NO			
+dunning	ClinicNum	bigint	NO	MUL		
+dunning	IsSuperFamily	tinyint	NO			
+ebill	EbillNum	bigint	NO	PRI		
+ebill	ClinicNum	bigint	NO	MUL		
+ebill	ClientAcctNumber	varchar	NO			
+ebill	ElectUserName	varchar	NO			
+ebill	ElectPassword	varchar	NO			
+ebill	PracticeAddress	tinyint	NO			
+ebill	RemitAddress	tinyint	NO			
+eclipboardimagecapture	EClipboardImageCaptureNum	bigint	NO	PRI		
+eclipboardimagecapture	PatNum	bigint	NO	MUL		
+eclipboardimagecapture	DefNum	bigint	NO	MUL		
+eclipboardimagecapture	IsSelfPortrait	tinyint	NO			
+eclipboardimagecapture	DateTimeUpserted	datetime	NO			
+eclipboardimagecapture	DocNum	bigint	NO	MUL		
+eclipboardimagecapture	OcrCaptureType	tinyint	NO			
+eclipboardimagecapturedef	EClipboardImageCaptureDefNum	bigint	NO	PRI		
+eclipboardimagecapturedef	DefNum	bigint	NO	MUL		
+eclipboardimagecapturedef	IsSelfPortrait	tinyint	NO			
+eclipboardimagecapturedef	FrequencyDays	int	NO			
+eclipboardimagecapturedef	ClinicNum	bigint	NO	MUL		
+eclipboardimagecapturedef	OcrCaptureType	tinyint	NO			
+eclipboardimagecapturedef	Frequency	tinyint	NO			
+eclipboardimagecapturedef	ResubmitInterval	bigint	NO	MUL		
+eclipboardsheetdef	EClipboardSheetDefNum	bigint	NO	PRI		
+eclipboardsheetdef	SheetDefNum	bigint	NO	MUL		
+eclipboardsheetdef	ClinicNum	bigint	NO	MUL		
+eclipboardsheetdef	ResubmitInterval	bigint	NO	MUL		
+eclipboardsheetdef	ItemOrder	int	NO			
+eclipboardsheetdef	PrefillStatus	tinyint	NO			
+eclipboardsheetdef	MinAge	int	NO			
+eclipboardsheetdef	MaxAge	int	NO			
+eclipboardsheetdef	IgnoreSheetDefNums	text	NO			
+eclipboardsheetdef	PrefillStatusOverride	bigint	NO	MUL		
+eclipboardsheetdef	EFormDefNum	bigint	NO	MUL		
+eclipboardsheetdef	Frequency	tinyint	NO			
+eduresource	EduResourceNum	bigint	NO	PRI		
+eduresource	DiseaseDefNum	bigint	NO	MUL		
+eduresource	MedicationNum	bigint	NO	MUL		
+eduresource	LabResultID	varchar	NO	MUL		
+eduresource	LabResultName	varchar	NO			
+eduresource	LabResultCompare	varchar	NO			
+eduresource	ResourceUrl	varchar	NO			
+eduresource	SmokingSnoMed	varchar	NO			
+eform	EFormNum	bigint	NO	PRI		
+eform	FormType	tinyint	NO			
+eform	PatNum	bigint	NO	MUL		
+eform	DateTimeShown	datetime	NO			
+eform	Description	varchar	NO			
+eform	DateTEdited	datetime	NO			
+eform	MaxWidth	int	NO			
+eform	EFormDefNum	bigint	NO	MUL		
+eform	Status	tinyint	NO			
+eform	RevID	int	NO			
+eform	ShowLabelsBold	tinyint	NO			
+eform	SpaceBelowEachField	int	NO			
+eform	SpaceToRightEachField	int	NO			
+eform	SaveImageCategory	bigint	NO			
+eformdef	EFormDefNum	bigint	NO	PRI		
+eformdef	FormType	tinyint	NO			
+eformdef	Description	varchar	NO			
+eformdef	DateTCreated	datetime	NO			
+eformdef	IsInternalHidden	tinyint	NO			
+eformdef	MaxWidth	int	NO			
+eformdef	RevID	int	NO			
+eformdef	ShowLabelsBold	tinyint	NO			
+eformdef	SpaceBelowEachField	int	NO			
+eformdef	SpaceToRightEachField	int	NO			
+eformdef	SaveImageCategory	bigint	NO			
+eformfield	EFormFieldNum	bigint	NO	PRI		
+eformfield	EFormNum	bigint	NO	MUL		
+eformfield	PatNum	bigint	NO	MUL		
+eformfield	FieldType	tinyint	NO			
+eformfield	DbLink	varchar	NO			
+eformfield	ValueLabel	text	NO			
+eformfield	ValueString	text	NO			
+eformfield	ItemOrder	int	NO			
+eformfield	PickListVis	varchar	NO			
+eformfield	PickListDb	varchar	NO			
+eformfield	IsHorizStacking	tinyint	NO			
+eformfield	IsTextWrap	tinyint	NO			
+eformfield	Width	int	NO			
+eformfield	FontScale	int	NO			
+eformfield	IsRequired	tinyint	NO			
+eformfield	ConditionalParent	varchar	NO			
+eformfield	ConditionalValue	varchar	NO			
+eformfield	LabelAlign	tinyint	NO			
+eformfield	SpaceBelow	int	NO			
+eformfield	ReportableName	varchar	NO			
+eformfield	IsLocked	tinyint	NO			
+eformfield	Border	tinyint	NO			
+eformfield	IsWidthPercentage	tinyint	NO			
+eformfield	MinWidth	int	NO			
+eformfield	WidthLabel	int	NO			
+eformfield	SpaceToRight	int	NO			
+eformfield	AutoImport	tinyint	NO			
+eformfield	PrefillFromGuar	tinyint	NO			
+eformfielddef	EFormFieldDefNum	bigint	NO	PRI		
+eformfielddef	EFormDefNum	bigint	NO	MUL		
+eformfielddef	FieldType	tinyint	NO			
+eformfielddef	DbLink	varchar	NO			
+eformfielddef	ValueLabel	text	NO			
+eformfielddef	ItemOrder	int	NO			
+eformfielddef	PickListVis	varchar	NO			
+eformfielddef	PickListDb	varchar	NO			
+eformfielddef	IsHorizStacking	tinyint	NO			
+eformfielddef	IsTextWrap	tinyint	NO			
+eformfielddef	Width	int	NO			
+eformfielddef	FontScale	int	NO			
+eformfielddef	IsRequired	tinyint	NO			
+eformfielddef	ConditionalParent	varchar	NO			
+eformfielddef	ConditionalValue	varchar	NO			
+eformfielddef	LabelAlign	tinyint	NO			
+eformfielddef	SpaceBelow	int	NO			
+eformfielddef	ReportableName	varchar	NO			
+eformfielddef	IsLocked	tinyint	NO			
+eformfielddef	Border	tinyint	NO			
+eformfielddef	IsWidthPercentage	tinyint	NO			
+eformfielddef	MinWidth	int	NO			
+eformfielddef	WidthLabel	int	NO			
+eformfielddef	SpaceToRight	int	NO			
+eformfielddef	AutoImport	tinyint	NO			
+eformfielddef	PrefillFromGuar	tinyint	NO			
+eformimportrule	EFormImportRuleNum	bigint	NO	PRI		
+eformimportrule	FieldName	varchar	NO			
+eformimportrule	Situation	tinyint	NO			
+eformimportrule	Action	tinyint	NO			
+ehramendment	EhrAmendmentNum	bigint	NO	PRI		
+ehramendment	PatNum	bigint	NO	MUL		
+ehramendment	IsAccepted	tinyint	NO			
+ehramendment	Description	text	NO			
+ehramendment	Source	tinyint	NO			
+ehramendment	SourceName	text	NO			
+ehramendment	FileName	varchar	NO			
+ehramendment	RawBase64	longtext	NO			
+ehramendment	DateTRequest	datetime	NO			
+ehramendment	DateTAcceptDeny	datetime	NO			
+ehramendment	DateTAppend	datetime	NO			
+ehraptobs	EhrAptObsNum	bigint	NO	PRI		
+ehraptobs	AptNum	bigint	NO	MUL		
+ehraptobs	IdentifyingCode	tinyint	NO			
+ehraptobs	ValType	tinyint	NO			
+ehraptobs	ValReported	varchar	NO			
+ehraptobs	UcumCode	varchar	NO			
+ehraptobs	ValCodeSystem	varchar	NO			
+ehrcareplan	EhrCarePlanNum	bigint	NO	PRI		
+ehrcareplan	PatNum	bigint	NO	MUL		
+ehrcareplan	SnomedEducation	varchar	NO			
+ehrcareplan	Instructions	varchar	NO			
+ehrcareplan	DatePlanned	date	NO			
+ehrlab	EhrLabNum	bigint	NO	PRI		
+ehrlab	PatNum	bigint	NO	MUL		
+ehrlab	OrderControlCode	varchar	NO			
+ehrlab	PlacerOrderNum	varchar	NO			
+ehrlab	PlacerOrderNamespace	varchar	NO			
+ehrlab	PlacerOrderUniversalID	varchar	NO			
+ehrlab	PlacerOrderUniversalIDType	varchar	NO			
+ehrlab	FillerOrderNum	varchar	NO			
+ehrlab	FillerOrderNamespace	varchar	NO			
+ehrlab	FillerOrderUniversalID	varchar	NO			
+ehrlab	FillerOrderUniversalIDType	varchar	NO			
+ehrlab	PlacerGroupNum	varchar	NO			
+ehrlab	PlacerGroupNamespace	varchar	NO			
+ehrlab	PlacerGroupUniversalID	varchar	NO			
+ehrlab	PlacerGroupUniversalIDType	varchar	NO			
+ehrlab	OrderingProviderID	varchar	NO			
+ehrlab	OrderingProviderLName	varchar	NO			
+ehrlab	OrderingProviderFName	varchar	NO			
+ehrlab	OrderingProviderMiddleNames	varchar	NO			
+ehrlab	OrderingProviderSuffix	varchar	NO			
+ehrlab	OrderingProviderPrefix	varchar	NO			
+ehrlab	OrderingProviderAssigningAuthorityNamespaceID	varchar	NO			
+ehrlab	OrderingProviderAssigningAuthorityUniversalID	varchar	NO			
+ehrlab	OrderingProviderAssigningAuthorityIDType	varchar	NO			
+ehrlab	OrderingProviderNameTypeCode	varchar	NO			
+ehrlab	OrderingProviderIdentifierTypeCode	varchar	NO			
+ehrlab	SetIdOBR	bigint	NO	MUL		
+ehrlab	UsiID	varchar	NO			
+ehrlab	UsiText	varchar	NO			
+ehrlab	UsiCodeSystemName	varchar	NO			
+ehrlab	UsiIDAlt	varchar	NO			
+ehrlab	UsiTextAlt	varchar	NO			
+ehrlab	UsiCodeSystemNameAlt	varchar	NO			
+ehrlab	UsiTextOriginal	varchar	NO			
+ehrlab	ObservationDateTimeStart	varchar	NO			
+ehrlab	ObservationDateTimeEnd	varchar	NO			
+ehrlab	SpecimenActionCode	varchar	NO			
+ehrlab	ResultDateTime	varchar	NO			
+ehrlab	ResultStatus	varchar	NO			
+ehrlab	ParentObservationID	varchar	NO			
+ehrlab	ParentObservationText	varchar	NO			
+ehrlab	ParentObservationCodeSystemName	varchar	NO			
+ehrlab	ParentObservationIDAlt	varchar	NO			
+ehrlab	ParentObservationTextAlt	varchar	NO			
+ehrlab	ParentObservationCodeSystemNameAlt	varchar	NO			
+ehrlab	ParentObservationTextOriginal	varchar	NO			
+ehrlab	ParentObservationSubID	varchar	NO			
+ehrlab	ParentPlacerOrderNum	varchar	NO			
+ehrlab	ParentPlacerOrderNamespace	varchar	NO			
+ehrlab	ParentPlacerOrderUniversalID	varchar	NO			
+ehrlab	ParentPlacerOrderUniversalIDType	varchar	NO			
+ehrlab	ParentFillerOrderNum	varchar	NO			
+ehrlab	ParentFillerOrderNamespace	varchar	NO			
+ehrlab	ParentFillerOrderUniversalID	varchar	NO			
+ehrlab	ParentFillerOrderUniversalIDType	varchar	NO			
+ehrlab	ListEhrLabResultsHandlingF	tinyint	NO			
+ehrlab	ListEhrLabResultsHandlingN	tinyint	NO			
+ehrlab	TQ1SetId	bigint	NO	MUL		
+ehrlab	TQ1DateTimeStart	varchar	NO			
+ehrlab	TQ1DateTimeEnd	varchar	NO			
+ehrlab	IsCpoe	tinyint	NO			
+ehrlab	OriginalPIDSegment	text	NO			
+ehrlabclinicalinfo	EhrLabClinicalInfoNum	bigint	NO	PRI		
+ehrlabclinicalinfo	EhrLabNum	bigint	NO	MUL		
+ehrlabclinicalinfo	ClinicalInfoID	varchar	NO			
+ehrlabclinicalinfo	ClinicalInfoText	varchar	NO			
+ehrlabclinicalinfo	ClinicalInfoCodeSystemName	varchar	NO			
+ehrlabclinicalinfo	ClinicalInfoIDAlt	varchar	NO			
+ehrlabclinicalinfo	ClinicalInfoTextAlt	varchar	NO			
+ehrlabclinicalinfo	ClinicalInfoCodeSystemNameAlt	varchar	NO			
+ehrlabclinicalinfo	ClinicalInfoTextOriginal	varchar	NO			
+ehrlabimage	EhrLabImageNum	bigint	NO	PRI		
+ehrlabimage	EhrLabNum	bigint	NO	MUL		
+ehrlabimage	DocNum	bigint	NO	MUL		
+ehrlabnote	EhrLabNoteNum	bigint	NO	PRI		
+ehrlabnote	EhrLabNum	bigint	NO	MUL		
+ehrlabnote	EhrLabResultNum	bigint	NO	MUL		
+ehrlabnote	Comments	text	NO			
+ehrlabresult	EhrLabResultNum	bigint	NO	PRI		
+ehrlabresult	EhrLabNum	bigint	NO	MUL		
+ehrlabresult	SetIdOBX	bigint	NO	MUL		
+ehrlabresult	ValueType	varchar	NO			
+ehrlabresult	ObservationIdentifierID	varchar	NO			
+ehrlabresult	ObservationIdentifierText	varchar	NO			
+ehrlabresult	ObservationIdentifierCodeSystemName	varchar	NO			
+ehrlabresult	ObservationIdentifierIDAlt	varchar	NO			
+ehrlabresult	ObservationIdentifierTextAlt	varchar	NO			
+ehrlabresult	ObservationIdentifierCodeSystemNameAlt	varchar	NO			
+ehrlabresult	ObservationIdentifierTextOriginal	varchar	NO			
+ehrlabresult	ObservationIdentifierSub	varchar	NO			
+ehrlabresult	ObservationValueCodedElementID	varchar	NO			
+ehrlabresult	ObservationValueCodedElementText	varchar	NO			
+ehrlabresult	ObservationValueCodedElementCodeSystemName	varchar	NO			
+ehrlabresult	ObservationValueCodedElementIDAlt	varchar	NO			
+ehrlabresult	ObservationValueCodedElementTextAlt	varchar	NO			
+ehrlabresult	ObservationValueCodedElementCodeSystemNameAlt	varchar	NO			
+ehrlabresult	ObservationValueCodedElementTextOriginal	varchar	NO			
+ehrlabresult	ObservationValueDateTime	varchar	NO			
+ehrlabresult	ObservationValueTime	time	NO			
+ehrlabresult	ObservationValueComparator	varchar	NO			
+ehrlabresult	ObservationValueNumber1	double	NO			
+ehrlabresult	ObservationValueSeparatorOrSuffix	varchar	NO			
+ehrlabresult	ObservationValueNumber2	double	NO			
+ehrlabresult	ObservationValueNumeric	double	NO			
+ehrlabresult	ObservationValueText	varchar	NO			
+ehrlabresult	UnitsID	varchar	NO			
+ehrlabresult	UnitsText	varchar	NO			
+ehrlabresult	UnitsCodeSystemName	varchar	NO			
+ehrlabresult	UnitsIDAlt	varchar	NO			
+ehrlabresult	UnitsTextAlt	varchar	NO			
+ehrlabresult	UnitsCodeSystemNameAlt	varchar	NO			
+ehrlabresult	UnitsTextOriginal	varchar	NO			
+ehrlabresult	referenceRange	varchar	NO			
+ehrlabresult	AbnormalFlags	varchar	NO			
+ehrlabresult	ObservationResultStatus	varchar	NO			
+ehrlabresult	ObservationDateTime	varchar	NO			
+ehrlabresult	AnalysisDateTime	varchar	NO			
+ehrlabresult	PerformingOrganizationName	varchar	NO			
+ehrlabresult	PerformingOrganizationNameAssigningAuthorityNamespaceId	varchar	NO			
+ehrlabresult	PerformingOrganizationNameAssigningAuthorityUniversalId	varchar	NO			
+ehrlabresult	PerformingOrganizationNameAssigningAuthorityUniversalIdType	varchar	NO			
+ehrlabresult	PerformingOrganizationIdentifierTypeCode	varchar	NO			
+ehrlabresult	PerformingOrganizationIdentifier	varchar	NO			
+ehrlabresult	PerformingOrganizationAddressStreet	varchar	NO			
+ehrlabresult	PerformingOrganizationAddressOtherDesignation	varchar	NO			
+ehrlabresult	PerformingOrganizationAddressCity	varchar	NO			
+ehrlabresult	PerformingOrganizationAddressStateOrProvince	varchar	NO			
+ehrlabresult	PerformingOrganizationAddressZipOrPostalCode	varchar	NO			
+ehrlabresult	PerformingOrganizationAddressCountryCode	varchar	NO			
+ehrlabresult	PerformingOrganizationAddressAddressType	varchar	NO			
+ehrlabresult	PerformingOrganizationAddressCountyOrParishCode	varchar	NO			
+ehrlabresult	MedicalDirectorID	varchar	NO			
+ehrlabresult	MedicalDirectorLName	varchar	NO			
+ehrlabresult	MedicalDirectorFName	varchar	NO			
+ehrlabresult	MedicalDirectorMiddleNames	varchar	NO			
+ehrlabresult	MedicalDirectorSuffix	varchar	NO			
+ehrlabresult	MedicalDirectorPrefix	varchar	NO			
+ehrlabresult	MedicalDirectorAssigningAuthorityNamespaceID	varchar	NO			
+ehrlabresult	MedicalDirectorAssigningAuthorityUniversalID	varchar	NO			
+ehrlabresult	MedicalDirectorAssigningAuthorityIDType	varchar	NO			
+ehrlabresult	MedicalDirectorNameTypeCode	varchar	NO			
+ehrlabresult	MedicalDirectorIdentifierTypeCode	varchar	NO			
+ehrlabresultscopyto	EhrLabResultsCopyToNum	bigint	NO	PRI		
+ehrlabresultscopyto	EhrLabNum	bigint	NO	MUL		
+ehrlabresultscopyto	CopyToID	varchar	NO			
+ehrlabresultscopyto	CopyToLName	varchar	NO			
+ehrlabresultscopyto	CopyToFName	varchar	NO			
+ehrlabresultscopyto	CopyToMiddleNames	varchar	NO			
+ehrlabresultscopyto	CopyToSuffix	varchar	NO			
+ehrlabresultscopyto	CopyToPrefix	varchar	NO			
+ehrlabresultscopyto	CopyToAssigningAuthorityNamespaceID	varchar	NO			
+ehrlabresultscopyto	CopyToAssigningAuthorityUniversalID	varchar	NO			
+ehrlabresultscopyto	CopyToAssigningAuthorityIDType	varchar	NO			
+ehrlabresultscopyto	CopyToNameTypeCode	varchar	NO			
+ehrlabresultscopyto	CopyToIdentifierTypeCode	varchar	NO			
+ehrlabspecimen	EhrLabSpecimenNum	bigint	NO	PRI		
+ehrlabspecimen	EhrLabNum	bigint	NO	MUL		
+ehrlabspecimen	SetIdSPM	bigint	NO	MUL		
+ehrlabspecimen	SpecimenTypeID	varchar	NO			
+ehrlabspecimen	SpecimenTypeText	varchar	NO			
+ehrlabspecimen	SpecimenTypeCodeSystemName	varchar	NO			
+ehrlabspecimen	SpecimenTypeIDAlt	varchar	NO			
+ehrlabspecimen	SpecimenTypeTextAlt	varchar	NO			
+ehrlabspecimen	SpecimenTypeCodeSystemNameAlt	varchar	NO			
+ehrlabspecimen	SpecimenTypeTextOriginal	varchar	NO			
+ehrlabspecimen	CollectionDateTimeStart	varchar	NO			
+ehrlabspecimen	CollectionDateTimeEnd	varchar	NO			
+ehrlabspecimencondition	EhrLabSpecimenConditionNum	bigint	NO	PRI		
+ehrlabspecimencondition	EhrLabSpecimenNum	bigint	NO	MUL		
+ehrlabspecimencondition	SpecimenConditionID	varchar	NO			
+ehrlabspecimencondition	SpecimenConditionText	varchar	NO			
+ehrlabspecimencondition	SpecimenConditionCodeSystemName	varchar	NO			
+ehrlabspecimencondition	SpecimenConditionIDAlt	varchar	NO			
+ehrlabspecimencondition	SpecimenConditionTextAlt	varchar	NO			
+ehrlabspecimencondition	SpecimenConditionCodeSystemNameAlt	varchar	NO			
+ehrlabspecimencondition	SpecimenConditionTextOriginal	varchar	NO			
+ehrlabspecimenrejectreason	EhrLabSpecimenRejectReasonNum	bigint	NO	PRI		
+ehrlabspecimenrejectreason	EhrLabSpecimenNum	bigint	NO	MUL		
+ehrlabspecimenrejectreason	SpecimenRejectReasonID	varchar	NO			
+ehrlabspecimenrejectreason	SpecimenRejectReasonText	varchar	NO			
+ehrlabspecimenrejectreason	SpecimenRejectReasonCodeSystemName	varchar	NO			
+ehrlabspecimenrejectreason	SpecimenRejectReasonIDAlt	varchar	NO			
+ehrlabspecimenrejectreason	SpecimenRejectReasonTextAlt	varchar	NO			
+ehrlabspecimenrejectreason	SpecimenRejectReasonCodeSystemNameAlt	varchar	NO			
+ehrlabspecimenrejectreason	SpecimenRejectReasonTextOriginal	varchar	NO			
+ehrmeasure	EhrMeasureNum	bigint	NO	PRI		
+ehrmeasure	MeasureType	tinyint	NO			
+ehrmeasure	Numerator	smallint	NO			
+ehrmeasure	Denominator	smallint	NO			
+ehrmeasureevent	EhrMeasureEventNum	bigint	NO	PRI		
+ehrmeasureevent	DateTEvent	datetime	NO			
+ehrmeasureevent	EventType	tinyint	NO			
+ehrmeasureevent	PatNum	bigint	NO	MUL		
+ehrmeasureevent	MoreInfo	varchar	NO			
+ehrmeasureevent	CodeValueEvent	varchar	NO	MUL		
+ehrmeasureevent	CodeSystemEvent	varchar	NO			
+ehrmeasureevent	CodeValueResult	varchar	NO	MUL		
+ehrmeasureevent	CodeSystemResult	varchar	NO			
+ehrmeasureevent	FKey	bigint	NO	MUL		
+ehrmeasureevent	TobaccoCessationDesire	tinyint	NO			
+ehrmeasureevent	DateStartTobacco	date	NO			
+ehrnotperformed	EhrNotPerformedNum	bigint	NO	PRI		
+ehrnotperformed	PatNum	bigint	NO	MUL		
+ehrnotperformed	ProvNum	bigint	NO	MUL		
+ehrnotperformed	CodeValue	varchar	NO	MUL		
+ehrnotperformed	CodeSystem	varchar	NO			
+ehrnotperformed	CodeValueReason	varchar	NO	MUL		
+ehrnotperformed	CodeSystemReason	varchar	NO			
+ehrnotperformed	Note	text	NO			
+ehrnotperformed	DateEntry	date	NO			
+ehrpatient	PatNum	bigint	NO	PRI		
+ehrpatient	MotherMaidenFname	varchar	NO			
+ehrpatient	MotherMaidenLname	varchar	NO			
+ehrpatient	VacShareOk	tinyint	NO			
+ehrpatient	MedicaidState	varchar	NO			
+ehrpatient	SexualOrientation	varchar	NO			
+ehrpatient	GenderIdentity	varchar	NO			
+ehrpatient	SexualOrientationNote	varchar	NO			
+ehrpatient	GenderIdentityNote	varchar	NO			
+ehrpatient	DischargeDate	datetime	NO			
+ehrprovkey	EhrProvKeyNum	bigint	NO	PRI		
+ehrprovkey	PatNum	bigint	NO	MUL		
+ehrprovkey	LName	varchar	NO			
+ehrprovkey	FName	varchar	NO			
+ehrprovkey	ProvKey	varchar	NO			
+ehrprovkey	FullTimeEquiv	float	NO			
+ehrprovkey	Notes	text	NO			
+ehrprovkey	YearValue	int	NO			
+ehrquarterlykey	EhrQuarterlyKeyNum	bigint	NO	PRI		
+ehrquarterlykey	YearValue	int	NO			
+ehrquarterlykey	QuarterValue	int	NO			
+ehrquarterlykey	PracticeName	varchar	NO			
+ehrquarterlykey	KeyValue	varchar	NO			
+ehrquarterlykey	PatNum	bigint	NO	MUL		
+ehrquarterlykey	Notes	text	NO			
+ehrsummaryccd	EhrSummaryCcdNum	bigint	NO	PRI		
+ehrsummaryccd	PatNum	bigint	NO	MUL		
+ehrsummaryccd	DateSummary	date	NO			
+ehrsummaryccd	ContentSummary	longtext	NO			
+ehrsummaryccd	EmailAttachNum	bigint	NO	MUL		
+ehrtrigger	EhrTriggerNum	bigint	NO	PRI		
+ehrtrigger	Description	varchar	NO			
+ehrtrigger	ProblemSnomedList	text	NO			
+ehrtrigger	ProblemIcd9List	text	NO			
+ehrtrigger	ProblemIcd10List	text	NO			
+ehrtrigger	ProblemDefNumList	text	NO			
+ehrtrigger	MedicationNumList	text	NO			
+ehrtrigger	RxCuiList	text	NO			
+ehrtrigger	CvxList	text	NO			
+ehrtrigger	AllergyDefNumList	text	NO			
+ehrtrigger	DemographicsList	text	NO			
+ehrtrigger	LabLoincList	text	NO			
+ehrtrigger	VitalLoincList	text	NO			
+ehrtrigger	Instructions	text	NO			
+ehrtrigger	Bibliography	text	NO			
+ehrtrigger	Cardinality	tinyint	NO			
+electid	ElectIDNum	bigint	NO	PRI		
+electid	PayorID	varchar	YES			
+electid	CarrierName	varchar	YES			
+electid	IsMedicaid	tinyint	NO			
+electid	ProviderTypes	varchar	YES			
+electid	Comments	text	YES			
+electid	CommBridge	tinyint	NO			
+electid	Attributes	varchar	NO			
+emailaddress	EmailAddressNum	bigint	NO	PRI		
+emailaddress	SMTPserver	varchar	NO			
+emailaddress	EmailUsername	varchar	NO			
+emailaddress	EmailPassword	varchar	NO			
+emailaddress	ServerPort	int	NO			
+emailaddress	UseSSL	tinyint	NO			
+emailaddress	SenderAddress	varchar	NO			
+emailaddress	Pop3ServerIncoming	varchar	NO			
+emailaddress	ServerPortIncoming	int	NO			
+emailaddress	UserNum	bigint	NO	MUL		
+emailaddress	AccessToken	varchar	NO			
+emailaddress	RefreshToken	text	NO			
+emailaddress	DownloadInbox	tinyint	NO			
+emailaddress	QueryString	varchar	NO			
+emailaddress	AuthenticationType	tinyint	NO			
+emailattach	EmailAttachNum	bigint	NO	PRI		
+emailattach	EmailMessageNum	bigint	NO	MUL		
+emailattach	DisplayedFileName	varchar	YES			
+emailattach	ActualFileName	varchar	YES			
+emailattach	EmailTemplateNum	bigint	NO	MUL		
+emailautograph	EmailAutographNum	bigint	NO	PRI		
+emailautograph	Description	text	NO			
+emailautograph	EmailAddress	varchar	NO			
+emailautograph	AutographText	text	NO			
+emailhostingtemplate	EmailHostingTemplateNum	bigint	NO	PRI		
+emailhostingtemplate	TemplateName	varchar	NO			
+emailhostingtemplate	Subject	text	NO			
+emailhostingtemplate	BodyPlainText	mediumtext	NO			
+emailhostingtemplate	BodyHTML	mediumtext	NO			
+emailhostingtemplate	TemplateId	bigint	NO	MUL		
+emailhostingtemplate	ClinicNum	bigint	NO	MUL		
+emailhostingtemplate	EmailTemplateType	varchar	NO			
+emailhostingtemplate	TemplateType	varchar	NO			
+emailmessage	EmailMessageNum	bigint	NO	PRI		
+emailmessage	PatNum	bigint	NO	MUL		
+emailmessage	ToAddress	text	YES			
+emailmessage	FromAddress	text	YES			
+emailmessage	Subject	text	YES			
+emailmessage	BodyText	longtext	NO			
+emailmessage	MsgDateTime	datetime	NO	MUL		
+emailmessage	SentOrReceived	tinyint	NO	MUL		
+emailmessage	RecipientAddress	varchar	NO			
+emailmessage	RawEmailIn	longtext	NO			
+emailmessage	ProvNumWebMail	bigint	NO	MUL		
+emailmessage	PatNumSubj	bigint	NO	MUL		
+emailmessage	CcAddress	text	NO			
+emailmessage	BccAddress	text	NO			
+emailmessage	HideIn	tinyint	NO			
+emailmessage	AptNum	bigint	NO	MUL		
+emailmessage	UserNum	bigint	NO	MUL		
+emailmessage	HtmlType	tinyint	NO			
+emailmessage	SecDateTEntry	datetime	NO	MUL		
+emailmessage	SecDateTEdit	timestamp	NO	MUL		
+emailmessage	MsgType	varchar	NO			
+emailmessage	FailReason	varchar	NO			
+emailmessageuid	EmailMessageUidNum	bigint	NO	PRI		
+emailmessageuid	MsgId	text	YES			
+emailmessageuid	RecipientAddress	varchar	NO			
+emailsecure	EmailSecureNum	bigint	NO	PRI		
+emailsecure	ClinicNum	bigint	NO	MUL		
+emailsecure	PatNum	bigint	NO	MUL		
+emailsecure	EmailMessageNum	bigint	NO	MUL		
+emailsecure	EmailChainFK	bigint	NO	MUL		
+emailsecure	EmailFK	bigint	NO	MUL		
+emailsecure	DateTEntry	datetime	NO			
+emailsecure	SecDateTEdit	timestamp	NO			
+emailsecureattach	EmailSecureAttachNum	bigint	NO	PRI		
+emailsecureattach	ClinicNum	bigint	NO	MUL		
+emailsecureattach	EmailAttachNum	bigint	NO	MUL		
+emailsecureattach	EmailSecureNum	bigint	NO	MUL		
+emailsecureattach	AttachmentGuid	varchar	NO			
+emailsecureattach	DisplayedFileName	varchar	NO			
+emailsecureattach	Extension	varchar	NO			
+emailsecureattach	DateTEntry	datetime	NO			
+emailsecureattach	SecDateTEdit	timestamp	NO			
+emailtemplate	EmailTemplateNum	bigint	NO	PRI		
+emailtemplate	Subject	text	YES			
+emailtemplate	BodyText	text	YES			
+emailtemplate	Description	text	NO			
+emailtemplate	TemplateType	tinyint	NO			
+employee	EmployeeNum	bigint	NO	PRI		
+employee	LName	varchar	YES			
+employee	FName	varchar	YES			
+employee	MiddleI	varchar	YES			
+employee	IsHidden	tinyint	NO			
+employee	ClockStatus	varchar	YES			
+employee	PhoneExt	int	NO			
+employee	PayrollID	varchar	NO			
+employee	WirelessPhone	varchar	NO			
+employee	EmailWork	varchar	NO			
+employee	EmailPersonal	varchar	NO			
+employee	IsFurloughed	tinyint	NO			
+employee	IsWorkingHome	tinyint	NO			
+employee	ReportsTo	bigint	NO			
+employer	EmployerNum	bigint	NO	PRI		
+employer	EmpName	varchar	YES			
+employer	Address	varchar	YES			
+employer	Address2	varchar	YES			
+employer	City	varchar	YES			
+employer	State	varchar	YES			
+employer	Zip	varchar	YES			
+employer	Phone	varchar	YES			
+encounter	EncounterNum	bigint	NO	PRI		
+encounter	PatNum	bigint	NO	MUL		
+encounter	ProvNum	bigint	NO	MUL		
+encounter	CodeValue	varchar	NO	MUL		
+encounter	CodeSystem	varchar	NO			
+encounter	Note	text	NO			
+encounter	DateEncounter	date	NO			
+entrylog	EntryLogNum	bigint	NO	PRI		
+entrylog	UserNum	bigint	NO	MUL		
+entrylog	FKeyType	tinyint	NO			
+entrylog	FKey	bigint	NO	MUL		
+entrylog	LogSource	tinyint	NO			
+entrylog	EntryDateTime	datetime	NO	MUL		
+eobattach	EobAttachNum	bigint	NO	PRI		
+eobattach	ClaimPaymentNum	bigint	NO	MUL		
+eobattach	DateTCreated	datetime	NO			
+eobattach	FileName	varchar	NO			
+eobattach	RawBase64	text	NO			
+equipment	EquipmentNum	bigint	NO	PRI		
+equipment	Description	text	NO			
+equipment	SerialNumber	varchar	YES			
+equipment	ModelYear	varchar	YES			
+equipment	DatePurchased	date	NO			
+equipment	DateSold	date	NO			
+equipment	PurchaseCost	double	NO			
+equipment	MarketValue	double	NO			
+equipment	Location	text	NO			
+equipment	DateEntry	date	NO			
+equipment	ProvNumCheckedOut	bigint	NO	MUL		
+equipment	DateCheckedOut	date	NO			
+equipment	DateExpectedBack	date	NO			
+equipment	DispenseNote	text	NO			
+equipment	Status	text	NO			
+erouting	ERoutingNum	bigint	NO	PRI		
+erouting	Description	varchar	NO			
+erouting	PatNum	bigint	NO	MUL		
+erouting	ClinicNum	bigint	NO	MUL		
+erouting	SecDateTEntry	datetime	NO			
+erouting	IsComplete	tinyint	NO			
+eroutingaction	ERoutingActionNum	bigint	NO	PRI		
+eroutingaction	ERoutingNum	bigint	NO	MUL		
+eroutingaction	ItemOrder	int	NO			
+eroutingaction	ERoutingActionType	tinyint	NO			
+eroutingaction	UserNum	bigint	NO	MUL		
+eroutingaction	IsComplete	tinyint	NO			
+eroutingaction	DateTimeComplete	datetime	NO			
+eroutingaction	ForeignKeyType	tinyint	NO			
+eroutingaction	ForeignKey	bigint	NO			
+eroutingaction	LabelOverride	varchar	NO			
+eroutingactiondef	ERoutingActionDefNum	bigint	NO	PRI		
+eroutingactiondef	ERoutingDefNum	bigint	NO	MUL		
+eroutingactiondef	ERoutingActionType	tinyint	NO			
+eroutingactiondef	ItemOrder	int	NO			
+eroutingactiondef	SecDateTEntry	datetime	NO			
+eroutingactiondef	DateTLastModified	datetime	NO			
+eroutingactiondef	ForeignKeyType	tinyint	NO			
+eroutingactiondef	ForeignKey	bigint	NO			
+eroutingactiondef	LabelOverride	varchar	NO			
+eroutingdef	ERoutingDefNum	bigint	NO	PRI		
+eroutingdef	ClinicNum	bigint	NO	MUL		
+eroutingdef	Description	varchar	NO			
+eroutingdef	UserNumCreated	bigint	NO	MUL		
+eroutingdef	UserNumModified	bigint	NO	MUL		
+eroutingdef	SecDateTEntered	datetime	NO			
+eroutingdef	DateLastModified	datetime	NO			
+eroutingdeflink	ERoutingDefLinkNum	bigint	NO	PRI		
+eroutingdeflink	ERoutingDefNum	bigint	NO	MUL		
+eroutingdeflink	Fkey	bigint	NO	MUL		
+eroutingdeflink	ERoutingType	tinyint	NO			
+erxlog	ErxLogNum	bigint	NO	PRI		
+erxlog	PatNum	bigint	NO	MUL		
+erxlog	MsgText	mediumtext	NO			
+erxlog	DateTStamp	timestamp	NO			
+erxlog	ProvNum	bigint	NO	MUL		
+erxlog	UserNum	bigint	NO	MUL		
+eservicelog	EServiceLogNum	bigint	NO	PRI		
+eservicelog	LogDateTime	datetime	NO			
+eservicelog	PatNum	bigint	NO	MUL		
+eservicelog	EServiceType	tinyint	YES			
+eservicelog	EServiceAction	smallint	YES			
+eservicelog	KeyType	smallint	YES			
+eservicelog	LogGuid	varchar	NO	MUL		
+eservicelog	ClinicNum	bigint	YES	MUL		
+eservicelog	FKey	bigint	YES			
+eservicelog	DateTimeUploaded	datetime	NO	MUL		
+eservicelog	Note	varchar	NO			
+eserviceshortguid	EServiceShortGuidNum	bigint	NO	PRI		
+eserviceshortguid	EServiceCode	varchar	NO			
+eserviceshortguid	ShortGuid	varchar	NO	MUL		
+eserviceshortguid	ShortURL	varchar	NO			
+eserviceshortguid	FKey	bigint	NO	MUL		
+eserviceshortguid	FKeyType	varchar	NO			
+eserviceshortguid	DateTimeExpiration	datetime	NO			
+eserviceshortguid	DateTEntry	datetime	NO			
+eservicesignal	EServiceSignalNum	bigint	NO	PRI		
+eservicesignal	ServiceCode	int	NO			
+eservicesignal	ReasonCategory	int	NO			
+eservicesignal	ReasonCode	int	NO			
+eservicesignal	Severity	tinyint	NO			
+eservicesignal	Description	text	NO			
+eservicesignal	SigDateTime	datetime	NO			
+eservicesignal	Tag	text	NO			
+eservicesignal	IsProcessed	tinyint	NO			
+etrans	EtransNum	bigint	NO	PRI		
+etrans	DateTimeTrans	datetime	NO			
+etrans	ClearingHouseNum	bigint	NO	MUL		
+etrans	Etype	tinyint	NO	MUL		
+etrans	ClaimNum	bigint	NO	MUL		
+etrans	OfficeSequenceNumber	int	NO			
+etrans	CarrierTransCounter	int	NO			
+etrans	CarrierTransCounter2	int	NO			
+etrans	CarrierNum	bigint	NO	MUL		
+etrans	CarrierNum2	bigint	NO	MUL		
+etrans	PatNum	bigint	NO	MUL		
+etrans	BatchNumber	int	NO			
+etrans	AckCode	varchar	YES			
+etrans	TransSetNum	int	NO			
+etrans	Note	text	YES			
+etrans	EtransMessageTextNum	bigint	NO	MUL		
+etrans	AckEtransNum	bigint	NO	MUL		
+etrans	PlanNum	bigint	NO	MUL		
+etrans	InsSubNum	bigint	NO	MUL		
+etrans	TranSetId835	varchar	NO			
+etrans	CarrierNameRaw	varchar	NO			
+etrans	PatientNameRaw	varchar	NO			
+etrans	UserNum	bigint	NO	MUL		
+etrans835	Etrans835Num	bigint	NO	PRI		
+etrans835	EtransNum	bigint	NO	MUL		
+etrans835	PayerName	varchar	NO			
+etrans835	TransRefNum	varchar	NO			
+etrans835	InsPaid	double	NO			
+etrans835	ControlId	varchar	NO			
+etrans835	PaymentMethodCode	varchar	NO			
+etrans835	PatientName	varchar	NO			
+etrans835	Status	tinyint	NO			
+etrans835	AutoProcessed	tinyint	NO			
+etrans835	IsApproved	tinyint	NO			
+etrans835attach	Etrans835AttachNum	bigint	NO	PRI		
+etrans835attach	EtransNum	bigint	NO	MUL		
+etrans835attach	ClaimNum	bigint	NO	MUL		
+etrans835attach	ClpSegmentIndex	int	NO			
+etrans835attach	DateTimeEntry	datetime	NO			
+etransmessagetext	EtransMessageTextNum	bigint	NO	PRI		
+etransmessagetext	MessageText	mediumtext	NO			
+evaluation	EvaluationNum	bigint	NO	PRI		
+evaluation	InstructNum	bigint	NO	MUL		
+evaluation	StudentNum	bigint	NO	MUL		
+evaluation	SchoolCourseNum	bigint	NO	MUL		
+evaluation	EvalTitle	varchar	NO			
+evaluation	DateEval	date	NO			
+evaluation	GradingScaleNum	bigint	NO	MUL		
+evaluation	OverallGradeShowing	varchar	NO			
+evaluation	OverallGradeNumber	float	NO			
+evaluation	Notes	text	NO			
+evaluationcriterion	EvaluationCriterionNum	bigint	NO	PRI		
+evaluationcriterion	EvaluationNum	bigint	NO	MUL		
+evaluationcriterion	CriterionDescript	varchar	NO			
+evaluationcriterion	IsCategoryName	tinyint	NO			
+evaluationcriterion	GradingScaleNum	bigint	NO	MUL		
+evaluationcriterion	GradeShowing	varchar	NO			
+evaluationcriterion	GradeNumber	float	NO			
+evaluationcriterion	Notes	text	NO			
+evaluationcriterion	ItemOrder	int	NO			
+evaluationcriterion	MaxPointsPoss	float	NO			
+evaluationcriteriondef	EvaluationCriterionDefNum	bigint	NO	PRI		
+evaluationcriteriondef	EvaluationDefNum	bigint	NO	MUL		
+evaluationcriteriondef	CriterionDescript	varchar	NO			
+evaluationcriteriondef	IsCategoryName	tinyint	NO			
+evaluationcriteriondef	GradingScaleNum	bigint	NO	MUL		
+evaluationcriteriondef	ItemOrder	int	NO			
+evaluationcriteriondef	MaxPointsPoss	float	NO			
+evaluationdef	EvaluationDefNum	bigint	NO	PRI		
+evaluationdef	SchoolCourseNum	bigint	NO	MUL		
+evaluationdef	EvalTitle	varchar	NO			
+evaluationdef	GradingScaleNum	bigint	NO	MUL		
+famaging	PatNum	bigint	NO	PRI		
+famaging	Bal_0_30	double	NO			
+famaging	Bal_31_60	double	NO			
+famaging	Bal_61_90	double	NO			
+famaging	BalOver90	double	NO			
+famaging	InsEst	double	NO			
+famaging	BalTotal	double	NO			
+famaging	PayPlanDue	double	NO			
+familyhealth	FamilyHealthNum	bigint	NO	PRI		
+familyhealth	PatNum	bigint	NO	MUL		
+familyhealth	Relationship	tinyint	NO			
+familyhealth	DiseaseDefNum	bigint	NO	MUL		
+familyhealth	PersonName	varchar	NO			
+fee	FeeNum	bigint	NO	PRI		
+fee	Amount	double	NO			
+fee	OldCode	varchar	NO	MUL		
+fee	FeeSched	bigint	NO	MUL		
+fee	UseDefaultFee	tinyint	NO			
+fee	UseDefaultCov	tinyint	NO			
+fee	CodeNum	bigint	NO	MUL		
+fee	ClinicNum	bigint	NO	MUL		
+fee	ProvNum	bigint	NO	MUL		
+fee	SecUserNumEntry	bigint	NO	MUL		
+fee	SecDateEntry	date	NO			
+fee	SecDateTEdit	timestamp	NO			
+fee	DateEffective	date	NO			
+feesched	FeeSchedNum	bigint	NO	PRI		
+feesched	Description	varchar	YES			
+feesched	FeeSchedType	int	NO			
+feesched	ItemOrder	int	NO			
+feesched	IsHidden	tinyint	NO			
+feesched	IsGlobal	tinyint	NO			
+feesched	SecUserNumEntry	bigint	NO	MUL		
+feesched	SecDateEntry	date	NO			
+feesched	SecDateTEdit	timestamp	NO			
+feeschedgroup	FeeSchedGroupNum	bigint	NO	PRI		
+feeschedgroup	Description	varchar	NO			
+feeschedgroup	FeeSchedNum	bigint	NO	MUL		
+feeschedgroup	ClinicNums	varchar	NO			
+feeschednote	FeeSchedNoteNum	bigint	NO	PRI		
+feeschednote	FeeSchedNum	bigint	NO	MUL		
+feeschednote	ClinicNums	text	NO			
+feeschednote	Note	text	NO			
+feeschednote	DateEntry	date	NO			
+feeschednote	SecUserNumEntry	bigint	NO	MUL		
+feeschednote	SecDateEntry	date	NO			
+feeschednote	SecDateTEdit	timestamp	NO			
+fhircontactpoint	FHIRContactPointNum	bigint	NO	PRI		
+fhircontactpoint	FHIRSubscriptionNum	bigint	NO	MUL		
+fhircontactpoint	ContactSystem	tinyint	NO			
+fhircontactpoint	ContactValue	varchar	NO			
+fhircontactpoint	ContactUse	tinyint	NO			
+fhircontactpoint	ItemOrder	int	NO			
+fhircontactpoint	DateStart	date	NO			
+fhircontactpoint	DateEnd	date	NO			
+fhirsubscription	FHIRSubscriptionNum	bigint	NO	PRI		
+fhirsubscription	Criteria	varchar	NO			
+fhirsubscription	Reason	varchar	NO			
+fhirsubscription	SubStatus	tinyint	NO			
+fhirsubscription	ErrorNote	text	NO			
+fhirsubscription	ChannelType	tinyint	NO			
+fhirsubscription	ChannelEndpoint	varchar	NO			
+fhirsubscription	ChannelPayLoad	varchar	NO			
+fhirsubscription	ChannelHeader	varchar	NO			
+fhirsubscription	DateEnd	datetime	NO			
+fhirsubscription	APIKeyHash	varchar	NO			
+fielddeflink	FieldDefLinkNum	bigint	NO	PRI		
+fielddeflink	FieldDefNum	bigint	NO	MUL		
+fielddeflink	FieldDefType	tinyint	NO			
+fielddeflink	FieldLocation	tinyint	NO			
+formpat	FormPatNum	bigint	NO	PRI		
+formpat	PatNum	bigint	NO	MUL		
+formpat	FormDateTime	datetime	NO			
+gradingscale	GradingScaleNum	bigint	NO	PRI		
+gradingscale	Description	varchar	NO			
+gradingscale	ScaleType	tinyint	NO			
+gradingscaleitem	GradingScaleItemNum	bigint	NO	PRI		
+gradingscaleitem	GradingScaleNum	bigint	NO	MUL		
+gradingscaleitem	GradeShowing	varchar	NO			
+gradingscaleitem	GradeNumber	float	NO			
+gradingscaleitem	Description	varchar	NO			
+grouppermission	GroupPermNum	bigint	NO	PRI		
+grouppermission	NewerDate	date	NO			
+grouppermission	NewerDays	int	NO			
+grouppermission	UserGroupNum	bigint	NO	MUL		
+grouppermission	PermType	smallint	NO			
+grouppermission	FKey	bigint	NO	MUL		
+guardian	GuardianNum	bigint	NO	PRI		
+guardian	PatNumChild	bigint	NO	MUL		
+guardian	PatNumGuardian	bigint	NO	MUL		
+guardian	Relationship	tinyint	NO			
+guardian	IsGuardian	tinyint	NO			
+hcpcs	HcpcsNum	bigint	NO	PRI		
+hcpcs	HcpcsCode	varchar	NO	MUL		
+hcpcs	DescriptionShort	varchar	NO			
+hieclinic	HieClinicNum	bigint	NO	PRI		
+hieclinic	ClinicNum	bigint	NO	MUL		
+hieclinic	SupportedCarrierFlags	tinyint	NO			
+hieclinic	PathExportCCD	varchar	NO			
+hieclinic	TimeOfDayExportCCD	bigint	NO	MUL		
+hieclinic	IsEnabled	tinyint	NO			
+hiequeue	HieQueueNum	bigint	NO	PRI		
+hiequeue	PatNum	bigint	NO	MUL		
+histappointment	HistApptNum	bigint	NO	PRI		
+histappointment	HistUserNum	bigint	NO	MUL		
+histappointment	HistDateTStamp	datetime	NO	MUL		
+histappointment	HistApptAction	tinyint	NO			
+histappointment	ApptSource	tinyint	NO			
+histappointment	AptNum	bigint	NO	MUL		
+histappointment	PatNum	bigint	NO	MUL		
+histappointment	AptStatus	tinyint	NO			
+histappointment	Pattern	varchar	NO			
+histappointment	Confirmed	bigint	NO	MUL		
+histappointment	TimeLocked	tinyint	NO			
+histappointment	Op	bigint	NO	MUL		
+histappointment	Note	text	NO			
+histappointment	ProvNum	bigint	NO	MUL		
+histappointment	ProvHyg	bigint	NO	MUL		
+histappointment	AptDateTime	datetime	NO			
+histappointment	NextAptNum	bigint	NO	MUL		
+histappointment	UnschedStatus	bigint	NO	MUL		
+histappointment	IsNewPatient	tinyint	NO			
+histappointment	ProcDescript	varchar	NO			
+histappointment	Assistant	bigint	NO	MUL		
+histappointment	ClinicNum	bigint	NO	MUL		
+histappointment	IsHygiene	tinyint	NO			
+histappointment	DateTStamp	timestamp	NO			
+histappointment	DateTimeArrived	datetime	NO			
+histappointment	DateTimeSeated	datetime	NO			
+histappointment	DateTimeDismissed	datetime	NO			
+histappointment	InsPlan1	bigint	NO	MUL		
+histappointment	InsPlan2	bigint	NO	MUL		
+histappointment	DateTimeAskedToArrive	datetime	NO			
+histappointment	ProcsColored	text	NO			
+histappointment	ColorOverride	int	NO			
+histappointment	AppointmentTypeNum	bigint	NO	MUL		
+histappointment	SecUserNumEntry	bigint	NO	MUL		
+histappointment	SecDateTEntry	datetime	NO			
+histappointment	Priority	tinyint	NO			
+histappointment	ProvBarText	varchar	NO			
+histappointment	PatternSecondary	varchar	NO			
+histappointment	SecurityHash	varchar	NO			
+histappointment	ItemOrderPlanned	int	NO			
+hl7def	HL7DefNum	bigint	NO	PRI		
+hl7def	Description	varchar	NO			
+hl7def	ModeTx	tinyint	NO			
+hl7def	IncomingFolder	varchar	NO			
+hl7def	OutgoingFolder	varchar	NO			
+hl7def	IncomingPort	varchar	NO			
+hl7def	OutgoingIpPort	varchar	NO			
+hl7def	FieldSeparator	varchar	NO			
+hl7def	ComponentSeparator	varchar	NO			
+hl7def	SubcomponentSeparator	varchar	NO			
+hl7def	RepetitionSeparator	varchar	NO			
+hl7def	EscapeCharacter	varchar	NO			
+hl7def	IsInternal	tinyint	NO			
+hl7def	InternalType	varchar	NO			
+hl7def	InternalTypeVersion	varchar	NO			
+hl7def	IsEnabled	tinyint	NO			
+hl7def	Note	text	NO			
+hl7def	HL7Server	varchar	NO			
+hl7def	HL7ServiceName	varchar	NO			
+hl7def	ShowDemographics	tinyint	NO			
+hl7def	ShowAppts	tinyint	NO			
+hl7def	ShowAccount	tinyint	NO			
+hl7def	IsQuadAsToothNum	tinyint	NO			
+hl7def	LabResultImageCat	bigint	NO	MUL		
+hl7def	SftpUsername	varchar	NO			
+hl7def	SftpPassword	varchar	NO			
+hl7def	SftpInSocket	varchar	NO			
+hl7def	HasLongDCodes	tinyint	NO			
+hl7def	IsProcApptEnforced	tinyint	NO			
+hl7deffield	HL7DefFieldNum	bigint	NO	PRI		
+hl7deffield	HL7DefSegmentNum	bigint	NO	MUL		
+hl7deffield	OrdinalPos	int	NO			
+hl7deffield	TableId	varchar	NO			
+hl7deffield	DataType	varchar	NO			
+hl7deffield	FieldName	varchar	NO			
+hl7deffield	FixedText	text	NO			
+hl7defmessage	HL7DefMessageNum	bigint	NO	PRI		
+hl7defmessage	HL7DefNum	bigint	NO	MUL		
+hl7defmessage	MessageType	varchar	NO			
+hl7defmessage	EventType	varchar	NO			
+hl7defmessage	InOrOut	tinyint	NO			
+hl7defmessage	ItemOrder	int	NO			
+hl7defmessage	Note	text	NO			
+hl7defmessage	MessageStructure	varchar	NO			
+hl7defsegment	HL7DefSegmentNum	bigint	NO	PRI		
+hl7defsegment	HL7DefMessageNum	bigint	NO	MUL		
+hl7defsegment	ItemOrder	int	NO			
+hl7defsegment	CanRepeat	tinyint	NO			
+hl7defsegment	IsOptional	tinyint	NO			
+hl7defsegment	SegmentName	varchar	NO			
+hl7defsegment	Note	text	NO			
+hl7msg	HL7MsgNum	bigint	NO	PRI		
+hl7msg	HL7Status	int	NO	MUL		
+hl7msg	MsgText	mediumtext	YES	MUL		
+hl7msg	AptNum	bigint	NO	MUL		
+hl7msg	DateTStamp	timestamp	NO	MUL		
+hl7msg	PatNum	bigint	NO	MUL		
+hl7msg	Note	text	NO			
+hl7procattach	HL7ProcAttachNum	bigint	NO	PRI		
+hl7procattach	HL7MsgNum	bigint	NO	MUL		
+hl7procattach	ProcNum	bigint	NO	MUL		
+icd10	Icd10Num	bigint	NO	PRI		
+icd10	Icd10Code	varchar	NO	MUL		
+icd10	Description	varchar	NO			
+icd10	IsCode	varchar	NO			
+icd9	ICD9Num	bigint	NO	PRI		
+icd9	ICD9Code	varchar	NO	MUL		
+icd9	Description	varchar	NO			
+icd9	DateTStamp	timestamp	NO			
+imagedraw	ImageDrawNum	bigint	NO	PRI		
+imagedraw	DocNum	bigint	NO	MUL		
+imagedraw	MountNum	bigint	NO	MUL		
+imagedraw	ColorDraw	int	NO			
+imagedraw	ColorBack	int	NO			
+imagedraw	DrawingSegment	text	NO			
+imagedraw	DrawText	varchar	NO			
+imagedraw	FontSize	float	NO			
+imagedraw	DrawType	tinyint	NO			
+imagedraw	ImageAnnotVendor	tinyint	NO			
+imagedraw	Details	text	NO			
+imagedraw	PearlLayer	tinyint	NO			
+imagedraw	BetterDiagLayer	tinyint	NO			
+imagingdevice	ImagingDeviceNum	bigint	NO	PRI		
+imagingdevice	Description	varchar	NO			
+imagingdevice	ComputerName	varchar	NO			
+imagingdevice	DeviceType	tinyint	NO			
+imagingdevice	TwainName	varchar	NO			
+imagingdevice	ItemOrder	int	NO			
+imagingdevice	ShowTwainUI	tinyint	NO			
+insbluebook	InsBlueBookNum	bigint	NO	PRI		
+insbluebook	ProcCodeNum	bigint	NO	MUL		
+insbluebook	CarrierNum	bigint	NO	MUL		
+insbluebook	PlanNum	bigint	NO	MUL		
+insbluebook	GroupNum	varchar	NO			
+insbluebook	InsPayAmt	double	NO			
+insbluebook	AllowedOverride	double	NO			
+insbluebook	DateTEntry	datetime	NO			
+insbluebook	ProcNum	bigint	NO	MUL		
+insbluebook	ProcDate	date	NO			
+insbluebook	ClaimType	varchar	NO			
+insbluebook	ClaimNum	bigint	NO	MUL		
+insbluebooklog	InsBlueBookLogNum	bigint	NO	PRI		
+insbluebooklog	ClaimProcNum	bigint	NO	MUL		
+insbluebooklog	AllowedFee	double	NO			
+insbluebooklog	DateTEntry	datetime	NO			
+insbluebooklog	Description	text	NO			
+insbluebookrule	InsBlueBookRuleNum	bigint	NO	PRI		
+insbluebookrule	ItemOrder	smallint	NO			
+insbluebookrule	RuleType	tinyint	NO			
+insbluebookrule	LimitValue	int	NO			
+insbluebookrule	LimitType	tinyint	NO			
+inseditlog	InsEditLogNum	bigint	NO	PRI		
+inseditlog	FKey	bigint	NO			
+inseditlog	LogType	tinyint	NO	MUL		
+inseditlog	FieldName	varchar	NO			
+inseditlog	OldValue	varchar	NO			
+inseditlog	NewValue	varchar	NO			
+inseditlog	UserNum	bigint	NO	MUL		
+inseditlog	DateTStamp	timestamp	NO			
+inseditlog	ParentKey	bigint	NO	MUL		
+inseditlog	Description	varchar	NO			
+inseditpatlog	InsEditPatLogNum	bigint	NO	PRI		
+inseditpatlog	FKey	bigint	NO	MUL		
+inseditpatlog	LogType	tinyint	NO			
+inseditpatlog	FieldName	varchar	NO			
+inseditpatlog	OldValue	varchar	NO			
+inseditpatlog	NewValue	varchar	NO			
+inseditpatlog	UserNum	bigint	NO	MUL		
+inseditpatlog	DateTStamp	timestamp	NO			
+inseditpatlog	ParentKey	bigint	NO	MUL		
+inseditpatlog	Description	varchar	NO			
+insfilingcode	InsFilingCodeNum	bigint	NO	PRI		
+insfilingcode	Descript	varchar	YES			
+insfilingcode	EclaimCode	varchar	YES			
+insfilingcode	ItemOrder	int	YES	MUL		
+insfilingcode	GroupType	bigint	NO	MUL		
+insfilingcode	ExcludeOtherCoverageOnPriClaims	tinyint	NO			
+insfilingcodesubtype	InsFilingCodeSubtypeNum	bigint	NO	PRI		
+insfilingcodesubtype	InsFilingCodeNum	bigint	NO	MUL		
+insfilingcodesubtype	Descript	varchar	YES			
+insplan	PlanNum	bigint	NO	PRI		
+insplan	GroupName	varchar	YES			
+insplan	GroupNum	varchar	YES			
+insplan	PlanNote	text	NO			
+insplan	FeeSched	bigint	NO	MUL		
+insplan	PlanType	char	YES			
+insplan	ClaimFormNum	bigint	NO			
+insplan	UseAltCode	tinyint	NO			
+insplan	ClaimsUseUCR	tinyint	NO			
+insplan	CopayFeeSched	bigint	NO	MUL		
+insplan	EmployerNum	bigint	NO			
+insplan	CarrierNum	bigint	NO	MUL		
+insplan	AllowedFeeSched	bigint	NO	MUL		
+insplan	TrojanID	varchar	YES	MUL		
+insplan	DivisionNo	varchar	YES			
+insplan	IsMedical	tinyint	NO			
+insplan	FilingCode	bigint	NO			
+insplan	DentaideCardSequence	tinyint	NO			
+insplan	ShowBaseUnits	tinyint	NO			
+insplan	CodeSubstNone	tinyint	NO			
+insplan	IsHidden	tinyint	NO			
+insplan	MonthRenew	tinyint	NO			
+insplan	FilingCodeSubtype	bigint	NO	MUL		
+insplan	CanadianPlanFlag	varchar	NO			
+insplan	CanadianDiagnosticCode	varchar	NO			
+insplan	CanadianInstitutionCode	varchar	NO			
+insplan	RxBIN	varchar	NO			
+insplan	CobRule	tinyint	NO			
+insplan	SopCode	varchar	NO			
+insplan	SecUserNumEntry	bigint	NO	MUL		
+insplan	SecDateEntry	date	NO			
+insplan	SecDateTEdit	timestamp	NO			
+insplan	HideFromVerifyList	tinyint	NO			
+insplan	OrthoType	tinyint	NO			
+insplan	OrthoAutoProcFreq	tinyint	NO			
+insplan	OrthoAutoProcCodeNumOverride	bigint	NO	MUL		
+insplan	OrthoAutoFeeBilled	double	NO			
+insplan	OrthoAutoClaimDaysWait	int	NO			
+insplan	BillingType	bigint	NO	MUL		
+insplan	HasPpoSubstWriteoffs	tinyint	NO			
+insplan	ExclusionFeeRule	tinyint	NO			
+insplan	ManualFeeSchedNum	bigint	NO	MUL		
+insplan	IsBlueBookEnabled	tinyint	NO			
+insplan	InsPlansZeroWriteOffsOnAnnualMaxOverride	tinyint	NO			
+insplan	InsPlansZeroWriteOffsOnFreqOrAgingOverride	tinyint	NO			
+insplan	PerVisitPatAmount	double	NO			
+insplan	PerVisitInsAmount	double	NO			
+insplanpreference	InsPlanPrefNum	bigint	NO	PRI		
+insplanpreference	PlanNum	bigint	NO	MUL		
+insplanpreference	FKey	bigint	NO	MUL		
+insplanpreference	FKeyType	tinyint	NO			
+insplanpreference	ValueString	text	NO			
+inssub	InsSubNum	bigint	NO	PRI		
+inssub	PlanNum	bigint	NO	MUL		
+inssub	Subscriber	bigint	NO	MUL		
+inssub	DateEffective	date	NO			
+inssub	DateTerm	date	NO			
+inssub	ReleaseInfo	tinyint	NO			
+inssub	AssignBen	tinyint	NO			
+inssub	SubscriberID	varchar	NO			
+inssub	BenefitNotes	text	NO			
+inssub	SubscNote	text	NO			
+inssub	SecUserNumEntry	bigint	NO	MUL		
+inssub	SecDateEntry	date	NO			
+inssub	SecDateTEdit	timestamp	NO			
+installmentplan	InstallmentPlanNum	bigint	NO	PRI		
+installmentplan	PatNum	bigint	NO	MUL		
+installmentplan	DateAgreement	date	NO			
+installmentplan	DateFirstPayment	date	NO			
+installmentplan	MonthlyPayment	double	NO			
+installmentplan	APR	float	NO			
+installmentplan	Note	varchar	NO			
+insverify	InsVerifyNum	bigint	NO	PRI		
+insverify	DateLastVerified	date	NO			
+insverify	UserNum	bigint	NO	MUL		
+insverify	VerifyType	tinyint	NO	MUL		
+insverify	FKey	bigint	NO	MUL		
+insverify	DefNum	bigint	NO	MUL		
+insverify	Note	text	NO			
+insverify	DateLastAssigned	date	NO	MUL		
+insverify	DateTimeEntry	datetime	NO	MUL		
+insverify	HoursAvailableForVerification	double	NO			
+insverify	SecDateTEdit	timestamp	NO	MUL		
+insverify	SecurityHash	varchar	NO			
+insverifyhist	InsVerifyHistNum	bigint	NO	PRI		
+insverifyhist	InsVerifyNum	bigint	NO	MUL		
+insverifyhist	DateLastVerified	date	NO			
+insverifyhist	UserNum	bigint	NO	MUL		
+insverifyhist	VerifyType	tinyint	NO			
+insverifyhist	FKey	bigint	NO	MUL		
+insverifyhist	DefNum	bigint	NO	MUL		
+insverifyhist	Note	text	NO			
+insverifyhist	DateLastAssigned	date	NO			
+insverifyhist	DateTimeEntry	datetime	NO			
+insverifyhist	HoursAvailableForVerification	double	NO			
+insverifyhist	VerifyUserNum	bigint	NO	MUL		
+insverifyhist	SecDateTEdit	timestamp	NO	MUL		
+insverifyhist	SecurityHash	varchar	NO			
+intervention	InterventionNum	bigint	NO	PRI		
+intervention	PatNum	bigint	NO	MUL		
+intervention	ProvNum	bigint	NO	MUL		
+intervention	CodeValue	varchar	NO	MUL		
+intervention	CodeSystem	varchar	NO			
+intervention	Note	text	NO			
+intervention	DateEntry	date	NO			
+intervention	CodeSet	tinyint	NO			
+intervention	IsPatDeclined	tinyint	NO			
+journalentry	JournalEntryNum	bigint	NO	PRI		
+journalentry	TransactionNum	bigint	NO	MUL		
+journalentry	AccountNum	bigint	NO	MUL		
+journalentry	DateDisplayed	date	NO			
+journalentry	DebitAmt	double	NO			
+journalentry	CreditAmt	double	NO			
+journalentry	Memo	text	YES			
+journalentry	Splits	text	YES			
+journalentry	CheckNumber	varchar	YES			
+journalentry	ReconcileNum	bigint	NO			
+journalentry	SecUserNumEntry	bigint	NO	MUL		
+journalentry	SecDateTEntry	datetime	NO			
+journalentry	SecUserNumEdit	bigint	NO	MUL		
+journalentry	SecDateTEdit	timestamp	NO			
+labcase	LabCaseNum	bigint	NO	PRI		
+labcase	PatNum	bigint	NO			
+labcase	LaboratoryNum	bigint	NO			
+labcase	AptNum	bigint	NO	MUL		
+labcase	PlannedAptNum	bigint	NO			
+labcase	DateTimeDue	datetime	NO			
+labcase	DateTimeCreated	datetime	NO			
+labcase	DateTimeSent	datetime	NO			
+labcase	DateTimeRecd	datetime	NO			
+labcase	DateTimeChecked	datetime	NO			
+labcase	ProvNum	bigint	NO			
+labcase	Instructions	text	YES			
+labcase	LabFee	double	NO			
+labcase	DateTStamp	timestamp	NO			
+labcase	InvoiceNum	varchar	NO			
+laboratory	LaboratoryNum	bigint	NO	PRI		
+laboratory	Description	varchar	YES			
+laboratory	Phone	varchar	YES			
+laboratory	Notes	text	YES			
+laboratory	Slip	bigint	NO			
+laboratory	Address	varchar	NO			
+laboratory	City	varchar	NO			
+laboratory	State	varchar	NO			
+laboratory	Zip	varchar	NO			
+laboratory	Email	varchar	NO			
+laboratory	WirelessPhone	varchar	NO			
+laboratory	IsHidden	tinyint	NO			
+labpanel	LabPanelNum	bigint	NO	PRI		
+labpanel	PatNum	bigint	NO	MUL		
+labpanel	RawMessage	text	NO			
+labpanel	LabNameAddress	varchar	NO			
+labpanel	DateTStamp	timestamp	NO			
+labpanel	SpecimenCondition	varchar	NO			
+labpanel	SpecimenSource	varchar	NO			
+labpanel	ServiceId	varchar	NO			
+labpanel	ServiceName	varchar	NO			
+labpanel	MedicalOrderNum	bigint	NO	MUL		
+labresult	LabResultNum	bigint	NO	PRI		
+labresult	LabPanelNum	bigint	NO	MUL		
+labresult	DateTimeTest	datetime	NO			
+labresult	TestName	varchar	NO			
+labresult	DateTStamp	timestamp	NO			
+labresult	TestID	varchar	NO			
+labresult	ObsValue	varchar	NO			
+labresult	ObsUnits	varchar	NO			
+labresult	ObsRange	varchar	NO			
+labresult	AbnormalFlag	tinyint	NO			
+labturnaround	LabTurnaroundNum	bigint	NO	PRI		
+labturnaround	LaboratoryNum	bigint	NO			
+labturnaround	Description	varchar	YES			
+labturnaround	DaysPublished	smallint	NO			
+labturnaround	DaysActual	smallint	NO			
+language	LanguageNum	bigint	NO	PRI		
+language	EnglishComments	text	YES			
+language	ClassType	text	YES			
+language	English	text	YES			
+language	IsObsolete	tinyint	NO			
+languageforeign	LanguageForeignNum	bigint	NO	PRI		
+languageforeign	ClassType	text	YES			
+languageforeign	English	text	YES			
+languageforeign	Culture	varchar	YES			
+languageforeign	Translation	text	YES			
+languageforeign	Comments	text	YES			
+languagepat	LanguagePatNum	bigint	NO	PRI		
+languagepat	PrefName	varchar	NO	MUL		
+languagepat	Language	varchar	NO			
+languagepat	Translation	text	NO			
+languagepat	EFormFieldDefNum	bigint	NO	MUL		
+letter	LetterNum	bigint	NO	PRI		
+letter	Description	varchar	YES			
+letter	BodyText	text	YES			
+lettermerge	LetterMergeNum	bigint	NO	PRI		
+lettermerge	Description	varchar	YES			
+lettermerge	TemplateName	varchar	YES			
+lettermerge	DataFileName	varchar	YES			
+lettermerge	Category	bigint	NO			
+lettermerge	ImageFolder	bigint	NO			
+lettermergefield	FieldNum	bigint	NO	PRI		
+lettermergefield	LetterMergeNum	bigint	NO			
+lettermergefield	FieldName	varchar	YES			
+limitedbetafeature	LimitedBetaFeatureNum	bigint	NO	PRI		
+limitedbetafeature	LimitedBetaFeatureTypeNum	bigint	NO	MUL		
+limitedbetafeature	ClinicNum	bigint	NO	MUL		
+limitedbetafeature	IsSignedUp	tinyint	NO			
+loginattempt	LoginAttemptNum	bigint	NO	PRI		
+loginattempt	UserName	varchar	NO	MUL		
+loginattempt	LoginType	tinyint	NO			
+loginattempt	DateTFail	datetime	NO			
+loinc	LoincNum	bigint	NO	PRI		
+loinc	LoincCode	varchar	NO	MUL		
+loinc	Component	varchar	NO			
+loinc	PropertyObserved	varchar	NO			
+loinc	TimeAspct	varchar	NO			
+loinc	SystemMeasured	varchar	NO			
+loinc	ScaleType	varchar	NO			
+loinc	MethodType	varchar	NO			
+loinc	StatusOfCode	varchar	NO			
+loinc	NameShort	varchar	NO			
+loinc	ClassType	varchar	NO			
+loinc	UnitsRequired	tinyint	NO			
+loinc	OrderObs	varchar	NO			
+loinc	HL7FieldSubfieldID	varchar	NO			
+loinc	ExternalCopyrightNotice	text	NO			
+loinc	NameLongCommon	varchar	NO			
+loinc	UnitsUCUM	varchar	NO			
+loinc	RankCommonTests	int	NO			
+loinc	RankCommonOrders	int	NO			
+medicalorder	MedicalOrderNum	bigint	NO	PRI		
+medicalorder	MedOrderType	tinyint	NO			
+medicalorder	PatNum	bigint	NO	MUL		
+medicalorder	DateTimeOrder	datetime	NO			
+medicalorder	Description	varchar	NO			
+medicalorder	IsDiscontinued	tinyint	NO			
+medicalorder	ProvNum	bigint	NO	MUL		
+medication	MedicationNum	bigint	NO	PRI		
+medication	MedName	varchar	YES			
+medication	GenericNum	bigint	NO			
+medication	Notes	text	YES			
+medication	DateTStamp	timestamp	NO			
+medication	RxCui	bigint	NO	MUL		
+medication	IsHidden	tinyint	NO			
+medicationpat	MedicationPatNum	bigint	NO	PRI		
+medicationpat	PatNum	bigint	NO	MUL		
+medicationpat	MedicationNum	bigint	NO			
+medicationpat	PatNote	text	YES			
+medicationpat	DateTStamp	timestamp	NO			
+medicationpat	DateStart	date	NO			
+medicationpat	DateStop	date	NO			
+medicationpat	ProvNum	bigint	NO	MUL		
+medicationpat	MedDescript	varchar	NO			
+medicationpat	RxCui	bigint	NO	MUL		
+medicationpat	ErxGuid	varchar	NO			
+medicationpat	IsCpoe	tinyint	NO			
+medlab	MedLabNum	bigint	NO	PRI		
+medlab	SendingApp	varchar	NO			
+medlab	SendingFacility	varchar	NO			
+medlab	PatNum	bigint	NO	MUL		
+medlab	ProvNum	bigint	NO	MUL		
+medlab	PatIDLab	varchar	NO			
+medlab	PatIDAlt	varchar	NO			
+medlab	PatAge	varchar	NO			
+medlab	PatAccountNum	varchar	NO			
+medlab	PatFasting	tinyint	NO			
+medlab	SpecimenID	varchar	NO			
+medlab	SpecimenIDFiller	varchar	NO			
+medlab	ObsTestID	varchar	NO			
+medlab	ObsTestDescript	varchar	NO			
+medlab	ObsTestLoinc	varchar	NO			
+medlab	ObsTestLoincText	varchar	NO			
+medlab	DateTimeCollected	datetime	NO			
+medlab	TotalVolume	varchar	NO			
+medlab	ActionCode	varchar	NO			
+medlab	ClinicalInfo	varchar	NO			
+medlab	DateTimeEntered	datetime	NO			
+medlab	OrderingProvNPI	varchar	NO			
+medlab	OrderingProvLocalID	varchar	NO			
+medlab	OrderingProvLName	varchar	NO			
+medlab	OrderingProvFName	varchar	NO			
+medlab	SpecimenIDAlt	varchar	NO			
+medlab	DateTimeReported	datetime	NO			
+medlab	ResultStatus	varchar	NO			
+medlab	ParentObsID	varchar	NO			
+medlab	ParentObsTestID	varchar	NO			
+medlab	NotePat	text	NO			
+medlab	NoteLab	text	NO			
+medlab	FileName	varchar	NO			
+medlab	OriginalPIDSegment	text	NO			
+medlabfacattach	MedLabFacAttachNum	bigint	NO	PRI		
+medlabfacattach	MedLabNum	bigint	NO	MUL		
+medlabfacattach	MedLabResultNum	bigint	NO	MUL		
+medlabfacattach	MedLabFacilityNum	bigint	NO	MUL		
+medlabfacility	MedLabFacilityNum	bigint	NO	PRI		
+medlabfacility	FacilityName	varchar	NO			
+medlabfacility	Address	varchar	NO			
+medlabfacility	City	varchar	NO			
+medlabfacility	State	varchar	NO			
+medlabfacility	Zip	varchar	NO			
+medlabfacility	Phone	varchar	NO			
+medlabfacility	DirectorTitle	varchar	NO			
+medlabfacility	DirectorLName	varchar	NO			
+medlabfacility	DirectorFName	varchar	NO			
+medlabresult	MedLabResultNum	bigint	NO	PRI		
+medlabresult	MedLabNum	bigint	NO	MUL		
+medlabresult	ObsID	varchar	NO			
+medlabresult	ObsText	varchar	NO			
+medlabresult	ObsLoinc	varchar	NO			
+medlabresult	ObsLoincText	varchar	NO			
+medlabresult	ObsIDSub	varchar	NO			
+medlabresult	ObsValue	text	NO			
+medlabresult	ObsSubType	varchar	NO			
+medlabresult	ObsUnits	varchar	NO			
+medlabresult	ReferenceRange	varchar	NO			
+medlabresult	AbnormalFlag	varchar	NO			
+medlabresult	ResultStatus	varchar	NO			
+medlabresult	DateTimeObs	datetime	NO			
+medlabresult	FacilityID	varchar	NO			
+medlabresult	DocNum	bigint	NO	MUL		
+medlabresult	Note	text	NO			
+medlabspecimen	MedLabSpecimenNum	bigint	NO	PRI		
+medlabspecimen	MedLabNum	bigint	NO	MUL		
+medlabspecimen	SpecimenID	varchar	NO			
+medlabspecimen	SpecimenDescript	varchar	NO			
+medlabspecimen	DateTimeCollected	datetime	NO			
+mobileappdevice	MobileAppDeviceNum	bigint	NO	PRI		
+mobileappdevice	ClinicNum	bigint	NO	MUL		
+mobileappdevice	DeviceName	varchar	NO			
+mobileappdevice	UniqueID	varchar	NO			
+mobileappdevice	IsEclipboardEnabled	tinyint	NO			
+mobileappdevice	EclipboardLastAttempt	datetime	NO			
+mobileappdevice	EclipboardLastLogin	datetime	NO			
+mobileappdevice	PatNum	bigint	NO	MUL		
+mobileappdevice	LastCheckInActivity	datetime	NO			
+mobileappdevice	IsBYODDevice	tinyint	NO			
+mobileappdevice	DevicePage	tinyint	NO			
+mobileappdevice	UserNum	bigint	NO	MUL		
+mobileappdevice	IsODTouchEnabled	tinyint	NO			
+mobileappdevice	ODTouchLastLogin	datetime	NO			
+mobileappdevice	ODTouchLastAttempt	datetime	NO			
+mobilebrandingprofile	MobileBrandingProfileNum	bigint	NO	PRI		
+mobilebrandingprofile	ClinicNum	bigint	NO	MUL		
+mobilebrandingprofile	OfficeDescription	varchar	NO			
+mobilebrandingprofile	LogoFilePath	varchar	NO			
+mobilebrandingprofile	DateTStamp	timestamp	NO			
+mobiledatabyte	MobileDataByteNum	bigint	NO	PRI		
+mobiledatabyte	RawBase64Data	mediumtext	NO			
+mobiledatabyte	RawBase64Code	mediumtext	NO	MUL		
+mobiledatabyte	RawBase64Tag	mediumtext	NO			
+mobiledatabyte	PatNum	bigint	NO	MUL		
+mobiledatabyte	ActionType	tinyint	NO			
+mobiledatabyte	DateTimeEntry	datetime	NO			
+mobiledatabyte	DateTimeExpires	datetime	NO			
+mobilenotification	MobileNotificationNum	bigint	NO	PRI		
+mobilenotification	NotificationType	tinyint	NO			
+mobilenotification	DeviceId	varchar	NO			
+mobilenotification	PrimaryKeys	text	NO			
+mobilenotification	Tags	text	NO			
+mobilenotification	DateTimeEntry	datetime	NO			
+mobilenotification	DateTimeExpires	datetime	NO			
+mobilenotification	AppTarget	tinyint	NO			
+mount	MountNum	bigint	NO	PRI		
+mount	PatNum	bigint	NO	MUL		
+mount	DocCategory	bigint	NO			
+mount	DateCreated	datetime	NO			
+mount	Description	varchar	NO			
+mount	Note	text	NO			
+mount	Width	int	NO			
+mount	Height	int	NO			
+mount	ColorBack	int	NO			
+mount	ProvNum	bigint	NO			
+mount	ColorFore	int	NO			
+mount	ColorTextBack	int	NO			
+mount	FlipOnAcquire	tinyint	NO			
+mount	AdjModeAfterSeries	tinyint	NO			
+mountdef	MountDefNum	bigint	NO	PRI		
+mountdef	Description	varchar	YES			
+mountdef	ItemOrder	int	NO			
+mountdef	Width	int	NO			
+mountdef	Height	int	NO			
+mountdef	ColorBack	int	NO			
+mountdef	ColorFore	int	NO			
+mountdef	ColorTextBack	int	NO			
+mountdef	ScaleValue	varchar	NO			
+mountdef	DefaultCat	bigint	NO			
+mountdef	FlipOnAcquire	tinyint	NO			
+mountdef	AdjModeAfterSeries	tinyint	NO			
+mountitem	MountItemNum	bigint	NO	PRI		
+mountitem	MountNum	bigint	NO	MUL		
+mountitem	Xpos	int	NO			
+mountitem	Ypos	int	NO			
+mountitem	ItemOrder	int	NO			
+mountitem	Width	int	NO			
+mountitem	Height	int	NO			
+mountitem	RotateOnAcquire	int	NO			
+mountitem	ToothNumbers	varchar	NO			
+mountitem	TextShowing	text	NO			
+mountitem	FontSize	float	NO			
+mountitemdef	MountItemDefNum	bigint	NO	PRI		
+mountitemdef	MountDefNum	bigint	NO			
+mountitemdef	Xpos	int	NO			
+mountitemdef	Ypos	int	NO			
+mountitemdef	Width	int	NO			
+mountitemdef	Height	int	NO			
+mountitemdef	ItemOrder	int	NO			
+mountitemdef	RotateOnAcquire	int	NO			
+mountitemdef	ToothNumbers	varchar	NO			
+mountitemdef	TextShowing	text	NO			
+mountitemdef	FontSize	float	NO			
+msgtopaysent	MsgToPaySentNum	bigint	NO	PRI		
+msgtopaysent	PatNum	bigint	NO	MUL		
+msgtopaysent	ClinicNum	bigint	NO	MUL		
+msgtopaysent	SendStatus	tinyint	NO			
+msgtopaysent	Source	tinyint	NO	MUL		
+msgtopaysent	MessageType	tinyint	NO			
+msgtopaysent	MessageFk	bigint	NO	MUL		
+msgtopaysent	Subject	text	NO			
+msgtopaysent	Message	text	NO			
+msgtopaysent	EmailType	tinyint	NO			
+msgtopaysent	DateTimeEntry	datetime	NO			
+msgtopaysent	DateTimeSent	datetime	NO	MUL		
+msgtopaysent	ResponseDescript	text	NO			
+msgtopaysent	ApptReminderRuleNum	bigint	NO			
+msgtopaysent	ShortGUID	varchar	NO			
+msgtopaysent	DateTimeSendFailed	datetime	NO			
+msgtopaysent	ApptNum	bigint	NO	MUL		
+msgtopaysent	ApptDateTime	datetime	NO			
+msgtopaysent	TSPrior	bigint	NO	MUL		
+msgtopaysent	StatementNum	bigint	NO	MUL		
+oidexternal	OIDExternalNum	bigint	NO	PRI		
+oidexternal	IDType	varchar	NO	MUL		
+oidexternal	IDInternal	bigint	NO			
+oidexternal	IDExternal	varchar	NO			
+oidexternal	rootExternal	varchar	NO	MUL		
+oidinternal	OIDInternalNum	bigint	NO	PRI		
+oidinternal	IDType	varchar	NO			
+oidinternal	IDRoot	varchar	NO			
+operatory	OperatoryNum	bigint	NO	PRI		
+operatory	OpName	varchar	YES			
+operatory	Abbrev	varchar	YES			
+operatory	ItemOrder	smallint	NO			
+operatory	IsHidden	tinyint	NO			
+operatory	ProvDentist	bigint	NO	MUL		
+operatory	ProvHygienist	bigint	NO	MUL		
+operatory	IsHygiene	tinyint	NO			
+operatory	ClinicNum	bigint	NO	MUL		
+operatory	DateTStamp	timestamp	NO			
+operatory	SetProspective	tinyint	NO			
+operatory	IsWebSched	tinyint	NO			
+operatory	IsNewPatAppt	tinyint	NO			
+operatory	OperatoryType	bigint	NO	MUL		
+orionproc	OrionProcNum	bigint	NO	PRI		
+orionproc	ProcNum	bigint	NO	MUL		
+orionproc	DPC	tinyint	NO			
+orionproc	DateScheduleBy	date	NO			
+orionproc	DateStopClock	date	NO			
+orionproc	Status2	int	NO			
+orionproc	IsOnCall	tinyint	NO			
+orionproc	IsEffectiveComm	tinyint	NO			
+orionproc	IsRepair	tinyint	NO			
+orionproc	DPCpost	tinyint	NO			
+orthocase	OrthoCaseNum	bigint	NO	PRI		
+orthocase	PatNum	bigint	NO	MUL		
+orthocase	ProvNum	bigint	NO	MUL		
+orthocase	ClinicNum	bigint	NO	MUL		
+orthocase	Fee	double	NO			
+orthocase	FeeInsPrimary	double	NO			
+orthocase	FeePat	double	NO			
+orthocase	BandingDate	date	NO			
+orthocase	DebondDate	date	NO			
+orthocase	DebondDateExpected	date	NO			
+orthocase	IsTransfer	tinyint	NO			
+orthocase	OrthoType	bigint	NO	MUL		
+orthocase	SecDateTEntry	datetime	NO			
+orthocase	SecUserNumEntry	bigint	NO	MUL		
+orthocase	SecDateTEdit	timestamp	NO			
+orthocase	IsActive	tinyint	NO			
+orthocase	FeeInsSecondary	double	NO			
+orthochart	OrthoChartNum	bigint	NO	PRI		
+orthochart	PatNum	bigint	NO	MUL		
+orthochart	DateService	date	NO			
+orthochart	FieldName	varchar	NO			
+orthochart	FieldValue	text	NO			
+orthochart	UserNum	bigint	NO	MUL		
+orthochart	ProvNum	bigint	NO			
+orthochart	OrthoChartRowNum	bigint	NO	MUL		
+orthochartlog	OrthoChartLogNum	bigint	NO	PRI		
+orthochartlog	PatNum	bigint	NO			
+orthochartlog	ComputerName	varchar	NO			
+orthochartlog	DateTimeLog	datetime	NO			
+orthochartlog	DateTimeService	datetime	NO			
+orthochartlog	UserNum	bigint	NO			
+orthochartlog	ProvNum	bigint	NO			
+orthochartlog	OrthoChartRowNum	bigint	NO			
+orthochartlog	LogData	mediumtext	NO			
+orthochartrow	OrthoChartRowNum	bigint	NO	PRI		
+orthochartrow	PatNum	bigint	NO	MUL		
+orthochartrow	DateTimeService	datetime	NO			
+orthochartrow	UserNum	bigint	NO	MUL		
+orthochartrow	ProvNum	bigint	NO	MUL		
+orthochartrow	Signature	text	NO			
+orthocharttab	OrthoChartTabNum	bigint	NO	PRI		
+orthocharttab	TabName	varchar	NO			
+orthocharttab	ItemOrder	int	NO			
+orthocharttab	IsHidden	tinyint	NO			
+orthocharttablink	OrthoChartTabLinkNum	bigint	NO	PRI		
+orthocharttablink	ItemOrder	int	NO			
+orthocharttablink	OrthoChartTabNum	bigint	NO	MUL		
+orthocharttablink	DisplayFieldNum	bigint	NO	MUL		
+orthocharttablink	ColumnWidthOverride	int	NO			
+orthohardware	OrthoHardwareNum	bigint	NO	PRI		
+orthohardware	PatNum	bigint	NO	MUL		
+orthohardware	DateExam	date	NO			
+orthohardware	OrthoHardwareType	tinyint	NO			
+orthohardware	OrthoHardwareSpecNum	bigint	NO			
+orthohardware	ToothRange	varchar	NO			
+orthohardware	Note	varchar	NO			
+orthohardware	IsHidden	tinyint	NO			
+orthohardwarespec	OrthoHardwareSpecNum	bigint	NO	PRI		
+orthohardwarespec	OrthoHardwareType	tinyint	NO			
+orthohardwarespec	Description	varchar	NO			
+orthohardwarespec	ItemColor	int	NO			
+orthohardwarespec	IsHidden	tinyint	NO			
+orthohardwarespec	ItemOrder	int	NO			
+orthoplanlink	OrthoPlanLinkNum	bigint	NO	PRI		
+orthoplanlink	OrthoCaseNum	bigint	NO	MUL		
+orthoplanlink	LinkType	tinyint	NO			
+orthoplanlink	FKey	bigint	NO	MUL		
+orthoplanlink	IsActive	tinyint	NO			
+orthoplanlink	SecDateTEntry	datetime	NO			
+orthoplanlink	SecUserNumEntry	bigint	NO			
+orthoproclink	OrthoProcLinkNum	bigint	NO	PRI		
+orthoproclink	OrthoCaseNum	bigint	NO	MUL		
+orthoproclink	ProcNum	bigint	NO	MUL		
+orthoproclink	SecDateTEntry	datetime	NO			
+orthoproclink	SecUserNumEntry	bigint	NO	MUL		
+orthoproclink	ProcLinkType	tinyint	NO			
+orthorx	OrthoRxNum	bigint	NO	PRI		
+orthorx	OrthoHardwareSpecNum	bigint	NO	MUL		
+orthorx	Description	varchar	NO			
+orthorx	ToothRange	varchar	NO			
+orthorx	ItemOrder	int	NO			
+orthoschedule	OrthoScheduleNum	bigint	NO	PRI		
+orthoschedule	BandingDateOverride	date	NO			
+orthoschedule	DebondDateOverride	date	NO			
+orthoschedule	BandingAmount	double	NO			
+orthoschedule	VisitAmount	double	NO			
+orthoschedule	DebondAmount	double	NO			
+orthoschedule	IsActive	tinyint	NO			
+orthoschedule	SecDateTEdit	timestamp	NO			
+patfield	PatFieldNum	bigint	NO	PRI		
+patfield	PatNum	bigint	NO	MUL		
+patfield	FieldName	varchar	YES			
+patfield	FieldValue	text	YES			
+patfield	SecUserNumEntry	bigint	NO	MUL		
+patfield	SecDateEntry	date	NO			
+patfield	SecDateTEdit	timestamp	NO			
+patfielddef	PatFieldDefNum	bigint	NO	PRI		
+patfielddef	FieldName	varchar	YES			
+patfielddef	FieldType	tinyint	NO			
+patfielddef	PickList	text	NO			
+patfielddef	ItemOrder	int	NO			
+patfielddef	IsHidden	tinyint	NO			
+patfieldpickitem	PatFieldPickItemNum	bigint	NO	PRI		
+patfieldpickitem	PatFieldDefNum	bigint	NO	MUL		
+patfieldpickitem	Name	varchar	NO			
+patfieldpickitem	Abbreviation	varchar	NO			
+patfieldpickitem	IsHidden	tinyint	NO			
+patfieldpickitem	ItemOrder	int	NO			
+patient	PatNum	bigint	NO	PRI		
+patient	LName	varchar	YES	MUL		
+patient	FName	varchar	YES	MUL		
+patient	MiddleI	varchar	YES			
+patient	Preferred	varchar	YES			
+patient	PatStatus	tinyint	NO	MUL		
+patient	Gender	tinyint	NO			
+patient	Position	tinyint	NO			
+patient	Birthdate	date	NO	MUL		
+patient	SSN	varchar	YES			
+patient	Address	varchar	YES			
+patient	Address2	varchar	YES			
+patient	City	varchar	YES			
+patient	State	varchar	YES			
+patient	Zip	varchar	YES			
+patient	HmPhone	varchar	YES	MUL		
+patient	WkPhone	varchar	YES	MUL		
+patient	WirelessPhone	varchar	YES	MUL		
+patient	Guarantor	bigint	NO	MUL		
+patient	CreditType	char	YES			
+patient	Email	varchar	YES	MUL		
+patient	Salutation	varchar	YES			
+patient	EstBalance	double	NO			
+patient	PriProv	bigint	NO	MUL		
+patient	SecProv	bigint	NO	MUL		
+patient	FeeSched	bigint	NO	MUL		
+patient	BillingType	bigint	NO			
+patient	ImageFolder	varchar	YES			
+patient	AddrNote	text	YES			
+patient	FamFinUrgNote	text	YES			
+patient	MedUrgNote	varchar	YES			
+patient	ApptModNote	varchar	YES			
+patient	StudentStatus	char	YES			
+patient	SchoolName	varchar	NO			
+patient	ChartNumber	varchar	NO	MUL		
+patient	MedicaidID	varchar	YES			
+patient	Bal_0_30	double	NO			
+patient	Bal_31_60	double	NO			
+patient	Bal_61_90	double	NO			
+patient	BalOver90	double	NO			
+patient	InsEst	double	NO			
+patient	BalTotal	double	NO			
+patient	EmployerNum	bigint	NO			
+patient	EmploymentNote	varchar	YES			
+patient	County	varchar	YES			
+patient	GradeLevel	tinyint	NO			
+patient	Urgency	tinyint	NO			
+patient	DateFirstVisit	date	NO			
+patient	ClinicNum	bigint	NO	MUL		
+patient	HasIns	varchar	YES			
+patient	TrophyFolder	varchar	YES			
+patient	PlannedIsDone	tinyint	NO			
+patient	Premed	tinyint	NO			
+patient	Ward	varchar	YES			
+patient	PreferConfirmMethod	tinyint	NO			
+patient	PreferContactMethod	tinyint	NO			
+patient	PreferRecallMethod	tinyint	NO			
+patient	SchedBeforeTime	time	YES			
+patient	SchedAfterTime	time	YES			
+patient	SchedDayOfWeek	tinyint	NO			
+patient	Language	varchar	YES			
+patient	AdmitDate	date	NO			
+patient	Title	varchar	YES			
+patient	PayPlanDue	double	NO			
+patient	SiteNum	bigint	NO	MUL		
+patient	DateTStamp	timestamp	NO			
+patient	ResponsParty	bigint	NO	MUL		
+patient	CanadianEligibilityCode	tinyint	NO			
+patient	AskToArriveEarly	int	NO			
+patient	PreferContactConfidential	tinyint	NO			
+patient	SuperFamily	bigint	NO	MUL		
+patient	TxtMsgOk	tinyint	NO			
+patient	SmokingSnoMed	varchar	NO			
+patient	Country	varchar	NO			
+patient	DateTimeDeceased	datetime	NO			
+patient	BillingCycleDay	int	NO			
+patient	SecUserNumEntry	bigint	NO	MUL		
+patient	SecDateEntry	date	NO	MUL		
+patient	HasSuperBilling	tinyint	NO			
+patient	PatNumCloneFrom	bigint	NO	MUL		
+patient	DiscountPlanNum	bigint	NO	MUL		
+patient	HasSignedTil	tinyint	NO			
+patient	ShortCodeOptIn	tinyint	NO			
+patient	SecurityHash	varchar	NO			
+patientlink	PatientLinkNum	bigint	NO	PRI		
+patientlink	PatNumFrom	bigint	NO	MUL		
+patientlink	PatNumTo	bigint	NO	MUL		
+patientlink	LinkType	tinyint	NO			
+patientlink	DateTimeLink	datetime	NO			
+patientnote	PatNum	bigint	NO	PRI		
+patientnote	FamFinancial	text	YES			
+patientnote	ApptPhone	text	YES			
+patientnote	Medical	text	YES			
+patientnote	Service	text	YES			
+patientnote	MedicalComp	text	YES			
+patientnote	Treatment	text	YES			
+patientnote	ICEName	varchar	NO			
+patientnote	ICEPhone	varchar	NO			
+patientnote	OrthoMonthsTreatOverride	int	NO			
+patientnote	DateOrthoPlacementOverride	date	NO			
+patientnote	SecDateTEntry	datetime	NO	MUL		
+patientnote	SecDateTEdit	timestamp	NO	MUL		
+patientnote	Consent	tinyint	NO			
+patientnote	UserNumOrthoLocked	bigint	NO			
+patientnote	Pronoun	tinyint	NO			
+patientportalinvite	PatientPortalInviteNum	bigint	NO	PRI		
+patientportalinvite	PatNum	bigint	NO	MUL		
+patientportalinvite	ApptNum	bigint	NO	MUL		
+patientportalinvite	ClinicNum	bigint	NO	MUL		
+patientportalinvite	DateTimeEntry	datetime	NO			
+patientportalinvite	TSPrior	bigint	NO			
+patientportalinvite	SendStatus	tinyint	NO			
+patientportalinvite	MessageFk	bigint	NO	MUL		
+patientportalinvite	ResponseDescript	text	NO			
+patientportalinvite	MessageType	tinyint	NO			
+patientportalinvite	DateTimeSent	datetime	NO			
+patientportalinvite	ApptReminderRuleNum	bigint	NO	MUL		
+patientportalinvite	ApptDateTime	datetime	NO			
+patientrace	PatientRaceNum	bigint	NO	PRI		
+patientrace	PatNum	bigint	NO	MUL		
+patientrace	Race	tinyint	NO			
+patientrace	CdcrecCode	varchar	NO	MUL		
+patplan	PatPlanNum	bigint	NO	PRI		
+patplan	PatNum	bigint	NO	MUL		
+patplan	Ordinal	tinyint	NO			
+patplan	IsPending	tinyint	NO			
+patplan	Relationship	tinyint	NO			
+patplan	PatID	varchar	YES			
+patplan	InsSubNum	bigint	NO	MUL		
+patplan	OrthoAutoFeeBilledOverride	double	NO			
+patplan	OrthoAutoNextClaimDate	date	NO			
+patplan	SecDateTEntry	datetime	NO	MUL		
+patplan	SecDateTEdit	timestamp	NO	MUL		
+patrestriction	PatRestrictionNum	bigint	NO	PRI		
+patrestriction	PatNum	bigint	NO	MUL		
+patrestriction	PatRestrictType	tinyint	NO			
+payconnectresponseweb	PayConnectResponseWebNum	bigint	NO	PRI		
+payconnectresponseweb	PatNum	bigint	NO	MUL		
+payconnectresponseweb	PayNum	bigint	NO	MUL		
+payconnectresponseweb	AccountToken	varchar	NO			
+payconnectresponseweb	PaymentToken	varchar	NO			
+payconnectresponseweb	ProcessingStatus	varchar	NO			
+payconnectresponseweb	DateTimeEntry	datetime	NO			
+payconnectresponseweb	DateTimePending	datetime	NO			
+payconnectresponseweb	DateTimeCompleted	datetime	NO			
+payconnectresponseweb	DateTimeExpired	datetime	NO			
+payconnectresponseweb	DateTimeLastError	datetime	NO			
+payconnectresponseweb	LastResponseStr	text	NO			
+payconnectresponseweb	CCSource	tinyint	NO			
+payconnectresponseweb	Amount	double	NO			
+payconnectresponseweb	PayNote	varchar	NO			
+payconnectresponseweb	IsTokenSaved	tinyint	NO			
+payconnectresponseweb	PayToken	varchar	NO			
+payconnectresponseweb	ExpDateToken	varchar	NO			
+payconnectresponseweb	RefNumber	varchar	NO			
+payconnectresponseweb	TransType	varchar	NO			
+payconnectresponseweb	EmailResponse	varchar	NO			
+payconnectresponseweb	LogGuid	varchar	YES			
+payment	PayNum	bigint	NO	PRI		
+payment	PayType	bigint	NO	MUL		
+payment	PayDate	date	NO			
+payment	PayAmt	double	NO			
+payment	CheckNum	varchar	YES			
+payment	BankBranch	varchar	YES			
+payment	PayNote	text	NO			
+payment	IsSplit	tinyint	NO			
+payment	PatNum	bigint	NO	MUL		
+payment	ClinicNum	bigint	NO	MUL		
+payment	DateEntry	date	NO			
+payment	DepositNum	bigint	NO	MUL		
+payment	Receipt	text	NO			
+payment	IsRecurringCC	tinyint	NO			
+payment	SecUserNumEntry	bigint	NO	MUL		
+payment	SecDateTEdit	timestamp	NO			
+payment	PaymentSource	tinyint	NO			
+payment	ProcessStatus	tinyint	NO	MUL		
+payment	RecurringChargeDate	date	NO			
+payment	ExternalId	varchar	NO			
+payment	PaymentStatus	tinyint	NO			
+payment	IsCcCompleted	tinyint	NO			
+payment	MerchantFee	double	NO			
+payortype	PayorTypeNum	bigint	NO	PRI		
+payortype	PatNum	bigint	NO	MUL		
+payortype	DateStart	date	NO			
+payortype	SopCode	varchar	NO	MUL		
+payortype	Note	text	NO			
+payperiod	PayPeriodNum	bigint	NO	PRI		
+payperiod	DateStart	date	NO			
+payperiod	DateStop	date	NO			
+payperiod	DatePaycheck	date	NO			
+payplan	PayPlanNum	bigint	NO	PRI		
+payplan	PatNum	bigint	NO	MUL		
+payplan	Guarantor	bigint	NO	MUL		
+payplan	PayPlanDate	date	NO			
+payplan	APR	double	NO			
+payplan	Note	text	YES			
+payplan	PlanNum	bigint	NO	MUL		
+payplan	CompletedAmt	double	NO			
+payplan	InsSubNum	bigint	NO	MUL		
+payplan	PaySchedule	tinyint	NO			
+payplan	NumberOfPayments	int	NO			
+payplan	PayAmt	double	NO			
+payplan	DownPayment	double	NO			
+payplan	IsClosed	tinyint	NO			
+payplan	Signature	text	NO			
+payplan	SigIsTopaz	tinyint	NO			
+payplan	PlanCategory	bigint	NO	MUL		
+payplan	IsDynamic	tinyint	NO			
+payplan	ChargeFrequency	tinyint	NO			
+payplan	DatePayPlanStart	date	NO			
+payplan	IsLocked	tinyint	NO			
+payplan	DateInterestStart	date	NO			
+payplan	DynamicPayPlanTPOption	tinyint	NO			
+payplan	MobileAppDeviceNum	bigint	NO	MUL		
+payplan	SecurityHash	varchar	NO			
+payplan	SheetDefNum	bigint	NO			
+payplancharge	PayPlanChargeNum	bigint	NO	PRI		
+payplancharge	PayPlanNum	bigint	NO	MUL		
+payplancharge	Guarantor	bigint	NO	MUL		
+payplancharge	PatNum	bigint	NO	MUL		
+payplancharge	ChargeDate	date	NO			
+payplancharge	Principal	double	NO			
+payplancharge	Interest	double	NO			
+payplancharge	Note	text	YES			
+payplancharge	ProvNum	bigint	NO			
+payplancharge	ClinicNum	bigint	NO	MUL		
+payplancharge	ChargeType	tinyint	NO			
+payplancharge	ProcNum	bigint	NO	MUL		
+payplancharge	SecDateTEntry	datetime	NO			
+payplancharge	SecDateTEdit	timestamp	NO	MUL		
+payplancharge	StatementNum	bigint	NO	MUL		
+payplancharge	FKey	bigint	NO	MUL		
+payplancharge	LinkType	tinyint	NO			
+payplancharge	IsOffset	tinyint	NO			
+payplancharge	IsDownPayment	tinyint	NO			
+payplanlink	PayPlanLinkNum	bigint	NO	PRI		
+payplanlink	PayPlanNum	bigint	NO	MUL		
+payplanlink	LinkType	tinyint	NO			
+payplanlink	FKey	bigint	NO	MUL		
+payplanlink	AmountOverride	double	NO			
+payplanlink	SecDateTEntry	datetime	NO			
+payplantemplate	PayPlanTemplateNum	bigint	NO	PRI		
+payplantemplate	PayPlanTemplateName	varchar	NO			
+payplantemplate	ClinicNum	bigint	NO	MUL		
+payplantemplate	APR	double	NO			
+payplantemplate	InterestDelay	int	NO			
+payplantemplate	PayAmt	double	NO			
+payplantemplate	NumberOfPayments	int	NO			
+payplantemplate	ChargeFrequency	tinyint	NO			
+payplantemplate	DownPayment	double	NO			
+payplantemplate	DynamicPayPlanTPOption	tinyint	NO			
+payplantemplate	Note	varchar	NO			
+payplantemplate	IsHidden	tinyint	NO			
+payplantemplate	SheetDefNum	bigint	NO			
+paysplit	SplitNum	bigint	NO	PRI		
+paysplit	SplitAmt	double	NO			
+paysplit	PatNum	bigint	NO	MUL		
+paysplit	ProcDate	date	NO			
+paysplit	PayNum	bigint	NO	MUL		
+paysplit	IsDiscount	tinyint	NO			
+paysplit	DiscountType	tinyint	NO			
+paysplit	ProvNum	bigint	NO	MUL		
+paysplit	PayPlanNum	bigint	NO	MUL		
+paysplit	DatePay	date	NO	MUL		
+paysplit	ProcNum	bigint	NO	MUL		
+paysplit	DateEntry	date	NO			
+paysplit	UnearnedType	bigint	NO			
+paysplit	ClinicNum	bigint	NO	MUL		
+paysplit	SecUserNumEntry	bigint	NO	MUL		
+paysplit	SecDateTEdit	timestamp	NO	MUL		
+paysplit	FSplitNum	bigint	NO	MUL		
+paysplit	AdjNum	bigint	NO	MUL		
+paysplit	PayPlanChargeNum	bigint	NO	MUL		
+paysplit	PayPlanDebitType	tinyint	NO			
+paysplit	SecurityHash	varchar	NO			
+payterminal	PayTerminalNum	bigint	NO	PRI		
+payterminal	Name	varchar	NO			
+payterminal	ClinicNum	bigint	NO	MUL		
+payterminal	TerminalID	varchar	NO			
+pearlrequest	PearlRequestNum	bigint	NO	PRI		
+pearlrequest	RequestId	varchar	NO			
+pearlrequest	DocNum	bigint	NO			
+pearlrequest	RequestStatus	tinyint	NO	MUL		
+pearlrequest	DateTSent	date	NO			
+pearlrequest	DateTChecked	date	NO			
+perioexam	PerioExamNum	bigint	NO	PRI		
+perioexam	PatNum	bigint	NO	MUL		
+perioexam	ExamDate	date	NO			
+perioexam	ProvNum	bigint	NO			
+perioexam	DateTMeasureEdit	datetime	NO			
+perioexam	Note	text	NO			
+periomeasure	PerioMeasureNum	bigint	NO	PRI		
+periomeasure	PerioExamNum	bigint	NO	MUL		
+periomeasure	SequenceType	tinyint	NO			
+periomeasure	IntTooth	smallint	NO			
+periomeasure	ToothValue	smallint	NO			
+periomeasure	MBvalue	smallint	NO			
+periomeasure	Bvalue	smallint	NO			
+periomeasure	DBvalue	smallint	NO			
+periomeasure	MLvalue	smallint	NO			
+periomeasure	Lvalue	smallint	NO			
+periomeasure	DLvalue	smallint	NO			
+periomeasure	SecDateTEntry	datetime	NO	MUL		
+periomeasure	SecDateTEdit	timestamp	NO	MUL		
+pharmacy	PharmacyNum	bigint	NO	PRI		
+pharmacy	PharmID	varchar	YES			
+pharmacy	StoreName	varchar	YES			
+pharmacy	Phone	varchar	YES			
+pharmacy	Fax	varchar	YES			
+pharmacy	Address	varchar	YES			
+pharmacy	Address2	varchar	YES			
+pharmacy	City	varchar	YES			
+pharmacy	State	varchar	YES			
+pharmacy	Zip	varchar	YES			
+pharmacy	Note	text	YES			
+pharmacy	DateTStamp	timestamp	NO			
+pharmclinic	PharmClinicNum	bigint	NO	PRI		
+pharmclinic	PharmacyNum	bigint	NO	MUL		
+pharmclinic	ClinicNum	bigint	NO	MUL		
+phonenumber	PhoneNumberNum	bigint	NO	PRI		
+phonenumber	PatNum	bigint	NO	MUL		
+phonenumber	PhoneNumberVal	varchar	YES	MUL		
+phonenumber	PhoneNumberDigits	varchar	NO	MUL		
+phonenumber	PhoneType	tinyint	NO			
+popup	PopupNum	bigint	NO	PRI		
+popup	PatNum	bigint	NO	MUL		
+popup	Description	text	YES			
+popup	IsDisabled	tinyint	NO			
+popup	PopupLevel	tinyint	NO			
+popup	UserNum	bigint	NO	MUL		
+popup	DateTimeEntry	datetime	NO			
+popup	IsArchived	tinyint	NO			
+popup	PopupNumArchive	bigint	NO	MUL		
+popup	DateTimeDisabled	datetime	NO			
+preference	PrefName	varchar	NO	MUL		
+preference	ValueString	text	NO			
+preference	PrefNum	bigint	NO	PRI		
+preference	Comments	text	YES			
+printer	PrinterNum	bigint	NO	PRI		
+printer	ComputerNum	bigint	NO			
+printer	PrintSit	tinyint	NO			
+printer	PrinterName	varchar	YES			
+printer	DisplayPrompt	tinyint	NO			
+printer	FileExtension	varchar	NO			
+printer	IsVirtualPrinter	tinyint	NO			
+procapptcolor	ProcApptColorNum	bigint	NO	PRI		
+procapptcolor	CodeRange	varchar	NO			
+procapptcolor	ColorText	int	NO			
+procapptcolor	ShowPreviousDate	tinyint	NO			
+procbutton	ProcButtonNum	bigint	NO	PRI		
+procbutton	Description	varchar	YES			
+procbutton	ItemOrder	smallint	NO			
+procbutton	Category	bigint	NO			
+procbutton	ButtonImage	text	YES			
+procbutton	IsMultiVisit	tinyint	NO			
+procbuttonitem	ProcButtonItemNum	bigint	NO	PRI		
+procbuttonitem	ProcButtonNum	bigint	NO			
+procbuttonitem	OldCode	varchar	NO			
+procbuttonitem	AutoCodeNum	bigint	NO			
+procbuttonitem	CodeNum	bigint	NO			
+procbuttonitem	ItemOrder	bigint	NO			
+procbuttonquick	ProcButtonQuickNum	bigint	NO	PRI		
+procbuttonquick	Description	varchar	NO			
+procbuttonquick	CodeValue	varchar	NO			
+procbuttonquick	Surf	varchar	NO			
+procbuttonquick	YPos	int	NO			
+procbuttonquick	ItemOrder	int	NO			
+procbuttonquick	IsLabel	tinyint	NO			
+proccodenote	ProcCodeNoteNum	bigint	NO	PRI		
+proccodenote	CodeNum	bigint	NO			
+proccodenote	ProvNum	bigint	NO			
+proccodenote	Note	text	YES			
+proccodenote	ProcTime	varchar	YES			
+proccodenote	ProcStatus	tinyint	NO			
+procedurecode	CodeNum	bigint	NO	PRI		
+procedurecode	ProcCode	varchar	NO	MUL		
+procedurecode	Descript	varchar	YES			
+procedurecode	AbbrDesc	varchar	YES			
+procedurecode	ProcTime	varchar	YES			
+procedurecode	ProcCat	bigint	NO			
+procedurecode	TreatArea	tinyint	NO			
+procedurecode	NoBillIns	tinyint	NO			
+procedurecode	IsProsth	tinyint	NO			
+procedurecode	DefaultNote	text	YES			
+procedurecode	IsHygiene	tinyint	NO			
+procedurecode	GTypeNum	smallint	NO			
+procedurecode	AlternateCode1	varchar	YES			
+procedurecode	MedicalCode	varchar	YES			
+procedurecode	IsTaxed	tinyint	NO			
+procedurecode	PaintType	tinyint	NO			
+procedurecode	GraphicColor	int	NO			
+procedurecode	LaymanTerm	varchar	YES			
+procedurecode	IsCanadianLab	tinyint	NO			
+procedurecode	PreExisting	tinyint	NO			
+procedurecode	BaseUnits	int	NO			
+procedurecode	SubstitutionCode	varchar	YES			
+procedurecode	SubstOnlyIf	int	NO			
+procedurecode	DateTStamp	timestamp	NO			
+procedurecode	IsMultiVisit	tinyint	NO			
+procedurecode	DrugNDC	varchar	NO			
+procedurecode	RevenueCodeDefault	varchar	NO			
+procedurecode	ProvNumDefault	bigint	NO	MUL		
+procedurecode	CanadaTimeUnits	double	NO			
+procedurecode	IsRadiology	tinyint	NO			
+procedurecode	DefaultClaimNote	text	NO			
+procedurecode	DefaultTPNote	text	NO			
+procedurecode	BypassGlobalLock	tinyint	NO			
+procedurecode	TaxCode	varchar	NO			
+procedurecode	PaintText	varchar	NO			
+procedurecode	AreaAlsoToothRange	tinyint	NO			
+procedurecode	DiagnosticCodes	varchar	NO			
+procedurelog	ProcNum	bigint	NO	PRI		
+procedurelog	PatNum	bigint	NO	MUL		
+procedurelog	AptNum	bigint	NO	MUL		
+procedurelog	OldCode	varchar	NO			
+procedurelog	ProcDate	date	NO	MUL		
+procedurelog	ProcFee	double	NO			
+procedurelog	Surf	varchar	YES			
+procedurelog	ToothNum	varchar	YES			
+procedurelog	ToothRange	varchar	YES			
+procedurelog	Priority	bigint	NO	MUL		
+procedurelog	ProcStatus	tinyint	NO			
+procedurelog	ProvNum	bigint	NO	MUL		
+procedurelog	Dx	bigint	NO			
+procedurelog	PlannedAptNum	bigint	NO	MUL		
+procedurelog	PlaceService	tinyint	NO			
+procedurelog	Prosthesis	char	YES			
+procedurelog	DateOriginalProsth	date	NO			
+procedurelog	ClaimNote	varchar	YES			
+procedurelog	DateEntryC	date	NO			
+procedurelog	ClinicNum	bigint	NO	MUL		
+procedurelog	MedicalCode	varchar	YES			
+procedurelog	DiagnosticCode	varchar	YES			
+procedurelog	IsPrincDiag	tinyint	NO			
+procedurelog	ProcNumLab	bigint	NO	MUL		
+procedurelog	BillingTypeOne	bigint	NO	MUL		
+procedurelog	BillingTypeTwo	bigint	NO	MUL		
+procedurelog	CodeNum	bigint	NO	MUL		
+procedurelog	CodeMod1	char	YES			
+procedurelog	CodeMod2	char	YES			
+procedurelog	CodeMod3	char	YES			
+procedurelog	CodeMod4	char	YES			
+procedurelog	RevCode	varchar	YES			
+procedurelog	UnitQty	int	NO			
+procedurelog	BaseUnits	int	NO			
+procedurelog	StartTime	int	NO			
+procedurelog	StopTime	int	NO			
+procedurelog	DateTP	date	NO			
+procedurelog	SiteNum	bigint	NO			
+procedurelog	HideGraphics	tinyint	NO			
+procedurelog	CanadianTypeCodes	varchar	NO			
+procedurelog	ProcTime	time	NO			
+procedurelog	ProcTimeEnd	time	NO			
+procedurelog	DateTStamp	timestamp	NO	MUL		
+procedurelog	Prognosis	bigint	NO	MUL		
+procedurelog	DrugUnit	tinyint	NO			
+procedurelog	DrugQty	float	NO			
+procedurelog	UnitQtyType	tinyint	NO			
+procedurelog	StatementNum	bigint	NO	MUL		
+procedurelog	IsLocked	tinyint	NO			
+procedurelog	BillingNote	varchar	NO			
+procedurelog	RepeatChargeNum	bigint	NO	MUL		
+procedurelog	SnomedBodySite	varchar	NO			
+procedurelog	DiagnosticCode2	varchar	NO			
+procedurelog	DiagnosticCode3	varchar	NO			
+procedurelog	DiagnosticCode4	varchar	NO			
+procedurelog	ProvOrderOverride	bigint	NO	MUL		
+procedurelog	Discount	double	NO			
+procedurelog	IsDateProsthEst	tinyint	NO			
+procedurelog	IcdVersion	tinyint	NO			
+procedurelog	IsCpoe	tinyint	NO			
+procedurelog	SecUserNumEntry	bigint	NO	MUL		
+procedurelog	SecDateEntry	datetime	NO			
+procedurelog	DateComplete	date	NO	MUL		
+procedurelog	OrderingReferralNum	bigint	NO	MUL		
+procedurelog	TaxAmt	double	NO			
+procedurelog	Urgency	tinyint	NO			
+procedurelog	DiscountPlanAmt	double	NO			
+procgroupitem	ProcGroupItemNum	bigint	NO	PRI		
+procgroupitem	ProcNum	bigint	NO	MUL		
+procgroupitem	GroupNum	bigint	NO	MUL		
+procmultivisit	ProcMultiVisitNum	bigint	NO	PRI		
+procmultivisit	GroupProcMultiVisitNum	bigint	NO	MUL		
+procmultivisit	ProcNum	bigint	NO	MUL		
+procmultivisit	ProcStatus	tinyint	NO			
+procmultivisit	IsInProcess	tinyint	NO	MUL		
+procmultivisit	SecDateTEntry	datetime	NO	MUL		
+procmultivisit	SecDateTEdit	timestamp	NO	MUL		
+procmultivisit	PatNum	bigint	NO	MUL		
+procnote	ProcNoteNum	bigint	NO	PRI		
+procnote	PatNum	bigint	NO	MUL		
+procnote	ProcNum	bigint	NO	MUL		
+procnote	EntryDateTime	datetime	NO			
+procnote	UserNum	bigint	NO	MUL		
+procnote	Note	text	YES			
+procnote	SigIsTopaz	tinyint	NO			
+procnote	Signature	text	YES			
+proctp	ProcTPNum	bigint	NO	PRI		
+proctp	TreatPlanNum	bigint	NO	MUL		
+proctp	PatNum	bigint	NO	MUL		
+proctp	ProcNumOrig	bigint	NO	MUL		
+proctp	ItemOrder	smallint	NO			
+proctp	Priority	bigint	NO			
+proctp	ToothNumTP	varchar	YES			
+proctp	Surf	varchar	YES			
+proctp	ProcCode	varchar	YES			
+proctp	Descript	varchar	YES			
+proctp	FeeAmt	double	NO			
+proctp	PriInsAmt	double	NO			
+proctp	SecInsAmt	double	NO			
+proctp	PatAmt	double	NO			
+proctp	Discount	double	NO			
+proctp	Prognosis	varchar	NO			
+proctp	Dx	varchar	NO			
+proctp	ProcAbbr	varchar	NO			
+proctp	SecUserNumEntry	bigint	NO	MUL		
+proctp	SecDateEntry	date	NO			
+proctp	SecDateTEdit	timestamp	NO			
+proctp	FeeAllowed	double	NO			
+proctp	TaxAmt	double	NO			
+proctp	ProvNum	bigint	NO	MUL		
+proctp	DateTP	date	NO			
+proctp	ClinicNum	bigint	NO	MUL		
+proctp	CatPercUCR	double	NO			
+program	ProgramNum	bigint	NO	PRI		
+program	ProgName	varchar	YES			
+program	ProgDesc	varchar	YES			
+program	Enabled	tinyint	NO			
+program	Path	text	NO			
+program	CommandLine	text	NO			
+program	Note	text	YES			
+program	PluginDllName	varchar	NO			
+program	ButtonImage	text	NO			
+program	FileTemplate	text	NO			
+program	FilePath	varchar	NO			
+program	IsDisabledByHq	tinyint	NO			
+program	CustErr	varchar	NO			
+programproperty	ProgramPropertyNum	bigint	NO	PRI		
+programproperty	ProgramNum	bigint	NO			
+programproperty	PropertyDesc	varchar	YES			
+programproperty	PropertyValue	text	YES			
+programproperty	ComputerName	varchar	NO			
+programproperty	ClinicNum	bigint	NO	MUL		
+programproperty	IsMasked	tinyint	NO			
+programproperty	IsHighSecurity	tinyint	NO			
+promotion	PromotionNum	bigint	NO	PRI		
+promotion	PromotionName	varchar	NO			
+promotion	DateTimeCreated	date	NO			
+promotion	ClinicNum	bigint	NO	MUL		
+promotion	TypePromotion	tinyint	NO			
+promotionlog	PromotionLogNum	bigint	NO	PRI		
+promotionlog	PromotionNum	bigint	NO	MUL		
+promotionlog	PatNum	bigint	NO	MUL		
+promotionlog	MessageFk	bigint	NO	MUL		
+promotionlog	EmailHostingFK	bigint	NO	MUL		
+promotionlog	DateTimeSent	datetime	NO			
+promotionlog	PromotionStatus	tinyint	NO			
+promotionlog	ClinicNum	bigint	NO	MUL		
+promotionlog	SendStatus	tinyint	NO			
+promotionlog	MessageType	tinyint	NO			
+promotionlog	DateTimeEntry	datetime	NO			
+promotionlog	ResponseDescript	text	NO			
+promotionlog	ApptReminderRuleNum	bigint	NO	MUL		
+provider	ProvNum	bigint	NO	PRI		
+provider	Abbr	varchar	YES			
+provider	ItemOrder	smallint	NO			
+provider	LName	varchar	YES			
+provider	FName	varchar	YES			
+provider	MI	varchar	YES			
+provider	Suffix	varchar	YES			
+provider	FeeSched	bigint	NO	MUL		
+provider	Specialty	bigint	NO			
+provider	SSN	varchar	YES			
+provider	StateLicense	varchar	YES			
+provider	DEANum	varchar	YES			
+provider	IsSecondary	tinyint	NO			
+provider	ProvColor	int	NO			
+provider	IsHidden	tinyint	NO			
+provider	UsingTIN	tinyint	NO			
+provider	BlueCrossID	varchar	YES			
+provider	SigOnFile	tinyint	NO			
+provider	MedicaidID	varchar	YES			
+provider	OutlineColor	int	NO			
+provider	SchoolClassNum	bigint	NO			
+provider	NationalProvID	varchar	YES			
+provider	CanadianOfficeNum	varchar	YES			
+provider	DateTStamp	timestamp	NO			
+provider	AnesthProvType	bigint	NO			
+provider	TaxonomyCodeOverride	varchar	NO			
+provider	IsCDAnet	tinyint	NO			
+provider	EcwID	varchar	NO			
+provider	StateRxID	varchar	NO			
+provider	IsNotPerson	tinyint	NO			
+provider	StateWhereLicensed	varchar	NO			
+provider	EmailAddressNum	bigint	NO	MUL		
+provider	IsInstructor	tinyint	NO			
+provider	EhrMuStage	int	NO			
+provider	ProvNumBillingOverride	bigint	NO	MUL		
+provider	CustomID	varchar	NO			
+provider	ProvStatus	tinyint	NO			
+provider	IsHiddenReport	tinyint	NO			
+provider	IsErxEnabled	tinyint	NO			
+provider	Birthdate	date	NO			
+provider	SchedNote	varchar	NO			
+provider	WebSchedDescript	varchar	NO			
+provider	WebSchedImageLocation	varchar	NO			
+provider	HourlyProdGoalAmt	double	NO			
+provider	DateTerm	date	NO			
+provider	PreferredName	varchar	NO			
+providerclinic	ProviderClinicNum	bigint	NO	PRI		
+providerclinic	ProvNum	bigint	NO	MUL		
+providerclinic	ClinicNum	bigint	NO	MUL		
+providerclinic	DEANum	varchar	NO			
+providerclinic	StateLicense	varchar	NO			
+providerclinic	StateRxID	varchar	NO			
+providerclinic	StateWhereLicensed	varchar	NO			
+providerclinic	CareCreditMerchantId	varchar	NO			
+providercliniclink	ProviderClinicLinkNum	bigint	NO	PRI		
+providercliniclink	ProvNum	bigint	NO	MUL		
+providercliniclink	ClinicNum	bigint	NO	MUL		
+providererx	ProviderErxNum	bigint	NO	PRI		
+providererx	PatNum	bigint	NO	MUL		
+providererx	NationalProviderID	varchar	NO			
+providererx	IsEnabled	tinyint	NO			
+providererx	IsIdentifyProofed	tinyint	NO			
+providererx	IsSentToHq	tinyint	NO			
+providererx	IsEpcs	tinyint	NO			
+providererx	ErxType	tinyint	NO			
+providererx	UserId	varchar	NO			
+providererx	AccountId	varchar	NO			
+providererx	RegistrationKeyNum	bigint	NO	MUL		
+providerident	ProviderIdentNum	bigint	NO	PRI		
+providerident	ProvNum	bigint	NO			
+providerident	PayorID	varchar	YES			
+providerident	SuppIDType	tinyint	NO			
+providerident	IDNumber	varchar	YES			
+queryfilter	QueryFilterNum	bigint	NO	PRI		
+queryfilter	GroupName	varchar	NO			
+queryfilter	FilterText	varchar	NO			
+question	QuestionNum	bigint	NO	PRI		
+question	PatNum	bigint	NO	MUL		
+question	ItemOrder	smallint	NO			
+question	Description	text	YES			
+question	Answer	text	YES			
+question	FormPatNum	bigint	NO			
+questiondef	QuestionDefNum	bigint	NO	PRI		
+questiondef	Description	text	YES			
+questiondef	ItemOrder	smallint	NO			
+questiondef	QuestType	tinyint	NO			
+quickpastecat	QuickPasteCatNum	bigint	NO	PRI		
+quickpastecat	Description	varchar	YES			
+quickpastecat	ItemOrder	smallint	NO			
+quickpastecat	DefaultForTypes	text	YES			
+quickpastenote	QuickPasteNoteNum	bigint	NO	PRI		
+quickpastenote	QuickPasteCatNum	bigint	NO			
+quickpastenote	ItemOrder	smallint	NO			
+quickpastenote	Note	text	YES			
+quickpastenote	Abbreviation	varchar	YES			
+reactivation	ReactivationNum	bigint	NO	PRI		
+reactivation	PatNum	bigint	NO	MUL		
+reactivation	ReactivationStatus	bigint	NO	MUL		
+reactivation	ReactivationNote	text	NO			
+reactivation	DoNotContact	tinyint	NO			
+recall	RecallNum	bigint	NO	PRI		
+recall	PatNum	bigint	NO	MUL		
+recall	DateDueCalc	date	NO			
+recall	DateDue	date	NO	MUL		
+recall	DatePrevious	date	NO	MUL		
+recall	RecallInterval	int	NO			
+recall	RecallStatus	bigint	NO			
+recall	Note	text	YES			
+recall	IsDisabled	tinyint	NO	MUL		
+recall	DateTStamp	timestamp	NO			
+recall	RecallTypeNum	bigint	NO	MUL		
+recall	DisableUntilBalance	double	NO			
+recall	DisableUntilDate	date	NO			
+recall	DateScheduled	date	NO	MUL		
+recall	Priority	tinyint	NO			
+recall	TimePatternOverride	varchar	NO			
+recalltrigger	RecallTriggerNum	bigint	NO	PRI		
+recalltrigger	RecallTypeNum	bigint	NO	MUL		
+recalltrigger	CodeNum	bigint	NO	MUL		
+recalltype	RecallTypeNum	bigint	NO	PRI		
+recalltype	Description	varchar	YES			
+recalltype	DefaultInterval	int	NO			
+recalltype	TimePattern	varchar	YES			
+recalltype	Procedures	varchar	YES			
+recalltype	AppendToSpecial	tinyint	NO			
+reconcile	ReconcileNum	bigint	NO	PRI		
+reconcile	AccountNum	bigint	NO			
+reconcile	StartingBal	double	NO			
+reconcile	EndingBal	double	NO			
+reconcile	DateReconcile	date	NO			
+reconcile	IsLocked	tinyint	NO			
+recurringcharge	RecurringChargeNum	bigint	NO	PRI		
+recurringcharge	PatNum	bigint	NO	MUL		
+recurringcharge	ClinicNum	bigint	NO	MUL		
+recurringcharge	DateTimeCharge	datetime	NO			
+recurringcharge	ChargeStatus	tinyint	NO			
+recurringcharge	FamBal	double	NO			
+recurringcharge	PayPlanDue	double	NO			
+recurringcharge	TotalDue	double	NO			
+recurringcharge	RepeatAmt	double	NO			
+recurringcharge	ChargeAmt	double	NO			
+recurringcharge	UserNum	bigint	NO	MUL		
+recurringcharge	PayNum	bigint	NO	MUL		
+recurringcharge	CreditCardNum	bigint	NO	MUL		
+recurringcharge	ErrorMsg	text	NO			
+refattach	RefAttachNum	bigint	NO	PRI		
+refattach	ReferralNum	bigint	NO	MUL		
+refattach	PatNum	bigint	NO	MUL		
+refattach	ItemOrder	smallint	NO			
+refattach	RefDate	date	NO			
+refattach	RefType	tinyint	NO			
+refattach	RefToStatus	tinyint	NO			
+refattach	Note	text	YES			
+refattach	IsTransitionOfCare	tinyint	NO			
+refattach	ProcNum	bigint	NO	MUL		
+refattach	DateProcComplete	date	NO			
+refattach	ProvNum	bigint	NO	MUL		
+refattach	DateTStamp	timestamp	NO			
+referral	ReferralNum	bigint	NO	PRI		
+referral	LName	varchar	YES			
+referral	FName	varchar	YES			
+referral	MName	varchar	YES			
+referral	SSN	varchar	YES			
+referral	UsingTIN	tinyint	NO			
+referral	Specialty	bigint	NO			
+referral	ST	varchar	YES			
+referral	Telephone	varchar	YES			
+referral	Address	varchar	YES			
+referral	Address2	varchar	YES			
+referral	City	varchar	YES			
+referral	Zip	varchar	YES			
+referral	Note	text	YES			
+referral	Phone2	varchar	YES			
+referral	IsHidden	tinyint	NO			
+referral	NotPerson	tinyint	NO			
+referral	Title	varchar	YES			
+referral	EMail	varchar	YES			
+referral	PatNum	bigint	NO			
+referral	NationalProvID	varchar	YES			
+referral	Slip	bigint	NO			
+referral	IsDoctor	tinyint	NO			
+referral	IsTrustedDirect	tinyint	NO			
+referral	DateTStamp	timestamp	NO			
+referral	IsPreferred	tinyint	NO			
+referral	BusinessName	varchar	NO			
+referral	DisplayNote	varchar	NO			
+referralcliniclink	ReferralClinicLinkNum	bigint	NO	PRI		
+referralcliniclink	ReferralNum	bigint	NO	MUL		
+referralcliniclink	ClinicNum	bigint	NO	MUL		
+registrationkey	RegistrationKeyNum	bigint	NO	PRI		
+registrationkey	PatNum	bigint	NO	MUL		
+registrationkey	RegKey	varchar	YES			
+registrationkey	Note	varchar	YES			
+registrationkey	DateStarted	date	NO			
+registrationkey	DateDisabled	date	NO			
+registrationkey	DateEnded	date	NO			
+registrationkey	IsForeign	tinyint	NO			
+registrationkey	UsesServerVersion	tinyint	NO			
+registrationkey	IsFreeVersion	tinyint	NO			
+registrationkey	IsOnlyForTesting	tinyint	NO			
+registrationkey	VotesAllotted	int	NO			
+registrationkey	IsResellerCustomer	tinyint	NO			
+registrationkey	HasEarlyAccess	tinyint	NO			
+registrationkey	DateTBackupScheduled	datetime	NO			
+registrationkey	BackupPassCode	varchar	NO			
+reminderrule	ReminderRuleNum	bigint	NO	PRI		
+reminderrule	ReminderCriterion	tinyint	NO			
+reminderrule	CriterionFK	bigint	NO	MUL		
+reminderrule	CriterionValue	varchar	NO			
+reminderrule	Message	varchar	NO			
+repeatcharge	RepeatChargeNum	bigint	NO	PRI		
+repeatcharge	PatNum	bigint	NO	MUL		
+repeatcharge	ProcCode	varchar	YES			
+repeatcharge	ChargeAmt	double	NO			
+repeatcharge	DateStart	date	NO			
+repeatcharge	DateStop	date	NO			
+repeatcharge	Note	text	YES			
+repeatcharge	CopyNoteToProc	tinyint	NO			
+repeatcharge	CreatesClaim	tinyint	NO			
+repeatcharge	IsEnabled	tinyint	NO			
+repeatcharge	UsePrepay	tinyint	NO			
+repeatcharge	Npi	text	NO			
+repeatcharge	ErxAccountId	text	NO			
+repeatcharge	ProviderName	text	NO			
+repeatcharge	ChargeAmtAlt	double	NO			
+repeatcharge	UnearnedTypes	varchar	NO			
+repeatcharge	Frequency	tinyint	NO			
+replicationserver	ReplicationServerNum	bigint	NO	PRI		
+replicationserver	Descript	text	NO			
+replicationserver	ServerId	int	NO			
+replicationserver	RangeStart	bigint	NO			
+replicationserver	RangeEnd	bigint	NO			
+replicationserver	AtoZpath	varchar	NO			
+replicationserver	UpdateBlocked	tinyint	NO			
+replicationserver	SlaveMonitor	varchar	NO			
+reqneeded	ReqNeededNum	bigint	NO	PRI		
+reqneeded	Descript	varchar	YES			
+reqneeded	SchoolCourseNum	bigint	NO			
+reqneeded	SchoolClassNum	bigint	NO			
+reqstudent	ReqStudentNum	bigint	NO	PRI		
+reqstudent	ReqNeededNum	bigint	NO	MUL		
+reqstudent	Descript	varchar	YES			
+reqstudent	SchoolCourseNum	bigint	NO			
+reqstudent	ProvNum	bigint	NO	MUL		
+reqstudent	AptNum	bigint	NO			
+reqstudent	PatNum	bigint	NO			
+reqstudent	InstructorNum	bigint	NO			
+reqstudent	DateCompleted	date	NO			
+requiredfield	RequiredFieldNum	bigint	NO	PRI		
+requiredfield	FieldType	tinyint	NO			
+requiredfield	FieldName	varchar	NO			
+requiredfieldcondition	RequiredFieldConditionNum	bigint	NO	PRI		
+requiredfieldcondition	RequiredFieldNum	bigint	NO	MUL		
+requiredfieldcondition	ConditionType	varchar	NO			
+requiredfieldcondition	Operator	tinyint	NO			
+requiredfieldcondition	ConditionValue	varchar	NO			
+requiredfieldcondition	ConditionRelationship	tinyint	NO			
+rxalert	RxAlertNum	bigint	NO	PRI		
+rxalert	RxDefNum	bigint	NO			
+rxalert	DiseaseDefNum	bigint	NO			
+rxalert	AllergyDefNum	bigint	NO	MUL		
+rxalert	MedicationNum	bigint	NO	MUL		
+rxalert	NotificationMsg	varchar	NO			
+rxalert	IsHighSignificance	tinyint	NO			
+rxdef	RxDefNum	bigint	NO	PRI		
+rxdef	Drug	varchar	YES			
+rxdef	Sig	varchar	YES			
+rxdef	Disp	varchar	YES			
+rxdef	Refills	varchar	YES			
+rxdef	Notes	varchar	YES			
+rxdef	IsControlled	tinyint	NO			
+rxdef	RxCui	bigint	NO	MUL		
+rxdef	IsProcRequired	tinyint	NO			
+rxdef	PatientInstruction	text	NO			
+rxnorm	RxNormNum	bigint	NO	PRI		
+rxnorm	RxCui	varchar	NO	MUL		
+rxnorm	MmslCode	varchar	NO			
+rxnorm	Description	text	NO	MUL		
+rxpat	RxNum	bigint	NO	PRI		
+rxpat	PatNum	bigint	NO	MUL		
+rxpat	RxDate	date	NO			
+rxpat	Drug	varchar	YES			
+rxpat	Sig	varchar	YES			
+rxpat	Disp	varchar	YES			
+rxpat	Refills	varchar	YES			
+rxpat	ProvNum	bigint	NO	MUL		
+rxpat	Notes	varchar	YES			
+rxpat	PharmacyNum	bigint	NO			
+rxpat	IsControlled	tinyint	NO			
+rxpat	DateTStamp	timestamp	NO			
+rxpat	SendStatus	tinyint	NO			
+rxpat	RxCui	bigint	NO	MUL		
+rxpat	DosageCode	varchar	NO			
+rxpat	ErxGuid	varchar	NO			
+rxpat	IsErxOld	tinyint	NO			
+rxpat	ErxPharmacyInfo	varchar	NO			
+rxpat	IsProcRequired	tinyint	NO			
+rxpat	ProcNum	bigint	NO	MUL		
+rxpat	DaysOfSupply	double	YES			
+rxpat	PatientInstruction	text	NO			
+rxpat	ClinicNum	bigint	NO	MUL		
+rxpat	UserNum	bigint	NO	MUL		
+rxpat	RxType	tinyint	NO			
+schedule	ScheduleNum	bigint	NO	PRI		
+schedule	SchedDate	date	NO	MUL		
+schedule	StartTime	time	NO			
+schedule	StopTime	time	NO			
+schedule	SchedType	tinyint	NO			
+schedule	ProvNum	bigint	NO	MUL		
+schedule	BlockoutType	bigint	NO	MUL		
+schedule	Note	text	YES			
+schedule	Status	tinyint	NO			
+schedule	EmployeeNum	bigint	NO	MUL		
+schedule	DateTStamp	timestamp	NO			
+schedule	ClinicNum	bigint	NO	MUL		
+scheduledprocess	ScheduledProcessNum	bigint	NO	PRI		
+scheduledprocess	ScheduledAction	varchar	NO			
+scheduledprocess	TimeToRun	datetime	NO			
+scheduledprocess	FrequencyToRun	varchar	NO			
+scheduledprocess	LastRanDateTime	datetime	NO			
+scheduleop	ScheduleOpNum	bigint	NO	PRI		
+scheduleop	ScheduleNum	bigint	NO	MUL		
+scheduleop	OperatoryNum	bigint	NO	MUL		
+schoolclass	SchoolClassNum	bigint	NO	PRI		
+schoolclass	GradYear	int	NO			
+schoolclass	Descript	varchar	YES			
+schoolcourse	SchoolCourseNum	bigint	NO	PRI		
+schoolcourse	CourseID	varchar	YES			
+schoolcourse	Descript	varchar	YES			
+screen	ScreenNum	bigint	NO	PRI		
+screen	Gender	tinyint	NO			
+screen	RaceOld	tinyint	NO			
+screen	GradeLevel	tinyint	NO			
+screen	Age	tinyint	NO			
+screen	Urgency	tinyint	NO			
+screen	HasCaries	tinyint	NO			
+screen	NeedsSealants	tinyint	NO			
+screen	CariesExperience	tinyint	NO			
+screen	EarlyChildCaries	tinyint	NO			
+screen	ExistingSealants	tinyint	NO			
+screen	MissingAllTeeth	tinyint	NO			
+screen	Birthdate	date	NO			
+screen	ScreenGroupNum	bigint	NO			
+screen	ScreenGroupOrder	smallint	NO			
+screen	Comments	varchar	YES			
+screen	ScreenPatNum	bigint	NO	MUL		
+screen	SheetNum	bigint	NO	MUL		
+screengroup	ScreenGroupNum	bigint	NO	PRI		
+screengroup	Description	varchar	YES			
+screengroup	SGDate	date	NO			
+screengroup	ProvName	varchar	NO			
+screengroup	ProvNum	bigint	NO	MUL		
+screengroup	PlaceService	tinyint	NO			
+screengroup	County	varchar	NO			
+screengroup	GradeSchool	varchar	NO			
+screengroup	SheetDefNum	bigint	NO	MUL		
+screenpat	ScreenPatNum	bigint	NO	PRI		
+screenpat	PatNum	bigint	NO	MUL		
+screenpat	ScreenGroupNum	bigint	NO	MUL		
+screenpat	SheetNum	bigint	NO	MUL		
+screenpat	PatScreenPerm	tinyint	NO			
+securitylog	SecurityLogNum	bigint	NO	PRI		
+securitylog	PermType	smallint	NO	MUL		
+securitylog	UserNum	bigint	NO	MUL		
+securitylog	LogDateTime	datetime	NO	MUL		
+securitylog	LogText	text	YES			
+securitylog	PatNum	bigint	NO	MUL		
+securitylog	CompName	varchar	NO			
+securitylog	FKey	bigint	NO	MUL		
+securitylog	LogSource	tinyint	NO			
+securitylog	DefNum	bigint	NO	MUL		
+securitylog	DefNumError	bigint	NO	MUL		
+securitylog	DateTPrevious	datetime	NO			
+securityloghash	SecurityLogHashNum	bigint	NO	PRI		
+securityloghash	SecurityLogNum	bigint	NO	MUL		
+securityloghash	LogHash	varchar	NO			
+sessiontoken	SessionTokenNum	bigint	NO	PRI		
+sessiontoken	SessionTokenHash	varchar	NO	MUL		
+sessiontoken	Expiration	datetime	NO	MUL		
+sessiontoken	TokenType	tinyint	NO			
+sessiontoken	FKey	bigint	NO	MUL		
+sheet	SheetNum	bigint	NO	PRI		
+sheet	SheetType	int	NO			
+sheet	PatNum	bigint	NO	MUL		
+sheet	DateTimeSheet	datetime	NO			
+sheet	FontSize	float	NO			
+sheet	FontName	varchar	YES			
+sheet	Width	int	NO			
+sheet	Height	int	NO			
+sheet	IsLandscape	tinyint	NO			
+sheet	InternalNote	text	YES			
+sheet	Description	varchar	NO			
+sheet	ShowInTerminal	tinyint	NO			
+sheet	IsWebForm	tinyint	NO			
+sheet	IsMultiPage	tinyint	NO			
+sheet	IsDeleted	tinyint	NO			
+sheet	SheetDefNum	bigint	NO	MUL		
+sheet	DocNum	bigint	NO	MUL		
+sheet	ClinicNum	bigint	NO	MUL		
+sheet	DateTSheetEdited	datetime	NO			
+sheet	HasMobileLayout	tinyint	NO			
+sheet	RevID	int	NO			
+sheet	WebFormSheetID	bigint	NO	MUL		
+sheetdef	SheetDefNum	bigint	NO	PRI		
+sheetdef	Description	varchar	YES			
+sheetdef	SheetType	int	NO			
+sheetdef	FontSize	float	NO			
+sheetdef	FontName	varchar	YES			
+sheetdef	Width	int	NO			
+sheetdef	Height	int	NO			
+sheetdef	IsLandscape	tinyint	NO			
+sheetdef	PageCount	int	NO			
+sheetdef	IsMultiPage	tinyint	NO			
+sheetdef	BypassGlobalLock	tinyint	NO			
+sheetdef	HasMobileLayout	tinyint	NO			
+sheetdef	DateTCreated	datetime	NO			
+sheetdef	RevID	int	NO			
+sheetdef	AutoCheckSaveImage	tinyint	NO			
+sheetdef	AutoCheckSaveImageDocCategory	bigint	NO	MUL		
+sheetfield	SheetFieldNum	bigint	NO	PRI		
+sheetfield	SheetNum	bigint	NO	MUL		
+sheetfield	FieldType	int	NO	MUL		
+sheetfield	FieldName	varchar	YES			
+sheetfield	FieldValue	text	YES			
+sheetfield	FontSize	float	NO			
+sheetfield	FontName	varchar	YES			
+sheetfield	FontIsBold	tinyint	NO			
+sheetfield	XPos	int	NO			
+sheetfield	YPos	int	NO			
+sheetfield	Width	int	NO			
+sheetfield	Height	int	NO			
+sheetfield	GrowthBehavior	int	NO			
+sheetfield	RadioButtonValue	varchar	NO			
+sheetfield	RadioButtonGroup	varchar	NO			
+sheetfield	IsRequired	tinyint	NO			
+sheetfield	TabOrder	int	NO			
+sheetfield	ReportableName	varchar	YES			
+sheetfield	TextAlign	tinyint	NO			
+sheetfield	ItemColor	int	NO			
+sheetfield	DateTimeSig	datetime	NO			
+sheetfield	IsLocked	tinyint	NO			
+sheetfield	TabOrderMobile	int	NO			
+sheetfield	UiLabelMobile	text	NO			
+sheetfield	UiLabelMobileRadioButton	text	NO			
+sheetfield	SheetFieldDefNum	bigint	NO	MUL		
+sheetfield	CanElectronicallySign	tinyint	NO			
+sheetfield	IsSigProvRestricted	tinyint	NO			
+sheetfielddef	SheetFieldDefNum	bigint	NO	PRI		
+sheetfielddef	SheetDefNum	bigint	NO	MUL		
+sheetfielddef	FieldType	int	NO			
+sheetfielddef	FieldName	varchar	YES			
+sheetfielddef	FieldValue	text	NO			
+sheetfielddef	FontSize	float	NO			
+sheetfielddef	FontName	varchar	YES			
+sheetfielddef	FontIsBold	tinyint	NO			
+sheetfielddef	XPos	int	NO			
+sheetfielddef	YPos	int	NO			
+sheetfielddef	Width	int	NO			
+sheetfielddef	Height	int	NO			
+sheetfielddef	GrowthBehavior	int	NO			
+sheetfielddef	RadioButtonValue	varchar	NO			
+sheetfielddef	RadioButtonGroup	varchar	NO			
+sheetfielddef	IsRequired	tinyint	NO			
+sheetfielddef	TabOrder	int	NO			
+sheetfielddef	ReportableName	varchar	YES			
+sheetfielddef	TextAlign	tinyint	NO			
+sheetfielddef	IsPaymentOption	tinyint	NO			
+sheetfielddef	ItemColor	int	NO			
+sheetfielddef	IsLocked	tinyint	NO			
+sheetfielddef	TabOrderMobile	int	NO			
+sheetfielddef	UiLabelMobile	text	NO			
+sheetfielddef	UiLabelMobileRadioButton	text	NO			
+sheetfielddef	LayoutMode	tinyint	NO			
+sheetfielddef	Language	varchar	NO			
+sheetfielddef	CanElectronicallySign	tinyint	NO			
+sheetfielddef	IsSigProvRestricted	tinyint	NO			
+sigbutdef	SigButDefNum	bigint	NO	PRI		
+sigbutdef	ButtonText	varchar	YES			
+sigbutdef	ButtonIndex	smallint	NO			
+sigbutdef	SynchIcon	tinyint	NO			
+sigbutdef	ComputerName	varchar	YES			
+sigbutdef	SigElementDefNumUser	bigint	NO	MUL		
+sigbutdef	SigElementDefNumExtra	bigint	NO	MUL		
+sigbutdef	SigElementDefNumMsg	bigint	NO	MUL		
+sigelementdef	SigElementDefNum	bigint	NO	PRI		
+sigelementdef	LightRow	tinyint	NO			
+sigelementdef	LightColor	int	NO			
+sigelementdef	SigElementType	tinyint	NO			
+sigelementdef	SigText	varchar	YES			
+sigelementdef	Sound	mediumtext	YES			
+sigelementdef	ItemOrder	smallint	NO			
+sigmessage	SigMessageNum	bigint	NO	PRI		
+sigmessage	ButtonText	varchar	NO			
+sigmessage	ButtonIndex	int	NO			
+sigmessage	SynchIcon	tinyint	NO			
+sigmessage	FromUser	varchar	NO			
+sigmessage	ToUser	varchar	NO			
+sigmessage	MessageDateTime	datetime	NO			
+sigmessage	AckDateTime	datetime	NO			
+sigmessage	SigText	varchar	NO			
+sigmessage	SigElementDefNumUser	bigint	NO	MUL		
+sigmessage	SigElementDefNumExtra	bigint	NO	MUL		
+sigmessage	SigElementDefNumMsg	bigint	NO	MUL		
+signalod	SignalNum	bigint	NO	PRI		
+signalod	DateViewing	date	NO			
+signalod	SigDateTime	datetime	NO	MUL		
+signalod	FKey	bigint	NO	MUL		
+signalod	FKeyType	varchar	NO			
+signalod	IType	tinyint	NO	MUL		
+signalod	RemoteRole	tinyint	NO			
+signalod	MsgValue	text	NO			
+site	SiteNum	bigint	NO	PRI		
+site	Description	varchar	YES			
+site	Note	text	YES			
+site	Address	varchar	NO			
+site	Address2	varchar	NO			
+site	City	varchar	NO			
+site	State	varchar	NO			
+site	Zip	varchar	NO			
+site	ProvNum	bigint	NO	MUL		
+site	PlaceService	tinyint	NO			
+smsblockphone	SmsBlockPhoneNum	bigint	NO	PRI		
+smsblockphone	BlockWirelessNumber	varchar	NO			
+smsfrommobile	SmsFromMobileNum	bigint	NO	PRI		
+smsfrommobile	PatNum	bigint	NO	MUL		
+smsfrommobile	ClinicNum	bigint	NO			
+smsfrommobile	CommlogNum	bigint	NO	MUL		
+smsfrommobile	MsgText	text	NO			
+smsfrommobile	DateTimeReceived	datetime	NO			
+smsfrommobile	SmsPhoneNumber	varchar	NO			
+smsfrommobile	MobilePhoneNumber	varchar	NO			
+smsfrommobile	MsgPart	int	NO			
+smsfrommobile	MsgTotal	int	NO			
+smsfrommobile	MsgRefID	varchar	NO			
+smsfrommobile	SmsStatus	tinyint	NO	MUL		
+smsfrommobile	Flags	varchar	NO			
+smsfrommobile	IsHidden	tinyint	NO			
+smsfrommobile	MatchCount	int	NO			
+smsfrommobile	GuidMessage	varchar	NO			
+smsfrommobile	SecDateTEdit	timestamp	NO	MUL		
+smsphone	SmsPhoneNum	bigint	NO	PRI		
+smsphone	ClinicNum	bigint	NO	MUL		
+smsphone	PhoneNumber	varchar	NO			
+smsphone	DateTimeActive	datetime	NO			
+smsphone	DateTimeInactive	datetime	NO			
+smsphone	InactiveCode	varchar	NO			
+smsphone	CountryCode	varchar	NO			
+smstomobile	SmsToMobileNum	bigint	NO	PRI		
+smstomobile	PatNum	bigint	NO	MUL		
+smstomobile	GuidMessage	varchar	NO	MUL		
+smstomobile	GuidBatch	varchar	NO			
+smstomobile	SmsPhoneNumber	varchar	NO			
+smstomobile	MobilePhoneNumber	varchar	NO			
+smstomobile	IsTimeSensitive	tinyint	NO			
+smstomobile	MsgType	tinyint	NO			
+smstomobile	MsgText	text	NO			
+smstomobile	SmsStatus	tinyint	NO			
+smstomobile	MsgParts	int	NO			
+smstomobile	MsgChargeUSD	float	NO			
+smstomobile	ClinicNum	bigint	NO	MUL		
+smstomobile	CustErrorText	varchar	NO			
+smstomobile	DateTimeSent	datetime	NO			
+smstomobile	DateTimeTerminated	datetime	NO			
+smstomobile	IsHidden	tinyint	NO			
+smstomobile	MsgDiscountUSD	float	NO			
+smstomobile	SecDateTEdit	timestamp	NO	MUL		
+snomed	SnomedNum	bigint	NO	PRI		
+snomed	SnomedCode	varchar	NO	MUL		
+snomed	Description	varchar	NO			
+sop	SopNum	bigint	NO	PRI		
+sop	SopCode	varchar	NO	MUL		
+sop	Description	varchar	NO			
+stateabbr	StateAbbrNum	bigint	NO	PRI		
+stateabbr	Description	varchar	NO			
+stateabbr	Abbr	varchar	NO			
+stateabbr	MedicaidIDLength	int	NO			
+statement	StatementNum	bigint	NO	PRI		
+statement	PatNum	bigint	NO	MUL		
+statement	DateSent	date	NO			
+statement	DateRangeFrom	date	NO			
+statement	DateRangeTo	date	NO			
+statement	Note	text	YES			
+statement	NoteBold	text	YES			
+statement	Mode_	tinyint	NO			
+statement	HidePayment	tinyint	NO			
+statement	SinglePatient	tinyint	NO			
+statement	Intermingled	tinyint	NO			
+statement	IsSent	tinyint	NO	MUL		
+statement	DocNum	bigint	NO	MUL		
+statement	DateTStamp	timestamp	NO			
+statement	IsReceipt	tinyint	NO			
+statement	IsInvoice	tinyint	NO			
+statement	IsInvoiceCopy	tinyint	NO			
+statement	EmailSubject	varchar	NO			
+statement	EmailBody	mediumtext	NO			
+statement	SuperFamily	bigint	NO	MUL		
+statement	IsBalValid	tinyint	NO			
+statement	InsEst	double	NO			
+statement	BalTotal	double	NO			
+statement	StatementType	varchar	NO			
+statement	ShortGUID	varchar	NO	MUL		
+statement	StatementShortURL	varchar	NO			
+statement	StatementURL	varchar	NO			
+statement	SmsSendStatus	tinyint	NO			
+statement	LimitedCustomFamily	tinyint	NO			
+statementprod	StatementProdNum	bigint	NO	PRI		
+statementprod	StatementNum	bigint	NO	MUL		
+statementprod	FKey	bigint	NO	MUL		
+statementprod	ProdType	tinyint	NO	MUL		
+statementprod	LateChargeAdjNum	bigint	NO	MUL		
+statementprod	DocNum	bigint	NO	MUL		
+stmtlink	StmtLinkNum	bigint	NO	PRI		
+stmtlink	StatementNum	bigint	NO	MUL		
+stmtlink	StmtLinkType	tinyint	NO	MUL		
+stmtlink	FKey	bigint	NO			
+substitutionlink	SubstitutionLinkNum	bigint	NO	PRI		
+substitutionlink	PlanNum	bigint	NO	MUL		
+substitutionlink	CodeNum	bigint	NO	MUL		
+substitutionlink	SubstitutionCode	varchar	NO			
+substitutionlink	SubstOnlyIf	int	NO			
+supplier	SupplierNum	bigint	NO	PRI		
+supplier	Name	varchar	YES			
+supplier	Phone	varchar	YES			
+supplier	CustomerId	varchar	YES			
+supplier	Website	text	YES			
+supplier	UserName	varchar	YES			
+supplier	Password	varchar	YES			
+supplier	Note	text	YES			
+supply	SupplyNum	bigint	NO	PRI		
+supply	SupplierNum	bigint	NO	MUL		
+supply	CatalogNumber	varchar	YES			
+supply	Descript	varchar	YES			
+supply	Category	bigint	NO			
+supply	ItemOrder	int	NO			
+supply	LevelDesired	float	NO			
+supply	IsHidden	tinyint	NO			
+supply	Price	double	NO			
+supply	BarCodeOrID	varchar	NO			
+supply	DispDefaultQuant	float	NO			
+supply	DispUnitsCount	int	NO			
+supply	DispUnitDesc	varchar	NO			
+supply	LevelOnHand	float	NO			
+supply	OrderQty	int	NO			
+supplyneeded	SupplyNeededNum	bigint	NO	PRI		
+supplyneeded	Description	text	YES			
+supplyneeded	DateAdded	date	NO			
+supplyorder	SupplyOrderNum	bigint	NO	PRI		
+supplyorder	SupplierNum	bigint	NO	MUL		
+supplyorder	DatePlaced	date	NO			
+supplyorder	Note	text	YES			
+supplyorder	AmountTotal	double	NO			
+supplyorder	UserNum	bigint	NO	MUL		
+supplyorder	ShippingCharge	double	NO			
+supplyorder	DateReceived	date	NO			
+supplyorderitem	SupplyOrderItemNum	bigint	NO	PRI		
+supplyorderitem	SupplyOrderNum	bigint	NO	MUL		
+supplyorderitem	SupplyNum	bigint	NO	MUL		
+supplyorderitem	Qty	int	NO			
+supplyorderitem	Price	double	NO			
+supplyorderitem	DateReceived	date	NO			
+task	TaskNum	bigint	NO	PRI		
+task	TaskListNum	bigint	NO	MUL		
+task	DateTask	date	NO			
+task	KeyNum	bigint	NO	MUL		
+task	Descript	text	YES			
+task	TaskStatus	tinyint	NO	MUL		
+task	IsRepeating	tinyint	NO			
+task	DateType	tinyint	NO			
+task	FromNum	bigint	NO			
+task	ObjectType	tinyint	NO			
+task	DateTimeEntry	datetime	NO			
+task	UserNum	bigint	NO	MUL		
+task	DateTimeFinished	datetime	NO			
+task	PriorityDefNum	bigint	NO	MUL		
+task	ReminderGroupId	varchar	NO			
+task	ReminderType	smallint	NO			
+task	ReminderFrequency	int	NO			
+task	DateTimeOriginal	datetime	NO	MUL		
+task	SecDateTEdit	timestamp	NO	MUL		
+task	DescriptOverride	varchar	NO			
+task	IsReadOnly	tinyint	NO			
+task	TriageCategory	bigint	NO	MUL		
+taskancestor	TaskAncestorNum	bigint	NO	PRI		
+taskancestor	TaskNum	bigint	NO	MUL		
+taskancestor	TaskListNum	bigint	NO	MUL		
+taskattachment	TaskAttachmentNum	bigint	NO	PRI		
+taskattachment	TaskNum	bigint	NO	MUL		
+taskattachment	DocNum	bigint	NO	MUL		
+taskattachment	TextValue	text	NO			
+taskattachment	Description	varchar	NO			
+taskhist	TaskHistNum	bigint	NO	PRI		
+taskhist	UserNumHist	bigint	NO			
+taskhist	DateTStamp	datetime	NO	MUL		
+taskhist	IsNoteChange	tinyint	NO			
+taskhist	TaskNum	bigint	NO	MUL		
+taskhist	TaskListNum	bigint	NO			
+taskhist	DateTask	date	NO			
+taskhist	KeyNum	bigint	NO	MUL		
+taskhist	Descript	text	NO			
+taskhist	TaskStatus	tinyint	NO			
+taskhist	IsRepeating	tinyint	NO			
+taskhist	DateType	tinyint	NO			
+taskhist	FromNum	bigint	NO			
+taskhist	ObjectType	tinyint	NO			
+taskhist	DateTimeEntry	datetime	NO			
+taskhist	UserNum	bigint	NO			
+taskhist	DateTimeFinished	datetime	NO			
+taskhist	PriorityDefNum	bigint	NO			
+taskhist	ReminderGroupId	varchar	NO			
+taskhist	ReminderType	smallint	NO			
+taskhist	ReminderFrequency	int	NO			
+taskhist	DateTimeOriginal	datetime	NO			
+taskhist	SecDateTEdit	timestamp	NO	MUL		
+taskhist	DescriptOverride	varchar	NO			
+taskhist	IsReadOnly	tinyint	NO			
+taskhist	TriageCategory	bigint	NO	MUL		
+tasklist	TaskListNum	bigint	NO	PRI		
+tasklist	Descript	varchar	YES			
+tasklist	Parent	bigint	NO	MUL		
+tasklist	DateTL	date	NO			
+tasklist	IsRepeating	tinyint	NO			
+tasklist	DateType	tinyint	NO			
+tasklist	FromNum	bigint	NO			
+tasklist	ObjectType	tinyint	NO			
+tasklist	DateTimeEntry	datetime	NO			
+tasklist	GlobalTaskFilterType	tinyint	NO			
+tasklist	TaskListStatus	tinyint	NO			
+tasknote	TaskNoteNum	bigint	NO	PRI		
+tasknote	TaskNum	bigint	NO	MUL		
+tasknote	UserNum	bigint	NO	MUL		
+tasknote	DateTimeNote	datetime	NO			
+tasknote	Note	text	NO			
+tasksubscription	TaskSubscriptionNum	bigint	NO	PRI		
+tasksubscription	UserNum	bigint	NO	MUL		
+tasksubscription	TaskListNum	bigint	NO	MUL		
+tasksubscription	TaskNum	bigint	NO	MUL		
+taskunread	TaskUnreadNum	bigint	NO	PRI		
+taskunread	TaskNum	bigint	NO	MUL		
+taskunread	UserNum	bigint	NO	MUL		
+terminalactive	TerminalActiveNum	bigint	NO	PRI		
+terminalactive	ComputerName	varchar	YES			
+terminalactive	TerminalStatus	tinyint	NO			
+terminalactive	PatNum	bigint	NO			
+terminalactive	SessionId	int	NO			
+terminalactive	ProcessId	int	NO			
+terminalactive	SessionName	varchar	NO			
+timeadjust	TimeAdjustNum	bigint	NO	PRI		
+timeadjust	EmployeeNum	bigint	NO	MUL		
+timeadjust	TimeEntry	datetime	NO			
+timeadjust	RegHours	time	NO			
+timeadjust	OTimeHours	time	NO			
+timeadjust	Note	text	YES			
+timeadjust	IsAuto	tinyint	NO			
+timeadjust	ClinicNum	bigint	NO	MUL		
+timeadjust	PtoDefNum	bigint	NO	MUL		
+timeadjust	PtoHours	time	NO			
+timeadjust	IsUnpaidProtectedLeave	tinyint	NO			
+timeadjust	SecuUserNumEntry	bigint	NO	MUL		
+timecardrule	TimeCardRuleNum	bigint	NO	PRI		
+timecardrule	EmployeeNum	bigint	NO	MUL		
+timecardrule	OverHoursPerDay	time	NO			
+timecardrule	AfterTimeOfDay	time	NO			
+timecardrule	BeforeTimeOfDay	time	NO			
+timecardrule	IsOvertimeExempt	tinyint	NO			
+timecardrule	MinClockInTime	time	NO			
+timecardrule	HasWeekendRate3	tinyint	NO			
+toolbutitem	ToolButItemNum	bigint	NO	PRI		
+toolbutitem	ProgramNum	bigint	NO			
+toolbutitem	ToolBar	smallint	NO			
+toolbutitem	ButtonText	varchar	YES			
+toothgridcell	ToothGridCellNum	bigint	NO	PRI		
+toothgridcell	SheetFieldNum	bigint	NO	MUL		
+toothgridcell	ToothGridColNum	bigint	NO	MUL		
+toothgridcell	ValueEntered	varchar	NO			
+toothgridcell	ToothNum	varchar	NO			
+toothgridcol	ToothGridColNum	bigint	NO	PRI		
+toothgridcol	SheetFieldNum	bigint	NO	MUL		
+toothgridcol	NameItem	varchar	NO			
+toothgridcol	CellType	tinyint	NO			
+toothgridcol	ItemOrder	smallint	NO			
+toothgridcol	ColumnWidth	smallint	NO			
+toothgridcol	CodeNum	bigint	NO	MUL		
+toothgridcol	ProcStatus	tinyint	NO			
+toothgriddef	ToothGridDefNum	bigint	NO	PRI		
+toothgriddef	NameInternal	varchar	YES			
+toothgriddef	NameShowing	varchar	YES			
+toothgriddef	CellType	tinyint	NO			
+toothgriddef	ItemOrder	smallint	NO			
+toothgriddef	ColumnWidth	smallint	NO			
+toothgriddef	CodeNum	bigint	NO	MUL		
+toothgriddef	ProcStatus	tinyint	NO			
+toothgriddef	SheetFieldDefNum	bigint	NO	MUL		
+toothinitial	ToothInitialNum	bigint	NO	PRI		
+toothinitial	PatNum	bigint	NO	MUL		
+toothinitial	ToothNum	varchar	YES			
+toothinitial	InitialType	tinyint	NO			
+toothinitial	Movement	float	NO			
+toothinitial	DrawingSegment	text	YES			
+toothinitial	ColorDraw	int	NO			
+toothinitial	SecDateTEntry	datetime	NO	MUL		
+toothinitial	SecDateTEdit	timestamp	NO	MUL		
+toothinitial	DrawText	varchar	NO			
+transaction	TransactionNum	bigint	NO	PRI		
+transaction	DateTimeEntry	datetime	NO			
+transaction	UserNum	bigint	NO			
+transaction	DepositNum	bigint	NO			
+transaction	PayNum	bigint	NO			
+transaction	SecUserNumEdit	bigint	NO	MUL		
+transaction	SecDateTEdit	timestamp	NO			
+transaction	TransactionInvoiceNum	bigint	NO	MUL		
+transactioninvoice	TransactionInvoiceNum	bigint	NO	PRI		
+transactioninvoice	FileName	varchar	NO			
+transactioninvoice	InvoiceData	mediumtext	YES			
+transactioninvoice	FilePath	varchar	NO			
+treatplan	TreatPlanNum	bigint	NO	PRI		
+treatplan	PatNum	bigint	NO	MUL		
+treatplan	DateTP	date	NO			
+treatplan	Heading	varchar	YES			
+treatplan	Note	text	YES			
+treatplan	Signature	text	YES			
+treatplan	SigIsTopaz	tinyint	NO			
+treatplan	ResponsParty	bigint	NO			
+treatplan	DocNum	bigint	NO	MUL		
+treatplan	TPStatus	tinyint	NO			
+treatplan	SecUserNumEntry	bigint	NO	MUL		
+treatplan	SecDateEntry	date	NO			
+treatplan	SecDateTEdit	timestamp	NO			
+treatplan	UserNumPresenter	bigint	NO	MUL		
+treatplan	TPType	tinyint	NO			
+treatplan	SignaturePractice	text	NO			
+treatplan	DateTSigned	datetime	NO			
+treatplan	DateTPracticeSigned	datetime	NO			
+treatplan	SignatureText	varchar	NO			
+treatplan	SignaturePracticeText	varchar	NO			
+treatplan	MobileAppDeviceNum	bigint	NO	MUL		
+treatplanattach	TreatPlanAttachNum	bigint	NO	PRI		
+treatplanattach	TreatPlanNum	bigint	NO	MUL		
+treatplanattach	ProcNum	bigint	NO	MUL		
+treatplanattach	Priority	bigint	NO	MUL		
+treatplanparam	TreatPlanParamNum	bigint	NO	PRI		
+treatplanparam	PatNum	bigint	NO	MUL		
+treatplanparam	TreatPlanNum	bigint	NO	MUL		
+treatplanparam	ShowDiscount	tinyint	NO			
+treatplanparam	ShowMaxDed	tinyint	NO			
+treatplanparam	ShowSubTotals	tinyint	NO			
+treatplanparam	ShowTotals	tinyint	NO			
+treatplanparam	ShowCompleted	tinyint	NO			
+treatplanparam	ShowFees	tinyint	NO			
+treatplanparam	ShowIns	tinyint	NO			
+tsitranslog	TsiTransLogNum	bigint	NO	PRI		
+tsitranslog	PatNum	bigint	NO	MUL		
+tsitranslog	UserNum	bigint	NO	MUL		
+tsitranslog	TransType	tinyint	NO			
+tsitranslog	TransDateTime	datetime	NO			
+tsitranslog	ServiceType	tinyint	NO			
+tsitranslog	ServiceCode	tinyint	NO			
+tsitranslog	TransAmt	double	NO			
+tsitranslog	AccountBalance	double	NO			
+tsitranslog	FKeyType	tinyint	NO			
+tsitranslog	FKey	bigint	NO	MUL		
+tsitranslog	RawMsgText	varchar	NO			
+tsitranslog	ClientId	varchar	NO			
+tsitranslog	TransJson	mediumtext	NO			
+tsitranslog	ClinicNum	bigint	NO	MUL		
+tsitranslog	AggTransLogNum	bigint	NO	MUL		
+ucum	UcumNum	bigint	NO	PRI		
+ucum	UcumCode	varchar	NO	MUL		
+ucum	Description	varchar	NO			
+ucum	IsInUse	tinyint	NO			
+updatehistory	UpdateHistoryNum	bigint	NO	PRI		
+updatehistory	DateTimeUpdated	datetime	NO			
+updatehistory	ProgramVersion	varchar	NO			
+updatehistory	Signature	text	NO			
+userclinic	UserClinicNum	bigint	NO	PRI		
+userclinic	UserNum	bigint	NO	MUL		
+userclinic	ClinicNum	bigint	NO	MUL		
+usergroup	UserGroupNum	bigint	NO	PRI		
+usergroup	Description	varchar	YES			
+usergroup	UserGroupNumCEMT	bigint	NO	MUL		
+usergroupattach	UserGroupAttachNum	bigint	NO	PRI		
+usergroupattach	UserNum	bigint	NO	MUL		
+usergroupattach	UserGroupNum	bigint	NO	MUL		
+userod	UserNum	bigint	NO	PRI		
+userod	UserName	varchar	YES			
+userod	Password	varchar	YES			
+userod	UserGroupNum	bigint	NO	MUL		
+userod	EmployeeNum	bigint	NO			
+userod	ClinicNum	bigint	NO	MUL		
+userod	ProvNum	bigint	NO	MUL		
+userod	IsHidden	tinyint	NO			
+userod	TaskListInBox	bigint	NO			
+userod	AnesthProvType	int	NO			
+userod	DefaultHidePopups	tinyint	NO			
+userod	PasswordIsStrong	tinyint	NO			
+userod	ClinicIsRestricted	tinyint	NO			
+userod	InboxHidePopups	tinyint	NO			
+userod	UserNumCEMT	bigint	NO			
+userod	DateTFail	datetime	NO			
+userod	FailedAttempts	tinyint	NO			
+userod	DomainUser	varchar	NO			
+userod	IsPasswordResetRequired	tinyint	NO			
+userod	MobileWebPin	varchar	NO			
+userod	MobileWebPinFailedAttempts	tinyint	NO			
+userod	DateTLastLogin	datetime	NO			
+userod	EClipboardClinicalPin	varchar	NO			
+userod	BadgeId	varchar	NO			
+userodapptview	UserodApptViewNum	bigint	NO	PRI		
+userodapptview	UserNum	bigint	NO	MUL		
+userodapptview	ClinicNum	bigint	NO	MUL		
+userodapptview	ApptViewNum	bigint	NO	MUL		
+userodpref	UserOdPrefNum	bigint	NO	PRI		
+userodpref	UserNum	bigint	NO	MUL		
+userodpref	Fkey	bigint	NO	MUL		
+userodpref	FkeyType	tinyint	NO			
+userodpref	ValueString	text	NO			
+userodpref	ClinicNum	bigint	NO	MUL		
+userquery	QueryNum	bigint	NO	PRI		
+userquery	Description	varchar	YES			
+userquery	FileName	varchar	YES			
+userquery	QueryText	mediumtext	NO			
+userquery	IsReleased	tinyint	YES			
+userquery	IsPromptSetup	tinyint	NO			
+userquery	DefaultFormatRaw	tinyint	NO			
+userweb	UserWebNum	bigint	NO	PRI		
+userweb	FKey	bigint	NO	MUL		
+userweb	FKeyType	tinyint	NO			
+userweb	UserName	varchar	NO			
+userweb	Password	varchar	NO			
+userweb	PasswordResetCode	varchar	NO			
+userweb	RequireUserNameChange	tinyint	NO			
+userweb	DateTimeLastLogin	datetime	NO			
+userweb	RequirePasswordChange	tinyint	NO			
+utm	UtmNum	bigint	NO	PRI		
+utm	CampaignName	varchar	NO			
+utm	MediumInfo	varchar	NO			
+utm	SourceInfo	varchar	NO			
+vaccinedef	VaccineDefNum	bigint	NO	PRI		
+vaccinedef	CVXCode	varchar	NO			
+vaccinedef	VaccineName	varchar	NO			
+vaccinedef	DrugManufacturerNum	bigint	NO	MUL		
+vaccineobs	VaccineObsNum	bigint	NO	PRI		
+vaccineobs	VaccinePatNum	bigint	NO	MUL		
+vaccineobs	ValType	tinyint	NO			
+vaccineobs	IdentifyingCode	tinyint	NO			
+vaccineobs	ValReported	varchar	NO			
+vaccineobs	ValCodeSystem	tinyint	NO			
+vaccineobs	VaccineObsNumGroup	bigint	NO	MUL		
+vaccineobs	UcumCode	varchar	NO			
+vaccineobs	DateObs	date	NO			
+vaccineobs	MethodCode	varchar	NO			
+vaccinepat	VaccinePatNum	bigint	NO	PRI		
+vaccinepat	VaccineDefNum	bigint	NO	MUL		
+vaccinepat	DateTimeStart	datetime	YES			
+vaccinepat	DateTimeEnd	datetime	YES			
+vaccinepat	AdministeredAmt	float	NO			
+vaccinepat	DrugUnitNum	bigint	NO	MUL		
+vaccinepat	LotNumber	varchar	NO			
+vaccinepat	PatNum	bigint	NO	MUL		
+vaccinepat	Note	text	NO			
+vaccinepat	FilledCity	varchar	NO			
+vaccinepat	FilledST	varchar	NO			
+vaccinepat	CompletionStatus	tinyint	NO			
+vaccinepat	AdministrationNoteCode	tinyint	NO			
+vaccinepat	UserNum	bigint	NO	MUL		
+vaccinepat	ProvNumOrdering	bigint	NO	MUL		
+vaccinepat	ProvNumAdminister	bigint	NO	MUL		
+vaccinepat	DateExpire	date	NO			
+vaccinepat	RefusalReason	tinyint	NO			
+vaccinepat	ActionCode	tinyint	NO			
+vaccinepat	AdministrationRoute	tinyint	NO			
+vaccinepat	AdministrationSite	tinyint	NO			
+vitalsign	VitalsignNum	bigint	NO	PRI		
+vitalsign	PatNum	bigint	NO	MUL		
+vitalsign	Height	float	NO			
+vitalsign	Weight	float	NO			
+vitalsign	BpSystolic	smallint	NO			
+vitalsign	BpDiastolic	smallint	NO			
+vitalsign	DateTaken	date	NO			
+vitalsign	HasFollowupPlan	tinyint	NO			
+vitalsign	IsIneligible	tinyint	NO			
+vitalsign	Documentation	text	NO			
+vitalsign	ChildGotNutrition	tinyint	NO			
+vitalsign	ChildGotPhysCouns	tinyint	NO			
+vitalsign	WeightCode	varchar	NO	MUL		
+vitalsign	HeightExamCode	varchar	NO			
+vitalsign	WeightExamCode	varchar	NO			
+vitalsign	BMIExamCode	varchar	NO			
+vitalsign	EhrNotPerformedNum	bigint	NO	MUL		
+vitalsign	PregDiseaseNum	bigint	NO	MUL		
+vitalsign	BMIPercentile	int	NO			
+vitalsign	Pulse	int	NO			
+webschedcarrierrule	WebSchedCarrierRuleNum	bigint	NO	PRI		
+webschedcarrierrule	ClinicNum	bigint	NO	MUL		
+webschedcarrierrule	CarrierName	varchar	NO			
+webschedcarrierrule	DisplayName	varchar	NO			
+webschedcarrierrule	Message	text	NO			
+webschedcarrierrule	Rule	tinyint	NO			
+webschedrecall	WebSchedRecallNum	bigint	NO	PRI		
+webschedrecall	ClinicNum	bigint	NO	MUL		
+webschedrecall	PatNum	bigint	NO	MUL		
+webschedrecall	RecallNum	bigint	NO	MUL		
+webschedrecall	DateTimeEntry	datetime	NO	MUL		
+webschedrecall	DateDue	datetime	NO			
+webschedrecall	ReminderCount	int	NO			
+webschedrecall	DateTimeSent	datetime	NO	MUL		
+webschedrecall	DateTimeSendFailed	datetime	NO			
+webschedrecall	SendStatus	tinyint	NO			
+webschedrecall	ShortGUID	varchar	NO			
+webschedrecall	ResponseDescript	text	NO			
+webschedrecall	Source	tinyint	NO			
+webschedrecall	CommlogNum	bigint	NO	MUL		
+webschedrecall	MessageType	tinyint	NO	MUL		
+webschedrecall	MessageFk	bigint	NO	MUL		
+webschedrecall	ApptReminderRuleNum	bigint	NO	MUL		
+wikilistheaderwidth	WikiListHeaderWidthNum	bigint	NO	PRI		
+wikilistheaderwidth	ListName	varchar	NO			
+wikilistheaderwidth	ColName	varchar	NO			
+wikilistheaderwidth	ColWidth	int	NO			
+wikilistheaderwidth	PickList	text	NO			
+wikilistheaderwidth	IsHidden	tinyint	NO			
+wikilisthist	WikiListHistNum	bigint	NO	PRI		
+wikilisthist	UserNum	bigint	NO	MUL		
+wikilisthist	ListName	varchar	NO			
+wikilisthist	ListHeaders	text	NO			
+wikilisthist	ListContent	mediumtext	NO			
+wikilisthist	DateTimeSaved	datetime	NO			
+wikipage	WikiPageNum	bigint	NO	PRI		
+wikipage	UserNum	bigint	NO	MUL		
+wikipage	PageTitle	varchar	NO			
+wikipage	KeyWords	varchar	NO			
+wikipage	PageContent	mediumtext	NO			
+wikipage	DateTimeSaved	datetime	NO			
+wikipage	IsDraft	tinyint	NO			
+wikipage	IsLocked	tinyint	NO			
+wikipage	IsDeleted	tinyint	NO			
+wikipage	PageContentPlainText	mediumtext	NO			
+wikipagehist	WikiPageNum	bigint	NO	PRI		
+wikipagehist	UserNum	bigint	NO	MUL		
+wikipagehist	PageTitle	varchar	NO			
+wikipagehist	PageContent	mediumtext	NO			
+wikipagehist	DateTimeSaved	datetime	NO			
+wikipagehist	IsDeleted	tinyint	NO			
+xchargetransaction	XChargeTransactionNum	bigint	NO	PRI		
+xchargetransaction	TransType	varchar	NO			
+xchargetransaction	Amount	double	NO			
+xchargetransaction	CCEntry	varchar	NO			
+xchargetransaction	PatNum	bigint	NO	MUL		
+xchargetransaction	Result	varchar	NO			
+xchargetransaction	ClerkID	varchar	NO			
+xchargetransaction	ResultCode	varchar	NO			
+xchargetransaction	Expiration	varchar	NO			
+xchargetransaction	CCType	varchar	NO			
+xchargetransaction	CreditCardNum	varchar	NO			
+xchargetransaction	BatchNum	varchar	NO			
+xchargetransaction	ItemNum	varchar	NO			
+xchargetransaction	ApprCode	varchar	NO			
+xchargetransaction	TransactionDateTime	datetime	NO	MUL		
+xchargetransaction	BatchTotal	double	NO			
+xwebresponse	XWebResponseNum	bigint	NO	PRI		
+xwebresponse	PatNum	bigint	NO	MUL		
+xwebresponse	ProvNum	bigint	NO	MUL		
+xwebresponse	ClinicNum	bigint	NO	MUL		
+xwebresponse	PaymentNum	bigint	NO	MUL		
+xwebresponse	DateTEntry	datetime	NO			
+xwebresponse	DateTUpdate	datetime	NO	MUL		
+xwebresponse	TransactionStatus	tinyint	NO			
+xwebresponse	ResponseCode	int	NO			
+xwebresponse	XWebResponseCode	varchar	NO			
+xwebresponse	ResponseDescription	varchar	NO			
+xwebresponse	OTK	varchar	NO			
+xwebresponse	HpfUrl	text	NO			
+xwebresponse	HpfExpiration	datetime	NO			
+xwebresponse	TransactionID	varchar	NO			
+xwebresponse	TransactionType	varchar	NO			
+xwebresponse	Alias	varchar	NO			
+xwebresponse	CardType	varchar	NO			
+xwebresponse	CardBrand	varchar	NO			
+xwebresponse	CardBrandShort	varchar	NO			
+xwebresponse	MaskedAcctNum	varchar	NO			
+xwebresponse	Amount	double	NO			
+xwebresponse	ApprovalCode	varchar	NO			
+xwebresponse	CardCodeResponse	varchar	NO			
+xwebresponse	ReceiptID	int	NO			
+xwebresponse	ExpDate	varchar	NO			
+xwebresponse	EntryMethod	varchar	NO			
+xwebresponse	ProcessorResponse	varchar	NO			
+xwebresponse	BatchNum	int	NO			
+xwebresponse	BatchAmount	double	NO			
+xwebresponse	AccountExpirationDate	date	NO			
+xwebresponse	DebugError	text	NO			
+xwebresponse	PayNote	text	NO			
+xwebresponse	CCSource	tinyint	NO			
+xwebresponse	OrderId	varchar	NO			
+xwebresponse	EmailResponse	varchar	NO			
+xwebresponse	LogGuid	varchar	YES			
+zipcode	ZipCodeNum	bigint	NO	PRI		
+zipcode	ZipCodeDigits	varchar	YES			
+zipcode	City	varchar	YES			
+zipcode	State	varchar	YES			
+zipcode	IsFrequent	tinyint	NO			
