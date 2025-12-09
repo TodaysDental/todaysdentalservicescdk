@@ -27,7 +27,7 @@ import { ChimeStack, type VoiceConnectorOriginationRouteConfig } from './stacks/
 import { HrStack } from './stacks/hr-stack';
 import { PatientPortalApptTypesStack } from './stacks/patient-portal-appttypes-stack';
 import { FluorideAutomationStack } from './stacks/fluoride-automation-stack';
-
+import { MarketingStack } from './stacks/marketing-stack';
 import { CommStack } from './stacks/comm-stack'; // <-- NEW IMPORT ADDED HERE
 import { AnalyticsStack } from './stacks/analytics-stack';
 import { ClinicImagesStack } from './stacks/clinic-images-stack';
@@ -208,7 +208,10 @@ const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNoti
   env,
   templatesTableName: templatesStack.templatesTable.tableName,
 });
-
+const marketingStack = new MarketingStack(app, 'TodaysDentalInsightsMarketingN1', {
+  env,
+  authorizerFunctionArn: coreStack.authorizerFunction.functionArn,
+});
 // Amazon Chime Voice Integration - create Chime stack first and export
 // Lambda ARNs. We intentionally do NOT pass the Admin API object into the
 // Chime stack to avoid a two-way construct dependency which leads to
