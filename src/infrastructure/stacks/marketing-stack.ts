@@ -5,6 +5,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
+import * as iam from 'aws-cdk-lib/aws-iam'; // Added IAM import
 
 export interface MarketingStackProps extends StackProps {
   authorizerFunctionArn: string; 
@@ -25,14 +26,35 @@ export class MarketingStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
-    // 2. Authorizer
+    // 2. API Gateway
+    this.api = new apigw.RestApi(this, 'MarketingApi', {
+      restApiName: 'MarketingApi',
+      defaultCorsPreflightOptions: {
+        allowOrigins: ['https://todaysdentalinsights.com', 'http://localhost:3000', 'http://localhost:5173'],
+        allowMethods: apigw.Cors.ALL_METHODS,
+        allowHeaders: ['Content-Type', 'Authorization'],
+      },
+    });
+
+    // 3. Authorizer Setup (THE FIX IS HERE)
     const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthFn', props.authorizerFunctionArn);
+    
     const authorizer = new apigw.RequestAuthorizer(this, 'MarketingAuthorizer', {
       handler: authorizerFn,
       identitySources: [apigw.IdentitySource.header('Authorization')],
+      resultsCacheTtl: Duration.seconds(0), // Disable caching for testing
     });
 
-    // 3. Lambdas
+    // *** CRITICAL FIX: Grant API Gateway permission to invoke the Authorizer ***
+    // This often fails when passing authorizers between stacks without explicit permission
+    new lambda.CfnPermission(this, 'AuthorizerInvokePermission', {
+      action: 'lambda:InvokeFunction',
+      functionName: props.authorizerFunctionArn,
+      principal: 'apigateway.amazonaws.com',
+      sourceArn: this.api.arnForExecuteApi('authorizers'), // Allow this specific API to invoke it
+    });
+
+    // 4. Lambdas
     const envVars = {
         MARKETING_CONFIG_TABLE: this.marketingConfigTable.tableName,
         AYRSHARE_API_KEY: process.env.AYRSHARE_API_KEY || '',
@@ -54,21 +76,11 @@ export class MarketingStack extends Stack {
       environment: envVars,
     });
 
-    // 4. Permissions
+    // 5. Permissions
     this.marketingConfigTable.grantReadWriteData(managerFn);
     this.marketingConfigTable.grantReadData(publisherFn);
 
-    // 5. API Gateway
-    this.api = new apigw.RestApi(this, 'MarketingApi', {
-      restApiName: 'MarketingApi',
-      defaultCorsPreflightOptions: {
-        allowOrigins: ['https://todaysdentalinsights.com', 'http://localhost:3000', 'null'], // 'null' for local html testing
-        allowMethods: apigw.Cors.ALL_METHODS,
-        allowHeaders: ['Content-Type', 'Authorization'],
-      },
-    });
-
-    // Domain Mapping
+    // 6. Routes
     new apigw.CfnBasePathMapping(this, 'MarketingBasePathMapping', {
         domainName: 'apig.todaysdentalinsights.com',
         basePath: 'marketing',
@@ -76,7 +88,7 @@ export class MarketingStack extends Stack {
         stage: this.api.deploymentStage.stageName,
     });
 
-    const root = this.api.root; // Maps to /marketing via BasePath
+    const root = this.api.root;
 
     // /marketing/setup
     const setupRes = root.addResource('setup');
