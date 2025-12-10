@@ -2,6 +2,10 @@ import axios from 'axios';
 
 const AYRSHARE_URL = 'https://app.ayrshare.com/api';
 
+// ============================================
+// PROFILE MANAGEMENT
+// ============================================
+
 export async function ayrshareCreateProfile(apiKey: string, title: string) {
   try {
     const res = await axios.post(`${AYRSHARE_URL}/profiles/profile`, 
@@ -15,9 +19,22 @@ export async function ayrshareCreateProfile(apiKey: string, title: string) {
   }
 }
 
+export async function ayrshareGetProfile(apiKey: string, profileKey: string) {
+  try {
+    const res = await axios.get(`${AYRSHARE_URL}/user`, {
+      headers: { 
+        'Authorization': `Bearer ${apiKey}`,
+        'Profile-Key': profileKey
+      }
+    });
+    return res.data;
+  } catch (err: any) {
+    throw new Error(err.response?.data?.message || 'Failed to get profile');
+  }
+}
+
 export async function ayrshareDeleteProfile(apiKey: string, profileKey: string) {
   try {
-    // Note: Ayrshare typically deletes via the main API key referencing the profileKey
     const res = await axios.delete(`${AYRSHARE_URL}/profiles/profile`, {
       headers: { 
         'Authorization': `Bearer ${apiKey}`,
@@ -43,6 +60,10 @@ export async function ayrshareGenerateJWT(apiKey: string, profileKey: string, do
   }
 }
 
+// ============================================
+// POSTING & SCHEDULING
+// ============================================
+
 export async function ayrsharePost(apiKey: string, profileKey: string, postData: any) {
   try {
     const res = await axios.post(`${AYRSHARE_URL}/post`,
@@ -57,5 +78,185 @@ export async function ayrsharePost(apiKey: string, profileKey: string, postData:
     return res.data;
   } catch (err: any) {
     throw new Error(err.response?.data?.message || 'Failed to post');
+  }
+}
+
+export async function ayrshareDeletePost(apiKey: string, profileKey: string, postId: string) {
+  try {
+    const res = await axios.delete(`${AYRSHARE_URL}/post`,
+      {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Profile-Key': profileKey
+        },
+        data: { id: postId }
+      }
+    );
+    return res.data;
+  } catch (err: any) {
+    throw new Error(err.response?.data?.message || 'Failed to delete post');
+  }
+}
+
+// ============================================
+// ANALYTICS & HISTORY
+// ============================================
+
+export async function ayrshareGetHistory(apiKey: string, profileKey: string, params?: {
+  lastRecords?: number;
+  lastDays?: number;
+}) {
+  try {
+    const res = await axios.get(`${AYRSHARE_URL}/history`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Profile-Key': profileKey
+      },
+      params
+    });
+    return res.data;
+  } catch (err: any) {
+    throw new Error(err.response?.data?.message || 'Failed to get history');
+  }
+}
+
+export async function ayrshareGetAnalytics(apiKey: string, profileKey: string, postId: string) {
+  try {
+    const res = await axios.get(`${AYRSHARE_URL}/analytics/post`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Profile-Key': profileKey
+      },
+      params: { id: postId }
+    });
+    return res.data;
+  } catch (err: any) {
+    throw new Error(err.response?.data?.message || 'Failed to get analytics');
+  }
+}
+
+export async function ayrshareGetSocialStats(apiKey: string, profileKey: string, platforms: string[]) {
+  try {
+    const res = await axios.get(`${AYRSHARE_URL}/analytics/social`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Profile-Key': profileKey
+      },
+      params: { platforms: platforms.join(',') }
+    });
+    return res.data;
+  } catch (err: any) {
+    throw new Error(err.response?.data?.message || 'Failed to get social stats');
+  }
+}
+
+// ============================================
+// COMMENTS MANAGEMENT
+// ============================================
+
+export async function ayrshareGetComments(apiKey: string, profileKey: string, postId: string) {
+  try {
+    const res = await axios.get(`${AYRSHARE_URL}/comments`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Profile-Key': profileKey
+      },
+      params: { id: postId }
+    });
+    return res.data;
+  } catch (err: any) {
+    throw new Error(err.response?.data?.message || 'Failed to get comments');
+  }
+}
+
+export async function ayrshareReplyToComment(
+  apiKey: string, 
+  profileKey: string, 
+  commentId: string,
+  replyText: string,
+  platform: string
+) {
+  try {
+    const res = await axios.post(`${AYRSHARE_URL}/comments`,
+      {
+        commentId,
+        comment: replyText,
+        platform
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Profile-Key': profileKey
+        }
+      }
+    );
+    return res.data;
+  } catch (err: any) {
+    throw new Error(err.response?.data?.message || 'Failed to reply to comment');
+  }
+}
+
+// ============================================
+// MEDIA MANAGEMENT
+// ============================================
+
+export async function ayrshareUploadMedia(apiKey: string, profileKey: string, file: Buffer, fileName: string) {
+  try {
+    const formData = new FormData();
+    formData.append('file', new Blob([file]), fileName);
+
+    const res = await axios.post(`${AYRSHARE_URL}/upload`, formData, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Profile-Key': profileKey,
+        'Content-Type': 'multipart/form-data'
+      }
+    });
+    return res.data;
+  } catch (err: any) {
+    throw new Error(err.response?.data?.message || 'Failed to upload media');
+  }
+}
+
+// ============================================
+// AUTO-SCHEDULING
+// ============================================
+
+export async function ayrshareSetAutoSchedule(
+  apiKey: string, 
+  profileKey: string, 
+  schedule: {
+    scheduleDate: string[];
+    scheduleTime: string[];
+    title: string;
+  }
+) {
+  try {
+    const res = await axios.post(`${AYRSHARE_URL}/auto-schedule/set`,
+      schedule,
+      {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Profile-Key': profileKey
+        }
+      }
+    );
+    return res.data;
+  } catch (err: any) {
+    throw new Error(err.response?.data?.message || 'Failed to set auto-schedule');
+  }
+}
+
+export async function ayrshareGetAutoSchedule(apiKey: string, profileKey: string) {
+  try {
+    const res = await axios.get(`${AYRSHARE_URL}/auto-schedule/list`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Profile-Key': profileKey
+      }
+    });
+    return res.data;
+  } catch (err: any) {
+    throw new Error(err.response?.data?.message || 'Failed to get auto-schedule');
   }
 }

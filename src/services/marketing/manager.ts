@@ -1,7 +1,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
-import { ayrshareCreateProfile, ayrshareGenerateJWT, ayrshareDeleteProfile } from './ayrshare-client';
+import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { ayrshareCreateProfile, ayrshareGenerateJWT, ayrshareDeleteProfile, ayrshareGetProfile } from './ayrshare-client';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -36,7 +36,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return { 
           statusCode: 200, 
           headers: corsHeaders, 
-          body: JSON.stringify({ success: true, profileKey: existing.Item.ayrshareProfileKey, message: 'Profile already exists' }) 
+          body: JSON.stringify({ 
+            success: true, 
+            profileKey: existing.Item.ayrshareProfileKey, 
+            message: 'Profile already exists',
+            setupComplete: true
+          }) 
         };
       }
 
@@ -50,7 +55,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           clinicId: String(clinicId),
           ayrshareProfileKey: ayrResponse.profileKey,
           clinicName: clinicName,
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          setupComplete: false // Will be true after linking accounts
         }
       }));
 
@@ -102,13 +108,80 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
       const jwtRes = await ayrshareGenerateJWT(API_KEY, dbRes.Item.ayrshareProfileKey, FRONTEND_DOMAIN);
       
-      return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(jwtRes) };
+      return { 
+        statusCode: 200, 
+        headers: corsHeaders, 
+        body: JSON.stringify({
+          ...jwtRes,
+          userProfileKey: dbRes.Item.ayrshareProfileKey // Include profile key for widget
+        }) 
+      };
+    }
+
+    // ---------------------------------------------------------
+    // 4. GET STATUS (GET): Check clinic setup & linked accounts
+    // ---------------------------------------------------------
+    if (event.path.endsWith('/status') && event.httpMethod === 'GET') {
+      const clinicId = event.queryStringParameters?.clinicId;
+      if (!clinicId) throw new Error('clinicId required');
+
+      const dbRes = await ddb.send(new GetCommand({
+        TableName: TABLE_NAME,
+        Key: { clinicId }
+      }));
+
+      if (!dbRes.Item?.ayrshareProfileKey) {
+        return { 
+          statusCode: 200, 
+          headers: corsHeaders, 
+          body: JSON.stringify({ 
+            setupComplete: false,
+            linkedAccounts: []
+          }) 
+        };
+      }
+
+      // Get profile info from Ayrshare
+      const profileInfo = await ayrshareGetProfile(API_KEY, dbRes.Item.ayrshareProfileKey);
+      
+      return { 
+        statusCode: 200, 
+        headers: corsHeaders, 
+        body: JSON.stringify({
+          setupComplete: true,
+          profileKey: dbRes.Item.ayrshareProfileKey,
+          linkedAccounts: profileInfo.activeSocialAccounts || [],
+          createdAt: dbRes.Item.createdAt
+        }) 
+      };
+    }
+
+    // ---------------------------------------------------------
+    // 5. LIST ALL CLINICS (GET): Get all configured clinics
+    // ---------------------------------------------------------
+    if (event.path.endsWith('/clinics') && event.httpMethod === 'GET') {
+      const scanRes = await ddb.send(new ScanCommand({
+        TableName: TABLE_NAME
+      }));
+
+      const clinics = (scanRes.Items || []).map(item => ({
+        clinicId: item.clinicId,
+        clinicName: item.clinicName,
+        setupComplete: item.setupComplete || false,
+        createdAt: item.createdAt
+      }));
+
+      return { 
+        statusCode: 200, 
+        headers: corsHeaders, 
+        body: JSON.stringify({ clinics }) 
+      };
     }
 
     return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Route not found' }) };
 
   } catch (err: any) {
-    console.error(err);
+    console.error('Manager Error:', err);
     return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: err.message }) };
   }
 };
