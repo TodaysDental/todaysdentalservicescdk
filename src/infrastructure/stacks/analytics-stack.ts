@@ -40,6 +40,7 @@ export interface AnalyticsStackProps extends StackProps {
   callQueueTableStreamArn?: string;
   /**
    * Explicit CallQueue table name. If not provided, derived as: ${chimeStackName}-CallQueueV2
+   * RECOMMENDED: Pass explicit table name from ChimeStack to avoid derivation fragility.
    */
   callQueueTableName?: string;
   /**
@@ -48,10 +49,12 @@ export interface AnalyticsStackProps extends StackProps {
   supervisorEmails?: string[];
   /**
    * Explicit AgentPresence table name. If not provided, derived as: ${chimeStackName}-AgentPresence
+   * RECOMMENDED: Pass explicit table name from ChimeStack to avoid derivation fragility.
    */
   agentPresenceTableName?: string;
   /**
    * Explicit AgentPerformance table name. If not provided, derived as: ${chimeStackName}-AgentPerformance
+   * RECOMMENDED: Pass explicit table name from ChimeStack to avoid derivation fragility.
    */
   agentPerformanceTableName?: string;
   /**
@@ -59,6 +62,38 @@ export interface AnalyticsStackProps extends StackProps {
    * Defaults to ${stackName}-TranscriptBuffersV2
    */
   transcriptBufferTableName?: string;
+  
+  // ========================================
+  // VOICE AI INTEGRATION (from AiAgentsStack)
+  // ========================================
+  // CRITICAL: Name and ARN must be provided together for proper integration.
+  // If only name is provided without ARN, IAM permissions will fail silently.
+  
+  /**
+   * Voice Sessions table name from AiAgentsStack for AI call session tracking.
+   * Required for correlating AI voice call sessions with analytics.
+   * MUST be provided together with voiceSessionsTableArn.
+   */
+  voiceSessionsTableName?: string;
+  
+  /**
+   * Voice Sessions table ARN for IAM permissions.
+   * MUST be provided together with voiceSessionsTableName.
+   */
+  voiceSessionsTableArn?: string;
+  
+  /**
+   * AI Agents table name from AiAgentsStack.
+   * Used to validate and enrich AI agent information in analytics.
+   * MUST be provided together with aiAgentsTableArn.
+   */
+  aiAgentsTableName?: string;
+  
+  /**
+   * AI Agents table ARN for IAM permissions.
+   * MUST be provided together with aiAgentsTableName.
+   */
+  aiAgentsTableArn?: string;
 }
 
 export class AnalyticsStack extends Stack {
@@ -163,6 +198,7 @@ export class AnalyticsStack extends Stack {
     // This allows AnalyticsStack to reference ChimeStack tables even when created before ChimeStack.
     // WARNING: These names must match the naming convention in ChimeStack exactly.
     // If ChimeStack changes its table naming, these derivations must be updated.
+    // RECOMMENDED: Pass explicit table names via props instead of relying on derivation.
     
     if (!props.chimeStackName) {
       throw new Error('chimeStackName is required for AnalyticsStack to derive ChimeStack table names');
@@ -173,15 +209,61 @@ export class AnalyticsStack extends Stack {
       throw new Error(`Invalid chimeStackName format: ${props.chimeStackName}. Must start with letter and contain only alphanumeric characters and hyphens.`);
     }
     
+    // ========================================
+    // VOICE AI INTEGRATION VALIDATION
+    // ========================================
+    // CRITICAL FIX: Validate that name and ARN are provided together
+    // This prevents silent failures where Lambda has env var but no IAM permissions
+    
+    if (props.voiceSessionsTableName && !props.voiceSessionsTableArn) {
+      throw new Error(
+        '[AnalyticsStack] CONFIGURATION ERROR: voiceSessionsTableName is provided but voiceSessionsTableArn is missing. ' +
+        'Both must be provided together for proper IAM permissions.'
+      );
+    }
+    if (props.voiceSessionsTableArn && !props.voiceSessionsTableName) {
+      throw new Error(
+        '[AnalyticsStack] CONFIGURATION ERROR: voiceSessionsTableArn is provided but voiceSessionsTableName is missing. ' +
+        'Both must be provided together for environment variable configuration.'
+      );
+    }
+    
+    if (props.aiAgentsTableName && !props.aiAgentsTableArn) {
+      throw new Error(
+        '[AnalyticsStack] CONFIGURATION ERROR: aiAgentsTableName is provided but aiAgentsTableArn is missing. ' +
+        'Both must be provided together for proper IAM permissions.'
+      );
+    }
+    if (props.aiAgentsTableArn && !props.aiAgentsTableName) {
+      throw new Error(
+        '[AnalyticsStack] CONFIGURATION ERROR: aiAgentsTableArn is provided but aiAgentsTableName is missing. ' +
+        'Both must be provided together for environment variable configuration.'
+      );
+    }
+    
+    // Log Voice AI integration status
+    const voiceAiEnabled = !!(props.voiceSessionsTableName && props.voiceSessionsTableArn);
+    console.log(`[AnalyticsStack] Voice AI integration: ${voiceAiEnabled ? 'ENABLED' : 'DISABLED'}`);
+    
+    // Use explicit table names if provided, otherwise derive from chimeStackName
+    // Log warning if using derived names (fragile)
+    if (!props.callQueueTableName || !props.agentPresenceTableName || !props.agentPerformanceTableName) {
+      console.warn(
+        '[AnalyticsStack] WARNING: Using derived table names from chimeStackName. ' +
+        'This is fragile - pass explicit table names via callQueueTableName, agentPresenceTableName, agentPerformanceTableName props.'
+      );
+    }
+    
     this.derivedCallQueueTableName = props.callQueueTableName || `${props.chimeStackName}-CallQueueV2`;
     this.derivedAgentPresenceTableName = props.agentPresenceTableName || `${props.chimeStackName}-AgentPresence`;
     this.derivedAgentPerformanceTableName = props.agentPerformanceTableName || `${props.chimeStackName}-AgentPerformance`;
     
     // Log derived table names for debugging during synth
-    console.log('[AnalyticsStack] Derived ChimeStack table names:', {
+    console.log('[AnalyticsStack] ChimeStack table names:', {
       callQueueTable: this.derivedCallQueueTableName,
       agentPresenceTable: this.derivedAgentPresenceTableName,
       agentPerformanceTable: this.derivedAgentPerformanceTableName,
+      source: props.callQueueTableName ? 'explicit props' : 'derived from chimeStackName',
     });
 
     // ========================================
@@ -254,6 +336,43 @@ export class AnalyticsStack extends Stack {
       partitionKey: { name: 'analyticsState', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'finalizationScheduledAt', type: dynamodb.AttributeType.NUMBER },
       projectionType: dynamodb.ProjectionType.KEYS_ONLY, // Only need callId and timestamp
+    });
+
+    // ========================================
+    // AI VOICE CALL ANALYTICS GSIs
+    // ========================================
+    // These GSIs support Voice AI call tracking from AiAgentsStack
+    
+    // GSI: Query by AI call type (inbound_after_hours, outbound_scheduled, ai_transfer)
+    this.analyticsTable.addGlobalSecondaryIndex({
+      indexName: 'aiCallType-timestamp-index',
+      partitionKey: { name: 'aiCallType', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI: Query by AI agent ID for performance tracking
+    this.analyticsTable.addGlobalSecondaryIndex({
+      indexName: 'aiAgentId-timestamp-index',
+      partitionKey: { name: 'aiAgentId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI: Query by AI resolution outcome (resolved, transferred_to_human, voicemail, callback_scheduled)
+    this.analyticsTable.addGlobalSecondaryIndex({
+      indexName: 'aiResolutionOutcome-timestamp-index',
+      partitionKey: { name: 'aiResolutionOutcome', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI: Query AI calls by clinic for AI-specific reporting
+    this.analyticsTable.addGlobalSecondaryIndex({
+      indexName: 'clinicId-aiCallType-index',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'aiCallType', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     // Permanent failures table for DLQ triage visibility
@@ -483,6 +602,14 @@ export class AnalyticsStack extends Stack {
     new CfnOutput(this, 'AnalyticsTableName', {
       value: this.analyticsTable.tableName,
       description: 'DynamoDB Analytics Table Name',
+      exportName: `${this.stackName}-CallAnalyticsTableName`,
+    });
+
+    // CRITICAL FIX: Export table ARN for cross-stack IAM permissions
+    new CfnOutput(this, 'AnalyticsTableArn', {
+      value: this.analyticsTable.tableArn,
+      description: 'DynamoDB Analytics Table ARN for cross-stack IAM policies',
+      exportName: `${this.stackName}-CallAnalyticsTableArn`,
     });
 
 
@@ -522,6 +649,10 @@ export class AnalyticsStack extends Stack {
         AGENT_PERFORMANCE_TABLE_NAME: this.derivedAgentPerformanceTableName,
         AGENT_PRESENCE_TABLE_NAME: this.derivedAgentPresenceTableName,
         TRANSCRIPT_BUFFER_TABLE_NAME: this.transcriptBufferTable.tableName,
+        // Voice AI integration tables from AiAgentsStack
+        VOICE_SESSIONS_TABLE_NAME: props.voiceSessionsTableName || '',
+        AI_AGENTS_TABLE_NAME: props.aiAgentsTableName || '',
+        VOICE_AI_ENABLED: props.voiceSessionsTableName ? 'true' : 'false',
       },
       logRetention: logs.RetentionDays.ONE_WEEK,
     });
@@ -548,6 +679,35 @@ export class AnalyticsStack extends Stack {
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${this.derivedAgentPresenceTableName}`,
       ],
     }));
+
+    // Grant permissions to Voice AI tables from AiAgentsStack (if provided)
+    if (props.voiceSessionsTableArn) {
+      finalizeAnalyticsFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'dynamodb:GetItem',
+          'dynamodb:Query',
+        ],
+        resources: [
+          props.voiceSessionsTableArn,
+          `${props.voiceSessionsTableArn}/index/*`,
+        ],
+      }));
+    }
+
+    if (props.aiAgentsTableArn) {
+      finalizeAnalyticsFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'dynamodb:GetItem',
+          'dynamodb:Query',
+        ],
+        resources: [
+          props.aiAgentsTableArn,
+          `${props.aiAgentsTableArn}/index/*`,
+        ],
+      }));
+    }
 
     // Schedule to run every minute
     const finalizationRule = new events.Rule(this, 'AnalyticsFinalizationRule', {

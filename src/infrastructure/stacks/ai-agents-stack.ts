@@ -1,0 +1,1234 @@
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn, Tags } from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import * as path from 'path';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as apigw from 'aws-cdk-lib/aws-apigateway';
+import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
+import * as apigwv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
+
+/**
+ * AI Agents Stack - AWS Bedrock Agents with Action Groups
+ * 
+ * Uses the managed Bedrock Agents service with:
+ * - Action Groups for OpenDental API tools
+ * - Knowledge Bases (optional)
+ * - Built-in conversation memory
+ * - Agent lifecycle: CREATE → PREPARE → READY
+ * 
+ * 3-Level Prompt System:
+ * 1. System Prompt (constant) - Agent instruction in Bedrock
+ * 2. Negative Prompt (constant) - Guardrails and restrictions
+ * 3. User Prompt (customizable) - Additional frontend instructions
+ */
+export interface AiAgentsStackProps extends StackProps {
+  clinicHoursTableName?: string;
+  clinicPricingTableName?: string;
+  clinicInsuranceTableName?: string;
+  
+  // ========================================
+  // CHIME STACK INTEGRATION (REQUIRED)
+  // ========================================
+  // These props MUST be passed from ChimeStack to avoid hardcoded imports
+  // and circular dependencies. Do not rely on default stack names.
+  
+  /**
+   * Clinics table name from ChimeStack.
+   * REQUIRED for outbound calls to look up clinic SIP configuration.
+   */
+  clinicsTableName: string;
+  
+  /**
+   * Clinics table ARN from ChimeStack for IAM permissions.
+   * REQUIRED for outbound call Lambda to read clinic data.
+   */
+  clinicsTableArn?: string;
+  
+  /**
+   * SMA ID Map JSON string from ChimeStack.
+   * Maps clinicId -> SIP Media Application ID.
+   * REQUIRED for initiating outbound calls via the correct SMA.
+   */
+  smaIdMap: string;
+  
+  /**
+   * ChimeStack name for additional dynamic imports if needed.
+   * Optional - prefer explicit props over dynamic imports.
+   */
+  chimeStackName?: string;
+  
+  // ========================================
+  // UNIFIED ANALYTICS INTEGRATION (REQUIRED)
+  // ========================================
+  // CRITICAL: Use the shared CallAnalytics table from AnalyticsStack to avoid
+  // data fragmentation. The AnalyticsStack table (CallAnalyticsV2) uses callId/timestamp
+  // schema which aligns with Chime stream processor and reconciliation jobs.
+  
+  /**
+   * Name of the shared CallAnalytics table from AnalyticsStack.
+   * Schema: PK=callId (String), SK=timestamp (Number)
+   * REQUIRED for unified call analytics. If not provided, Voice AI analytics will be disabled.
+   */
+  callAnalyticsTableName?: string;
+  
+  /**
+   * ARN of the shared CallAnalytics table for IAM permissions.
+   * MUST be provided if callAnalyticsTableName is provided.
+   */
+  callAnalyticsTableArn?: string;
+  
+  /**
+   * AnalyticsStack name for deriving import names.
+   * Optional - prefer explicit props (callAnalyticsTableName/Arn) over dynamic imports.
+   */
+  analyticsStackName?: string;
+  
+  // ========================================
+  // SHARED RECORDINGS BUCKET (from ChimeStack)
+  // ========================================
+  // CRITICAL: Use the shared recordings bucket from ChimeStack to avoid
+  // data fragmentation between AI calls and human calls.
+  
+  /**
+   * Shared recordings bucket name from ChimeStack.
+   * If provided, AiAgentsStack will NOT create its own recordings bucket.
+   * RECOMMENDED: Always pass this to have unified call recordings.
+   */
+  sharedRecordingsBucketName?: string;
+  
+  /**
+   * Shared recordings bucket ARN for IAM permissions.
+   * MUST be provided together with sharedRecordingsBucketName.
+   */
+  sharedRecordingsBucketArn?: string;
+}
+
+export class AiAgentsStack extends Stack {
+  public readonly agentsTable: dynamodb.Table;
+  public readonly connectionsTable: dynamodb.Table;
+  public readonly voiceSessionsTable: dynamodb.Table;
+  public readonly clinicHoursTable: dynamodb.Table;
+  public readonly voiceConfigTable: dynamodb.Table;
+  public readonly scheduledCallsTable: dynamodb.Table;
+  /**
+   * Reference to the shared CallAnalytics table from AnalyticsStack.
+   * This avoids data fragmentation between AI-written records and Chime stream records.
+   * Will be undefined if callAnalyticsTableName was not provided.
+   */
+  public readonly callAnalyticsTableName?: string;
+  /**
+   * Call recordings bucket. Either the shared bucket from ChimeStack
+   * or a dedicated bucket if no shared bucket was provided.
+   */
+  public readonly callRecordingsBucket: s3.IBucket;
+  public readonly agentsFn: lambdaNode.NodejsFunction;
+  public readonly invokeAgentFn: lambdaNode.NodejsFunction;
+  public readonly actionGroupFn: lambdaNode.NodejsFunction;
+  public readonly wsConnectFn: lambdaNode.NodejsFunction;
+  public readonly wsDisconnectFn: lambdaNode.NodejsFunction;
+  public readonly wsMessageFn: lambdaNode.NodejsFunction;
+  public readonly voiceAiFn: lambdaNode.NodejsFunction;
+  public readonly voiceConfigFn: lambdaNode.NodejsFunction;
+  public readonly outboundSchedulerFn: lambdaNode.NodejsFunction;
+  public readonly outboundExecutorFn: lambdaNode.NodejsFunction;
+  public readonly api: apigw.RestApi;
+  public readonly websocketApi: apigwv2.WebSocketApi;
+  public readonly authorizer: apigw.RequestAuthorizer;
+  public readonly bedrockAgentRole: iam.Role;
+  public readonly schedulerRole: iam.Role;
+
+  constructor(scope: Construct, id: string, props: AiAgentsStackProps) {
+    super(scope, id, props);
+
+    // Tags & alarm helpers
+    const baseTags: Record<string, string> = {
+      Stack: Stack.of(this).stackName,
+      Service: 'AIAgents',
+      ManagedBy: 'cdk',
+    };
+    const applyTags = (resource: Construct, extra?: Record<string, string>) => {
+      Object.entries(baseTags).forEach(([k, v]) => Tags.of(resource).add(k, v));
+      if (extra) Object.entries(extra).forEach(([k, v]) => Tags.of(resource).add(k, v));
+    };
+    applyTags(this);
+
+    const createLambdaErrorAlarm = (fn: lambda.IFunction, name: string) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}ErrorAlarm`, {
+        metric: fn.metricErrors({ period: Duration.minutes(1), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${name} Lambda has errors`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createLambdaThrottleAlarm = (fn: lambda.IFunction, name: string) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}ThrottleAlarm`, {
+        metric: fn.metricThrottles({ period: Duration.minutes(1), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when ${name} Lambda is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createLambdaDurationAlarm = (fn: lambda.IFunction, name: string, thresholdMs: number) =>
+      new cloudwatch.Alarm(this, `${fn.node.id}DurationAlarm`, {
+        metric: fn.metricDuration({ period: Duration.minutes(5), statistic: 'Maximum' }),
+        threshold: thresholdMs,
+        evaluationPeriods: 2,
+        alarmDescription: `Alert when ${name} Lambda p99 duration exceeds ${thresholdMs}ms (~80% of timeout)`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    const createDynamoThrottleAlarm = (tableName: string, idSuffix: string) =>
+      new cloudwatch.Alarm(this, `${idSuffix}ThrottleAlarm`, {
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/DynamoDB',
+          metricName: 'ThrottledRequests',
+          dimensionsMap: { TableName: tableName },
+          statistic: 'Sum',
+          period: Duration.minutes(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmDescription: `Alert when DynamoDB table ${tableName} is throttled`,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    // ========================================
+    // DYNAMODB TABLE
+    // ========================================
+
+    // AI Agents Table - stores agent metadata & Bedrock agent IDs
+    this.agentsTable = new dynamodb.Table(this, 'AiAgentsTable', {
+      partitionKey: { name: 'agentId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      tableName: `${this.stackName}-AiAgents`,
+      pointInTimeRecovery: true,
+    });
+    applyTags(this.agentsTable, { Table: 'ai-agents' });
+
+    // Add GSI for clinic-based queries
+    this.agentsTable.addGlobalSecondaryIndex({
+      indexName: 'ClinicIndex',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+    });
+
+    // WebSocket Connections Table - stores active connections
+    this.connectionsTable = new dynamodb.Table(this, 'AiAgentConnectionsTable', {
+      partitionKey: { name: 'connectionId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY, // Connections are ephemeral
+      tableName: `${this.stackName}-AiAgentConnections`,
+      timeToLiveAttribute: 'ttl',
+    });
+    applyTags(this.connectionsTable, { Table: 'ai-agent-connections' });
+
+    // Voice AI Sessions Table - stores active voice call sessions
+    this.voiceSessionsTable = new dynamodb.Table(this, 'VoiceAiSessionsTable', {
+      partitionKey: { name: 'sessionId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      tableName: `${this.stackName}-VoiceAiSessions`,
+      timeToLiveAttribute: 'ttl',
+      pointInTimeRecovery: true,
+    });
+    applyTags(this.voiceSessionsTable, { Table: 'voice-sessions' });
+
+    // Add GSI for callId lookups
+    this.voiceSessionsTable.addGlobalSecondaryIndex({
+      indexName: 'CallIdIndex',
+      partitionKey: { name: 'callId', type: dynamodb.AttributeType.STRING },
+    });
+
+    // Clinic Hours Table - stores business hours for each clinic
+    this.clinicHoursTable = new dynamodb.Table(this, 'ClinicHoursTable', {
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      tableName: `${this.stackName}-ClinicHours`,
+      pointInTimeRecovery: true,
+    });
+    applyTags(this.clinicHoursTable, { Table: 'clinic-hours' });
+
+    // Voice Agent Config Table - stores which agent handles voice calls per clinic
+    this.voiceConfigTable = new dynamodb.Table(this, 'VoiceAgentConfigTable', {
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      tableName: `${this.stackName}-VoiceAgentConfig`,
+      pointInTimeRecovery: true,
+    });
+    applyTags(this.voiceConfigTable, { Table: 'voice-config' });
+
+    // Scheduled Calls Table - stores outbound call schedules
+    this.scheduledCallsTable = new dynamodb.Table(this, 'ScheduledCallsTable', {
+      partitionKey: { name: 'callId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      tableName: `${this.stackName}-ScheduledCalls`,
+      timeToLiveAttribute: 'ttl',
+      pointInTimeRecovery: true,
+    });
+    applyTags(this.scheduledCallsTable, { Table: 'scheduled-calls' });
+
+    // Add GSI for clinic-based queries
+    this.scheduledCallsTable.addGlobalSecondaryIndex({
+      indexName: 'ClinicIndex',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'scheduledTime', type: dynamodb.AttributeType.STRING },
+    });
+
+    // ========================================
+    // SHARED CALL ANALYTICS TABLE (from AnalyticsStack)
+    // ========================================
+    // CRITICAL FIX: Use the shared CallAnalytics table from AnalyticsStack instead of
+    // creating a duplicate. This ensures all call analytics data (from Chime stream
+    // processor, reconciliation jobs, and Voice AI) goes to the same table.
+    //
+    // The AnalyticsStack table schema:
+    //   PK: callId (String) - unique call identifier
+    //   SK: timestamp (Number) - call start timestamp
+    //   GSIs: clinicId-timestamp, agentId-timestamp, callStatus-timestamp, etc.
+    //
+    // If callAnalyticsTableName is not provided, Voice AI analytics will be disabled
+    // with a warning at synth time.
+    
+    // ========================================
+    // ANALYTICS INTEGRATION VALIDATION
+    // ========================================
+    // CRITICAL FIX: Validate that name and ARN are provided together
+    if (props.callAnalyticsTableName && !props.callAnalyticsTableArn) {
+      throw new Error(
+        '[AiAgentsStack] CONFIGURATION ERROR: callAnalyticsTableName is provided but callAnalyticsTableArn is missing. ' +
+        'Both must be provided together for proper IAM permissions.'
+      );
+    }
+    if (props.callAnalyticsTableArn && !props.callAnalyticsTableName) {
+      throw new Error(
+        '[AiAgentsStack] CONFIGURATION ERROR: callAnalyticsTableArn is provided but callAnalyticsTableName is missing. ' +
+        'Both must be provided together for environment variable configuration.'
+      );
+    }
+    
+    // Use explicit props for analytics table (preferred over dynamic imports)
+    if (props.callAnalyticsTableName) {
+      this.callAnalyticsTableName = props.callAnalyticsTableName;
+      console.log(`[AiAgentsStack] CallAnalytics table configured: ${props.callAnalyticsTableName}`);
+    } else if (props.analyticsStackName) {
+      // Fallback: Import dynamically from AnalyticsStack
+      this.callAnalyticsTableName = Fn.importValue(`${props.analyticsStackName}-CallAnalyticsTableName`).toString();
+      console.log(`[AiAgentsStack] Importing CallAnalytics table from ${props.analyticsStackName}`);
+    } else {
+      // No analytics integration configured
+      this.callAnalyticsTableName = undefined;
+      console.warn(
+        '[AiAgentsStack] WARNING: callAnalyticsTableName and analyticsStackName not provided. ' +
+        'Voice AI call analytics will be DISABLED. To enable unified analytics, ' +
+        'pass the AnalyticsStack CallAnalyticsV2 table name via props or provide analyticsStackName.'
+      );
+    }
+
+    // ========================================
+    // S3 BUCKET FOR CALL RECORDINGS
+    // ========================================
+    // CRITICAL FIX: Use shared recordings bucket from ChimeStack if provided
+    // This avoids data fragmentation between AI calls and human calls.
+    
+    // Validate shared bucket name+ARN pair
+    if (props.sharedRecordingsBucketName && !props.sharedRecordingsBucketArn) {
+      throw new Error(
+        '[AiAgentsStack] CONFIGURATION ERROR: sharedRecordingsBucketName is provided but sharedRecordingsBucketArn is missing. ' +
+        'Both must be provided together for proper IAM permissions.'
+      );
+    }
+    if (props.sharedRecordingsBucketArn && !props.sharedRecordingsBucketName) {
+      throw new Error(
+        '[AiAgentsStack] CONFIGURATION ERROR: sharedRecordingsBucketArn is provided but sharedRecordingsBucketName is missing. ' +
+        'Both must be provided together for bucket reference.'
+      );
+    }
+    
+    // Declare bucket variable for use throughout constructor
+    let recordingsBucket: s3.IBucket;
+    
+    if (props.sharedRecordingsBucketName && props.sharedRecordingsBucketArn) {
+      // Use shared recordings bucket from ChimeStack (RECOMMENDED)
+      console.log(`[AiAgentsStack] Using shared recordings bucket from ChimeStack: ${props.sharedRecordingsBucketName}`);
+      
+      recordingsBucket = s3.Bucket.fromBucketAttributes(this, 'SharedRecordingsBucket', {
+        bucketName: props.sharedRecordingsBucketName,
+        bucketArn: props.sharedRecordingsBucketArn,
+      });
+      
+      // Note: Bucket policies are configured in ChimeStack
+      // AiAgentsStack just needs write permissions (granted via IAM role policy below)
+    } else {
+      // Create AiAgentsStack's own recordings bucket (legacy behavior)
+      // WARNING: This creates data fragmentation between AI and human call recordings
+      console.warn(
+        '[AiAgentsStack] WARNING: Creating separate recordings bucket. ' +
+        'This causes data fragmentation between AI and human call recordings. ' +
+        'Pass sharedRecordingsBucketName/Arn from ChimeStack for unified storage.'
+      );
+      
+      const ownBucket = new s3.Bucket(this, 'CallRecordingsBucket', {
+        bucketName: `${this.stackName.toLowerCase()}-call-recordings-${this.account}`,
+        encryption: s3.BucketEncryption.S3_MANAGED,
+        blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+        removalPolicy: RemovalPolicy.RETAIN,
+        lifecycleRules: [{
+          id: 'expire-old-recordings',
+          expiration: Duration.days(365), // Keep recordings for 1 year
+          enabled: true,
+        }],
+        versioned: false,
+      });
+      applyTags(ownBucket, { Bucket: 'call-recordings' });
+
+      // Allow Chime Voice Connector to write recordings to this bucket
+      // CRITICAL FIX: Use voiceconnector.chime.amazonaws.com principal, not chime.amazonaws.com
+      // The chime.amazonaws.com principal is for Chime SDK Meetings, not Voice Connector/SMA.
+      // Voice Connector and SIP Media Application recordings require the voiceconnector principal.
+      ownBucket.addToResourcePolicy(new iam.PolicyStatement({
+        sid: 'AllowChimeVoiceConnectorToWriteRecordings',
+        effect: iam.Effect.ALLOW,
+        principals: [new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com')],
+        actions: ['s3:PutObject', 's3:PutObjectAcl'],
+        resources: [`${ownBucket.bucketArn}/*`],
+        conditions: {
+          StringEquals: {
+            'aws:SourceAccount': this.account,
+          },
+          ArnLike: {
+            'aws:SourceArn': `arn:aws:chime:*:${this.account}:sma/*`,
+          },
+        },
+      }));
+      
+      recordingsBucket = ownBucket;
+    }
+    
+    // Store reference for other parts of the stack
+    this.callRecordingsBucket = recordingsBucket;
+
+    // ========================================
+    // IAM ROLE FOR BEDROCK AGENTS
+    // ========================================
+
+    // This role is assumed by Bedrock Agents to invoke Lambda action groups
+    this.bedrockAgentRole = new iam.Role(this, 'BedrockAgentRole', {
+      assumedBy: new iam.ServicePrincipal('bedrock.amazonaws.com'),
+      description: 'Role assumed by Bedrock Agents to invoke action group Lambda functions',
+      roleName: `${this.stackName}-BedrockAgentRole`,
+    });
+
+    // Allow Bedrock Agent to invoke foundation models
+    this.bedrockAgentRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock:InvokeModel'],
+      resources: ['arn:aws:bedrock:*::foundation-model/*'],
+    }));
+
+    // ========================================
+    // IAM ROLE FOR EVENTBRIDGE SCHEDULER
+    // ========================================
+
+    // This role is assumed by EventBridge Scheduler to invoke Lambda functions
+    this.schedulerRole = new iam.Role(this, 'SchedulerRole', {
+      assumedBy: new iam.ServicePrincipal('scheduler.amazonaws.com'),
+      description: 'Role assumed by EventBridge Scheduler to invoke outbound call Lambda',
+      roleName: `${this.stackName}-SchedulerRole`,
+    });
+
+    // ========================================
+    // ACTION GROUP LAMBDA
+    // ========================================
+
+    // This Lambda handles all OpenDental tool calls from the Bedrock Agent
+    this.actionGroupFn = new lambdaNode.NodejsFunction(this, 'ActionGroupFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'action-group-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 1024,
+      timeout: Duration.minutes(2), // Tool calls may take time
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        AGENTS_TABLE: this.agentsTable.tableName,
+      },
+    });
+    applyTags(this.actionGroupFn, { Function: 'action-group' });
+
+    this.agentsTable.grantReadData(this.actionGroupFn);
+
+    // Allow Bedrock Agent role to invoke the action group Lambda
+    this.actionGroupFn.grantInvoke(this.bedrockAgentRole);
+
+    // Also allow bedrock.amazonaws.com to invoke directly
+    this.actionGroupFn.addPermission('BedrockInvoke', {
+      principal: new iam.ServicePrincipal('bedrock.amazonaws.com'),
+      action: 'lambda:InvokeFunction',
+      sourceArn: `arn:aws:bedrock:${this.region}:${this.account}:agent/*`,
+    });
+
+    // ========================================
+    // API GATEWAY SETUP
+    // ========================================
+
+    const corsConfig = getCdkCorsConfig();
+
+    this.api = new apigw.RestApi(this, 'AiAgentsApi', {
+      restApiName: 'AiAgentsApi',
+      description: 'AI Agents service API - Bedrock Agents with Action Groups',
+      defaultCorsPreflightOptions: {
+        allowOrigins: corsConfig.allowOrigins,
+        allowHeaders: corsConfig.allowHeaders,
+        allowMethods: corsConfig.allowMethods,
+      },
+      deployOptions: {
+        stageName: 'prod',
+        metricsEnabled: true,
+        loggingLevel: apigw.MethodLoggingLevel.INFO,
+        dataTraceEnabled: false,
+      },
+    });
+
+    const corsErrorHeaders = getCorsErrorHeaders();
+
+    new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
+      restApi: this.api,
+      type: apigw.ResponseType.DEFAULT_4XX,
+      responseHeaders: corsErrorHeaders,
+    });
+
+    new apigw.GatewayResponse(this, 'GatewayResponseDefault5XX', {
+      restApi: this.api,
+      type: apigw.ResponseType.DEFAULT_5XX,
+      responseHeaders: corsErrorHeaders,
+    });
+
+    new apigw.GatewayResponse(this, 'GatewayResponseUnauthorized', {
+      restApi: this.api,
+      type: apigw.ResponseType.UNAUTHORIZED,
+      responseHeaders: corsErrorHeaders,
+    });
+
+    // Import authorizer
+    const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
+    const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
+
+    this.authorizer = new apigw.RequestAuthorizer(this, 'AiAgentsAuthorizer', {
+      handler: authorizerFn,
+      identitySources: [apigw.IdentitySource.header('Authorization')],
+      resultsCacheTtl: Duration.minutes(5),
+    });
+
+    new lambda.CfnPermission(this, 'AuthorizerInvokePermission', {
+      action: 'lambda:InvokeFunction',
+      functionName: authorizerFunctionArn,
+      principal: 'apigateway.amazonaws.com',
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${this.api.restApiId}/authorizers/*`,
+    });
+
+    // ========================================
+    // LAMBDA FUNCTIONS
+    // ========================================
+
+    // AI Agents CRUD + Bedrock Agent Management
+    this.agentsFn = new lambdaNode.NodejsFunction(this, 'AiAgentsFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'agents.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 512,
+      timeout: Duration.seconds(60), // Agent creation/prepare can take time
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        AGENTS_TABLE: this.agentsTable.tableName,
+        BEDROCK_AGENT_ROLE_ARN: this.bedrockAgentRole.roleArn,
+        ACTION_GROUP_LAMBDA_ARN: this.actionGroupFn.functionArn,
+        AWS_REGION_OVERRIDE: this.region,
+      },
+    });
+    applyTags(this.agentsFn, { Function: 'ai-agents-crud' });
+
+    this.agentsTable.grantReadWriteData(this.agentsFn);
+
+    // Bedrock Agent management permissions
+    this.agentsFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        // Agent lifecycle
+        'bedrock:CreateAgent',
+        'bedrock:UpdateAgent',
+        'bedrock:DeleteAgent',
+        'bedrock:GetAgent',
+        'bedrock:PrepareAgent',
+        'bedrock:ListAgents',
+        // Agent versions
+        'bedrock:ListAgentVersions',
+        'bedrock:GetAgentVersion',
+        // Agent aliases
+        'bedrock:CreateAgentAlias',
+        'bedrock:UpdateAgentAlias',
+        'bedrock:DeleteAgentAlias',
+        'bedrock:GetAgentAlias',
+        'bedrock:ListAgentAliases',
+        // Action groups
+        'bedrock:CreateAgentActionGroup',
+        'bedrock:UpdateAgentActionGroup',
+        'bedrock:DeleteAgentActionGroup',
+        'bedrock:GetAgentActionGroup',
+        'bedrock:ListAgentActionGroups',
+      ],
+      resources: ['*'],
+    }));
+
+    // Allow passing the Bedrock Agent role
+    this.agentsFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['iam:PassRole'],
+      resources: [this.bedrockAgentRole.roleArn],
+      conditions: {
+        StringEquals: {
+          'iam:PassedToService': 'bedrock.amazonaws.com',
+        },
+      },
+    }));
+
+    // Invoke Agent Handler
+    this.invokeAgentFn = new lambdaNode.NodejsFunction(this, 'InvokeAgentFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'invoke-agent.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 1024,
+      timeout: Duration.minutes(5),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        AGENTS_TABLE: this.agentsTable.tableName,
+      },
+    });
+    applyTags(this.invokeAgentFn, { Function: 'invoke-agent' });
+
+    this.agentsTable.grantReadWriteData(this.invokeAgentFn);
+
+    // Bedrock Agent invocation permissions
+    this.invokeAgentFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock:InvokeAgent',
+        'bedrock:GetAgent',
+        'bedrock:GetAgentAlias',
+      ],
+      resources: ['*'],
+    }));
+
+    // ========================================
+    // VOICE AI HANDLER
+    // ========================================
+
+    // Handles after-hours inbound voice calls
+    this.voiceAiFn = new lambdaNode.NodejsFunction(this, 'VoiceAiFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'voice-ai-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 1024,
+      timeout: Duration.minutes(5), // Voice calls can be long
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        AGENTS_TABLE: this.agentsTable.tableName,
+        VOICE_SESSIONS_TABLE: this.voiceSessionsTable.tableName,
+        CLINIC_HOURS_TABLE: this.clinicHoursTable.tableName,
+        VOICE_CONFIG_TABLE: this.voiceConfigTable.tableName,
+        // Use shared CallAnalytics table from AnalyticsStack (or empty if not provided)
+        CALL_ANALYTICS_TABLE: props.callAnalyticsTableName || '',
+        CALL_ANALYTICS_ENABLED: props.callAnalyticsTableName ? 'true' : 'false',
+        CALL_RECORDINGS_BUCKET: this.callRecordingsBucket.bucketName,
+      },
+    });
+    applyTags(this.voiceAiFn, { Function: 'voice-ai' });
+
+    this.agentsTable.grantReadData(this.voiceAiFn);
+    this.voiceSessionsTable.grantReadWriteData(this.voiceAiFn);
+    this.clinicHoursTable.grantReadData(this.voiceAiFn);
+    this.voiceConfigTable.grantReadData(this.voiceAiFn);
+    this.callRecordingsBucket.grantWrite(this.voiceAiFn);
+
+    // Grant write access to shared CallAnalytics table (cross-stack permission)
+    // The table schema is: PK=callId, SK=timestamp (Number)
+    // Use explicit ARN from props (validated above to be present if name is present)
+    const callAnalyticsTableArn = props.callAnalyticsTableArn;
+    
+    if (callAnalyticsTableArn) {
+      this.voiceAiFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'dynamodb:PutItem',
+          'dynamodb:UpdateItem',
+          'dynamodb:GetItem',
+        ],
+        resources: [
+          callAnalyticsTableArn,
+          `${callAnalyticsTableArn}/index/*`,
+        ],
+      }));
+    }
+
+    // Bedrock Agent invocation for Voice AI
+    this.voiceAiFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock:InvokeAgent',
+        'bedrock:GetAgent',
+        'bedrock:GetAgentAlias',
+      ],
+      resources: ['*'],
+    }));
+
+    // Amazon Polly for text-to-speech
+    this.voiceAiFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'polly:SynthesizeSpeech',
+        'polly:DescribeVoices',
+      ],
+      resources: ['*'],
+    }));
+
+    // Amazon Transcribe for speech-to-text
+    this.voiceAiFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'transcribe:StartStreamTranscription',
+        'transcribe:StartStreamTranscriptionWebSocket',
+      ],
+      resources: ['*'],
+    }));
+
+    // ========================================
+    // VOICE AGENT CONFIG HANDLER
+    // ========================================
+
+    // Manages which AI agent handles voice calls per clinic
+    this.voiceConfigFn = new lambdaNode.NodejsFunction(this, 'VoiceConfigFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'voice-agent-config.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        AGENTS_TABLE: this.agentsTable.tableName,
+        VOICE_CONFIG_TABLE: this.voiceConfigTable.tableName,
+        CLINIC_HOURS_TABLE: this.clinicHoursTable.tableName,
+      },
+    });
+    applyTags(this.voiceConfigFn, { Function: 'voice-config' });
+
+    this.agentsTable.grantReadData(this.voiceConfigFn);
+    this.voiceConfigTable.grantReadWriteData(this.voiceConfigFn);
+    this.clinicHoursTable.grantReadWriteData(this.voiceConfigFn);
+
+    // ========================================
+    // OUTBOUND CALL EXECUTOR (Invoked by Scheduler)
+    // ========================================
+
+    // ========================================
+    // CHIME STACK INTEGRATION (using required props)
+    // ========================================
+    // CRITICAL FIX: Use explicit props instead of hardcoded defaults
+    // This avoids fragile dependencies on stack naming conventions
+    const clinicsTableName = props.clinicsTableName;
+    const smaIdMap = props.smaIdMap;
+    
+    console.log('[AiAgentsStack] Chime integration configured:', {
+      clinicsTable: clinicsTableName,
+      smaIdMapLength: smaIdMap?.length || 0,
+    });
+
+    // Executes scheduled outbound calls - invoked by EventBridge Scheduler
+    // Uses EXISTING Chime infrastructure from ChimeStack
+    this.outboundExecutorFn = new lambdaNode.NodejsFunction(this, 'OutboundExecutorFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'outbound-call-scheduler.ts'),
+      handler: 'executeOutboundCall',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 1024,
+      timeout: Duration.minutes(5),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        AGENTS_TABLE: this.agentsTable.tableName,
+        SCHEDULED_CALLS_TABLE: this.scheduledCallsTable.tableName,
+        VOICE_SESSIONS_TABLE: this.voiceSessionsTable.tableName,
+        // Chime integration - uses existing infrastructure
+        CLINICS_TABLE: clinicsTableName,
+        SMA_ID_MAP: smaIdMap,
+      },
+    });
+    applyTags(this.outboundExecutorFn, { Function: 'outbound-executor' });
+
+    this.agentsTable.grantReadData(this.outboundExecutorFn);
+    this.scheduledCallsTable.grantReadWriteData(this.outboundExecutorFn);
+    this.voiceSessionsTable.grantReadWriteData(this.outboundExecutorFn);
+
+    // Grant read access to Clinics table (from ChimeStack)
+    // Use explicit ARN from props if available, otherwise construct from table name
+    const clinicsTableArn = props.clinicsTableArn || 
+      `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicsTableName}`;
+    
+    this.outboundExecutorFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['dynamodb:GetItem'],
+      resources: [clinicsTableArn],
+    }));
+
+    // Chime SDK permissions - use EXISTING SIP Media Application
+    this.outboundExecutorFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['chime:CreateSipMediaApplicationCall'],
+      resources: [`arn:aws:chime:${this.region}:${this.account}:sma/*`],
+    }));
+
+    // Bedrock Agent invocation for outbound calls
+    this.outboundExecutorFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock:InvokeAgent',
+        'bedrock:GetAgent',
+        'bedrock:GetAgentAlias',
+      ],
+      resources: ['*'],
+    }));
+
+    // Amazon Polly for text-to-speech
+    this.outboundExecutorFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'polly:SynthesizeSpeech',
+        'polly:DescribeVoices',
+      ],
+      resources: ['*'],
+    }));
+
+    // Allow Scheduler to invoke the outbound executor
+    this.outboundExecutorFn.grantInvoke(this.schedulerRole);
+
+    // ========================================
+    // OUTBOUND CALL SCHEDULER HANDLER
+    // ========================================
+
+    // API handler for scheduling outbound calls
+    // Increased timeout and memory for bulk scheduling (up to 500 calls)
+    this.outboundSchedulerFn = new lambdaNode.NodejsFunction(this, 'OutboundSchedulerFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'outbound-call-scheduler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 1024, // Increased for bulk operations
+      timeout: Duration.minutes(3), // Increased for processing up to 500 calls
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        AGENTS_TABLE: this.agentsTable.tableName,
+        SCHEDULED_CALLS_TABLE: this.scheduledCallsTable.tableName,
+        OUTBOUND_CALL_LAMBDA_ARN: this.outboundExecutorFn.functionArn,
+        SCHEDULER_ROLE_ARN: this.schedulerRole.roleArn,
+        // Bulk scheduling configuration
+        BULK_SCHEDULE_MAX_CALLS: '500', // Maximum calls per bulk request
+        BULK_SCHEDULE_BATCH_SIZE: '25', // Parallel batch size
+      },
+    });
+    applyTags(this.outboundSchedulerFn, { Function: 'outbound-scheduler' });
+
+    this.agentsTable.grantReadData(this.outboundSchedulerFn);
+    this.scheduledCallsTable.grantReadWriteData(this.outboundSchedulerFn);
+
+    // EventBridge Scheduler permissions
+    this.outboundSchedulerFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'scheduler:CreateSchedule',
+        'scheduler:DeleteSchedule',
+        'scheduler:GetSchedule',
+        'scheduler:UpdateSchedule',
+      ],
+      resources: [`arn:aws:scheduler:${this.region}:${this.account}:schedule/default/outbound-call-*`],
+    }));
+
+    // Allow passing the scheduler role
+    this.outboundSchedulerFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['iam:PassRole'],
+      resources: [this.schedulerRole.roleArn],
+      conditions: {
+        StringEquals: {
+          'iam:PassedToService': 'scheduler.amazonaws.com',
+        },
+      },
+    }));
+
+    // ========================================
+    // WEBSOCKET HANDLERS
+    // ========================================
+
+    // WebSocket Connect Handler
+    this.wsConnectFn = new lambdaNode.NodejsFunction(this, 'WsConnectFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'websocket-connect.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        CONNECTIONS_TABLE: this.connectionsTable.tableName,
+      },
+    });
+    applyTags(this.wsConnectFn, { Function: 'ws-connect' });
+    this.connectionsTable.grantWriteData(this.wsConnectFn);
+
+    // WebSocket Disconnect Handler
+    this.wsDisconnectFn = new lambdaNode.NodejsFunction(this, 'WsDisconnectFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'websocket-disconnect.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        CONNECTIONS_TABLE: this.connectionsTable.tableName,
+      },
+    });
+    applyTags(this.wsDisconnectFn, { Function: 'ws-disconnect' });
+    this.connectionsTable.grantWriteData(this.wsDisconnectFn);
+
+    // WebSocket Message Handler (with thinking/trace streaming)
+    this.wsMessageFn = new lambdaNode.NodejsFunction(this, 'WsMessageFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'websocket-message.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 1024,
+      timeout: Duration.minutes(5),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        AGENTS_TABLE: this.agentsTable.tableName,
+        CONNECTIONS_TABLE: this.connectionsTable.tableName,
+      },
+    });
+    applyTags(this.wsMessageFn, { Function: 'ws-message' });
+    
+    this.agentsTable.grantReadWriteData(this.wsMessageFn);
+    this.connectionsTable.grantReadWriteData(this.wsMessageFn);
+
+    // Bedrock Agent invocation for WebSocket
+    this.wsMessageFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock:InvokeAgent',
+        'bedrock:GetAgent',
+        'bedrock:GetAgentAlias',
+      ],
+      resources: ['*'],
+    }));
+
+    // API Gateway management for WebSocket (to send messages back to clients)
+    this.wsMessageFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['execute-api:ManageConnections'],
+      resources: ['*'],
+    }));
+
+    // ========================================
+    // API ROUTES
+    // ========================================
+
+    // /agents
+    const agentsRes = this.api.root.addResource('agents');
+    agentsRes.addMethod('GET', new apigw.LambdaIntegration(this.agentsFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+    agentsRes.addMethod('POST', new apigw.LambdaIntegration(this.agentsFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /agents/{agentId}
+    const agentIdRes = agentsRes.addResource('{agentId}');
+    agentIdRes.addMethod('GET', new apigw.LambdaIntegration(this.agentsFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+    agentIdRes.addMethod('PUT', new apigw.LambdaIntegration(this.agentsFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+    agentIdRes.addMethod('DELETE', new apigw.LambdaIntegration(this.agentsFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /agents/{agentId}/prepare - Prepare the agent
+    const prepareRes = agentIdRes.addResource('prepare');
+    prepareRes.addMethod('POST', new apigw.LambdaIntegration(this.agentsFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /clinic/{clinicId}/agents/{agentId}/chat - Main endpoint (clinic + agent specific, authenticated)
+    const clinicRes = this.api.root.addResource('clinic');
+    const clinicIdRes = clinicRes.addResource('{clinicId}');
+    const clinicAgentsRes = clinicIdRes.addResource('agents');
+    const clinicAgentIdRes = clinicAgentsRes.addResource('{agentId}');
+    const chatRes = clinicAgentIdRes.addResource('chat');
+    chatRes.addMethod('POST', new apigw.LambdaIntegration(this.invokeAgentFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /public/clinic/{clinicId}/agents/{agentId}/chat - Public endpoint for website chatbot (API key auth)
+    const publicRes = this.api.root.addResource('public');
+    const publicClinicRes = publicRes.addResource('clinic');
+    const publicClinicIdRes = publicClinicRes.addResource('{clinicId}');
+    const publicAgentsRes = publicClinicIdRes.addResource('agents');
+    const publicAgentIdRes = publicAgentsRes.addResource('{agentId}');
+    const publicChatRes = publicAgentIdRes.addResource('chat');
+    publicChatRes.addMethod('POST', new apigw.LambdaIntegration(this.invokeAgentFn), {
+      // No authorizer - uses API key in header instead
+      authorizationType: apigw.AuthorizationType.NONE,
+    });
+
+    // /models - List available models
+    const modelsRes = this.api.root.addResource('models');
+    modelsRes.addMethod('GET', new apigw.LambdaIntegration(this.agentsFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /voice-config/{clinicId} - Voice agent configuration per clinic
+    const voiceConfigRes = this.api.root.addResource('voice-config');
+    const voiceConfigClinicRes = voiceConfigRes.addResource('{clinicId}');
+    voiceConfigClinicRes.addMethod('GET', new apigw.LambdaIntegration(this.voiceConfigFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+    voiceConfigClinicRes.addMethod('PUT', new apigw.LambdaIntegration(this.voiceConfigFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /scheduled-calls - Outbound call scheduling
+    const scheduledCallsRes = this.api.root.addResource('scheduled-calls');
+    scheduledCallsRes.addMethod('GET', new apigw.LambdaIntegration(this.outboundSchedulerFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+    scheduledCallsRes.addMethod('POST', new apigw.LambdaIntegration(this.outboundSchedulerFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /scheduled-calls/bulk - Bulk create scheduled calls
+    const scheduledCallsBulkRes = scheduledCallsRes.addResource('bulk');
+    scheduledCallsBulkRes.addMethod('POST', new apigw.LambdaIntegration(this.outboundSchedulerFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /scheduled-calls/{callId} - Individual scheduled call
+    const scheduledCallIdRes = scheduledCallsRes.addResource('{callId}');
+    scheduledCallIdRes.addMethod('GET', new apigw.LambdaIntegration(this.outboundSchedulerFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+    scheduledCallIdRes.addMethod('DELETE', new apigw.LambdaIntegration(this.outboundSchedulerFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /clinic-hours/{clinicId} - Clinic business hours (for Voice AI)
+    const clinicHoursRes = this.api.root.addResource('clinic-hours');
+    const clinicHoursClinicRes = clinicHoursRes.addResource('{clinicId}');
+    clinicHoursClinicRes.addMethod('GET', new apigw.LambdaIntegration(this.voiceConfigFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+    clinicHoursClinicRes.addMethod('PUT', new apigw.LambdaIntegration(this.voiceConfigFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // ========================================
+    // WEBSOCKET API (Public - for website chatbot)
+    // ========================================
+
+    this.websocketApi = new apigwv2.WebSocketApi(this, 'AiAgentsWebSocketApi', {
+      apiName: 'ai-agents-websocket-api',
+      description: 'WebSocket API for AI Agents public chat with thinking/trace streaming',
+      connectRouteOptions: {
+        integration: new apigwv2Integrations.WebSocketLambdaIntegration('WsConnectIntegration', this.wsConnectFn),
+      },
+      disconnectRouteOptions: {
+        integration: new apigwv2Integrations.WebSocketLambdaIntegration('WsDisconnectIntegration', this.wsDisconnectFn),
+      },
+      defaultRouteOptions: {
+        integration: new apigwv2Integrations.WebSocketLambdaIntegration('WsMessageIntegration', this.wsMessageFn),
+      },
+    });
+
+    const websocketStage = new apigwv2.WebSocketStage(this, 'AiAgentsWebSocketStage', {
+      webSocketApi: this.websocketApi,
+      stageName: 'prod',
+      autoDeploy: true,
+    });
+
+    // Map AI Agents WebSocket to /ai-agents path on existing ws.todaysdentalinsights.com domain
+    // Note: The domain was created in ChatbotStack, we just add a new mapping here
+    new apigwv2.CfnApiMapping(this, 'AiAgentsWebSocketMapping', {
+      apiId: this.websocketApi.apiId,
+      domainName: 'ws.todaysdentalinsights.com',
+      stage: websocketStage.stageName,
+      apiMappingKey: 'ai-agents',
+    });
+
+    // ========================================
+    // DOMAIN MAPPING (REST API)
+    // ========================================
+
+    new apigw.CfnBasePathMapping(this, 'AiAgentsApiBasePathMapping', {
+      domainName: 'apig.todaysdentalinsights.com',
+      basePath: 'ai-agents',
+      restApiId: this.api.restApiId,
+      stage: this.api.deploymentStage.stageName,
+    });
+
+    // ========================================
+    // OUTPUTS
+    // ========================================
+
+    new CfnOutput(this, 'AiAgentsTableName', {
+      value: this.agentsTable.tableName,
+      exportName: `${Stack.of(this).stackName}-AiAgentsTableName`,
+    });
+
+    // CRITICAL FIX: Export ARN for cross-stack IAM permissions (used by AnalyticsStack)
+    new CfnOutput(this, 'AiAgentsTableArn', {
+      value: this.agentsTable.tableArn,
+      description: 'AI Agents table ARN for cross-stack IAM policies',
+      exportName: `${Stack.of(this).stackName}-AiAgentsTableArn`,
+    });
+
+    new CfnOutput(this, 'BedrockAgentRoleArn', {
+      value: this.bedrockAgentRole.roleArn,
+      exportName: `${Stack.of(this).stackName}-BedrockAgentRoleArn`,
+    });
+
+    new CfnOutput(this, 'ActionGroupLambdaArn', {
+      value: this.actionGroupFn.functionArn,
+      exportName: `${Stack.of(this).stackName}-ActionGroupLambdaArn`,
+    });
+
+    new CfnOutput(this, 'AiAgentsApiUrl', {
+      value: 'https://apig.todaysdentalinsights.com/ai-agents/',
+      exportName: `${Stack.of(this).stackName}-AiAgentsApiUrl`,
+    });
+
+    new CfnOutput(this, 'AiAgentsWebSocketUrl', {
+      value: 'wss://ws.todaysdentalinsights.com/ai-agents',
+      description: 'WebSocket URL for public AI Agent chat with thinking stream',
+      exportName: `${Stack.of(this).stackName}-AiAgentsWebSocketUrl`,
+    });
+
+    new CfnOutput(this, 'ConnectionsTableName', {
+      value: this.connectionsTable.tableName,
+      exportName: `${Stack.of(this).stackName}-ConnectionsTableName`,
+    });
+
+    new CfnOutput(this, 'VoiceSessionsTableName', {
+      value: this.voiceSessionsTable.tableName,
+      exportName: `${Stack.of(this).stackName}-VoiceSessionsTableName`,
+    });
+
+    // CRITICAL FIX: Export ARN for cross-stack IAM permissions (used by AnalyticsStack)
+    new CfnOutput(this, 'VoiceSessionsTableArn', {
+      value: this.voiceSessionsTable.tableArn,
+      description: 'Voice Sessions table ARN for cross-stack IAM policies',
+      exportName: `${Stack.of(this).stackName}-VoiceSessionsTableArn`,
+    });
+
+    new CfnOutput(this, 'ClinicHoursTableName', {
+      value: this.clinicHoursTable.tableName,
+      exportName: `${Stack.of(this).stackName}-ClinicHoursTableName`,
+    });
+
+    new CfnOutput(this, 'VoiceConfigTableName', {
+      value: this.voiceConfigTable.tableName,
+      exportName: `${Stack.of(this).stackName}-VoiceConfigTableName`,
+    });
+
+    new CfnOutput(this, 'ScheduledCallsTableName', {
+      value: this.scheduledCallsTable.tableName,
+      exportName: `${Stack.of(this).stackName}-ScheduledCallsTableName`,
+    });
+
+    new CfnOutput(this, 'VoiceAiFunctionArn', {
+      value: this.voiceAiFn.functionArn,
+      description: 'Voice AI handler Lambda ARN - for Chime SIP integration',
+      exportName: `${Stack.of(this).stackName}-VoiceAiFunctionArn`,
+    });
+
+    new CfnOutput(this, 'SchedulerRoleArn', {
+      value: this.schedulerRole.roleArn,
+      exportName: `${Stack.of(this).stackName}-SchedulerRoleArn`,
+    });
+
+    // NOTE: CallAnalyticsTable is now imported from AnalyticsStack, not created here.
+    // This prevents data fragmentation between AI-written and Chime stream records.
+    if (props.callAnalyticsTableName) {
+      new CfnOutput(this, 'SharedCallAnalyticsTableName', {
+        value: props.callAnalyticsTableName,
+        description: 'Shared Call Analytics table (from AnalyticsStack) for unified tracking',
+      });
+    }
+
+    new CfnOutput(this, 'CallRecordingsBucketName', {
+      value: this.callRecordingsBucket.bucketName,
+      description: props.sharedRecordingsBucketName 
+        ? 'Shared recordings bucket (from ChimeStack)' 
+        : 'Dedicated AI recordings bucket (consider using shared bucket from ChimeStack)',
+      exportName: `${Stack.of(this).stackName}-CallRecordingsBucketName`,
+    });
+
+    // NOTE: Table name exports for ChimeStack Voice AI integration are already
+    // defined above (AiAgentsTableName, ClinicHoursTableName, VoiceConfigTableName,
+    // ScheduledCallsTableName). Do not add duplicate exports here.
+
+    // ========================================
+    // CloudWatch Alarms
+    // ========================================
+    [
+      { fn: this.agentsFn, name: 'ai-agents-crud', durationMs: 48000 },
+      { fn: this.invokeAgentFn, name: 'invoke-agent', durationMs: 240000 },
+      { fn: this.actionGroupFn, name: 'action-group', durationMs: 96000 },
+      { fn: this.wsConnectFn, name: 'ws-connect', durationMs: 24000 },
+      { fn: this.wsDisconnectFn, name: 'ws-disconnect', durationMs: 24000 },
+      { fn: this.wsMessageFn, name: 'ws-message', durationMs: 240000 },
+      { fn: this.voiceAiFn, name: 'voice-ai', durationMs: 240000 },
+      { fn: this.voiceConfigFn, name: 'voice-config', durationMs: 24000 },
+      { fn: this.outboundSchedulerFn, name: 'outbound-scheduler', durationMs: 144000 }, // 3 min timeout for bulk
+      { fn: this.outboundExecutorFn, name: 'outbound-executor', durationMs: 240000 },
+    ].forEach(({ fn, name, durationMs }) => {
+      createLambdaErrorAlarm(fn, name);
+      createLambdaThrottleAlarm(fn, name);
+      createLambdaDurationAlarm(fn, name, durationMs);
+    });
+
+    createDynamoThrottleAlarm(this.agentsTable.tableName, 'AiAgentsTable');
+    createDynamoThrottleAlarm(this.voiceSessionsTable.tableName, 'VoiceSessionsTable');
+    createDynamoThrottleAlarm(this.clinicHoursTable.tableName, 'ClinicHoursTable');
+    createDynamoThrottleAlarm(this.voiceConfigTable.tableName, 'VoiceConfigTable');
+    createDynamoThrottleAlarm(this.scheduledCallsTable.tableName, 'ScheduledCallsTable');
+    // NOTE: CallAnalytics table throttle alarm is in AnalyticsStack (shared table)
+  }
+}

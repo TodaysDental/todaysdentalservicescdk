@@ -62,6 +62,64 @@ export interface ChimeStackProps extends StackProps {
    * Custom vocabulary name for medical/dental transcription
    */
   medicalVocabularyName?: string;
+  
+  // ========================================
+  // VOICE AI INTEGRATION (from AiAgentsStack)
+  // ========================================
+  
+  /**
+   * Voice AI Lambda ARN for after-hours call handling
+   */
+  voiceAiLambdaArn?: string;
+  
+  /**
+   * Clinic Hours table name for checking business hours
+   */
+  clinicHoursTableName?: string;
+  
+  /**
+   * AI Agents table name for getting agent configuration
+   */
+  aiAgentsTableName?: string;
+  
+  /**
+   * Voice Config table name for voice agent configuration
+   */
+  voiceConfigTableName?: string;
+  
+  /**
+   * Scheduled Calls table name for AI outbound calls
+   */
+  scheduledCallsTableName?: string;
+  
+  /**
+   * Enable after-hours AI routing (default: false)
+   */
+  enableAfterHoursAi?: boolean;
+  
+  /**
+   * External call recordings bucket name from AiAgentsStack.
+   * When provided, ChimeStack will NOT create its own recordings bucket
+   * to avoid data fragmentation between AI and human calls.
+   * All recordings will go to this shared bucket.
+   */
+  sharedRecordingsBucketName?: string;
+  
+  /**
+   * External call recordings bucket ARN for IAM permissions.
+   * Required when sharedRecordingsBucketName is provided.
+   */
+  sharedRecordingsBucketArn?: string;
+  
+  /**
+   * AiAgentsStack name for dynamic imports.
+   * When provided along with enableAfterHoursAi, ChimeStack can dynamically import
+   * Voice AI resources using Fn.importValue instead of requiring explicit props.
+   * This helps break the circular dependency between stacks.
+   * 
+   * NOTE: AiAgentsStack must be deployed before ChimeStack when using this approach.
+   */
+  aiAgentsStackName?: string;
 }
 
 export type VoiceConnectorOriginationProtocol = 'UDP' | 'TCP' | 'TLS';
@@ -85,6 +143,72 @@ export class ChimeStack extends Stack {
 
   constructor(scope: Construct, id: string, props: ChimeStackProps) {
     super(scope, id, props);
+
+    // ========================================
+    // VOICE AI INTEGRATION VALIDATION & DYNAMIC IMPORTS
+    // ========================================
+    // CRITICAL FIX: Support dynamic imports from AiAgentsStack to break circular dependency.
+    // Two modes are supported:
+    // 1. Explicit props (voiceAiLambdaArn, clinicHoursTableName, etc.) - requires AiAgentsStack deployed first
+    // 2. Dynamic imports via aiAgentsStackName - uses Fn.importValue at deploy time
+    
+    // Resolve Voice AI integration values (explicit props take precedence over dynamic imports)
+    let resolvedVoiceAiLambdaArn = props.voiceAiLambdaArn;
+    let resolvedClinicHoursTableName = props.clinicHoursTableName;
+    let resolvedAiAgentsTableName = props.aiAgentsTableName;
+    let resolvedVoiceConfigTableName = props.voiceConfigTableName;
+    let resolvedScheduledCallsTableName = props.scheduledCallsTableName;
+    
+    // If aiAgentsStackName is provided, use dynamic imports for missing props
+    if (props.aiAgentsStackName && props.enableAfterHoursAi) {
+      console.log(`[ChimeStack] Using dynamic imports from AiAgentsStack: ${props.aiAgentsStackName}`);
+      
+      if (!resolvedVoiceAiLambdaArn) {
+        resolvedVoiceAiLambdaArn = Fn.importValue(`${props.aiAgentsStackName}-VoiceAiFunctionArn`);
+      }
+      if (!resolvedClinicHoursTableName) {
+        resolvedClinicHoursTableName = Fn.importValue(`${props.aiAgentsStackName}-ClinicHoursTableName`);
+      }
+      if (!resolvedAiAgentsTableName) {
+        resolvedAiAgentsTableName = Fn.importValue(`${props.aiAgentsStackName}-AiAgentsTableName`);
+      }
+      if (!resolvedVoiceConfigTableName) {
+        resolvedVoiceConfigTableName = Fn.importValue(`${props.aiAgentsStackName}-VoiceConfigTableName`);
+      }
+      if (!resolvedScheduledCallsTableName) {
+        resolvedScheduledCallsTableName = Fn.importValue(`${props.aiAgentsStackName}-ScheduledCallsTableName`);
+      }
+    }
+    
+    if (props.enableAfterHoursAi) {
+      // Validate that all required values are now available (either from props or imports)
+      const missingProps: string[] = [];
+      
+      if (!resolvedVoiceAiLambdaArn) {
+        missingProps.push('voiceAiLambdaArn');
+      }
+      if (!resolvedClinicHoursTableName) {
+        missingProps.push('clinicHoursTableName');
+      }
+      if (!resolvedAiAgentsTableName) {
+        missingProps.push('aiAgentsTableName');
+      }
+      if (!resolvedVoiceConfigTableName) {
+        missingProps.push('voiceConfigTableName');
+      }
+      
+      if (missingProps.length > 0) {
+        throw new Error(
+          `[ChimeStack] CONFIGURATION ERROR: enableAfterHoursAi is true but required props are missing: ` +
+          `${missingProps.join(', ')}. ` +
+          `Either set enableAfterHoursAi to false, provide aiAgentsStackName for dynamic imports, ` +
+          `or provide all required Voice AI integration props explicitly. ` +
+          `Required props: voiceAiLambdaArn, clinicHoursTableName, aiAgentsTableName, voiceConfigTableName.`
+        );
+      }
+      
+      console.log('[ChimeStack] Voice AI integration enabled with all required values resolved.');
+    }
 
     // Stack-wide tagging helper
     const baseTags: Record<string, string> = {
@@ -277,6 +401,13 @@ export class ChimeStack extends Stack {
         LOCKS_TABLE_NAME: this.locksTable.tableName,
         HOLD_MUSIC_BUCKET: '', // Will be updated after bucket creation
         CHIME_MEDIA_REGION: 'us-east-1', // Supported Chime SDK media region
+        // Voice AI integration - uses resolved values (explicit props or dynamic imports)
+        VOICE_AI_LAMBDA_ARN: resolvedVoiceAiLambdaArn?.toString() || '',
+        CLINIC_HOURS_TABLE: resolvedClinicHoursTableName?.toString() || '',
+        AI_AGENTS_TABLE: resolvedAiAgentsTableName?.toString() || '',
+        VOICE_CONFIG_TABLE: resolvedVoiceConfigTableName?.toString() || '',
+        SCHEDULED_CALLS_TABLE: resolvedScheduledCallsTableName?.toString() || '',
+        ENABLE_AFTER_HOURS_AI: props.enableAfterHoursAi ? 'true' : 'false',
       },
     });
 
@@ -285,6 +416,51 @@ export class ChimeStack extends Stack {
     this.agentPresenceTable.grantReadWriteData(smaHandler);
     this.callQueueTable.grantReadWriteData(smaHandler);
     this.locksTable.grantReadWriteData(smaHandler);
+
+    // Voice AI integration permissions - uses resolved values (explicit props or dynamic imports)
+    if (resolvedVoiceAiLambdaArn) {
+      smaHandler.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [resolvedVoiceAiLambdaArn.toString()],
+      }));
+    }
+
+    // Grant read access to AI-related tables if configured
+    if (resolvedClinicHoursTableName) {
+      smaHandler.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['dynamodb:GetItem'],
+        resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${resolvedClinicHoursTableName}`],
+      }));
+    }
+
+    if (resolvedAiAgentsTableName) {
+      smaHandler.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${resolvedAiAgentsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${resolvedAiAgentsTableName}/index/*`,
+        ],
+      }));
+    }
+
+    if (resolvedVoiceConfigTableName) {
+      smaHandler.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['dynamodb:GetItem'],
+        resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${resolvedVoiceConfigTableName}`],
+      }));
+    }
+
+    if (resolvedScheduledCallsTableName) {
+      smaHandler.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],
+        resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${resolvedScheduledCallsTableName}`],
+      }));
+    }
 
     // Grant Chime SDK permissions
     smaHandler.addToRolePolicy(new iam.PolicyStatement({
@@ -1378,14 +1554,44 @@ export class ChimeStack extends Stack {
     // ========================================
     // 5. Outputs
     // ========================================
+    // CRITICAL FIX: Use consistent this.stackName for all exports
+    // This ensures AiAgentsStack can reliably import these values
     new CfnOutput(this, 'ClinicsTableName', {
       value: this.clinicsTable.tableName,
+      description: 'Clinics table name for cross-stack references',
+      exportName: `${this.stackName}-ClinicsTableName`,
     });
+    
+    // Export Clinics table ARN for IAM permissions
+    new CfnOutput(this, 'ClinicsTableArn', {
+      value: this.clinicsTable.tableArn,
+      description: 'Clinics table ARN for cross-stack IAM policies',
+      exportName: `${this.stackName}-ClinicsTableArn`,
+    });
+    
     new CfnOutput(this, 'AgentPresenceTableName', {
       value: this.agentPresenceTable.tableName,
+      exportName: `${this.stackName}-AgentPresenceTableName`,
     });
+    
+    // Export CallQueue table name for AnalyticsStack derived references
+    new CfnOutput(this, 'CallQueueTableName', {
+      value: this.callQueueTable.tableName,
+      description: 'CallQueue table name - use this instead of deriving from stack name',
+      exportName: `${this.stackName}-CallQueueTableName`,
+    });
+    
+    // Export AgentPerformance table name for AnalyticsStack
+    new CfnOutput(this, 'AgentPerformanceTableNameExport', {
+      value: this.agentPerformanceTable.tableName,
+      description: 'AgentPerformance table name for cross-stack references',
+      exportName: `${this.stackName}-AgentPerformanceTableName`,
+    });
+    
     new CfnOutput(this, 'SipMediaApplicationIdMap', {
       value: smaIdMapJson,
+      description: 'JSON map of clinicId to SIP Media Application ID',
+      exportName: `${this.stackName}-SmaIdMap`,
     });
     
     new CfnOutput(this, 'StartSessionFnArn', {
@@ -1569,6 +1775,12 @@ export class ChimeStack extends Stack {
     // This prevents CloudFormation failures when AdminStack imports the ARN
     const recordingEnabled = props.enableCallRecording !== false;
     
+    // Check if using shared recordings bucket from AiAgentsStack to avoid data fragmentation
+    const useSharedBucket = Boolean(props.sharedRecordingsBucketName && props.sharedRecordingsBucketArn);
+    if (useSharedBucket) {
+      console.log(`[ChimeStack] Using shared recordings bucket: ${props.sharedRecordingsBucketName}`);
+    }
+    
     // Create getRecordingFn outside conditional to ensure export always exists
     const getRecordingFn = new lambdaNode.NodejsFunction(this, 'GetRecordingFn', {
       functionName: `${this.stackName}-GetRecording`,
@@ -1594,151 +1806,171 @@ export class ChimeStack extends Stack {
     if (recordingEnabled) { // Default to enabled
       console.log('[ChimeStack] Setting up call recording infrastructure');
 
-      // 1. KMS Key for encryption at rest (HIPAA compliance)
-      recordingsKey = new kms.Key(this, 'RecordingsEncryptionKey', {
-        description: 'Encryption key for call recordings',
-        enableKeyRotation: true,
-        removalPolicy: RemovalPolicy.RETAIN, // Keep keys even if stack is deleted
-      });
+      // CRITICAL FIX: Use shared bucket from AiAgentsStack if provided to avoid data fragmentation
+      // This ensures both AI-handled and human-handled call recordings go to the same bucket
+      if (useSharedBucket) {
+        // Import the shared recordings bucket from AiAgentsStack
+        const sharedBucket = s3.Bucket.fromBucketAttributes(this, 'SharedRecordingsBucket', {
+          bucketName: props.sharedRecordingsBucketName!,
+          bucketArn: props.sharedRecordingsBucketArn!,
+        });
+        recordingsBucket = sharedBucket as s3.Bucket;
+        this.recordingsBucket = sharedBucket as s3.Bucket;
+        
+        console.log(`[ChimeStack] Using shared recordings bucket: ${props.sharedRecordingsBucketName}`);
+        // Note: Bucket policies are already configured in AiAgentsStack
+      } else {
+        // Create ChimeStack's own recordings bucket (legacy behavior)
+        console.log('[ChimeStack] Creating dedicated recordings bucket');
+        
+        // 1. KMS Key for encryption at rest (HIPAA compliance)
+        recordingsKey = new kms.Key(this, 'RecordingsEncryptionKey', {
+          description: 'Encryption key for call recordings',
+          enableKeyRotation: true,
+          removalPolicy: RemovalPolicy.RETAIN, // Keep keys even if stack is deleted
+        });
 
-      // Allow Chime to use the key
-      recordingsKey.addToResourcePolicy(new iam.PolicyStatement({
-        sid: 'AllowChimeToUseKey',
-        principals: [new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com')],
-        actions: [
-          'kms:Decrypt',
-          'kms:GenerateDataKey'
-        ],
-        resources: ['*'],
-        conditions: {
-          StringEquals: {
-            'aws:SourceAccount': this.account
+        // Allow Chime to use the key
+        recordingsKey.addToResourcePolicy(new iam.PolicyStatement({
+          sid: 'AllowChimeToUseKey',
+          principals: [new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com')],
+          actions: [
+            'kms:Decrypt',
+            'kms:GenerateDataKey'
+          ],
+          resources: ['*'],
+          conditions: {
+            StringEquals: {
+              'aws:SourceAccount': this.account
+            }
           }
-        }
-      }));
+        }));
 
-      // FIXED: Allow Transcribe to decrypt recordings AND encrypt transcription output
-      recordingsKey.addToResourcePolicy(new iam.PolicyStatement({
-        sid: 'AllowTranscribeToUseKey',
-        principals: [new iam.ServicePrincipal('transcribe.amazonaws.com')],
-        actions: [
-          'kms:Decrypt',           // Read encrypted audio files
-          'kms:GenerateDataKey',   // Encrypt transcription output  
-          'kms:DescribeKey',       // Get key metadata
-          'kms:CreateGrant'        // Allow Transcribe to create grants for encryption
-        ],
-        resources: ['*'],
-        conditions: {
-          StringEquals: {
-            'kms:ViaService': [
-              `s3.${this.region}.amazonaws.com`,
-              `transcribe.${this.region}.amazonaws.com`
-            ],
-            'kms:CallerAccount': this.account
+        // FIXED: Allow Transcribe to decrypt recordings AND encrypt transcription output
+        recordingsKey.addToResourcePolicy(new iam.PolicyStatement({
+          sid: 'AllowTranscribeToUseKey',
+          principals: [new iam.ServicePrincipal('transcribe.amazonaws.com')],
+          actions: [
+            'kms:Decrypt',           // Read encrypted audio files
+            'kms:GenerateDataKey',   // Encrypt transcription output  
+            'kms:DescribeKey',       // Get key metadata
+            'kms:CreateGrant'        // Allow Transcribe to create grants for encryption
+          ],
+          resources: ['*'],
+          conditions: {
+            StringEquals: {
+              'kms:ViaService': [
+                `s3.${this.region}.amazonaws.com`,
+                `transcribe.${this.region}.amazonaws.com`
+              ],
+              'kms:CallerAccount': this.account
+            }
           }
-        }
-      }));
+        }));
 
-      // 2. S3 Bucket for storing recordings
-      const retentionDays = props.recordingRetentionDays || 2555; // ~7 years (common compliance requirement)
-      
-      recordingsBucket = new s3.Bucket(this, 'CallRecordingsBucket', {
-        bucketName: `${this.stackName.toLowerCase()}-recordings-${this.account}-${this.region}`,
-        encryption: s3.BucketEncryption.KMS,
-        encryptionKey: recordingsKey,
-        blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-        versioned: true, // Protect against accidental deletion
-        lifecycleRules: [
-          {
-            id: 'DeleteOldRecordings',
-            enabled: true,
-            expiration: Duration.days(retentionDays),
-            noncurrentVersionExpiration: Duration.days(7), // Clean up old versions
-          },
-          {
-            id: 'TransitionToGlacier',
-            enabled: true,
-            transitions: [
-              {
-                storageClass: s3.StorageClass.INTELLIGENT_TIERING,
-                transitionAfter: Duration.days(90),
-              }
-            ]
+        // 2. S3 Bucket for storing recordings
+        const retentionDays = props.recordingRetentionDays || 2555; // ~7 years (common compliance requirement)
+        
+        const newRecordingsBucket = new s3.Bucket(this, 'CallRecordingsBucket', {
+          bucketName: `${this.stackName.toLowerCase()}-recordings-${this.account}-${this.region}`,
+          encryption: s3.BucketEncryption.KMS,
+          encryptionKey: recordingsKey,
+          blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+          versioned: true, // Protect against accidental deletion
+          lifecycleRules: [
+            {
+              id: 'DeleteOldRecordings',
+              enabled: true,
+              expiration: Duration.days(retentionDays),
+              noncurrentVersionExpiration: Duration.days(7), // Clean up old versions
+            },
+            {
+              id: 'TransitionToGlacier',
+              enabled: true,
+              transitions: [
+                {
+                  storageClass: s3.StorageClass.INTELLIGENT_TIERING,
+                  transitionAfter: Duration.days(90),
+                }
+              ]
+            }
+          ],
+          serverAccessLogsPrefix: 'access-logs/',
+          objectOwnership: s3.ObjectOwnership.OBJECT_WRITER,
+          removalPolicy: RemovalPolicy.RETAIN, // Never delete recordings accidentally
+          autoDeleteObjects: false, // Extra safety - don't auto-delete
+        });
+        
+        recordingsBucket = newRecordingsBucket;
+
+        // Bucket policy to allow Chime to write recordings
+        // Includes security conditions to prevent confused deputy problem
+        recordingsBucket.addToResourcePolicy(new iam.PolicyStatement({
+          sid: 'AllowChimeVoiceConnectorToWriteRecordings',
+          principals: [new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com')],
+          actions: [
+            's3:PutObject',
+            's3:PutObjectAcl'
+          ],
+          resources: [recordingsBucket.arnForObjects('*')],
+          conditions: {
+            StringEquals: {
+              'aws:SourceAccount': this.account
+            },
+            ArnLike: {
+              'aws:SourceArn': `arn:aws:chime:*:${this.account}:sma/*`
+            }
           }
-        ],
-        serverAccessLogsPrefix: 'access-logs/',
-        objectOwnership: s3.ObjectOwnership.OBJECT_WRITER,
-        removalPolicy: RemovalPolicy.RETAIN, // Never delete recordings accidentally
-        autoDeleteObjects: false, // Extra safety - don't auto-delete
-      });
+        }));
 
-      // Bucket policy to allow Chime to write recordings
-      // Includes security conditions to prevent confused deputy problem
-      recordingsBucket.addToResourcePolicy(new iam.PolicyStatement({
-        sid: 'AllowChimeVoiceConnectorToWriteRecordings',
-        principals: [new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com')],
-        actions: [
-          's3:PutObject',
-          's3:PutObjectAcl'
-        ],
-        resources: [recordingsBucket.arnForObjects('*')],
-        conditions: {
-          StringEquals: {
-            'aws:SourceAccount': this.account
-          },
-          ArnLike: {
-            'aws:SourceArn': `arn:aws:chime:*:${this.account}:sma/*`
+        // FIXED: Allow AWS Transcribe to access bucket for transcription
+        // Transcribe needs these permissions to read input files and write transcription results
+        recordingsBucket.addToResourcePolicy(new iam.PolicyStatement({
+          sid: 'AllowTranscribeToAccessBucket',
+          principals: [new iam.ServicePrincipal('transcribe.amazonaws.com')],
+          actions: [
+            's3:GetBucketLocation',
+            's3:ListBucket'
+          ],
+          resources: [recordingsBucket.bucketArn],
+          conditions: {
+            StringEquals: {
+              'aws:SourceAccount': this.account
+            }
           }
-        }
-      }));
+        }));
 
-      // FIXED: Allow AWS Transcribe to access bucket for transcription
-      // Transcribe needs these permissions to read input files and write transcription results
-      recordingsBucket.addToResourcePolicy(new iam.PolicyStatement({
-        sid: 'AllowTranscribeToAccessBucket',
-        principals: [new iam.ServicePrincipal('transcribe.amazonaws.com')],
-        actions: [
-          's3:GetBucketLocation',
-          's3:ListBucket'
-        ],
-        resources: [recordingsBucket.bucketArn],
-        conditions: {
-          StringEquals: {
-            'aws:SourceAccount': this.account
+        recordingsBucket.addToResourcePolicy(new iam.PolicyStatement({
+          sid: 'AllowTranscribeToReadInputFiles',
+          principals: [new iam.ServicePrincipal('transcribe.amazonaws.com')],
+          actions: [
+            's3:GetObject'
+          ],
+          resources: [recordingsBucket.arnForObjects('recordings/*')],
+          conditions: {
+            StringEquals: {
+              'aws:SourceAccount': this.account
+            }
           }
-        }
-      }));
+        }));
 
-      recordingsBucket.addToResourcePolicy(new iam.PolicyStatement({
-        sid: 'AllowTranscribeToReadInputFiles',
-        principals: [new iam.ServicePrincipal('transcribe.amazonaws.com')],
-        actions: [
-          's3:GetObject'
-        ],
-        resources: [recordingsBucket.arnForObjects('recordings/*')],
-        conditions: {
-          StringEquals: {
-            'aws:SourceAccount': this.account
+        recordingsBucket.addToResourcePolicy(new iam.PolicyStatement({
+          sid: 'AllowTranscribeToWriteTranscriptions',
+          principals: [new iam.ServicePrincipal('transcribe.amazonaws.com')],
+          actions: [
+            's3:PutObject'
+          ],
+          resources: [recordingsBucket.arnForObjects('transcriptions/*')],
+          conditions: {
+            StringEquals: {
+              'aws:SourceAccount': this.account
+            }
           }
-        }
-      }));
+        }));
 
-      recordingsBucket.addToResourcePolicy(new iam.PolicyStatement({
-        sid: 'AllowTranscribeToWriteTranscriptions',
-        principals: [new iam.ServicePrincipal('transcribe.amazonaws.com')],
-        actions: [
-          's3:PutObject'
-        ],
-        resources: [recordingsBucket.arnForObjects('transcriptions/*')],
-        conditions: {
-          StringEquals: {
-            'aws:SourceAccount': this.account
-          }
-        }
-      }));
-
-      // Store recordingsBucket to public property
-      this.recordingsBucket = recordingsBucket;
+        // Store recordingsBucket to public property
+        this.recordingsBucket = recordingsBucket;
+      }
 
       // 3. DynamoDB table for recording metadata
       this.recordingMetadataTable = new dynamodb.Table(this, 'RecordingMetadataTable', {
@@ -1805,7 +2037,10 @@ export class ChimeStack extends Stack {
       this.callQueueTable.grantReadWriteData(recordingProcessorFn);
       this.agentPerformanceTable.grantReadWriteData(recordingProcessorFn);
       // Grant encrypt/decrypt for KMS - needed for both reading recordings and writing transcriptions
-      recordingsKey.grantEncryptDecrypt(recordingProcessorFn);
+      // Only grant if using own bucket (shared bucket handles its own encryption)
+      if (recordingsKey) {
+        recordingsKey.grantEncryptDecrypt(recordingProcessorFn);
+      }
 
       // Grant Transcribe permissions
       recordingProcessorFn.addToRolePolicy(new iam.PolicyStatement({
@@ -1853,7 +2088,10 @@ export class ChimeStack extends Stack {
       smaHandler.addEnvironment('RECORDINGS_BUCKET', recordingsBucket.bucketName);
       smaHandler.addEnvironment('ENABLE_CALL_RECORDING', 'true');
       recordingsBucket.grantWrite(smaHandler);
-      recordingsKey.grantEncrypt(smaHandler);
+      // Only grant KMS permissions if using own bucket
+      if (recordingsKey) {
+        recordingsKey.grantEncrypt(smaHandler);
+      }
 
       // 6. Update getRecordingFn with actual bucket/table names (created outside conditional)
       getRecordingFn.addEnvironment('RECORDINGS_BUCKET', recordingsBucket.bucketName);
@@ -1862,7 +2100,10 @@ export class ChimeStack extends Stack {
       // Grant permissions to getRecordingFn
       recordingsBucket.grantRead(getRecordingFn);
       recordingMetadataTable.grantReadData(getRecordingFn);
-      recordingsKey.grantDecrypt(getRecordingFn);
+      // Only grant KMS permissions if using own bucket
+      if (recordingsKey) {
+        recordingsKey.grantDecrypt(getRecordingFn);
+      }
 
       // 7. Lambda for getting agent performance reports
       const getAgentPerformanceFn = new lambdaNode.NodejsFunction(this, 'GetAgentPerformanceFn', {
@@ -1907,7 +2148,10 @@ export class ChimeStack extends Stack {
       recordingMetadataTable.grantReadWriteData(transcriptionCompleteFn);
       this.callQueueTable.grantReadWriteData(transcriptionCompleteFn);
       this.agentPerformanceTable.grantReadWriteData(transcriptionCompleteFn);
-      recordingsKey.grantDecrypt(transcriptionCompleteFn);
+      // Only grant KMS permissions if using own bucket
+      if (recordingsKey) {
+        recordingsKey.grantDecrypt(transcriptionCompleteFn);
+      }
 
       // Grant Comprehend permissions for sentiment analysis
       transcriptionCompleteFn.addToRolePolicy(new iam.PolicyStatement({
@@ -1942,8 +2186,15 @@ export class ChimeStack extends Stack {
       // Outputs
       new CfnOutput(this, 'RecordingsBucketName', {
         value: recordingsBucket.bucketName,
-        description: 'S3 bucket for call recordings',
-        exportName: `${this.stackName}-RecordingsBucket`,
+        description: 'S3 bucket for call recordings (shared with AiAgentsStack)',
+        exportName: `${this.stackName}-RecordingsBucketName`,
+      });
+      
+      // CRITICAL FIX: Export bucket ARN for AiAgentsStack to use as shared bucket
+      new CfnOutput(this, 'RecordingsBucketArn', {
+        value: recordingsBucket.bucketArn,
+        description: 'S3 bucket ARN for cross-stack IAM permissions',
+        exportName: `${this.stackName}-RecordingsBucketArn`,
       });
 
       new CfnOutput(this, 'RecordingMetadataTableName', {
