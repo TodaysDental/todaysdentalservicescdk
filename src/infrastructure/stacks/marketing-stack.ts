@@ -7,6 +7,9 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
+import { getCdkCorsConfig, getCorsErrorHeaders, ALLOWED_ORIGINS_LIST } from '../../shared/utils/cors';
 
 export interface MarketingStackProps extends StackProps {
   authorizerFunctionArn: string;
@@ -117,7 +120,7 @@ export class MarketingStack extends Stack {
       cors: [
         {
           allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.PUT, s3.HttpMethods.POST],
-          allowedOrigins: ['https://todaysdentalinsights.com'],
+          allowedOrigins: ALLOWED_ORIGINS_LIST,
           allowedHeaders: ['*'],
         },
       ],
@@ -128,12 +131,14 @@ export class MarketingStack extends Stack {
     // ============================================
     // 3. API Gateway
     // ============================================
+    const corsConfig = getCdkCorsConfig();
+
     this.api = new apigw.RestApi(this, 'MarketingApi', {
       restApiName: 'MarketingApi',
       defaultCorsPreflightOptions: {
-        allowOrigins: ['https://todaysdentalinsights.com'],
-        allowMethods: apigw.Cors.ALL_METHODS,
-        allowHeaders: ['Content-Type', 'Authorization'],
+        allowOrigins: corsConfig.allowOrigins,
+        allowMethods: corsConfig.allowMethods,
+        allowHeaders: corsConfig.allowHeaders,
         allowCredentials: true,
       },
       deployOptions: {
@@ -142,6 +147,33 @@ export class MarketingStack extends Stack {
         loggingLevel: apigw.MethodLoggingLevel.INFO,
         dataTraceEnabled: false,
       },
+    });
+
+    // Add CORS headers to error responses using shared utility
+    const corsErrorHeaders = getCorsErrorHeaders();
+
+    new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
+      restApi: this.api,
+      type: apigw.ResponseType.DEFAULT_4XX,
+      responseHeaders: corsErrorHeaders,
+    });
+
+    new apigw.GatewayResponse(this, 'GatewayResponseDefault5XX', {
+      restApi: this.api,
+      type: apigw.ResponseType.DEFAULT_5XX,
+      responseHeaders: corsErrorHeaders,
+    });
+
+    new apigw.GatewayResponse(this, 'GatewayResponseUnauthorized', {
+      restApi: this.api,
+      type: apigw.ResponseType.UNAUTHORIZED,
+      responseHeaders: corsErrorHeaders,
+    });
+
+    new apigw.GatewayResponse(this, 'GatewayResponseAccessDenied', {
+      restApi: this.api,
+      type: apigw.ResponseType.ACCESS_DENIED,
+      responseHeaders: corsErrorHeaders,
     });
 
     // ============================================
@@ -182,6 +214,9 @@ export class MarketingStack extends Stack {
       AYRSHARE_API_KEY: process.env.AYRSHARE_API_KEY || '',
       AYRSHARE_PRIVATE_KEY: process.env.AYRSHARE_PRIVATE_KEY || '',
       AYRSHARE_DOMAIN: process.env.AYRSHARE_DOMAIN || 'todaysdentalinsights',
+      // Webhook secret for HMAC signature verification
+      // Generate a secure random string and set it as an environment variable
+      AYRSHARE_WEBHOOK_SECRET: process.env.AYRSHARE_WEBHOOK_SECRET || '',
     };
 
     // ============================================
@@ -250,6 +285,21 @@ export class MarketingStack extends Stack {
       timeout: Duration.seconds(300),
       environment: envVars,
     });
+
+    // ============================================
+    // EventBridge Rule for Analytics Sync (runs every 6 hours)
+    // ============================================
+    const analyticsSyncRule = new events.Rule(this, 'MarketingAnalyticsSyncRule', {
+      ruleName: 'MarketingAnalyticsSyncSchedule',
+      description: 'Triggers analytics sync Lambda every 6 hours to fetch latest social media analytics',
+      schedule: events.Schedule.rate(Duration.hours(6)),
+      enabled: true,
+    });
+
+    // Add the Lambda as a target for the EventBridge rule
+    analyticsSyncRule.addTarget(new targets.LambdaFunction(analyticsSyncFn, {
+      retryAttempts: 2,
+    }));
 
     // ============================================
     // 7. Grant Permissions
@@ -398,10 +448,16 @@ export class MarketingStack extends Stack {
     // -----------------------------------------
     const webhooksRes = root.addResource('webhooks');
 
-    // POST /webhooks - Register webhook
+    // GET /webhooks - Get registered webhooks from Ayrshare
+    webhooksRes.addMethod('GET', new apigw.LambdaIntegration(webhooksFn), { authorizer });
+
+    // POST /webhooks - Register webhook with Ayrshare
     webhooksRes.addMethod('POST', new apigw.LambdaIntegration(webhooksFn), { authorizer });
 
-    // POST /webhooks/ayrshare - Ayrshare webhook handler (no auth - external webhook)
+    // DELETE /webhooks - Unregister webhook from Ayrshare
+    webhooksRes.addMethod('DELETE', new apigw.LambdaIntegration(webhooksFn), { authorizer });
+
+    // POST /webhooks/ayrshare - Ayrshare webhook handler (no auth - but HMAC signature verified)
     const ayrshareWebhookRes = webhooksRes.addResource('ayrshare');
     ayrshareWebhookRes.addMethod('POST', new apigw.LambdaIntegration(webhooksFn));
 

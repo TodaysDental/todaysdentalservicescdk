@@ -53,7 +53,7 @@ export async function ayrshareGenerateJWT(apiKey: string, profileKey: string, do
     console.log('Ayrshare generateJWT request - domain:', domain, 'profileKey:', profileKey.substring(0, 10) + '...');
     
     const res = await axios.post(`${AYRSHARE_URL}/profiles/generateJWT`,
-      { domain, privateKey: profileKey },
+      { domain, profileKey },
       { headers: { 'Authorization': `Bearer ${apiKey}` } }
     );
     
@@ -272,5 +272,85 @@ export async function ayrshareGetAutoSchedule(apiKey: string, profileKey: string
     return res.data;
   } catch (err: any) {
     throw new Error(err.response?.data?.message || 'Failed to get auto-schedule');
+  }
+}
+
+// ============================================
+// WEBHOOK MANAGEMENT
+// ============================================
+
+export type WebhookAction = 'social' | 'message' | 'analytics' | 'comment' | 'feed';
+
+export async function ayrshareRegisterWebhook(
+  apiKey: string, 
+  action: WebhookAction,
+  url: string,
+  secret: string,
+  profileKey?: string
+) {
+  try {
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    };
+    
+    if (profileKey) {
+      headers['Profile-Key'] = profileKey;
+    }
+    
+    const res = await axios.post(`${AYRSHARE_URL}/hook/webhook`,
+      { action, url, secret },
+      { headers }
+    );
+    return res.data;
+  } catch (err: any) {
+    console.error('Register Webhook Error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || 'Failed to register webhook');
+  }
+}
+
+export async function ayrshareUnregisterWebhook(
+  apiKey: string,
+  action: WebhookAction,
+  profileKey?: string
+) {
+  try {
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    };
+    
+    if (profileKey) {
+      headers['Profile-Key'] = profileKey;
+    }
+    
+    const res = await axios.delete(`${AYRSHARE_URL}/hook/webhook`,
+      {
+        headers,
+        data: { action }
+      }
+    );
+    return res.data;
+  } catch (err: any) {
+    console.error('Unregister Webhook Error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || 'Failed to unregister webhook');
+  }
+}
+
+export async function ayrshareGetWebhooks(apiKey: string, profileKey?: string) {
+  try {
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${apiKey}`
+    };
+    
+    if (profileKey) {
+      headers['Profile-Key'] = profileKey;
+    }
+    
+    const res = await axios.get(`${AYRSHARE_URL}/hook/webhook`, { headers });
+    return res.data;
+  } catch (err: any) {
+    console.error('Get Webhooks Error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || 'Failed to get webhooks');
   }
 }
