@@ -220,7 +220,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ---------------------------------------------------------
     if (path.includes('/generate-jwt') && method === 'POST') {
       const clinicId = event.pathParameters?.clinicId;
-      if (!clinicId) throw new Error('clinicId required');
+      console.log('Generate JWT request for clinicId:', clinicId);
+      
+      if (!clinicId) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ 
+            success: false, 
+            error: 'clinicId is required in the path' 
+          })
+        };
+      }
 
       const body = JSON.parse(event.body || '{}');
       const expiresIn = body.expiresIn || 300;
@@ -230,30 +241,66 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         Key: { clinicId }
       }));
 
+      console.log('DB lookup result:', dbRes.Item ? 'Found profile' : 'No profile found');
+
       if (!dbRes.Item?.ayrshareProfileKey) {
         return {
           statusCode: 404,
           headers: corsHeaders,
-          body: JSON.stringify({ error: 'Clinic profile not found' })
+          body: JSON.stringify({ 
+            success: false, 
+            error: 'Clinic profile not found. Please initialize the profile first.',
+            clinicId,
+            hint: 'Call POST /profiles/initialize with this clinic first to create an Ayrshare profile.'
+          })
         };
       }
 
-      const jwtRes = await ayrshareGenerateJWT(API_KEY, dbRes.Item.ayrshareProfileKey, AYRSHARE_DOMAIN);
+      try {
+        console.log('Generating JWT for profile:', dbRes.Item.ayrshareProfileKey, 'domain:', AYRSHARE_DOMAIN);
+        const jwtRes = await ayrshareGenerateJWT(API_KEY, dbRes.Item.ayrshareProfileKey, AYRSHARE_DOMAIN);
+        console.log('JWT generated successfully, URL:', jwtRes.url ? 'Present' : 'Missing');
 
-      const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+        if (!jwtRes.url) {
+          console.error('Ayrshare returned response without URL:', JSON.stringify(jwtRes));
+          return {
+            statusCode: 500,
+            headers: corsHeaders,
+            body: JSON.stringify({
+              success: false,
+              error: 'Ayrshare did not return a JWT URL. Please try again.',
+              details: 'The social media service returned an incomplete response.'
+            })
+          };
+        }
 
-      return {
-        statusCode: 200,
-        headers: corsHeaders,
-        body: JSON.stringify({
-          success: true,
-          clinicId,
-          clinicName: dbRes.Item.clinicName,
-          jwtUrl: jwtRes.url,
-          expiresAt,
-          instructions: 'Open this URL in a new window to connect social media accounts. The link expires in 5 minutes.'
-        })
-      };
+        const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: true,
+            clinicId,
+            clinicName: dbRes.Item.clinicName,
+            jwtUrl: jwtRes.url,
+            expiresAt,
+            instructions: 'Open this URL in a new window to connect social media accounts. The link expires in 5 minutes.'
+          })
+        };
+      } catch (jwtError: any) {
+        console.error('JWT generation failed:', jwtError.message);
+        return {
+          statusCode: 502,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: false,
+            error: 'Failed to generate social media connection link.',
+            details: jwtError.message,
+            hint: 'The Ayrshare service may be temporarily unavailable. Please try again.'
+          })
+        };
+      }
     }
 
     // ---------------------------------------------------------

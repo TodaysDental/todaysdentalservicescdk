@@ -50,13 +50,27 @@ export async function ayrshareDeleteProfile(apiKey: string, profileKey: string) 
 
 export async function ayrshareGenerateJWT(apiKey: string, profileKey: string, domain: string) {
   try {
+    console.log('Ayrshare generateJWT request - domain:', domain, 'profileKey:', profileKey.substring(0, 10) + '...');
+    
     const res = await axios.post(`${AYRSHARE_URL}/profiles/generateJWT`,
       { domain, privateKey: profileKey },
       { headers: { 'Authorization': `Bearer ${apiKey}` } }
     );
-    return res.data;
+    
+    console.log('Ayrshare generateJWT response status:', res.status);
+    console.log('Ayrshare generateJWT response data keys:', Object.keys(res.data || {}));
+    
+    // Ayrshare returns { url: "https://..." } or { jwtUrl: "https://..." }
+    // Normalize the response to always have 'url'
+    const responseData = res.data;
+    if (responseData.jwtUrl && !responseData.url) {
+      responseData.url = responseData.jwtUrl;
+    }
+    
+    return responseData;
   } catch (err: any) {
-    throw new Error(err.response?.data?.message || 'Failed to generate JWT');
+    console.error('Ayrshare generateJWT error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || err.response?.data?.error || 'Failed to generate JWT');
   }
 }
 

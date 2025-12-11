@@ -95,7 +95,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ---------------------------------------------------------
     if (event.path.endsWith('/jwt') && event.httpMethod === 'GET') {
       const clinicId = event.queryStringParameters?.clinicId;
-      if (!clinicId) throw new Error('clinicId required');
+      console.log('JWT GET request for clinicId:', clinicId);
+      
+      if (!clinicId) {
+        return { 
+          statusCode: 400, 
+          headers: corsHeaders, 
+          body: JSON.stringify({ 
+            success: false, 
+            error: 'clinicId query parameter is required' 
+          }) 
+        };
+      }
 
       const dbRes = await ddb.send(new GetCommand({
         TableName: TABLE_NAME,
@@ -103,19 +114,61 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }));
 
       if (!dbRes.Item?.ayrshareProfileKey) {
-        return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Clinic not set up' }) };
+        return { 
+          statusCode: 404, 
+          headers: corsHeaders, 
+          body: JSON.stringify({ 
+            success: false, 
+            error: 'Clinic not set up. Please initialize the profile first.',
+            clinicId,
+            hint: 'Call POST /marketing/setup with clinicId and clinicName first.'
+          }) 
+        };
       }
 
-      const jwtRes = await ayrshareGenerateJWT(API_KEY, dbRes.Item.ayrshareProfileKey, FRONTEND_DOMAIN);
-      
-      return { 
-        statusCode: 200, 
-        headers: corsHeaders, 
-        body: JSON.stringify({
-          ...jwtRes,
-          userProfileKey: dbRes.Item.ayrshareProfileKey // Include profile key for widget
-        }) 
-      };
+      try {
+        console.log('Generating JWT for profile:', dbRes.Item.ayrshareProfileKey);
+        const jwtRes = await ayrshareGenerateJWT(API_KEY, dbRes.Item.ayrshareProfileKey, FRONTEND_DOMAIN);
+        
+        if (!jwtRes.url) {
+          console.error('Ayrshare returned response without URL:', JSON.stringify(jwtRes));
+          return {
+            statusCode: 500,
+            headers: corsHeaders,
+            body: JSON.stringify({
+              success: false,
+              error: 'Ayrshare did not return a JWT URL.',
+              details: 'The social media service returned an incomplete response.'
+            })
+          };
+        }
+
+        return { 
+          statusCode: 200, 
+          headers: corsHeaders, 
+          body: JSON.stringify({
+            success: true,
+            clinicId,
+            clinicName: dbRes.Item.clinicName,
+            jwtUrl: jwtRes.url,
+            url: jwtRes.url, // Include both for backwards compatibility
+            userProfileKey: dbRes.Item.ayrshareProfileKey,
+            expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+            instructions: 'Open this URL in a new window to connect social media accounts.'
+          }) 
+        };
+      } catch (jwtError: any) {
+        console.error('JWT generation failed:', jwtError.message);
+        return {
+          statusCode: 502,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: false,
+            error: 'Failed to generate connection link.',
+            details: jwtError.message
+          })
+        };
+      }
     }
 
     // ---------------------------------------------------------
