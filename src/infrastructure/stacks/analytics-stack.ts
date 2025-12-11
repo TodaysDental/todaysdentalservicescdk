@@ -271,7 +271,7 @@ export class AnalyticsStack extends Stack {
     // ========================================
 
     this.analyticsTable = new dynamodb.Table(this, 'CallAnalyticsTable', {
-      tableName: `${this.stackName}-CallAnalyticsV2`,
+      tableName: `${this.stackName}-CallAnalyticsN1`,
       partitionKey: { name: 'callId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,

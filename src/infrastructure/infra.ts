@@ -33,6 +33,7 @@ import { CommStack } from './stacks/comm-stack'; // <-- NEW IMPORT ADDED HERE
 import { AnalyticsStack } from './stacks/analytics-stack';
 import { ClinicImagesStack } from './stacks/clinic-images-stack';
 import { AiAgentsStack } from './stacks/ai-agents-stack';
+import { QueryGeneratorStack } from './stacks/query-generator-stack';
 // import { DentalSoftwareStack } from './stacks/dental-software-stack';
 
 const app = new cdk.App();
@@ -233,6 +234,14 @@ const CHATBOT_STACK_NAME = 'TodaysDentalInsightsChatbotN1';
 // The conversations table name follows the pattern: ${stackName}-ConversationN1
 const CHATBOT_CONVERSATIONS_TABLE_NAME = `${CHATBOT_STACK_NAME}-ConversationN1`;
 
+// Define AnalyticsStack name for consistent cross-stack references
+// CRITICAL FIX: Using constant names prevents CloudFormation from creating implicit exports
+// which cause UPDATE_ROLLBACK failures when the table needs replacement
+const ANALYTICS_STACK_NAME = 'TodaysDentalInsightsAnalyticsN1';
+// Table names follow the pattern: ${stackName}-TableNameSuffix
+const ANALYTICS_TABLE_NAME = `${ANALYTICS_STACK_NAME}-CallAnalyticsN1`;
+const ANALYTICS_DEDUP_TABLE_NAME = `${ANALYTICS_STACK_NAME}-CallAnalytics-dedupV2`;
+
 // Define AI Agents stack name for consistent cross-stack references
 const AI_AGENTS_STACK_NAME = 'TodaysDentalInsightsAiAgentsN1';
 
@@ -251,7 +260,7 @@ const AI_AGENTS_STACK_NAME = 'TodaysDentalInsightsAiAgentsN1';
 
 const ENABLE_VOICE_AI_ANALYTICS = process.env.ENABLE_VOICE_AI_ANALYTICS === 'true';
 
-const analyticsStack = new AnalyticsStack(app, 'TodaysDentalInsightsAnalyticsN1', {
+const analyticsStack = new AnalyticsStack(app, ANALYTICS_STACK_NAME, {
   env,
   jwtSecret: coreStack.jwtSecretValue,
   region: env.region || process.env.AWS_REGION || 'us-east-1',
@@ -294,8 +303,10 @@ const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
  jwtSecret: coreStack.jwtSecretValue,
  voiceConnectorTerminationCidrs,
  voiceConnectorOriginationRoutes,
- analyticsTableName: analyticsStack.analyticsTable.tableName,
- analyticsDedupTableName: analyticsStack.analyticsDedupTable.tableName,
+ // CRITICAL FIX: Use constant table names instead of direct references to avoid CloudFormation
+ // implicit exports which cause UPDATE_ROLLBACK failures when the table needs replacement
+ analyticsTableName: ANALYTICS_TABLE_NAME,
+ analyticsDedupTableName: ANALYTICS_DEDUP_TABLE_NAME,
  enableCallRecording: true, // Enable call recording by default
  recordingRetentionDays: 2555, // ~7 years for compliance
  medicalVocabularyName: analyticsStack.medicalVocabularyName,
@@ -335,7 +346,9 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
   favorsTableName: communicationsStack.favorsTable.tableName,
   teamsTableName: communicationsStack.teamsTable.tableName, // For group favor requests
   clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
-  analyticsTableName: analyticsStack.analyticsTable.tableName,
+  // CRITICAL FIX: Use constant table name instead of direct reference to avoid CloudFormation
+  // implicit exports which cause UPDATE_ROLLBACK failures when the table needs replacement
+  analyticsTableName: ANALYTICS_TABLE_NAME,
   jwtSecretValue: coreStack.jwtSecretValue,
  // Additional table names for detailed analytics
  callQueueTableName: chimeStack.callQueueTable.tableName,
@@ -435,8 +448,8 @@ const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   // CRITICAL FIX: Pass all required props explicitly to avoid fragile hardcoded defaults
   clinicsTableName: chimeStack.clinicsTable.tableName,
   clinicsTableArn: chimeStack.clinicsTable.tableArn,
-  // SMA ID Map for initiating outbound calls via correct SIP Media Application
-  smaIdMap: cdk.Fn.importValue(`${CHIME_STACK_NAME}-SmaIdMap`),
+  // SMA ID Map SSM Parameter name (value stored in SSM due to CloudFormation 1024 char limit)
+  smaIdMapParameterName: `/${CHIME_STACK_NAME}/SmaIdMap`,
   chimeStackName: CHIME_STACK_NAME,
   
   // ========================================
@@ -446,8 +459,11 @@ const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   // This ensures Voice AI call records go to the same table as Chime stream records,
   // making dashboards and reconciliation jobs see all data in one place.
   // Schema: PK=callId (String), SK=timestamp (Number)
-  callAnalyticsTableName: analyticsStack.analyticsTable.tableName,
-  callAnalyticsTableArn: analyticsStack.analyticsTable.tableArn,
+  // CRITICAL FIX: Use constant table name instead of direct reference to avoid CloudFormation
+  // implicit exports which cause UPDATE_ROLLBACK failures when the table needs replacement
+  callAnalyticsTableName: ANALYTICS_TABLE_NAME,
+  // Construct ARN from known components to avoid cross-stack reference
+  callAnalyticsTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/${ANALYTICS_TABLE_NAME}`,
   
   // ========================================
   // SHARED RECORDINGS BUCKET
@@ -456,11 +472,28 @@ const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   // between AI calls and human calls
   sharedRecordingsBucketName: chimeStack.recordingsBucket?.bucketName,
   sharedRecordingsBucketArn: chimeStack.recordingsBucket?.bucketArn,
+  
+  // ========================================
+  // WEBSOCKET DOMAIN (from ChatbotStack)
+  // ========================================
+  // CRITICAL FIX: Use explicit values for the WebSocket domain created by ChatbotStack
+  // These are static AWS-assigned values that don't change after domain creation
+  // Using hardcoded values avoids CloudFormation cross-stack reference issues
+  webSocketDomainName: 'ws.todaysdentalinsights.com',
+  webSocketRegionalDomainName: 'd-1623htv8c4.execute-api.us-east-1.amazonaws.com',
+  webSocketRegionalHostedZoneId: 'Z1UJRXOUMOOFQ8',
 });
 
-// Add dependencies so AI Agents stack deploys after Chime and Analytics
+// Add dependencies so AI Agents stack deploys after Chime, Analytics, and Chatbot
+// Chatbot creates the ws.todaysdentalinsights.com domain that AI Agents uses
 aiAgentsStack.addDependency(chimeStack);
 aiAgentsStack.addDependency(analyticsStack);
+aiAgentsStack.addDependency(chatbotStack);
+
+// Query Generator Stack - AI-powered SQL query generation using Bedrock
+const queryGeneratorStack = new QueryGeneratorStack(app, 'TodaysDentalInsightsQueryGeneratorN1', {
+  env,
+});
 
 // Dental Software Stack - RDS MySQL database and S3 for clinic management
 // const dentalSoftwareStack = new DentalSoftwareStack(app, 'TodaysDentalInsightsDentalSoftwareN1', {
@@ -508,6 +541,7 @@ callbackStack.addDependency(coreStack); // Explicit - imports AuthorizerFunction
 patientPortalApptTypesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 clinicImagesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 aiAgentsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+queryGeneratorStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 // dentalSoftwareStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 // patientPortalStack.addDependency(coreStack); // Note: PatientPortalStack might not import it - verify
 patientPortalStack.addDependency(openDentalStack); // Explicit - uses SFTP resources

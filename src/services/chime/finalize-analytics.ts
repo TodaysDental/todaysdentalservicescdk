@@ -219,7 +219,7 @@ const AGENT_PERFORMANCE_TABLE = process.env.AGENT_PERFORMANCE_TABLE_NAME;
 // Now we derive from the stack name pattern or require explicit configuration.
 const TRANSCRIPT_BUFFER_TABLE = process.env.TRANSCRIPT_BUFFER_TABLE_NAME || (() => {
   // Derive from ANALYTICS_TABLE by replacing the table suffix with TranscriptBuffersV2
-  // ANALYTICS_TABLE format: TodaysDentalInsightsAnalyticsN1-CallAnalyticsV2
+  // ANALYTICS_TABLE format: TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1
   // TRANSCRIPT_BUFFER_TABLE should be: TodaysDentalInsightsAnalyticsN1-TranscriptBuffersV2
   if (ANALYTICS_TABLE) {
     const parts = ANALYTICS_TABLE.split('-');

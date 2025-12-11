@@ -28,6 +28,8 @@ export class ChatbotStack extends cdk.Stack {
   public readonly conversationsTable: dynamodb.Table;
   public readonly clinicHoursTable?: dynamodb.ITable;
   public readonly clinicPricingTable?: dynamodb.ITable;
+  /** WebSocket custom domain for wss://ws.todaysdentalinsights.com */
+  public readonly webSocketDomain: apigatewayv2.DomainName;
   public readonly clinicInsuranceTable?: dynamodb.ITable;
 
   constructor(scope: Construct, id: string, props: ChatbotStackProps) {
@@ -458,7 +460,8 @@ export class ChatbotStack extends cdk.Stack {
     const wsCertificateArn = 'arn:aws:acm:us-east-1:851620242036:certificate/4609e555-88a2-403f-b053-9d0899a899b9';
 
     // Create WebSocket custom domain (WebSocket APIs cannot share domain with REST APIs)
-    const wsDomain = new apigatewayv2.DomainName(this, 'WebSocketDomain', {
+    // This domain is shared with AiAgentsStack which adds its own API mapping
+    this.webSocketDomain = new apigatewayv2.DomainName(this, 'WebSocketDomain', {
       domainName: 'ws.todaysdentalinsights.com',
       certificate: certificatemanager.Certificate.fromCertificateArn(
         this,
@@ -470,7 +473,7 @@ export class ChatbotStack extends cdk.Stack {
     // API mapping for WebSocket with /chat path
     new apigatewayv2.ApiMapping(this, 'WebSocketMapping', {
       api: this.websocketApi,
-      domainName: wsDomain,
+      domainName: this.webSocketDomain,
       stage: websocketStage,
       apiMappingKey: 'chat',
     });
@@ -485,8 +488,8 @@ export class ChatbotStack extends cdk.Stack {
       zone: hostedZone,
       recordName: 'ws',
       target: route53.RecordTarget.fromAlias(new route53targets.ApiGatewayv2DomainProperties(
-        wsDomain.regionalDomainName,
-        wsDomain.regionalHostedZoneId 
+        this.webSocketDomain.regionalDomainName,
+        this.webSocketDomain.regionalHostedZoneId 
       )),
     });
 
@@ -502,6 +505,25 @@ export class ChatbotStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'WebSocketCustomDomainEndpoint', {
       value: 'wss://ws.todaysdentalinsights.com/chat',
       description: 'Custom domain WebSocket API endpoint for chatbot',
+    });
+
+    // Export WebSocket domain attributes for cross-stack references (used by AiAgentsStack)
+    new cdk.CfnOutput(this, 'WebSocketDomainName', {
+      value: this.webSocketDomain.name,
+      description: 'WebSocket custom domain name for cross-stack API mappings',
+      exportName: `${this.stackName}-WebSocketDomainName`,
+    });
+    
+    new cdk.CfnOutput(this, 'WebSocketRegionalDomainName', {
+      value: this.webSocketDomain.regionalDomainName,
+      description: 'Regional domain name for WebSocket custom domain',
+      exportName: `${this.stackName}-WebSocketRegionalDomainName`,
+    });
+    
+    new cdk.CfnOutput(this, 'WebSocketRegionalHostedZoneId', {
+      value: this.webSocketDomain.regionalHostedZoneId,
+      description: 'Regional hosted zone ID for WebSocket custom domain',
+      exportName: `${this.stackName}-WebSocketRegionalHostedZoneId`,
     });
 
     new cdk.CfnOutput(this, 'RestApiEndpoint', {

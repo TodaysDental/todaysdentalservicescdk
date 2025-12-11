@@ -50,11 +50,12 @@ export interface AiAgentsStackProps extends StackProps {
   clinicsTableArn?: string;
   
   /**
-   * SMA ID Map JSON string from ChimeStack.
+   * SSM Parameter name containing the SMA ID Map JSON.
+   * The Lambda will read the value from SSM at runtime.
    * Maps clinicId -> SIP Media Application ID.
    * REQUIRED for initiating outbound calls via the correct SMA.
    */
-  smaIdMap: string;
+  smaIdMapParameterName: string;
   
   /**
    * ChimeStack name for additional dynamic imports if needed.
@@ -66,7 +67,7 @@ export interface AiAgentsStackProps extends StackProps {
   // UNIFIED ANALYTICS INTEGRATION (REQUIRED)
   // ========================================
   // CRITICAL: Use the shared CallAnalytics table from AnalyticsStack to avoid
-  // data fragmentation. The AnalyticsStack table (CallAnalyticsV2) uses callId/timestamp
+  // data fragmentation. The AnalyticsStack table (CallAnalyticsN1) uses callId/timestamp
   // schema which aligns with Chime stream processor and reconciliation jobs.
   
   /**
@@ -106,6 +107,27 @@ export interface AiAgentsStackProps extends StackProps {
    * MUST be provided together with sharedRecordingsBucketName.
    */
   sharedRecordingsBucketArn?: string;
+  
+  // ========================================
+  // WEBSOCKET DOMAIN (from ChatbotStack)
+  // ========================================
+  /**
+   * WebSocket domain name from ChatbotStack (ws.todaysdentalinsights.com).
+   * REQUIRED for adding the /ai-agents API mapping to the shared domain.
+   */
+  webSocketDomainName: string;
+  
+  /**
+   * Regional domain name for the WebSocket domain (d-xxx.execute-api.region.amazonaws.com).
+   * REQUIRED for importing the domain as an L2 construct.
+   */
+  webSocketRegionalDomainName: string;
+  
+  /**
+   * Regional hosted zone ID for the WebSocket domain.
+   * REQUIRED for importing the domain as an L2 construct.
+   */
+  webSocketRegionalHostedZoneId: string;
 }
 
 export class AiAgentsStack extends Stack {
@@ -331,7 +353,7 @@ export class AiAgentsStack extends Stack {
       console.warn(
         '[AiAgentsStack] WARNING: callAnalyticsTableName and analyticsStackName not provided. ' +
         'Voice AI call analytics will be DISABLED. To enable unified analytics, ' +
-        'pass the AnalyticsStack CallAnalyticsV2 table name via props or provide analyticsStackName.'
+        'pass the AnalyticsStack CallAnalyticsN1 table name via props or provide analyticsStackName.'
       );
     }
 
@@ -744,11 +766,11 @@ export class AiAgentsStack extends Stack {
     // CRITICAL FIX: Use explicit props instead of hardcoded defaults
     // This avoids fragile dependencies on stack naming conventions
     const clinicsTableName = props.clinicsTableName;
-    const smaIdMap = props.smaIdMap;
+    const smaIdMapParameterName = props.smaIdMapParameterName;
     
     console.log('[AiAgentsStack] Chime integration configured:', {
       clinicsTable: clinicsTableName,
-      smaIdMapLength: smaIdMap?.length || 0,
+      smaIdMapParameterName,
     });
 
     // Executes scheduled outbound calls - invoked by EventBridge Scheduler
@@ -766,7 +788,8 @@ export class AiAgentsStack extends Stack {
         VOICE_SESSIONS_TABLE: this.voiceSessionsTable.tableName,
         // Chime integration - uses existing infrastructure
         CLINICS_TABLE: clinicsTableName,
-        SMA_ID_MAP: smaIdMap,
+        // SMA ID Map stored in SSM due to CloudFormation 1024 char limit
+        SMA_ID_MAP_PARAMETER_NAME: smaIdMapParameterName,
       },
     });
     applyTags(this.outboundExecutorFn, { Function: 'outbound-executor' });
@@ -774,6 +797,13 @@ export class AiAgentsStack extends Stack {
     this.agentsTable.grantReadData(this.outboundExecutorFn);
     this.scheduledCallsTable.grantReadWriteData(this.outboundExecutorFn);
     this.voiceSessionsTable.grantReadWriteData(this.outboundExecutorFn);
+
+    // Grant read access to SMA ID Map SSM Parameter
+    this.outboundExecutorFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['ssm:GetParameter'],
+      resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter${smaIdMapParameterName}`],
+    }));
 
     // Grant read access to Clinics table (from ChimeStack)
     // Use explicit ARN from props if available, otherwise construct from table name
@@ -1084,11 +1114,18 @@ export class AiAgentsStack extends Stack {
     });
 
     // Map AI Agents WebSocket to /ai-agents path on existing ws.todaysdentalinsights.com domain
-    // Note: The domain was created in ChatbotStack, we just add a new mapping here
-    new apigwv2.CfnApiMapping(this, 'AiAgentsWebSocketMapping', {
-      apiId: this.websocketApi.apiId,
-      domainName: 'ws.todaysdentalinsights.com',
-      stage: websocketStage.stageName,
+    // CRITICAL FIX: Import the domain from ChatbotStack and use L2 ApiMapping construct
+    // This ensures proper stage reference handling (CfnApiMapping has stage reference issues)
+    const importedWsDomain = apigwv2.DomainName.fromDomainNameAttributes(this, 'ImportedWebSocketDomain', {
+      name: props.webSocketDomainName,
+      regionalDomainName: props.webSocketRegionalDomainName,
+      regionalHostedZoneId: props.webSocketRegionalHostedZoneId,
+    });
+    
+    new apigwv2.ApiMapping(this, 'AiAgentsWebSocketMapping', {
+      api: this.websocketApi,
+      domainName: importedWsDomain,
+      stage: websocketStage,
       apiMappingKey: 'ai-agents',
     });
 

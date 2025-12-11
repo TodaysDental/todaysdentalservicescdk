@@ -80,7 +80,7 @@ export class MarketingStack extends Stack {
     const envVars = {
       MARKETING_CONFIG_TABLE: this.marketingConfigTable.tableName,
       MARKETING_POSTS_TABLE: this.marketingPostsTable.tableName,
-      AYRSHARE_API_KEY: process.env.AYRSHARE_API_KEY || 'YOUR_API_KEY_HERE',
+      AYRSHARE_API_KEY: process.env.AYRSHARE_API_KEY || 'A7DD2620-39C046C1-ABAAA24C-64B16202',
     };
 
     // 5. Lambda Functions

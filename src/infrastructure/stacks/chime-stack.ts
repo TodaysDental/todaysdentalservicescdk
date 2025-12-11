@@ -1588,10 +1588,20 @@ export class ChimeStack extends Stack {
       exportName: `${this.stackName}-AgentPerformanceTableName`,
     });
     
-    new CfnOutput(this, 'SipMediaApplicationIdMap', {
-      value: smaIdMapJson,
+    // Store SMA ID Map in SSM Parameter Store instead of CfnOutput
+    // CloudFormation exports have a 1024 char limit which the SMA map exceeds
+    const smaIdMapParameter = new ssm.StringParameter(this, 'SmaIdMapParameter', {
+      parameterName: `/${this.stackName}/SmaIdMap`,
+      stringValue: smaIdMapJson,
       description: 'JSON map of clinicId to SIP Media Application ID',
-      exportName: `${this.stackName}-SmaIdMap`,
+      tier: ssm.ParameterTier.STANDARD,
+    });
+    
+    // Export the parameter name for cross-stack references
+    new CfnOutput(this, 'SmaIdMapParameterName', {
+      value: smaIdMapParameter.parameterName,
+      description: 'SSM Parameter name containing SMA ID Map',
+      exportName: `${this.stackName}-SmaIdMapParameterName`,
     });
     
     new CfnOutput(this, 'StartSessionFnArn', {
@@ -1662,10 +1672,7 @@ export class ChimeStack extends Stack {
       value: getJoinableCallsFn.functionArn,
       exportName: `${this.stackName}-GetJoinableCallsArn`,
     });
-    new CfnOutput(this, 'AgentPresenceTableNameExport', {
-      value: this.agentPresenceTable.tableName,
-      exportName: `${this.stackName}-AgentPresenceTableName`,
-    });
+    // NOTE: AgentPresenceTableName export is already defined above (line ~1572)
     new CfnOutput(this, 'HoldMusicBucketName', {
       value: holdMusicBucket.bucketName,
       description: 'S3 bucket for hold music. Upload a file named "hold-music.wav" to this bucket.',

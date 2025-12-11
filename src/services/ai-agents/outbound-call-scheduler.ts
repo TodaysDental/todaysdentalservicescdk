@@ -28,6 +28,7 @@ import {
   ChimeSDKVoiceClient,
   CreateSipMediaApplicationCallCommand,
 } from '@aws-sdk/client-chime-sdk-voice';
+import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { v4 as uuidv4 } from 'uuid';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { buildCorsHeaders } from '../../shared/utils/cors';
@@ -49,18 +50,47 @@ const schedulerClient = new SchedulerClient({
 const chimeVoiceClient = new ChimeSDKVoiceClient({
   region: process.env.AWS_REGION || 'us-east-1',
 });
+const ssmClient = new SSMClient({
+  region: process.env.AWS_REGION || 'us-east-1',
+});
 
 const SCHEDULED_CALLS_TABLE = process.env.SCHEDULED_CALLS_TABLE || 'ScheduledCalls';
 const OUTBOUND_CALL_LAMBDA_ARN = process.env.OUTBOUND_CALL_LAMBDA_ARN || '';
 const SCHEDULER_ROLE_ARN = process.env.SCHEDULER_ROLE_ARN || '';
 const CLINICS_TABLE = process.env.CLINICS_TABLE || 'Clinics';
 const AGENTS_TABLE = process.env.AGENTS_TABLE || 'AiAgents';
+const SMA_ID_MAP_PARAMETER_NAME = process.env.SMA_ID_MAP_PARAMETER_NAME || '';
 
 // SMA ID Map - maps clinic regions to SIP Media Application IDs
-// This should match the configuration in chime-stack
-const SMA_ID_MAP: Record<string, string> = process.env.SMA_ID_MAP 
-  ? JSON.parse(process.env.SMA_ID_MAP) 
-  : {};
+// Loaded from SSM Parameter Store at runtime (cached for Lambda instance lifetime)
+let cachedSmaIdMap: Record<string, string> | null = null;
+
+async function getSmaIdMap(): Promise<Record<string, string>> {
+  if (cachedSmaIdMap) {
+    return cachedSmaIdMap;
+  }
+  
+  if (!SMA_ID_MAP_PARAMETER_NAME) {
+    console.warn('[SMA] No SMA_ID_MAP_PARAMETER_NAME configured, returning empty map');
+    return {};
+  }
+  
+  try {
+    const response = await ssmClient.send(new GetParameterCommand({
+      Name: SMA_ID_MAP_PARAMETER_NAME,
+    }));
+    
+    if (response.Parameter?.Value) {
+      cachedSmaIdMap = JSON.parse(response.Parameter.Value);
+      console.log('[SMA] Loaded SMA ID Map from SSM:', Object.keys(cachedSmaIdMap || {}).length, 'entries');
+      return cachedSmaIdMap || {};
+    }
+  } catch (error) {
+    console.error('[SMA] Failed to load SMA ID Map from SSM:', error);
+  }
+  
+  return {};
+}
 
 // Bulk scheduling configuration
 // Configurable via environment variable, default 500 (max 1000 to stay within Lambda timeout)
@@ -73,13 +103,14 @@ const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, eve
 /**
  * Get SMA ID for a clinic (uses same logic as chime-stack)
  */
-function getSmaIdForClinic(clinicId: string): string | undefined {
+async function getSmaIdForClinic(clinicId: string): Promise<string | undefined> {
+  const smaIdMap = await getSmaIdMap();
   // First check for clinic-specific SMA
-  if (SMA_ID_MAP[clinicId]) {
-    return SMA_ID_MAP[clinicId];
+  if (smaIdMap[clinicId]) {
+    return smaIdMap[clinicId];
   }
   // Fall back to default SMA
-  return SMA_ID_MAP['default'] || Object.values(SMA_ID_MAP)[0];
+  return smaIdMap['default'] || Object.values(smaIdMap)[0];
 }
 
 // ========================================================================
@@ -764,7 +795,7 @@ export const executeOutboundCall = async (event: any) => {
     }
 
     // Get SMA ID for this clinic (uses existing Chime infrastructure)
-    const smaId = getSmaIdForClinic(clinicId);
+    const smaId = await getSmaIdForClinic(clinicId);
     if (!smaId) {
       throw new Error(`No SIP Media Application configured for clinic ${clinicId}`);
     }
