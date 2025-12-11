@@ -3,7 +3,9 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, ScanCommand, UpdateCommand, PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { ayrshareGetAnalytics } from './ayrshare-client';
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  marshallOptions: { removeUndefinedValues: true }
+});
 const PROFILES_TABLE = process.env.MARKETING_PROFILES_TABLE!;
 const POSTS_TABLE = process.env.MARKETING_POSTS_TABLE!;
 const ANALYTICS_TABLE = process.env.MARKETING_ANALYTICS_TABLE!;

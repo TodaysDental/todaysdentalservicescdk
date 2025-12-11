@@ -6,7 +6,9 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v4 as uuidv4 } from 'uuid';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  marshallOptions: { removeUndefinedValues: true }
+});
 const s3 = new S3Client({});
 const MEDIA_TABLE = process.env.MARKETING_MEDIA_TABLE!;
 const MEDIA_BUCKET = process.env.MEDIA_BUCKET!;

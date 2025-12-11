@@ -4,7 +4,9 @@ import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, ScanComm
 import { ayrshareCreateProfile, ayrshareGenerateJWT, ayrshareDeleteProfile, ayrshareGetProfile } from './ayrshare-client';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  marshallOptions: { removeUndefinedValues: true }
+});
 const TABLE_NAME = process.env.MARKETING_CONFIG_TABLE!;
 const API_KEY = process.env.AYRSHARE_API_KEY!;
 const FRONTEND_DOMAIN = 'todaysdentalinsights.com';

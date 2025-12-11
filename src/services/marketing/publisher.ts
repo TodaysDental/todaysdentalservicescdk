@@ -12,7 +12,9 @@ import {
 } from './ayrshare-client';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  marshallOptions: { removeUndefinedValues: true }
+});
 const TABLE_NAME = process.env.MARKETING_CONFIG_TABLE!;
 const POSTS_TABLE = process.env.MARKETING_POSTS_TABLE || 'MarketingPosts';
 const API_KEY = process.env.AYRSHARE_API_KEY!;

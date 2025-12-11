@@ -6,7 +6,9 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { ayrshareRegisterWebhook, ayrshareUnregisterWebhook, ayrshareGetWebhooks, WebhookAction } from './ayrshare-client';
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  marshallOptions: { removeUndefinedValues: true }
+});
 const PROFILES_TABLE = process.env.MARKETING_PROFILES_TABLE!;
 const POSTS_TABLE = process.env.MARKETING_POSTS_TABLE!;
 const COMMENTS_TABLE = process.env.MARKETING_COMMENTS_TABLE!;

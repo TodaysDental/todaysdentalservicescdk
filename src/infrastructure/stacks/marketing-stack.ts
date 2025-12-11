@@ -211,7 +211,7 @@ export class MarketingStack extends Stack {
       MARKETING_MEDIA_TABLE: this.marketingMediaTable.tableName,
       MARKETING_ANALYTICS_TABLE: this.marketingAnalyticsTable.tableName,
       MEDIA_BUCKET: this.mediaBucket.bucketName,
-      AYRSHARE_API_KEY: process.env.AYRSHARE_API_KEY || '',
+      AYRSHARE_API_KEY: process.env.AYRSHARE_API_KEY || 'A7DD2620-39C046C1-ABAAA24C-64B16202',
       AYRSHARE_PRIVATE_KEY: process.env.AYRSHARE_PRIVATE_KEY || '',
       AYRSHARE_DOMAIN: process.env.AYRSHARE_DOMAIN || 'todaysdentalinsights',
       // Webhook secret for HMAC signature verification
@@ -318,6 +318,7 @@ export class MarketingStack extends Stack {
     this.marketingCommentsTable.grantReadWriteData(commentsFn);
 
     // Analytics Lambda permissions
+    this.marketingProfilesTable.grantReadData(analyticsFn);
     this.marketingPostsTable.grantReadData(analyticsFn);
     this.marketingAnalyticsTable.grantReadWriteData(analyticsFn);
 

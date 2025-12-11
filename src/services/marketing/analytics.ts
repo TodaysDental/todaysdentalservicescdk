@@ -4,7 +4,9 @@ import { DynamoDBDocumentClient, GetCommand, QueryCommand, ScanCommand } from '@
 import { ayrshareGetAnalytics } from './ayrshare-client';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  marshallOptions: { removeUndefinedValues: true }
+});
 const POSTS_TABLE = process.env.MARKETING_POSTS_TABLE!;
 const ANALYTICS_TABLE = process.env.MARKETING_ANALYTICS_TABLE!;
 const PROFILES_TABLE = process.env.MARKETING_PROFILES_TABLE!;
