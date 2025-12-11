@@ -5,28 +5,43 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as iam from 'aws-cdk-lib/aws-iam';
 
 export interface MarketingStackProps extends StackProps {
-  authorizerFunctionArn: string; 
+  authorizerFunctionArn: string;
 }
 
 export class MarketingStack extends Stack {
-  public readonly marketingConfigTable: dynamodb.Table;
+  // DynamoDB Tables
+  public readonly marketingProfilesTable: dynamodb.Table;
   public readonly marketingPostsTable: dynamodb.Table;
+  public readonly marketingCommentsTable: dynamodb.Table;
+  public readonly marketingMediaTable: dynamodb.Table;
+  public readonly marketingAnalyticsTable: dynamodb.Table;
+
+  // S3 Bucket for media
+  public readonly mediaBucket: s3.Bucket;
+
+  // API Gateway
   public readonly api: apigw.RestApi;
 
   constructor(scope: Construct, id: string, props: MarketingStackProps) {
     super(scope, id, props);
 
+    // ============================================
     // 1. DynamoDB Tables
-    this.marketingConfigTable = new dynamodb.Table(this, 'MarketingConfigTable', {
-      tableName: 'MarketingConfig',
+    // ============================================
+
+    // Table 1: MarketingProfiles - Ayrshare profile mappings for each clinic
+    this.marketingProfilesTable = new dynamodb.Table(this, 'MarketingProfilesTable', {
+      tableName: 'MarketingProfiles',
       partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
-    // NEW: Table for post history
+    // Table 2: MarketingPosts - Social media posts
     this.marketingPostsTable = new dynamodb.Table(this, 'MarketingPostsTable', {
       tableName: 'MarketingPosts',
       partitionKey: { name: 'postId', type: dynamodb.AttributeType.STRING },
@@ -35,129 +50,414 @@ export class MarketingStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
-    // Add GSI for querying by clinicId
+    // GSI: ByClinic - Query posts by clinicId
     this.marketingPostsTable.addGlobalSecondaryIndex({
-      indexName: 'ClinicIdIndex',
+      indexName: 'ByClinic',
       partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
-    // 2. API Gateway
+    // GSI: ByStatus - Query posts by status
+    this.marketingPostsTable.addGlobalSecondaryIndex({
+      indexName: 'ByStatus',
+      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Table 3: MarketingComments - Comments from social media posts
+    this.marketingCommentsTable = new dynamodb.Table(this, 'MarketingCommentsTable', {
+      tableName: 'MarketingComments',
+      partitionKey: { name: 'postId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'commentId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    // GSI: ByClinic - Query comments by clinicId
+    this.marketingCommentsTable.addGlobalSecondaryIndex({
+      indexName: 'ByClinic',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Table 4: MarketingMedia - Uploaded media files
+    this.marketingMediaTable = new dynamodb.Table(this, 'MarketingMediaTable', {
+      tableName: 'MarketingMedia',
+      partitionKey: { name: 'mediaId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    // GSI: ByUploader - Query media by uploader
+    this.marketingMediaTable.addGlobalSecondaryIndex({
+      indexName: 'ByUploader',
+      partitionKey: { name: 'uploadedBy', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'uploadedAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Table 5: MarketingAnalytics - Analytics data synced from social platforms
+    this.marketingAnalyticsTable = new dynamodb.Table(this, 'MarketingAnalyticsTable', {
+      tableName: 'MarketingAnalytics',
+      partitionKey: { name: 'postId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'syncedAt', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    // ============================================
+    // 2. S3 Bucket for Media Storage
+    // ============================================
+    this.mediaBucket = new s3.Bucket(this, 'MarketingMediaBucket', {
+      bucketName: 'todaysdentalinsights-marketing-media',
+      removalPolicy: RemovalPolicy.RETAIN,
+      cors: [
+        {
+          allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.PUT, s3.HttpMethods.POST],
+          allowedOrigins: ['https://todaysdentalinsights.com'],
+          allowedHeaders: ['*'],
+        },
+      ],
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ACLS,
+      publicReadAccess: true,
+    });
+
+    // ============================================
+    // 3. API Gateway
+    // ============================================
     this.api = new apigw.RestApi(this, 'MarketingApi', {
       restApiName: 'MarketingApi',
       defaultCorsPreflightOptions: {
-        allowOrigins: [
-          'https://todaysdentalinsights.com',
-        ],
+        allowOrigins: ['https://todaysdentalinsights.com'],
         allowMethods: apigw.Cors.ALL_METHODS,
         allowHeaders: ['Content-Type', 'Authorization'],
         allowCredentials: true,
       },
+      deployOptions: {
+        stageName: 'prod',
+        metricsEnabled: true,
+        loggingLevel: apigw.MethodLoggingLevel.INFO,
+        dataTraceEnabled: false,
+      },
     });
 
-    // 3. Authorizer Setup (FIXED)
+    // ============================================
+    // 4. Authorizer Setup
+    // ============================================
     const authorizerFn = lambda.Function.fromFunctionArn(
-      this, 
-      'ImportedAuthFn', 
+      this,
+      'ImportedAuthFn',
       props.authorizerFunctionArn
     );
-    
+
     const authorizer = new apigw.RequestAuthorizer(this, 'MarketingAuthorizer', {
       handler: authorizerFn,
       identitySources: [apigw.IdentitySource.header('Authorization')],
       resultsCacheTtl: Duration.seconds(0),
     });
 
-    // CRITICAL FIX: Grant API Gateway permission to invoke the Authorizer
+    // Grant API Gateway permission to invoke the Authorizer
+    // The authorizer sourceArn pattern is different from regular API method invocations
+    // Authorizer invocations use: arn:aws:execute-api:region:account:api-id/authorizers/*
     new lambda.CfnPermission(this, 'AuthorizerInvokePermission', {
       action: 'lambda:InvokeFunction',
       functionName: props.authorizerFunctionArn,
       principal: 'apigateway.amazonaws.com',
-      sourceArn: this.api.arnForExecuteApi('*'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${this.api.restApiId}/authorizers/*`,
     });
 
-    // 4. Environment Variables
+    // ============================================
+    // 5. Environment Variables
+    // ============================================
     const envVars = {
-      MARKETING_CONFIG_TABLE: this.marketingConfigTable.tableName,
+      MARKETING_PROFILES_TABLE: this.marketingProfilesTable.tableName,
       MARKETING_POSTS_TABLE: this.marketingPostsTable.tableName,
-      AYRSHARE_API_KEY: process.env.AYRSHARE_API_KEY || 'A7DD2620-39C046C1-ABAAA24C-64B16202',
+      MARKETING_COMMENTS_TABLE: this.marketingCommentsTable.tableName,
+      MARKETING_MEDIA_TABLE: this.marketingMediaTable.tableName,
+      MARKETING_ANALYTICS_TABLE: this.marketingAnalyticsTable.tableName,
+      MEDIA_BUCKET: this.mediaBucket.bucketName,
+      AYRSHARE_API_KEY: process.env.AYRSHARE_API_KEY || '',
+      AYRSHARE_PRIVATE_KEY: process.env.AYRSHARE_PRIVATE_KEY || '',
+      AYRSHARE_DOMAIN: process.env.AYRSHARE_DOMAIN || 'todaysdentalinsights',
     };
 
-    // 5. Lambda Functions
-    const managerFn = new lambdaNode.NodejsFunction(this, 'MarketingManagerFn', {
-      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'manager.ts'),
+    // ============================================
+    // 6. Lambda Functions
+    // ============================================
+
+    // Profile Management Lambda
+    const profilesFn = new lambdaNode.NodejsFunction(this, 'MarketingProfilesFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'profiles.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
       environment: envVars,
     });
 
-    const publisherFn = new lambdaNode.NodejsFunction(this, 'MarketingPublisherFn', {
-      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'publisher.ts'),
+    // Posts Management Lambda
+    const postsFn = new lambdaNode.NodejsFunction(this, 'MarketingPostsFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'posts.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(60),
       environment: envVars,
     });
 
-    // 6. Grant Permissions
-    this.marketingConfigTable.grantReadWriteData(managerFn);
-    this.marketingConfigTable.grantReadData(publisherFn);
-    this.marketingPostsTable.grantReadWriteData(publisherFn);
+    // Comments Management Lambda
+    const commentsFn = new lambdaNode.NodejsFunction(this, 'MarketingCommentsFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'comments.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      environment: envVars,
+    });
 
-    // 7. API Routes
+    // Analytics Lambda
+    const analyticsFn = new lambdaNode.NodejsFunction(this, 'MarketingAnalyticsFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'analytics.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      environment: envVars,
+    });
+
+    // Media Management Lambda
+    const mediaFn = new lambdaNode.NodejsFunction(this, 'MarketingMediaFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'media.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(60),
+      environment: envVars,
+    });
+
+    // Webhooks Lambda
+    const webhooksFn = new lambdaNode.NodejsFunction(this, 'MarketingWebhooksFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'webhooks.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      environment: envVars,
+    });
+
+    // Analytics Sync Lambda (scheduled)
+    const analyticsSyncFn = new lambdaNode.NodejsFunction(this, 'MarketingAnalyticsSyncFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'analytics-sync.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(300),
+      environment: envVars,
+    });
+
+    // ============================================
+    // 7. Grant Permissions
+    // ============================================
+
+    // Profiles Lambda permissions
+    this.marketingProfilesTable.grantReadWriteData(profilesFn);
+
+    // Posts Lambda permissions
+    this.marketingProfilesTable.grantReadData(postsFn);
+    this.marketingPostsTable.grantReadWriteData(postsFn);
+
+    // Comments Lambda permissions
+    this.marketingProfilesTable.grantReadData(commentsFn);
+    this.marketingPostsTable.grantReadData(commentsFn);
+    this.marketingCommentsTable.grantReadWriteData(commentsFn);
+
+    // Analytics Lambda permissions
+    this.marketingPostsTable.grantReadData(analyticsFn);
+    this.marketingAnalyticsTable.grantReadWriteData(analyticsFn);
+
+    // Media Lambda permissions
+    this.marketingMediaTable.grantReadWriteData(mediaFn);
+    this.mediaBucket.grantReadWrite(mediaFn);
+
+    // Webhooks Lambda permissions
+    this.marketingProfilesTable.grantReadData(webhooksFn);
+    this.marketingPostsTable.grantReadData(webhooksFn);
+    this.marketingCommentsTable.grantReadWriteData(webhooksFn);
+
+    // Analytics Sync Lambda permissions
+    this.marketingProfilesTable.grantReadData(analyticsSyncFn);
+    this.marketingPostsTable.grantReadWriteData(analyticsSyncFn);
+    this.marketingAnalyticsTable.grantReadWriteData(analyticsSyncFn);
+
+    // ============================================
+    // 8. API Routes
+    // ============================================
     const root = this.api.root;
 
-    // /marketing/setup
-    const setupRes = root.addResource('setup');
-    setupRes.addMethod('POST', new apigw.LambdaIntegration(managerFn), { authorizer });
-    setupRes.addMethod('DELETE', new apigw.LambdaIntegration(managerFn), { authorizer });
+    // -----------------------------------------
+    // Profile Management Routes (/profiles)
+    // -----------------------------------------
+    const profilesRes = root.addResource('profiles');
 
-    // /marketing/jwt
-    const jwtRes = root.addResource('jwt');
-    jwtRes.addMethod('GET', new apigw.LambdaIntegration(managerFn), { authorizer });
+    // POST /profiles/initialize - Create Ayrshare profiles for all clinics
+    const initializeRes = profilesRes.addResource('initialize');
+    initializeRes.addMethod('POST', new apigw.LambdaIntegration(profilesFn), { authorizer });
 
-    // /marketing/status
-    const statusRes = root.addResource('status');
-    statusRes.addMethod('GET', new apigw.LambdaIntegration(managerFn), { authorizer });
+    // GET /profiles - Get all clinic profiles
+    profilesRes.addMethod('GET', new apigw.LambdaIntegration(profilesFn), { authorizer });
 
-    // /marketing/clinics
-    const clinicsRes = root.addResource('clinics');
-    clinicsRes.addMethod('GET', new apigw.LambdaIntegration(managerFn), { authorizer });
+    // GET /profiles/:clinicId - Get single clinic profile
+    const profileByIdRes = profilesRes.addResource('{clinicId}');
+    profileByIdRes.addMethod('GET', new apigw.LambdaIntegration(profilesFn), { authorizer });
 
-    // /marketing/post
-    const postRes = root.addResource('post');
-    postRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
-    postRes.addMethod('DELETE', new apigw.LambdaIntegration(publisherFn), { authorizer });
+    // POST /profiles/:clinicId/generate-jwt - Generate JWT for social account linking
+    const generateJwtRes = profileByIdRes.addResource('generate-jwt');
+    generateJwtRes.addMethod('POST', new apigw.LambdaIntegration(profilesFn), { authorizer });
 
-    // /marketing/history
-    const historyRes = root.addResource('history');
-    historyRes.addMethod('GET', new apigw.LambdaIntegration(publisherFn), { authorizer });
+    // DELETE /profiles/:clinicId/social/:platform - Unlink social network
+    const socialRes = profileByIdRes.addResource('social');
+    const platformRes = socialRes.addResource('{platform}');
+    platformRes.addMethod('DELETE', new apigw.LambdaIntegration(profilesFn), { authorizer });
 
-    // /marketing/analytics
-    const analyticsRes = root.addResource('analytics');
-    analyticsRes.addMethod('GET', new apigw.LambdaIntegration(publisherFn), { authorizer });
+    // -----------------------------------------
+    // Post Management Routes (/posts)
+    // -----------------------------------------
+    const postsRes = root.addResource('posts');
 
-    // /marketing/stats
-    const statsRes = root.addResource('stats');
-    statsRes.addMethod('GET', new apigw.LambdaIntegration(publisherFn), { authorizer });
+    // POST /posts - Create post (single or multiple clinics)
+    // GET /posts - Get all posts with filtering and pagination
+    postsRes.addMethod('POST', new apigw.LambdaIntegration(postsFn), { authorizer });
+    postsRes.addMethod('GET', new apigw.LambdaIntegration(postsFn), { authorizer });
 
-    // /marketing/comments
+    // POST /posts/bulk - Bulk post creation
+    const bulkPostsRes = postsRes.addResource('bulk');
+    bulkPostsRes.addMethod('POST', new apigw.LambdaIntegration(postsFn), { authorizer });
+
+    // GET /posts/:postId - Get single post
+    // PATCH /posts/:postId - Update post
+    // DELETE /posts/:postId - Delete post
+    const postByIdRes = postsRes.addResource('{postId}');
+    postByIdRes.addMethod('GET', new apigw.LambdaIntegration(postsFn), { authorizer });
+    postByIdRes.addMethod('PATCH', new apigw.LambdaIntegration(postsFn), { authorizer });
+    postByIdRes.addMethod('DELETE', new apigw.LambdaIntegration(postsFn), { authorizer });
+
+    // -----------------------------------------
+    // Comment Management Routes (/comments)
+    // -----------------------------------------
     const commentsRes = root.addResource('comments');
-    commentsRes.addMethod('GET', new apigw.LambdaIntegration(publisherFn), { authorizer });
-    
-    const commentsReplyRes = commentsRes.addResource('reply');
-    commentsReplyRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
 
-    // 8. Outputs
+    // GET /comments - Get comments with filtering
+    commentsRes.addMethod('GET', new apigw.LambdaIntegration(commentsFn), { authorizer });
+
+    // POST /comments/bulk-read - Bulk mark comments as read
+    const bulkReadRes = commentsRes.addResource('bulk-read');
+    bulkReadRes.addMethod('POST', new apigw.LambdaIntegration(commentsFn), { authorizer });
+
+    // POST /comments/:commentId/reply - Reply to comment
+    // PATCH /comments/:commentId/read - Mark comment as read
+    const commentByIdRes = commentsRes.addResource('{commentId}');
+    const replyRes = commentByIdRes.addResource('reply');
+    replyRes.addMethod('POST', new apigw.LambdaIntegration(commentsFn), { authorizer });
+
+    const readRes = commentByIdRes.addResource('read');
+    readRes.addMethod('PATCH', new apigw.LambdaIntegration(commentsFn), { authorizer });
+
+    // -----------------------------------------
+    // Analytics Routes (/analytics)
+    // -----------------------------------------
+    const analyticsRes = root.addResource('analytics');
+
+    // GET /analytics/dashboard - Get dashboard analytics
+    const dashboardRes = analyticsRes.addResource('dashboard');
+    dashboardRes.addMethod('GET', new apigw.LambdaIntegration(analyticsFn), { authorizer });
+
+    // GET /analytics/posts/:postId - Get post analytics
+    const analyticsPostsRes = analyticsRes.addResource('posts');
+    const analyticsPostByIdRes = analyticsPostsRes.addResource('{postId}');
+    analyticsPostByIdRes.addMethod('GET', new apigw.LambdaIntegration(analyticsFn), { authorizer });
+
+    // GET /analytics/clinics/:clinicId - Get clinic analytics
+    const analyticsClinicsRes = analyticsRes.addResource('clinics');
+    const analyticsClinicByIdRes = analyticsClinicsRes.addResource('{clinicId}');
+    analyticsClinicByIdRes.addMethod('GET', new apigw.LambdaIntegration(analyticsFn), { authorizer });
+
+    // -----------------------------------------
+    // Media Management Routes (/media)
+    // -----------------------------------------
+    const mediaRes = root.addResource('media');
+
+    // POST /media/upload - Upload media
+    const uploadRes = mediaRes.addResource('upload');
+    uploadRes.addMethod('POST', new apigw.LambdaIntegration(mediaFn), { authorizer });
+
+    // GET /media - Get media library
+    mediaRes.addMethod('GET', new apigw.LambdaIntegration(mediaFn), { authorizer });
+
+    // DELETE /media/:mediaId - Delete media
+    const mediaByIdRes = mediaRes.addResource('{mediaId}');
+    mediaByIdRes.addMethod('DELETE', new apigw.LambdaIntegration(mediaFn), { authorizer });
+
+    // -----------------------------------------
+    // Webhook Routes (/webhooks)
+    // -----------------------------------------
+    const webhooksRes = root.addResource('webhooks');
+
+    // POST /webhooks - Register webhook
+    webhooksRes.addMethod('POST', new apigw.LambdaIntegration(webhooksFn), { authorizer });
+
+    // POST /webhooks/ayrshare - Ayrshare webhook handler (no auth - external webhook)
+    const ayrshareWebhookRes = webhooksRes.addResource('ayrshare');
+    ayrshareWebhookRes.addMethod('POST', new apigw.LambdaIntegration(webhooksFn));
+
+    // ============================================
+    // 9. Outputs
+    // ============================================
     new CfnOutput(this, 'MarketingApiUrl', {
       value: this.api.url,
       exportName: `${this.stackName}-ApiUrl`,
     });
 
-    new CfnOutput(this, 'MarketingConfigTableName', {
-      value: this.marketingConfigTable.tableName,
-      exportName: `${this.stackName}-ConfigTableName`,
+    new CfnOutput(this, 'MarketingProfilesTableName', {
+      value: this.marketingProfilesTable.tableName,
+      exportName: `${this.stackName}-ProfilesTableName`,
+    });
+
+    new CfnOutput(this, 'MarketingPostsTableName', {
+      value: this.marketingPostsTable.tableName,
+      exportName: `${this.stackName}-PostsTableName`,
+    });
+
+    new CfnOutput(this, 'MarketingCommentsTableName', {
+      value: this.marketingCommentsTable.tableName,
+      exportName: `${this.stackName}-CommentsTableName`,
+    });
+
+    new CfnOutput(this, 'MarketingMediaTableName', {
+      value: this.marketingMediaTable.tableName,
+      exportName: `${this.stackName}-MediaTableName`,
+    });
+
+    new CfnOutput(this, 'MarketingAnalyticsTableName', {
+      value: this.marketingAnalyticsTable.tableName,
+      exportName: `${this.stackName}-AnalyticsTableName`,
+    });
+
+    new CfnOutput(this, 'MarketingMediaBucketName', {
+      value: this.mediaBucket.bucketName,
+      exportName: `${this.stackName}-MediaBucketName`,
+    });
+
+    // ============================================
+    // 10. Custom Domain Mapping
+    // ============================================
+    // Map this API under the existing custom domain as /marketing
+    new apigw.CfnBasePathMapping(this, 'MarketingBasePathMapping', {
+      domainName: 'apig.todaysdentalinsights.com',
+      basePath: 'marketing',
+      restApiId: this.api.restApiId,
+      stage: this.api.deploymentStage.stageName,
+    });
+
+    new CfnOutput(this, 'MarketingCustomApiUrl', {
+      value: 'https://apig.todaysdentalinsights.com/marketing/',
+      description: 'Custom domain URL for Marketing API',
+      exportName: `${this.stackName}-CustomApiUrl`,
     });
   }
 }
