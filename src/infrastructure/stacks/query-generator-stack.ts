@@ -169,6 +169,7 @@ export class QueryGeneratorStack extends Stack {
       },
       environment: {
         DEBUG_MODE: 'false',
+        AWS_REGION: this.region,
       },
     });
 
@@ -180,7 +181,7 @@ export class QueryGeneratorStack extends Stack {
       resources: [
         // Claude Sonnet 4.5 - both inference profile AND foundation model (required for cross-region inference)
         `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0`,
-        `arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0`,
+        `arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0`,
         // Foundation models (for fallback)
         `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0`,
         `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0`,
