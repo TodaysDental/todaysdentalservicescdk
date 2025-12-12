@@ -167,6 +167,54 @@ export class AiAgentsStack extends Stack {
   constructor(scope: Construct, id: string, props: AiAgentsStackProps) {
     super(scope, id, props);
 
+    // ========================================
+    // REQUIRED PROPS VALIDATION
+    // ========================================
+    // Validate all required props upfront to fail fast with clear error messages
+    
+    if (!props.clinicsTableName) {
+      throw new Error(
+        '[AiAgentsStack] CONFIGURATION ERROR: clinicsTableName is REQUIRED. ' +
+        'This must be passed from ChimeStack for outbound calls to look up clinic SIP configuration.'
+      );
+    }
+    
+    if (!props.smaIdMapParameterName) {
+      throw new Error(
+        '[AiAgentsStack] CONFIGURATION ERROR: smaIdMapParameterName is REQUIRED. ' +
+        'This SSM Parameter contains the SIP Media Application ID mapping for initiating outbound calls.'
+      );
+    }
+    
+    // Validate SSM parameter name format (must start with /)
+    if (!props.smaIdMapParameterName.startsWith('/')) {
+      throw new Error(
+        '[AiAgentsStack] CONFIGURATION ERROR: smaIdMapParameterName must start with "/" ' +
+        `(e.g., "/ai-agents/sma-id-map"). Received: "${props.smaIdMapParameterName}"`
+      );
+    }
+    
+    if (!props.webSocketDomainName) {
+      throw new Error(
+        '[AiAgentsStack] CONFIGURATION ERROR: webSocketDomainName is REQUIRED. ' +
+        'This must be passed from ChatbotStack for the /ai-agents API mapping on the shared WebSocket domain.'
+      );
+    }
+    
+    if (!props.webSocketRegionalDomainName) {
+      throw new Error(
+        '[AiAgentsStack] CONFIGURATION ERROR: webSocketRegionalDomainName is REQUIRED. ' +
+        'This is the regional domain name (d-xxx.execute-api.region.amazonaws.com) for importing the WebSocket domain.'
+      );
+    }
+    
+    if (!props.webSocketRegionalHostedZoneId) {
+      throw new Error(
+        '[AiAgentsStack] CONFIGURATION ERROR: webSocketRegionalHostedZoneId is REQUIRED. ' +
+        'This is the regional hosted zone ID for importing the WebSocket domain.'
+      );
+    }
+
     // Tags & alarm helpers
     const baseTags: Record<string, string> = {
       Stack: Stack.of(this).stackName,

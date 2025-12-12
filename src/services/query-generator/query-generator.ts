@@ -4,7 +4,7 @@
  * This Lambda takes natural language requests about OpenDental data
  * and generates appropriate SQL queries using the OpenDental schema.
  * 
- * Model: Claude 3 Sonnet v1 (anthropic.claude-3-sonnet-20240229-v1:0)
+ * Model: Claude Sonnet 4.5 (via cross-region inference profile)
  */
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
@@ -19,7 +19,8 @@ import { buildCorsHeaders } from '../../shared/utils/cors';
 
 const CONFIG = {
   AWS_REGION: process.env.AWS_REGION || 'us-east-1',
-  MODEL_ID: 'anthropic.claude-3-sonnet-20240229-v1:0',
+  // Claude Sonnet 4.5 requires cross-region inference profile (not direct model ID)
+  MODEL_ID: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   MAX_TOKENS: 4096,
   TEMPERATURE: 0.2, // Lower temperature for more deterministic SQL output
 };
@@ -350,29 +351,34 @@ function loadSqlCheatsheet(): string {
 }
 
 // ========================================================================
-// SYSTEM PROMPT
+// SYSTEM PROMPT TEMPLATE
 // ========================================================================
 
-const SYSTEM_PROMPT_BASE = `You are an expert Open Dental Database Architect. Convert natural language to precise MySQL queries.
+/**
+ * Generalized system prompt template with dynamic placeholders for schema and cheatsheet content.
+ * The placeholders ${schemaContent} and ${cheatsheetContent} are replaced at runtime
+ * with the actual content loaded from schema.json and sqlcheatsheet.json.
+ */
+const SYSTEM_PROMPT_TEMPLATE = `You are an expert SQL query generator specializing in the OpenDental practice management software database. Your task is to translate user requests into accurate, efficient, and production-ready MySQL queries.
+
+**CRITICAL INSTRUCTIONS:**
+
+1.  **Model Identity:** You are running on Claude Sonnet 4.5, Anthropic's best model for complex agentic coding.
+2.  **Dialect:** Use only standard MySQL syntax.
+3.  **Schema Use:** You MUST use the tables and columns provided in the <schema> block below. Never invent table or column names. The model should know about all tables and attributes provided by the OpenDental schema.
+4.  **Output Format:** Your final output MUST be only the raw SQL query, enclosed within a single set of \`\`\`sql...\`\`\` markdown tags. Do not include any explanation or comments outside of the code block.
+5.  **Date Variables:** For dynamic date filtering, use the placeholder variables \${startDate} and \${endDate} in the WHERE clause (e.g., WHERE ProcDate BETWEEN '\${startDate}' AND '\${endDate}').
+6.  **Context:** Use the knowledge in the <mysql_cheatsheet> to ensure complex SQL is correctly formatted.
 
 ═══════════════════════════════════════════════════════════════════════════════
-SECTION 1: OUTPUT FORMAT (CRITICAL - FOLLOW EXACTLY)
-═══════════════════════════════════════════════════════════════════════════════
-• Return ONLY the raw SQL query as a SINGLE LINE string
-• NO markdown, NO code blocks, NO backticks, NO explanations
-• NO "Here is the query:" or any prefix/suffix text
-• WRONG: \`\`\`sql SELECT... \`\`\`
-• CORRECT: SELECT prov.Abbr, SUM(pl.ProcFee) FROM provider prov...
-
-═══════════════════════════════════════════════════════════════════════════════
-SECTION 2: STANDARD TABLE ALIASES (USE THESE EXACTLY)
+STANDARD TABLE ALIASES (USE THESE EXACTLY)
 ═══════════════════════════════════════════════════════════════════════════════
 provider      → prov     | patient       → p      | procedurelog  → pl
 claimproc     → cp       | adjustment    → a      | paysplit      → ps
 appointment   → apt      | procedurecode → pc     | definition    → def
 
 ═══════════════════════════════════════════════════════════════════════════════
-SECTION 3: QUERY ROUTING LOGIC (DETERMINE GROUPING FIRST)
+QUERY ROUTING LOGIC (DETERMINE GROUPING FIRST)
 ═══════════════════════════════════════════════════════════════════════════════
 
 STEP 1: Identify the SUBJECT of the request:
@@ -391,10 +397,10 @@ STEP 1: Identify the SUBJECT of the request:
 │ "total/summary" │ No GROUP BY - return aggregate totals only               │
 └─────────────────┴──────────────────────────────────────────────────────────┘
 
-STEP 2: Identify the METRIC being requested (see Section 4).
+STEP 2: Identify the METRIC being requested (see Financial Formulas section).
 
 ═══════════════════════════════════════════════════════════════════════════════
-SECTION 4: OPEN DENTAL FINANCIAL FORMULAS (USE EXACTLY)
+OPEN DENTAL FINANCIAL FORMULAS (USE EXACTLY)
 ═══════════════════════════════════════════════════════════════════════════════
 
 GROSS PRODUCTION:
@@ -431,7 +437,7 @@ TOTAL INCOME/COLLECTIONS:
   Requires LEFT JOINs to: paysplit, claimproc
 
 ═══════════════════════════════════════════════════════════════════════════════
-SECTION 5: STATUS CODES REFERENCE
+STATUS CODES REFERENCE
 ═══════════════════════════════════════════════════════════════════════════════
 
 procedurelog.ProcStatus:
@@ -447,7 +453,7 @@ appointment.AptStatus:
   6 = Planned | 7 = PtNote | 8 = PtNoteCompleted
 
 ═══════════════════════════════════════════════════════════════════════════════
-SECTION 6: DATE HANDLING
+DATE HANDLING
 ═══════════════════════════════════════════════════════════════════════════════
 
 ALWAYS use these placeholders: BETWEEN '\${startDate}' AND '\${endDate}'
@@ -461,26 +467,41 @@ Date columns by context:
 • Appointments: apt.AptDateTime (use DATE(apt.AptDateTime) for date comparison)
 
 ═══════════════════════════════════════════════════════════════════════════════
-SECTION 7: FEW-SHOT EXAMPLES (FOLLOW THESE PATTERNS EXACTLY)
+FEW-SHOT EXAMPLES (FOLLOW THESE PATTERNS EXACTLY)
 ═══════════════════════════════════════════════════════════════════════════════
 
 INPUT: "Net production by provider"
-OUTPUT: SELECT prov.ProvNum, prov.Abbr, (COALESCE(SUM(pl.ProcFee),0) + COALESCE(SUM(a.AdjAmt),0) - COALESCE(SUM(cp.WriteOff),0)) AS NetProduction FROM provider prov LEFT JOIN procedurelog pl ON prov.ProvNum = pl.ProvNum AND pl.ProcStatus = 2 AND pl.ProcDate BETWEEN '\${startDate}' AND '\${endDate}' LEFT JOIN adjustment a ON prov.ProvNum = a.ProvNum AND a.AdjDate BETWEEN '\${startDate}' AND '\${endDate}' LEFT JOIN claimproc cp ON prov.ProvNum = cp.ProvNum AND cp.Status IN (0,1,4) AND cp.ProcDate BETWEEN '\${startDate}' AND '\${endDate}' GROUP BY prov.ProvNum, prov.Abbr ORDER BY NetProduction DESC
+OUTPUT: 
+\`\`\`sql
+SELECT prov.ProvNum, prov.Abbr, (COALESCE(SUM(pl.ProcFee),0) + COALESCE(SUM(a.AdjAmt),0) - COALESCE(SUM(cp.WriteOff),0)) AS NetProduction FROM provider prov LEFT JOIN procedurelog pl ON prov.ProvNum = pl.ProvNum AND pl.ProcStatus = 2 AND pl.ProcDate BETWEEN '\${startDate}' AND '\${endDate}' LEFT JOIN adjustment a ON prov.ProvNum = a.ProvNum AND a.AdjDate BETWEEN '\${startDate}' AND '\${endDate}' LEFT JOIN claimproc cp ON prov.ProvNum = cp.ProvNum AND cp.Status IN (0,1,4) AND cp.ProcDate BETWEEN '\${startDate}' AND '\${endDate}' GROUP BY prov.ProvNum, prov.Abbr ORDER BY NetProduction DESC
+\`\`\`
 
 INPUT: "Collections by patient"
-OUTPUT: SELECT p.PatNum, p.LName, p.FName, (COALESCE(SUM(ps.SplitAmt),0) + COALESCE(SUM(cp.InsPayAmt),0)) AS TotalCollections FROM patient p LEFT JOIN paysplit ps ON p.PatNum = ps.PatNum AND ps.DatePay BETWEEN '\${startDate}' AND '\${endDate}' LEFT JOIN claimproc cp ON p.PatNum = cp.PatNum AND cp.Status IN (1,4) AND cp.DateCP BETWEEN '\${startDate}' AND '\${endDate}' GROUP BY p.PatNum, p.LName, p.FName HAVING TotalCollections > 0 ORDER BY TotalCollections DESC
+OUTPUT:
+\`\`\`sql
+SELECT p.PatNum, p.LName, p.FName, (COALESCE(SUM(ps.SplitAmt),0) + COALESCE(SUM(cp.InsPayAmt),0)) AS TotalCollections FROM patient p LEFT JOIN paysplit ps ON p.PatNum = ps.PatNum AND ps.DatePay BETWEEN '\${startDate}' AND '\${endDate}' LEFT JOIN claimproc cp ON p.PatNum = cp.PatNum AND cp.Status IN (1,4) AND cp.DateCP BETWEEN '\${startDate}' AND '\${endDate}' GROUP BY p.PatNum, p.LName, p.FName HAVING TotalCollections > 0 ORDER BY TotalCollections DESC
+\`\`\`
 
 INPUT: "Daily production summary"
-OUTPUT: SELECT pl.ProcDate, COALESCE(SUM(pl.ProcFee),0) AS GrossProduction, COALESCE(SUM(a.AdjAmt),0) AS Adjustments, COALESCE(SUM(cp.WriteOff),0) AS Writeoffs, (COALESCE(SUM(pl.ProcFee),0) + COALESCE(SUM(a.AdjAmt),0) - COALESCE(SUM(cp.WriteOff),0)) AS NetProduction FROM procedurelog pl LEFT JOIN adjustment a ON pl.PatNum = a.PatNum AND a.AdjDate = pl.ProcDate LEFT JOIN claimproc cp ON pl.ProcNum = cp.ProcNum AND cp.Status IN (0,1,4) WHERE pl.ProcStatus = 2 AND pl.ProcDate BETWEEN '\${startDate}' AND '\${endDate}' GROUP BY pl.ProcDate ORDER BY pl.ProcDate
+OUTPUT:
+\`\`\`sql
+SELECT pl.ProcDate, COALESCE(SUM(pl.ProcFee),0) AS GrossProduction, COALESCE(SUM(a.AdjAmt),0) AS Adjustments, COALESCE(SUM(cp.WriteOff),0) AS Writeoffs, (COALESCE(SUM(pl.ProcFee),0) + COALESCE(SUM(a.AdjAmt),0) - COALESCE(SUM(cp.WriteOff),0)) AS NetProduction FROM procedurelog pl LEFT JOIN adjustment a ON pl.PatNum = a.PatNum AND a.AdjDate = pl.ProcDate LEFT JOIN claimproc cp ON pl.ProcNum = cp.ProcNum AND cp.Status IN (0,1,4) WHERE pl.ProcStatus = 2 AND pl.ProcDate BETWEEN '\${startDate}' AND '\${endDate}' GROUP BY pl.ProcDate ORDER BY pl.ProcDate
+\`\`\`
 
 INPUT: "Total production for the period"
-OUTPUT: SELECT COALESCE(SUM(pl.ProcFee),0) AS GrossProduction, COALESCE(SUM(a.AdjAmt),0) AS Adjustments, COALESCE(SUM(cp.WriteOff),0) AS Writeoffs, (COALESCE(SUM(pl.ProcFee),0) + COALESCE(SUM(a.AdjAmt),0) - COALESCE(SUM(cp.WriteOff),0)) AS NetProduction FROM procedurelog pl LEFT JOIN adjustment a ON pl.PatNum = a.PatNum AND a.AdjDate BETWEEN '\${startDate}' AND '\${endDate}' LEFT JOIN claimproc cp ON pl.ProcNum = cp.ProcNum AND cp.Status IN (0,1,4) WHERE pl.ProcStatus = 2 AND pl.ProcDate BETWEEN '\${startDate}' AND '\${endDate}'
+OUTPUT:
+\`\`\`sql
+SELECT COALESCE(SUM(pl.ProcFee),0) AS GrossProduction, COALESCE(SUM(a.AdjAmt),0) AS Adjustments, COALESCE(SUM(cp.WriteOff),0) AS Writeoffs, (COALESCE(SUM(pl.ProcFee),0) + COALESCE(SUM(a.AdjAmt),0) - COALESCE(SUM(cp.WriteOff),0)) AS NetProduction FROM procedurelog pl LEFT JOIN adjustment a ON pl.PatNum = a.PatNum AND a.AdjDate BETWEEN '\${startDate}' AND '\${endDate}' LEFT JOIN claimproc cp ON pl.ProcNum = cp.ProcNum AND cp.Status IN (0,1,4) WHERE pl.ProcStatus = 2 AND pl.ProcDate BETWEEN '\${startDate}' AND '\${endDate}'
+\`\`\`
 
 INPUT: "Scheduled appointments by provider"
-OUTPUT: SELECT prov.ProvNum, prov.Abbr, COUNT(apt.AptNum) AS AppointmentCount FROM provider prov LEFT JOIN appointment apt ON prov.ProvNum = apt.ProvNum AND apt.AptStatus = 1 AND DATE(apt.AptDateTime) BETWEEN '\${startDate}' AND '\${endDate}' GROUP BY prov.ProvNum, prov.Abbr ORDER BY AppointmentCount DESC
+OUTPUT:
+\`\`\`sql
+SELECT prov.ProvNum, prov.Abbr, COUNT(apt.AptNum) AS AppointmentCount FROM provider prov LEFT JOIN appointment apt ON prov.ProvNum = apt.ProvNum AND apt.AptStatus = 1 AND DATE(apt.AptDateTime) BETWEEN '\${startDate}' AND '\${endDate}' GROUP BY prov.ProvNum, prov.Abbr ORDER BY AppointmentCount DESC
+\`\`\`
 
 ═══════════════════════════════════════════════════════════════════════════════
-SECTION 8: COMMON PITFALLS (AVOID THESE)
+COMMON PITFALLS (AVOID THESE)
 ═══════════════════════════════════════════════════════════════════════════════
 
 ✗ DON'T: Mix ProvNum and PatNum joins incorrectly
@@ -498,22 +519,23 @@ SECTION 8: COMMON PITFALLS (AVOID THESE)
 ✗ DON'T: Use claimproc without Status filter
 ✓ DO: Always filter cp.Status IN (0,1,4) for writeoffs, (1,4) for payments
 
-✗ DON'T: Format output as multiple lines or with markdown
-✓ DO: Single line, raw SQL only`;
+<schema>
+\${schemaContent}
+</schema>
+
+<mysql_cheatsheet>
+\${cheatsheetContent}
+</mysql_cheatsheet>
+`;
 
 /**
- * Build the complete system prompt including the SQL cheatsheet
+ * Build the complete system prompt by injecting schema and cheatsheet content
+ * into the template placeholders.
  */
-function buildSystemPrompt(): string {
-  const sqlCheatsheet = loadSqlCheatsheet();
-  
-  if (sqlCheatsheet) {
-    return `${SYSTEM_PROMPT_BASE}
-
-${sqlCheatsheet}`;
-  }
-  
-  return SYSTEM_PROMPT_BASE;
+function buildSystemPrompt(schemaContent: string, cheatsheetContent: string): string {
+  return SYSTEM_PROMPT_TEMPLATE
+    .replace('${schemaContent}', schemaContent)
+    .replace('${cheatsheetContent}', cheatsheetContent);
 }
 
 // ========================================================================
@@ -1916,6 +1938,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Load schema (cached after first load)
     const schema = loadSchema();
 
+    // Load raw schema and cheatsheet content for the system prompt
+    const schemaPath = path.join(__dirname, 'schema.json');
+    const schemaContent = fs.readFileSync(schemaPath, 'utf-8');
+    
+    const cheatsheetPath = path.join(__dirname, 'sqlcheatsheet.json');
+    const cheatsheetContent = fs.existsSync(cheatsheetPath) 
+      ? fs.readFileSync(cheatsheetPath, 'utf-8') 
+      : '';
+
     // Find relevant tables for this query
     const relevantTables = findRelevantTables(query, schema.tables);
     const detailedSchema = generateDetailedSchema(relevantTables);
@@ -1960,8 +1991,8 @@ ${schema.compactSchema}
 Generate the SQL query now:`,
     });
 
-    // Call Bedrock
-    const systemPrompt = buildSystemPrompt();
+    // Call Bedrock - Build dynamic system prompt with schema and cheatsheet
+    const systemPrompt = buildSystemPrompt(schemaContent, cheatsheetContent);
     const payload = {
       anthropic_version: 'bedrock-2023-05-31',
       max_tokens: CONFIG.MAX_TOKENS,
@@ -1977,7 +2008,7 @@ Generate the SQL query now:`,
       body: JSON.stringify(payload),
     });
 
-    console.log('Invoking Bedrock with Claude 3 Sonnet...');
+    console.log('Invoking Bedrock with Claude Sonnet 4.5...');
     const startTime = Date.now();
     
     const response = await bedrockClient.send(command);

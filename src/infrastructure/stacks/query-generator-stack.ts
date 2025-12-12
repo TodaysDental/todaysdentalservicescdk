@@ -174,14 +174,19 @@ export class QueryGeneratorStack extends Stack {
 
     applyTags(this.queryGeneratorFn, { Function: 'query-generator' });
 
-    // Grant Bedrock InvokeModel permission for Claude 3 Sonnet
+    // Grant Bedrock InvokeModel permission for Claude models
     this.queryGeneratorFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['bedrock:InvokeModel'],
       resources: [
+        // Claude Sonnet 4.5 - both inference profile AND foundation model (required for cross-region inference)
+        `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0`,
+        `arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0`,
+        // Foundation models (for fallback)
         `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0`,
-        // Also allow other Claude models in case of fallback
         `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0`,
         `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0`,
+        // Also allow cross-region profiles for Claude 3.5 models
+        `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0`,
       ],
     }));
 

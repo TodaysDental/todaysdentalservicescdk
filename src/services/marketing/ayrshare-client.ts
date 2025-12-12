@@ -1,6 +1,7 @@
 import axios from 'axios';
 
-const AYRSHARE_URL = 'https://app.ayrshare.com/api';
+// Use the correct Ayrshare API base URL (api.ayrshare.com, not app.ayrshare.com)
+const AYRSHARE_URL = 'https://api.ayrshare.com/api';
 
 // ============================================
 // PROFILE MANAGEMENT
@@ -8,9 +9,16 @@ const AYRSHARE_URL = 'https://app.ayrshare.com/api';
 
 export async function ayrshareCreateProfile(apiKey: string, title: string) {
   try {
-    const res = await axios.post(`${AYRSHARE_URL}/profiles/profile`, 
+    // Correct endpoint: POST /profiles (not /profiles/profile)
+    // Available on Business, Enterprise plans
+    const res = await axios.post(`${AYRSHARE_URL}/profiles`, 
       { title }, 
-      { headers: { 'Authorization': `Bearer ${apiKey}` } }
+      { 
+        headers: { 
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        } 
+      }
     );
     return res.data; 
   } catch (err: any) {
@@ -35,10 +43,13 @@ export async function ayrshareGetProfile(apiKey: string, profileKey: string) {
 
 export async function ayrshareDeleteProfile(apiKey: string, profileKey: string) {
   try {
-    const res = await axios.delete(`${AYRSHARE_URL}/profiles/profile`, {
+    // Correct endpoint: DELETE /profiles (not /profiles/profile)
+    // Available on Business, Enterprise plans
+    const res = await axios.delete(`${AYRSHARE_URL}/profiles`, {
       headers: { 
         'Authorization': `Bearer ${apiKey}`,
-        'Profile-Key': profileKey
+        'Profile-Key': profileKey,
+        'Content-Type': 'application/json'
       }
     });
     return res.data;
@@ -48,12 +59,28 @@ export async function ayrshareDeleteProfile(apiKey: string, profileKey: string) 
   }
 }
 
-export async function ayrshareGenerateJWT(apiKey: string, profileKey: string, domain: string) {
+export async function ayrshareGenerateJWT(
+  apiKey: string, 
+  profileKey: string, 
+  domain: string,
+  privateKey: string,
+  expiresIn: number = 300
+) {
   try {
-    console.log('Ayrshare generateJWT request - domain:', domain, 'profileKey:', profileKey.substring(0, 10) + '...');
+    console.log('Ayrshare generateJWT request - domain:', domain, 'profileKey:', profileKey.substring(0, 10) + '...', 'expiresIn:', expiresIn);
+    
+    // Validate required fields
+    if (!privateKey) {
+      throw new Error('AYRSHARE_PRIVATE_KEY is not configured. Please set the private key in environment variables.');
+    }
     
     const res = await axios.post(`${AYRSHARE_URL}/profiles/generateJWT`,
-      { domain, profileKey },
+      { 
+        domain, 
+        profileKey,
+        privateKey,
+        expiresIn
+      },
       { headers: { 'Authorization': `Bearer ${apiKey}` } }
     );
     

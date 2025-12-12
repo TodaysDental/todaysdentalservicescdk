@@ -9,7 +9,8 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
 });
 const PROFILES_TABLE = process.env.MARKETING_PROFILES_TABLE!;
 const API_KEY = process.env.AYRSHARE_API_KEY!;
-const AYRSHARE_DOMAIN = process.env.AYRSHARE_DOMAIN || 'todaysdentalinsights';
+const AYRSHARE_DOMAIN = process.env.AYRSHARE_DOMAIN || 'id-lJiXe';
+const AYRSHARE_PRIVATE_KEY = process.env.AYRSHARE_PRIVATE_KEY!;
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'] });
@@ -88,7 +89,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           }));
 
           // Generate JWT URL
-          const jwtRes = await ayrshareGenerateJWT(API_KEY, ayrResponse.profileKey, AYRSHARE_DOMAIN);
+          const jwtRes = await ayrshareGenerateJWT(API_KEY, ayrResponse.profileKey, AYRSHARE_DOMAIN, AYRSHARE_PRIVATE_KEY, 300);
 
           results.push({
             clinicId,
@@ -260,7 +261,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
       try {
         console.log('Generating JWT for profile:', dbRes.Item.ayrshareProfileKey, 'domain:', AYRSHARE_DOMAIN);
-        const jwtRes = await ayrshareGenerateJWT(API_KEY, dbRes.Item.ayrshareProfileKey, AYRSHARE_DOMAIN);
+        const jwtRes = await ayrshareGenerateJWT(API_KEY, dbRes.Item.ayrshareProfileKey, AYRSHARE_DOMAIN, AYRSHARE_PRIVATE_KEY, expiresIn);
         console.log('JWT generated successfully, URL:', jwtRes.url ? 'Present' : 'Missing');
 
         if (!jwtRes.url) {
