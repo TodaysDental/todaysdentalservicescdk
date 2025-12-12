@@ -7,14 +7,24 @@ import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getSmaIdForClinic } from './utils/sma-map';
 import { verifyIdToken } from '../../shared/utils/auth-helper';
-import { getUserIdFromJwt } from '../../shared/utils/permissions-helper';
+import { getUserIdFromJwt, checkClinicAuthorization } from '../../shared/utils/permissions-helper';
 import { createCheckQueueForWork } from './utils/check-queue-for-work';
+import { CHIME_CONFIG } from './config';
+import { isValidStateTransition, CALL_STATE_MACHINE, getValidNextStates } from '../shared/utils/state-machine';
+import { DistributedLock } from './utils/distributed-lock';
 
 const ddb = getDynamoDBClient();
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
-const chimeVoiceClient = new ChimeSDKVoiceClient({});
-const chime = new ChimeSDKMeetingsClient({ region: process.env.CHIME_MEDIA_REGION || 'us-east-1' });
+const LOCKS_TABLE_NAME = process.env.LOCKS_TABLE_NAME;
+
+// CHIME_MEDIA_REGION: Use environment variable for consistency across all handlers
+// This is set by ChimeStack CDK and ensures all Chime operations use the same region
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
+const chimeVoiceClient = new ChimeSDKVoiceClient({ region: CHIME_MEDIA_REGION });
+const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
+
+// CRITICAL FIX #6: Initialize checkQueueForWork to assign queued calls after hangup
 const checkQueueForWork = createCheckQueueForWork({
     ddb,
     callQueueTableName: CALL_QUEUE_TABLE_NAME,
@@ -62,9 +72,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         const body = JSON.parse(event.body);
         const { callId, agentId, reason } = body;
-        // CRITICAL FIX: Don't trust client-provided duration, we'll calculate it server-side
-        // Initialize variable for server-calculated duration
-        let calculatedDuration = 0;
 
         if (!callId) {
             return { 
@@ -104,23 +111,50 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
+        // FIX: Add clinic authorization check (was missing)
+        if (callMetadata.clinicId) {
+            const authzCheck = checkClinicAuthorization(verifyResult.payload! as any, callMetadata.clinicId);
+            if (!authzCheck.authorized) {
+                console.warn('[call-hungup] Agent not authorized for call clinic', {
+                    agentId: requestingAgentId,
+                    callId,
+                    clinicId: callMetadata.clinicId,
+                    reason: authzCheck.reason
+                });
+                return {
+                    statusCode: 403,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ 
+                        message: 'You are not authorized to hang up calls for this clinic',
+                        reason: authzCheck.reason
+                    })
+                };
+            }
+            console.log('[call-hungup] Clinic authorization verified', { requestingAgentId, clinicId: callMetadata.clinicId });
+        }
+
         // CRITICAL FIX #4: Add timeout for stale holds and supervisor override
+        // CRITICAL FIX: Use configurable hold timeout instead of hardcoded value
         const currentCallStatus = callMetadata.status || callMetadata.callStatus;
         if (currentCallStatus === 'on_hold' && callMetadata.heldByAgentId && agentId && callMetadata.heldByAgentId !== agentId) {
-            // Check if hold is stale (>30 minutes) or requester is supervisor
+            // Check if hold is stale or requester is supervisor
             const holdStartTime = callMetadata.holdStartTime ? new Date(callMetadata.holdStartTime).getTime() : 0;
             const holdDuration = holdStartTime > 0 ? (Date.now() - holdStartTime) / 1000 : 0;
-            const MAX_HOLD_DURATION = 30 * 60; // 30 minutes
-            const isSupervisor = requestingAgentId && verifyResult.payload && (verifyResult.payload.isSuperAdmin || verifyResult.payload.isGlobalSuperAdmin);
+            const MAX_HOLD_DURATION = CHIME_CONFIG.HOLD.MAX_HOLD_DURATION_MINUTES * 60; // Use config
+            const payload = verifyResult.payload as any;
+            const isSupervisor = requestingAgentId && payload && 
+                                (payload.isSuperAdmin || payload.isGlobalSuperAdmin || 
+                                 payload.roles?.includes('supervisor') || payload.roles?.includes('admin'));
             
             if (holdDuration > MAX_HOLD_DURATION) {
                 console.warn('[call-hungup] Overriding stale hold', {
                     callId,
                     heldByAgentId: callMetadata.heldByAgentId,
                     holdDuration,
+                    maxHoldDuration: MAX_HOLD_DURATION,
                     requestingAgentId: agentId
                 });
-            } else if (isSupervisor) {
+            } else if (isSupervisor && CHIME_CONFIG.HOLD.ALLOW_SUPERVISOR_OVERRIDE) {
                 console.warn('[call-hungup] Supervisor override of hold', {
                     callId,
                     heldByAgentId: callMetadata.heldByAgentId,
@@ -146,6 +180,36 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
 
         const clinicId = typeof callMetadata.clinicId === 'string' ? callMetadata.clinicId : undefined;
+        
+        // FIX: Determine final status based on state machine validation
+        // 'ringing' calls should transition to 'abandoned', not 'completed'
+        let finalStatus: 'completed' | 'abandoned' = 'completed';
+        
+        if (currentCallStatus && !isValidStateTransition(currentCallStatus, 'completed', CALL_STATE_MACHINE)) {
+            // Special case: 'ringing' should transition to 'abandoned' not 'completed' when hung up
+            if (isValidStateTransition(currentCallStatus, 'abandoned', CALL_STATE_MACHINE)) {
+                console.log(`[call-hungup] Using 'abandoned' instead of 'completed' for ${currentCallStatus} -> transition`);
+                finalStatus = 'abandoned';
+            } else {
+                const validNextStates = getValidNextStates(currentCallStatus, CALL_STATE_MACHINE);
+                console.warn('[call-hungup] Invalid state transition', {
+                    callId,
+                    currentStatus: currentCallStatus,
+                    attemptedTransition: 'completed',
+                    validNextStates
+                });
+                return {
+                    statusCode: 409,
+                    headers: corsHeaders,
+                    body: JSON.stringify({
+                        message: `Cannot hang up call in ${currentCallStatus} state`,
+                        currentStatus: currentCallStatus,
+                        validNextStates
+                    })
+                };
+            }
+        }
+        
         const smaId = getSmaIdForClinic(clinicId);
         if (!smaId) {
             console.error('[call-hungup] Missing SMA mapping for clinic', { clinicId, callId });
@@ -178,6 +242,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         
         // 2. ATOMIC: Update agent status and call record together in single transaction
         // This ensures agent isn't marked as available until both updates succeed
+        // CRITICAL FIX: Update BOTH status AND callStatus fields for consistency
+        const timestamp = new Date().toISOString();
+        
+        // Calculate duration BEFORE the transaction so we can include it atomically
+        let calculatedDuration = 0;
+        const startTime = callMetadata.acceptedAt ? Date.parse(callMetadata.acceptedAt) : null;
+        if (startTime && !isNaN(startTime)) {
+            const endTime = Date.now();
+            calculatedDuration = Math.max(0, Math.floor((endTime - startTime) / 1000));
+            console.log(`[call-hungup] Call ${callId} duration calculated from acceptedAt: ${calculatedDuration}s`);
+        } else {
+            console.warn(`[call-hungup] No acceptedAt timestamp for ${callId} - cannot calculate duration`);
+        }
+        
         if (agentId && callMetadata.clinicId && typeof callMetadata.queuePosition !== 'undefined') {
             try {
                 await ddb.send(new TransactWriteCommand({
@@ -186,13 +264,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                             Update: {
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
                                 Key: { agentId },
-                                UpdateExpression: 'SET #status = :online, lastActivityAt = :now REMOVE currentCallId, ringingCallId',
-                                ConditionExpression: 'currentCallId = :callId OR ringingCallId = :callId',
+                                // CRITICAL FIX: Include stats update atomically to prevent data drift
+                                UpdateExpression: 'SET #status = :online, lastActivityAt = :now ADD completedCalls :one, totalCallDuration :duration REMOVE currentCallId, ringingCallId, heldCallId, heldCallMeetingId, callStatus',
+                                ConditionExpression: 'currentCallId = :callId OR ringingCallId = :callId OR heldCallId = :callId',
                                 ExpressionAttributeNames: { '#status': 'status' },
                                 ExpressionAttributeValues: {
                                     ':online': 'Online',
-                                    ':now': new Date().toISOString(),
-                                    ':callId': callId
+                                    ':now': timestamp,
+                                    ':callId': callId,
+                                    ':one': 1,
+                                    ':duration': calculatedDuration
                                 }
                             }
                         },
@@ -200,19 +281,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                             Update: {
                                 TableName: CALL_QUEUE_TABLE_NAME,
                                 Key: { clinicId: callMetadata.clinicId, queuePosition: callMetadata.queuePosition },
-                                UpdateExpression: 'SET #status = :completed, completedAt = :timestamp, completedByAgentId = :agentId',
-                                ConditionExpression: 'assignedAgentId = :agentId',
+                                // CRITICAL FIX: Use finalStatus (completed or abandoned) based on state machine
+                                UpdateExpression: 'SET #status = :finalStatus, callStatus = :finalStatus, completedAt = :timestamp, completedByAgentId = :agentId, callDuration = :duration',
                                 ExpressionAttributeNames: { '#status': 'status' },
                                 ExpressionAttributeValues: {
-                                    ':completed': 'completed',
-                                    ':timestamp': new Date().toISOString(),
-                                    ':agentId': agentId
+                                    ':finalStatus': finalStatus,
+                                    ':timestamp': timestamp,
+                                    ':agentId': agentId,
+                                    ':duration': calculatedDuration
                                 }
                             }
                         }
                     ]
                 }));
-                console.log('[call-hungup] Hangup completed atomically', { callId, agentId });
+                console.log('[call-hungup] Hangup completed atomically', { callId, agentId, finalStatus, duration: calculatedDuration });
             } catch (txErr: any) {
                 if (txErr.name === 'TransactionCanceledException') {
                     console.warn('[call-hungup] Hangup transaction failed - agent state may be inconsistent', {
@@ -228,71 +310,142 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 throw txErr;
             }
         } else if (agentId) {
-            // Fallback if call doesn't have queue key: just update agent status
-            await ddb.send(new UpdateCommand({
-                TableName: AGENT_PRESENCE_TABLE_NAME,
-                Key: { agentId },
-                UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp REMOVE currentCallId',
-                ExpressionAttributeNames: {
-                    '#status': 'status'
-                },
-                ExpressionAttributeValues: {
-                    ':status': 'Online',
-                    ':timestamp': new Date().toISOString()
-                }
-            }));
-            console.log(`[call-hungup] Agent ${agentId} marked as Online after successful hangup`);
-        }
-
-        // CRITICAL FIX #8: Use consistent timestamp for duration calculation
-        try {
-            const callRecord = callMetadata;
-            // Always use acceptedAt as the single source of truth for agent talk time
-            const startTime = callRecord.acceptedAt ? Date.parse(callRecord.acceptedAt) : null;
+            // Fallback if call doesn't have queue key: update agent status AND try to find/update call record
+            // FIX: Try to find call record using callId-index and update it if found
+            console.warn('[call-hungup] Call record missing queue key, attempting alternative update', { callId, agentId });
             
-            if (startTime && !isNaN(startTime)) {
-                const endTime = Date.now();
-                calculatedDuration = Math.max(0, Math.floor((endTime - startTime) / 1000));
-                console.log(`[call-hungup] Call ${callId} duration calculated from acceptedAt: ${calculatedDuration}s`);
-                
-                // Calculate queue wait time separately for analytics
-                if (callRecord.queueEntryTimeIso) {
-                    const queueStartTime = Date.parse(callRecord.queueEntryTimeIso);
-                    if (!isNaN(queueStartTime) && queueStartTime < startTime) {
-                        const queueDuration = Math.floor((startTime - queueStartTime) / 1000);
-                        console.log(`[call-hungup] Call ${callId} queue wait time: ${queueDuration}s`);
-                        // Store queue duration if needed for analytics
-                    }
-                }
-            } else {
-                console.warn(`[call-hungup] No acceptedAt timestamp for ${callId} - cannot calculate duration`);
-                calculatedDuration = 0;
-            }
-
-            // Log call statistics for the agent
-            if (agentId) {
-                await ddb.send(new UpdateCommand({
-                    TableName: AGENT_PRESENCE_TABLE_NAME,
-                    Key: { agentId },
-                    UpdateExpression: 'ADD completedCalls :one, totalCallDuration :duration',
-                    ExpressionAttributeValues: {
-                        ':one': 1,
-                        ':duration': calculatedDuration
-                    }
+            try {
+                // Find the call record using callId-index
+                const { Items: callRecords } = await ddb.send(new QueryCommand({
+                    TableName: CALL_QUEUE_TABLE_NAME,
+                    IndexName: 'callId-index',
+                    KeyConditionExpression: 'callId = :callId',
+                    ExpressionAttributeValues: { ':callId': callId }
                 }));
-            }
-        } catch (durationErr) {
-            console.error(`[call-hungup] Error calculating call duration:`, durationErr);
-            // Still increment completed calls counter even if duration calculation fails
-            if (agentId) {
+                
+                if (callRecords && callRecords.length > 0) {
+                    const foundCall = callRecords[0];
+                    // Now we have the correct keys, attempt atomic update
+                    // CRITICAL FIX: Use finalStatus and include stats atomically
+                    await ddb.send(new TransactWriteCommand({
+                        TransactItems: [
+                            {
+                                Update: {
+                                    TableName: AGENT_PRESENCE_TABLE_NAME,
+                                    Key: { agentId },
+                                    UpdateExpression: 'SET #status = :online, lastActivityAt = :now ADD completedCalls :one, totalCallDuration :duration REMOVE currentCallId, ringingCallId, heldCallId, heldCallMeetingId, callStatus',
+                                    ExpressionAttributeNames: { '#status': 'status' },
+                                    ExpressionAttributeValues: {
+                                        ':online': 'Online',
+                                        ':now': timestamp,
+                                        ':one': 1,
+                                        ':duration': calculatedDuration
+                                    }
+                                }
+                            },
+                            {
+                                Update: {
+                                    TableName: CALL_QUEUE_TABLE_NAME,
+                                    Key: { clinicId: foundCall.clinicId, queuePosition: foundCall.queuePosition },
+                                    UpdateExpression: 'SET #status = :finalStatus, callStatus = :finalStatus, completedAt = :timestamp, callDuration = :duration',
+                                    ExpressionAttributeNames: { '#status': 'status' },
+                                    ExpressionAttributeValues: {
+                                        ':finalStatus': finalStatus,
+                                        ':timestamp': timestamp,
+                                        ':duration': calculatedDuration
+                                    }
+                                }
+                            }
+                        ]
+                    }));
+                    console.log(`[call-hungup] Atomic fallback update successful for call ${callId}`, { finalStatus, duration: calculatedDuration });
+                } else {
+                    // Call record truly not found, just update agent with stats
+                    await ddb.send(new UpdateCommand({
+                        TableName: AGENT_PRESENCE_TABLE_NAME,
+                        Key: { agentId },
+                        UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp ADD completedCalls :one, totalCallDuration :duration REMOVE currentCallId, ringingCallId, heldCallId',
+                        ExpressionAttributeNames: {
+                            '#status': 'status'
+                        },
+                        ExpressionAttributeValues: {
+                            ':status': 'Online',
+                            ':timestamp': new Date().toISOString(),
+                            ':one': 1,
+                            ':duration': calculatedDuration
+                        }
+                    }));
+                    console.warn(`[call-hungup] Call record not found for ${callId}, only updated agent status with stats`);
+                }
+            } catch (fallbackErr: any) {
+                console.error('[call-hungup] Fallback update failed:', fallbackErr);
+                // Still try to update agent status as last resort (include stats)
                 await ddb.send(new UpdateCommand({
                     TableName: AGENT_PRESENCE_TABLE_NAME,
                     Key: { agentId },
-                    UpdateExpression: 'ADD completedCalls :one',
+                    UpdateExpression: 'SET #status = :status, lastActivityAt = :timestamp ADD completedCalls :one REMOVE currentCallId',
+                    ExpressionAttributeNames: { '#status': 'status' },
                     ExpressionAttributeValues: {
+                        ':status': 'Online',
+                        ':timestamp': new Date().toISOString(),
                         ':one': 1
                     }
                 }));
+            }
+            console.log(`[call-hungup] Agent ${agentId} marked as Online after successful hangup`);
+        }
+
+        // CRITICAL FIX #6: Proactively check for queued work for this newly-free agent
+        // This ensures queued calls are routed to agents after they hang up
+        // FIX: Use distributed lock to prevent race condition where multiple calls could be assigned
+        if (agentId) {
+            if (LOCKS_TABLE_NAME) {
+                const lock = new DistributedLock(ddb, {
+                    tableName: LOCKS_TABLE_NAME,
+                    lockKey: `queue-check-${agentId}`,
+                    ttlSeconds: 10,
+                    maxRetries: 3,
+                    retryDelayMs: 100
+                });
+
+                const lockAcquired = await lock.acquire();
+                if (lockAcquired) {
+                    try {
+                        const { Item: refreshedAgentInfo } = await ddb.send(new GetCommand({
+                            TableName: AGENT_PRESENCE_TABLE_NAME,
+                            Key: { agentId }
+                        }));
+                        
+                        // Only check queue if agent is still Online (no call assigned during lock acquisition)
+                        if (refreshedAgentInfo && refreshedAgentInfo.status === 'Online' && !refreshedAgentInfo.currentCallId) {
+                            await checkQueueForWork(agentId, refreshedAgentInfo);
+                        } else {
+                            console.log(`[call-hungup] Agent ${agentId} already has a call or is not online, skipping queue check`);
+                        }
+                    } catch (queueErr) {
+                        // Non-fatal error - log but continue
+                        console.error('[call-hungup] Error checking queue for work:', queueErr);
+                    } finally {
+                        await lock.release();
+                    }
+                } else {
+                    console.log(`[call-hungup] Could not acquire lock for queue check - another operation in progress for ${agentId}`);
+                }
+            } else {
+                // Fallback if locks table not configured - use original logic with warning
+                console.warn('[call-hungup] LOCKS_TABLE_NAME not configured - queue check may have race conditions');
+                try {
+                    const { Item: refreshedAgentInfo } = await ddb.send(new GetCommand({
+                        TableName: AGENT_PRESENCE_TABLE_NAME,
+                        Key: { agentId }
+                    }));
+                    
+                    if (refreshedAgentInfo && refreshedAgentInfo.status === 'Online') {
+                        await checkQueueForWork(agentId, refreshedAgentInfo);
+                    }
+                } catch (queueErr) {
+                    console.error('[call-hungup] Error checking queue for work:', queueErr);
+                }
             }
         }
 

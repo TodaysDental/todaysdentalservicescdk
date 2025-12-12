@@ -19,8 +19,9 @@ import { DistributedLock } from './utils/distributed-lock';
 
 const ddb = getDynamoDBClient();
 const LOCKS_TABLE_NAME = process.env.LOCKS_TABLE_NAME;
-const chimeVoice = new ChimeSDKVoiceClient({});
+// FIX #8: Use CHIME_MEDIA_REGION for Voice client to match Meetings client
 const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
+const chimeVoice = new ChimeSDKVoiceClient({ region: CHIME_MEDIA_REGION });
 const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
@@ -152,29 +153,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         const smaId = getSmaIdForClinic(clinicId);
 
-        // RACE CONDITION CHECK: Ensure call is still ringing
-        if (callRecord.status !== 'ringing') {
-            console.warn('[call-accepted] Race condition - call already accepted or handled', { callId, status: callRecord.status });
-            
-            // Clean up this agent's ringing status, as they lost the race
-            await ddb.send(new UpdateCommand({
-                TableName: AGENT_PRESENCE_TABLE_NAME,
-                Key: { agentId },
-                UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
-                ConditionExpression: 'ringingCallId = :callId',
-                ExpressionAttributeNames: {'#status': 'status'},
-                ExpressionAttributeValues: { ':online': 'Online', ':callId': callId }
-            })).catch(err => console.warn(`[call-accepted] Agent cleanup failed for race condition: ${err.message}`));
-            
-            return {
-                statusCode: 409, // Conflict
-                headers: corsHeaders,
-                body: JSON.stringify({ message: 'Call was already handled by another agent.' })
-            };
-        }
-
-        // 4. CRITICAL FIX #1: Use distributed lock to prevent race conditions
-        // Acquire lock on this specific call before attempting to claim it
+        // 4. CRITICAL FIX #1: Acquire distributed lock BEFORE status check to prevent TOCTOU race condition
+        // FIX: Moved lock acquisition before status check to eliminate race window
         console.log('[call-accepted] Acquiring distributed lock for call', { callId });
         
         if (!LOCKS_TABLE_NAME) {
@@ -186,13 +166,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // FIX #2: Increased TTL to 15s to handle Lambda cold starts + Chime API latency
-        // Trade-off: If Lambda fails, call is blocked for 15s, but prevents race conditions
-        // Note: Lambda timeout should be configured to < 15s for this function
+        // FIX #2: Increased TTL to 30s to handle Lambda cold starts + Chime API latency + SMA bridging
+        // FIX #6: Lock must cover the entire operation including SMA bridging to prevent race conditions
+        // Trade-off: If Lambda fails, call is blocked for 30s, but prevents race conditions during bridging
+        // Note: Lambda timeout should be configured to < 30s for this function
         const lock = new DistributedLock(ddb, {
             tableName: LOCKS_TABLE_NAME,
             lockKey: `call-assignment-${callId}`,
-            ttlSeconds: 15, // Increased to handle cold start + API latency
+            ttlSeconds: 30, // Increased to cover transaction + attendee creation + SMA bridging
             maxRetries: 10, // More retries with exponential backoff
             retryDelayMs: 150 // Slightly longer initial delay
         });
@@ -208,6 +189,36 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
 
         try {
+            // RACE CONDITION CHECK: Ensure call is still ringing (now inside lock to prevent TOCTOU)
+            // FIX: Re-fetch call record inside lock to get authoritative state
+            const { Items: freshCallRecords } = await ddb.send(new QueryCommand({
+                TableName: CALL_QUEUE_TABLE_NAME,
+                IndexName: 'callId-index',
+                KeyConditionExpression: 'callId = :callId',
+                ExpressionAttributeValues: { ':callId': callId }
+            }));
+
+            const freshCallRecord = freshCallRecords?.[0];
+            if (!freshCallRecord || freshCallRecord.status !== 'ringing') {
+                console.warn('[call-accepted] Race condition - call already accepted or handled', { callId, status: freshCallRecord?.status });
+                
+                // Clean up this agent's ringing status, as they lost the race
+                await ddb.send(new UpdateCommand({
+                    TableName: AGENT_PRESENCE_TABLE_NAME,
+                    Key: { agentId },
+                    UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
+                    ConditionExpression: 'ringingCallId = :callId',
+                    ExpressionAttributeNames: {'#status': 'status'},
+                    ExpressionAttributeValues: { ':online': 'Online', ':callId': callId }
+                })).catch(err => console.warn(`[call-accepted] Agent cleanup failed for race condition: ${err.message}`));
+                
+                return {
+                    statusCode: 409, // Conflict
+                    headers: corsHeaders,
+                    body: JSON.stringify({ message: 'Call was already handled by another agent.' })
+                };
+            }
+
             // 5. Use transaction to atomically claim the call with version number
             // CRITICAL FIX #1: Win transaction FIRST before creating attendee to prevent resource leak
             console.log('[call-accepted] Attempting to claim call with transaction (lock acquired)', { callId, agentId });
@@ -347,13 +358,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 // Other transaction error
                 throw err;
             }
-        } finally {
-            // Always release the lock
-            await lock.release();
-        }
 
-        // 5. Create attendee AFTER winning the transaction (prevents resource leak)
-        let customerAttendee: Attendee;
+            // FIX #6: Move attendee creation and SMA bridging INSIDE the lock scope
+            // This prevents race conditions during the critical bridging operation
+
+            // 5. Create attendee AFTER winning the transaction (prevents resource leak)
+            let customerAttendee: Attendee;
         try {
             console.log(`[call-accepted] Creating customer attendee for agent's meeting ${agentMeeting.MeetingId}`);
             const attendeeResponse = await chime.send(new CreateAttendeeCommand({
@@ -436,23 +446,53 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     }
                 }));
                 
-                // CRITICAL FIX #7: Async cleanup of other ringing agents (fire and forget)
+                // CRITICAL FIX #7: Cleanup other ringing agents with retry logic
+                // FIX: Changed from fire-and-forget to more reliable cleanup with retries
                 const otherAgentIds = (callRecord.agentIds || []).filter((id: string) => id !== agentId);
                 if (otherAgentIds.length > 0) {
-                    console.log('[call-accepted] Cleaning up other ringing agents (async)', { count: otherAgentIds.length });
-                    Promise.all(otherAgentIds.map((otherId: string) =>
-                        ddb.send(new UpdateCommand({
-                            TableName: AGENT_PRESENCE_TABLE_NAME,
-                            Key: { agentId: otherId },
-                            UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
-                            ConditionExpression: 'ringingCallId = :callId',
-                            ExpressionAttributeNames: { '#status': 'status' },
-                            ExpressionAttributeValues: { ':online': 'Online', ':callId': callId }
-                        })).catch(err => {
-                            console.warn('[call-accepted] Failed to cleanup agent', { otherId, error: err.message });
-                            // Don't throw - this is best-effort
-                        })
-                    )).catch(() => {}); // Fire and forget
+                    console.log('[call-accepted] Cleaning up other ringing agents', { count: otherAgentIds.length });
+                    
+                    // Process cleanups with retry logic (but don't block the response)
+                    const cleanupWithRetry = async (otherId: string, retries = 2): Promise<void> => {
+                        for (let attempt = 1; attempt <= retries; attempt++) {
+                            try {
+                                await ddb.send(new UpdateCommand({
+                                    TableName: AGENT_PRESENCE_TABLE_NAME,
+                                    Key: { agentId: otherId },
+                                    UpdateExpression: 'SET #status = :online, lastActivityAt = :now REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
+                                    ConditionExpression: 'ringingCallId = :callId',
+                                    ExpressionAttributeNames: { '#status': 'status' },
+                                    ExpressionAttributeValues: { 
+                                        ':online': 'Online', 
+                                        ':callId': callId,
+                                        ':now': new Date().toISOString()
+                                    }
+                                }));
+                                return; // Success
+                            } catch (err: any) {
+                                if (err.name === 'ConditionalCheckFailedException') {
+                                    // Agent is no longer ringing for this call - that's fine
+                                    return;
+                                }
+                                if (attempt === retries) {
+                                    console.error('[call-accepted] Failed to cleanup agent after retries', { 
+                                        otherId, 
+                                        error: err.message,
+                                        callId 
+                                    });
+                                    // Log for monitoring - cleanup-monitor will catch stale states
+                                } else {
+                                    // Exponential backoff before retry
+                                    await new Promise(r => setTimeout(r, 50 * Math.pow(2, attempt - 1)));
+                                }
+                            }
+                        }
+                    };
+                    
+                    // Run cleanups in parallel (but with retry logic)
+                    Promise.all(otherAgentIds.map((otherId: string) => cleanupWithRetry(otherId)))
+                        .then(() => console.log('[call-accepted] Finished cleaning up other agents'))
+                        .catch(() => {}); // Don't let cleanup errors affect response
                 }
                 
             } catch (smaErr) {
@@ -551,18 +591,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // 7. Return success to the agent's frontend.
-        // The frontend is already in the agent's meeting, so it just needs confirmation.
-        return {
-            statusCode: 200,
-            headers: corsHeaders,
-            body: JSON.stringify({ 
-                message: 'Call acceptance recorded and bridge initiated',
-                callId,
-                agentId,
-                status: 'connected',
-            })
-        };
+            // 7. Return success to the agent's frontend.
+            // The frontend is already in the agent's meeting, so it just needs confirmation.
+            return {
+                statusCode: 200,
+                headers: corsHeaders,
+                body: JSON.stringify({ 
+                    message: 'Call acceptance recorded and bridge initiated',
+                    callId,
+                    agentId,
+                    status: 'connected',
+                })
+            };
+        } finally {
+            // FIX #6: Release lock after ALL operations complete (transaction + attendee + SMA bridging)
+            await lock.release();
+        }
 
     } catch (error: any) {
         console.error('[call-accepted] Error processing call acceptance:', {

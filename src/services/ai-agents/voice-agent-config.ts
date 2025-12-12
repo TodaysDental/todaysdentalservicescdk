@@ -470,6 +470,8 @@ async function updateClinicHours(
 
   // Validate hours format
   const validDays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+  const timeRegex = /^([01]?[0-9]|2[0-3]):([0-5][0-9])$/; // Valid 24-hour format HH:mm
+  
   for (const [day, schedule] of Object.entries(body.hours)) {
     if (!validDays.includes(day.toLowerCase())) {
       return {
@@ -485,6 +487,44 @@ async function updateClinicHours(
         headers: getCorsHeaders(event),
         body: JSON.stringify({ error: `Day ${day} must have open/close times or be marked closed` }),
       };
+    }
+    
+    // VALIDATION FIX: Validate time format (HH:mm in 24-hour format)
+    if (!sched.closed) {
+      if (!timeRegex.test(sched.open)) {
+        return {
+          statusCode: 400,
+          headers: getCorsHeaders(event),
+          body: JSON.stringify({ 
+            error: `Invalid open time for ${day}: "${sched.open}". Must be in HH:mm format (e.g., "09:00", "17:30")` 
+          }),
+        };
+      }
+      if (!timeRegex.test(sched.close)) {
+        return {
+          statusCode: 400,
+          headers: getCorsHeaders(event),
+          body: JSON.stringify({ 
+            error: `Invalid close time for ${day}: "${sched.close}". Must be in HH:mm format (e.g., "09:00", "17:30")` 
+          }),
+        };
+      }
+      
+      // VALIDATION FIX: Ensure open time is before close time
+      const [openHour, openMin] = sched.open.split(':').map(Number);
+      const [closeHour, closeMin] = sched.close.split(':').map(Number);
+      const openMinutes = openHour * 60 + openMin;
+      const closeMinutes = closeHour * 60 + closeMin;
+      
+      if (openMinutes >= closeMinutes) {
+        return {
+          statusCode: 400,
+          headers: getCorsHeaders(event),
+          body: JSON.stringify({ 
+            error: `Invalid hours for ${day}: open time (${sched.open}) must be before close time (${sched.close})` 
+          }),
+        };
+      }
     }
   }
 

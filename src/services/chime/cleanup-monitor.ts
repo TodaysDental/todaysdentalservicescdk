@@ -9,8 +9,13 @@ import { ConsistencyChecker } from './utils/consistency-checker';
 import { StateTimeoutManager } from './utils/state-timeouts';
 
 const ddb = getDynamoDBClient();
-const chime = new ChimeSDKMeetingsClient({ region: process.env.CHIME_MEDIA_REGION || 'us-east-1' });
-const chimeVoice = new ChimeSDKVoiceClient({});
+
+// CHIME_MEDIA_REGION: Use environment variable for consistency across all handlers
+// This is set by ChimeStack CDK and ensures all Chime operations use the same region
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
+const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
+// FIX: Add region to ChimeSDKVoiceClient for consistency
+const chimeVoice = new ChimeSDKVoiceClient({ region: CHIME_MEDIA_REGION });
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;

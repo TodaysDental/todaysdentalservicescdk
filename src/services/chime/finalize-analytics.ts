@@ -16,13 +16,28 @@ import { AnalyticsState } from '../../types/analytics-state-machine';
 import { transitionAnalyticsState, acquireAnalyticsLock, releaseAnalyticsLock, cleanupExpiredLock } from '../shared/utils/analytics-state-manager';
 import { getTranscriptBufferManager } from '../shared/utils/transcript-buffer-manager';
 
-// CRITICAL FIX #8: Persistent circuit breaker state using DynamoDB
+// CRITICAL FIX #8: Persistent circuit breaker state using dedicated DynamoDB table
 // In-memory circuit breaker state is lost on Lambda cold starts, defeating its purpose.
-// This implementation stores state in DynamoDB for persistence across invocations.
+// IMPORTANT: Use a dedicated table or the dedup table to avoid polluting analytics data
+// Using analytics table with magic keys breaks GSI queries and is an anti-pattern.
 
 const CIRCUIT_BREAKER_THRESHOLD = 5; // Open after 5 consecutive failures
 const CIRCUIT_BREAKER_TIMEOUT = 60000; // 1 minute cooldown
-const CIRCUIT_BREAKER_TABLE = process.env.CALL_ANALYTICS_TABLE_NAME; // Reuse analytics table with special key
+// CRITICAL FIX #8 & #3.2: Use dedup table with explicit validation
+// The dedup table is designed for operational state with TTL cleanup
+const CIRCUIT_BREAKER_TABLE = process.env.ANALYTICS_DEDUP_TABLE_NAME || process.env.ANALYTICS_DEDUP_TABLE;
+
+// CRITICAL FIX #3.2: Validate circuit breaker table is configured
+if (!CIRCUIT_BREAKER_TABLE) {
+  console.warn('[finalize-analytics] CIRCUIT_BREAKER_TABLE not configured - circuit breaker will be disabled');
+}
+
+// CRITICAL FIX #3.1: Maximum continuation depth to prevent infinite loop
+const MAX_CONTINUATION_DEPTH = parseInt(process.env.MAX_CONTINUATION_DEPTH || '10', 10);
+
+// CRITICAL FIX #3.4: Lock retry configuration
+const LOCK_RETRY_ATTEMPTS = 3;
+const LOCK_RETRY_DELAY_MS = 1000;
 
 interface PersistentCircuitBreakerState {
   failures: number;
@@ -33,7 +48,8 @@ interface PersistentCircuitBreakerState {
 
 /**
  * Get circuit breaker state from DynamoDB
- * Uses a special key pattern to store state in the analytics table
+ * CRITICAL FIX #8: Uses dedup table with eventId as partition key (no sort key)
+ * This avoids polluting the analytics table and its GSIs
  */
 async function getCircuitBreakerState(breakerKey: string): Promise<PersistentCircuitBreakerState> {
   const defaultState: PersistentCircuitBreakerState = {
@@ -49,11 +65,11 @@ async function getCircuitBreakerState(breakerKey: string): Promise<PersistentCir
   }
   
   try {
+    // CRITICAL FIX #8: Use eventId as partition key (matches dedup table schema)
     const result = await ddb.send(new GetCommand({
       TableName: CIRCUIT_BREAKER_TABLE,
       Key: {
-        callId: `__circuit_breaker__${breakerKey}`,
-        timestamp: 0 // Fixed timestamp for circuit breaker entries
+        eventId: `__circuit_breaker__${breakerKey}` // Uses dedup table's partition key
       }
     }));
     
@@ -74,6 +90,7 @@ async function getCircuitBreakerState(breakerKey: string): Promise<PersistentCir
 
 /**
  * Update circuit breaker state in DynamoDB
+ * CRITICAL FIX #8: Uses dedup table with eventId as partition key
  */
 async function updateCircuitBreakerState(
   breakerKey: string, 
@@ -84,22 +101,24 @@ async function updateCircuitBreakerState(
   }
   
   try {
+    // CRITICAL FIX #8: Use PutCommand for dedup table (simpler schema)
     await ddb.send(new UpdateCommand({
       TableName: CIRCUIT_BREAKER_TABLE,
       Key: {
-        callId: `__circuit_breaker__${breakerKey}`,
-        timestamp: 0
+        eventId: `__circuit_breaker__${breakerKey}` // Uses dedup table's partition key
       },
-      UpdateExpression: 'SET failures = :failures, lastFailure = :lastFailure, isOpen = :isOpen, lastUpdated = :lastUpdated, #ttl = :ttl',
+      UpdateExpression: 'SET failures = :failures, lastFailure = :lastFailure, isOpen = :isOpen, lastUpdated = :lastUpdated, #ttl = :ttl, #type = :type',
       ExpressionAttributeNames: {
-        '#ttl': 'ttl'
+        '#ttl': 'ttl',
+        '#type': 'recordType' // Mark as circuit breaker for debugging
       },
       ExpressionAttributeValues: {
         ':failures': state.failures,
         ':lastFailure': state.lastFailure,
         ':isOpen': state.isOpen,
         ':lastUpdated': Date.now(),
-        ':ttl': Math.floor(Date.now() / 1000) + (24 * 60 * 60) // Expire after 24 hours
+        ':ttl': Math.floor(Date.now() / 1000) + (24 * 60 * 60), // Expire after 24 hours
+        ':type': 'circuit_breaker'
       }
     }));
   } catch (err: any) {
@@ -213,24 +232,17 @@ const ddb = getDynamoDBClient();
 const ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE_NAME;
 const AGENT_PERFORMANCE_TABLE = process.env.AGENT_PERFORMANCE_TABLE_NAME;
 
-// CRITICAL FIX: The transcript buffer table name must match AnalyticsStack's naming convention.
-// AnalyticsStack uses: ${stackName}-TranscriptBuffersV2
-// The fallback logic was incorrect - it was using ANALYTICS_TABLE-Transcripts which doesn't exist.
-// Now we derive from the stack name pattern or require explicit configuration.
-const TRANSCRIPT_BUFFER_TABLE = process.env.TRANSCRIPT_BUFFER_TABLE_NAME || (() => {
-  // Derive from ANALYTICS_TABLE by replacing the table suffix with TranscriptBuffersV2
-  // ANALYTICS_TABLE format: TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1
-  // TRANSCRIPT_BUFFER_TABLE should be: TodaysDentalInsightsAnalyticsN1-TranscriptBuffersV2
-  if (ANALYTICS_TABLE) {
-    const parts = ANALYTICS_TABLE.split('-');
-    if (parts.length >= 2) {
-      parts[parts.length - 1] = 'TranscriptBuffersV2';
-      return parts.join('-');
-    }
-  }
-  console.warn('[finalize-analytics] Could not derive TRANSCRIPT_BUFFER_TABLE_NAME from ANALYTICS_TABLE');
-  return '';
-})();
+// CRITICAL FIX #3.3 & #7: Require explicit TRANSCRIPT_BUFFER_TABLE_NAME - remove fragile derivation
+// The AnalyticsStack should always pass this env var explicitly
+const TRANSCRIPT_BUFFER_TABLE = process.env.TRANSCRIPT_BUFFER_TABLE_NAME;
+
+// CRITICAL FIX #3.3: Warn loudly if not configured, but don't use fragile derivation
+if (!TRANSCRIPT_BUFFER_TABLE) {
+  console.error(
+    '[finalize-analytics] CRITICAL: TRANSCRIPT_BUFFER_TABLE_NAME not configured. ' +
+    'Transcript cleanup will be SKIPPED. Update AnalyticsStack to pass this env var explicitly.'
+  );
+}
 
 // Initialize transcript buffer manager for cleanup (only if table is configured)
 const transcriptManager = TRANSCRIPT_BUFFER_TABLE 
@@ -264,13 +276,30 @@ interface AnalyticsRecord {
  * - Invoke continuation if more records remain
  */
 export const handler = async (event: any = {}): Promise<void> => {
-  console.log('[finalize-analytics] Starting finalization sweep');
+  // CRITICAL FIX #3.1: Track continuation depth to prevent infinite loops
+  const continuationDepth = event.continuationDepth || 0;
+  const continuationToken = event.continuationToken;
+  
+  console.log('[finalize-analytics] Starting finalization sweep', {
+    continuationDepth,
+    maxDepth: MAX_CONTINUATION_DEPTH,
+    hasContinuationToken: !!continuationToken
+  });
+  
+  // CRITICAL FIX #3.1: Prevent infinite continuation loops
+  if (continuationDepth >= MAX_CONTINUATION_DEPTH) {
+    console.error('[finalize-analytics] CRITICAL: Max continuation depth reached - stopping to prevent infinite loop', {
+      continuationDepth,
+      maxDepth: MAX_CONTINUATION_DEPTH,
+      message: 'Large backlog detected. Consider increasing Lambda concurrency or reducing batch size.'
+    });
+    return;
+  }
   
   const now = Date.now();
   let finalizedCount = 0;
   let errorCount = 0;
   const BATCH_SIZE = 50; // Process 50 records per invocation
-  const continuationToken = event.continuationToken;
   
   try {
     // Validate required environment variables
@@ -332,13 +361,29 @@ export const handler = async (event: any = {}): Promise<void> => {
       hasMore: !!scanResult.LastEvaluatedKey || records.length > BATCH_SIZE
     });
     
-    // CRITICAL FIX: If more records remain, invoke self for continuation
+    // CRITICAL FIX #3.1: If more records remain, invoke self for continuation WITH depth tracking
     if (scanResult.LastEvaluatedKey) {
       const nextToken = Buffer.from(
         JSON.stringify(scanResult.LastEvaluatedKey)
       ).toString('base64');
       
-      console.log('[finalize-analytics] More records remain, scheduling continuation');
+      const nextDepth = continuationDepth + 1;
+      
+      // CRITICAL FIX #3.1: Check if we should continue
+      if (nextDepth >= MAX_CONTINUATION_DEPTH) {
+        console.warn('[finalize-analytics] Approaching max depth, stopping continuation chain', {
+          nextDepth,
+          maxDepth: MAX_CONTINUATION_DEPTH,
+          remainingRecords: 'unknown - pagination key exists'
+        });
+        return;
+      }
+      
+      console.log('[finalize-analytics] More records remain, scheduling continuation', {
+        currentDepth: continuationDepth,
+        nextDepth,
+        maxDepth: MAX_CONTINUATION_DEPTH
+      });
       
       // Import Lambda client for self-invocation
       const { LambdaClient, InvokeCommand } = await import('@aws-sdk/client-lambda');
@@ -348,10 +393,13 @@ export const handler = async (event: any = {}): Promise<void> => {
         await lambda.send(new InvokeCommand({
           FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME,
           InvocationType: 'Event', // Async invocation
-          Payload: JSON.stringify({ continuationToken: nextToken })
+          Payload: JSON.stringify({ 
+            continuationToken: nextToken,
+            continuationDepth: nextDepth  // CRITICAL FIX #3.1: Pass depth for tracking
+          })
         }));
         
-        console.log('[finalize-analytics] Continuation scheduled successfully');
+        console.log('[finalize-analytics] Continuation scheduled successfully', { nextDepth });
       } catch (invokeErr: any) {
         console.error('[finalize-analytics] Failed to invoke continuation:', invokeErr.message);
         // Non-fatal - next scheduled run will pick up remaining records
@@ -378,11 +426,33 @@ async function finalizeRecord(callId: string, timestamp: number): Promise<void> 
     // FIX #13: Try to cleanup expired locks first
     await cleanupExpiredLock(ddb, ANALYTICS_TABLE!, callId, timestamp);
     
-    // CRITICAL FIX: Acquire lock to prevent concurrent finalization
-    const lockAcquired = await acquireAnalyticsLock(ddb, ANALYTICS_TABLE!, callId, timestamp, requestId);
+    // CRITICAL FIX #3.4: Acquire lock with retry and exponential backoff
+    let lockAcquired = false;
+    let lockAttempt = 0;
+    
+    while (!lockAcquired && lockAttempt < LOCK_RETRY_ATTEMPTS) {
+      lockAcquired = await acquireAnalyticsLock(ddb, ANALYTICS_TABLE!, callId, timestamp, requestId);
+      
+      if (!lockAcquired) {
+        lockAttempt++;
+        if (lockAttempt < LOCK_RETRY_ATTEMPTS) {
+          const delay = LOCK_RETRY_DELAY_MS * Math.pow(2, lockAttempt - 1);
+          console.log('[finalize-analytics] Lock acquisition failed, retrying...', {
+            callId,
+            attempt: lockAttempt,
+            maxAttempts: LOCK_RETRY_ATTEMPTS,
+            delayMs: delay
+          });
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
     
     if (!lockAcquired) {
-      console.log('[finalize-analytics] Failed to acquire lock, another process is finalizing:', callId);
+      console.warn('[finalize-analytics] Failed to acquire lock after retries - will retry on next sweep:', {
+        callId,
+        attempts: LOCK_RETRY_ATTEMPTS
+      });
       return;
     }
     
@@ -481,43 +551,40 @@ async function finalizeRecord(callId: string, timestamp: number): Promise<void> 
       throw new Error(`Failed to finalize: ${stateTransition.error}`);
     }
     
-    // CRITICAL FIX: Use DynamoDB transactions for atomic multi-table update
-    // This ensures either both analytics and agent metrics update, or neither do
+    // CRITICAL FIX #9 & #10: Use atomic conditional update to prevent duplicate agent metrics
+    // The previous approach had two issues:
+    // 1. transactionItems array was built but never used in a TransactWriteCommand
+    // 2. Check-then-update pattern allowed race conditions between Get and Update
+    // 
+    // New approach: Use conditional update that atomically checks and sets the marker
     
-    // Build transaction items
-    const transactionItems: any[] = [
-      {
-        Update: {
-          TableName: ANALYTICS_TABLE,
-          Key: { callId, timestamp },
-          UpdateExpression: 'SET coachingSummary = :coaching',
-          ExpressionAttributeValues: {
-            ':coaching': coachingSummary
-          }
-        }
-      }
-    ];
-    
-    // FIX #2: Use idempotency marker to prevent duplicate agent metrics
-    // Check if metrics already tracked for this call
-    const metricsMarker = `metrics-tracked-${callId}`;
     let metricsAlreadyTracked = false;
     
     if (analytics.agentId && AGENT_PERFORMANCE_TABLE) {
       try {
-        // Check if we already tracked metrics
-        const markerResult = await ddb.send(new GetCommand({
+        // CRITICAL FIX #10: Atomic check-and-set using conditional update
+        // This eliminates the race condition between check and mark
+        await ddb.send(new UpdateCommand({
           TableName: ANALYTICS_TABLE,
           Key: { callId, timestamp },
-          ProjectionExpression: 'agentMetricsTracked'
+          UpdateExpression: 'SET agentMetricsTracking = :tracking, agentMetricsTrackingStartedAt = :now',
+          ConditionExpression: 'attribute_not_exists(agentMetricsTracking) AND attribute_not_exists(agentMetricsTracked)',
+          ExpressionAttributeValues: {
+            ':tracking': true,
+            ':now': Date.now()
+          }
         }));
         
-        if (markerResult.Item?.agentMetricsTracked) {
-          console.log('[finalize-analytics] Agent metrics already tracked, skipping:', callId);
-          metricsAlreadyTracked = true;
-        }
+        console.log('[finalize-analytics] Acquired metrics tracking lock for:', callId);
+        
       } catch (err: any) {
-        console.warn('[finalize-analytics] Error checking metrics marker:', err.message);
+        if (err.name === 'ConditionalCheckFailedException') {
+          console.log('[finalize-analytics] Agent metrics already being tracked or tracked, skipping:', callId);
+          metricsAlreadyTracked = true;
+        } else {
+          console.warn('[finalize-analytics] Error acquiring metrics tracking lock:', err.message);
+          // Continue anyway - worst case is duplicate metrics which is better than missing
+        }
       }
     }
     
@@ -622,13 +689,13 @@ async function finalizeRecord(callId: string, timestamp: number): Promise<void> 
         }
       }
       
-      // Mark metrics as tracked to prevent duplicates
+      // CRITICAL FIX #10: Atomically mark metrics as tracked and remove tracking lock
       if (metricsTracked) {
         try {
           await ddb.send(new UpdateCommand({
             TableName: ANALYTICS_TABLE,
             Key: { callId, timestamp },
-            UpdateExpression: 'SET coachingSummary = :coaching, agentMetricsTracked = :true, agentMetricsTrackedAt = :now',
+            UpdateExpression: 'SET coachingSummary = :coaching, agentMetricsTracked = :true, agentMetricsTrackedAt = :now REMOVE agentMetricsTracking',
             ExpressionAttributeValues: {
               ':coaching': coachingSummary,
               ':true': true,
@@ -640,6 +707,27 @@ async function finalizeRecord(callId: string, timestamp: number): Promise<void> 
             error: updateErr.message,
             callId
           });
+          // Still try to release the tracking lock even if update failed
+          try {
+            await ddb.send(new UpdateCommand({
+              TableName: ANALYTICS_TABLE,
+              Key: { callId, timestamp },
+              UpdateExpression: 'REMOVE agentMetricsTracking'
+            }));
+          } catch (releaseErr: any) {
+            console.warn('[finalize-analytics] Could not release tracking lock:', releaseErr.message);
+          }
+        }
+      } else {
+        // Metrics tracking failed - release the lock
+        try {
+          await ddb.send(new UpdateCommand({
+            TableName: ANALYTICS_TABLE,
+            Key: { callId, timestamp },
+            UpdateExpression: 'REMOVE agentMetricsTracking'
+          }));
+        } catch (releaseErr: any) {
+          console.warn('[finalize-analytics] Could not release tracking lock after failure:', releaseErr.message);
         }
       }
     } else {

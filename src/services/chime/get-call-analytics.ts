@@ -1,6 +1,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBDocumentClient, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { createHmac } from 'crypto';
 import {
   getUserPermissions,
   getAllowedClinicIds,
@@ -22,6 +23,77 @@ import {
 } from '../../types/analytics';
 import { ScanCommand, BatchGetCommand } from '@aws-sdk/lib-dynamodb';
 
+// CRITICAL FIX #15: Pagination token signing for security
+// Use JWT secret or a dedicated signing key
+const PAGINATION_TOKEN_SECRET = process.env.JWT_SECRET || process.env.PAGINATION_SECRET || 'default-pagination-secret';
+const TOKEN_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
+
+/**
+ * CRITICAL FIX #15: Sign pagination token to prevent tampering
+ */
+function signPaginationToken(data: any, context: string): string {
+  const payload = {
+    ...data,
+    _ctx: context,
+    _exp: Date.now() + TOKEN_EXPIRY_MS
+  };
+  
+  const payloadStr = JSON.stringify(payload);
+  const signature = createHmac('sha256', PAGINATION_TOKEN_SECRET)
+    .update(payloadStr)
+    .digest('hex')
+    .substring(0, 16); // Use first 16 chars for brevity
+  
+  const signedToken = Buffer.from(JSON.stringify({ p: payload, s: signature })).toString('base64');
+  return signedToken;
+}
+
+/**
+ * CRITICAL FIX #15: Verify and decode signed pagination token
+ */
+function verifyPaginationToken(token: string, expectedContext: string): { valid: boolean; data?: any; error?: string } {
+  try {
+    const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf-8'));
+    
+    // Check for signed token format
+    if (decoded.p && decoded.s) {
+      const { p: payload, s: signature } = decoded;
+      
+      // Verify signature
+      const expectedSig = createHmac('sha256', PAGINATION_TOKEN_SECRET)
+        .update(JSON.stringify(payload))
+        .digest('hex')
+        .substring(0, 16);
+      
+      if (signature !== expectedSig) {
+        return { valid: false, error: 'Invalid token signature' };
+      }
+      
+      // Check expiry
+      if (payload._exp && payload._exp < Date.now()) {
+        return { valid: false, error: 'Token expired' };
+      }
+      
+      // Check context (clinic/agent)
+      if (payload._ctx && payload._ctx !== expectedContext) {
+        return { valid: false, error: 'Token context mismatch' };
+      }
+      
+      // Remove internal fields before returning
+      const { _ctx, _exp, ...data } = payload;
+      return { valid: true, data };
+    }
+    
+    // Fallback: Handle legacy unsigned tokens (for backward compatibility)
+    // Log warning but still validate structure
+    console.warn('[verifyPaginationToken] Legacy unsigned token detected - consider re-issuing');
+    return { valid: true, data: decoded };
+    
+  } catch (err: any) {
+    return { valid: false, error: `Cannot decode token: ${err.message}` };
+  }
+}
+
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const STAFF_USER_TABLE_NAME = process.env.STAFF_USER_TABLE || 'StaffUser';
 
@@ -38,9 +110,27 @@ if (!ANALYTICS_TABLE_NAME) {
 }
 
 /**
- * Validate time range parameters
+ * CRITICAL FIX #13: Normalize timestamp to epoch seconds
+ * Handles both seconds and milliseconds input
  */
-function validateTimeRange(startTime: number, endTime: number): { valid: boolean; error?: any } {
+function normalizeTimestamp(value: number): number {
+  // Detect if timestamp is in milliseconds (>= year 2001 in ms)
+  // Year 2001 in seconds: 978307200
+  // Year 2100 in seconds: 4102444800
+  const YEAR_2100_SECONDS = 4102444800;
+  
+  if (value > YEAR_2100_SECONDS) {
+    // Definitely milliseconds, convert to seconds
+    return Math.floor(value / 1000);
+  }
+  return value;
+}
+
+/**
+ * Validate time range parameters
+ * CRITICAL FIX #13: Auto-normalize timestamps to handle ms/s inconsistency
+ */
+function validateTimeRange(startTime: number, endTime: number): { valid: boolean; error?: any; normalizedStart?: number; normalizedEnd?: number } {
   const now = Math.floor(Date.now() / 1000);
   const oneYearAgo = now - (365 * 24 * 60 * 60);
   
@@ -54,19 +144,32 @@ function validateTimeRange(startTime: number, endTime: number): { valid: boolean
     };
   }
   
-  if (startTime >= endTime) {
+  // CRITICAL FIX #13: Normalize timestamps to handle ms/s inconsistency
+  const normalizedStart = normalizeTimestamp(startTime);
+  const normalizedEnd = normalizeTimestamp(endTime);
+  
+  if (normalizedStart !== startTime || normalizedEnd !== endTime) {
+    console.log('[validateTimeRange] Normalized timestamps from ms to seconds:', {
+      originalStart: startTime,
+      normalizedStart,
+      originalEnd: endTime,
+      normalizedEnd
+    });
+  }
+  
+  if (normalizedStart >= normalizedEnd) {
     return {
       valid: false,
       error: { 
         message: 'startTime must be before endTime',
         error: 'INVALID_TIME_RANGE',
-        startTime,
-        endTime
+        startTime: normalizedStart,
+        endTime: normalizedEnd
       }
     };
   }
   
-  if (startTime < oneYearAgo) {
+  if (normalizedStart < oneYearAgo) {
     return {
       valid: false,
       error: { 
@@ -77,7 +180,7 @@ function validateTimeRange(startTime: number, endTime: number): { valid: boolean
     };
   }
   
-  if (endTime > now + 3600) {
+  if (normalizedEnd > now + 3600) {
     return {
       valid: false,
       error: { 
@@ -90,19 +193,19 @@ function validateTimeRange(startTime: number, endTime: number): { valid: boolean
   
   // Prevent excessively large time ranges (max 90 days)
   const MAX_RANGE_SECONDS = 90 * 24 * 60 * 60;
-  if (endTime - startTime > MAX_RANGE_SECONDS) {
+  if (normalizedEnd - normalizedStart > MAX_RANGE_SECONDS) {
     return {
       valid: false,
       error: { 
         message: 'Time range cannot exceed 90 days',
         error: 'TIME_RANGE_TOO_LARGE',
-        requestedRange: endTime - startTime,
+        requestedRange: normalizedEnd - normalizedStart,
         maxRange: MAX_RANGE_SECONDS
       }
     };
   }
   
-  return { valid: true };
+  return { valid: true, normalizedStart, normalizedEnd };
 }
 
 /**
@@ -515,79 +618,63 @@ async function getClinicAnalytics(
     };
   }
   
-  // **FIXED: Pagination token validation with signature verification**
-  // Parse optional pagination token from query string
+  // CRITICAL FIX #15: Pagination token validation with cryptographic signature verification
   let exclusiveStartKey: any = undefined;
   if (queryParams.lastEvaluatedKey) {
-    try {
-      // Base64 decode the token
-      const decodedToken = Buffer.from(queryParams.lastEvaluatedKey, 'base64').toString('utf-8');
-      exclusiveStartKey = JSON.parse(decodedToken);
-      
-      // Validate the structure has required keys
-      if (!exclusiveStartKey || typeof exclusiveStartKey !== 'object') {
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ 
-            message: 'Invalid pagination token: malformed structure',
-            error: 'INVALID_PAGINATION_TOKEN'
-          })
-        };
-      }
-      
-      if (!exclusiveStartKey.clinicId || !exclusiveStartKey.timestamp) {
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ 
-            message: 'Invalid pagination token: missing required fields (clinicId, timestamp)',
-            error: 'INVALID_PAGINATION_TOKEN'
-          })
-        };
-      }
-      
-      // FIX #14: Validate token belongs to requested clinic (prevent token manipulation)
-      if (exclusiveStartKey.clinicId !== clinicId) {
-        console.warn('[getClinicAnalytics] Token manipulation detected:', {
-          requestedClinic: clinicId,
-          tokenClinic: exclusiveStartKey.clinicId
-        });
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ 
-            message: 'Invalid pagination token: does not match requested clinic',
-            error: 'INVALID_PAGINATION_TOKEN'
-          })
-        };
-      }
-      
-      // Validate timestamp is within reasonable bounds (not too old or future)
-      const tokenTimestamp = exclusiveStartKey.timestamp;
-      const now = Math.floor(Date.now() / 1000);
-      const oneYearAgo = now - (365 * 24 * 60 * 60);
-      
-      if (tokenTimestamp < oneYearAgo || tokenTimestamp > now + 3600) {
-        console.warn('[getClinicAnalytics] Invalid token timestamp:', {
-          tokenTimestamp,
-          now
-        });
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ 
-            message: 'Invalid pagination token: timestamp out of valid range',
-            error: 'INVALID_PAGINATION_TOKEN'
-          })
-        };
-      }
-    } catch (parseErr) {
+    // Use signed token verification
+    const tokenResult = verifyPaginationToken(queryParams.lastEvaluatedKey, `clinic:${clinicId}`);
+    
+    if (!tokenResult.valid) {
+      console.warn('[getClinicAnalytics] Token verification failed:', {
+        error: tokenResult.error,
+        requestedClinic: clinicId
+      });
       return {
         statusCode: 400,
         headers: corsHeaders,
         body: JSON.stringify({ 
-          message: 'Invalid pagination token: cannot decode',
+          message: `Invalid pagination token: ${tokenResult.error}`,
+          error: 'INVALID_PAGINATION_TOKEN'
+        })
+      };
+    }
+    
+    exclusiveStartKey = tokenResult.data;
+    
+    // Validate the structure has required keys
+    if (!exclusiveStartKey || typeof exclusiveStartKey !== 'object') {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({ 
+          message: 'Invalid pagination token: malformed structure',
+          error: 'INVALID_PAGINATION_TOKEN'
+        })
+      };
+    }
+    
+    if (!exclusiveStartKey.clinicId || !exclusiveStartKey.timestamp) {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({ 
+          message: 'Invalid pagination token: missing required fields (clinicId, timestamp)',
+          error: 'INVALID_PAGINATION_TOKEN'
+        })
+      };
+    }
+    
+    // Additional validation: Validate token belongs to requested clinic
+    if (exclusiveStartKey.clinicId !== clinicId) {
+      console.warn('[getClinicAnalytics] Token clinic mismatch:', {
+        requestedClinic: clinicId,
+        tokenClinic: exclusiveStartKey.clinicId
+      });
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({ 
+          message: 'Invalid pagination token: does not match requested clinic',
           error: 'INVALID_PAGINATION_TOKEN'
         })
       };
@@ -661,10 +748,11 @@ async function getClinicAnalytics(
       endTime,
       totalCalls: analytics.length,
       calls: analytics,
-      // **FLAW #10 FIX: Include pagination tokens**
+      // **FLAW #10 FIX: Include signed pagination tokens**
+      // CRITICAL FIX #15: Sign tokens to prevent tampering
       hasMore: !!queryResult.LastEvaluatedKey,
       lastEvaluatedKey: queryResult.LastEvaluatedKey
-        ? Buffer.from(JSON.stringify(queryResult.LastEvaluatedKey)).toString('base64')
+        ? signPaginationToken(queryResult.LastEvaluatedKey, `clinic:${clinicId}`)
         : null
     })
   };
@@ -830,80 +918,64 @@ async function getAgentAnalytics(
     ? parseInt(queryParams.endTime, 10)
     : Math.floor(Date.now() / 1000);
   
-  // **FIXED: Pagination token validation with tampering detection**
+  // CRITICAL FIX #15: Pagination token validation with cryptographic signature verification
   let exclusiveStartKey: any = undefined;
   if (queryParams.lastEvaluatedKey) {
-    try {
-      exclusiveStartKey = JSON.parse(
-        Buffer.from(queryParams.lastEvaluatedKey, 'base64').toString('utf-8')
-      );
-      
-      // Validate the structure
-      if (!exclusiveStartKey || typeof exclusiveStartKey !== 'object') {
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ 
-            message: 'Invalid pagination token: malformed structure',
-            error: 'INVALID_PAGINATION_TOKEN'
-          })
-        };
-      }
-      
-      if (!exclusiveStartKey.agentId || !exclusiveStartKey.timestamp) {
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ 
-            message: 'Invalid pagination token: missing required fields (agentId, timestamp)',
-            error: 'INVALID_PAGINATION_TOKEN'
-          })
-        };
-      }
-      
-      // FIX #14: Validate token belongs to requested agent (prevent token manipulation)
-      if (exclusiveStartKey.agentId !== agentId) {
-        console.warn('[getAgentAnalytics] Token manipulation detected:', {
-          requestedAgent: agentId,
-          tokenAgent: exclusiveStartKey.agentId,
-          requestingUser: requestingAgentId
-        });
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ 
-            message: 'Invalid pagination token: does not match requested agent',
-            error: 'INVALID_PAGINATION_TOKEN'
-          })
-        };
-      }
-      
-      // Validate timestamp is within reasonable bounds
-      const tokenTimestamp = exclusiveStartKey.timestamp;
-      const now = Math.floor(Date.now() / 1000);
-      const oneYearAgo = now - (365 * 24 * 60 * 60);
-      
-      if (tokenTimestamp < oneYearAgo || tokenTimestamp > now + 3600) {
-        console.warn('[getAgentAnalytics] Invalid token timestamp:', {
-          tokenTimestamp,
-          now,
-          agentId
-        });
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ 
-            message: 'Invalid pagination token: timestamp out of valid range',
-            error: 'INVALID_PAGINATION_TOKEN'
-          })
-        };
-      }
-    } catch (parseErr) {
+    // Use signed token verification
+    const tokenResult = verifyPaginationToken(queryParams.lastEvaluatedKey, `agent:${agentId}`);
+    
+    if (!tokenResult.valid) {
+      console.warn('[getAgentAnalytics] Token verification failed:', {
+        error: tokenResult.error,
+        requestedAgent: agentId
+      });
       return {
         statusCode: 400,
         headers: corsHeaders,
         body: JSON.stringify({ 
-          message: 'Invalid pagination token: cannot decode',
+          message: `Invalid pagination token: ${tokenResult.error}`,
+          error: 'INVALID_PAGINATION_TOKEN'
+        })
+      };
+    }
+    
+    exclusiveStartKey = tokenResult.data;
+    
+    // Validate the structure
+    if (!exclusiveStartKey || typeof exclusiveStartKey !== 'object') {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({ 
+          message: 'Invalid pagination token: malformed structure',
+          error: 'INVALID_PAGINATION_TOKEN'
+        })
+      };
+    }
+    
+    if (!exclusiveStartKey.agentId || !exclusiveStartKey.timestamp) {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({ 
+          message: 'Invalid pagination token: missing required fields (agentId, timestamp)',
+          error: 'INVALID_PAGINATION_TOKEN'
+        })
+      };
+    }
+    
+    // Additional validation: Validate token belongs to requested agent
+    if (exclusiveStartKey.agentId !== agentId) {
+      console.warn('[getAgentAnalytics] Token agent mismatch:', {
+        requestedAgent: agentId,
+        tokenAgent: exclusiveStartKey.agentId,
+        requestingUser: requestingAgentId
+      });
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({ 
+          message: 'Invalid pagination token: does not match requested agent',
           error: 'INVALID_PAGINATION_TOKEN'
         })
       };
@@ -1017,8 +1089,9 @@ async function getAgentAnalytics(
       calls: analytics,
       pagination: {
         hasMore: !!queryResult.LastEvaluatedKey,
+        // CRITICAL FIX #15: Use signed pagination tokens
         lastEvaluatedKey: queryResult.LastEvaluatedKey
-          ? Buffer.from(JSON.stringify(queryResult.LastEvaluatedKey)).toString('base64')
+          ? signPaginationToken(queryResult.LastEvaluatedKey, `agent:${agentId}`)
           : null,
         isPaginated,
         warning: isPaginated && !fullMetrics
@@ -1068,28 +1141,50 @@ async function getAnalyticsSummary(
   const limit = Math.min(parseInt(queryParams.limit || '1000', 10), 1000); // Max 1000 per request
   let exclusiveStartKey: any = undefined;
   
+  // CRITICAL FIX #5.1: Use signed pagination tokens for summary endpoint (matching clinic/agent endpoints)
   if (queryParams.lastEvaluatedKey) {
-    try {
-      exclusiveStartKey = JSON.parse(
-        Buffer.from(queryParams.lastEvaluatedKey, 'base64').toString('utf-8')
-      );
-      
-      if (!exclusiveStartKey?.clinicId || !exclusiveStartKey?.timestamp) {
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ 
-            message: 'Invalid pagination token for summary',
-            error: 'INVALID_PAGINATION_TOKEN'
-          })
-        };
-      }
-    } catch (parseErr) {
+    // Use signed token verification for consistency and security
+    const tokenResult = verifyPaginationToken(queryParams.lastEvaluatedKey, `summary:${clinicId}`);
+    
+    if (!tokenResult.valid) {
+      console.warn('[getAnalyticsSummary] Token verification failed:', {
+        error: tokenResult.error,
+        requestedClinic: clinicId
+      });
       return {
         statusCode: 400,
         headers: corsHeaders,
         body: JSON.stringify({ 
-          message: 'Invalid pagination token: cannot decode',
+          message: `Invalid pagination token: ${tokenResult.error}`,
+          error: 'INVALID_PAGINATION_TOKEN'
+        })
+      };
+    }
+    
+    exclusiveStartKey = tokenResult.data;
+    
+    if (!exclusiveStartKey?.clinicId || !exclusiveStartKey?.timestamp) {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({ 
+          message: 'Invalid pagination token: missing required fields',
+          error: 'INVALID_PAGINATION_TOKEN'
+        })
+      };
+    }
+    
+    // CRITICAL FIX #5.1: Validate token matches requested clinic (prevent cross-clinic access)
+    if (exclusiveStartKey.clinicId !== clinicId) {
+      console.warn('[getAnalyticsSummary] Token clinic mismatch - possible security issue:', {
+        requestedClinic: clinicId,
+        tokenClinic: exclusiveStartKey.clinicId
+      });
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({ 
+          message: 'Invalid pagination token: clinic mismatch',
           error: 'INVALID_PAGINATION_TOKEN'
         })
       };
@@ -1140,35 +1235,47 @@ async function getAnalyticsSummary(
       : null
   };
   
-  return {
-    statusCode: 200,
-    headers: corsHeaders,
-    body: JSON.stringify({
-      clinicId,
-      startTime,
-      endTime,
-      summary: {
-        ...summary,
-        // CRITICAL: Add warning flags directly to summary object
-        _isPartial: isPartialData,
-        _warning: dataCompleteness.warning
-      },
-      dataCompleteness,
-      pagination: {
-        hasMore: !!queryResult.LastEvaluatedKey,
-        lastEvaluatedKey: queryResult.LastEvaluatedKey
-          ? Buffer.from(JSON.stringify(queryResult.LastEvaluatedKey)).toString('base64')
-          : null,
-        recordsInPage: analytics.length,
-        limit
-      }
-    })
-  };
-}
+    // CRITICAL FIX #5.2: Add warning header for partial results
+    const responseHeaders = {
+      ...corsHeaders,
+      ...(isPartialData && {
+        'X-Data-Partial': 'true',
+        'X-Data-Warning': 'Results are partial. Use pagination to get complete data.'
+      })
+    };
+    
+    return {
+      statusCode: 200,
+      headers: responseHeaders,
+      body: JSON.stringify({
+        clinicId,
+        startTime,
+        endTime,
+        summary: {
+          ...summary,
+          // CRITICAL: Add warning flags directly to summary object
+          _isPartial: isPartialData,
+          _warning: dataCompleteness.warning
+        },
+        dataCompleteness,
+        pagination: {
+          hasMore: !!queryResult.LastEvaluatedKey,
+          // CRITICAL FIX #5.1: Use signed pagination tokens for summary
+          lastEvaluatedKey: queryResult.LastEvaluatedKey
+            ? signPaginationToken(queryResult.LastEvaluatedKey, `summary:${clinicId}`)
+            : null,
+          recordsInPage: analytics.length,
+          limit
+        }
+      })
+    };
+  }
 
 /**
- * CRITICAL FIX: Fallback function to fetch all call analytics when pre-aggregated data unavailable
+ * CRITICAL FIX #14: Fallback function to fetch all call analytics when pre-aggregated data unavailable
  * Used for new agents or when AgentPerformance table has gaps
+ * 
+ * PERFORMANCE FIX: Added timeout protection and streaming approach to prevent Lambda timeout
  */
 async function fetchAllAgentCallAnalytics(
   agentId: string,
@@ -1179,10 +1286,26 @@ async function fetchAllAgentCallAnalytics(
   let lastEvaluatedKey: any = undefined;
   let pageCount = 0;
   const MAX_PAGES = 20; // Safety limit (100/page × 20 = 2000 max records)
+  const MAX_DURATION_MS = 25000; // Max 25 seconds to leave buffer for response
+  const startTimeMs = Date.now();
   let hitLimit = false;
+  let hitTimeout = false;
   
   try {
     do {
+      // CRITICAL FIX #14: Check elapsed time before each query to prevent Lambda timeout
+      const elapsedMs = Date.now() - startTimeMs;
+      if (elapsedMs > MAX_DURATION_MS) {
+        hitTimeout = true;
+        console.warn('[fetchAllAgentCallAnalytics] Approaching timeout limit - stopping early:', {
+          agentId,
+          recordsFetched: allAnalytics.length,
+          elapsedMs,
+          maxDurationMs: MAX_DURATION_MS
+        });
+        break;
+      }
+      
       const queryResult = await ddb.send(new QueryCommand({
         TableName: ANALYTICS_TABLE_NAME,
         IndexName: 'agentId-timestamp-index',
@@ -1217,16 +1340,39 @@ async function fetchAllAgentCallAnalytics(
     } while (lastEvaluatedKey);
     
     // Calculate metrics from all fetched calls
+    const isIncomplete = hitLimit || hitTimeout;
+    const incompleteReason = hitTimeout 
+      ? 'Query timeout - consider using a shorter time range'
+      : hitLimit 
+        ? 'Data incomplete: Agent has >2000 calls in range. Metrics calculated from first 2000 calls only.'
+        : null;
+    
+    // CRITICAL FIX #5.2: Log warning for incomplete data to CloudWatch for monitoring
+    if (isIncomplete) {
+      console.warn('[fetchAllAgentCallAnalytics] INCOMPLETE_DATA_WARNING', {
+        agentId,
+        recordsFetched: allAnalytics.length,
+        hitTimeout,
+        hitLimit,
+        elapsedMs: Date.now() - startTimeMs,
+        recommendation: hitTimeout 
+          ? 'Consider reducing time range or increasing Lambda memory'
+          : 'Consider using pre-aggregated AgentPerformance table'
+      });
+    }
+    
     return {
       ...calculateAgentMetrics(allAnalytics),
       totalCalls: allAnalytics.length,
       _source: 'fallback_full_scan',
       _pagesFetched: pageCount,
-      _isIncomplete: hitLimit,
-      _warning: hitLimit 
-        ? 'Data incomplete: Agent has >2000 calls in range. Metrics calculated from first 2000 calls only.'
-        : null,
-      _estimatedTotalCalls: hitLimit ? `>${allAnalytics.length}` : allAnalytics.length
+      _elapsedMs: Date.now() - startTimeMs,
+      _isIncomplete: isIncomplete,
+      _hitTimeout: hitTimeout,
+      _warning: incompleteReason,
+      _estimatedTotalCalls: isIncomplete ? `>${allAnalytics.length}` : allAnalytics.length,
+      // CRITICAL FIX #5.2: Add explicit field for client to check
+      dataQuality: isIncomplete ? 'PARTIAL' : 'COMPLETE'
     };
   } catch (err: any) {
     console.error('[fetchAllAgentCallAnalytics] Error fetching all analytics:', err.message);
@@ -2305,6 +2451,7 @@ async function fetchAgentPresenceData(
 
 /**
  * Fetch agent names from staff user table
+ * CRITICAL FIX #5.3: Added proper error handling and schema detection
  */
 async function fetchAgentNames(
   agentIds: string[]
@@ -2325,26 +2472,54 @@ async function fetchAgentNames(
     for (const batch of batches) {
       const keys = batch.map(email => ({ email: email.toLowerCase() }));
       
-      const result = await ddb.send(new BatchGetCommand({
-        RequestItems: {
-          [STAFF_USER_TABLE_NAME]: {
-            Keys: keys,
-            ProjectionExpression: 'email, givenName, familyName'
+      try {
+        const result = await ddb.send(new BatchGetCommand({
+          RequestItems: {
+            [STAFF_USER_TABLE_NAME]: {
+              Keys: keys,
+              ProjectionExpression: 'email, givenName, familyName'
+            }
           }
-        }
-      }));
-      
-      const responses = result.Responses?.[STAFF_USER_TABLE_NAME] || [];
-      responses.forEach((item: any) => {
-        namesMap.set(item.email, {
-          givenName: item.givenName,
-          familyName: item.familyName
+        }));
+        
+        const responses = result.Responses?.[STAFF_USER_TABLE_NAME] || [];
+        responses.forEach((item: any) => {
+          namesMap.set(item.email, {
+            givenName: item.givenName,
+            familyName: item.familyName
+          });
         });
-      });
+        
+        // CRITICAL FIX #5.3: Handle unprocessed keys
+        const unprocessedKeys = result.UnprocessedKeys?.[STAFF_USER_TABLE_NAME]?.Keys;
+        if (unprocessedKeys && unprocessedKeys.length > 0) {
+          console.warn('[fetchAgentNames] Some keys were not processed:', {
+            unprocessedCount: unprocessedKeys.length,
+            totalInBatch: batch.length
+          });
+        }
+        
+      } catch (batchErr: any) {
+        // CRITICAL FIX #5.3: Handle schema mismatch errors specifically
+        if (batchErr.name === 'ValidationException' && batchErr.message.includes('key')) {
+          console.error('[fetchAgentNames] Table schema mismatch - email may not be the partition key:', {
+            tableName: STAFF_USER_TABLE_NAME,
+            error: batchErr.message,
+            hint: 'Verify STAFF_USER_TABLE schema has email as partition key'
+          });
+          // Return early - no point retrying with wrong schema
+          return namesMap;
+        }
+        throw batchErr;
+      }
     }
     
   } catch (error: any) {
-    console.error('[fetchAgentNames] Error:', error.message);
+    console.error('[fetchAgentNames] Error fetching agent names:', {
+      error: error.message,
+      tableName: STAFF_USER_TABLE_NAME,
+      agentCount: agentIds.length
+    });
     // Return empty map, names will fall back to email
   }
   

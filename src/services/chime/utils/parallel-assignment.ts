@@ -80,9 +80,10 @@ async function attemptSingleAssignment(
 ): Promise<{ success: boolean; error?: CallAssignmentError }> {
 
     // CRITICAL FIX: Reduced lock TTL to minimize orphaned lock impact
+    // FIX: Use consistent lock key format (dash not colon) to match join-queued-call.ts and call-accepted.ts
     const lock = new DistributedLock(ddb, {
         tableName: locksTableName,
-        lockKey: `call-assignment:${callContext.callId}`,
+        lockKey: `call-assignment-${callContext.callId}`,
         ttlSeconds: 3 // Reduced from 10s to 3s
     });
 

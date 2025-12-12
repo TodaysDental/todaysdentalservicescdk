@@ -242,6 +242,12 @@ const ANALYTICS_STACK_NAME = 'TodaysDentalInsightsAnalyticsN1';
 const ANALYTICS_TABLE_NAME = `${ANALYTICS_STACK_NAME}-CallAnalyticsN1`;
 const ANALYTICS_DEDUP_TABLE_NAME = `${ANALYTICS_STACK_NAME}-CallAnalytics-dedupV2`;
 
+// ChimeStack table names - defined as constants to pass to AnalyticsStack
+// CRITICAL: These must match the actual table names created in ChimeStack
+const CALL_QUEUE_TABLE_NAME = `${CHIME_STACK_NAME}-CallQueueV2`;
+const AGENT_PRESENCE_TABLE_NAME = `${CHIME_STACK_NAME}-AgentPresence`;
+const AGENT_PERFORMANCE_TABLE_NAME = `${CHIME_STACK_NAME}-AgentPerformance`;
+
 // Define AI Agents stack name for consistent cross-stack references
 const AI_AGENTS_STACK_NAME = 'TodaysDentalInsightsAiAgentsN1';
 
@@ -268,12 +274,12 @@ const analyticsStack = new AnalyticsStack(app, ANALYTICS_STACK_NAME, {
   // ========================================
   // CHIME STACK INTEGRATION
   // ========================================
-  // Pass ChimeStack name for deriving table references
-  // NOTE: Explicit table names will be passed after ChimeStack is created
-  // (see post-ChimeStack configuration below)
+  // Pass explicit table names to avoid fragile derivation
   chimeStackName: CHIME_STACK_NAME,
-  // Table names will be dynamically imported from ChimeStack exports
-  // This avoids fragile hardcoded table name derivation
+  // Explicit table names from constants (must match ChimeStack table names)
+  callQueueTableName: CALL_QUEUE_TABLE_NAME,
+  agentPresenceTableName: AGENT_PRESENCE_TABLE_NAME,
+  agentPerformanceTableName: AGENT_PERFORMANCE_TABLE_NAME,
   
   // ========================================
   // VOICE AI INTEGRATION (Phase 2 Deployment)
@@ -298,6 +304,11 @@ const analyticsStack = new AnalyticsStack(app, ANALYTICS_STACK_NAME, {
 // Set to true after initial deployment of AiAgentsStack
 const ENABLE_AFTER_HOURS_AI = process.env.ENABLE_AFTER_HOURS_AI === 'true';
 
+// Chime Media Region - Chime SDK only supports specific regions for media operations
+// Override via environment variable if deploying to a different region
+// Supported: us-east-1, us-west-2, eu-west-2, ap-southeast-1, etc.
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
+
 const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
  env,
  jwtSecret: coreStack.jwtSecretValue,
@@ -310,6 +321,8 @@ const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
  enableCallRecording: true, // Enable call recording by default
  recordingRetentionDays: 2555, // ~7 years for compliance
  medicalVocabularyName: analyticsStack.medicalVocabularyName,
+ // Chime Media Region - passed to all Lambda functions for consistent region usage
+ chimeMediaRegion: CHIME_MEDIA_REGION,
  // Voice AI integration (from AiAgentsStack)
  // NOTE: Set ENABLE_AFTER_HOURS_AI=true after AiAgentsStack is deployed
  enableAfterHoursAi: ENABLE_AFTER_HOURS_AI,

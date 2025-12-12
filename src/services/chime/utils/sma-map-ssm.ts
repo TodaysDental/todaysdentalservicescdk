@@ -23,6 +23,12 @@ const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Fetch SMA map from SSM Parameter Store
+ * 
+ * Tries multiple SSM parameter paths in order:
+ * 1. SMA_ID_MAP_PARAMETER env var (set by ChimeStack for AI Transcript Bridge)
+ * 2. /${stackName}/SmaIdMap (created by ChimeStack CDK deployment)
+ * 3. /contactcenter/${env}/sma-map (legacy/alternative configuration)
+ * 4. SMA_ID_MAP environment variable (fallback)
  */
 async function fetchSmaMapFromSSM(): Promise<ClinicSmaMap | undefined> {
   const now = Date.now();
@@ -33,27 +39,36 @@ async function fetchSmaMapFromSSM(): Promise<ClinicSmaMap | undefined> {
   }
 
   const env = process.env.ENVIRONMENT || 'dev';
-  const paramName = `/contactcenter/${env}/sma-map`;
+  const stackName = process.env.CHIME_STACK_NAME || 'ChimeStack';
+  
+  // List of SSM parameter paths to try (in order of priority)
+  const paramPaths = [
+    process.env.SMA_ID_MAP_PARAMETER, // Set by ChimeStack for AI Transcript Bridge
+    `/${stackName}/SmaIdMap`,          // ChimeStack CDK-created parameter
+    `/contactcenter/${env}/sma-map`,   // Legacy/alternative configuration
+  ].filter(Boolean) as string[];
 
-  try {
-    const result = await ssm.send(new GetParameterCommand({
-      Name: paramName,
-      WithDecryption: true
-    }));
+  for (const paramName of paramPaths) {
+    try {
+      const result = await ssm.send(new GetParameterCommand({
+        Name: paramName,
+        WithDecryption: true
+      }));
 
-    if (result.Parameter?.Value) {
-      cachedMap = JSON.parse(result.Parameter.Value);
-      cacheExpiry = now + CACHE_TTL;
-      console.log(`[sma-map] Loaded SMA map from SSM: ${paramName}`);
-      return cachedMap || {};
-    }
-  } catch (err: any) {
-    console.error('[sma-map] Failed to load from SSM:', err);
-    
-    // If parameter doesn't exist, log helpful message
-    if (err.name === 'ParameterNotFound') {
-      console.error(`[sma-map] Parameter ${paramName} not found in SSM. Please create it with:
-        aws ssm put-parameter --name ${paramName} --value '{"clinic1":"sma-id-1"}' --type SecureString`);
+      if (result.Parameter?.Value) {
+        cachedMap = JSON.parse(result.Parameter.Value);
+        cacheExpiry = now + CACHE_TTL;
+        console.log(`[sma-map] Loaded SMA map from SSM: ${paramName}`);
+        return cachedMap || {};
+      }
+    } catch (err: any) {
+      // Parameter not found - try next one
+      if (err.name === 'ParameterNotFound') {
+        console.log(`[sma-map] Parameter ${paramName} not found, trying next...`);
+        continue;
+      }
+      // Other error - log and continue
+      console.warn(`[sma-map] Error loading ${paramName}:`, err.message);
     }
   }
 
@@ -71,7 +86,7 @@ async function fetchSmaMapFromSSM(): Promise<ClinicSmaMap | undefined> {
   }
 
   // Return undefined if all else fails
-  console.error('[sma-map] No SMA map configuration found');
+  console.error('[sma-map] No SMA map configuration found. Tried SSM paths:', paramPaths.join(', '));
   return undefined;
 }
 

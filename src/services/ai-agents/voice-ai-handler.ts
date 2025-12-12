@@ -117,6 +117,8 @@ interface VoiceSession {
     text: string;
     timestamp: string;
   }>;
+  // ANALYTICS FIX: Track tools used across invocations
+  toolsUsed: string[];
   ttl: number;
 }
 
@@ -449,6 +451,9 @@ async function recordCallAnalytics(params: {
 
 /**
  * Get or create voice session
+ * 
+ * RACE CONDITION FIX: Uses conditional PutItem to prevent duplicate sessions
+ * for the same callId when multiple Lambda invocations run simultaneously.
  */
 async function getOrCreateSession(
   callId: string,
@@ -468,7 +473,7 @@ async function getOrCreateSession(
     return existingResponse.Items[0] as VoiceSession;
   }
 
-  // Create new session
+  // Create new session with conditional put to prevent race conditions
   const sessionId = uuidv4();
   const bedrockSessionId = uuidv4();
   const now = new Date().toISOString();
@@ -484,63 +489,144 @@ async function getOrCreateSession(
     lastActivityTime: now,
     status: 'active',
     transcripts: [],
+    // ANALYTICS FIX: Initialize tools tracking array
+    toolsUsed: [],
     ttl: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // 24 hour TTL
   };
 
-  await docClient.send(new PutCommand({
-    TableName: VOICE_SESSIONS_TABLE,
-    Item: session,
-  }));
+  try {
+    // Use conditional put to prevent duplicate sessions
+    await docClient.send(new PutCommand({
+      TableName: VOICE_SESSIONS_TABLE,
+      Item: session,
+      ConditionExpression: 'attribute_not_exists(sessionId)',
+    }));
 
-  return session;
+    return session;
+  } catch (error: any) {
+    if (error.name === 'ConditionalCheckFailedException') {
+      // Race condition - another invocation created the session
+      // Query again to get the existing session
+      console.log(`[getOrCreateSession] Race condition detected for callId ${callId}, fetching existing session`);
+      
+      const retryResponse = await docClient.send(new QueryCommand({
+        TableName: VOICE_SESSIONS_TABLE,
+        IndexName: 'CallIdIndex',
+        KeyConditionExpression: 'callId = :cid',
+        ExpressionAttributeValues: { ':cid': callId },
+      }));
+
+      if (retryResponse.Items && retryResponse.Items.length > 0) {
+        return retryResponse.Items[0] as VoiceSession;
+      }
+    }
+    
+    // Re-throw if it's a different error
+    throw error;
+  }
 }
 
 /**
- * Update session with new transcript
+ * Update session with new transcript and optionally add tools used
+ * 
+ * TTL FIX: Also refreshes TTL on every activity to prevent mid-call expiry
  */
 async function updateSessionTranscript(
   sessionId: string,
   speaker: 'caller' | 'ai',
-  text: string
+  text: string,
+  newToolsUsed?: string[]
 ): Promise<void> {
   const now = new Date().toISOString();
+  // TTL FIX: Refresh TTL to 24 hours from now on every activity
+  const newTtl = Math.floor(Date.now() / 1000) + (24 * 60 * 60);
+  
+  let updateExpression = 'SET transcripts = list_append(if_not_exists(transcripts, :empty), :transcript), lastActivityTime = :now, #ttl = :newTtl';
+  const expressionAttributeValues: Record<string, any> = {
+    ':empty': [],
+    ':transcript': [{ speaker, text, timestamp: now }],
+    ':now': now,
+    ':newTtl': newTtl,
+  };
+  const expressionAttributeNames: Record<string, string> = { '#ttl': 'ttl' };
+  
+  // ANALYTICS FIX: Append new tools to the session's toolsUsed array
+  if (newToolsUsed && newToolsUsed.length > 0) {
+    updateExpression += ', toolsUsed = list_append(if_not_exists(toolsUsed, :emptyTools), :newTools)';
+    expressionAttributeValues[':emptyTools'] = [];
+    expressionAttributeValues[':newTools'] = newToolsUsed;
+  }
   
   await docClient.send(new UpdateCommand({
     TableName: VOICE_SESSIONS_TABLE,
     Key: { sessionId },
-    UpdateExpression: 'SET transcripts = list_append(if_not_exists(transcripts, :empty), :transcript), lastActivityTime = :now',
-    ExpressionAttributeValues: {
-      ':empty': [],
-      ':transcript': [{ speaker, text, timestamp: now }],
-      ':now': now,
-    },
+    UpdateExpression: updateExpression,
+    ExpressionAttributeNames: expressionAttributeNames,
+    ExpressionAttributeValues: expressionAttributeValues,
   }));
 }
 
 /**
  * Get the voice AI agent for a clinic's after-hours calls
- * Priority order:
+ * 
+ * SECURITY FIX: Respects aiInboundEnabled flag at all levels.
+ * If aiInboundEnabled is explicitly false, returns null (no fallback).
+ * 
+ * Priority order (only if AI inbound is enabled):
  * 1. CONFIGURED agent (from VoiceAgentConfig - change anytime via API)
  * 2. Agent with isDefaultVoiceAgent = true (fallback)
  * 3. Any voice-enabled agent for the clinic
- * 4. Any active agent for the clinic (last resort)
+ * 4. Any active agent for the clinic (ONLY if no voice config exists)
+ * 
+ * LOGIC FIX: Consistent handling of config states:
+ * - Config exists + aiInboundEnabled=false → null (user disabled AI)
+ * - Config exists + aiInboundEnabled=true/undefined + no agent → null (user wants voicemail)
+ * - Config exists + agent set → use that agent
+ * - No config at all → use fallback agents (new clinic, not yet configured)
  */
 async function getVoiceAgent(clinicId: string): Promise<AiAgent | null> {
-  // FIRST: Check if there's a configured agent for this clinic
-  const configuredAgent = await getConfiguredVoiceAgent(clinicId);
-  if (configuredAgent) {
-    // Fetch the full agent details
-    const agentResponse = await docClient.send(new GetCommand({
-      TableName: AGENTS_TABLE,
-      Key: { agentId: configuredAgent.agentId },
-    }));
+  // FIRST: Get voice config to check enabled state
+  const voiceConfig = await getFullVoiceConfig(clinicId);
+  
+  // If config exists, check the enabled flag FIRST (before any agent lookup)
+  if (voiceConfig) {
+    // CRITICAL: If AI inbound is explicitly disabled, return null immediately
+    if (voiceConfig.aiInboundEnabled === false) {
+      console.log(`[getVoiceAgent] AI inbound is explicitly DISABLED for clinic ${clinicId}`);
+      return null;
+    }
     
-    if (agentResponse.Item && agentResponse.Item.isActive && agentResponse.Item.bedrockAgentStatus === 'PREPARED') {
-      console.log(`Using CONFIGURED voice agent for clinic ${clinicId}:`, configuredAgent.agentId);
-      return agentResponse.Item as AiAgent;
+    // If agent is configured, try to use it
+    if (voiceConfig.inboundAgentId) {
+      const agentResponse = await docClient.send(new GetCommand({
+        TableName: AGENTS_TABLE,
+        Key: { agentId: voiceConfig.inboundAgentId },
+      }));
+      
+      if (agentResponse.Item && agentResponse.Item.isActive && agentResponse.Item.bedrockAgentStatus === 'PREPARED') {
+        console.log(`[getVoiceAgent] Using CONFIGURED agent for clinic ${clinicId}:`, voiceConfig.inboundAgentId);
+        return agentResponse.Item as AiAgent;
+      }
+      
+      // Configured agent is not ready - log warning but continue to fallbacks
+      console.warn(`[getVoiceAgent] Configured agent ${voiceConfig.inboundAgentId} is not ready, trying fallbacks`);
+    }
+    
+    // Config exists but no working agent configured
+    // If aiInboundEnabled is explicitly true, try fallbacks
+    // If aiInboundEnabled is undefined (legacy), try fallbacks for backwards compatibility
+    if (voiceConfig.aiInboundEnabled === undefined && !voiceConfig.inboundAgentId) {
+      // Legacy config without explicit toggle and no agent = use voicemail
+      console.log(`[getVoiceAgent] Config exists but no agent set for clinic ${clinicId}, using voicemail`);
+      return null;
     }
   }
-
+  
+  // At this point, either:
+  // - No config exists (new clinic)
+  // - Config exists with aiInboundEnabled=true/undefined but configured agent failed
+  // Try fallback agents
+  
   // SECOND: Try to find the DEFAULT voice agent for this clinic
   const defaultResponse = await docClient.send(new QueryCommand({
     TableName: AGENTS_TABLE,
@@ -557,7 +643,7 @@ async function getVoiceAgent(clinicId: string): Promise<AiAgent | null> {
   }));
 
   if (defaultResponse.Items && defaultResponse.Items.length > 0) {
-    console.log(`Using DEFAULT voice agent for clinic ${clinicId}:`, defaultResponse.Items[0].agentId);
+    console.log(`[getVoiceAgent] Using DEFAULT voice agent for clinic ${clinicId}:`, defaultResponse.Items[0].agentId);
     return defaultResponse.Items[0] as AiAgent;
   }
 
@@ -577,30 +663,33 @@ async function getVoiceAgent(clinicId: string): Promise<AiAgent | null> {
   }));
 
   if (voiceResponse.Items && voiceResponse.Items.length > 0) {
-    console.log(`Using voice-enabled agent for clinic ${clinicId}:`, voiceResponse.Items[0].agentId);
+    console.log(`[getVoiceAgent] Using voice-enabled agent for clinic ${clinicId}:`, voiceResponse.Items[0].agentId);
     return voiceResponse.Items[0] as AiAgent;
   }
 
-  // FOURTH: Fallback - any active agent
-  const fallbackResponse = await docClient.send(new QueryCommand({
-    TableName: AGENTS_TABLE,
-    IndexName: 'ClinicIndex',
-    KeyConditionExpression: 'clinicId = :cid',
-    FilterExpression: 'isActive = :active AND bedrockAgentStatus = :status',
-    ExpressionAttributeValues: {
-      ':cid': clinicId,
-      ':active': true,
-      ':status': 'PREPARED',
-    },
-    Limit: 1,
-  }));
+  // FOURTH: Only use any-active-agent fallback if NO config exists at all
+  // This allows new clinics to get AI while configured clinics respect their settings
+  if (!voiceConfig) {
+    const fallbackResponse = await docClient.send(new QueryCommand({
+      TableName: AGENTS_TABLE,
+      IndexName: 'ClinicIndex',
+      KeyConditionExpression: 'clinicId = :cid',
+      FilterExpression: 'isActive = :active AND bedrockAgentStatus = :status',
+      ExpressionAttributeValues: {
+        ':cid': clinicId,
+        ':active': true,
+        ':status': 'PREPARED',
+      },
+      Limit: 1,
+    }));
 
-  if (fallbackResponse.Items && fallbackResponse.Items.length > 0) {
-    console.log(`Using fallback agent for clinic ${clinicId}:`, fallbackResponse.Items[0].agentId);
-    return fallbackResponse.Items[0] as AiAgent;
+    if (fallbackResponse.Items && fallbackResponse.Items.length > 0) {
+      console.log(`[getVoiceAgent] Using fallback agent for clinic ${clinicId}:`, fallbackResponse.Items[0].agentId);
+      return fallbackResponse.Items[0] as AiAgent;
+    }
   }
 
-  console.warn(`No suitable agent found for clinic ${clinicId}`);
+  console.warn(`[getVoiceAgent] No suitable agent found for clinic ${clinicId}`);
   return null;
 }
 
@@ -669,7 +758,8 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
 
   const responses: VoiceAiResponse[] = [];
   const callStartTime = Date.now();
-  let toolsUsed: string[] = [];
+  // FIX: Removed unused local toolsUsed variable
+  // Tools used are tracked in session.toolsUsed (persisted in DynamoDB) instead
 
   try {
     switch (event.eventType) {
@@ -778,19 +868,54 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
       }
 
       case 'TRANSCRIPT': {
-        // Caller said something
-        const { callId, clinicId, transcript, sessionId } = event;
+        // Caller said something - this can come from:
+        // 1. Direct invocation with sessionId (legacy)
+        // 2. AI Transcript Bridge Lambda (via Media Insights Pipeline)
+        const { callId, clinicId, transcript, sessionId, aiAgentId } = event;
 
-        if (!transcript || !sessionId) {
+        if (!transcript) {
+          console.warn('[TRANSCRIPT] Empty transcript received, skipping');
           return [{ action: 'CONTINUE', sessionId }];
         }
 
-        // Get session
-        const sessionResponse = await docClient.send(new GetCommand({
-          TableName: VOICE_SESSIONS_TABLE,
-          Key: { sessionId },
-        }));
-        const session = sessionResponse.Item as VoiceSession;
+        // Get session - try sessionId first, then lookup by callId
+        let session: VoiceSession | undefined;
+        
+        if (sessionId) {
+          const sessionResponse = await docClient.send(new GetCommand({
+            TableName: VOICE_SESSIONS_TABLE,
+            Key: { sessionId },
+          }));
+          session = sessionResponse.Item as VoiceSession | undefined;
+        }
+        
+        // If no session found by sessionId, try to find by callId
+        if (!session && callId) {
+          const callIdQuery = await docClient.send(new QueryCommand({
+            TableName: VOICE_SESSIONS_TABLE,
+            IndexName: 'CallIdIndex',
+            KeyConditionExpression: 'callId = :cid',
+            ExpressionAttributeValues: { ':cid': callId },
+            Limit: 1,
+          }));
+          session = callIdQuery.Items?.[0] as VoiceSession | undefined;
+        }
+        
+        // If still no session, create one on-the-fly for real-time transcripts
+        if (!session && callId && clinicId) {
+          console.log('[TRANSCRIPT] No existing session found, creating new session for real-time transcript');
+          
+          // Try to get agent by aiAgentId or find default for clinic
+          let agentId = aiAgentId;
+          if (!agentId) {
+            const voiceAgent = await getVoiceAgent(clinicId);
+            agentId = voiceAgent?.agentId;
+          }
+          
+          if (agentId) {
+            session = await getOrCreateSession(callId, clinicId, agentId, 'real-time-transcript');
+          }
+        }
 
         if (!session) {
           return [{
@@ -801,12 +926,23 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
           }];
         }
 
-        // Save caller transcript
-        await updateSessionTranscript(sessionId, 'caller', transcript);
+        // CRITICAL FIX: Use session.sessionId instead of the original sessionId variable
+        // The original sessionId from event may be undefined if session was created on-the-fly
+        const activeSessionId = session.sessionId;
 
-        // Get agent
-        const agent = await getVoiceAgent(clinicId);
-        if (!agent) {
+        // Save caller transcript
+        await updateSessionTranscript(activeSessionId, 'caller', transcript);
+
+        // CONSISTENCY FIX: Get agent using session.agentId to ensure same agent throughout call
+        // Previously re-queried for voice agent which could return different agent if config changed mid-call
+        const agentResponse = await docClient.send(new GetCommand({
+          TableName: AGENTS_TABLE,
+          Key: { agentId: session.agentId },
+        }));
+        const agent = agentResponse.Item as AiAgent | undefined;
+        
+        if (!agent || !agent.isActive || agent.bedrockAgentStatus !== 'PREPARED') {
+          console.error(`[TRANSCRIPT] Agent ${session.agentId} not found or not ready`);
           return [{
             action: 'SPEAK',
             text: CONFIG.ERROR_MESSAGE,
@@ -823,11 +959,11 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
           lowerTranscript.includes('thank you') ||
           lowerTranscript.includes('that\'s all')
         ) {
-          await updateSessionTranscript(sessionId, 'ai', CONFIG.GOODBYE_MESSAGE);
+          await updateSessionTranscript(activeSessionId, 'ai', CONFIG.GOODBYE_MESSAGE);
           return [{
             action: 'SPEAK',
             text: CONFIG.GOODBYE_MESSAGE,
-            sessionId,
+            sessionId: activeSessionId,
           }, {
             action: 'HANG_UP',
           }];
@@ -838,7 +974,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
         responses.push({
           action: 'SPEAK',
           text: fillerPhrase,
-          sessionId,
+          sessionId: activeSessionId,
         });
 
         // Invoke AI agent
@@ -848,22 +984,22 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
         const detectedTools = thinking
           .filter((t: string) => t.includes('Checking:'))
           .map((t: string) => t.replace('Checking: ', ''));
-        toolsUsed = [...new Set([...toolsUsed, ...detectedTools])];
-
-        // Save AI response
-        await updateSessionTranscript(sessionId, 'ai', aiResponse);
+        
+        // ANALYTICS FIX: Save AI response WITH tools used to session record
+        // This persists toolsUsed across Lambda invocations
+        await updateSessionTranscript(activeSessionId, 'ai', aiResponse, detectedTools);
 
         // Speak AI response
         responses.push({
           action: 'SPEAK',
           text: aiResponse,
-          sessionId,
+          sessionId: activeSessionId,
         });
 
         // Continue listening
         responses.push({
           action: 'CONTINUE',
-          sessionId,
+          sessionId: activeSessionId,
         });
 
         break;
@@ -934,6 +1070,10 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
               aiResponses.includes('booked') ||
               aiResponses.includes('appointment confirmed');
 
+            // ANALYTICS FIX: Use session.toolsUsed which persists across Lambda invocations
+            // instead of the local toolsUsed variable which gets reset each invocation
+            const persistedToolsUsed = session.toolsUsed || [];
+
             await recordCallAnalytics({
               callId: session.callId,
               clinicId: session.clinicId,
@@ -945,7 +1085,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
               callerNumber: session.callerNumber,
               patientName,
               transcriptSummary,
-              toolsUsed,
+              toolsUsed: [...new Set(persistedToolsUsed)], // Deduplicate
               appointmentBooked,
             });
           }

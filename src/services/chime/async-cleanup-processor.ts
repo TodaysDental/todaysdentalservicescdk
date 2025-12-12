@@ -14,7 +14,9 @@ import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getErrorTracker } from '../shared/utils/error-tracker';
 
 const ddb = getDynamoDBClient();
-const chime = new ChimeSDKMeetingsClient({});
+// FIX: Add region to ChimeSDKMeetingsClient for consistency across all handlers
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
+const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 const s3 = new S3Client({});
 const errorTracker = getErrorTracker();
 

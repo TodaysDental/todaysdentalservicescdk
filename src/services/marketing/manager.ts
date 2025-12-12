@@ -9,6 +9,7 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
 });
 const TABLE_NAME = process.env.MARKETING_CONFIG_TABLE!;
 const API_KEY = process.env.AYRSHARE_API_KEY!;
+const PRIVATE_KEY = process.env.AYRSHARE_PRIVATE_KEY!;
 const FRONTEND_DOMAIN = 'todaysdentalinsights.com';
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
@@ -130,7 +131,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
       try {
         console.log('Generating JWT for profile:', dbRes.Item.ayrshareProfileKey);
-        const jwtRes = await ayrshareGenerateJWT(API_KEY, dbRes.Item.ayrshareProfileKey, FRONTEND_DOMAIN);
+        const jwtRes = await ayrshareGenerateJWT(API_KEY, dbRes.Item.ayrshareProfileKey, FRONTEND_DOMAIN, PRIVATE_KEY);
         
         if (!jwtRes.url) {
           console.error('Ayrshare returned response without URL:', JSON.stringify(jwtRes));

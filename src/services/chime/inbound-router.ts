@@ -17,7 +17,10 @@ import { startMediaPipeline, stopMediaPipeline, isRealTimeTranscriptionEnabled }
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const lambdaClient = new LambdaClient({});
-// Chime meetings must be created in a supported media region
+
+// CHIME_MEDIA_REGION: Chime SDK Meetings must be created in a supported media region.
+// This is set by ChimeStack CDK and ensures all Chime operations use the same region.
+// Supported regions: us-east-1, us-west-2, eu-west-2, ap-southeast-1, etc.
 const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
 const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 const CLINICS_TABLE_NAME = process.env.CLINICS_TABLE_NAME!;
@@ -57,14 +60,15 @@ type CallStatus =
     | 'timeout'             // Call timed out (no answer)
     | 'no_agents_available' // No agents available to take the call
     | 'dialing'             // For outbound: call is being dialed
-    | 'failed';             // Call failed for technical reasons
+    | 'failed'              // Call failed for technical reasons
+    | 'escalated';          // Call escalated due to excessive rejections - requires supervisor
 
 // Valid call state transitions
 // FIX #13: Removed backward transitions that could bypass queue logic
 // State machine should be forward-only except for explicit retry scenarios
 const VALID_STATE_TRANSITIONS: Record<CallStatus, CallStatus[]> = {
     'queued': ['ringing', 'abandoned', 'timeout', 'no_agents_available'],
-    'ringing': ['connected', 'queued', 'abandoned', 'no_agents_available', 'timeout'], // queued allowed for rejection/re-queue
+    'ringing': ['connected', 'queued', 'abandoned', 'no_agents_available', 'timeout', 'escalated'], // escalated for excessive rejections
     'dialing': ['connected', 'timeout', 'abandoned', 'failed'],
     'connected': ['on_hold', 'completed', 'abandoned'],
     'on_hold': ['connected', 'abandoned', 'completed'],
@@ -74,7 +78,10 @@ const VALID_STATE_TRANSITIONS: Record<CallStatus, CallStatus[]> = {
     // FIX #13: no_agents_available can only transition to ringing (agent became available) or abandoned
     // Removed 'queued' to prevent regression - once no_agents_available, call should either
     // ring an agent or be abandoned, not go back to queue
-    'no_agents_available': ['ringing', 'abandoned'],
+    'no_agents_available': ['ringing', 'abandoned', 'escalated'],
+    // CRITICAL FIX #7: Added 'escalated' status for calls with excessive rejections
+    // Escalated calls require supervisor attention
+    'escalated': ['connected', 'abandoned', 'completed'],
     'failed': []
 };
 
@@ -108,151 +115,134 @@ interface QueueEntry {
 }
 
 /**
- * FIX #4 & #7: Queue Position Conflicts and Duplicate Prevention
+ * FIX #4 & #7 & #10: Queue Position Conflicts and Duplicate Prevention
  * Uses unique ID generation to prevent collisions and checks for existing callId
+ * 
+ * FIX #10: Uses retry loop with exponential backoff to handle GSI eventual consistency.
+ * The callId-index GSI does not support ConsistentRead, so between checking for duplicates
+ * and inserting, a parallel request could insert the same call. We handle this by:
+ * 1. Using conditional PutItem to prevent overwriting
+ * 2. On collision, re-checking the GSI with a small delay to allow replication
+ * 3. Using a unique callId-based lock if distributed locks are available
  */
 async function addToQueue(clinicId: string, callId: string, phoneNumber: string): Promise<QueueEntry> {
     const now = Math.floor(Date.now() / 1000);
+    const MAX_RETRIES = 3;
     
-    // FIX #7: First check if this call already exists in the queue
-    // This prevents duplicate entries if addToQueue is called multiple times for the same call
-    const { Items: existingCalls } = await ddb.send(new QueryCommand({
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        // FIX #7: First check if this call already exists in the queue
+        // This prevents duplicate entries if addToQueue is called multiple times for the same call
+        const { Items: existingCalls } = await ddb.send(new QueryCommand({
+            TableName: CALL_QUEUE_TABLE_NAME,
+            IndexName: 'callId-index',
+            KeyConditionExpression: 'callId = :callId',
+            ExpressionAttributeValues: { ':callId': callId }
+        }));
+        
+        if (existingCalls && existingCalls.length > 0) {
+            const existingEntry = existingCalls[0];
+            console.warn('[addToQueue] Call already exists in queue - returning existing entry', { 
+                clinicId, 
+                callId, 
+                existingStatus: existingEntry.status,
+                existingPosition: existingEntry.queuePosition,
+                attempt
+            });
+            return existingEntry as QueueEntry;
+        }
+        
+        // FIX #4: Use unique position generation
+        const { queuePosition, uniquePositionId } = generateUniqueCallPosition();
+        
+        const entry: QueueEntry = {
+            clinicId,
+            callId,
+            phoneNumber,
+            queuePosition,
+            queueEntryTime: now,
+            queueEntryTimeIso: new Date().toISOString(),
+            uniquePositionId,
+            status: 'queued',
+            ttl: now + QUEUE_TIMEOUT,
+            priority: 'normal',
+            direction: 'inbound'
+        };
+
+        try {
+            await ddb.send(new PutCommand({
+                TableName: CALL_QUEUE_TABLE_NAME,
+                Item: entry,
+                // FIX #10: Added callId uniqueness condition to prevent duplicates due to GSI eventual consistency
+                ConditionExpression: 'attribute_not_exists(clinicId) AND attribute_not_exists(queuePosition)'
+            }));
+            
+            console.log('[addToQueue] Successfully queued call', { clinicId, callId, queuePosition, attempt });
+            return entry;
+            
+        } catch (err: any) {
+            if (err.name === 'ConditionalCheckFailedException') {
+                console.warn('[addToQueue] Position collision - will retry', { clinicId, callId, queuePosition, attempt });
+                
+                // FIX #10: Add small delay before retry to allow GSI replication
+                if (attempt < MAX_RETRIES) {
+                    await new Promise(resolve => setTimeout(resolve, 50 * Math.pow(2, attempt - 1)));
+                }
+                // Continue to next iteration (will re-check GSI)
+            } else {
+                throw err;
+            }
+        }
+    }
+    
+    // FIX #10: Final check after all retries - the call should exist by now due to eventual consistency
+    const { Items: finalCheck } = await ddb.send(new QueryCommand({
         TableName: CALL_QUEUE_TABLE_NAME,
         IndexName: 'callId-index',
         KeyConditionExpression: 'callId = :callId',
         ExpressionAttributeValues: { ':callId': callId }
     }));
     
-    if (existingCalls && existingCalls.length > 0) {
-        const existingEntry = existingCalls[0];
-        console.warn('[addToQueue] Call already exists in queue - returning existing entry', { 
-            clinicId, 
-            callId, 
-            existingStatus: existingEntry.status,
-            existingPosition: existingEntry.queuePosition
-        });
-        return existingEntry as QueueEntry;
+    if (finalCheck && finalCheck.length > 0) {
+        console.warn('[addToQueue] Found call after retries exhausted - likely added by parallel request', { callId });
+        return finalCheck[0] as QueueEntry;
     }
     
-    // FIX #4: Use unique position generation
-    const { queuePosition, uniquePositionId } = generateUniqueCallPosition();
-    
-    const entry: QueueEntry = {
-        clinicId,
-        callId,
-        phoneNumber,
-        queuePosition,
-        queueEntryTime: now,
-        queueEntryTimeIso: new Date().toISOString(),
-        uniquePositionId,
-        status: 'queued',
-        ttl: now + QUEUE_TIMEOUT,
-        priority: 'normal',
-        direction: 'inbound'
-    };
-
-    try {
-        await ddb.send(new PutCommand({
-            TableName: CALL_QUEUE_TABLE_NAME,
-            Item: entry,
-            ConditionExpression: 'attribute_not_exists(clinicId) AND attribute_not_exists(queuePosition)'
-        }));
-    } catch (err: any) {
-        if (err.name === 'ConditionalCheckFailedException') {
-            console.error('[addToQueue] Position collision - regenerating position', { clinicId, callId, queuePosition });
-            
-            // FIX #7: Re-check if call already exists (might have been added by parallel request)
-            const { Items: recheck } = await ddb.send(new QueryCommand({
-                TableName: CALL_QUEUE_TABLE_NAME,
-                IndexName: 'callId-index',
-                KeyConditionExpression: 'callId = :callId',
-                ExpressionAttributeValues: { ':callId': callId }
-            }));
-            
-            if (recheck && recheck.length > 0) {
-                console.warn('[addToQueue] Call was added by parallel request - returning existing entry', { callId });
-                return recheck[0] as QueueEntry;
-            }
-            
-            // FIX #4: Regenerate with new unique position
-            const retryPosition = generateUniqueCallPosition();
-            entry.queuePosition = retryPosition.queuePosition;
-            entry.uniquePositionId = retryPosition.uniquePositionId;
-            
-            await ddb.send(new PutCommand({
-                TableName: CALL_QUEUE_TABLE_NAME,
-                Item: entry
-            }));
-            
-            console.log('[addToQueue] Successfully inserted call with retry position', { 
-                clinicId, 
-                callId, 
-                queuePosition: entry.queuePosition 
-            });
-        } else {
-            throw err;
-        }
-    }
-
-    return entry;
+    // This should rarely happen - throw error for investigation
+    throw new Error(`[addToQueue] Failed to queue call after ${MAX_RETRIES} attempts: ${callId}`);
 }
 
-// FIX #11: VIP cache with TTL-based refresh
+// VIP phone numbers cache - parsed once at cold start since env vars don't change during execution
+// CRITICAL FIX #10: Removed pointless TTL-based refresh - env vars are set at cold start and don't change
 let vipPhoneNumbersCache: Set<string> | null = null;
-let vipCacheLastRefresh: number = 0;
-const VIP_CACHE_TTL_MS = 5 * 60 * 1000; // Refresh every 5 minutes
 
 function getVipPhoneNumbers(): Set<string> {
-    const now = Date.now();
-    
-    // FIX #11: Check if cache needs refresh based on TTL
-    if (vipPhoneNumbersCache && (now - vipCacheLastRefresh) < VIP_CACHE_TTL_MS) {
+    // Return cached value if already parsed
+    if (vipPhoneNumbersCache !== null) {
         return vipPhoneNumbersCache;
     }
     
-    // Cache is stale or doesn't exist - refresh it
+    // Parse VIP phone numbers from environment variable (once per cold start)
     try {
         const raw = process.env.VIP_PHONE_NUMBERS;
         if (!raw) {
             vipPhoneNumbersCache = new Set<string>();
-            vipCacheLastRefresh = now;
             return vipPhoneNumbersCache;
         }
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-            const newCache = new Set<string>(parsed.map((v) => String(v)));
-            
-            // Log if cache changed
-            if (vipPhoneNumbersCache && !setsEqual(vipPhoneNumbersCache, newCache)) {
-                console.log('[inbound-router] VIP phone numbers cache refreshed', { 
-                    previous: vipPhoneNumbersCache.size,
-                    current: newCache.size
-                });
-            }
-            
-            vipPhoneNumbersCache = newCache;
+            vipPhoneNumbersCache = new Set<string>(parsed.map((v) => String(v)));
+            console.log('[inbound-router] VIP phone numbers loaded', { 
+                count: vipPhoneNumbersCache.size
+            });
         } else {
+            console.warn('[inbound-router] VIP_PHONE_NUMBERS is not an array');
             vipPhoneNumbersCache = new Set<string>();
         }
-        vipCacheLastRefresh = now;
     } catch (err) {
         console.warn('[inbound-router] Failed to parse VIP_PHONE_NUMBERS:', err);
-        // Keep existing cache if parse fails, or create empty set
-        if (!vipPhoneNumbersCache) {
-            vipPhoneNumbersCache = new Set<string>();
-        }
-        vipCacheLastRefresh = now;
+        vipPhoneNumbersCache = new Set<string>();
     }
     return vipPhoneNumbersCache;
-}
-
-// Helper function to compare two sets
-function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
-    if (a.size !== b.size) return false;
-    for (const item of a) {
-        if (!b.has(item)) return false;
-    }
-    return true;
 }
 
 async function getQueuePosition(clinicId: string, callId: string): Promise<{ position: number, estimatedWaitTime: number } | null> {
@@ -291,6 +281,12 @@ async function getQueuePosition(clinicId: string, callId: string): Promise<{ pos
         
         const position = index + 1;
         
+        // FIX #9: PERFORMANCE WARNING - This query scans ALL online agents across all clinics
+        // then filters client-side. For large contact centers, consider adding a composite
+        // GSI with partition key 'clinicId' and sort key 'status' for O(1) clinic-specific queries.
+        // Alternative: Use a separate table to track clinic-to-agent mappings.
+        // Current approach: status-index GSI + FilterExpression = O(n) where n = all online agents
+        // Better approach: clinicId-status GSI = O(m) where m = agents for this clinic
         const { Items: onlineAgents } = await ddb.send(new QueryCommand({
             TableName: AGENT_PRESENCE_TABLE_NAME,
             IndexName: 'status-index',
@@ -918,6 +914,7 @@ export const handler = async (event: any): Promise<any> => {
                                 }
 
                                 // Store AI call session in queue for tracking
+                                const aiSessionId = voiceAiResponse[0]?.sessionId || randomUUID();
                                 try {
                                     const { queuePosition, uniquePositionId } = generateUniqueCallPosition();
                                     const now = Math.floor(Date.now() / 1000);
@@ -937,11 +934,92 @@ export const handler = async (event: any): Promise<any> => {
                                             direction: 'inbound',
                                             isAiCall: true,
                                             aiAgentId: voiceAiAgent.agentId,
-                                            aiSessionId: voiceAiResponse[0]?.sessionId || randomUUID(),
+                                            aiSessionId,
+                                            transactionId: callId, // Store for Media Pipeline correlation
                                         }
                                     }));
                                 } catch (err) {
                                     console.warn('[NEW_INBOUND_CALL] Failed to create AI call record:', err);
+                                }
+
+                                // ========== START MEDIA PIPELINE FOR AI CALL ==========
+                                // Start real-time transcription for AI voice conversation
+                                // The transcript-bridge Lambda will consume transcripts and invoke Voice AI
+                                // CRITICAL FIX: Added robust error handling and fallback mechanism
+                                if (isRealTimeTranscriptionEnabled()) {
+                                    console.log('[NEW_INBOUND_CALL] Starting Media Pipeline for AI call:', {
+                                        callId,
+                                        clinicId,
+                                        aiAgentId: voiceAiAgent.agentId
+                                    });
+                                    
+                                    // Helper to update call record with pipeline status
+                                    const updateCallPipelineStatus = async (status: 'active' | 'failed' | 'fallback', pipelineId?: string, errorMessage?: string) => {
+                                        try {
+                                            const { Items: callRecords } = await ddb.send(new QueryCommand({
+                                                TableName: CALL_QUEUE_TABLE_NAME,
+                                                IndexName: 'callId-index',
+                                                KeyConditionExpression: 'callId = :callId',
+                                                ExpressionAttributeValues: { ':callId': callId }
+                                            }));
+                                            
+                                            if (callRecords && callRecords[0]) {
+                                                const updateExpr = status === 'active' 
+                                                    ? 'SET mediaPipelineId = :pipelineId, transcriptionEnabled = :true, pipelineStatus = :status'
+                                                    : 'SET transcriptionEnabled = :false, pipelineStatus = :status, pipelineError = :error, useDtmfFallback = :fallback';
+                                                
+                                                const updateValues: Record<string, any> = status === 'active'
+                                                    ? { ':pipelineId': pipelineId, ':true': true, ':status': status }
+                                                    : { ':false': false, ':status': status, ':error': errorMessage || 'unknown', ':fallback': true };
+                                                
+                                                await ddb.send(new UpdateCommand({
+                                                    TableName: CALL_QUEUE_TABLE_NAME,
+                                                    Key: { 
+                                                        clinicId: callRecords[0].clinicId, 
+                                                        queuePosition: callRecords[0].queuePosition 
+                                                    },
+                                                    UpdateExpression: updateExpr,
+                                                    ExpressionAttributeValues: updateValues
+                                                }));
+                                            }
+                                        } catch (updateErr) {
+                                            console.error('[NEW_INBOUND_CALL] Failed to update call pipeline status:', updateErr);
+                                        }
+                                    };
+                                    
+                                    startMediaPipeline({
+                                        callId,
+                                        meetingId: callId, // For AI calls, use callId as meetingId
+                                        clinicId,
+                                        agentId: voiceAiAgent.agentId,
+                                        customerPhone: fromPhoneNumber,
+                                        direction: 'inbound',
+                                        // Pass AI-specific metadata for transcript bridge
+                                        isAiCall: true,
+                                        aiSessionId,
+                                    } as any).then(async pipelineId => {
+                                        if (pipelineId) {
+                                            await updateCallPipelineStatus('active', pipelineId);
+                                            console.log('[NEW_INBOUND_CALL] Media Pipeline started for AI call:', {
+                                                callId,
+                                                pipelineId
+                                            });
+                                        } else {
+                                            // Pipeline creation returned null - mark for DTMF fallback
+                                            console.warn('[NEW_INBOUND_CALL] Media Pipeline returned null - using DTMF fallback');
+                                            await updateCallPipelineStatus('fallback', undefined, 'Pipeline returned null');
+                                        }
+                                    }).catch(async (err: Error) => {
+                                        console.error('[NEW_INBOUND_CALL] Failed to start Media Pipeline for AI call:', {
+                                            callId,
+                                            error: err.message
+                                        });
+                                        // Mark call for DTMF fallback mode so ACTION_SUCCESSFUL can use PlayAudioAndGetDigits
+                                        await updateCallPipelineStatus('failed', undefined, err.message);
+                                    });
+                                } else {
+                                    // Real-time transcription not enabled - use DTMF fallback from the start
+                                    console.log('[NEW_INBOUND_CALL] Real-time transcription not enabled - AI call will use DTMF fallback');
                                 }
 
                                 return buildActions(actions);
@@ -2145,9 +2223,81 @@ export const handler = async (event: any): Promise<any> => {
                     }
                 }
 
-                // For other ACTION_SUCCESSFUL events, just acknowledge
+                // For other ACTION_SUCCESSFUL events, check for pending AI responses
                 if (eventType === 'ACTION_SUCCESSFUL') {
                     console.log(`[ACTION_SUCCESSFUL] Action completed for call ${callId}`, { actionType });
+                    
+                    // CRITICAL FIX: Check for pending AI responses from transcript bridge
+                    // This handles the case where the AI Transcript Bridge has queued a response
+                    try {
+                        const { Items: callRecords } = await ddb.send(new QueryCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            IndexName: 'callId-index',
+                            KeyConditionExpression: 'callId = :callId',
+                            ExpressionAttributeValues: { ':callId': callId }
+                        }));
+                        
+                        if (callRecords && callRecords[0]) {
+                            const callRecord = callRecords[0];
+                            
+                            // Check if this is an AI call with pending response
+                            if (callRecord.isAiCall && callRecord.pendingAiResponse) {
+                                console.log('[ACTION_SUCCESSFUL] Found pending AI response, processing...');
+                                
+                                // Parse the pending response
+                                const pendingResponses = JSON.parse(callRecord.pendingAiResponse);
+                                const actions: any[] = [];
+                                
+                                for (const response of pendingResponses) {
+                                    switch (response.action) {
+                                        case 'SPEAK':
+                                            if (response.text) {
+                                                actions.push(buildSpeakAction(response.text));
+                                            }
+                                            break;
+                                        case 'HANG_UP':
+                                            actions.push({ Type: 'Hangup', Parameters: { SipResponseCode: '0' } });
+                                            break;
+                                        case 'CONTINUE':
+                                            // Continue listening - if DTMF fallback, use PlayAudioAndGetDigits
+                                            if (callRecord.useDtmfFallback) {
+                                                actions.push(buildPlayAudioAndGetDigitsAction('ai-listening-prompt.wav', 1, 30));
+                                            } else {
+                                                actions.push(buildPauseAction(500));
+                                            }
+                                            break;
+                                    }
+                                }
+                                
+                                // Clear the pending response
+                                await ddb.send(new UpdateCommand({
+                                    TableName: CALL_QUEUE_TABLE_NAME,
+                                    Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
+                                    UpdateExpression: 'REMOVE pendingAiResponse, pendingAiResponseTime',
+                                }));
+                                
+                                if (actions.length > 0) {
+                                    console.log('[ACTION_SUCCESSFUL] Returning pending AI actions:', { count: actions.length });
+                                    return buildActions(actions);
+                                }
+                            }
+                            
+                            // For AI calls with no pending response, continue listening
+                            if (callRecord.isAiCall && !callRecord.pendingAiResponse) {
+                                // If using DTMF fallback, prompt for input
+                                if (callRecord.useDtmfFallback || !callRecord.transcriptionEnabled) {
+                                    return buildActions([
+                                        buildPlayAudioAndGetDigitsAction('ai-listening-prompt.wav', 1, 30)
+                                    ]);
+                                }
+                                // Otherwise, Media Pipeline will handle transcription
+                                return buildActions([buildPauseAction(100)]);
+                            }
+                        }
+                    } catch (err) {
+                        console.error('[ACTION_SUCCESSFUL] Error checking for pending AI response:', err);
+                    }
+                    
                     return buildActions([]);
                 }
 

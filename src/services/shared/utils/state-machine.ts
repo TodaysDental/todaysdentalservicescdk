@@ -8,6 +8,7 @@
 export type CallStatus = 
   | 'queued' 
   | 'ringing' 
+  | 'accepting'  // FIX #3: Add intermediate state for call acceptance
   | 'connected' 
   | 'on_hold' 
   | 'transferring' 
@@ -19,14 +20,17 @@ export type CallStatus =
 export type AgentStatus = 
   | 'Offline' 
   | 'Online' 
+  | 'Ringing'  // FIX #2: Add Ringing status for agent state machine
   | 'OnCall';
 
 /**
  * Call state machine defining valid transitions
+ * FIX #3: Added 'accepting' as intermediate state for call acceptance
  */
 export const CALL_STATE_MACHINE: Record<CallStatus, CallStatus[]> = {
   queued: ['ringing', 'abandoned', 'escalated'],
-  ringing: ['connected', 'queued', 'abandoned'],
+  ringing: ['accepting', 'connected', 'queued', 'abandoned'],  // FIX: ringing -> accepting
+  accepting: ['connected', 'ringing', 'abandoned'],  // FIX: accepting -> connected (success) or ringing (rollback)
   connected: ['on_hold', 'completed', 'transferring'],
   on_hold: ['connected', 'completed', 'abandoned'],
   transferring: ['connected', 'completed', 'failed'],
@@ -38,10 +42,12 @@ export const CALL_STATE_MACHINE: Record<CallStatus, CallStatus[]> = {
 
 /**
  * Agent state machine defining valid transitions
+ * FIX #2: Added 'Ringing' state for incoming calls
  */
 export const AGENT_STATE_MACHINE: Record<AgentStatus, AgentStatus[]> = {
   Offline: ['Online'],
-  Online: ['OnCall', 'Offline'],
+  Online: ['Ringing', 'OnCall', 'Offline'],  // FIX: Online -> Ringing when call comes in
+  Ringing: ['OnCall', 'Online', 'Offline'],  // FIX: Ringing -> OnCall (accept) or Online (reject/timeout)
   OnCall: ['Online', 'Offline'], // Can go offline during call (emergency)
 };
 

@@ -1,5 +1,5 @@
 import { DynamoDBDocumentClient, QueryCommand, TransactWriteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { ChimeSDKMeetingsClient, CreateAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
+import { ChimeSDKMeetingsClient, CreateAttendeeCommand, DeleteAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { getSmaIdForClinic } from './sma-map';
 
@@ -43,34 +43,66 @@ interface AgentInfo extends Record<string, any> {
     canHandleVip?: boolean;
 }
 
+/**
+ * Calculate priority score for a queued call
+ * 
+ * FIX #7: Adjusted algorithm to prevent starvation of normal-priority calls:
+ * - Priority bonuses are now smaller relative to wait time
+ * - Wait time bonus uses 2x multiplier for first 30 minutes (urgent escalation)
+ * - This ensures normal calls waiting 30+ minutes beat freshly-arrived high-priority calls
+ * 
+ * Priority breakdown:
+ * - High priority base: 60 points
+ * - Normal priority base: 30 points  
+ * - Low priority base: 15 points
+ * - VIP bonus: 30 points
+ * - Wait time: 2 points/minute for first 30 min, 1 point/minute thereafter (max 180 total)
+ * - Callback bonus: 20 points
+ * 
+ * Examples:
+ * - Fresh high+VIP call: 60 + 30 = 90 points
+ * - Normal call waiting 30 min: 30 + (30*2) = 90 points (ties!)
+ * - Normal call waiting 45 min: 30 + 60 + 15 = 105 points (beats high+VIP)
+ */
 function calculatePriorityScore(entry: QueuedCall, nowSeconds: number): number {
     let score = 0;
 
+    // Reduced priority base scores to give wait time more relative weight
     const priority = entry.priority || 'normal';
     switch (priority) {
         case 'high':
-            score += 100;
+            score += 60;
             break;
         case 'normal':
-            score += 50;
+            score += 30;
             break;
         case 'low':
-            score += 25;
+            score += 15;
             break;
     }
 
     if (entry.isVip) {
-        score += 50;
+        score += 30;
     }
 
-    // CRITICAL FIX #7: Cap wait time bonus to prevent integer overflow with long wait times
+    // FIX #7: Wait time bonus with early escalation to prevent starvation
+    // First 30 minutes: 2 points per minute (aggressive)
+    // After 30 minutes: 1 point per minute (steady)
+    // Max total wait bonus: 180 points (60 + 120)
     const queueEntryTime = entry.queueEntryTime ?? nowSeconds;
     const waitMinutes = Math.max(0, (nowSeconds - queueEntryTime) / 60);
-    const cappedWaitMinutes = Math.min(waitMinutes, 120); // Max 2 hours bonus (120 points)
-    score += cappedWaitMinutes;
+    
+    if (waitMinutes <= 30) {
+        // First 30 minutes: 2x multiplier for urgent escalation
+        score += waitMinutes * 2;
+    } else {
+        // After 30 minutes: 60 points base + 1 per additional minute
+        const additionalMinutes = Math.min(waitMinutes - 30, 120); // Cap at 2 more hours
+        score += 60 + additionalMinutes;
+    }
 
     if (entry.isCallback) {
-        score += 30;
+        score += 20;
     }
 
     const previousCallCount = typeof entry.previousCallCount === 'number' ? entry.previousCallCount : 0;
@@ -149,9 +181,21 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
         }
 
         const scoredCalls = matchingCalls.map((call) => {
-            const priorityScore = typeof call.priorityScore === 'number'
-                ? call.priorityScore
-                : calculatePriorityScore(call, nowSeconds);
+            let priorityScore: number;
+            
+            if (typeof call.priorityScore === 'number') {
+                // FIX #13: Validate priorityScore is within reasonable bounds
+                // Clamp to [0, 1000] to prevent malformed records from breaking sorting
+                priorityScore = Math.max(0, Math.min(call.priorityScore, 1000));
+                if (call.priorityScore !== priorityScore) {
+                    console.warn(`[checkQueueForWork] Clamped out-of-bounds priorityScore for call ${call.callId}`, {
+                        original: call.priorityScore,
+                        clamped: priorityScore
+                    });
+                }
+            } else {
+                priorityScore = calculatePriorityScore(call, nowSeconds);
+            }
 
             return { ...call, priorityScore };
         });
@@ -242,11 +286,12 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
                             Update: {
                                 TableName: agentPresenceTableName,
                                 Key: { agentId },
+                                // FIX #2: Use 'Ringing' (capitalized) consistent with agent state machine
                                 UpdateExpression: 'SET #status = :ringing, ringingCallId = :callId, ringingCallTime = :time, ringingCallFrom = :from, ringingCallPriority = :priority, lastActivityAt = :time',
                                 ConditionExpression: '#status = :online',
                                 ExpressionAttributeNames: { '#status': 'status' },
                                 ExpressionAttributeValues: {
-                                    ':ringing': 'ringing',
+                                    ':ringing': 'Ringing',
                                     ':callId': callToAssign.callId,
                                     ':time': assignmentTimestamp,
                                     ':from': callToAssign.phoneNumber || 'Unknown',
@@ -274,18 +319,35 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
                     }
 
                     // Update call record with attendee info
-                    await ddb.send(new UpdateCommand({
-                        TableName: callQueueTableName,
-                        Key: { clinicId: callToAssign.clinicId, queuePosition: callToAssign.queuePosition },
-                        UpdateExpression: 'SET customerAttendeeInfo = :attendee',
-                        ConditionExpression: '#status = :ringing AND assignedAgentId = :agentId',
-                        ExpressionAttributeNames: { '#status': 'status' },
-                        ExpressionAttributeValues: {
-                            ':attendee': customerAttendee,
-                            ':ringing': 'ringing',
-                            ':agentId': agentId
+                    // FIX #6: Wrap in try-catch to cleanup attendee if update fails
+                    try {
+                        await ddb.send(new UpdateCommand({
+                            TableName: callQueueTableName,
+                            Key: { clinicId: callToAssign.clinicId, queuePosition: callToAssign.queuePosition },
+                            UpdateExpression: 'SET customerAttendeeInfo = :attendee',
+                            ConditionExpression: '#status = :ringing AND assignedAgentId = :agentId',
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: {
+                                ':attendee': customerAttendee,
+                                ':ringing': 'ringing',
+                                ':agentId': agentId
+                            }
+                        }));
+                    } catch (updateErr: any) {
+                        // FIX #6: Cleanup the orphaned attendee if update fails
+                        console.error(`[checkQueueForWork] Failed to update call record with attendee, cleaning up:`, updateErr);
+                        try {
+                            // FIX: Use static import instead of dynamic import for better latency
+                            await chime.send(new DeleteAttendeeCommand({
+                                MeetingId: agentMeeting.MeetingId,
+                                AttendeeId: customerAttendee.AttendeeId!
+                            }));
+                            console.log(`[checkQueueForWork] Cleaned up orphaned attendee ${customerAttendee.AttendeeId}`);
+                        } catch (cleanupErr) {
+                            console.error(`[checkQueueForWork] Failed to cleanup orphaned attendee:`, cleanupErr);
                         }
-                    }));
+                        throw updateErr; // Re-throw to trigger rollback
+                    }
 
                     console.log(`[checkQueueForWork] Created customer attendee ${customerAttendee.AttendeeId}`);
                 } catch (attendeeErr) {
@@ -297,7 +359,7 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
                                 Update: {
                                     TableName: callQueueTableName,
                                     Key: { clinicId: callToAssign.clinicId, queuePosition: callToAssign.queuePosition },
-                                    UpdateExpression: 'SET #status = :queued REMOVE agentIds, assignedAgentId, meetingInfo, assignedAt',
+                                    UpdateExpression: 'SET #status = :queued REMOVE agentIds, assignedAgentId, meetingInfo, assignedAt, customerAttendeeInfo',
                                     ConditionExpression: '#status = :ringing AND assignedAgentId = :agentId',
                                     ExpressionAttributeNames: { '#status': 'status' },
                                     ExpressionAttributeValues: {
@@ -324,18 +386,70 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
                     continue; // Skip to next clinic
                 }
 
-                await chimeVoiceClient.send(new UpdateSipMediaApplicationCallCommand({
-                    SipMediaApplicationId: smaId,
-                    TransactionId: callToAssign.callId,
-                    Arguments: {
-                        action: 'BRIDGE_CUSTOMER_INBOUND',
-                        meetingId: agentMeeting.MeetingId,
-                        customerAttendeeId: customerAttendee.AttendeeId!,
-                        customerAttendeeJoinToken: customerAttendee.JoinToken!
-                    }
-                }));
+                // FIX: Add error handling for SMA bridge failure
+                try {
+                    await chimeVoiceClient.send(new UpdateSipMediaApplicationCallCommand({
+                        SipMediaApplicationId: smaId,
+                        TransactionId: callToAssign.callId,
+                        Arguments: {
+                            action: 'BRIDGE_CUSTOMER_INBOUND',
+                            meetingId: agentMeeting.MeetingId,
+                            customerAttendeeId: customerAttendee.AttendeeId!,
+                            customerAttendeeJoinToken: customerAttendee.JoinToken!
+                        }
+                    }));
 
-                console.log(`[checkQueueForWork] Successfully assigned call ${callToAssign.callId} to agent ${agentId} and triggered bridge.`);
+                    console.log(`[checkQueueForWork] Successfully assigned call ${callToAssign.callId} to agent ${agentId} and triggered bridge.`);
+                } catch (smaBridgeErr: any) {
+                    console.error(`[checkQueueForWork] SMA bridge failed for call ${callToAssign.callId}:`, smaBridgeErr);
+                    
+                    // Rollback: Delete orphaned attendee and reset states
+                    try {
+                        // Delete the orphaned customer attendee
+                        // FIX: Use static import instead of dynamic import for better latency
+                        await chime.send(new DeleteAttendeeCommand({
+                            MeetingId: agentMeeting.MeetingId,
+                            AttendeeId: customerAttendee.AttendeeId!
+                        }));
+                        console.log(`[checkQueueForWork] Cleaned up orphaned attendee ${customerAttendee.AttendeeId}`);
+                    } catch (cleanupErr) {
+                        console.error(`[checkQueueForWork] Failed to cleanup orphaned attendee:`, cleanupErr);
+                    }
+                    
+                    // Rollback database state
+                    await ddb.send(new TransactWriteCommand({
+                        TransactItems: [
+                            {
+                                Update: {
+                                    TableName: callQueueTableName,
+                                    Key: { clinicId: callToAssign.clinicId, queuePosition: callToAssign.queuePosition },
+                                    UpdateExpression: 'SET #status = :queued, smaBridgeError = :error REMOVE agentIds, assignedAgentId, meetingInfo, assignedAt, customerAttendeeInfo',
+                                    ConditionExpression: '#status = :ringing AND assignedAgentId = :agentId',
+                                    ExpressionAttributeNames: { '#status': 'status' },
+                                    ExpressionAttributeValues: {
+                                        ':queued': 'queued',
+                                        ':ringing': 'ringing',
+                                        ':agentId': agentId,
+                                        ':error': smaBridgeErr.message || 'SMA bridge failed'
+                                    }
+                                }
+                            },
+                            {
+                                Update: {
+                                    TableName: agentPresenceTableName,
+                                    Key: { agentId },
+                                    UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallPriority',
+                                    ExpressionAttributeNames: { '#status': 'status' },
+                                    ExpressionAttributeValues: {
+                                        ':online': 'Online'
+                                    }
+                                }
+                            }
+                        ]
+                    })).catch(rollbackErr => console.error('[checkQueueForWork] SMA bridge rollback failed:', rollbackErr));
+                    
+                    continue; // Try next clinic
+                }
                 return;
             } catch (err: any) {
                 if (err?.name === 'TransactionCanceledException') {

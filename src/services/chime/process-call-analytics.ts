@@ -4,7 +4,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { ComprehendClient, DetectSentimentCommand, DetectKeyPhrasesCommand, DetectEntitiesCommand, LanguageCode } from '@aws-sdk/client-comprehend';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import { getTranscriptBufferManager, TranscriptBufferManager, TranscriptBuffer, TranscriptSegment } from '../shared/utils/transcript-buffer-manager';
-import { checkAndMarkProcessed, getDedupTableName } from '../shared/utils/analytics-deduplication';
+import { checkAndMarkProcessed, getDedupTableName, generateDedupKeyFromEvent } from '../shared/utils/analytics-deduplication';
 import { AnalyticsState } from '../../types/analytics-state-machine';
 import { transitionAnalyticsState, canUpdateAnalyticsRecord } from '../shared/utils/analytics-state-manager';
 
@@ -24,6 +24,16 @@ const RETENTION_DAYS = parseInt(process.env.ANALYTICS_RETENTION_DAYS || '90', 10
 const ENABLE_REAL_TIME_SENTIMENT = process.env.ENABLE_REAL_TIME_SENTIMENT === 'true';
 const ENABLE_REAL_TIME_ALERTS = process.env.ENABLE_REAL_TIME_ALERTS === 'true';
 const CALL_ALERTS_TOPIC_ARN = process.env.CALL_ALERTS_TOPIC_ARN;
+
+// CRITICAL FIX #2.4: Make finalization delay configurable
+const FINALIZATION_DELAY_MS = parseInt(process.env.FINALIZATION_DELAY_MS || '30000', 10);
+
+// CRITICAL FIX #2.2: Maximum total category score per call to prevent overflow
+const MAX_TOTAL_CATEGORY_SCORE = parseInt(process.env.MAX_TOTAL_CATEGORY_SCORE || '500', 10);
+
+// CRITICAL FIX #2.3: Track Comprehend failures for alerting
+let comprehendFailureCount = 0;
+const COMPREHEND_FAILURE_THRESHOLD = 5; // Alert after 5 consecutive failures
 
 // Initialize TranscriptBufferManager
 const transcriptManager = getTranscriptBufferManager(ddb, TRANSCRIPT_BUFFER_TABLE);
@@ -319,10 +329,40 @@ async function analyzeSentimentWithComprehend(
     
     // CRITICAL FIX: Validate sentiment score range
     const sentimentScore = validateSentimentScore(rawScore);
+    
+    // CRITICAL FIX #2.3: Reset failure count on success
+    comprehendFailureCount = 0;
 
     return { sentiment, sentimentScore, scores };
-  } catch (err) {
-    console.error('[process-analytics] Comprehend error, falling back to keywords:', err);
+  } catch (err: any) {
+    // CRITICAL FIX #2.3: Track consecutive failures and alert
+    comprehendFailureCount++;
+    console.error('[process-analytics] Comprehend error, falling back to keywords:', {
+      error: err.message,
+      failureCount: comprehendFailureCount,
+      threshold: COMPREHEND_FAILURE_THRESHOLD
+    });
+    
+    // Alert if we hit the failure threshold
+    if (comprehendFailureCount === COMPREHEND_FAILURE_THRESHOLD && CALL_ALERTS_TOPIC_ARN && ENABLE_REAL_TIME_ALERTS) {
+      try {
+        await sns.send(new PublishCommand({
+          TopicArn: CALL_ALERTS_TOPIC_ARN,
+          Subject: 'ALERT: Comprehend Service Degradation',
+          Message: JSON.stringify({
+            type: 'COMPREHEND_DEGRADATION',
+            severity: 'HIGH',
+            message: `AWS Comprehend has failed ${COMPREHEND_FAILURE_THRESHOLD} consecutive times. Sentiment analysis is degraded to keyword-based fallback.`,
+            lastError: err.message,
+            timestamp: new Date().toISOString(),
+            recommendation: 'Check AWS Comprehend quotas, permissions, and service health.'
+          }, null, 2)
+        }));
+      } catch (alertErr) {
+        console.error('[process-analytics] Failed to send Comprehend degradation alert:', alertErr);
+      }
+    }
+    
     return analyzeKeywordSentiment(text);
   }
 }
@@ -672,7 +712,9 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
       score: sentimentResult.sentimentScore
     };
     
-    // CRITICAL FIX: Use atomic ADD operations to prevent race conditions in concurrent updates
+    // CRITICAL FIX #4 & #6: Use atomic ADD operations with bounded values
+    // Fix #4: Track list sizes and trim atomically to prevent unbounded growth
+    // Fix #6: Cap category scores to prevent overflow
     const expressionNames: any = {};
     const expressionValues: any = {
       ':one': 1,
@@ -683,14 +725,32 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
       ':maxListSize': 10
     };
     
-    // Build atomic category score updates
+    // CRITICAL FIX #6 & #2.2: Build atomic category score updates with capping
+    // Cap individual scores AND total scores to prevent unbounded growth on long calls
+    const MAX_CATEGORY_SCORE_PER_UPDATE = 10; // Cap at 10 matches per transcript segment
     const categoryAddExpressions: string[] = [];
-    Object.entries(categoryScores).forEach(([category, score], idx) => {
-      const attrName = `#cat${idx}`;
-      expressionNames[attrName] = category;
-      categoryAddExpressions.push(`categoryScores.${attrName} :catScore${idx}`);
-      expressionValues[`:catScore${idx}`] = score;
-    });
+    
+    // CRITICAL FIX #2.2: Check current category scores and skip if already at max
+    const currentCategoryScores = storedRecord.categoryScores || {};
+    const totalCurrentScore = Object.values(currentCategoryScores).reduce((sum: number, val: any) => sum + (val || 0), 0);
+    const shouldUpdateCategories = totalCurrentScore < MAX_TOTAL_CATEGORY_SCORE;
+    
+    if (shouldUpdateCategories) {
+      Object.entries(categoryScores).forEach(([category, score], idx) => {
+        const attrName = `#cat${idx}`;
+        expressionNames[attrName] = category;
+        // Cap the score increment to prevent overflow
+        const cappedScore = Math.min(score as number, MAX_CATEGORY_SCORE_PER_UPDATE);
+        categoryAddExpressions.push(`categoryScores.${attrName} :catScore${idx}`);
+        expressionValues[`:catScore${idx}`] = cappedScore;
+      });
+    } else {
+      console.log('[processTranscriptEvent] Category scores at max, skipping update:', {
+        callId,
+        totalCurrentScore,
+        maxTotal: MAX_TOTAL_CATEGORY_SCORE
+      });
+    }
     
     // Build key phrases and entities ADD expressions (using arrays)
     const newKeyPhrases = keyPhrases.slice(0, 5); // Limit per update
@@ -723,6 +783,7 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
     ];
     
     // CRITICAL FIX #4: Add state machine enforcement to prevent updates to finalized calls
+    // CRITICAL FIX #2.1: Add ReturnValues to get updated count for race-safe trimming
     const updateResult = await ddb.send(new UpdateCommand({
       TableName: ANALYTICS_TABLE_NAME,
       Key: { callId, timestamp: storedTimestamp },
@@ -736,7 +797,9 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
         ':activeState': AnalyticsState.ACTIVE
       },
       // CRITICAL FIX #4: Only update if still in ACTIVE state
-      ConditionExpression: 'analyticsState = :activeState OR attribute_not_exists(analyticsState)'
+      ConditionExpression: 'analyticsState = :activeState OR attribute_not_exists(analyticsState)',
+      // CRITICAL FIX #2.1: Return updated values to get accurate transcript count
+      ReturnValues: 'UPDATED_NEW'
     })).catch((err: any) => {
       if (err.name === 'ConditionalCheckFailedException') {
         console.warn(`[processTranscriptEvent] Cannot update - call no longer active:`, {
@@ -753,9 +816,12 @@ async function processTranscriptEvent(event: ChimeAnalyticsEvent): Promise<void>
       continue;
     }
     
-    // Periodically trim lists to prevent unbounded growth (every 25 updates)
-    if ((storedRecord.transcriptCount || 0) % 25 === 0) {
-      await trimLargeListsAsync(callId, storedTimestamp);
+    // CRITICAL FIX #4 & #2.1: Trim lists synchronously using ATOMIC counter from update result
+    // FIX #2.1: Use the transcript count AFTER update (from updateResult.Attributes) instead of stale storedRecord
+    // This prevents race conditions where concurrent Lambdas use stale counts
+    const updatedCount = updateResult?.Attributes?.transcriptCount || (storedRecord.transcriptCount || 0) + 1;
+    if (updatedCount % 15 === 0 && updatedCount > 0) {
+      await trimLargeListsSync(callId, storedTimestamp);
     }
     
     // Check for issues and send alerts
@@ -869,8 +935,8 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
     return;
   }
 
-  const FINALIZATION_DELAY = 30000; // 30 seconds
-  const finalizationTime = Date.now() + FINALIZATION_DELAY;
+  // CRITICAL FIX #2.4: Use configurable finalization delay
+  const finalizationTime = Date.now() + FINALIZATION_DELAY_MS;
 
   const queryResult = await ddb.send(new QueryCommand({
     TableName: ANALYTICS_TABLE_NAME,
@@ -975,11 +1041,13 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
     ? Math.round((customerWordCount / totalWordCount) * 100)
     : 0;
   
-  // FIX #15: Validate call timestamps before using them
+  // CRITICAL FIX #5: Capture timestamps early and use them consistently
+  // This minimizes the race window between calculation and conditional write
+  const finalizationStartTime = Date.now();
   const callStartTime = new Date(analytics.callStartTime).getTime();
   
   // Don't trust client-provided end time - use server time
-  const callEndTime = Date.now();
+  const callEndTime = finalizationStartTime;
   
   // Validate call duration is reasonable (not negative, not > 24 hours)
   let totalDuration = Math.floor((callEndTime - callStartTime) / 1000);
@@ -999,6 +1067,30 @@ async function finalizeCallAnalytics(event: ChimeAnalyticsEvent): Promise<void> 
       durationHours: Math.round(totalDuration / 3600)
     });
     // Keep the value but log warning - might be legitimate
+  }
+  
+  // CRITICAL FIX #5: Check if record was modified by another process during our computation
+  // Re-verify the record hasn't been finalized in the meantime
+  const timeSinceStart = Date.now() - finalizationStartTime;
+  if (timeSinceStart > 5000) {
+    console.warn('[finalizeCallAnalytics] Finalization took >5s, re-verifying state:', {
+      callId,
+      elapsedMs: timeSinceStart
+    });
+    
+    // Re-fetch to check current state
+    const recheckResult = await ddb.send(new QueryCommand({
+      TableName: ANALYTICS_TABLE_NAME,
+      KeyConditionExpression: 'callId = :callId',
+      ExpressionAttributeValues: { ':callId': callId },
+      Limit: 1
+    }));
+    
+    const currentRecord = recheckResult.Items?.[0];
+    if (currentRecord?.finalizationScheduledAt || currentRecord?.callStatus === 'completed') {
+      console.log('[finalizeCallAnalytics] Record already finalized by another process:', callId);
+      return;
+    }
   }
   
   const silenceMetrics = calculateSilenceMetrics(safeBuffer, totalDuration);
@@ -1094,44 +1186,60 @@ async function trimTranscriptLists(callId: string, timestamp: number): Promise<v
 }
 
 /**
- * CRITICAL FIX: Trim large lists asynchronously to prevent unbounded growth
- * Called periodically (every 25 updates) to keep lists at manageable size
+ * CRITICAL FIX #4: Trim large lists SYNCHRONOUSLY to guarantee bounded growth
+ * Called every 15 updates to ensure lists never exceed ~25 items
+ * This replaces the async version which could miss trimming due to Lambda lifecycle
  */
-async function trimLargeListsAsync(callId: string, timestamp: number): Promise<void> {
-  // Run asynchronously without blocking the main flow
-  setImmediate(async () => {
-    try {
-      const { Item } = await ddb.send(new GetCommand({
-        TableName: ANALYTICS_TABLE_NAME,
-        Key: { callId, timestamp }
-      }));
-      
-      if (!Item) return;
-      
-      const needsTrim = 
-        (Item.latestTranscripts && Item.latestTranscripts.length > 15) ||
-        (Item.latestSentiment && Item.latestSentiment.length > 15);
-      
-      if (!needsTrim) return;
-      
-      await ddb.send(new UpdateCommand({
-        TableName: ANALYTICS_TABLE_NAME,
-        Key: { callId, timestamp },
-        UpdateExpression: `
-          SET latestTranscripts = :trans,
-              latestSentiment = :sent
-        `,
-        ExpressionAttributeValues: {
-          ':trans': (Item.latestTranscripts || []).slice(-10),
-          ':sent': (Item.latestSentiment || []).slice(-10)
-        }
-      }));
-      
-      console.log('[trimLargeListsAsync] Trimmed lists for call:', callId);
-    } catch (err: any) {
-      console.warn('[trimLargeListsAsync] Non-critical trim error:', err.message);
-    }
-  });
+async function trimLargeListsSync(callId: string, timestamp: number): Promise<void> {
+  try {
+    const { Item } = await ddb.send(new GetCommand({
+      TableName: ANALYTICS_TABLE_NAME,
+      Key: { callId, timestamp }
+    }));
+    
+    if (!Item) return;
+    
+    // CRITICAL FIX #4: Use stricter threshold - trim if > 15 items
+    const transcriptsLength = Item.latestTranscripts?.length || 0;
+    const sentimentLength = Item.latestSentiment?.length || 0;
+    const keyPhrasesLength = Item.keyPhrases?.length || 0;
+    const entitiesLength = Item.entities?.length || 0;
+    
+    const needsTrim = 
+      transcriptsLength > 15 ||
+      sentimentLength > 15 ||
+      keyPhrasesLength > 50 ||  // Key phrases can be longer
+      entitiesLength > 50;
+    
+    if (!needsTrim) return;
+    
+    // Trim all lists atomically to prevent partial updates
+    await ddb.send(new UpdateCommand({
+      TableName: ANALYTICS_TABLE_NAME,
+      Key: { callId, timestamp },
+      UpdateExpression: `
+        SET latestTranscripts = :trans,
+            latestSentiment = :sent,
+            keyPhrases = :phrases,
+            entities = :ents
+      `,
+      ExpressionAttributeValues: {
+        ':trans': (Item.latestTranscripts || []).slice(-10),  // Keep last 10
+        ':sent': (Item.latestSentiment || []).slice(-10),     // Keep last 10
+        ':phrases': (Item.keyPhrases || []).slice(-30),       // Keep last 30
+        ':ents': (Item.entities || []).slice(-30)             // Keep last 30
+      }
+    }));
+    
+    console.log('[trimLargeListsSync] Trimmed lists for call:', {
+      callId,
+      transcriptsBefore: transcriptsLength,
+      sentimentBefore: sentimentLength
+    });
+  } catch (err: any) {
+    // Log but don't throw - trimming is best-effort
+    console.warn('[trimLargeListsSync] Trim error (non-fatal):', err.message);
+  }
 }
 
 async function detectIssues(

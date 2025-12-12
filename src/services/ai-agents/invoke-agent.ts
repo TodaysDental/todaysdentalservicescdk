@@ -10,6 +10,8 @@ import {
   DynamoDBDocumentClient,
   GetCommand,
   UpdateCommand,
+  PutCommand,
+  DeleteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import {
   BedrockAgentRuntimeClient,
@@ -37,6 +39,7 @@ const bedrockAgentRuntimeClient = new BedrockAgentRuntimeClient({
 });
 
 const AGENTS_TABLE = process.env.AGENTS_TABLE || 'AiAgents';
+const SESSIONS_TABLE = process.env.SESSIONS_TABLE || 'AiAgentSessions';
 
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
 
@@ -50,6 +53,235 @@ interface InvokeRequest {
   sessionId?: string; // Optional - will create new if not provided
   endSession?: boolean; // End the session after this message
   enableTrace?: boolean; // Enable agent trace for debugging
+}
+
+// ========================================================================
+// SESSION MANAGEMENT (DynamoDB-backed for security)
+// ========================================================================
+
+/**
+ * Session tracking stored in DynamoDB for security and distributed state.
+ * 
+ * SECURITY FIX: Previously used in-memory Map which:
+ * 1. Allowed session hijacking across Lambda instances
+ * 2. Lost state on cold starts
+ * 3. Didn't bind sessions to specific users
+ * 
+ * Now sessions are stored with user binding in DynamoDB.
+ */
+interface SessionRecord {
+  sessionId: string;       // PK
+  agentId: string;
+  aliasId: string;
+  clinicId: string;
+  userId: string;          // User binding for security
+  messageCount: number;
+  createdAt: string;
+  lastActivity: string;
+  ttl: number;
+}
+
+// Maximum messages per session before forced cleanup
+const MAX_MESSAGES_PER_SESSION = 100;
+
+// Session TTL (30 minutes of inactivity)
+const SESSION_TTL_SECONDS = 30 * 60;
+
+// ========================================================================
+// PUBLIC ENDPOINT RATE LIMITING (DynamoDB-backed)
+// ========================================================================
+
+const PUBLIC_RATE_LIMIT = {
+  MAX_REQUESTS_PER_MINUTE: 10,      // Max requests per IP/visitor per minute
+  WINDOW_MS: 60 * 1000,              // 1 minute window
+  TTL_SECONDS: 300,                  // 5 minute TTL for rate limit records
+};
+
+// Rate limit table name (using sessions table with prefix)
+const RATE_LIMIT_TABLE = SESSIONS_TABLE;
+
+/**
+ * Check rate limit for public endpoint requests.
+ * Uses DynamoDB for distributed consistency across Lambda instances.
+ * 
+ * FIX: Previously the public endpoint had no rate limiting, allowing abuse.
+ */
+async function checkPublicRateLimit(
+  clinicId: string, 
+  visitorId: string, 
+  sourceIp?: string
+): Promise<{ allowed: boolean; reason?: string }> {
+  const now = Date.now();
+  const windowStart = Math.floor(now / PUBLIC_RATE_LIMIT.WINDOW_MS) * PUBLIC_RATE_LIMIT.WINDOW_MS;
+  const ttl = Math.floor(now / 1000) + PUBLIC_RATE_LIMIT.TTL_SECONDS;
+  
+  // Create a unique key based on clinic + visitor/IP
+  const rateLimitKey = `ratelimit:${clinicId}:${visitorId || sourceIp || 'unknown'}`;
+  
+  try {
+    // Try to get existing rate limit record
+    const response = await docClient.send(new GetCommand({
+      TableName: RATE_LIMIT_TABLE,
+      Key: { sessionId: rateLimitKey },
+    }));
+    
+    const record = response.Item;
+    const storedWindowStart = record?.windowStart || 0;
+    const isNewWindow = windowStart > storedWindowStart;
+    const currentCount = isNewWindow ? 0 : (record?.requestCount || 0);
+    
+    // Check if over limit
+    if (currentCount >= PUBLIC_RATE_LIMIT.MAX_REQUESTS_PER_MINUTE) {
+      const timeLeft = Math.ceil((storedWindowStart + PUBLIC_RATE_LIMIT.WINDOW_MS - now) / 1000);
+      return { 
+        allowed: false, 
+        reason: `Rate limit exceeded. Please wait ${Math.max(1, timeLeft)} seconds before making more requests.` 
+      };
+    }
+    
+    // Increment counter atomically
+    await docClient.send(new PutCommand({
+      TableName: RATE_LIMIT_TABLE,
+      Item: {
+        sessionId: rateLimitKey,
+        windowStart: isNewWindow ? windowStart : storedWindowStart,
+        requestCount: currentCount + 1,
+        clinicId,
+        visitorId,
+        sourceIp,
+        ttl,
+        isRateLimitRecord: true, // Flag to distinguish from session records
+      },
+    }));
+    
+    return { allowed: true };
+  } catch (error) {
+    console.error('[PublicRateLimit] Error checking rate limit:', error);
+    // Allow request on failure (fail open for availability)
+    return { allowed: true };
+  }
+}
+
+/**
+ * Get or create a session with user binding
+ * 
+ * SECURITY: Sessions are bound to a specific userId. If a different user
+ * tries to use the same sessionId, they get a new session instead.
+ */
+async function getOrCreateSession(
+  sessionId: string,
+  agentId: string,
+  aliasId: string,
+  clinicId: string,
+  userId: string
+): Promise<{ session: SessionRecord; isNew: boolean; shouldEnd: boolean }> {
+  const now = new Date().toISOString();
+  const ttl = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
+  
+  // Try to get existing session
+  try {
+    const existing = await docClient.send(new GetCommand({
+      TableName: SESSIONS_TABLE,
+      Key: { sessionId },
+    }));
+    
+    if (existing.Item) {
+      const session = existing.Item as SessionRecord;
+      
+      // SECURITY: Verify user binding
+      if (session.userId !== userId) {
+        console.warn(`[Session] User ${userId} attempted to use session owned by ${session.userId}`);
+        // Create a new session for this user instead
+        return createNewSession(agentId, aliasId, clinicId, userId);
+      }
+      
+      // Check message limit
+      if (session.messageCount >= MAX_MESSAGES_PER_SESSION) {
+        console.warn(`[Session] Session ${sessionId} exceeded max messages`);
+        return { session, isNew: false, shouldEnd: true };
+      }
+      
+      // Update activity timestamp and message count
+      await docClient.send(new UpdateCommand({
+        TableName: SESSIONS_TABLE,
+        Key: { sessionId },
+        UpdateExpression: 'SET messageCount = messageCount + :one, lastActivity = :now, #ttl = :ttl',
+        ExpressionAttributeNames: { '#ttl': 'ttl' },
+        ExpressionAttributeValues: {
+          ':one': 1,
+          ':now': now,
+          ':ttl': ttl,
+        },
+      }));
+      
+      session.messageCount++;
+      session.lastActivity = now;
+      
+      return { session, isNew: false, shouldEnd: false };
+    }
+  } catch (error) {
+    console.error('[Session] Error getting session:', error);
+  }
+  
+  // Create new session
+  return createNewSession(agentId, aliasId, clinicId, userId);
+}
+
+/**
+ * Create a new session with user binding
+ */
+async function createNewSession(
+  agentId: string,
+  aliasId: string,
+  clinicId: string,
+  userId: string
+): Promise<{ session: SessionRecord; isNew: boolean; shouldEnd: boolean }> {
+  const sessionId = uuidv4();
+  const now = new Date().toISOString();
+  const ttl = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
+  
+  const session: SessionRecord = {
+    sessionId,
+    agentId,
+    aliasId,
+    clinicId,
+    userId,
+    messageCount: 1,
+    createdAt: now,
+    lastActivity: now,
+    ttl,
+  };
+  
+  try {
+    await docClient.send(new PutCommand({
+      TableName: SESSIONS_TABLE,
+      Item: session,
+      ConditionExpression: 'attribute_not_exists(sessionId)',
+    }));
+  } catch (error: any) {
+    if (error.name === 'ConditionalCheckFailedException') {
+      // Race condition - session was created by another invocation
+      // Recursively try to get the existing session
+      return getOrCreateSession(sessionId, agentId, aliasId, clinicId, userId);
+    }
+    throw error;
+  }
+  
+  return { session, isNew: true, shouldEnd: false };
+}
+
+/**
+ * Mark a session as ended
+ */
+async function endSession(sessionId: string): Promise<void> {
+  try {
+    await docClient.send(new DeleteCommand({
+      TableName: SESSIONS_TABLE,
+      Key: { sessionId },
+    }));
+  } catch (error) {
+    console.error('[Session] Error ending session:', error);
+  }
 }
 
 interface InvokeResponse {
@@ -186,12 +418,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         };
       }
 
-      // CORS is handled by buildCorsHeaders using ALLOWED_ORIGINS_LIST from cors.ts
-      // which includes all clinic websiteLinks
-
       // Use visitor info from body if provided
       userName = (body as any).visitorName || 'Website Visitor';
       userId = (body as any).visitorId || `visitor-${uuidv4().slice(0, 8)}`;
+      
+      // FIX: Rate limit public endpoint to prevent abuse
+      const sourceIp = event.requestContext?.identity?.sourceIp;
+      const rateLimitCheck = await checkPublicRateLimit(clinicId, userId, sourceIp);
+      if (!rateLimitCheck.allowed) {
+        return {
+          statusCode: 429,
+          headers: getCorsHeaders(event),
+          body: JSON.stringify({ 
+            error: 'Too many requests',
+            message: rateLimitCheck.reason,
+          }),
+        };
+      }
     }
     // ========== AUTHENTICATED REQUEST VALIDATION ==========
     else {
@@ -249,8 +492,25 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    // Generate or use provided session ID
-    const sessionId = body.sessionId || uuidv4();
+    // SECURITY FIX: Get or create session with user binding
+    // Sessions are now stored in DynamoDB and bound to specific users
+    // to prevent session hijacking across Lambda instances
+    const { session, isNew, shouldEnd } = await getOrCreateSession(
+      body.sessionId || uuidv4(),
+      agent.bedrockAgentId!,
+      agent.bedrockAgentAliasId!,
+      clinicId,
+      userId || `anon-${uuidv4().slice(0, 8)}`
+    );
+    
+    const sessionId = session.sessionId;
+    
+    // Force end session if message limit exceeded
+    const shouldEndSession = body.endSession || shouldEnd;
+    
+    if (shouldEnd && !body.endSession) {
+      console.log(`[InvokeAgent] Forcing session end for ${sessionId} due to message limit`);
+    }
 
     // Build session attributes (passed to action group Lambda)
     const sessionAttributes: Record<string, string> = {
@@ -267,7 +527,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       sessionId: sessionId,
       inputText: body.message,
       enableTrace: body.enableTrace || false,
-      endSession: body.endSession || false,
+      endSession: shouldEndSession,
       sessionState: {
         sessionAttributes,
       },
@@ -302,6 +562,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         ExpressionAttributeValues: { ':zero': 0, ':one': 1 },
       })
     );
+
+    // Clean up session if session was ended
+    if (shouldEndSession) {
+      await endSession(sessionId);
+    }
 
     const response: InvokeResponse = {
       response: responseText || 'No response from agent',

@@ -51,6 +51,18 @@ export const CHIME_CONFIG = {
   },
 
   /**
+   * Hold Configuration
+   * CRITICAL FIX: Moved from hardcoded values to configurable settings
+   */
+  HOLD: {
+    /** Maximum hold duration in minutes before allowing stale hold override (default: 30 minutes) */
+    MAX_HOLD_DURATION_MINUTES: parseInt(process.env.CHIME_MAX_HOLD_DURATION_MINUTES || '30', 10),
+    
+    /** Whether to allow supervisor override of active holds */
+    ALLOW_SUPERVISOR_OVERRIDE: process.env.CHIME_HOLD_SUPERVISOR_OVERRIDE !== 'false',
+  },
+
+  /**
    * Transfer Configuration
    */
   TRANSFER: {

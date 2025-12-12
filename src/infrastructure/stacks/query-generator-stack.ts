@@ -169,7 +169,6 @@ export class QueryGeneratorStack extends Stack {
       },
       environment: {
         DEBUG_MODE: 'false',
-        AWS_REGION: this.region,
       },
     });
 

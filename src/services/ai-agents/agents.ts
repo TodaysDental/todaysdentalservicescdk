@@ -750,6 +750,33 @@ async function createAgent(event: APIGatewayProxyEvent, userPerms: UserPermissio
     bedrockAgentStatus = 'FAILED';
   }
 
+  // FIX: When setting isDefaultVoiceAgent=true, clear it from other agents in the same clinic
+  if (body.isDefaultVoiceAgent === true) {
+    try {
+      const existingDefaultsResponse = await docClient.send(new QueryCommand({
+        TableName: AGENTS_TABLE,
+        IndexName: 'ClinicIndex',
+        KeyConditionExpression: 'clinicId = :cid',
+        FilterExpression: 'isDefaultVoiceAgent = :true',
+        ExpressionAttributeValues: {
+          ':cid': body.clinicId,
+          ':true': true,
+        },
+      }));
+      
+      if (existingDefaultsResponse.Items && existingDefaultsResponse.Items.length > 0) {
+        for (const existingDefault of existingDefaultsResponse.Items) {
+          console.log(`[createAgent] Clearing isDefaultVoiceAgent from ${existingDefault.agentId}`);
+          const updatedAgent = { ...existingDefault, isDefaultVoiceAgent: false, updatedAt: timestamp, updatedBy: createdBy };
+          await docClient.send(new PutCommand({ TableName: AGENTS_TABLE, Item: updatedAgent }));
+        }
+      }
+    } catch (error) {
+      console.error('[createAgent] Failed to clear existing default voice agents:', error);
+      // Continue with the creation - don't fail the whole operation
+    }
+  }
+
   const agent: AiAgent = {
     agentId: internalAgentId,
     name: body.name,
@@ -830,10 +857,15 @@ async function prepareAgent(
     agent.bedrockAgentStatus = prepareResponse.agentStatus || 'PREPARING';
     agent.bedrockAgentVersion = prepareResponse.agentVersion;
 
-    // Wait for agent to be prepared (poll for up to 30 seconds)
+    // FIX: Reduce polling to stay within Lambda timeout (60s)
+    // Poll for up to 20 seconds (5 iterations x 4 seconds)
+    // This leaves ~30 seconds for alias creation and response
     let prepared = false;
-    for (let i = 0; i < 10; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+    const MAX_POLL_ITERATIONS = 5;
+    const POLL_INTERVAL_MS = 4000;
+    
+    for (let i = 0; i < MAX_POLL_ITERATIONS; i++) {
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
       const getResponse = await bedrockAgentClient.send(new GetAgentCommand({ agentId: agent.bedrockAgentId }));
       agent.bedrockAgentStatus = getResponse.agent?.agentStatus;
 
@@ -843,6 +875,24 @@ async function prepareAgent(
       } else if (agent.bedrockAgentStatus === AgentStatus.FAILED) {
         break;
       }
+    }
+
+    // If still preparing after polling, save state and return async response
+    if (!prepared && agent.bedrockAgentStatus === 'PREPARING') {
+      agent.updatedAt = new Date().toISOString();
+      agent.updatedBy = getUserDisplayName(userPerms);
+      await docClient.send(new PutCommand({ TableName: AGENTS_TABLE, Item: agent }));
+      
+      return {
+        statusCode: 202, // Accepted - still processing
+        headers: getCorsHeaders(event),
+        body: JSON.stringify({
+          message: 'Agent is still preparing. Poll GET /agents/{agentId} to check status.',
+          agent,
+          isReady: false,
+          checkAgain: true,
+        }),
+      };
     }
 
     // Create or get alias for invocation
@@ -940,6 +990,38 @@ async function updateAgent(
   if (typeof body.isVoiceEnabled === 'boolean') {
     agent.isVoiceEnabled = body.isVoiceEnabled;
   }
+  
+  // FIX: When setting isDefaultVoiceAgent=true, clear it from other agents in the same clinic
+  // This ensures only one agent is the default voice agent per clinic
+  if (body.isDefaultVoiceAgent === true && !agent.isDefaultVoiceAgent) {
+    // Clear isDefaultVoiceAgent from other agents in the same clinic
+    try {
+      const existingDefaultsResponse = await docClient.send(new QueryCommand({
+        TableName: AGENTS_TABLE,
+        IndexName: 'ClinicIndex',
+        KeyConditionExpression: 'clinicId = :cid',
+        FilterExpression: 'isDefaultVoiceAgent = :true AND agentId <> :currentAgentId',
+        ExpressionAttributeValues: {
+          ':cid': agent.clinicId,
+          ':true': true,
+          ':currentAgentId': agentId,
+        },
+      }));
+      
+      if (existingDefaultsResponse.Items && existingDefaultsResponse.Items.length > 0) {
+        // Clear isDefaultVoiceAgent from each existing default
+        for (const existingDefault of existingDefaultsResponse.Items) {
+          console.log(`[updateAgent] Clearing isDefaultVoiceAgent from ${existingDefault.agentId}`);
+          const updatedAgent = { ...existingDefault, isDefaultVoiceAgent: false, updatedAt: timestamp, updatedBy };
+          await docClient.send(new PutCommand({ TableName: AGENTS_TABLE, Item: updatedAgent }));
+        }
+      }
+    } catch (error) {
+      console.error('[updateAgent] Failed to clear existing default voice agents:', error);
+      // Continue with the update - don't fail the whole operation
+    }
+  }
+  
   if (typeof body.isDefaultVoiceAgent === 'boolean') {
     agent.isDefaultVoiceAgent = body.isDefaultVoiceAgent;
   }
@@ -948,6 +1030,8 @@ async function updateAgent(
   agent.updatedBy = updatedBy;
 
   // Update Bedrock Agent if exists
+  let bedrockUpdateError: string | undefined;
+  
   if (agent.bedrockAgentId) {
     try {
       const fullInstruction = [
@@ -974,10 +1058,37 @@ async function updateAgent(
       agent.bedrockAgentStatus = 'NOT_PREPARED';
     } catch (error: any) {
       console.error('Failed to update Bedrock Agent:', error);
+      // FIX: Capture error instead of silently continuing
+      bedrockUpdateError = error.message || 'Unknown Bedrock error';
+      // FIX: Use a valid status instead of custom 'SYNC_ERROR'
+      // Keep the original status but mark as needing attention via the response
+      // The agent may still work with its previous configuration
+      // Don't change bedrockAgentStatus to avoid breaking status checks
     }
   }
 
   await docClient.send(new PutCommand({ TableName: AGENTS_TABLE, Item: agent }));
+
+  // FIX: Return different status codes and messages based on Bedrock sync result
+  if (bedrockUpdateError) {
+    return {
+      statusCode: 207, // Multi-Status - partial success
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({
+        message: 'Agent saved locally but Bedrock sync failed',
+        warning: `Bedrock update failed: ${bedrockUpdateError}. The agent may be out of sync.`,
+        agent,
+        bedrockSyncFailed: true,
+        // FIX: Provide clear next steps for the user
+        nextSteps: [
+          'The local agent configuration has been saved',
+          'Bedrock Agent update failed - the agent is running with its previous configuration',
+          'Try calling /prepare to re-sync the agent with Bedrock',
+          'If the problem persists, check the agent in AWS Console',
+        ],
+      }),
+    };
+  }
 
   return {
     statusCode: 200,
@@ -1016,25 +1127,41 @@ async function deleteAgent(
     return { statusCode: 403, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Permission denied' }) };
   }
 
-  // Delete Bedrock Agent if exists
-  if (agent.bedrockAgentId) {
+  const bedrockAgentId = agent.bedrockAgentId;
+
+  // FIX: Delete DynamoDB record FIRST
+  // If DynamoDB deletion fails, Bedrock agent remains (can retry)
+  // If Bedrock deletion fails after DynamoDB delete, that's acceptable (orphaned Bedrock agent)
+  // But we avoid orphaned DynamoDB records pointing to deleted Bedrock agents
+  await docClient.send(new DeleteCommand({ TableName: AGENTS_TABLE, Key: { agentId } }));
+
+  // Then delete Bedrock Agent if it exists
+  let bedrockDeleteError: string | undefined;
+  if (bedrockAgentId) {
     try {
       await bedrockAgentClient.send(
         new DeleteAgentCommand({
-          agentId: agent.bedrockAgentId,
+          agentId: bedrockAgentId,
           skipResourceInUseCheck: true,
         })
       );
     } catch (error: any) {
       console.error('Failed to delete Bedrock Agent:', error);
+      bedrockDeleteError = error.message;
+      // Don't throw - DynamoDB record is already deleted, log for manual cleanup
     }
   }
-
-  await docClient.send(new DeleteCommand({ TableName: AGENTS_TABLE, Key: { agentId } }));
 
   return {
     statusCode: 200,
     headers: getCorsHeaders(event),
-    body: JSON.stringify({ message: 'Agent deleted successfully', agentId }),
+    body: JSON.stringify({ 
+      message: 'Agent deleted successfully', 
+      agentId,
+      bedrockAgentDeleted: !bedrockDeleteError,
+      bedrockCleanupWarning: bedrockDeleteError 
+        ? `Bedrock agent may need manual cleanup: ${bedrockDeleteError}` 
+        : undefined,
+    }),
   };
 }

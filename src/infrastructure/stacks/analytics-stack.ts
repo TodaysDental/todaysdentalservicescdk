@@ -246,17 +246,57 @@ export class AnalyticsStack extends Stack {
     console.log(`[AnalyticsStack] Voice AI integration: ${voiceAiEnabled ? 'ENABLED' : 'DISABLED'}`);
     
     // Use explicit table names if provided, otherwise derive from chimeStackName
-    // Log warning if using derived names (fragile)
+    // CRITICAL FIX #1: Validate derived table names and provide clear error messages
+    // CRITICAL FIX #1.1: Enforce explicit table names in production to prevent silent failures
+    // NOTE: CDK_DEFAULT_ACCOUNT is always set by CDK CLI, so don't use it for production detection
+    // Use explicit NODE_ENV=production or ENFORCE_EXPLICIT_TABLE_NAMES=true instead
+    const isProduction = process.env.NODE_ENV === 'production' || 
+                         process.env.ENFORCE_EXPLICIT_TABLE_NAMES === 'true';
+    
     if (!props.callQueueTableName || !props.agentPresenceTableName || !props.agentPerformanceTableName) {
-      console.warn(
-        '[AnalyticsStack] WARNING: Using derived table names from chimeStackName. ' +
-        'This is fragile - pass explicit table names via callQueueTableName, agentPresenceTableName, agentPerformanceTableName props.'
-      );
+      const missingTables = [
+        !props.callQueueTableName && 'callQueueTableName',
+        !props.agentPresenceTableName && 'agentPresenceTableName', 
+        !props.agentPerformanceTableName && 'agentPerformanceTableName'
+      ].filter(Boolean);
+      
+      const warningMsg = `[AnalyticsStack] WARNING: Using derived table names for: ${missingTables.join(', ')}. ` +
+        'This is fragile - pass explicit table names from infra.ts constants.';
+      
+      console.warn(warningMsg);
+      
+      // In production, require explicit table names to prevent silent failures
+      if (isProduction && process.env.ALLOW_DERIVED_TABLE_NAMES !== 'true') {
+        throw new Error(
+          `[AnalyticsStack] CRITICAL: Production deployments must provide explicit table names. ` +
+          `Missing: ${missingTables.join(', ')}. ` +
+          `Set ALLOW_DERIVED_TABLE_NAMES=true to override (not recommended).`
+        );
+      }
     }
     
     this.derivedCallQueueTableName = props.callQueueTableName || `${props.chimeStackName}-CallQueueV2`;
     this.derivedAgentPresenceTableName = props.agentPresenceTableName || `${props.chimeStackName}-AgentPresence`;
     this.derivedAgentPerformanceTableName = props.agentPerformanceTableName || `${props.chimeStackName}-AgentPerformance`;
+    
+    // CRITICAL FIX #1.1: Log derived table names at INFO level for debugging
+    console.info('[AnalyticsStack] Table configuration:', {
+      callQueueTable: this.derivedCallQueueTableName,
+      agentPresenceTable: this.derivedAgentPresenceTableName,
+      agentPerformanceTable: this.derivedAgentPerformanceTableName,
+      source: props.callQueueTableName ? 'EXPLICIT' : 'DERIVED',
+      isProduction
+    });
+    
+    // CRITICAL FIX #1: Store expected table name patterns for runtime validation
+    // Lambdas can use these to detect misconfiguration early
+    const tableNameValidationHints = {
+      expectedCallQueuePattern: `${props.chimeStackName}-CallQueue*`,
+      expectedAgentPresencePattern: `${props.chimeStackName}-AgentPresence*`,
+      expectedAgentPerformancePattern: `${props.chimeStackName}-AgentPerformance*`,
+      chimeStackName: props.chimeStackName,
+    };
+    console.log('[AnalyticsStack] Table name validation hints:', tableNameValidationHints);
     
     // Log derived table names for debugging during synth
     console.log('[AnalyticsStack] ChimeStack table names:', {
@@ -897,6 +937,10 @@ export class AnalyticsStack extends Stack {
         CALL_QUEUE_TABLE_NAME: this.derivedCallQueueTableName,
         CALL_ANALYTICS_TABLE_NAME: this.analyticsTable.tableName,
         ANALYTICS_DEDUP_TABLE_NAME: this.analyticsDedupTable.tableName,
+        // CRITICAL FIX #1.2: Pass all required table names for reconciliation
+        AGENT_PERFORMANCE_TABLE_NAME: this.derivedAgentPerformanceTableName,
+        TRANSCRIPT_BUFFER_TABLE_NAME: this.transcriptBufferTable.tableName,
+        AGENT_PRESENCE_TABLE_NAME: this.derivedAgentPresenceTableName,
       },
       logRetention: logs.RetentionDays.ONE_WEEK,
     });
@@ -926,8 +970,13 @@ export class AnalyticsStack extends Stack {
     createDynamoThrottleAlarm(reconciliationTable.tableName, 'ReconciliationTable');
 
     // Grant permissions
-    this.analyticsTable.grantReadData(reconcileAnalyticsFn);
+    // CRITICAL FIX #3: reconcileAnalyticsFn needs ReadWrite on analytics table
+    // because it creates analytics records using PutCommand for orphaned calls
+    this.analyticsTable.grantReadWriteData(reconcileAnalyticsFn);
     this.analyticsDedupTable.grantReadWriteData(reconcileAnalyticsFn);
+    
+    // CRITICAL FIX #1.2: Grant permission to transcript buffer table for orphan cleanup
+    this.transcriptBufferTable.grantReadWriteData(reconcileAnalyticsFn);
 
     // Grant permission to read CallQueue and trigger reprocessing
     reconcileAnalyticsFn.addToRolePolicy(new iam.PolicyStatement({
@@ -939,6 +988,19 @@ export class AnalyticsStack extends Stack {
       ],
       resources: [
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${this.derivedCallQueueTableName}`,
+      ],
+    }));
+    
+    // CRITICAL FIX #1.2: Grant permission to AgentPerformance table for metrics tracking
+    reconcileAnalyticsFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'dynamodb:UpdateItem',
+        'dynamodb:GetItem',
+      ],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${this.derivedAgentPerformanceTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${this.derivedAgentPerformanceTableName}/index/*`,
       ],
     }));
 

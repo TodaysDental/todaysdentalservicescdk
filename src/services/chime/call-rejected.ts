@@ -5,7 +5,7 @@ import { ChimeSDKMeetingsClient } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { verifyIdToken } from '../../shared/utils/auth-helper';
-import { getUserIdFromJwt } from '../../shared/utils/permissions-helper';
+import { getUserIdFromJwt, checkClinicAuthorization } from '../../shared/utils/permissions-helper';
 import { createCheckQueueForWork } from './utils/check-queue-for-work';
 import { RejectionTracker } from './utils/rejection-tracker';
 
@@ -14,9 +14,10 @@ const rejectionTracker = new RejectionTracker({
     rejectionWindowMinutes: 5,
     maxRejections: 50
 });
+// FIX: Use CHIME_MEDIA_REGION for both clients to ensure consistency
 const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
 const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
-const chimeVoiceClient = new ChimeSDKVoiceClient({});
+const chimeVoiceClient = new ChimeSDKVoiceClient({ region: CHIME_MEDIA_REGION });
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 const checkQueueForWork = createCheckQueueForWork({
@@ -89,6 +90,25 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const callRecord = callRecords[0];
         const { clinicId, queuePosition } = callRecord;
 
+        // FIX #10: Add clinic authorization check (was missing)
+        const authzCheck = checkClinicAuthorization(verifyResult.payload! as any, clinicId);
+        if (!authzCheck.authorized) {
+            console.warn('[call-rejected] Agent not authorized for call clinic', {
+                agentId,
+                callId,
+                clinicId,
+                reason: authzCheck.reason
+            });
+            return {
+                statusCode: 403,
+                headers: corsHeaders,
+                body: JSON.stringify({ 
+                    message: 'You are not authorized to reject calls for this clinic',
+                    reason: authzCheck.reason
+                })
+            };
+        }
+
         // 3. Check for race condition (call already accepted)
         if (callRecord.status !== 'ringing') {
             console.warn('[call-rejected] Call already handled', { callId, status: callRecord.status });
@@ -115,41 +135,86 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             const stats = rejectionTracker.getStatistics(callRecord);
             console.warn(`[call-rejected] Call ${callId} exceeded rejection limit`, stats);
             
-            await ddb.send(new TransactWriteCommand({
-                TransactItems: [
-                    {
-                        Update: {
-                            TableName: AGENT_PRESENCE_TABLE_NAME,
-                            Key: { agentId },
-                            UpdateExpression: 'SET #status = :online, lastActivityAt = :ts, lastRejectedCallId = :callId ' +
-                                             'REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, inboundMeetingInfo, inboundAttendeeInfo',
-                            ConditionExpression: 'ringingCallId = :callId',
-                            ExpressionAttributeNames: { '#status': 'status' },
-                            ExpressionAttributeValues: {
-                                ':online': 'Online',
-                                ':ts': new Date().toISOString(),
-                                ':callId': callId
+            // FIX: Add retry logic for escalation transaction
+            const MAX_ESCALATION_RETRIES = 3;
+            let escalationSuccess = false;
+            let lastEscalationError: any = null;
+            
+            for (let attempt = 1; attempt <= MAX_ESCALATION_RETRIES; attempt++) {
+                try {
+                    await ddb.send(new TransactWriteCommand({
+                        TransactItems: [
+                            {
+                                Update: {
+                                    TableName: AGENT_PRESENCE_TABLE_NAME,
+                                    Key: { agentId },
+                                    UpdateExpression: 'SET #status = :online, lastActivityAt = :ts, lastRejectedCallId = :callId ' +
+                                                     'REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, inboundMeetingInfo, inboundAttendeeInfo',
+                                    ConditionExpression: 'ringingCallId = :callId',
+                                    ExpressionAttributeNames: { '#status': 'status' },
+                                    ExpressionAttributeValues: {
+                                        ':online': 'Online',
+                                        ':ts': new Date().toISOString(),
+                                        ':callId': callId
+                                    }
+                                }
+                            },
+                            {
+                                Update: {
+                                    TableName: CALL_QUEUE_TABLE_NAME,
+                                    Key: { clinicId, queuePosition },
+                                    // FIX: Keep meetingInfo so supervisors can still join the escalated call
+                                    // Only remove agent-specific attendee info, not the meeting itself
+                                    UpdateExpression: 'SET #status = :escalated, escalationReason = :reason, escalatedAt = :timestamp ' +
+                                                     'REMOVE agentAttendeeInfo, agentIds, assignedAgentId',
+                                    ConditionExpression: '#status = :ringing',
+                                    ExpressionAttributeNames: { '#status': 'status' },
+                                    ExpressionAttributeValues: {
+                                        ':escalated': 'escalated',
+                                        ':reason': 'excessive_rejections',
+                                        ':timestamp': new Date().toISOString(),
+                                        ':ringing': 'ringing'
+                                    }
+                                }
                             }
-                        }
-                    },
-                    {
-                        Update: {
-                            TableName: CALL_QUEUE_TABLE_NAME,
-                            Key: { clinicId, queuePosition },
-                            UpdateExpression: 'SET #status = :escalated, escalationReason = :reason, escalatedAt = :timestamp ' +
-                                             'REMOVE meetingInfo, customerAttendeeInfo, agentAttendeeInfo',
-                            ConditionExpression: '#status = :ringing',
-                            ExpressionAttributeNames: { '#status': 'status' },
-                            ExpressionAttributeValues: {
-                                ':escalated': 'escalated',
-                                ':reason': 'excessive_rejections',
-                                ':timestamp': new Date().toISOString(),
-                                ':ringing': 'ringing'
-                            }
-                        }
+                        ]
+                    }));
+                    escalationSuccess = true;
+                    break;
+                } catch (escalationErr: any) {
+                    lastEscalationError = escalationErr;
+                    
+                    if (escalationErr.name === 'TransactionCanceledException') {
+                        // Condition check failed - state changed, don't retry
+                        console.warn('[call-rejected] Escalation transaction failed - state changed', {
+                            callId,
+                            agentId,
+                            reasons: escalationErr.CancellationReasons
+                        });
+                        return {
+                            statusCode: 409,
+                            headers: corsHeaders,
+                            body: JSON.stringify({ message: 'Call state changed during escalation' })
+                        };
                     }
-                ]
-            }));
+                    
+                    // Check for retryable errors (throttling, etc.)
+                    const isRetryable = ['ProvisionedThroughputExceededException', 'ThrottlingException', 'RequestLimitExceeded'].includes(escalationErr.name);
+                    if (isRetryable && attempt < MAX_ESCALATION_RETRIES) {
+                        const backoff = 100 * Math.pow(2, attempt - 1);
+                        console.warn(`[call-rejected] Escalation throttled, retrying in ${backoff}ms (attempt ${attempt}/${MAX_ESCALATION_RETRIES})`);
+                        await new Promise(resolve => setTimeout(resolve, backoff));
+                        continue;
+                    }
+                    
+                    throw escalationErr;
+                }
+            }
+            
+            if (!escalationSuccess) {
+                console.error('[call-rejected] Escalation failed after retries', { callId, agentId, error: lastEscalationError?.message });
+                throw lastEscalationError;
+            }
             
             return {
                 statusCode: 200,
@@ -193,8 +258,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                         Update: {
                             TableName: CALL_QUEUE_TABLE_NAME,
                             Key: { clinicId, queuePosition },
+                            // FIX: Preserve meetingInfo and customerAttendeeInfo - the customer is still waiting!
+                            // Only remove agent-specific data (agentAttendeeInfo, agentIds, assignedAgentId)
                             UpdateExpression: `${rejectionUpdate.UpdateExpression}, #status = :queued ` +
-                                             'REMOVE meetingInfo, customerAttendeeInfo, agentAttendeeInfo, agentIds, assignedAgentId',
+                                             'REMOVE agentAttendeeInfo, agentIds, assignedAgentId',
                             ConditionExpression: '#status = :ringing',
                             ExpressionAttributeNames: { 
                                 '#status': 'status',
@@ -209,7 +276,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     }
                 ]
             }));
-            console.log(`[call-rejected] Transaction successful. Call ${callId} moved to 'queued' state.`);
+            console.log(`[call-rejected] Transaction successful. Call ${callId} moved to 'queued' state (meeting preserved for next agent).`);
 
         } catch (err: any) {
              if (err.name === 'TransactionCanceledException') {

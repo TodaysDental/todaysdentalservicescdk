@@ -9,8 +9,9 @@
  */
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+// TransactWriteCommand is used for atomic updates in attemptDirectStateRecovery
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
-import { ChimeSDKMeetingsClient, DeleteAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
+import { ChimeSDKMeetingsClient, DeleteAttendeeCommand, GetMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
@@ -19,12 +20,18 @@ import { verifyIdToken } from '../../shared/utils/auth-helper';
 import { getUserIdFromJwt, checkClinicAuthorization } from '../../shared/utils/permissions-helper';
 import { validateStateTransition, CALL_STATE_MACHINE } from '../shared/utils/state-machine';
 import { randomUUID } from 'crypto';
+// FIX #11: Static import to avoid latency in error handling path
+import { CompensatingIntent } from './compensating-action-processor';
+import { DistributedLock } from './utils/distributed-lock';
 
 const sqs = new SQSClient({});
 
 const ddb = getDynamoDBClient();
-const chimeVoice = new ChimeSDKVoiceClient({});
-const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || process.env.AWS_REGION || 'us-east-1';
+// FIX: Use CHIME_MEDIA_REGION for Voice client to match Meetings client
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
+const chimeVoice = new ChimeSDKVoiceClient({ region: CHIME_MEDIA_REGION });
+
+// Note: CHIME_MEDIA_REGION is defined above with chimeVoice client
 const chimeClient = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
@@ -78,8 +85,42 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
+        // FIX #1: Acquire lock BEFORE any state checks to prevent TOCTOU race condition
+        const LOCKS_TABLE_NAME = process.env.LOCKS_TABLE_NAME;
+        if (!LOCKS_TABLE_NAME) {
+            console.error('[hold-call] LOCKS_TABLE_NAME not configured');
+            return {
+                statusCode: 500,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'System configuration error' })
+            };
+        }
+
+        // FIX: Use unified lock key for all call state operations to prevent concurrent hold/resume
+        const lock = new DistributedLock(ddb, {
+            tableName: LOCKS_TABLE_NAME,
+            lockKey: `call-state-${callId}`,
+            ttlSeconds: 30,
+            maxRetries: 5,
+            retryDelayMs: 100
+        });
+
+        const lockResult = await lock.acquireWithFencingToken();
+        if (!lockResult.acquired) {
+            console.warn('[hold-call] Failed to acquire lock - another hold operation in progress', { callId, agentId });
+            return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Hold operation already in progress. Please wait.' })
+            };
+        }
+        
+        const fencingToken = lockResult.fencingToken;
+        console.log('[hold-call] Lock acquired with fencing token', { callId, agentId, fencingToken });
+
+        try {
         // Update the call status in the database
-        // 1. Find the call record in the queue table
+        // 1. Find the call record in the queue table (now inside lock to prevent TOCTOU)
         const { Items: callRecords } = await ddb.send(new QueryCommand({
             TableName: CALL_QUEUE_TABLE_NAME,
             IndexName: 'callId-index',
@@ -246,7 +287,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // CRITICAL FIX #4: Comprehensive error handling for each step
         // Log operation ID for debugging and potential retry
         const holdOperationId = randomUUID();
-        console.log('[hold-call] Starting hold operation', { holdOperationId, callId, agentId });
+        console.log('[hold-call] Starting hold operation', { holdOperationId, callId, agentId, fencingToken });
+        
+        // FIX #3: Validate fencing token is still valid before critical SMA operation
+        const tokenValid = await lock.validateFencingToken();
+        if (!tokenValid) {
+            console.warn('[hold-call] Fencing token invalidated - another process took over', { callId, agentId, fencingToken });
+            return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Operation was superseded. Please try again.' })
+            };
+        }
         
         // Step 1: Send the hold command to the SMA
         try {
@@ -320,10 +372,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                             TableName: AGENT_PRESENCE_TABLE_NAME,
                             Key: { agentId },
                             // CRITICAL FIX #9: Don't store heldCallAttendeeId - always create new attendee on resume
-                            UpdateExpression: 'SET callStatus = :status, lastActivityAt = :timestamp, ' +
-                                             'heldCallMeetingId = :meetingId, heldCallId = :callId',
+                            // FIX #7: REMOVE currentCallId to indicate agent is not actively on a call
+                            // FIX #5: Use 'OnHold' status instead of 'Online' to prevent new call assignment
+                            // Agent with held call should NOT receive new calls from queue
+                            UpdateExpression: 'SET #agentStatus = :onHoldStatus, callStatus = :status, lastActivityAt = :timestamp, ' +
+                                             'heldCallMeetingId = :meetingId, heldCallId = :callId ' +
+                                             'REMOVE currentCallId',
                             ConditionExpression: 'currentCallId = :callId',
+                            ExpressionAttributeNames: {
+                                '#agentStatus': 'status'
+                            },
                             ExpressionAttributeValues: {
+                                ':onHoldStatus': 'OnHold',
                                 ':status': 'on_hold',
                                 ':timestamp': timestamp,
                                 ':meetingId': meetingId || null,
@@ -350,6 +410,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             console.error(`[hold-call] STEP 3 FAILED - Database transaction failed (${holdOperationId}):`, dbErr);
             
             // FIX #2: CRITICAL - SMA is on hold but DB not updated - schedule compensating action
+            // CRITICAL FIX: Use explicit intent field instead of relying on reason string parsing
+            // FIX #11: CompensatingIntent is now statically imported at top of file
             await scheduleCompensatingAction({
                 action: 'RESUME_HELD_CALL',
                 callId,
@@ -358,7 +420,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 queuePosition,
                 smaId,
                 holdOperationId,
+                meetingId: meetingId || undefined,
                 reason: 'DB_UPDATE_FAILED',
+                intent: CompensatingIntent.INTENDED_HOLD, // Explicit intent: the hold was intended
                 timestamp: new Date().toISOString()
             });
             
@@ -386,6 +450,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 })
             };
         }
+        } finally {
+            // FIX #1: Always release lock after all operations complete
+            await lock.release();
+        }
 
     } catch (error) {
         console.error('Error processing hold call request:', error);
@@ -400,10 +468,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 /**
  * FIX #2: Schedule compensating action to fix inconsistent state
  * Sends message to SQS for async processing
+ * 
+ * FIX: Enhanced error handling - if SQS fails, log structured error for CloudWatch alerting
+ * and attempt to directly update DB to on_hold state as a fallback
  */
 async function scheduleCompensatingAction(action: any): Promise<void> {
     if (!COMPENSATING_ACTIONS_QUEUE_URL) {
-        console.error('[hold-call] No compensating actions queue configured - cannot schedule recovery');
+        console.error('[hold-call] CRITICAL: No compensating actions queue configured - attempting direct DB fix');
+        // FIX: Attempt direct DB update as fallback when queue isn't configured
+        await attemptDirectStateRecovery(action);
         return;
     }
 
@@ -425,18 +498,109 @@ async function scheduleCompensatingAction(action: any): Promise<void> {
         }));
 
         console.log('[hold-call] Compensating action scheduled:', action.action, action.holdOperationId);
-    } catch (err) {
-        console.error('[hold-call] Failed to schedule compensating action:', err);
-        // Don't throw - this is best-effort recovery
+    } catch (err: any) {
+        // FIX: Log structured error for CloudWatch alerting and attempt direct recovery
+        console.error('[hold-call] CRITICAL: Failed to schedule compensating action - attempting direct DB fix', {
+            error: err.message,
+            errorName: err.name,
+            action: action.action,
+            callId: action.callId,
+            agentId: action.agentId,
+            holdOperationId: action.holdOperationId,
+            // Structured fields for CloudWatch metric filter
+            _metric: 'CompensatingActionFailed',
+            _severity: 'CRITICAL'
+        });
+        
+        // Attempt direct recovery as fallback
+        await attemptDirectStateRecovery(action);
+    }
+}
+
+/**
+ * FIX: Fallback recovery when SQS queue is unavailable
+ * Attempts to directly update DB to match the intended state
+ * FIX: Now updates BOTH call record AND agent presence table for consistency
+ */
+async function attemptDirectStateRecovery(action: any): Promise<void> {
+    const { callId, agentId, clinicId, queuePosition, intent, meetingId } = action;
+    
+    if (!clinicId || queuePosition === undefined) {
+        console.error('[hold-call] Cannot attempt direct recovery - missing clinicId or queuePosition', { action });
+        return;
+    }
+
+    try {
+        const timestamp = new Date().toISOString();
+        
+        // If the intent was to hold, update DB to on_hold
+        if (intent === CompensatingIntent.INTENDED_HOLD) {
+            // FIX: Use TransactWriteCommand to update BOTH tables atomically
+            // This prevents the inconsistent state where call is on_hold but agent doesn't have heldCallId
+            await ddb.send(new TransactWriteCommand({
+                TransactItems: [
+                    // Update call record
+                    {
+                        Update: {
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            Key: { clinicId, queuePosition },
+                            UpdateExpression: 'SET #status = :onhold, callStatus = :onhold, holdStartTime = :now, heldByAgentId = :agentId, directRecoveryApplied = :true',
+                            ConditionExpression: '#status = :connected',
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: {
+                                ':onhold': 'on_hold',
+                                ':connected': 'connected',
+                                ':now': timestamp,
+                                ':agentId': agentId,
+                                ':true': true
+                            }
+                        }
+                    },
+                    // FIX: Also update agent presence table to match
+                    {
+                        Update: {
+                            TableName: AGENT_PRESENCE_TABLE_NAME,
+                            Key: { agentId },
+                            UpdateExpression: 'SET #agentStatus = :onHoldStatus, callStatus = :onhold, lastActivityAt = :timestamp, ' +
+                                             'heldCallMeetingId = :meetingId, heldCallId = :callId, directRecoveryApplied = :true ' +
+                                             'REMOVE currentCallId',
+                            ExpressionAttributeNames: {
+                                '#agentStatus': 'status'
+                            },
+                            ExpressionAttributeValues: {
+                                ':onHoldStatus': 'OnHold',
+                                ':onhold': 'on_hold',
+                                ':timestamp': timestamp,
+                                ':meetingId': meetingId || null,
+                                ':callId': callId,
+                                ':true': true
+                            }
+                        }
+                    }
+                ]
+            }));
+            
+            console.log('[hold-call] Direct recovery successful - both tables updated to on_hold', { callId, agentId });
+        }
+    } catch (recoveryErr: any) {
+        // Log but don't throw - this is last-resort recovery
+        console.error('[hold-call] Direct recovery failed - MANUAL INTERVENTION REQUIRED', {
+            error: recoveryErr.message,
+            callId,
+            agentId,
+            action: action.action,
+            _metric: 'DirectRecoveryFailed',
+            _severity: 'CRITICAL'
+        });
     }
 }
 
 /**
  * FIX #15: Validate meeting exists in Chime SDK
+ * FIX #8: Moved import to module level to avoid dynamic import latency on every call
  */
 async function validateMeetingExists(meetingId: string): Promise<boolean> {
     try {
-        const { GetMeetingCommand } = await import('@aws-sdk/client-chime-sdk-meetings');
         await chimeClient.send(new GetMeetingCommand({ MeetingId: meetingId }));
         return true;
     } catch (err: any) {

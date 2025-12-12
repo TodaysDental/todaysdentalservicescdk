@@ -12,7 +12,11 @@ import { TTL_POLICY } from './config/ttl-policy';
 import { DistributedLock } from './utils/distributed-lock';
 
 const ddb = getDynamoDBClient();
-const chimeVoiceClient = new ChimeSDKVoiceClient({});
+
+// FIX: Use CHIME_MEDIA_REGION for Voice client consistency across all handlers
+// This ensures all Chime operations use the same region
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
+const chimeVoiceClient = new ChimeSDKVoiceClient({ region: CHIME_MEDIA_REGION });
 
 const CLINICS_TABLE_NAME = process.env.CLINICS_TABLE_NAME;
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
@@ -154,7 +158,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const dialLock = new DistributedLock(ddb, {
         tableName: LOCKS_TABLE_NAME,
         lockKey: `outbound-dial-${agentId}`,
-        ttlSeconds: 10, // Short TTL - just needs to prevent double-click
+        ttlSeconds: 20, // FIX: Extended TTL to cover full SMA call + DB updates
         maxRetries: 1,  // Don't retry - if locked, user already has a dial in progress
         retryDelayMs: 0
     });
@@ -172,35 +176,33 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // 4. Set agent status to "dialing" atomically
     // This "locks" the agent to prevent them from receiving an inbound call
     const callReference = `outbound-${Date.now()}-${agentId}`;
+    
+    // FIX: Use try/finally to ensure lock is always released after all operations complete
     try {
-        await ddb.send(new UpdateCommand({
-            TableName: AGENT_PRESENCE_TABLE_NAME,
-            Key: { agentId },
-            UpdateExpression: 'SET #status = :dialingStatus, currentCallId = :callRef, lastActivityAt = :now',
-            ConditionExpression: '#status = :onlineStatus AND attribute_not_exists(currentCallId) AND attribute_not_exists(ringingCallId)',
-            ExpressionAttributeNames: { '#status': 'status' },
-            ExpressionAttributeValues: {
-                ':dialingStatus': 'dialing',
-                ':onlineStatus': 'Online',
-                ':callRef': callReference,
-                ':now': new Date().toISOString()
+        try {
+            await ddb.send(new UpdateCommand({
+                TableName: AGENT_PRESENCE_TABLE_NAME,
+                Key: { agentId },
+                UpdateExpression: 'SET #status = :dialingStatus, currentCallId = :callRef, lastActivityAt = :now',
+                ConditionExpression: '#status = :onlineStatus AND attribute_not_exists(currentCallId) AND attribute_not_exists(ringingCallId)',
+                ExpressionAttributeNames: { '#status': 'status' },
+                ExpressionAttributeValues: {
+                    ':dialingStatus': 'dialing',
+                    ':onlineStatus': 'Online',
+                    ':callRef': callReference,
+                    ':now': new Date().toISOString()
+                }
+            }));
+        } catch (err: any) {
+            if (err.name === 'ConditionalCheckFailedException') {
+                console.warn('[outbound-call] Agent status changed, aborting dial', { agentId });
+                return { statusCode: 409, headers: corsHeaders, body: JSON.stringify({ message: 'Agent status changed. Please try again.' }) };
             }
-        }));
-    } catch (err: any) {
-        await dialLock.release(); // Release lock on failure
-        if (err.name === 'ConditionalCheckFailedException') {
-            console.warn('[outbound-call] Agent status changed, aborting dial', { agentId });
-            return { statusCode: 409, headers: corsHeaders, body: JSON.stringify({ message: 'Agent status changed. Please try again.' }) };
+            console.error('[outbound-call] Failed to update agent status', { error: err.message });
+            return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'Failed to update agent status' }) };
         }
-        console.error('[outbound-call] Failed to update agent status', { error: err.message });
-        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'Failed to update agent status' }) };
-    }
     
-    // Release dial lock immediately after status update succeeds
-    // The agent status itself now prevents double-dial
-    await dialLock.release();
-    
-    const smaId = getSmaIdForClinic(body.fromClinicId);
+        const smaId = getSmaIdForClinic(body.fromClinicId);
     if (!smaId) {
         console.error('[outbound-call] Missing SMA mapping for clinic', { clinicId: body.fromClinicId });
         return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'Outbound calling is not configured for this clinic' }) };
@@ -323,6 +325,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       headers: corsHeaders,
       body: JSON.stringify(responseBody),
     };
+    
+    } finally {
+        // FIX: Always release lock after all operations complete (success or failure within this block)
+        await dialLock.release();
+        console.log('[outbound-call] Released dial lock');
+    }
 
   } catch (err: any) {
     const errorContext = {
@@ -356,6 +364,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             // This agent may be stuck in "dialing" state until cleanup-monitor runs
         }
     }
+    
+    // Note: dialLock.release() is called in finally block above, but if error occurred before lock acquired,
+    // the DistributedLock.release() method safely handles the case where lock wasn't acquired
     
     return {
       statusCode: concurrentLimitHit ? 429 : 500,

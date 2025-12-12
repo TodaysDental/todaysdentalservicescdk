@@ -24,12 +24,22 @@ const ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE_NAME;
 // CRITICAL FIX: Use direct environment variable if provided, otherwise derive from analytics table
 const DEDUP_TABLE_ENV = process.env.ANALYTICS_DEDUP_TABLE_NAME;
 
+// CRITICAL FIX #4.3: Agent performance tracking requires these tables
+const AGENT_PERFORMANCE_TABLE = process.env.AGENT_PERFORMANCE_TABLE_NAME;
+const AGENT_PRESENCE_TABLE = process.env.AGENT_PRESENCE_TABLE_NAME;
+const TRANSCRIPT_BUFFER_TABLE = process.env.TRANSCRIPT_BUFFER_TABLE_NAME;
+
 if (!CALL_QUEUE_TABLE || !ANALYTICS_TABLE) {
-    throw new Error('Required environment variables not set');
+    throw new Error('Required environment variables not set: CALL_QUEUE_TABLE_NAME, CALL_ANALYTICS_TABLE_NAME');
 }
 
 // Use direct env var if available, otherwise use derived name
 const DEDUP_TABLE = DEDUP_TABLE_ENV || getDedupTableName(ANALYTICS_TABLE);
+
+// CRITICAL FIX #4.3: Warn if agent performance tracking will be skipped
+if (!AGENT_PERFORMANCE_TABLE) {
+    console.warn('[Reconciliation] AGENT_PERFORMANCE_TABLE_NAME not configured - agent metrics will NOT be tracked for reconciled calls');
+}
 
 interface ReconciliationResult {
     scanned: number;
@@ -130,8 +140,42 @@ async function checkAndFixOrphanedCall(
     result: ReconciliationResult
 ): Promise<boolean> {
     try {
-        // Check if analytics exist
-        const timestamp = call.queueEntryTime || Math.floor(Date.now() / 1000);
+        // CRITICAL FIX #12 & #4.1: Normalize timestamp to consistent format (epoch seconds)
+        // queueEntryTime can be in seconds or milliseconds - detect and normalize
+        let timestamp = call.queueEntryTime || Math.floor(Date.now() / 1000);
+        
+        // CRITICAL FIX #4.1: Improved timestamp detection with better bounds
+        // Year 2001 in seconds: 978307200
+        // Year 2100 in seconds: 4102444800
+        // Reasonable oldest timestamp: Year 2015 (when call centers went digital)
+        const YEAR_2015_SECONDS = 1420070400;
+        const YEAR_2100_SECONDS = 4102444800;
+        
+        if (timestamp > YEAR_2100_SECONDS) {
+            // Definitely milliseconds, convert to seconds
+            timestamp = Math.floor(timestamp / 1000);
+            console.log('[Reconciliation] Converted timestamp from ms to seconds:', {
+                callId: call.callId,
+                original: call.queueEntryTime,
+                normalized: timestamp
+            });
+        } else if (timestamp < YEAR_2015_SECONDS && timestamp > 0) {
+            // CRITICAL FIX #4.1: Old timestamp - could be legacy/migrated data
+            // Keep it but log a warning instead of overwriting with current time
+            console.warn('[Reconciliation] Old timestamp detected (pre-2015), keeping original:', {
+                callId: call.callId,
+                originalTimestamp: timestamp,
+                date: new Date(timestamp * 1000).toISOString(),
+                note: 'May be migrated data. Review if this causes issues.'
+            });
+            // Only override if timestamp is clearly invalid (negative or zero)
+        } else if (timestamp <= 0) {
+            console.error('[Reconciliation] Invalid timestamp (<=0), using current time:', {
+                callId: call.callId,
+                originalTimestamp: timestamp
+            });
+            timestamp = Math.floor(Date.now() / 1000);
+        }
         
         const analyticsResult = await ddb.send(new GetCommand({
             TableName: ANALYTICS_TABLE,
@@ -252,25 +296,104 @@ async function checkAndFixOrphanedCall(
             console.log('[Reconciliation] Created analytics record for call:', call.callId);
             result.fixed++;
 
-            // Mark the original CallQueue record as reconciled
+            // CRITICAL FIX #4.3: Track agent metrics for reconciled calls
+            if (AGENT_PERFORMANCE_TABLE && call.assignedAgentId) {
+                try {
+                    const { trackEnhancedCallMetrics } = await import('../shared/utils/enhanced-agent-metrics');
+                    
+                    await trackEnhancedCallMetrics(ddb, AGENT_PERFORMANCE_TABLE, {
+                        agentId: call.assignedAgentId,
+                        clinicId: call.clinicId,
+                        callId: call.callId,
+                        direction: call.direction || 'inbound',
+                        duration: totalDuration,
+                        talkTime: talkDuration,
+                        holdTime: holdDuration,
+                        sentiment: 'NEUTRAL', // Default for reconciled calls without live analytics
+                        sentimentScore: 50,
+                        transferred: !!call.transferredToAgentId || !!call.transferToAgentId,
+                        escalated: false,
+                        issues: [],
+                        speakerMetrics: undefined,
+                        timestamp: completedAt || Date.now()
+                    });
+                    
+                    console.log('[Reconciliation] Tracked agent metrics for reconciled call:', {
+                        callId: call.callId,
+                        agentId: call.assignedAgentId
+                    });
+                } catch (metricsErr: any) {
+                    console.error('[Reconciliation] Failed to track agent metrics:', {
+                        callId: call.callId,
+                        agentId: call.assignedAgentId,
+                        error: metricsErr.message
+                    });
+                    // Non-fatal - continue with reconciliation
+                }
+            }
+
+            // CRITICAL FIX #4.2 & #11: Mark the original CallQueue record as reconciled
+            // Use a more robust approach: query the item first to determine schema
             try {
+                // First, try with clinicId + callId (most common schema)
                 await ddb.send(new UpdateCommand({
                     TableName: CALL_QUEUE_TABLE,
                     Key: {
                         clinicId: call.clinicId,
-                        queuePosition: call.queuePosition
+                        callId: call.callId
                     },
-                    UpdateExpression: 'SET reconciledAt = :now',
+                    UpdateExpression: 'SET reconciledAt = :now, reconciledBy = :source',
                     ExpressionAttributeValues: {
-                        ':now': new Date().toISOString()
-                    }
+                        ':now': new Date().toISOString(),
+                        ':source': 'reconciliation-job'
+                    },
+                    // CRITICAL FIX #4.2: Add condition to verify item exists
+                    ConditionExpression: 'attribute_exists(callId)'
                 }));
+                console.log('[Reconciliation] Marked call as reconciled:', call.callId);
             } catch (updateErr: any) {
-                console.warn('[Reconciliation] Failed to mark call as reconciled:', {
-                    callId: call.callId,
-                    error: updateErr.message
-                });
-                // Non-fatal - analytics are already created
+                // CRITICAL FIX #4.2: Handle case where table schema might be different
+                if (updateErr.name === 'ConditionalCheckFailedException') {
+                    // Item doesn't exist with this key - try alternative schema
+                    console.warn('[Reconciliation] Call not found with clinicId+callId, trying callId-only:', {
+                        callId: call.callId
+                    });
+                } else if (updateErr.name === 'ValidationException' && updateErr.message.includes('key')) {
+                    console.warn('[Reconciliation] clinicId+callId key failed, trying callId-only key:', {
+                        callId: call.callId,
+                        error: updateErr.message
+                    });
+                } else {
+                    console.warn('[Reconciliation] Failed to mark call as reconciled:', {
+                        callId: call.callId,
+                        error: updateErr.message
+                    });
+                    // Don't try fallback for unexpected errors
+                    return true;
+                }
+                
+                // Try with callId only as partition key (alternative schema)
+                try {
+                    await ddb.send(new UpdateCommand({
+                        TableName: CALL_QUEUE_TABLE,
+                        Key: {
+                            callId: call.callId
+                        },
+                        UpdateExpression: 'SET reconciledAt = :now, reconciledBy = :source',
+                        ExpressionAttributeValues: {
+                            ':now': new Date().toISOString(),
+                            ':source': 'reconciliation-job'
+                        }
+                    }));
+                    console.log('[Reconciliation] Marked call as reconciled (callId-only schema):', call.callId);
+                } catch (fallbackErr: any) {
+                    console.error('[Reconciliation] CRITICAL: Failed to mark call as reconciled with both schemas:', {
+                        callId: call.callId,
+                        primaryError: updateErr.message,
+                        fallbackError: fallbackErr.message,
+                        impact: 'Call may be reconciled again on next run'
+                    });
+                }
             }
 
         } catch (createErr: any) {

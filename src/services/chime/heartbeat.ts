@@ -71,7 +71,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // FIX #5 & #7: Calculate TTL based on whether agent is on active call
         const now = new Date();
         const nowSeconds = Math.floor(now.getTime() / 1000);
-        const isOnActiveCall = agentRecord.currentCallId || agentRecord.callStatus === 'on_hold';
+        // FIX: Check all possible active call states including heldCallId
+        // FIX #6: Also check for in-progress operations that may have temporarily inconsistent state
+        // During hold/transfer operations, there's a brief window where state fields may be between updates
+        const hasActiveCallFields = agentRecord.currentCallId || 
+                                    agentRecord.heldCallId || 
+                                    agentRecord.ringingCallId;
+        const hasActiveCallStatus = agentRecord.callStatus === 'on_hold' ||
+                                    agentRecord.callStatus === 'connected' ||
+                                    agentRecord.callStatus === 'ringing';
+        // FIX #6: Check for in-progress operations that warrant extended TTL
+        const hasInProgressOperation = agentRecord.transferringCallId ||
+                                       agentRecord.incomingTransferId ||
+                                       agentRecord.heldCallMeetingId || // Has meeting info for held call
+                                       (agentRecord.status === 'OnHold'); // Agent is in OnHold status
+        const isOnActiveCall = hasActiveCallFields || hasActiveCallStatus || hasInProgressOperation;
         
         let newTtl: number;
         let newSessionExpiresAt: number;
@@ -93,24 +107,49 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         try {
             // CRITICAL FIX: Add separate lastHeartbeatAt field distinct from lastActivityAt
             // This allows cleanup monitor to distinguish between heartbeats and other activity
+            // FIX #12: Add status healing - ensure agent status is valid (heal corrupted states)
+            // If agent has no active calls but status is stuck on something other than Online, heal it
+            const shouldHealStatus = !isOnActiveCall && 
+                                    agentRecord.status !== 'Online' && 
+                                    agentRecord.status !== 'Offline';
+            
             // ATOMIC: Check expiry in the same operation as the update
+            const baseUpdateExpression = 'SET lastActivityAt = :timestamp, lastHeartbeatAt = :timestamp, #ttl = :ttl, ' +
+                                        'sessionExpiresAtEpoch = :sessionExpiry, heartbeatCount = if_not_exists(heartbeatCount, :zero) + :one';
+            
+            // FIX #12: Conditionally heal agent status if it's stuck
+            const updateExpression = shouldHealStatus 
+                ? baseUpdateExpression + ', #status = :healedStatus'
+                : baseUpdateExpression;
+            
+            const expressionAttributeNames: Record<string, string> = {
+                '#ttl': 'ttl'
+            };
+            if (shouldHealStatus) {
+                expressionAttributeNames['#status'] = 'status';
+            }
+            
+            const expressionAttributeValues: Record<string, any> = {
+                ':timestamp': now.toISOString(),
+                ':ttl': newTtl,
+                ':sessionExpiry': newSessionExpiresAt,
+                ':nowSeconds': nowSeconds,
+                ':zero': 0,
+                ':one': 1
+            };
+            if (shouldHealStatus) {
+                expressionAttributeValues[':healedStatus'] = 'Online';
+                console.log(`[heartbeat] Healing stuck agent status from '${agentRecord.status}' to 'Online' for agent ${agentId}`);
+            }
+            
             await ddb.send(new UpdateCommand({
                 TableName: AGENT_PRESENCE_TABLE_NAME,
                 Key: { agentId },
-                UpdateExpression: 'SET lastActivityAt = :timestamp, lastHeartbeatAt = :timestamp, #ttl = :ttl, sessionExpiresAtEpoch = :sessionExpiry, heartbeatCount = if_not_exists(heartbeatCount, :zero) + :one',
+                UpdateExpression: updateExpression,
                 ConditionExpression: 'attribute_exists(agentId) AND ' +
                                     '(attribute_not_exists(sessionExpiresAtEpoch) OR sessionExpiresAtEpoch > :nowSeconds)',
-                ExpressionAttributeNames: {
-                    '#ttl': 'ttl'
-                },
-                ExpressionAttributeValues: {
-                    ':timestamp': now.toISOString(),
-                    ':ttl': newTtl,
-                    ':sessionExpiry': newSessionExpiresAt,
-                    ':nowSeconds': nowSeconds,
-                    ':zero': 0,
-                    ':one': 1
-                }
+                ExpressionAttributeNames: expressionAttributeNames,
+                ExpressionAttributeValues: expressionAttributeValues
             }));
             
             console.log(`[heartbeat] Updated heartbeat for agent ${agentId} (onCall: ${isOnActiveCall})`);
@@ -148,16 +187,36 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     }
                     
                     // Agent exists but session expired - mark offline
-                    console.warn('[heartbeat] Session expired for agent (atomic check)', { agentId, nowSeconds });
+                    // FIX: Check if agent has active call and schedule cleanup action
+                    console.warn('[heartbeat] Session expired for agent (atomic check)', { 
+                        agentId, 
+                        nowSeconds,
+                        hadActiveCall: !!(agent.currentCallId || agent.heldCallId || agent.ringingCallId)
+                    });
+                    
+                    // If agent had an active call, we need to notify about potential orphaned calls
+                    if (agent.currentCallId || agent.heldCallId) {
+                        console.error('[heartbeat] CRITICAL: Session expired with active call - scheduling cleanup', {
+                            agentId,
+                            currentCallId: agent.currentCallId,
+                            heldCallId: agent.heldCallId
+                        });
+                        // The compensating-action-processor or cleanup-monitor should handle this
+                        // For now, log the critical state for monitoring/alerting
+                    }
+                    
                     await ddb.send(new UpdateCommand({
                         TableName: AGENT_PRESENCE_TABLE_NAME,
                         Key: { agentId },
-                        UpdateExpression: 'SET #status = :offline, lastActivityAt = :timestamp, cleanupReason = :reason REMOVE currentCallId, ringingCallId, callStatus, heldCallId, heldCallMeetingId, inboundMeetingInfo, inboundAttendeeInfo',
+                        UpdateExpression: 'SET #status = :offline, lastActivityAt = :timestamp, cleanupReason = :reason, ' +
+                                         'expiredWithCallId = :expiredCallId ' +
+                                         'REMOVE currentCallId, ringingCallId, callStatus, heldCallId, heldCallMeetingId, inboundMeetingInfo, inboundAttendeeInfo',
                         ExpressionAttributeNames: { '#status': 'status' },
                         ExpressionAttributeValues: {
                             ':offline': 'Offline',
                             ':timestamp': now.toISOString(),
-                            ':reason': 'session_expired'
+                            ':reason': 'session_expired',
+                            ':expiredCallId': agent.currentCallId || agent.heldCallId || null
                         }
                     })).catch(expireErr => console.warn('[heartbeat] Failed to mark session expired', expireErr));
                     

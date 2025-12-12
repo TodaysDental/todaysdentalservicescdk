@@ -15,19 +15,25 @@ import { randomUUID } from 'crypto';
 const ddb = getDynamoDBClient();
 const errorTracker = new ErrorTracker();
 
-const ANALYTICS_TABLE = process.env.ANALYTICS_TABLE_NAME;
+// FIX: Use CALL_ANALYTICS_TABLE_NAME for consistency with other analytics processors
+const ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE_NAME || process.env.ANALYTICS_TABLE_NAME;
 const PERMANENT_FAILURES_TABLE = process.env.PERMANENT_FAILURES_TABLE;
 
 // Validate required environment variables
 if (!ANALYTICS_TABLE) {
-  throw new Error('ANALYTICS_TABLE_NAME environment variable is required');
+  throw new Error('CALL_ANALYTICS_TABLE_NAME environment variable is required');
 }
 if (!PERMANENT_FAILURES_TABLE) {
   console.warn('[DLQ] PERMANENT_FAILURES_TABLE not configured - permanently failed events will only be logged');
 }
 
+// FIX: Add retry constants
+const MAX_RETRIES = 3;
+const RETRY_DELAY_BASE_MS = 500;
+
 /**
  * Process analytics events from DLQ
+ * FIX: Added retry logic with exponential backoff before permanent failure
  */
 export const handler = async (event: SQSEvent): Promise<void> => {
   console.log(`[DLQ] Processing ${event.Records.length} failed analytics events`);
@@ -36,17 +42,44 @@ export const handler = async (event: SQSEvent): Promise<void> => {
     try {
       // Parse the failed event
       const failedEvent = JSON.parse(record.body);
+      const receiveCount = parseInt(record.attributes?.ApproximateReceiveCount || '1', 10);
 
       console.log('[DLQ] Reprocessing failed analytics event:', {
         callId: failedEvent.callId,
-        attempt: record.attributes?.ApproximateReceiveCount
+        receiveCount
       });
 
-      // Attempt to reprocess
-      await processAnalyticsEvent(failedEvent);
+      // FIX: Implement retry with exponential backoff
+      let lastError: any = null;
+      let succeeded = false;
+      
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        try {
+          await processAnalyticsEvent(failedEvent);
+          succeeded = true;
+          console.log('[DLQ] Successfully reprocessed on attempt', attempt + 1);
+          break;
+        } catch (retryErr: any) {
+          lastError = retryErr;
+          console.warn(`[DLQ] Retry attempt ${attempt + 1} failed:`, {
+            error: retryErr.message,
+            callId: failedEvent.callId
+          });
+          
+          if (attempt < MAX_RETRIES - 1) {
+            // Exponential backoff: 500ms, 1000ms, 2000ms
+            const delay = RETRY_DELAY_BASE_MS * Math.pow(2, attempt);
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
+        }
+      }
+      
+      if (!succeeded && lastError) {
+        throw lastError;
+      }
 
     } catch (err: any) {
-      // Still failing - alert and store for manual review
+      // Still failing after all retries - alert and store for manual review
       await errorTracker.trackError(
         'analytics_dlq_reprocess',
         err as Error,

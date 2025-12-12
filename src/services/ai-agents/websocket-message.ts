@@ -68,6 +68,93 @@ interface StreamEvent {
 }
 
 // ========================================================================
+// RATE LIMITING CONFIGURATION (DynamoDB-backed for distributed consistency)
+// ========================================================================
+
+const RATE_LIMIT = {
+  MAX_MESSAGES_PER_MINUTE: 20,      // Max messages per connection per minute
+  MESSAGE_WINDOW_MS: 60 * 1000,      // 1 minute window
+  MAX_MESSAGE_LENGTH: 4000,          // Max characters per message
+  MAX_SESSION_MESSAGES: 100,         // Max messages per session (aligned with REST API)
+};
+
+// Rate limit table - using connections table with rate limit fields
+const RATE_LIMIT_TTL_SECONDS = 300; // 5 minutes TTL for rate limit records
+
+/**
+ * Check rate limit using DynamoDB for distributed consistency.
+ * 
+ * FIX: Previously used in-memory Map which allowed bypass across Lambda instances.
+ * Now uses DynamoDB atomic counters for reliable distributed rate limiting.
+ */
+async function checkRateLimit(connectionId: string): Promise<{ allowed: boolean; reason?: string }> {
+  const now = Date.now();
+  const windowStart = Math.floor(now / RATE_LIMIT.MESSAGE_WINDOW_MS) * RATE_LIMIT.MESSAGE_WINDOW_MS;
+  const ttl = Math.floor(now / 1000) + RATE_LIMIT_TTL_SECONDS;
+  
+  try {
+    // Get current connection with rate limit info
+    const response = await docClient.send(new GetCommand({
+      TableName: CONNECTIONS_TABLE,
+      Key: { connectionId },
+    }));
+    
+    const connection = response.Item;
+    if (!connection) {
+      return { allowed: false, reason: 'Connection not found. Please reconnect.' };
+    }
+    
+    // Check if we're in a new window
+    const storedWindowStart = connection.rateLimitWindowStart || 0;
+    const isNewWindow = windowStart > storedWindowStart;
+    
+    // Get current count (reset if new window)
+    const currentCount = isNewWindow ? 0 : (connection.rateLimitCount || 0);
+    
+    // Check limit
+    if (currentCount >= RATE_LIMIT.MAX_MESSAGES_PER_MINUTE) {
+      const timeLeft = Math.ceil((storedWindowStart + RATE_LIMIT.MESSAGE_WINDOW_MS - now) / 1000);
+      return { 
+        allowed: false, 
+        reason: `Rate limit exceeded. Please wait ${Math.max(1, timeLeft)} seconds before sending more messages.` 
+      };
+    }
+    
+    // Check session message limit
+    const sessionMessageCount = connection.sessionMessageCount || 0;
+    if (sessionMessageCount >= RATE_LIMIT.MAX_SESSION_MESSAGES) {
+      return {
+        allowed: false,
+        reason: 'Session message limit reached. Please start a new session by reconnecting.',
+      };
+    }
+    
+    // Increment counter atomically
+    await docClient.send(new UpdateCommand({
+      TableName: CONNECTIONS_TABLE,
+      Key: { connectionId },
+      UpdateExpression: isNewWindow 
+        ? 'SET rateLimitCount = :one, rateLimitWindowStart = :windowStart, sessionMessageCount = if_not_exists(sessionMessageCount, :zero) + :one, #ttl = :ttl'
+        : 'SET rateLimitCount = rateLimitCount + :one, sessionMessageCount = if_not_exists(sessionMessageCount, :zero) + :one, #ttl = :ttl',
+      ExpressionAttributeNames: { '#ttl': 'ttl' },
+      ExpressionAttributeValues: {
+        ':one': 1,
+        ':zero': 0,
+        ':windowStart': windowStart,
+        ':ttl': ttl,
+      },
+    }));
+    
+    return { allowed: true };
+  } catch (error) {
+    console.error('[RateLimit] Error checking rate limit:', error);
+    // Allow request on rate limit check failure (fail open for availability)
+    // Log for monitoring but don't block legitimate requests
+    return { allowed: true };
+  }
+}
+
+// ========================================================================
 // HELPER FUNCTIONS
 // ========================================================================
 
@@ -121,6 +208,25 @@ export const handler = async (event: WebSocketMessageEvent) => {
         content: 'message is required',
       });
       return { statusCode: 400 };
+    }
+
+    // Validate message length
+    if (body.message.length > RATE_LIMIT.MAX_MESSAGE_LENGTH) {
+      await sendToClient(apiClient, connectionId, {
+        type: 'error',
+        content: `Message too long. Maximum ${RATE_LIMIT.MAX_MESSAGE_LENGTH} characters allowed.`,
+      });
+      return { statusCode: 400 };
+    }
+
+    // Check rate limit (now uses DynamoDB for distributed consistency)
+    const rateLimitCheck = await checkRateLimit(connectionId);
+    if (!rateLimitCheck.allowed) {
+      await sendToClient(apiClient, connectionId, {
+        type: 'error',
+        content: rateLimitCheck.reason || 'Rate limit exceeded.',
+      });
+      return { statusCode: 429 };
     }
 
     // Get connection info (clinicId, agentId)
@@ -180,8 +286,49 @@ export const handler = async (event: WebSocketMessageEvent) => {
       return { statusCode: 400 };
     }
 
-    // Generate or use session ID
-    const sessionId = body.sessionId || uuidv4();
+    // SECURITY FIX: Generate session ID bound to this connection
+    // NEVER accept client-provided sessionIds - always use server-generated ones
+    // This prevents session hijacking where attacker guesses another user's sessionId
+    let sessionId: string;
+    
+    if (connectionInfo.sessionId) {
+      // Reuse existing session for this connection
+      sessionId = connectionInfo.sessionId;
+      
+      // SECURITY: If client provided a different sessionId, log and ignore it
+      if (body.sessionId && body.sessionId !== connectionInfo.sessionId) {
+        console.warn(`[WebSocket] Client ${connectionId} attempted to use sessionId ${body.sessionId} but is bound to ${connectionInfo.sessionId}`);
+        // Continue with the bound session, don't fail - just ignore the invalid sessionId
+      }
+    } else {
+      // Create new session bound to this connection
+      // Include connectionId prefix to ensure uniqueness per connection
+      sessionId = `ws-${connectionId.slice(0, 8)}-${uuidv4()}`;
+      
+      // Store session binding in connection record atomically
+      try {
+        await docClient.send(new UpdateCommand({
+          TableName: CONNECTIONS_TABLE,
+          Key: { connectionId },
+          UpdateExpression: 'SET sessionId = :sid',
+          ExpressionAttributeValues: { ':sid': sessionId },
+          // Only set if not already set (prevents race condition)
+          ConditionExpression: 'attribute_not_exists(sessionId)',
+        }));
+      } catch (error: any) {
+        if (error.name === 'ConditionalCheckFailedException') {
+          // Race condition: another message set the sessionId
+          // Re-fetch the connection to get the real sessionId
+          const refreshedConn = await docClient.send(new GetCommand({
+            TableName: CONNECTIONS_TABLE,
+            Key: { connectionId },
+          }));
+          sessionId = refreshedConn.Item?.sessionId || sessionId;
+        } else {
+          throw error;
+        }
+      }
+    }
 
     // Build session attributes
     const sessionAttributes: Record<string, string> = {
@@ -189,6 +336,7 @@ export const handler = async (event: WebSocketMessageEvent) => {
       userId: body.visitorId || `visitor-${uuidv4().slice(0, 8)}`,
       userName: body.visitorName || 'Website Visitor',
       isPublicRequest: 'true',
+      connectionId, // Track which connection owns this session
     };
 
     // Send thinking start

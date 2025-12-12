@@ -1,5 +1,5 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { ChimeSDKMeetingsClient, CreateAttendeeCommand, DeleteAttendeeCommand, GetMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
@@ -7,12 +7,17 @@ import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getSmaIdForClinic } from './utils/sma-map';
 import { verifyIdToken } from '../../shared/utils/auth-helper';
 import { getUserIdFromJwt, checkClinicAuthorization } from '../../shared/utils/permissions-helper';
+import { scheduleCompensatingAction } from './compensating-action-processor';
+import { TTL_POLICY, calculateTTL } from './config/ttl-policy';
+import { DistributedLock } from './utils/distributed-lock';
 
 const ddb = getDynamoDBClient();
-const chimeVoice = new ChimeSDKVoiceClient({});
+const LOCKS_TABLE_NAME = process.env.LOCKS_TABLE_NAME;
+// FIX: Use CHIME_MEDIA_REGION for Voice client to match Meetings client
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
+const chimeVoice = new ChimeSDKVoiceClient({ region: CHIME_MEDIA_REGION });
 
-// Initialize Chime Meetings client for attendee operations
-const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || process.env.AWS_REGION || 'us-east-1';
+// Note: CHIME_MEDIA_REGION is defined above with chimeVoice client
 const chimeClient = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
@@ -74,7 +79,41 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             };
         }
 
-        // 1. Find the call record in the queue table
+        // FIX #1: Acquire lock BEFORE any state checks to prevent TOCTOU race condition
+        // This ensures no other operation can modify the call state between our checks and actions
+        if (!LOCKS_TABLE_NAME) {
+            console.error('[resume-call] LOCKS_TABLE_NAME not configured');
+            return {
+                statusCode: 500,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'System configuration error' })
+            };
+        }
+
+        // FIX: Use unified lock key for all call state operations to prevent concurrent hold/resume
+        const lock = new DistributedLock(ddb, {
+            tableName: LOCKS_TABLE_NAME,
+            lockKey: `call-state-${callId}`,
+            ttlSeconds: 30,
+            maxRetries: 5,
+            retryDelayMs: 100
+        });
+
+        const lockResult = await lock.acquireWithFencingToken();
+        if (!lockResult.acquired) {
+            console.warn('[resume-call] Failed to acquire lock - another resume in progress', { callId, agentId });
+            return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Resume operation already in progress. Please wait.' })
+            };
+        }
+        
+        const fencingToken = lockResult.fencingToken;
+        console.log('[resume-call] Lock acquired with fencing token', { callId, agentId, fencingToken });
+
+        try {
+        // 1. Find the call record in the queue table (now inside lock to prevent TOCTOU)
         const { Items: callRecords } = await ddb.send(new QueryCommand({
             TableName: CALL_QUEUE_TABLE_NAME,
             IndexName: 'callId-index',
@@ -168,6 +207,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             holdDuration = Math.floor((now - holdStart) / 1000); // seconds
         }
 
+        // FIX #3: Validate fencing token is still valid before critical operations
+        const tokenValid = await lock.validateFencingToken();
+        if (!tokenValid) {
+            console.warn('[resume-call] Fencing token invalidated - another process took over', { callId, agentId, fencingToken });
+            return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Operation was superseded. Please try again.' })
+            };
+        }
+
         // CRITICAL FIX: Check if this agent has meeting info stored for the held call
         const { Item: agentRecord } = await ddb.send(new GetCommand({
             TableName: AGENT_PRESENCE_TABLE_NAME,
@@ -184,6 +234,38 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             console.log(`[resume-call] Using call record meeting ID ${meetingId}`);
         } else {
             console.log(`[resume-call] No meeting ID found for call ${callId}`);
+        }
+
+        // CRITICAL FIX: Validate meeting exists before attempting resume
+        if (meetingId) {
+            try {
+                await chimeClient.send(new GetMeetingCommand({ MeetingId: meetingId }));
+                console.log(`[resume-call] Meeting ${meetingId} validated - exists`);
+            } catch (meetingErr: any) {
+                if (meetingErr.name === 'NotFoundException') {
+                    console.error(`[resume-call] Meeting ${meetingId} no longer exists`);
+                    
+                    // Clean up stale meeting reference
+                    await ddb.send(new UpdateCommand({
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        Key: { clinicId, queuePosition },
+                        UpdateExpression: 'REMOVE meetingInfo, customerAttendeeInfo, agentAttendeeInfo SET meetingError = :error',
+                        ExpressionAttributeValues: {
+                            ':error': 'Meeting not found in Chime SDK during resume'
+                        }
+                    })).catch(cleanupErr => console.warn('[resume-call] Failed to cleanup stale meeting ref:', cleanupErr));
+                    
+                    return {
+                        statusCode: 409,
+                        headers: corsHeaders,
+                        body: JSON.stringify({
+                            message: 'Cannot resume call - meeting no longer exists',
+                            error: 'MEETING_NOT_FOUND'
+                        })
+                    };
+                }
+                throw meetingErr; // Re-throw other errors
+            }
         }
 
         try {
@@ -266,51 +348,81 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             
             console.log(`[resume-call] SMA resume command successful for call ${callId}`);
             
-            // Only update database after SMA command succeeds
-            await ddb.send(new UpdateCommand({
-                TableName: CALL_QUEUE_TABLE_NAME,
-                Key: { clinicId, queuePosition },
-                UpdateExpression: 'SET #status = :status, callStatus = :status, holdEndTime = :endTime, holdDuration = :duration REMOVE holdStartTime, heldByAgentId',
-                ConditionExpression: '#status = :holdStatus AND heldByAgentId = :agentId',
-                ExpressionAttributeNames: {
-                    '#status': 'status'
-                },
-                ExpressionAttributeValues: {
-                    ':status': 'connected',
-                    ':endTime': new Date().toISOString(),
-                    ':duration': holdDuration,
-                    ':holdStatus': 'on_hold',
-                    ':agentId': agentId
-                }
-            }));
-
-            // Update the agent's record with the new attendee ID
-            await ddb.send(new UpdateCommand({
-                TableName: AGENT_PRESENCE_TABLE_NAME,
-                Key: { agentId },
-                UpdateExpression: 'SET callStatus = :status, lastActivityAt = :timestamp, currentMeetingAttendeeId = :attendeeId REMOVE heldCallMeetingId, heldCallId, heldCallAttendeeId',
-                ExpressionAttributeValues: {
-                    ':status': 'connected',
-                    ':timestamp': new Date().toISOString(),
-                    ':attendeeId': agentAttendeeId
-                }
-            }));
+            // FIX #5: Use TransactWriteCommand for atomic updates to prevent inconsistent state
+            const extendedTTL = calculateTTL(TTL_POLICY.ACTIVE_CALL_SECONDS);
+            const timestamp = new Date().toISOString();
             
-            // CRITICAL FIX: Update call record with resume metadata
-            // Since we already stored the attendee info above, we just update the timestamps here
             try {
-                await ddb.send(new UpdateCommand({
-                    TableName: CALL_QUEUE_TABLE_NAME,
-                    Key: { clinicId, queuePosition },
-                    UpdateExpression: 'SET resumeTime = :timestamp, lastUpdated = :timestamp',
-                    ExpressionAttributeValues: {
-                        ':timestamp': new Date().toISOString()
-                    }
+                await ddb.send(new TransactWriteCommand({
+                    TransactItems: [
+                        {
+                            Update: {
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                Key: { clinicId, queuePosition },
+                                UpdateExpression: 'SET #status = :status, callStatus = :status, holdEndTime = :endTime, ' +
+                                                 'holdDuration = :duration, #ttl = :ttl, resumeTime = :timestamp, lastUpdated = :timestamp ' +
+                                                 'REMOVE holdStartTime, heldByAgentId',
+                                ConditionExpression: '#status = :holdStatus AND heldByAgentId = :agentId',
+                                ExpressionAttributeNames: {
+                                    '#status': 'status',
+                                    '#ttl': 'ttl'
+                                },
+                                ExpressionAttributeValues: {
+                                    ':status': 'connected',
+                                    ':endTime': timestamp,
+                                    ':duration': holdDuration,
+                                    ':holdStatus': 'on_hold',
+                                    ':agentId': agentId,
+                                    ':ttl': extendedTTL,
+                                    ':timestamp': timestamp
+                                }
+                            }
+                        },
+                        {
+                            Update: {
+                                TableName: AGENT_PRESENCE_TABLE_NAME,
+                                Key: { agentId },
+                                UpdateExpression: 'SET callStatus = :status, lastActivityAt = :timestamp, ' +
+                                                 'currentMeetingAttendeeId = :attendeeId, currentCallId = :callId, #agentStatus = :onCall ' +
+                                                 'REMOVE heldCallMeetingId, heldCallId, heldCallAttendeeId',
+                                ConditionExpression: 'heldCallId = :callId',
+                                ExpressionAttributeNames: {
+                                    '#agentStatus': 'status'
+                                },
+                                ExpressionAttributeValues: {
+                                    ':status': 'connected',
+                                    ':timestamp': timestamp,
+                                    ':attendeeId': agentAttendeeId,
+                                    ':callId': callId,
+                                    ':onCall': 'OnCall'
+                                }
+                            }
+                        }
+                    ]
                 }));
-                console.log(`[resume-call] Updated call record with resume metadata for call ${callId}`);
-            } catch (callUpdateErr) {
-                // Non-fatal error
-                console.warn(`[resume-call] Failed to update call record with resume metadata:`, callUpdateErr);
+                console.log(`[resume-call] Transaction completed - both tables updated atomically for call ${callId}`);
+            } catch (txnErr: any) {
+                if (txnErr.name === 'TransactionCanceledException') {
+                    const reasons = txnErr.CancellationReasons || [];
+                    console.error('[resume-call] Transaction failed:', { reasons });
+                    
+                    // Schedule compensating action to reconcile state
+                    await scheduleCompensatingAction({
+                        action: 'RECONCILE_AGENT_STATE',
+                        callId,
+                        agentId,
+                        meetingId: meetingId || undefined,
+                        attendeeId: agentAttendeeId || undefined,
+                        reason: `Resume transaction failed: ${JSON.stringify(reasons)}`
+                    });
+                    
+                    return {
+                        statusCode: 409,
+                        headers: corsHeaders,
+                        body: JSON.stringify({ message: 'Call state changed during resume. Please try again.' })
+                    };
+                }
+                throw txnErr;
             }
 
             return {
@@ -345,6 +457,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     error: smaError.message
                 })
             };
+        }
+        } finally {
+            // FIX: Single finally block to release lock - covers all code paths including early returns
+            if (lock.isAcquired()) {
+                await lock.release();
+            }
         }
 
     } catch (error) {

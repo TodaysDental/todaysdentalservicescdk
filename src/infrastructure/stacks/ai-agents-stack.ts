@@ -132,11 +132,13 @@ export interface AiAgentsStackProps extends StackProps {
 
 export class AiAgentsStack extends Stack {
   public readonly agentsTable: dynamodb.Table;
+  public readonly sessionsTable: dynamodb.Table;
   public readonly connectionsTable: dynamodb.Table;
   public readonly voiceSessionsTable: dynamodb.Table;
   public readonly clinicHoursTable: dynamodb.Table;
   public readonly voiceConfigTable: dynamodb.Table;
   public readonly scheduledCallsTable: dynamodb.Table;
+  public readonly circuitBreakerTable: dynamodb.Table;
   /**
    * Reference to the shared CallAnalytics table from AnalyticsStack.
    * This avoids data fragmentation between AI-written records and Chime stream records.
@@ -274,11 +276,12 @@ export class AiAgentsStack extends Stack {
     // ========================================
 
     // AI Agents Table - stores agent metadata & Bedrock agent IDs
-    this.agentsTable = new dynamodb.Table(this, 'AiAgentsTable', {
+    // NOTE: Using new construct ID and table name suffix to force recreation after table was deleted outside CloudFormation
+    this.agentsTable = new dynamodb.Table(this, 'AiAgentTable', {
       partitionKey: { name: 'agentId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
-      tableName: `${this.stackName}-AiAgents`,
+      tableName: `${this.stackName}-AiAgent`,
       pointInTimeRecovery: true,
     });
     applyTags(this.agentsTable, { Table: 'ai-agents' });
@@ -289,6 +292,37 @@ export class AiAgentsStack extends Stack {
       partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
     });
+
+    // AI Agent Sessions Table - stores chat sessions with user binding
+    // SECURITY FIX: Sessions are now stored in DynamoDB (not in-memory) with user binding
+    // to prevent session hijacking across Lambda instances
+    this.sessionsTable = new dynamodb.Table(this, 'AiAgentSessionsTable', {
+      partitionKey: { name: 'sessionId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY, // Sessions are ephemeral
+      tableName: `${this.stackName}-AiAgentSessions`,
+      timeToLiveAttribute: 'ttl',
+    });
+    applyTags(this.sessionsTable, { Table: 'ai-agent-sessions' });
+
+    // Add GSI for user-based session lookup
+    this.sessionsTable.addGlobalSecondaryIndex({
+      indexName: 'UserIndex',
+      partitionKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+    });
+
+    // Circuit Breaker Table - distributed circuit breaker state
+    // ARCHITECTURE FIX: Circuit breaker state is now in DynamoDB (not in-memory)
+    // for consistent rate limiting and circuit breaking across Lambda instances
+    this.circuitBreakerTable = new dynamodb.Table(this, 'CircuitBreakerTable', {
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY, // State is ephemeral
+      tableName: `${this.stackName}-CircuitBreaker`,
+      timeToLiveAttribute: 'ttl',
+    });
+    applyTags(this.circuitBreakerTable, { Table: 'circuit-breaker' });
 
     // WebSocket Connections Table - stores active connections
     this.connectionsTable = new dynamodb.Table(this, 'AiAgentConnectionsTable', {
@@ -531,11 +565,27 @@ export class AiAgentsStack extends Stack {
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
         AGENTS_TABLE: this.agentsTable.tableName,
+        // SECURITY FIX: Clinic credentials loaded from SSM at runtime, not bundled
+        CLINICS_TABLE: props.clinicsTableName,
+        // ARCHITECTURE FIX: Distributed circuit breaker table
+        CIRCUIT_BREAKER_TABLE: this.circuitBreakerTable.tableName,
       },
     });
     applyTags(this.actionGroupFn, { Function: 'action-group' });
 
     this.agentsTable.grantReadData(this.actionGroupFn);
+    this.circuitBreakerTable.grantReadWriteData(this.actionGroupFn);
+    
+    // Grant read access to Clinics table for clinic metadata
+    // Use explicit ARN from props if available, otherwise construct from table name
+    const clinicsTableArnForActionGroup = props.clinicsTableArn || 
+      `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicsTableName}`;
+    
+    this.actionGroupFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['dynamodb:GetItem'],
+      resources: [clinicsTableArnForActionGroup],
+    }));
 
     // Allow Bedrock Agent role to invoke the action group Lambda
     this.actionGroupFn.grantInvoke(this.bedrockAgentRole);
@@ -681,11 +731,14 @@ export class AiAgentsStack extends Stack {
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
         AGENTS_TABLE: this.agentsTable.tableName,
+        // SECURITY FIX: Sessions table for user-bound session management
+        SESSIONS_TABLE: this.sessionsTable.tableName,
       },
     });
     applyTags(this.invokeAgentFn, { Function: 'invoke-agent' });
 
     this.agentsTable.grantReadWriteData(this.invokeAgentFn);
+    this.sessionsTable.grantReadWriteData(this.invokeAgentFn);
 
     // Bedrock Agent invocation permissions
     this.invokeAgentFn.addToRolePolicy(new iam.PolicyStatement({
@@ -1170,12 +1223,17 @@ export class AiAgentsStack extends Stack {
       regionalHostedZoneId: props.webSocketRegionalHostedZoneId,
     });
     
-    new apigwv2.ApiMapping(this, 'AiAgentsWebSocketMapping', {
-      api: this.websocketApi,
-      domainName: importedWsDomain,
-      stage: websocketStage,
+    // CRITICAL FIX: Use CfnApiMapping (L1) with explicit stage ID to avoid "Invalid stage identifier" errors
+    // The L2 ApiMapping sometimes has timing issues where CloudFormation validates the stage before it exists
+    const wsApiMapping = new apigwv2.CfnApiMapping(this, 'AiAgentsWebSocketMapping', {
+      apiId: this.websocketApi.apiId,
+      domainName: importedWsDomain.name,
+      stage: websocketStage.stageName,
       apiMappingKey: 'ai-agents',
     });
+    
+    // Explicit dependency ensures the stage is fully created before the mapping
+    wsApiMapping.addDependency(websocketStage.node.defaultChild as apigwv2.CfnStage);
 
     // ========================================
     // DOMAIN MAPPING (REST API)
@@ -1309,7 +1367,9 @@ export class AiAgentsStack extends Stack {
       createLambdaDurationAlarm(fn, name, durationMs);
     });
 
-    createDynamoThrottleAlarm(this.agentsTable.tableName, 'AiAgentsTable');
+    createDynamoThrottleAlarm(this.agentsTable.tableName, 'AiAgentTable');
+    createDynamoThrottleAlarm(this.sessionsTable.tableName, 'AiAgentSessionsTable');
+    createDynamoThrottleAlarm(this.circuitBreakerTable.tableName, 'CircuitBreakerTable');
     createDynamoThrottleAlarm(this.voiceSessionsTable.tableName, 'VoiceSessionsTable');
     createDynamoThrottleAlarm(this.clinicHoursTable.tableName, 'ClinicHoursTable');
     createDynamoThrottleAlarm(this.voiceConfigTable.tableName, 'VoiceConfigTable');

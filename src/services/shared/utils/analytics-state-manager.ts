@@ -16,7 +16,17 @@ import {
   isTerminalState
 } from '../../../types/analytics-state-machine';
 
-const LOCK_DURATION_MS = 30000; // 30 seconds
+// CRITICAL FIX #6.2: Make lock duration configurable via environment variable
+// Default to 60 seconds (was 30s) to account for slower finalization on complex calls
+const LOCK_DURATION_MS = parseInt(process.env.ANALYTICS_LOCK_DURATION_MS || '60000', 10);
+
+// CRITICAL FIX #6.2: Validate lock duration is reasonable
+if (LOCK_DURATION_MS < 10000 || LOCK_DURATION_MS > 300000) {
+  console.warn('[StateManager] ANALYTICS_LOCK_DURATION_MS outside recommended range (10s-300s):', {
+    configuredMs: LOCK_DURATION_MS,
+    recommendation: 'Use 30000-60000 for most workloads'
+  });
+}
 
 export interface StateTransitionResult {
   success: boolean;
@@ -28,6 +38,8 @@ export interface StateTransitionResult {
 
 /**
  * Attempt to transition analytics to a new state
+ * CRITICAL FIX #6.1: Use single atomic operation with validation in condition expression
+ * This eliminates the race window between GET and UPDATE
  */
 export async function transitionAnalyticsState(
   ddb: DynamoDBDocumentClient,
@@ -39,102 +51,95 @@ export async function transitionAnalyticsState(
   requestId?: string
 ): Promise<StateTransitionResult> {
   try {
-    // Get current state
-    const { Item: analytics } = await ddb.send(new GetCommand({
-      TableName: tableName,
-      Key: { callId, timestamp }
-    }));
-
-    if (!analytics) {
+    // CRITICAL FIX #6.1: Define valid source states for each target state upfront
+    // This allows us to do the transition validation in a single atomic operation
+    const validSourceStates = getValidSourceStates(toState);
+    
+    if (validSourceStates.length === 0) {
       return {
         success: false,
         currentState: AnalyticsState.FAILED,
-        error: 'Analytics record not found'
+        error: `No valid source states for transition to ${toState}`
       };
-    }
-
-    const currentState = analytics.analyticsState || AnalyticsState.INITIALIZING;
-    
-    // Check if transition is valid
-    if (!isValidTransition(currentState, toState)) {
-      return {
-        success: false,
-        currentState,
-        error: `Invalid transition from ${currentState} to ${toState}`
-      };
-    }
-
-    // Check if locked by another process
-    if (analytics.lockedBy && analytics.lockedUntil > Date.now()) {
-      if (analytics.lockedBy !== requestId) {
-        return {
-          success: false,
-          currentState,
-          isLocked: true,
-          lockedBy: analytics.lockedBy,
-          error: 'Record is locked by another process'
-        };
-      }
     }
 
     // Build state transition
+    const now = Date.now();
     const transition: AnalyticsStateTransition = {
-      from: currentState,
+      from: AnalyticsState.INITIALIZING, // Placeholder - will be overwritten by actual state
       to: toState,
-      timestamp: Date.now(),
+      timestamp: now,
       reason,
       processedBy: requestId
     };
 
-    const stateHistory = analytics.stateHistory || [];
-    stateHistory.push(transition);
-
-    // Apply state transition with conditional check
-    const updateExpression = `
+    // Build the atomic update expression
+    let updateExpression = `
       SET analyticsState = :newState,
-          stateHistory = :history,
+          stateHistory = list_append(if_not_exists(stateHistory, :emptyList), :newTransition),
           stateLastUpdated = :now
     `;
 
     const expressionValues: any = {
       ':newState': toState,
-      ':history': stateHistory,
-      ':now': Date.now(),
-      ':currentState': currentState
+      ':newTransition': [transition],
+      ':emptyList': [],
+      ':now': now
     };
 
     // Add finalization metadata if transitioning to FINALIZING
-    let finalUpdateExpression = updateExpression;
     if (toState === AnalyticsState.FINALIZING) {
-      finalUpdateExpression += `, finalizationScheduledAt = :scheduleTime`;
-      expressionValues[':scheduleTime'] = Date.now() + 30000; // 30 seconds
+      updateExpression += `, finalizationScheduledAt = :scheduleTime`;
+      expressionValues[':scheduleTime'] = now + 30000; // 30 seconds
     }
 
     // Add finalized timestamp if transitioning to FINALIZED
     if (toState === AnalyticsState.FINALIZED) {
-      finalUpdateExpression += `, finalizedAt = :finalizedTime, finalized = :true`;
-      expressionValues[':finalizedTime'] = Date.now();
+      updateExpression += `, finalizedAt = :finalizedTime, finalized = :true`;
+      expressionValues[':finalizedTime'] = now;
       expressionValues[':true'] = true;
     }
 
     // Remove lock if moving to terminal state
     if (isTerminalState(toState)) {
-      finalUpdateExpression += ` REMOVE lockedBy, lockedUntil`;
+      updateExpression += ` REMOVE lockedBy, lockedUntil`;
+    }
+
+    // CRITICAL FIX #6.1: Build condition expression that validates state AND checks lock atomically
+    // This is the key change - we validate everything in one atomic operation
+    const conditionParts: string[] = [];
+    const expressionNames: Record<string, string> = {};
+    
+    // Check current state is one of the valid source states
+    validSourceStates.forEach((state, idx) => {
+      expressionValues[`:validState${idx}`] = state;
+    });
+    
+    const stateConditions = validSourceStates.map((_, idx) => `analyticsState = :validState${idx}`);
+    stateConditions.push('attribute_not_exists(analyticsState)'); // Allow for new records
+    conditionParts.push(`(${stateConditions.join(' OR ')})`);
+    
+    // Check lock if requestId provided
+    if (requestId) {
+      expressionValues[':requestId'] = requestId;
+      expressionValues[':currentTime'] = now;
+      conditionParts.push('(attribute_not_exists(lockedBy) OR lockedUntil < :currentTime OR lockedBy = :requestId)');
     }
 
     await ddb.send(new UpdateCommand({
       TableName: tableName,
       Key: { callId, timestamp },
-      UpdateExpression: finalUpdateExpression,
-      ConditionExpression: 'analyticsState = :currentState OR attribute_not_exists(analyticsState)',
-      ExpressionAttributeValues: expressionValues
+      UpdateExpression: updateExpression,
+      ConditionExpression: conditionParts.join(' AND '),
+      ExpressionAttributeValues: expressionValues,
+      ExpressionAttributeNames: Object.keys(expressionNames).length > 0 ? expressionNames : undefined
     }));
 
     console.log('[StateManager] Transitioned analytics state:', {
       callId,
-      from: currentState,
       to: toState,
-      reason
+      reason,
+      validSourceStates
     });
 
     return {
@@ -144,13 +149,53 @@ export async function transitionAnalyticsState(
 
   } catch (err: any) {
     if (err.name === 'ConditionalCheckFailedException') {
-      return {
-        success: false,
-        currentState: AnalyticsState.FAILED,
-        error: 'State changed during transition attempt'
-      };
+      // CRITICAL FIX #6.1: On condition failure, fetch current state for better error reporting
+      try {
+        const { Item: analytics } = await ddb.send(new GetCommand({
+          TableName: tableName,
+          Key: { callId, timestamp },
+          ProjectionExpression: 'analyticsState, lockedBy, lockedUntil'
+        }));
+        
+        const currentState = analytics?.analyticsState || AnalyticsState.INITIALIZING;
+        const isLocked = analytics?.lockedBy && analytics?.lockedUntil > Date.now();
+        
+        return {
+          success: false,
+          currentState,
+          isLocked,
+          lockedBy: isLocked ? analytics?.lockedBy : undefined,
+          error: isLocked 
+            ? 'Record is locked by another process'
+            : `Invalid transition: current state is ${currentState}`
+        };
+      } catch {
+        return {
+          success: false,
+          currentState: AnalyticsState.FAILED,
+          error: 'State changed during transition attempt'
+        };
+      }
     }
     throw err;
+  }
+}
+
+/**
+ * CRITICAL FIX #6.1: Helper to get valid source states for a target state
+ */
+function getValidSourceStates(toState: AnalyticsState): AnalyticsState[] {
+  switch (toState) {
+    case AnalyticsState.ACTIVE:
+      return [AnalyticsState.INITIALIZING];
+    case AnalyticsState.FINALIZING:
+      return [AnalyticsState.ACTIVE, AnalyticsState.INITIALIZING];
+    case AnalyticsState.FINALIZED:
+      return [AnalyticsState.FINALIZING];
+    case AnalyticsState.FAILED:
+      return [AnalyticsState.INITIALIZING, AnalyticsState.ACTIVE, AnalyticsState.FINALIZING];
+    default:
+      return [];
   }
 }
 

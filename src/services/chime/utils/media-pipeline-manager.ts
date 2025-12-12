@@ -14,8 +14,12 @@ import {
 } from '@aws-sdk/client-chime-sdk-media-pipelines';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 
-const mediaPipelinesClient = new ChimeSDKMediaPipelinesClient({ region: process.env.AWS_REGION || 'us-east-1' });
-const ssmClient = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
+// CHIME_MEDIA_REGION: Use environment variable for consistency across all handlers
+// This is set by ChimeStack CDK and ensures all Chime operations use the same region
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
+
+const mediaPipelinesClient = new ChimeSDKMediaPipelinesClient({ region: CHIME_MEDIA_REGION });
+const ssmClient = new SSMClient({ region: CHIME_MEDIA_REGION });
 
 const ENABLE_REAL_TIME_TRANSCRIPTION = process.env.ENABLE_REAL_TIME_TRANSCRIPTION === 'true';
 const MEDIA_INSIGHTS_PIPELINE_PARAMETER = process.env.MEDIA_INSIGHTS_PIPELINE_PARAMETER;
@@ -61,6 +65,9 @@ export interface StartMediaPipelineParams {
     agentId?: string;
     customerPhone?: string;
     direction?: 'inbound' | 'outbound';
+    // AI call specific metadata
+    isAiCall?: boolean;
+    aiSessionId?: string;
 }
 
 /**
@@ -100,7 +107,7 @@ export async function startMediaPipeline(params: StartMediaPipelineParams): Prom
 
         // Get AWS account info for KVS ARN construction
         const kvsPrefix = process.env.KVS_STREAM_PREFIX || 'call-';
-        const region = process.env.AWS_REGION || 'us-east-1';
+        const region = CHIME_MEDIA_REGION;
         // Extract account ID from Lambda context or environment
         const account = process.env.AWS_ACCOUNT_ID || 
                        (process.env.AWS_LAMBDA_FUNCTION_NAME ? 
@@ -143,6 +150,7 @@ export async function startMediaPipeline(params: StartMediaPipelineParams): Prom
             },
             
             // Runtime metadata for analytics correlation
+            // This metadata is passed through to the Kinesis stream and available to consumers
             MediaInsightsRuntimeMetadata: {
                 callId,
                 clinicId,
@@ -150,6 +158,10 @@ export async function startMediaPipeline(params: StartMediaPipelineParams): Prom
                 agentId: agentId || '',
                 customerPhone: customerPhone || '',
                 direction: direction || 'inbound',
+                // AI call metadata for transcript-bridge Lambda
+                isAiCall: params.isAiCall ? 'true' : 'false',
+                aiSessionId: params.aiSessionId || '',
+                transactionId: callId, // For UpdateSipMediaApplicationCall
             },
             
             // Tags for resource management and cost tracking
@@ -157,7 +169,8 @@ export async function startMediaPipeline(params: StartMediaPipelineParams): Prom
                 { Key: 'CallId', Value: callId },
                 { Key: 'ClinicId', Value: clinicId },
                 { Key: 'MeetingId', Value: meetingId },
-                { Key: 'Type', Value: 'RealTimeAnalytics' },
+                { Key: 'Type', Value: params.isAiCall ? 'AiVoiceCall' : 'RealTimeAnalytics' },
+                ...(params.isAiCall ? [{ Key: 'AiSessionId', Value: params.aiSessionId || '' }] : []),
             ],
         });
 

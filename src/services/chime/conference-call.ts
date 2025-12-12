@@ -17,8 +17,13 @@ import { getSmaIdForClinic } from './utils/sma-map';
 import { randomUUID } from 'crypto';
 
 const ddb = getDynamoDBClient();
-const chimeVoice = new ChimeSDKVoiceClient({});
-const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || process.env.AWS_REGION || 'us-east-1';
+
+// CHIME_MEDIA_REGION: Use environment variable for consistency across all handlers
+// This is set by ChimeStack CDK and ensures all Chime operations use the same region
+// Note: Chime SDK Meetings only supports specific regions - do not use AWS_REGION as fallback
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
+// FIX: Add region to ChimeSDKVoiceClient for consistency
+const chimeVoice = new ChimeSDKVoiceClient({ region: CHIME_MEDIA_REGION });
 const chimeClient = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
@@ -214,47 +219,84 @@ async function mergeCallsIntoConference(
         };
     }
 
-    // Update call records with conference info
+    // FIX: Use TransactWriteCommand to update both call records AND agent presence atomically
+    // This prevents inconsistent state if any single update fails
     const now = new Date().toISOString();
-    await Promise.all([
-        ddb.send(new UpdateCommand({
-            TableName: CALL_QUEUE_TABLE_NAME,
-            Key: { clinicId: primaryCall.clinicId, queuePosition: primaryCall.queuePosition },
-            UpdateExpression: 'SET #status = :conferenceStatus, conferenceId = :conferenceId, conferenceRole = :role, conferenceStartedAt = :now',
-            ExpressionAttributeNames: { '#status': 'status' },
-            ExpressionAttributeValues: {
-                ':conferenceStatus': 'conference',
-                ':conferenceId': conferenceId,
-                ':role': 'primary',
-                ':now': now
-            }
-        })),
-        ddb.send(new UpdateCommand({
-            TableName: CALL_QUEUE_TABLE_NAME,
-            Key: { clinicId: secondaryCall.clinicId, queuePosition: secondaryCall.queuePosition },
-            UpdateExpression: 'SET #status = :conferenceStatus, conferenceId = :conferenceId, conferenceRole = :role, conferenceStartedAt = :now',
-            ExpressionAttributeNames: { '#status': 'status' },
-            ExpressionAttributeValues: {
-                ':conferenceStatus': 'conference',
-                ':conferenceId': conferenceId,
-                ':role': 'secondary',
-                ':now': now
-            }
-        }))
-    ]);
-
-    // Update agent presence
-    await ddb.send(new UpdateCommand({
-        TableName: AGENT_PRESENCE_TABLE_NAME,
-        Key: { agentId },
-        UpdateExpression: 'SET conferenceId = :conferenceId, conferenceCallIds = :callIds, conferenceStartedAt = :now, callStatus = :status REMOVE secondaryCallId, secondaryCallStatus',
-        ExpressionAttributeValues: {
-            ':conferenceId': conferenceId,
-            ':callIds': [primaryCallId, secondaryCallId],
-            ':now': now,
-            ':status': 'conference'
+    try {
+        await ddb.send(new TransactWriteCommand({
+            TransactItems: [
+                // Update primary call record
+                {
+                    Update: {
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        Key: { clinicId: primaryCall.clinicId, queuePosition: primaryCall.queuePosition },
+                        UpdateExpression: 'SET #status = :conferenceStatus, conferenceId = :conferenceId, conferenceRole = :role, conferenceStartedAt = :now',
+                        // FIX: Add ConditionExpression to verify call is still in expected state
+                        ConditionExpression: 'assignedAgentId = :agentId',
+                        ExpressionAttributeNames: { '#status': 'status' },
+                        ExpressionAttributeValues: {
+                            ':conferenceStatus': 'conference',
+                            ':conferenceId': conferenceId,
+                            ':role': 'primary',
+                            ':now': now,
+                            ':agentId': agentId
+                        }
+                    }
+                },
+                // Update secondary call record
+                {
+                    Update: {
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        Key: { clinicId: secondaryCall.clinicId, queuePosition: secondaryCall.queuePosition },
+                        UpdateExpression: 'SET #status = :conferenceStatus, conferenceId = :conferenceId, conferenceRole = :role, conferenceStartedAt = :now',
+                        // FIX: Add ConditionExpression to verify call is still in expected state
+                        ConditionExpression: 'assignedAgentId = :agentId',
+                        ExpressionAttributeNames: { '#status': 'status' },
+                        ExpressionAttributeValues: {
+                            ':conferenceStatus': 'conference',
+                            ':conferenceId': conferenceId,
+                            ':role': 'secondary',
+                            ':now': now,
+                            ':agentId': agentId
+                        }
+                    }
+                },
+                // Update agent presence
+                {
+                    Update: {
+                        TableName: AGENT_PRESENCE_TABLE_NAME,
+                        Key: { agentId },
+                        UpdateExpression: 'SET conferenceId = :conferenceId, conferenceCallIds = :callIds, conferenceStartedAt = :now, callStatus = :status REMOVE secondaryCallId, secondaryCallStatus',
+                        // FIX: Verify agent still has both calls
+                        ConditionExpression: 'currentCallId = :primaryCallId AND secondaryCallId = :secondaryCallId',
+                        ExpressionAttributeValues: {
+                            ':conferenceId': conferenceId,
+                            ':callIds': [primaryCallId, secondaryCallId],
+                            ':now': now,
+                            ':status': 'conference',
+                            ':primaryCallId': primaryCallId,
+                            ':secondaryCallId': secondaryCallId
+                        }
+                    }
+                }
+            ]
+        }));
+        console.log('[conference-call] Conference merge transaction completed successfully');
+    } catch (txnErr: any) {
+        if (txnErr.name === 'TransactionCanceledException') {
+            const reasons = txnErr.CancellationReasons || [];
+            console.error('[conference-call] Conference merge transaction failed', { reasons });
+            return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({ 
+                    message: 'Call state changed during conference merge. Please try again.',
+                    error: 'STATE_CHANGED'
+                })
+            };
         }
-    }));
+        throw txnErr;
+    }
 
     return {
         statusCode: 200,

@@ -9,7 +9,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
-import { ChimeSDKMeetingsClient, CreateAttendeeCommand, DeleteAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
+import { ChimeSDKMeetingsClient, CreateAttendeeCommand, DeleteAttendeeCommand, GetMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { getSmaIdForClinic } from './utils/sma-map';
@@ -20,8 +20,14 @@ import { getUserIdFromJwt, getClinicsFromJwtPayload } from '../../shared/utils/p
 import { randomUUID } from 'crypto';
 
 const ddb = getDynamoDBClient();
-const chimeVoice = new ChimeSDKVoiceClient({});
-const chime = new ChimeSDKMeetingsClient({ region: process.env.CHIME_MEDIA_REGION || 'us-east-1' });
+
+// CHIME_MEDIA_REGION: Use environment variable for consistency across all handlers
+// This is set by ChimeStack CDK and ensures all Chime operations use the same region
+// CRITICAL FIX: Apply CHIME_MEDIA_REGION to BOTH Voice and Meetings clients
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
+const chimeVoice = new ChimeSDKVoiceClient({ region: CHIME_MEDIA_REGION });
+const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
+
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 
@@ -160,8 +166,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             }));
 
             // FIX #30: Enhanced target agent validation
+            // FIX: Remove explicit lock.release() calls - let finally block handle it
             if (!targetAgent) {
-                await lock.release();
                 return {
                     statusCode: 404,
                     headers: corsHeaders,
@@ -170,7 +176,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             }
 
             if (targetAgent.status !== 'Online') {
-                await lock.release();
                 return {
                     statusCode: 409,
                     headers: corsHeaders,
@@ -183,7 +188,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
             // FIX #3: Verify target agent is not already on another call
             if (targetAgent.currentCallId || targetAgent.ringingCallId) {
-                await lock.release();
                 return {
                     statusCode: 409,
                     headers: corsHeaders,
@@ -213,9 +217,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const { clinicId, queuePosition } = callRecord;
 
         // FIX #30: Validate call is in transferable state
+        // FIX: Remove explicit lock.release() calls - let finally block handle it
         const TRANSFERABLE_STATES = ['connected'];
         if (!TRANSFERABLE_STATES.includes(callRecord.status)) {
-            await lock.release();
             return {
                 statusCode: 409,
                 headers: corsHeaders,
@@ -230,7 +234,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         // FIX #30: Validate call is not on hold
         if (callRecord.callStatus === 'on_hold') {
-            await lock.release();
             return {
                 statusCode: 409,
                 headers: corsHeaders,
@@ -243,7 +246,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         // FIX #30: Validate call has active meeting
         if (!callRecord.meetingInfo?.MeetingId) {
-            await lock.release();
             return {
                 statusCode: 409,
                 headers: corsHeaders,
@@ -300,6 +302,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         // CRITICAL FIX: Use a transaction to update everything atomically
         // This prevents race conditions by ensuring all updates happen consistently
+        
+        // FIX: Declare toAgentAttendee at higher scope so it's accessible in rollback code
+        let toAgentAttendee: any;
+        
         try {
             // Step 1: Verify call status and meeting info before proceeding
             if (!callRecord.meetingInfo?.MeetingId) {
@@ -312,6 +318,37 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             
             const meetingInfo = callRecord.meetingInfo;
             
+            // FIX #9: Validate meeting exists in Chime before attempting to create attendee
+            // This prevents unclear errors when meeting was deleted due to timeout/cleanup
+            try {
+                await chime.send(new GetMeetingCommand({ MeetingId: meetingInfo.MeetingId }));
+                console.log(`[transfer-call] Meeting ${meetingInfo.MeetingId} validated - exists`);
+            } catch (meetingErr: any) {
+                if (meetingErr.name === 'NotFoundException') {
+                    console.error(`[transfer-call] Meeting ${meetingInfo.MeetingId} no longer exists`);
+                    
+                    // Clean up stale meeting reference in call record
+                    await ddb.send(new UpdateCommand({
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        Key: { clinicId, queuePosition },
+                        UpdateExpression: 'REMOVE meetingInfo, customerAttendeeInfo, agentAttendeeInfo SET meetingError = :error',
+                        ExpressionAttributeValues: {
+                            ':error': 'Meeting not found in Chime SDK during transfer'
+                        }
+                    })).catch(cleanupErr => console.warn('[transfer-call] Failed to cleanup stale meeting ref:', cleanupErr));
+                    
+                    return {
+                        statusCode: 409,
+                        headers: corsHeaders,
+                        body: JSON.stringify({
+                            message: 'Cannot transfer call - meeting no longer exists',
+                            error: 'MEETING_NOT_FOUND'
+                        })
+                    };
+                }
+                throw meetingErr; // Re-throw other errors
+            }
+            
             // **FLAW #14 FIX: Use unique ExternalUserId for transfer to prevent attendee collisions**
             // Each transfer attempt gets a unique ID based on randomUUID to ensure idempotency
             const transferAttemptId = randomUUID();
@@ -319,7 +356,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             
             // Step 2: Create a new attendee for the target agent in the existing meeting
             console.log(`[transfer-call] Creating attendee for target agent ${toAgentId} in meeting ${meetingInfo.MeetingId}`);
-            let toAgentAttendee;
             try {
                 const toAgentAttendeeResponse = await chime.send(new CreateAttendeeCommand({
                     MeetingId: meetingInfo.MeetingId,
@@ -395,23 +431,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             }
             const sourceAgentUpdateExpression = `SET ${sourceAgentSetParts.join(', ')}${sourceAgentRemoveParts.length ? ' REMOVE ' + sourceAgentRemoveParts.join(', ') : ''}`;
             
-            // **FLAW #12 FIX: If call is currently held, update the held call meeting ID for source agent**
-            // This ensures resume-call uses the correct meeting after transfer
-            let sourceAgentExtra = '';
-            let sourceAgentExtraValues: any = {};
-            if (callRecord.status === 'on_hold') {
-                // Call is on hold - update the source agent's held call meeting info if they're holding it
-                sourceAgentExtra = ', heldCallMeetingId = :heldMeetingId, heldCallId = :heldCallId, heldCallAttendeeId = :heldAttendeeId';
-                sourceAgentExtraValues = {
-                    ':heldMeetingId': meetingInfo.MeetingId,
-                    ':heldCallId': callId,
-                    ':heldAttendeeId': toAgentAttendee.AttendeeId
-                };
-            }
+            // FIX #14: Removed dead code for on_hold transfers
+            // Transfers of held calls are already rejected earlier in validation (lines 236-248)
+            // This code path was unreachable and caused confusion
             
-            // Use the TransactWrite operation for atomic updates - already imported at the top of file
-            
-            const sourceAgentFinalUpdateExpression = sourceAgentUpdateExpression + sourceAgentExtra;
+            const sourceAgentFinalUpdateExpression = sourceAgentUpdateExpression;
             
             await ddb.send(new TransactWriteCommand({
                 TransactItems: [
@@ -470,8 +494,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                             ExpressionAttributeValues: {
                                 ':sourceStatus': isConferenceTransfer ? 'OnCall' : 'Online',
                                 ':timestamp': timestamp,
-                                ':callId': callId,
-                                ...sourceAgentExtraValues
+                                ':callId': callId
                             }
                         }
                     }
@@ -550,14 +573,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 // Get reference to the meeting info we verified earlier
                 const targetMeetingInfo = callRecord.meetingInfo; // already verified to exist earlier
                 
-                // Get a reference to the attendee we created earlier for this transfer
-                // Avoiding a variable name conflict by using a different name
-                const transferAttendee = callRecord.meetingInfo ? 
-                    { 
-                        AttendeeId: (callRecord.agentAttendeeInfo?.AttendeeId || ''), 
-                        JoinToken: '',
-                        ExternalUserId: toAgentId
-                    } : null;
+                // FIX: Use the NEWLY created attendee (toAgentAttendee) instead of the old one from callRecord
+                // The toAgentAttendee was created at line 329-338 and holds the actual attendee we need to clean up
                 
                 // Generate a unique operation ID for this rollback
                 const rollbackId = `rollback-${randomUUID()}`;
@@ -599,15 +616,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                             }
                         },
                         // 3. Restore source agent
+                        // FIX #4: For blind transfers, also restore callStatus which was removed in forward path
+                        // FIX: Add ConditionExpression to prevent overwriting legitimate state changes
                         {
                             Update: {
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
                                 Key: { agentId: fromAgentId },
-                                UpdateExpression: 'SET currentCallId = :callId, #status = :status, lastActivityAt = :timestamp, rollbackId = :rollbackId REMOVE transferInitiatedAt',
+                                UpdateExpression: 'SET currentCallId = :callId, callStatus = :callStatus, #status = :status, lastActivityAt = :timestamp, rollbackId = :rollbackId REMOVE transferInitiatedAt',
+                                // FIX: Only restore if agent hasn't started a new call or is still in transferring state
+                                ConditionExpression: 'attribute_not_exists(currentCallId) OR #status = :onlineStatus OR transferInitiatedAt = :timestamp',
                                 ExpressionAttributeNames: { '#status': 'status' },
                                 ExpressionAttributeValues: {
                                     ':callId': callId,
+                                    ':callStatus': 'connected',
                                     ':status': 'OnCall',
+                                    ':onlineStatus': 'Online',
                                     ':timestamp': new Date().toISOString(),
                                     ':rollbackId': rollbackId
                                 }
@@ -617,13 +640,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 }));
                 
                 // Delete the newly created attendee to clean up completely
-                if (transferAttendee?.AttendeeId && targetMeetingInfo?.MeetingId) {
+                // FIX: Use toAgentAttendee (the one we just created) instead of transferAttendee (which was incorrectly pointing to old data)
+                if (toAgentAttendee?.AttendeeId && targetMeetingInfo?.MeetingId) {
                     try {
                         await chime.send(new DeleteAttendeeCommand({
                             MeetingId: targetMeetingInfo.MeetingId,
-                            AttendeeId: transferAttendee.AttendeeId
+                            AttendeeId: toAgentAttendee.AttendeeId
                         }));
-                        console.log(`[transfer-call] Cleaned up target agent attendee ${transferAttendee.AttendeeId}`);
+                        console.log(`[transfer-call] Cleaned up target agent attendee ${toAgentAttendee.AttendeeId}`);
                     } catch (deleteErr) {
                         // Non-critical error, just log it
                         console.warn(`[transfer-call] Failed to delete attendee:`, deleteErr);
@@ -664,10 +688,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         } catch (transferErr: any) {
             console.error('[transfer-call] Transfer operation failed:', transferErr);
-            await lock.release();
+            // FIX: Don't release lock here - let finally block handle it to avoid double release
             throw transferErr;
         } finally {
-            // FIX #3: Always release the lock
+            // FIX #3: Always release the lock (only once, in finally block)
             await lock.release();
         }
 
