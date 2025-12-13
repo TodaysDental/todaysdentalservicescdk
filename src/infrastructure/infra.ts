@@ -301,8 +301,9 @@ const analyticsStack = new AnalyticsStack(app, ANALYTICS_STACK_NAME, {
 });
 
 // Flag to enable after-hours AI routing (requires AiAgentsStack to be deployed first)
-// Set to true after initial deployment of AiAgentsStack
-const ENABLE_AFTER_HOURS_AI = process.env.ENABLE_AFTER_HOURS_AI === 'true';
+// AiAgentsStack is deployed, so we enable this by default
+// Can be disabled via environment variable: ENABLE_AFTER_HOURS_AI=false
+const ENABLE_AFTER_HOURS_AI = process.env.ENABLE_AFTER_HOURS_AI !== 'false';
 
 // Chime Media Region - Chime SDK only supports specific regions for media operations
 // Override via environment variable if deploying to a different region

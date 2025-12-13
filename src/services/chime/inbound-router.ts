@@ -531,6 +531,10 @@ interface ClinicHours {
 
 /**
  * Check if a clinic is currently open based on their configured hours
+ * 
+ * Supports two data formats:
+ * 1. ClinicHoursStack format: { clinicId, monday: {...}, tuesday: {...}, timeZone }
+ * 2. Legacy format: { clinicId, hours: { monday: {...} }, timezone }
  */
 async function isClinicOpen(clinicId: string): Promise<boolean> {
     if (!CLINIC_HOURS_TABLE) {
@@ -544,15 +548,16 @@ async function isClinicOpen(clinicId: string): Promise<boolean> {
             Key: { clinicId },
         }));
 
-        const clinicHours = Item as ClinicHours | undefined;
-        if (!clinicHours?.hours) {
+        if (!Item) {
             // No hours defined = use default (always use AI for after-hours)
             console.log('[isClinicOpen] No hours configured for clinic - defaulting to AI');
             return false;
         }
 
         const now = new Date();
-        const timezone = clinicHours.timezone || 'America/New_York';
+        
+        // Support both field names: timeZone (ClinicHoursStack) and timezone (legacy)
+        const timezone = Item.timeZone || Item.timezone || 'America/New_York';
         
         // Get current time in clinic's timezone
         const options: Intl.DateTimeFormatOptions = {
@@ -571,9 +576,23 @@ async function isClinicOpen(clinicId: string): Promise<boolean> {
         const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0');
         const currentTime = hour * 60 + minute; // Minutes since midnight
 
-        const todayHours = clinicHours.hours[dayOfWeek];
-        if (!todayHours || todayHours.closed) {
-            console.log('[isClinicOpen] Clinic is closed today', { clinicId, dayOfWeek });
+        // Support both formats:
+        // 1. Direct on root: Item[dayOfWeek] (ClinicHoursStack format)
+        // 2. Nested under hours: Item.hours[dayOfWeek] (legacy format)
+        const todayHours = Item[dayOfWeek] || Item.hours?.[dayOfWeek];
+        
+        if (!todayHours) {
+            console.log('[isClinicOpen] No hours for today - clinic closed', { clinicId, dayOfWeek });
+            return false;
+        }
+        
+        if (todayHours.closed) {
+            console.log('[isClinicOpen] Clinic is marked closed today', { clinicId, dayOfWeek });
+            return false;
+        }
+
+        if (!todayHours.open || !todayHours.close) {
+            console.log('[isClinicOpen] Missing open/close times - assuming closed', { clinicId, dayOfWeek, todayHours });
             return false;
         }
 
@@ -586,6 +605,7 @@ async function isClinicOpen(clinicId: string): Promise<boolean> {
         console.log('[isClinicOpen] Clinic hours check', { 
             clinicId, 
             dayOfWeek, 
+            timezone,
             currentTime: `${hour}:${minute}`,
             openTime: todayHours.open,
             closeTime: todayHours.close,
@@ -601,6 +621,7 @@ async function isClinicOpen(clinicId: string): Promise<boolean> {
 
 /**
  * Get the configured voice AI agent for a clinic
+ * Returns null if AI inbound is disabled in VoiceAgentConfig
  */
 async function getVoiceAiAgentForClinic(clinicId: string): Promise<{ agentId: string; bedrockAgentId: string; bedrockAgentAliasId: string } | null> {
     if (!VOICE_CONFIG_TABLE || !AI_AGENTS_TABLE) {
@@ -614,6 +635,19 @@ async function getVoiceAiAgentForClinic(clinicId: string): Promise<{ agentId: st
             TableName: VOICE_CONFIG_TABLE,
             Key: { clinicId },
         }));
+
+        // CRITICAL: Check if AI inbound is enabled
+        if (config && config.aiInboundEnabled === false) {
+            console.log('[getVoiceAiAgentForClinic] AI inbound is disabled for clinic', { clinicId });
+            return null;
+        }
+
+        // If config exists but aiInboundEnabled is not explicitly true, check if we should use AI
+        // For new clinics without config, we'll fall back to finding a default agent
+        if (config && config.aiInboundEnabled !== true) {
+            console.log('[getVoiceAiAgentForClinic] AI inbound not explicitly enabled', { clinicId, aiInboundEnabled: config.aiInboundEnabled });
+            // Continue to check for agent - if user configured an agent but didn't set flag, still try
+        }
 
         let agentId = config?.inboundAgentId;
 
