@@ -17,6 +17,14 @@ const docClient = DynamoDBDocumentClient.from(dynamoClient);
 const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || 'AiAgentConnections';
 const AGENTS_TABLE = process.env.AGENTS_TABLE || 'AiAgents';
 
+// DEBUG: Log environment variables at module load time
+console.log('[WsConnect] Environment variables:', {
+  CONNECTIONS_TABLE,
+  AGENTS_TABLE,
+  ENV_CONNECTIONS_TABLE: process.env.CONNECTIONS_TABLE,
+  ENV_AGENTS_TABLE: process.env.AGENTS_TABLE,
+});
+
 // WebSocket connect event has headers and queryStringParameters like regular API Gateway
 interface WebSocketConnectEvent extends APIGatewayProxyEvent {
   requestContext: APIGatewayProxyEvent['requestContext'] & {

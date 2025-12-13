@@ -323,11 +323,12 @@ const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
  medicalVocabularyName: analyticsStack.medicalVocabularyName,
  // Chime Media Region - passed to all Lambda functions for consistent region usage
  chimeMediaRegion: CHIME_MEDIA_REGION,
- // Voice AI integration (from AiAgentsStack)
- // NOTE: Set ENABLE_AFTER_HOURS_AI=true after AiAgentsStack is deployed
- enableAfterHoursAi: ENABLE_AFTER_HOURS_AI,
- voiceAiLambdaArn: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceAiFunctionArn`) : undefined,
- clinicHoursTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-ClinicHoursTableName`) : undefined,
+  // Voice AI integration (from AiAgentsStack)
+  // NOTE: Set ENABLE_AFTER_HOURS_AI=true after AiAgentsStack is deployed
+  enableAfterHoursAi: ENABLE_AFTER_HOURS_AI,
+  voiceAiLambdaArn: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceAiFunctionArn`) : undefined,
+  // CRITICAL FIX: Use ClinicHoursStack table directly - it's the source of truth for clinic hours
+  clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
  aiAgentsTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableName`) : undefined,
  voiceConfigTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceConfigTableName`) : undefined,
  scheduledCallsTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-ScheduledCallsTableName`) : undefined,
@@ -456,6 +457,14 @@ const clinicImagesStack = new ClinicImagesStack(app, 'TodaysDentalInsightsClinic
 const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   env,
   // ========================================
+  // CLINIC HOURS INTEGRATION (from ClinicHoursStack)
+  // ========================================
+  // CRITICAL FIX: Use the shared ClinicHours table from ClinicHoursStack
+  // This table is synced hourly from OpenDental and contains the authoritative clinic hours
+  clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
+  clinicHoursTableArn: clinicHoursStack.clinicHoursTable.tableArn,
+  
+  // ========================================
   // CHIME STACK INTEGRATION (REQUIRED)
   // ========================================
   // CRITICAL FIX: Pass all required props explicitly to avoid fragile hardcoded defaults
@@ -497,11 +506,13 @@ const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   webSocketRegionalHostedZoneId: 'Z1UJRXOUMOOFQ8',
 });
 
-// Add dependencies so AI Agents stack deploys after Chime, Analytics, and Chatbot
+// Add dependencies so AI Agents stack deploys after Chime, Analytics, Chatbot, and ClinicHours
 // Chatbot creates the ws.todaysdentalinsights.com domain that AI Agents uses
+// ClinicHours provides the shared clinic hours table
 aiAgentsStack.addDependency(chimeStack);
 aiAgentsStack.addDependency(analyticsStack);
 aiAgentsStack.addDependency(chatbotStack);
+aiAgentsStack.addDependency(clinicHoursStack);
 
 // Query Generator Stack - AI-powered SQL query generation using Bedrock
 const queryGeneratorStack = new QueryGeneratorStack(app, 'TodaysDentalInsightsQueryGeneratorN1', {

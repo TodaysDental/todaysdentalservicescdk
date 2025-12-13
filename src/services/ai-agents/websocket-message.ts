@@ -161,7 +161,23 @@ async function checkRateLimit(connectionId: string): Promise<{ allowed: boolean;
 function createApiGatewayClient(event: WebSocketMessageEvent): ApiGatewayManagementApiClient {
   const domain = event.requestContext.domainName;
   const stage = event.requestContext.stage;
-  const endpoint = `https://${domain}/${stage}`;
+  const apiId = event.requestContext.apiId;
+  const region = process.env.AWS_REGION || 'us-east-1';
+  
+  // FIX: When using custom domains with path mapping, the @connections endpoint
+  // must use the execute-api URL format, not the custom domain.
+  // Custom domain: ws.todaysdentalinsights.com/ai-agents -> doesn't work for @connections
+  // Execute-api: {api-id}.execute-api.{region}.amazonaws.com/{stage} -> works
+  let endpoint: string;
+  
+  if (domain.includes('execute-api.amazonaws.com')) {
+    // Direct execute-api URL (no custom domain)
+    endpoint = `https://${domain}/${stage}`;
+  } else {
+    // Custom domain - use execute-api format instead
+    endpoint = `https://${apiId}.execute-api.${region}.amazonaws.com/${stage}`;
+    console.log(`[WsMessage] Using execute-api endpoint for @connections: ${endpoint}`);
+  }
   
   return new ApiGatewayManagementApiClient({ endpoint });
 }

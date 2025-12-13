@@ -27,7 +27,21 @@ import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
  * 3. User Prompt (customizable) - Additional frontend instructions
  */
 export interface AiAgentsStackProps extends StackProps {
-  clinicHoursTableName?: string;
+  // ========================================
+  // CLINIC HOURS INTEGRATION (from ClinicHoursStack)
+  // ========================================
+  /**
+   * Clinic hours table name from ClinicHoursStack.
+   * REQUIRED for Voice AI to determine after-hours routing.
+   */
+  clinicHoursTableName: string;
+  
+  /**
+   * Clinic hours table ARN from ClinicHoursStack for IAM permissions.
+   * REQUIRED for Voice AI Lambda to read clinic hours.
+   */
+  clinicHoursTableArn: string;
+  
   clinicPricingTableName?: string;
   clinicInsuranceTableName?: string;
   
@@ -135,7 +149,11 @@ export class AiAgentsStack extends Stack {
   public readonly sessionsTable: dynamodb.Table;
   public readonly connectionsTable: dynamodb.Table;
   public readonly voiceSessionsTable: dynamodb.Table;
-  public readonly clinicHoursTable: dynamodb.Table;
+  /**
+   * Imported clinic hours table from ClinicHoursStack.
+   * NOT created here - uses the shared table to avoid data duplication.
+   */
+  public readonly clinicHoursTable: dynamodb.ITable;
   public readonly voiceConfigTable: dynamodb.Table;
   public readonly scheduledCallsTable: dynamodb.Table;
   public readonly circuitBreakerTable: dynamodb.Table;
@@ -351,15 +369,14 @@ export class AiAgentsStack extends Stack {
       partitionKey: { name: 'callId', type: dynamodb.AttributeType.STRING },
     });
 
-    // Clinic Hours Table - stores business hours for each clinic
-    this.clinicHoursTable = new dynamodb.Table(this, 'ClinicHoursTable', {
-      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: RemovalPolicy.RETAIN,
-      tableName: `${this.stackName}-ClinicHours`,
-      pointInTimeRecovery: true,
-    });
-    applyTags(this.clinicHoursTable, { Table: 'clinic-hours' });
+    // ========================================
+    // CLINIC HOURS TABLE (Imported from ClinicHoursStack)
+    // ========================================
+    // CRITICAL FIX: Import the existing table from ClinicHoursStack instead of creating a duplicate.
+    // This ensures all clinic hours data is in one place and synced from OpenDental.
+    // NOTE: Only use tableArn (not both tableArn and tableName) to avoid ValidationError
+    this.clinicHoursTable = dynamodb.Table.fromTableArn(this, 'ImportedClinicHoursTable', props.clinicHoursTableArn);
+    console.log(`[AiAgentsStack] Using shared ClinicHours table: ${props.clinicHoursTableName}`);
 
     // Voice Agent Config Table - stores which agent handles voice calls per clinic
     this.voiceConfigTable = new dynamodb.Table(this, 'VoiceAgentConfigTable', {
@@ -1005,6 +1022,7 @@ export class AiAgentsStack extends Stack {
     // ========================================
 
     // WebSocket Connect Handler
+    // FIX: Added AGENTS_TABLE env var and read permission for agent validation
     this.wsConnectFn = new lambdaNode.NodejsFunction(this, 'WsConnectFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'websocket-connect.ts'),
       handler: 'handler',
@@ -1014,10 +1032,13 @@ export class AiAgentsStack extends Stack {
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
         CONNECTIONS_TABLE: this.connectionsTable.tableName,
+        AGENTS_TABLE: this.agentsTable.tableName,
       },
     });
     applyTags(this.wsConnectFn, { Function: 'ws-connect' });
     this.connectionsTable.grantWriteData(this.wsConnectFn);
+    // FIX: Grant read access to agents table for agent validation during connect
+    this.agentsTable.grantReadData(this.wsConnectFn);
 
     // WebSocket Disconnect Handler
     this.wsDisconnectFn = new lambdaNode.NodejsFunction(this, 'WsDisconnectFn', {
@@ -1302,6 +1323,7 @@ export class AiAgentsStack extends Stack {
 
     new CfnOutput(this, 'ClinicHoursTableName', {
       value: this.clinicHoursTable.tableName,
+      description: 'Shared Clinic Hours table (imported from ClinicHoursStack)',
       exportName: `${Stack.of(this).stackName}-ClinicHoursTableName`,
     });
 
