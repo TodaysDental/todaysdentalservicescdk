@@ -43,6 +43,10 @@ const VOICE_SESSIONS_TABLE = process.env.VOICE_SESSIONS_TABLE!;
 // Minimum transcript length to process (avoid processing partial words)
 const MIN_TRANSCRIPT_LENGTH = 3;
 
+// Cache call records to reduce DynamoDB queries for high-frequency transcript streams
+const CALL_RECORD_CACHE_TTL_MS = 15_000;
+const callRecordCache: Map<string, { record: any | null; expiresAt: number }> = new Map();
+
 // Debounce time in ms to wait for complete utterances
 const UTTERANCE_COMPLETE_TIMEOUT_MS = 1500;
 
@@ -170,7 +174,32 @@ async function processKinesisRecord(record: KinesisStreamRecord): Promise<boolea
 
   // Check if this is an AI call based on metadata
   const metadata = transcriptEvent.MediaInsightsRuntimeMetadata;
-  if (metadata?.isAiCall !== 'true') {
+
+  // Identify the SMA TransactionId (what UpdateSipMediaApplicationCall needs).
+  // Prefer metadata, but tolerate other event shapes (Voice Connector streaming differs).
+  const callId =
+    (metadata as any)?.transactionId ||
+    (metadata as any)?.TransactionId ||
+    (metadata as any)?.callId ||
+    (metadata as any)?.CallId ||
+    (transcriptEvent as any)?.TransactionId ||
+    (transcriptEvent as any)?.transactionId ||
+    (transcriptEvent as any)?.CallId ||
+    (transcriptEvent as any)?.callId;
+
+  if (!callId || typeof callId !== 'string') {
+    console.warn('[AITranscriptBridge] No callId/transactionId found in transcript event');
+    return false;
+  }
+
+  // Load the call record and verify this is actually an AI call.
+  // This avoids relying on MediaInsightsRuntimeMetadata.isAiCall (not always present).
+  const callRecord = await getCallRecord(callId);
+  if (!callRecord) {
+    console.warn('[AITranscriptBridge] Call record not found for transcript event (skipping):', callId);
+    return false;
+  }
+  if (!callRecord.isAiCall) {
     // Not an AI call - skip processing
     return false;
   }
@@ -182,21 +211,18 @@ async function processKinesisRecord(record: KinesisStreamRecord): Promise<boolea
     return false; // Skip empty or very short transcripts
   }
 
-  // Only process customer/caller channel (not AI/agent channel)
-  if (channelId === 'ch_0' || channelId === 'AGENT') {
-    console.log('[AITranscriptBridge] Skipping AI/agent channel transcript');
+  // Only process customer/caller speech (not agent/AI).
+  // NOTE: Voice Connector streams are often single-channel and Transcribe may label the only channel as "ch_0".
+  // Since this Lambda only processes AI calls (callRecord.isAiCall), we do NOT treat "ch_0" as agent by default.
+  const kvsRole = (metadata as any)?.kvsParticipantRole;
+  if (channelId === 'AGENT' || kvsRole === 'AGENT') {
+    console.log('[AITranscriptBridge] Skipping agent/AI transcript', { channelId, kvsRole });
     return false;
   }
 
-  // Get call context from metadata
-  const callId = metadata?.callId || metadata?.transactionId;
-  const clinicId = metadata?.clinicId;
-  const sessionId = metadata?.aiSessionId || metadata?.sessionId;
-
-  if (!callId) {
-    console.warn('[AITranscriptBridge] No callId in transcript metadata');
-    return false;
-  }
+  // Get call context (prefer DynamoDB since metadata may be incomplete)
+  const clinicId = (metadata as any)?.clinicId || callRecord.clinicId;
+  const sessionId = (metadata as any)?.aiSessionId || (metadata as any)?.sessionId || callRecord.aiSessionId;
 
   console.log('[AITranscriptBridge] Transcript received:', {
     callId,
@@ -213,7 +239,7 @@ async function processKinesisRecord(record: KinesisStreamRecord): Promise<boolea
   }
 
   // Complete utterance - process it
-  return await processCompleteUtterance(callId, clinicId || '', sessionId || '', transcript);
+  return await processCompleteUtterance(callId, clinicId || '', sessionId || '', transcript, callRecord);
 }
 
 /**
@@ -290,7 +316,8 @@ async function processCompleteUtterance(
   callId: string,
   clinicId: string,
   sessionId: string,
-  transcript: string
+  transcript: string,
+  callRecordOverride?: any
 ): Promise<boolean> {
   // Clear any pending accumulation
   const pending = pendingUtterances.get(callId);
@@ -300,7 +327,7 @@ async function processCompleteUtterance(
   }
 
   // Get call record for full context
-  const callRecord = await getCallRecord(callId);
+  const callRecord = callRecordOverride || await getCallRecord(callId);
   if (!callRecord) {
     console.warn('[AITranscriptBridge] Call record not found:', callId);
     return false;
@@ -339,7 +366,7 @@ async function processCompleteUtterance(
   }
 
   // Send AI response back to caller via SMA
-  await sendResponseToCall(finalClinicId, transactionId, voiceAiResponse);
+  await sendResponseToCall(callRecord, transactionId, voiceAiResponse);
 
   return true;
 }
@@ -348,6 +375,12 @@ async function processCompleteUtterance(
  * Get call record from DynamoDB
  */
 async function getCallRecord(callId: string): Promise<any | null> {
+  const cached = callRecordCache.get(callId);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) {
+    return cached.record;
+  }
+
   try {
     const result = await ddb.send(new QueryCommand({
       TableName: CALL_QUEUE_TABLE,
@@ -357,7 +390,9 @@ async function getCallRecord(callId: string): Promise<any | null> {
       Limit: 1
     }));
 
-    return result.Items?.[0] || null;
+    const record = result.Items?.[0] || null;
+    callRecordCache.set(callId, { record, expiresAt: now + CALL_RECORD_CACHE_TTL_MS });
+    return record;
   } catch (error) {
     console.error('[AITranscriptBridge] Error getting call record:', error);
     return null;
@@ -407,18 +442,21 @@ async function invokeVoiceAiHandler(event: {
  * CRITICAL FIX: Uses proper SDK and dynamic SMA ID lookup
  */
 async function sendResponseToCall(
-  clinicId: string,
+  callRecord: any,
   transactionId: string,
   responses: VoiceAiResponse[]
 ): Promise<void> {
+  const clinicId = callRecord?.clinicId;
+
+  // Always store a DynamoDB backup BEFORE attempting UpdateSipMediaApplicationCall.
+  // This prevents duplicates/races and ensures ACTION_SUCCESSFUL can still deliver the response if the update path fails.
+  await storePendingResponseForCallRecord(callRecord, responses);
+
   // Use shared SMA map utility (no duplication)
   const smaId = await getSmaIdForClinicSSM(clinicId);
   
   if (!smaId) {
     console.error('[AITranscriptBridge] No SMA ID found for clinic:', clinicId);
-    
-    // Fallback: Store pending response in DynamoDB for SMA handler to pick up
-    await storePendingResponse(transactionId, responses);
     return;
   }
 
@@ -501,9 +539,6 @@ async function sendResponseToCall(
       }
     }));
 
-    // Also store in DynamoDB as backup (SMA handler checks this)
-    await storePendingResponse(transactionId, responses);
-
     console.log('[AITranscriptBridge] Successfully sent update to SMA');
   } catch (error: any) {
     console.error('[AITranscriptBridge] Error sending response to call:', {
@@ -512,9 +547,6 @@ async function sendResponseToCall(
       error: error.message,
       code: error.code,
     });
-    
-    // Fallback: Store in DynamoDB for SMA handler
-    await storePendingResponse(transactionId, responses);
   }
 }
 
@@ -522,12 +554,10 @@ async function sendResponseToCall(
  * Store pending AI response in DynamoDB for SMA handler to retrieve
  * This is a fallback mechanism when UpdateSipMediaApplicationCall fails
  */
-async function storePendingResponse(transactionId: string, responses: VoiceAiResponse[]): Promise<void> {
+async function storePendingResponseForCallRecord(callRecord: any, responses: VoiceAiResponse[]): Promise<void> {
   try {
-    // Update the call record with pending AI response
-    const callRecord = await getCallRecord(transactionId);
-    if (!callRecord) {
-      console.warn('[AITranscriptBridge] Cannot store pending response - call record not found');
+    if (!callRecord?.clinicId || callRecord?.queuePosition === undefined) {
+      console.warn('[AITranscriptBridge] Cannot store pending response - call record missing keys');
       return;
     }
 
@@ -544,7 +574,7 @@ async function storePendingResponse(transactionId: string, responses: VoiceAiRes
       },
     }));
 
-    console.log('[AITranscriptBridge] Stored pending AI response in DynamoDB:', transactionId);
+    console.log('[AITranscriptBridge] Stored pending AI response in DynamoDB:', callRecord.callId || callRecord.transactionId);
   } catch (error) {
     console.error('[AITranscriptBridge] Failed to store pending response:', error);
   }

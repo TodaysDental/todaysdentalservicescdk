@@ -117,15 +117,52 @@ export class MarketingStack extends Stack {
     this.mediaBucket = new s3.Bucket(this, 'MarketingMediaBucket', {
       bucketName: 'todaysdentalinsights-marketing-media',
       removalPolicy: RemovalPolicy.RETAIN,
+      versioned: true,
       cors: [
         {
-          allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.PUT, s3.HttpMethods.POST],
+          allowedMethods: [
+            s3.HttpMethods.GET,
+            s3.HttpMethods.PUT,
+            s3.HttpMethods.POST,
+            s3.HttpMethods.DELETE,
+          ],
           allowedOrigins: ALLOWED_ORIGINS_LIST,
           allowedHeaders: ['*'],
+          exposedHeaders: ['ETag'],
+          maxAge: 3000,
         },
       ],
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ACLS,
       publicReadAccess: true,
+      // Lifecycle rules for media management
+      lifecycleRules: [
+        {
+          id: 'DeleteTempUploads',
+          enabled: true,
+          prefix: 'temp/uploads/',
+          expiration: Duration.days(1),
+        },
+        {
+          id: 'TransitionToStandardIA',
+          enabled: true,
+          transitions: [
+            {
+              storageClass: s3.StorageClass.INFREQUENT_ACCESS,
+              transitionAfter: Duration.days(90),
+            },
+          ],
+        },
+        {
+          id: 'TransitionToGlacier',
+          enabled: true,
+          transitions: [
+            {
+              storageClass: s3.StorageClass.GLACIER,
+              transitionAfter: Duration.days(365),
+            },
+          ],
+        },
+      ],
     });
 
     // ============================================
@@ -319,6 +356,51 @@ wlYXO5lFMbXxxeTKZao2DZfQ
       environment: envVars,
     });
 
+    // Auto-Schedule Lambda
+    const autoScheduleFn = new lambdaNode.NodejsFunction(this, 'MarketingAutoScheduleFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'auto-schedule.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      environment: envVars,
+    });
+
+    // Hashtags Lambda
+    const hashtagsFn = new lambdaNode.NodejsFunction(this, 'MarketingHashtagsFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'hashtags.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      environment: envVars,
+    });
+
+    // History Lambda
+    const historyFn = new lambdaNode.NodejsFunction(this, 'MarketingHistoryFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'history.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      environment: envVars,
+    });
+
+    // Messages Lambda (Direct Messaging)
+    const messagesFn = new lambdaNode.NodejsFunction(this, 'MarketingMessagesFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'messages.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      environment: envVars,
+    });
+
+    // Validate Lambda
+    const validateFn = new lambdaNode.NodejsFunction(this, 'MarketingValidateFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'validate.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      environment: envVars,
+    });
+
     // ============================================
     // EventBridge Rule for Analytics Sync (runs every 6 hours)
     // ============================================
@@ -368,6 +450,23 @@ wlYXO5lFMbXxxeTKZao2DZfQ
     this.marketingProfilesTable.grantReadData(analyticsSyncFn);
     this.marketingPostsTable.grantReadWriteData(analyticsSyncFn);
     this.marketingAnalyticsTable.grantReadWriteData(analyticsSyncFn);
+
+    // Auto-Schedule Lambda permissions
+    this.marketingProfilesTable.grantReadData(autoScheduleFn);
+    this.marketingPostsTable.grantReadWriteData(autoScheduleFn);
+
+    // Hashtags Lambda permissions (only needs profiles for API key)
+    this.marketingProfilesTable.grantReadData(hashtagsFn);
+
+    // History Lambda permissions
+    this.marketingProfilesTable.grantReadData(historyFn);
+    this.marketingPostsTable.grantReadData(historyFn);
+
+    // Messages Lambda permissions
+    this.marketingProfilesTable.grantReadData(messagesFn);
+
+    // Validate Lambda permissions (only needs profiles for API key)
+    this.marketingProfilesTable.grantReadData(validateFn);
 
     // ============================================
     // 8. API Routes
@@ -421,6 +520,10 @@ wlYXO5lFMbXxxeTKZao2DZfQ
     postByIdRes.addMethod('PATCH', new apigw.LambdaIntegration(postsFn), { authorizer });
     postByIdRes.addMethod('DELETE', new apigw.LambdaIntegration(postsFn), { authorizer });
 
+    // GET /posts/:postId/comments - Get comments for a specific post
+    const postCommentsRes = postByIdRes.addResource('comments');
+    postCommentsRes.addMethod('GET', new apigw.LambdaIntegration(commentsFn), { authorizer });
+
     // -----------------------------------------
     // Comment Management Routes (/comments)
     // -----------------------------------------
@@ -461,6 +564,14 @@ wlYXO5lFMbXxxeTKZao2DZfQ
     const analyticsClinicByIdRes = analyticsClinicsRes.addResource('{clinicId}');
     analyticsClinicByIdRes.addMethod('GET', new apigw.LambdaIntegration(analyticsFn), { authorizer });
 
+    // GET /analytics/social - Get social account analytics
+    const analyticsSocialRes = analyticsRes.addResource('social');
+    analyticsSocialRes.addMethod('GET', new apigw.LambdaIntegration(analyticsFn), { authorizer });
+
+    // GET /analytics/links - Get link analytics (shortened URLs)
+    const analyticsLinksRes = analyticsRes.addResource('links');
+    analyticsLinksRes.addMethod('GET', new apigw.LambdaIntegration(analyticsFn), { authorizer });
+
     // -----------------------------------------
     // Media Management Routes (/media)
     // -----------------------------------------
@@ -476,6 +587,92 @@ wlYXO5lFMbXxxeTKZao2DZfQ
     // DELETE /media/:mediaId - Delete media
     const mediaByIdRes = mediaRes.addResource('{mediaId}');
     mediaByIdRes.addMethod('DELETE', new apigw.LambdaIntegration(mediaFn), { authorizer });
+
+    // GET /media/upload-url - Get pre-signed upload URL
+    const uploadUrlRes = mediaRes.addResource('upload-url');
+    uploadUrlRes.addMethod('GET', new apigw.LambdaIntegration(mediaFn), { authorizer });
+
+    // POST /media/resize - Resize image via Ayrshare
+    const resizeRes = mediaRes.addResource('resize');
+    resizeRes.addMethod('POST', new apigw.LambdaIntegration(mediaFn), { authorizer });
+
+    // POST /media/verify-url - Verify media URL accessibility
+    const verifyUrlRes = mediaRes.addResource('verify-url');
+    verifyUrlRes.addMethod('POST', new apigw.LambdaIntegration(mediaFn), { authorizer });
+
+    // -----------------------------------------
+    // Auto-Schedule Routes (/auto-schedule)
+    // -----------------------------------------
+    const autoScheduleRes = root.addResource('auto-schedule');
+
+    // POST /auto-schedule/set - Create or update auto-schedule
+    const autoScheduleSetRes = autoScheduleRes.addResource('set');
+    autoScheduleSetRes.addMethod('POST', new apigw.LambdaIntegration(autoScheduleFn), { authorizer });
+
+    // GET /auto-schedule/list - List all schedules for a clinic
+    const autoScheduleListRes = autoScheduleRes.addResource('list');
+    autoScheduleListRes.addMethod('GET', new apigw.LambdaIntegration(autoScheduleFn), { authorizer });
+
+    // DELETE /auto-schedule - Delete a schedule
+    autoScheduleRes.addMethod('DELETE', new apigw.LambdaIntegration(autoScheduleFn), { authorizer });
+
+    // -----------------------------------------
+    // Hashtags Routes (/hashtags)
+    // -----------------------------------------
+    const hashtagsRes = root.addResource('hashtags');
+
+    // POST /hashtags/auto - Auto-generate hashtags for text
+    const hashtagsAutoRes = hashtagsRes.addResource('auto');
+    hashtagsAutoRes.addMethod('POST', new apigw.LambdaIntegration(hashtagsFn), { authorizer });
+
+    // GET /hashtags/recommend - Get hashtag recommendations
+    const hashtagsRecommendRes = hashtagsRes.addResource('recommend');
+    hashtagsRecommendRes.addMethod('GET', new apigw.LambdaIntegration(hashtagsFn), { authorizer });
+
+    // GET /hashtags/search - Search hashtags on a platform
+    const hashtagsSearchRes = hashtagsRes.addResource('search');
+    hashtagsSearchRes.addMethod('GET', new apigw.LambdaIntegration(hashtagsFn), { authorizer });
+
+    // GET /hashtags/check-banned - Check if hashtags are banned
+    const hashtagsCheckBannedRes = hashtagsRes.addResource('check-banned');
+    hashtagsCheckBannedRes.addMethod('GET', new apigw.LambdaIntegration(hashtagsFn), { authorizer });
+
+    // -----------------------------------------
+    // History Routes (/history)
+    // -----------------------------------------
+    const historyRes = root.addResource('history');
+
+    // GET /history - Get post history from Ayrshare
+    historyRes.addMethod('GET', new apigw.LambdaIntegration(historyFn), { authorizer });
+
+    // -----------------------------------------
+    // Messages Routes (/messages) - Direct Messaging
+    // -----------------------------------------
+    const messagesRes = root.addResource('messages');
+
+    // GET /messages - Get direct messages
+    messagesRes.addMethod('GET', new apigw.LambdaIntegration(messagesFn), { authorizer });
+
+    // POST /messages/send - Send a direct message
+    const messagesSendRes = messagesRes.addResource('send');
+    messagesSendRes.addMethod('POST', new apigw.LambdaIntegration(messagesFn), { authorizer });
+
+    // -----------------------------------------
+    // Validate Routes (/validate)
+    // -----------------------------------------
+    const validateRes = root.addResource('validate');
+
+    // POST /validate/post - Validate post content before publishing
+    const validatePostRes = validateRes.addResource('post');
+    validatePostRes.addMethod('POST', new apigw.LambdaIntegration(validateFn), { authorizer });
+
+    // POST /validate/media - Validate media files for platforms
+    const validateMediaRes = validateRes.addResource('media');
+    validateMediaRes.addMethod('POST', new apigw.LambdaIntegration(validateFn), { authorizer });
+
+    // POST /validate/content-moderation - Content moderation check
+    const validateContentModerationRes = validateRes.addResource('content-moderation');
+    validateContentModerationRes.addMethod('POST', new apigw.LambdaIntegration(validateFn), { authorizer });
 
     // -----------------------------------------
     // Webhook Routes (/webhooks)

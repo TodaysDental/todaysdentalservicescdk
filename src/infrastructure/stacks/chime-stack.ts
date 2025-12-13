@@ -517,8 +517,21 @@ export class ChimeStack extends Stack {
         'chime-sdk-meetings:CreateMeeting',
         'chime-sdk-meetings:CreateAttendee',
         'chime-sdk-meetings:DeleteMeeting',
+        // Media Insights Pipeline for real-time transcription
+        'chime:CreateMediaInsightsPipeline',
+        'chimesdkmediapipelines:CreateMediaInsightsPipeline',
       ],
       resources: ['*'],
+    }));
+    
+    // Grant KVS permissions for Media Insights Pipeline
+    smaHandler.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'kinesisvideo:DescribeStream',
+        'kinesisvideo:GetDataEndpoint',
+      ],
+      resources: [`arn:aws:kinesisvideo:${this.region}:${this.account}:stream/*`],
     }));
 
     // Grant Kinesis permissions for analytics (if stream is provided)
@@ -648,6 +661,48 @@ export class ChimeStack extends Stack {
         'logs:UpdateLogDelivery',
       ],
       resources: ['*'],
+    }));
+
+    // CRITICAL FIX: Add Media Pipelines permissions for Voice Connector streaming with Media Insights
+    // When VCStreamingConfig references a MediaInsightsPipelineConfiguration, the role needs access
+    chimeCustomResourceRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        // Legacy chime namespace
+        'chime:CreateMediaInsightsPipelineConfiguration',
+        'chime:DeleteMediaInsightsPipelineConfiguration',
+        'chime:GetMediaInsightsPipelineConfiguration',
+        'chime:ListMediaInsightsPipelineConfigurations',
+        'chime:UpdateMediaInsightsPipelineConfiguration',
+        'chime:TagResource',
+        'chime:UntagResource',
+        // New ChimeSDKMediaPipelines namespace
+        'chimesdkmediapipelines:CreateMediaInsightsPipelineConfiguration',
+        'chimesdkmediapipelines:DeleteMediaInsightsPipelineConfiguration',
+        'chimesdkmediapipelines:GetMediaInsightsPipelineConfiguration',
+        'chimesdkmediapipelines:ListMediaInsightsPipelineConfigurations',
+        'chimesdkmediapipelines:UpdateMediaInsightsPipelineConfiguration',
+        'chimesdkmediapipelines:TagResource',
+        'chimesdkmediapipelines:UntagResource',
+      ],
+      resources: ['*'],
+    }));
+
+    // CRITICAL FIX: Add Kinesis permissions for Media Insights Pipeline validation
+    chimeCustomResourceRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'kinesis:DescribeStream',
+        'kinesis:DescribeStreamSummary',
+      ],
+      resources: [`arn:aws:kinesis:${this.region}:${this.account}:stream/${this.stackName}-*`],
+    }));
+
+    // CRITICAL FIX: Add IAM PassRole for media pipeline roles
+    chimeCustomResourceRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['iam:PassRole'],
+      resources: [`arn:aws:iam::${this.account}:role/${this.stackName}-*`],
     }));
 
     chimeCustomResourceRole.addToPolicy(new iam.PolicyStatement({
@@ -2625,6 +2680,94 @@ export class ChimeStack extends Stack {
       });
 
       // ========================================
+      // TRANSCRIBE AUDIO SEGMENT LAMBDA
+      // ========================================
+      // This Lambda processes audio recordings from AI voice calls
+      // using Amazon Transcribe for speech-to-text conversion.
+      // It's triggered by S3 notifications when recordings are uploaded.
+      if (recordingsBucket) {
+        console.log('[ChimeStack] Creating Transcribe Audio Segment Lambda for AI voice transcription');
+
+        const transcribeAudioSegmentFn = new lambdaNode.NodejsFunction(this, 'TranscribeAudioSegmentFn', {
+          functionName: `${this.stackName}-TranscribeAudioSegment`,
+          entry: path.join(__dirname, '..', '..', 'services', 'chime', 'transcribe-audio-segment.ts'),
+          handler: 'handler',
+          runtime: lambda.Runtime.NODEJS_20_X,
+          timeout: Duration.minutes(2), // Allow time for transcription
+          memorySize: 512,
+          environment: {
+            CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+            VOICE_AI_LAMBDA_ARN: resolvedVoiceAiLambdaArn?.toString() || '',
+            TRANSCRIPTION_OUTPUT_BUCKET: recordingsBucket.bucketName,
+            AI_RECORDINGS_BUCKET: recordingsBucket.bucketName,
+            CHIME_MEDIA_REGION: chimeMediaRegion,
+            SMA_ID_MAP_PARAMETER: smaIdMapParameter.parameterName,
+          },
+          logRetention: logs.RetentionDays.ONE_WEEK,
+        });
+
+        // Grant SSM read for SMA ID lookup
+        smaIdMapParameter.grantRead(transcribeAudioSegmentFn);
+
+        // Grant S3 read/write for recordings and transcriptions
+        recordingsBucket.grantRead(transcribeAudioSegmentFn);
+        recordingsBucket.grantPut(transcribeAudioSegmentFn);
+
+        // Grant DynamoDB access
+        this.callQueueTable.grantReadWriteData(transcribeAudioSegmentFn);
+
+        // Grant Transcribe permissions (including Streaming API for low-latency)
+        transcribeAudioSegmentFn.addToRolePolicy(new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'transcribe:StartTranscriptionJob',
+            'transcribe:GetTranscriptionJob',
+            'transcribe:StartStreamTranscription', // For Transcribe Streaming API
+          ],
+          resources: ['*'],
+        }));
+
+        // Grant Lambda invoke for Voice AI
+        if (resolvedVoiceAiLambdaArn) {
+          transcribeAudioSegmentFn.addToRolePolicy(new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: ['lambda:InvokeFunction'],
+            resources: [resolvedVoiceAiLambdaArn.toString()],
+          }));
+        }
+
+        // Grant UpdateSipMediaApplicationCall permissions
+        transcribeAudioSegmentFn.addToRolePolicy(new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'chime:UpdateSipMediaApplicationCall',
+            'chime-sdk-voice:UpdateSipMediaApplicationCall',
+          ],
+          resources: [`arn:aws:chime:${this.region}:${this.account}:sma/*`],
+        }));
+
+        // Add S3 event notification to trigger on AI recording uploads
+        // Only trigger on ai-recordings/ prefix to avoid processing other recordings
+        if (isOwnedBucket && recordingsBucket instanceof s3.Bucket) {
+          recordingsBucket.addEventNotification(
+            s3.EventType.OBJECT_CREATED,
+            new s3n.LambdaDestination(transcribeAudioSegmentFn),
+            { prefix: 'ai-recordings/' }
+          );
+          console.log('[ChimeStack] Added S3 notification for AI recordings');
+        } else {
+          // For imported buckets, event notifications must be configured in the owning stack
+          console.log('[ChimeStack] Using shared recordings bucket - S3 notifications must be configured in AiAgentsStack');
+        }
+
+        new CfnOutput(this, 'TranscribeAudioSegmentFnArn', {
+          value: transcribeAudioSegmentFn.functionArn,
+          description: 'Lambda that transcribes AI voice call audio segments',
+          exportName: `${this.stackName}-TranscribeAudioSegmentFnArn`,
+        });
+      }
+
+      // ========================================
       // MEDIA INSIGHTS PIPELINE CONFIGURATION
       // ========================================
       // Creates a Media Insights Pipeline Configuration for real-time transcription
@@ -2635,23 +2778,41 @@ export class ChimeStack extends Stack {
         console.log('[ChimeStack] Creating Media Insights Pipeline Configuration for real-time transcription');
 
         // IAM Role for Media Insights Pipeline to access Kinesis
+        // CRITICAL: Use inlinePolicies to create policies atomically with the role
+        // This avoids IAM eventual consistency issues where the Chime API validates
+        // the role's permissions before IAM has propagated separate policy attachments
         const mediaPipelineRole = new iam.Role(this, 'MediaInsightsPipelineRole', {
           assumedBy: new iam.ServicePrincipal('mediapipelines.chime.amazonaws.com'),
           description: 'Role for Chime Media Insights Pipeline to access Kinesis and Transcribe',
+          inlinePolicies: {
+            KinesisAccess: new iam.PolicyDocument({
+              statements: [
+                new iam.PolicyStatement({
+                  effect: iam.Effect.ALLOW,
+                  actions: [
+                    'kinesis:PutRecord',
+                    'kinesis:PutRecords',
+                    'kinesis:DescribeStream',
+                    'kinesis:DescribeStreamSummary',
+                  ],
+                  resources: [aiTranscriptStream.streamArn],
+                }),
+              ],
+            }),
+            TranscribeAccess: new iam.PolicyDocument({
+              statements: [
+                new iam.PolicyStatement({
+                  effect: iam.Effect.ALLOW,
+                  actions: [
+                    'transcribe:StartStreamTranscription',
+                    'transcribe:StartCallAnalyticsStreamTranscription',
+                  ],
+                  resources: ['*'],
+                }),
+              ],
+            }),
+          },
         });
-
-        // Grant Kinesis write permissions
-        aiTranscriptStream.grantWrite(mediaPipelineRole);
-
-        // Grant Transcribe permissions
-        mediaPipelineRole.addToPolicy(new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'transcribe:StartStreamTranscription',
-            'transcribe:StartCallAnalyticsStreamTranscription',
-          ],
-          resources: ['*'],
-        }));
 
         // Create Media Insights Pipeline Configuration using custom resource
         // Note: CDK doesn't have native L2 constructs for this yet
@@ -2666,18 +2827,18 @@ export class ChimeStack extends Stack {
                 Disabled: true, // We handle alerts in our Lambda
               },
               Elements: [
-                // Amazon Transcribe processor for real-time speech-to-text
+                // Amazon Transcribe Call Analytics processor for real-time speech-to-text
+                // This yields UtteranceEvents with ParticipantRole (AGENT/CUSTOMER) so we can reliably
+                // ignore the non-caller leg and avoid AI responding to itself.
                 {
-                  Type: 'AmazonTranscribeProcessor',
-                  AmazonTranscribeProcessorConfiguration: {
+                  Type: 'AmazonTranscribeCallAnalyticsProcessor',
+                  AmazonTranscribeCallAnalyticsProcessorConfiguration: {
                     LanguageCode: 'en-US',
                     VocabularyName: props.medicalVocabularyName || undefined,
-                    ShowSpeakerLabel: true,
                     EnablePartialResultsStabilization: true,
                     PartialResultsStability: 'high',
-                    ContentIdentificationType: 'PII', // Identify PII for HIPAA compliance
-                    ContentRedactionType: 'PII', // Redact PII in transcripts
-                    // Use standard transcription (not Call Analytics) for lower latency
+                    // Redact PII in transcripts for HIPAA compliance
+                    ContentRedactionType: 'PII',
                   },
                 },
                 // Kinesis Data Stream sink for transcripts
@@ -2697,6 +2858,40 @@ export class ChimeStack extends Stack {
               'MediaInsightsPipelineConfiguration.MediaInsightsPipelineConfigurationArn'
             ),
           },
+          // IMPORTANT: Update the existing configuration in-place (don't try to create a new one with the same name).
+          onUpdate: {
+            service: 'ChimeSDKMediaPipelines',
+            action: 'updateMediaInsightsPipelineConfiguration',
+            parameters: {
+              Identifier: new customResources.PhysicalResourceIdReference(),
+              ResourceAccessRoleArn: mediaPipelineRole.roleArn,
+              RealTimeAlertConfiguration: {
+                Disabled: true,
+              },
+              Elements: [
+                {
+                  Type: 'AmazonTranscribeCallAnalyticsProcessor',
+                  AmazonTranscribeCallAnalyticsProcessorConfiguration: {
+                    LanguageCode: 'en-US',
+                    VocabularyName: props.medicalVocabularyName || undefined,
+                    EnablePartialResultsStabilization: true,
+                    PartialResultsStability: 'high',
+                    ContentRedactionType: 'PII',
+                  },
+                },
+                {
+                  Type: 'KinesisDataStreamSink',
+                  KinesisDataStreamSinkConfiguration: {
+                    InsightsTarget: aiTranscriptStream.streamArn,
+                  },
+                },
+              ],
+            },
+            // Keep the same physical id (ARN) across updates
+            physicalResourceId: customResources.PhysicalResourceId.fromResponse(
+              'MediaInsightsPipelineConfiguration.MediaInsightsPipelineConfigurationArn'
+            ),
+          },
           onDelete: {
             service: 'ChimeSDKMediaPipelines',
             action: 'deleteMediaInsightsPipelineConfiguration',
@@ -2705,6 +2900,7 @@ export class ChimeStack extends Stack {
             },
             ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
           },
+          // IMPORTANT: Use provider role policy so we can broaden permissions without relying on a single custom role
           policy: customResources.AwsCustomResourcePolicy.fromStatements([
             new iam.PolicyStatement({
               effect: iam.Effect.ALLOW,
@@ -2712,19 +2908,62 @@ export class ChimeStack extends Stack {
                 'chime:CreateMediaInsightsPipelineConfiguration',
                 'chime:DeleteMediaInsightsPipelineConfiguration',
                 'chime:GetMediaInsightsPipelineConfiguration',
+                'chime:ListMediaInsightsPipelineConfigurations',
+                'chime:UpdateMediaInsightsPipelineConfiguration',
+                'chime:TagResource',
+                'chime:UntagResource',
                 'chimesdkmediapipelines:CreateMediaInsightsPipelineConfiguration',
                 'chimesdkmediapipelines:DeleteMediaInsightsPipelineConfiguration',
                 'chimesdkmediapipelines:GetMediaInsightsPipelineConfiguration',
+                'chimesdkmediapipelines:ListMediaInsightsPipelineConfigurations',
+                'chimesdkmediapipelines:UpdateMediaInsightsPipelineConfiguration',
+                'chimesdkmediapipelines:TagResource',
+                'chimesdkmediapipelines:UntagResource',
+                // Needed during rollback/cleanup
+                'chime:ListVoiceConnectors',
+                'chime:GetVoiceConnector',
+                'chime:PutVoiceConnectorStreamingConfiguration',
+                'chime:GetVoiceConnectorStreamingConfiguration',
+                'chime:DeleteVoiceConnectorStreamingConfiguration',
+                'chime-sdk-voice:ListVoiceConnectors',
+                'chime-sdk-voice:GetVoiceConnector',
+                'chime-sdk-voice:PutVoiceConnectorStreamingConfiguration',
+                'chime-sdk-voice:GetVoiceConnectorStreamingConfiguration',
+                'chime-sdk-voice:DeleteVoiceConnectorStreamingConfiguration',
               ],
               resources: ['*'],
             }),
             new iam.PolicyStatement({
               effect: iam.Effect.ALLOW,
               actions: ['iam:PassRole'],
-              resources: [mediaPipelineRole.roleArn],
+              resources: [
+                mediaPipelineRole.roleArn,
+                `arn:aws:iam::${this.account}:role/*MediaInsightsPipelineRole*`,
+              ],
+              conditions: {
+                StringEquals: {
+                  'iam:PassedToService': 'mediapipelines.chime.amazonaws.com',
+                },
+              },
+            }),
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                'kinesis:DescribeStream',
+                'kinesis:DescribeStreamSummary',
+              ],
+              resources: [aiTranscriptStream.streamArn],
             }),
           ]),
         });
+
+        // Ensure the role and its policies are fully created before the pipeline config
+        // The Media Insights Pipeline validates role permissions at creation time
+        mediaPipelineConfig.node.addDependency(mediaPipelineRole);
+        
+        // CRITICAL FIX: Ensure Kinesis stream exists before creating the pipeline configuration
+        // Chime SDK validates access to the stream during creation
+        mediaPipelineConfig.node.addDependency(aiTranscriptStream);
 
         const mediaPipelineConfigArn = mediaPipelineConfig.getResponseField(
           'MediaInsightsPipelineConfiguration.MediaInsightsPipelineConfigurationArn'
@@ -2739,8 +2978,15 @@ export class ChimeStack extends Stack {
 
         // Grant the SMA handler access to read the pipeline config and create pipelines
         smaHandler.addEnvironment('MEDIA_INSIGHTS_PIPELINE_PARAMETER', mediaPipelineConfigParam.parameterName);
+        // Real-time voice transcription uses RecordAudio + S3 + Amazon Transcribe approach.
+        // This works with SipMediaApplicationDialIn phone numbers (unlike VC streaming).
+        // Flow: RecordAudio captures caller speech → S3 → Lambda → Transcribe → Voice AI
+        // The AI_RECORDINGS_BUCKET enables this approach by providing a destination for recordings.
+        if (recordingsBucket) {
+          smaHandler.addEnvironment('AI_RECORDINGS_BUCKET', recordingsBucket.bucketName);
+        }
         smaHandler.addEnvironment('ENABLE_REAL_TIME_TRANSCRIPTION', 'true');
-        smaHandler.addEnvironment('ENABLE_KVS_STREAMING', 'true');
+        smaHandler.addEnvironment('ENABLE_KVS_STREAMING', 'true'); // Required for meeting-based real-time transcription
         smaHandler.addEnvironment('KVS_STREAM_PREFIX', `${this.stackName.toLowerCase()}-call-`);
         smaHandler.addEnvironment('AWS_ACCOUNT_ID', this.account);
         mediaPipelineConfigParam.grantRead(smaHandler);
@@ -2761,12 +3007,19 @@ export class ChimeStack extends Stack {
         smaHandler.addToRolePolicy(new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,
           actions: [
+            // Needed to resolve the full StreamARN (includes /creationTime suffix) before starting Media Insights Pipeline
+            'kinesisvideo:DescribeStream',
             'kinesisvideo:CreateStream',
             'kinesisvideo:GetDataEndpoint',
             'kinesisvideo:PutMedia',
             'kinesisvideo:TagStream',
           ],
-          resources: [`arn:aws:kinesisvideo:${this.region}:${this.account}:stream/${this.stackName.toLowerCase()}-call-*`],
+          // Kinesis Video Stream ARN format includes /<creationTime> suffix; use wildcard to match both known/unknown creation times.
+          resources: [
+            `arn:aws:kinesisvideo:${this.region}:${this.account}:stream/${this.stackName.toLowerCase()}-call-*/*`,
+            `arn:aws:kinesisvideo:${this.region}:${this.account}:stream/${this.stackName.toLowerCase()}-call-*`,
+            '*', // DescribeStream/CreateStream are often evaluated against '*'
+          ],
         }));
 
         // ========================================
@@ -2789,6 +3042,8 @@ export class ChimeStack extends Stack {
                   },
                 ],
                 MediaInsightsConfiguration: {
+                  // Enable Voice Connector-managed call analytics (VC will invoke CreateMediaInsightsPipeline automatically).
+                  // This is the most reliable path and does not depend on EventBridge delivery of streaming status events.
                   Disabled: false,
                   ConfigurationArn: mediaPipelineConfigArn,
                 },
@@ -2810,6 +3065,8 @@ export class ChimeStack extends Stack {
                   },
                 ],
                 MediaInsightsConfiguration: {
+                  // Enable Voice Connector-managed call analytics (VC will invoke CreateMediaInsightsPipeline automatically).
+                  // This is the most reliable path and does not depend on EventBridge delivery of streaming status events.
                   Disabled: false,
                   ConfigurationArn: mediaPipelineConfigArn,
                 },
@@ -2840,6 +3097,78 @@ export class ChimeStack extends Stack {
           description: 'ARN of Media Insights Pipeline Configuration for AI transcription',
           exportName: `${this.stackName}-MediaInsightsPipelineConfigArn`,
         });
+
+        // ========================================
+        // VOICE CONNECTOR STREAMING EVENT HANDLER
+        // ========================================
+        // The Voice Connector publishes EventBridge events containing the KVS Stream ARN and start fragment.
+        // We use that to create a Media Insights Pipeline for AI calls without guessing stream names.
+        const vcStreamingEventFn = new lambdaNode.NodejsFunction(this, 'VcStreamingEventFn', {
+          functionName: `${this.stackName}-VcStreamingEvent`,
+          entry: path.join(__dirname, '..', '..', 'services', 'chime', 'vc-streaming-event.ts'),
+          handler: 'handler',
+          runtime: lambda.Runtime.NODEJS_20_X,
+          timeout: Duration.seconds(30),
+          memorySize: 256,
+          environment: {
+            CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+            CHIME_MEDIA_REGION: 'us-east-1',
+            MEDIA_INSIGHTS_PIPELINE_PARAMETER: mediaPipelineConfigParam.parameterName,
+            // Disabled - VC streaming events won't occur with SipMediaApplicationDialIn routing
+            ENABLE_REAL_TIME_TRANSCRIPTION: 'false',
+            // Telephone audio is typically 8kHz; override via env if needed
+            VC_MEDIA_SAMPLE_RATE: '8000',
+            // Default OFF: Voice Connector is configured to start pipelines automatically via MediaInsightsConfiguration.
+            START_MEDIA_PIPELINE_FROM_STREAMING_EVENT: 'false',
+          },
+          logRetention: logs.RetentionDays.ONE_WEEK,
+        });
+
+        this.callQueueTable.grantReadWriteData(vcStreamingEventFn);
+        mediaPipelineConfigParam.grantRead(vcStreamingEventFn);
+
+        vcStreamingEventFn.addToRolePolicy(new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'chime:CreateMediaInsightsPipeline',
+            'chimesdkmediapipelines:CreateMediaInsightsPipeline',
+          ],
+          resources: ['*'],
+        }));
+
+        // Trigger on Voice Connector streaming STARTED events (see AWS docs: "Chime VoiceConnector Streaming Status")
+        // NOTE: Do not filter by voiceConnectorId at the rule level.
+        // Some accounts/environments have multiple Voice Connectors and we want visibility when debugging.
+        // The Lambda itself gates on "isAiCall" and can safely ignore unrelated calls.
+        // Some AWS accounts/regions emit slightly different EventBridge source/detail-type strings.
+        // Match both to ensure we never miss VC streaming status events.
+        const vcStreamingEventSources = ['aws.chime', 'aws.chime-sdk-voice'];
+        const vcStreamingDetailTypes = ['Chime VoiceConnector Streaming Status', 'Chime Voice Connector Streaming Status'];
+
+        const vcStreamingStartedRule = new events.Rule(this, 'VoiceConnectorStreamingStartedRule', {
+          eventPattern: {
+            source: vcStreamingEventSources,
+            detailType: vcStreamingDetailTypes,
+            detail: {
+              streamingStatus: ['STARTED'],
+            },
+          },
+        });
+
+        vcStreamingStartedRule.addTarget(new targets.LambdaFunction(vcStreamingEventFn));
+
+        // Also capture streaming failures so we can quickly flip AI calls into DTMF fallback instead of silence.
+        const vcStreamingFailedRule = new events.Rule(this, 'VoiceConnectorStreamingFailedRule', {
+          eventPattern: {
+            source: vcStreamingEventSources,
+            detailType: vcStreamingDetailTypes,
+            detail: {
+              streamingStatus: ['FAILED'],
+            },
+          },
+        });
+
+        vcStreamingFailedRule.addTarget(new targets.LambdaFunction(vcStreamingEventFn));
 
         console.log('[ChimeStack] Media Insights Pipeline and Voice Connector Streaming configured');
       }

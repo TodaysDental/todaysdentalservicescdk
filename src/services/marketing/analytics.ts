@@ -1,7 +1,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
-import { ayrshareGetAnalytics } from './ayrshare-client';
+import { ayrshareGetAnalytics, ayrshareGetSocialStats, ayrshareGetLinkAnalytics } from './ayrshare-client';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
@@ -320,6 +320,125 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           }
         })
       };
+    }
+
+    // ---------------------------------------------------------
+    // GET /analytics/social - Get social account analytics
+    // ---------------------------------------------------------
+    if (path.includes('/social') && method === 'GET') {
+      const clinicId = event.queryStringParameters?.clinicId;
+      const platforms = event.queryStringParameters?.platforms;
+
+      if (!clinicId) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ success: false, error: 'clinicId is required' })
+        };
+      }
+
+      // Get profile
+      const profileRes = await ddb.send(new GetCommand({
+        TableName: PROFILES_TABLE,
+        Key: { clinicId }
+      }));
+
+      if (!profileRes.Item?.ayrshareProfileKey) {
+        return {
+          statusCode: 404,
+          headers: corsHeaders,
+          body: JSON.stringify({ success: false, error: 'Clinic profile not found' })
+        };
+      }
+
+      const platformList = platforms ? platforms.split(',') : ['facebook', 'instagram', 'twitter', 'linkedin'];
+
+      try {
+        const socialStats = await ayrshareGetSocialStats(
+          API_KEY,
+          profileRes.Item.ayrshareProfileKey,
+          platformList
+        );
+
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: true,
+            clinicId,
+            clinicName: profileRes.Item.clinicName,
+            analytics: socialStats.analytics || socialStats || {}
+          })
+        };
+      } catch (err: any) {
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({ 
+            success: false, 
+            error: err.message,
+            code: 'SOCIAL_ANALYTICS_ERROR'
+          })
+        };
+      }
+    }
+
+    // ---------------------------------------------------------
+    // GET /analytics/links - Get link analytics
+    // ---------------------------------------------------------
+    if (path.includes('/links') && method === 'GET') {
+      const clinicId = event.queryStringParameters?.clinicId;
+      const postId = event.queryStringParameters?.postId;
+
+      if (!clinicId) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ success: false, error: 'clinicId is required' })
+        };
+      }
+
+      // Get profile
+      const profileRes = await ddb.send(new GetCommand({
+        TableName: PROFILES_TABLE,
+        Key: { clinicId }
+      }));
+
+      if (!profileRes.Item?.ayrshareProfileKey) {
+        return {
+          statusCode: 404,
+          headers: corsHeaders,
+          body: JSON.stringify({ success: false, error: 'Clinic profile not found' })
+        };
+      }
+
+      try {
+        const linkAnalytics = await ayrshareGetLinkAnalytics(
+          API_KEY,
+          profileRes.Item.ayrshareProfileKey,
+          postId
+        );
+
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: true,
+            clinicId,
+            links: linkAnalytics.links || linkAnalytics || []
+          })
+        };
+      } catch (err: any) {
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({ 
+            success: false, 
+            error: err.message,
+            code: 'LINK_ANALYTICS_ERROR'
+          })
+        };
+      }
     }
 
     return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Route not found' }) };

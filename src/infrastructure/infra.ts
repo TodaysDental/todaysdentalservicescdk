@@ -334,6 +334,9 @@ const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
  voiceConfigTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceConfigTableName`) : undefined,
  scheduledCallsTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-ScheduledCallsTableName`) : undefined,
  // NOTE: ChimeStack creates the recordings bucket - it will be shared with AiAgentsStack
+ // Enable real-time transcription for Voice AI - required for AI to listen to speech
+ // This sets up Media Insights Pipeline + Amazon Transcribe + Kinesis for speech-to-text
+ enableRealTimeTranscription: ENABLE_AFTER_HOURS_AI,
 });
 // ** COMMUNICATIONS STACK INSTANTIATION **
 const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommN1', {

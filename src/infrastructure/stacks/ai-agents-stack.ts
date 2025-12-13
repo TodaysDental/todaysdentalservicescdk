@@ -789,6 +789,10 @@ export class AiAgentsStack extends Stack {
         CALL_ANALYTICS_TABLE: props.callAnalyticsTableName || '',
         CALL_ANALYTICS_ENABLED: props.callAnalyticsTableName ? 'true' : 'false',
         CALL_RECORDINGS_BUCKET: this.callRecordingsBucket.bucketName,
+        // Streaming response settings - sends AI chunks via UpdateSipMediaApplicationCall
+        ENABLE_STREAMING_RESPONSES: 'true',
+        CHIME_MEDIA_REGION: 'us-east-1',
+        SMA_ID_MAP_PARAMETER: props.smaIdMapParameterName,
       },
     });
     applyTags(this.voiceAiFn, { Function: 'voice-ai' });
@@ -848,6 +852,23 @@ export class AiAgentsStack extends Stack {
         'transcribe:StartStreamTranscriptionWebSocket',
       ],
       resources: ['*'],
+    }));
+
+    // Chime SDK Voice for streaming responses via UpdateSipMediaApplicationCall
+    this.voiceAiFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'chime:UpdateSipMediaApplicationCall',
+        'chime-sdk-voice:UpdateSipMediaApplicationCall',
+      ],
+      resources: [`arn:aws:chime:us-east-1:${this.account}:sma/*`],
+    }));
+
+    // SSM for reading SMA ID map (required for streaming responses)
+    this.voiceAiFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['ssm:GetParameter'],
+      resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/*SmaIdMap*`],
     }));
 
     // ========================================

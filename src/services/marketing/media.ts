@@ -5,6 +5,7 @@ import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } fro
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v4 as uuidv4 } from 'uuid';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { ayrshareResizeImage, ayrshareVerifyMediaUrl } from './ayrshare-client';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true }
@@ -12,6 +13,7 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
 const s3 = new S3Client({});
 const MEDIA_TABLE = process.env.MARKETING_MEDIA_TABLE!;
 const MEDIA_BUCKET = process.env.MEDIA_BUCKET!;
+const API_KEY = process.env.AYRSHARE_API_KEY!;
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'] });
@@ -231,6 +233,139 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           mediaId
         })
       };
+    }
+
+    // ---------------------------------------------------------
+    // GET /media/upload-url - Get pre-signed upload URL
+    // ---------------------------------------------------------
+    if (path.includes('/upload-url') && method === 'GET') {
+      const fileName = event.queryStringParameters?.fileName;
+      const fileType = event.queryStringParameters?.fileType;
+      const clinicId = event.queryStringParameters?.clinicId;
+
+      if (!fileName || !fileType) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ success: false, error: 'fileName and fileType are required' })
+        };
+      }
+
+      const fileId = uuidv4();
+      const key = `temp/uploads/${fileId}_${fileName}`;
+      
+      // Create presigned URL for upload
+      const putCommand = new PutObjectCommand({
+        Bucket: MEDIA_BUCKET,
+        Key: key,
+        ContentType: fileType
+      });
+
+      const uploadUrl = await getSignedUrl(s3, putCommand, { expiresIn: 3600 });
+      const fileUrl = `https://${MEDIA_BUCKET}.s3.amazonaws.com/${key}`;
+
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          success: true,
+          uploadUrl,
+          fileUrl,
+          key,
+          expiresIn: 3600
+        })
+      };
+    }
+
+    // ---------------------------------------------------------
+    // POST /media/resize - Resize image via Ayrshare
+    // ---------------------------------------------------------
+    if (path.includes('/resize') && method === 'POST') {
+      const body = JSON.parse(event.body || '{}');
+      const { imageUrl, width, height } = body;
+
+      if (!imageUrl || !width || !height) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ 
+            success: false, 
+            error: 'imageUrl, width, and height are required' 
+          })
+        };
+      }
+
+      try {
+        const result = await ayrshareResizeImage(API_KEY, imageUrl, width, height);
+
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: true,
+            originalUrl: imageUrl,
+            resizedUrl: result.resizedUrl || result.url,
+            width,
+            height
+          })
+        };
+      } catch (err: any) {
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({ 
+            success: false, 
+            error: err.message,
+            code: 'RESIZE_ERROR'
+          })
+        };
+      }
+    }
+
+    // ---------------------------------------------------------
+    // POST /media/verify-url - Verify media URL accessibility
+    // ---------------------------------------------------------
+    if (path.includes('/verify-url') && method === 'POST') {
+      const body = JSON.parse(event.body || '{}');
+      const { url } = body;
+
+      if (!url) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ success: false, error: 'url is required' })
+        };
+      }
+
+      try {
+        const result = await ayrshareVerifyMediaUrl(API_KEY, url);
+
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: true,
+            url,
+            valid: result.valid !== false,
+            contentType: result.contentType,
+            size: result.size,
+            accessible: result.accessible !== false
+          })
+        };
+      } catch (err: any) {
+        // If verification fails, the URL might be inaccessible
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: true,
+            url,
+            valid: false,
+            error: err.message,
+            message: 'URL could not be verified - it may be inaccessible or private'
+          })
+        };
+      }
     }
 
     return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Route not found' }) };

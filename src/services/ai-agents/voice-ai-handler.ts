@@ -32,7 +32,12 @@ import {
   VoiceId,
   Engine,
 } from '@aws-sdk/client-polly';
+import {
+  ChimeSDKVoiceClient,
+  UpdateSipMediaApplicationCallCommand,
+} from '@aws-sdk/client-chime-sdk-voice';
 import { v4 as uuidv4 } from 'uuid';
+import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { AiAgent } from './agents';
 import {
   getConfiguredVoiceAgent,
@@ -79,12 +84,26 @@ const pollyClient = new PollyClient({
   region: process.env.AWS_REGION || 'us-east-1',
 });
 
+// Chime client for streaming responses
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
+const chimeVoiceClient = new ChimeSDKVoiceClient({
+  region: CHIME_MEDIA_REGION,
+});
+const ssmClient = new SSMClient({
+  region: process.env.AWS_REGION || 'us-east-1',
+});
+
 const AGENTS_TABLE = process.env.AGENTS_TABLE || 'AiAgents';
 const VOICE_SESSIONS_TABLE = process.env.VOICE_SESSIONS_TABLE || 'VoiceAiSessions';
 const CLINIC_HOURS_TABLE = process.env.CLINIC_HOURS_TABLE || 'ClinicHours';
 const CALL_ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE || '';
 const CALL_ANALYTICS_ENABLED = process.env.CALL_ANALYTICS_ENABLED === 'true';
 const CALL_RECORDINGS_BUCKET = process.env.CALL_RECORDINGS_BUCKET || '';
+
+// Streaming response configuration
+const STREAMING_ENABLED = process.env.ENABLE_STREAMING_RESPONSES === 'true';
+const MIN_CHUNK_SIZE = 50; // Minimum characters before sending a chunk
+const SMA_ID_MAP_PARAMETER = process.env.SMA_ID_MAP_PARAMETER || '';
 
 // ========================================================================
 // TYPES
@@ -693,8 +712,219 @@ async function getVoiceAgent(clinicId: string): Promise<AiAgent | null> {
   return null;
 }
 
+// ========================================================================
+// STREAMING RESPONSE HELPERS
+// ========================================================================
+
+// Cache for SMA ID map
+let smaIdMapCache: Record<string, string> | null = null;
+let smaIdMapCacheTime = 0;
+const SMA_ID_MAP_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 /**
- * Invoke AI agent and get response
+ * Get SMA ID for a clinic from SSM parameter
+ */
+async function getSmaIdForClinic(clinicId: string): Promise<string | null> {
+  if (!SMA_ID_MAP_PARAMETER) {
+    console.warn('[getSmaIdForClinic] SMA_ID_MAP_PARAMETER not configured');
+    return null;
+  }
+
+  try {
+    // Check cache
+    const now = Date.now();
+    if (smaIdMapCache && now - smaIdMapCacheTime < SMA_ID_MAP_CACHE_TTL) {
+      return smaIdMapCache[clinicId] || smaIdMapCache['default'] || null;
+    }
+
+    // Fetch from SSM
+    const response = await ssmClient.send(new GetParameterCommand({
+      Name: SMA_ID_MAP_PARAMETER,
+    }));
+
+    if (response.Parameter?.Value) {
+      smaIdMapCache = JSON.parse(response.Parameter.Value);
+      smaIdMapCacheTime = now;
+      return smaIdMapCache?.[clinicId] || smaIdMapCache?.['default'] || null;
+    }
+
+    return null;
+  } catch (error) {
+    console.error('[getSmaIdForClinic] Error fetching SMA ID:', error);
+    return null;
+  }
+}
+
+/**
+ * Send a streaming chunk to the call via UpdateSipMediaApplicationCall
+ * This interrupts the current action (pause) and speaks the chunk immediately
+ */
+async function sendStreamingChunk(
+  callId: string,
+  clinicId: string,
+  text: string,
+  isFinal: boolean,
+  sessionId?: string
+): Promise<boolean> {
+  const smaId = await getSmaIdForClinic(clinicId);
+  if (!smaId) {
+    console.warn('[sendStreamingChunk] No SMA ID found for clinic:', clinicId);
+    return false;
+  }
+
+  try {
+    const actions = [
+      {
+        Type: 'Speak',
+        Parameters: {
+          Text: text,
+          Engine: 'neural',
+          LanguageCode: 'en-US',
+          TextType: 'text',
+          VoiceId: 'Joanna',
+        },
+      },
+    ];
+
+    // If this is the final chunk, add CONTINUE to keep listening
+    if (isFinal) {
+      actions.push({
+        Type: 'Pause',
+        Parameters: {
+          DurationInMilliseconds: '500',
+        },
+      } as any);
+    }
+
+    await chimeVoiceClient.send(new UpdateSipMediaApplicationCallCommand({
+      SipMediaApplicationId: smaId,
+      TransactionId: callId, // callId is the transactionId
+      Arguments: {
+        pendingAiActions: JSON.stringify(actions),
+        aiResponseTime: new Date().toISOString(),
+        isStreamingChunk: 'true',
+        isFinalChunk: isFinal ? 'true' : 'false',
+        sessionId: sessionId || '',
+      },
+    }));
+
+    console.log('[sendStreamingChunk] Sent chunk:', { callId, textLength: text.length, isFinal });
+    return true;
+  } catch (error: any) {
+    console.error('[sendStreamingChunk] Error sending chunk:', error.message);
+    return false;
+  }
+}
+
+/**
+ * Split text into sentences for streaming
+ */
+function splitIntoSentences(text: string): string[] {
+  // Split on sentence boundaries while keeping the delimiter
+  const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+  return sentences.map(s => s.trim()).filter(s => s.length > 0);
+}
+
+/**
+ * Invoke AI agent with streaming response
+ * Sends partial responses via UpdateSipMediaApplicationCall as they arrive
+ */
+async function invokeAiAgentWithStreaming(
+  agent: AiAgent,
+  session: VoiceSession,
+  userMessage: string,
+  callId: string,
+  clinicId: string
+): Promise<{ response: string; thinking: string[]; chunksSent: number }> {
+  const thinking: string[] = [];
+  let fullResponse = '';
+  let pendingText = '';
+  let chunksSent = 0;
+
+  const sessionAttributes: Record<string, string> = {
+    clinicId: session.clinicId,
+    callerNumber: session.callerNumber,
+    isVoiceCall: 'true',
+  };
+
+  const invokeCommand = new InvokeAgentCommand({
+    agentId: agent.bedrockAgentId,
+    agentAliasId: agent.bedrockAgentAliasId,
+    sessionId: session.bedrockSessionId,
+    inputText: userMessage,
+    enableTrace: true,
+    sessionState: {
+      sessionAttributes,
+    },
+  });
+
+  const bedrockResponse = await bedrockAgentClient.send(invokeCommand);
+
+  if (bedrockResponse.completion) {
+    for await (const event of bedrockResponse.completion) {
+      // Capture thinking/trace
+      if (event.trace?.trace) {
+        const trace = event.trace.trace;
+        
+        if (trace.orchestrationTrace?.rationale?.text) {
+          thinking.push(trace.orchestrationTrace.rationale.text);
+        }
+        
+        if (trace.orchestrationTrace?.invocationInput?.actionGroupInvocationInput) {
+          const action = trace.orchestrationTrace.invocationInput.actionGroupInvocationInput;
+          thinking.push(`Checking: ${action.apiPath}`);
+        }
+      }
+
+      // Capture response chunks
+      if (event.chunk?.bytes) {
+        const chunkText = new TextDecoder().decode(event.chunk.bytes);
+        fullResponse += chunkText;
+        pendingText += chunkText;
+
+        // Check if we have complete sentences to send
+        const sentences = splitIntoSentences(pendingText);
+        
+        // Send all complete sentences except the last (which might be incomplete)
+        if (sentences.length > 1) {
+          for (let i = 0; i < sentences.length - 1; i++) {
+            const sent = await sendStreamingChunk(
+              callId,
+              clinicId,
+              sentences[i],
+              false, // Not final
+              session.sessionId
+            );
+            if (sent) chunksSent++;
+          }
+          // Keep the last (potentially incomplete) sentence
+          pendingText = sentences[sentences.length - 1];
+        }
+      }
+    }
+  }
+
+  // Send any remaining text as final chunk
+  if (pendingText.trim()) {
+    const sent = await sendStreamingChunk(
+      callId,
+      clinicId,
+      pendingText.trim(),
+      true, // Final chunk
+      session.sessionId
+    );
+    if (sent) chunksSent++;
+  }
+
+  return { 
+    response: fullResponse || "I'm sorry, I couldn't process that request.", 
+    thinking,
+    chunksSent
+  };
+}
+
+/**
+ * Invoke AI agent and get response (non-streaming version)
  */
 async function invokeAiAgent(
   agent: AiAgent,
@@ -969,38 +1199,90 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
           }];
         }
 
-        // Play thinking phrase while AI processes (avoid silence)
-        const fillerPhrase = await getThinkingPhrase(clinicId);
-        responses.push({
-          action: 'SPEAK',
-          text: fillerPhrase,
-          sessionId: activeSessionId,
-        });
-
-        // Invoke AI agent
-        const { response: aiResponse, thinking } = await invokeAiAgent(agent, session, transcript);
-
-        // Extract tools used from thinking trace
-        const detectedTools = thinking
-          .filter((t: string) => t.includes('Checking:'))
-          .map((t: string) => t.replace('Checking: ', ''));
+        // ========== STREAMING vs NON-STREAMING RESPONSE ==========
+        // When streaming is enabled:
+        //   - We return a brief filler immediately
+        //   - AI response chunks are sent via UpdateSipMediaApplicationCall
+        //   - This reduces perceived latency by starting TTS as AI generates
+        // When streaming is disabled:
+        //   - We wait for full AI response
+        //   - Return filler + full response together
         
-        // ANALYTICS FIX: Save AI response WITH tools used to session record
-        // This persists toolsUsed across Lambda invocations
-        await updateSessionTranscript(activeSessionId, 'ai', aiResponse, detectedTools);
+        if (STREAMING_ENABLED && callId && clinicId) {
+          console.log('[TRANSCRIPT] Using streaming response mode');
+          
+          // Return a brief filler immediately - streaming chunks will follow
+          const fillerPhrase = await getThinkingPhrase(clinicId);
+          responses.push({
+            action: 'SPEAK',
+            text: fillerPhrase,
+            sessionId: activeSessionId,
+          });
+          
+          // Start streaming AI response (sends chunks via UpdateSipMediaApplicationCall)
+          // This runs async but we don't await - Lambda returns filler immediately
+          invokeAiAgentWithStreaming(agent, session, transcript, callId, clinicId)
+            .then(async ({ response: aiResponse, thinking, chunksSent }) => {
+              console.log('[TRANSCRIPT] Streaming complete:', { 
+                chunksSent, 
+                responseLength: aiResponse.length 
+              });
+              
+              // Extract and save tools used
+              const detectedTools = thinking
+                .filter((t: string) => t.includes('Checking:'))
+                .map((t: string) => t.replace('Checking: ', ''));
+              
+              await updateSessionTranscript(activeSessionId, 'ai', aiResponse, detectedTools);
+            })
+            .catch((err) => {
+              console.error('[TRANSCRIPT] Streaming error:', err);
+            });
+          
+          // Return just the filler - streaming handles the rest
+          // Add CONTINUE to keep listening while streaming happens
+          responses.push({
+            action: 'CONTINUE',
+            sessionId: activeSessionId,
+          });
+          
+        } else {
+          // Non-streaming mode: wait for full response
+          console.log('[TRANSCRIPT] Using non-streaming response mode');
+          
+          // Play thinking phrase while AI processes (avoid silence)
+          const fillerPhrase = await getThinkingPhrase(clinicId);
+          responses.push({
+            action: 'SPEAK',
+            text: fillerPhrase,
+            sessionId: activeSessionId,
+          });
 
-        // Speak AI response
-        responses.push({
-          action: 'SPEAK',
-          text: aiResponse,
-          sessionId: activeSessionId,
-        });
+          // Invoke AI agent (waits for full response)
+          const { response: aiResponse, thinking } = await invokeAiAgent(agent, session, transcript);
 
-        // Continue listening
-        responses.push({
-          action: 'CONTINUE',
-          sessionId: activeSessionId,
-        });
+          // Extract tools used from thinking trace
+          const detectedTools = thinking
+            .filter((t: string) => t.includes('Checking:'))
+            .map((t: string) => t.replace('Checking: ', ''));
+          
+          // ANALYTICS FIX: Save AI response WITH tools used to session record
+          // This persists toolsUsed across Lambda invocations
+          await updateSessionTranscript(activeSessionId, 'ai', aiResponse, detectedTools);
+
+          // Speak AI response
+          responses.push({
+            action: 'SPEAK',
+            text: aiResponse,
+            sessionId: activeSessionId,
+          });
+
+          // Continue listening
+          responses.push({
+            action: 'CONTINUE',
+            sessionId: activeSessionId,
+          });
+        }
 
         break;
       }
