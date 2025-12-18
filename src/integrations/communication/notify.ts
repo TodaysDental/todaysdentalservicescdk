@@ -13,6 +13,7 @@ import {
   UserPermissions,
 } from '../../shared/utils/permissions-helper';
 import clinicsData from '../../infrastructure/configs/clinics.json';
+import { renderTemplate, buildTemplateContext } from '../../shared/utils/clinic-placeholders';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -205,8 +206,8 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
   }
 
   const results: any = { email: null, sms: null };
-  const clinicCtx = buildClinicContext(clinicId);
-  const mergedCtx = { ...clinicCtx, FName: fname, LName: lname } as Record<string, string>;
+  // Build template context with patient data - supports {patient_name}, {first_name}, {last_name}, {FName}, {LName}
+  const mergedCtx = buildTemplateContext(clinicId, { FName: fname, LName: lname });
 
   if (notificationTypes.includes('EMAIL')) {
     try {
@@ -214,7 +215,16 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
       const htmlStr = template ? renderTemplateString(String(template.email_body || ''), mergedCtx) : '';
       const textAltStr = htmlStr ? htmlStr.replace(/<[^>]+>/g, ' ') : '';
 
-      await sendEmail({ clinicId, to: email, subject: subjectStr, html: htmlStr || textAltStr, text: textAltStr || htmlStr });
+      await sendEmail({ 
+        clinicId, 
+        to: email, 
+        subject: subjectStr, 
+        html: htmlStr || textAltStr, 
+        text: textAltStr || htmlStr,
+        patNum,
+        templateName: templateMessage,
+        sentBy,
+      });
 
       results.email = email;
 
@@ -396,30 +406,12 @@ function renderText(text: string, ctx: Record<string, string>): string {
   return renderTemplateString(String(text || ''), ctx);
 }
 
-function buildClinicContext(clinicId: string): Record<string, string> {
-  const clinic = (clinicsData as any[]).find((c) => String(c.clinicId) === String(clinicId)) || {};
-  const ctx: Record<string, string> = {};
-  for (const [k, v] of Object.entries(clinic)) {
-    if (v === undefined || v === null) continue;
-    ctx[String(k)] = String(v);
-  }
-  return ctx;
-}
-
+/**
+ * Render a template string by replacing placeholders with values.
+ * Supports both {{placeholder}} and {placeholder} syntax.
+ */
 function renderTemplateString(tpl: string, ctx: Record<string, string>): string {
-  let out = tpl;
-  // Support both {{Key}} and {Key}
-  for (const [key, value] of Object.entries(ctx)) {
-    const safe = String(value);
-    const re1 = new RegExp(`\\{\\{\\s*${escapeRegExp(key)}\\s*\\}\\}`, 'g');
-    const re2 = new RegExp(`\\{${escapeRegExp(key)}\\}`, 'g');
-    out = out.replace(re1, safe).replace(re2, safe);
-  }
-  return out;
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
+  return renderTemplate(tpl, ctx);
 }
 
 function normalizePhone(p: string): string | undefined {
@@ -520,9 +512,26 @@ function extractEmailAndPhone(row: any): { email?: string; phone?: string } {
   return { email, phone };
 }
 
-async function sendEmail({ clinicId, to, subject, html, text }: { clinicId: string; to: string; subject: string; html: string; text?: string; }) {
+interface SendEmailOptions {
+  clinicId: string;
+  to: string;
+  subject: string;
+  html: string;
+  text?: string;
+  patNum?: string;
+  templateName?: string;
+  sentBy?: string;
+}
+
+interface SendEmailResult {
+  messageId?: string;
+  success: boolean;
+}
+
+async function sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
+  const { clinicId, to, subject, html, text, patNum, templateName, sentBy } = options;
   const identityArn = CLINIC_SES_IDENTITY_ARN_MAP[clinicId];
-  if (!identityArn) return;
+  if (!identityArn) return { success: false };
   
   // Use the clinic's verified email address instead of no-reply
   const clinicEmail = CLINIC_EMAIL_MAP[clinicId];
@@ -536,13 +545,85 @@ async function sendEmail({ clinicId, to, subject, html, text }: { clinicId: stri
     from = clinicEmail;
   }
   
+  const configurationSetName = process.env.SES_CONFIGURATION_SET_NAME;
+  
   const cmd = new SendEmailCommand({
     FromEmailAddress: from,
     FromEmailAddressIdentityArn: identityArn,
     Destination: { ToAddresses: [to] },
-    Content: { Simple: { Subject: { Data: subject }, Body: { Html: { Data: html }, Text: { Data: text || html.replace(/<[^>]+>/g, ' ') } } } },
+    Content: { 
+      Simple: { 
+        Subject: { Data: subject }, 
+        Body: { 
+          Html: { Data: html }, 
+          Text: { Data: text || html.replace(/<[^>]+>/g, ' ') } 
+        } 
+      } 
+    },
+    // Add configuration set for event tracking
+    ConfigurationSetName: configurationSetName,
+    // Add tags for tracking context
+    EmailTags: [
+      { Name: 'clinicId', Value: clinicId },
+      ...(patNum ? [{ Name: 'patNum', Value: patNum }] : []),
+      ...(templateName ? [{ Name: 'templateName', Value: templateName }] : []),
+    ],
   });
-  await ses.send(cmd);
+  
+  const response = await ses.send(cmd);
+  const messageId = response.MessageId;
+  
+  // Create initial tracking record in email analytics table
+  if (messageId) {
+    await createEmailTrackingRecord({
+      messageId,
+      clinicId,
+      recipientEmail: to,
+      patNum,
+      subject,
+      templateName,
+      sentBy,
+    });
+  }
+  
+  return { messageId, success: true };
+}
+
+async function createEmailTrackingRecord(record: {
+  messageId: string;
+  clinicId: string;
+  recipientEmail: string;
+  patNum?: string;
+  subject?: string;
+  templateName?: string;
+  sentBy?: string;
+}): Promise<void> {
+  const EMAIL_ANALYTICS_TABLE = process.env.EMAIL_ANALYTICS_TABLE;
+  if (!EMAIL_ANALYTICS_TABLE) return;
+  
+  const now = new Date();
+  const ttl = Math.floor(now.getTime() / 1000) + (365 * 24 * 60 * 60); // 1 year TTL
+  
+  try {
+    await ddb.send(new PutCommand({
+      TableName: EMAIL_ANALYTICS_TABLE,
+      Item: {
+        messageId: record.messageId,
+        clinicId: record.clinicId,
+        recipientEmail: record.recipientEmail,
+        patNum: record.patNum,
+        subject: record.subject,
+        templateName: record.templateName,
+        sentBy: record.sentBy,
+        sentAt: now.toISOString(),
+        status: 'QUEUED',
+        ttl,
+      },
+    }));
+  } catch (error) {
+    console.error('Error creating email tracking record:', error);
+    // Don't throw - tracking is secondary to sending
+  }
 }
 
 async function sendSms({ clinicId, to, body }: { clinicId: string; to: string; body: string; }) {

@@ -5,6 +5,7 @@ import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { parse as parseCsv } from 'csv-parse/sync';
 import { Client as SSH2Client } from 'ssh2';
 import clinicsData from '../../infrastructure/configs/clinics.json';
+import { buildTemplateContext, renderTemplate } from '../../shared/utils/clinic-placeholders';
 // Use require to avoid type resolution issues if types aren't present
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { PinpointSMSVoiceV2Client, SendTextMessageCommand } = require('@aws-sdk/client-pinpoint-sms-voice-v2');
@@ -62,6 +63,15 @@ const CLINIC_SMS_ORIGINATION_ARN_MAP: Record<string, string> = (() => {
   const acc: Record<string, string> = {};
   (clinicsData as any[]).forEach((c: any) => {
     if (c.smsOriginationArn) acc[String(c.clinicId)] = String(c.smsOriginationArn);
+  });
+  return acc;
+})();
+
+// Build clinic email map from imported clinic data for sending emails from clinic addresses
+const CLINIC_EMAIL_MAP: Record<string, string> = (() => {
+  const acc: Record<string, string> = {};
+  (clinicsData as any[]).forEach((c: any) => {
+    if (c.clinicEmail) acc[String(c.clinicId)] = String(c.clinicEmail);
   });
   return acc;
 })();
@@ -240,30 +250,61 @@ async function httpRequest(opts: { hostname: string; path: string; method: strin
   });
 }
 
-async function downloadLatestCsv(opts: { host: string; port: number; username: string; password: string; remoteDir: string; }): Promise<string> {
+// Retry helper with exponential backoff
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelayMs: number = 1000
+): Promise<T> {
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      if (attempt < maxRetries - 1) {
+        const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 500;
+        console.log(`SFTP attempt ${attempt + 1} failed, retrying in ${Math.round(delay)}ms: ${err.message}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  throw lastError;
+}
+
+async function downloadLatestCsvOnce(opts: { host: string; port: number; username: string; password: string; remoteDir: string; }): Promise<string> {
   const { host, port, username, password, remoteDir } = opts;
   const conn = new SSH2Client();
   return new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      conn.end();
+      reject(new Error('SFTP connection timeout'));
+    }, 30000); // 30 second timeout
+
     conn.on('ready', () => {
       conn.sftp((err: any, sftp: any) => {
-        if (err) { conn.end(); reject(err); return; }
+        if (err) { clearTimeout(timeout); conn.end(); reject(err); return; }
         setTimeout(() => {
           sftp.readdir(remoteDir, (err2: any, list: any[]) => {
-            if (err2) { conn.end(); reject(err2); return; }
+            if (err2) { clearTimeout(timeout); conn.end(); reject(err2); return; }
             const csvFiles = list.filter((f: any) => String(f.filename).endsWith('.csv'));
-            if (csvFiles.length === 0) { conn.end(); reject(new Error('No CSV files found')); return; }
+            if (csvFiles.length === 0) { clearTimeout(timeout); conn.end(); reject(new Error('No CSV files found')); return; }
             const latest = csvFiles.sort((a: any, b: any) => b.attrs.mtime - a.attrs.mtime)[0];
             const actualPath = `${remoteDir}/${latest.filename}`;
             const readStream = sftp.createReadStream(actualPath);
             let csvContent = '';
             readStream.on('data', (chunk: any) => { csvContent += chunk.toString(); });
-            readStream.on('end', () => { conn.end(); resolve(csvContent); });
-            readStream.on('error', (e: any) => { conn.end(); reject(e); });
+            readStream.on('end', () => { clearTimeout(timeout); conn.end(); resolve(csvContent); });
+            readStream.on('error', (e: any) => { clearTimeout(timeout); conn.end(); reject(e); });
           });
         }, 3000);
       });
-    }).on('error', (e: any) => { reject(e); }).connect({ host, port, username, password, readyTimeout: 10000 });
+    }).on('error', (e: any) => { clearTimeout(timeout); reject(e); }).connect({ host, port, username, password, readyTimeout: 15000 });
   });
+}
+
+async function downloadLatestCsv(opts: { host: string; port: number; username: string; password: string; remoteDir: string; }): Promise<string> {
+  return retryWithBackoff(() => downloadLatestCsvOnce(opts), 3, 2000);
 }
 
 function extractEmailAndPhone(row: any): { email?: string; phone?: string } {
@@ -287,11 +328,34 @@ function normalizePhone(p: string): string | undefined {
   return undefined;
 }
 
-async function sendEmail({ clinicId, to, subject, html, text }: { clinicId: string; to: string; subject: string; html: string; text?: string; }) {
+interface SendEmailOptions {
+  clinicId: string;
+  to: string;
+  subject: string;
+  html: string;
+  text?: string;
+  templateName?: string;
+}
+
+async function sendEmail(options: SendEmailOptions): Promise<string | undefined> {
+  const { clinicId, to, subject, html, text, templateName } = options;
   const identityArn = CLINIC_SES_IDENTITY_ARN_MAP[clinicId];
-  if (!identityArn) return;
-  const fromDomain = identityArn.split(':identity/')[1] || 'todaysdentalinsights.com';
-  const from = `no-reply@${fromDomain}`;
+  if (!identityArn) return undefined;
+  
+  // Use the clinic's verified email address instead of no-reply (like notifications stack)
+  const clinicEmail = CLINIC_EMAIL_MAP[clinicId];
+  let from: string;
+  
+  if (!clinicEmail) {
+    // Fallback to no-reply if clinic email is not found
+    const fromDomain = identityArn.split(':identity/')[1] || 'todaysdentalinsights.com';
+    from = `no-reply@${fromDomain}`;
+  } else {
+    from = clinicEmail;
+  }
+  
+  const configurationSetName = process.env.SES_CONFIGURATION_SET_NAME;
+  
   const cmd = new SendEmailCommand({
     FromEmailAddress: from,
     FromEmailAddressIdentityArn: identityArn,
@@ -302,8 +366,17 @@ async function sendEmail({ clinicId, to, subject, html, text }: { clinicId: stri
         Body: { Html: { Data: html }, Text: { Data: text || html.replace(/<[^>]+>/g, ' ') } },
       },
     },
+    // Add configuration set for event tracking
+    ConfigurationSetName: configurationSetName,
+    // Add tags for tracking context
+    EmailTags: [
+      { Name: 'clinicId', Value: clinicId },
+      { Name: 'source', Value: 'scheduled-worker' },
+      ...(templateName ? [{ Name: 'templateName', Value: templateName }] : []),
+    ],
   });
-  await ses.send(cmd);
+  const response = await ses.send(cmd);
+  return response.MessageId;
 }
 
 async function sendSms({ clinicId, to, body }: { clinicId: string; to: string; body: string; }) {
@@ -352,11 +425,19 @@ export const handler = async () => {
         const rows = await runOpenDentalQuery({ clinicId, sql });
         for (const row of rows) {
           const { email, phone } = extractEmailAndPhone(row);
+          
+          // Build template context with clinic placeholders and row data
+          // Supports: {clinic_name}, {phone_number}, {clinic_address}, {clinic_url}, {clinic_email}, {maps_url}
+          const templateContext = buildTemplateContext(clinicId, row);
+          
           if (Array.isArray(sched.notificationTypes) && sched.notificationTypes.includes('EMAIL') && email) {
-            await sendEmail({ clinicId, to: email, subject: template.email_subject || 'Notification', html: template.email_body || '' });
+            const renderedSubject = renderTemplate(template.email_subject || 'Notification', templateContext);
+            const renderedHtml = renderTemplate(template.email_body || '', templateContext);
+            await sendEmail({ clinicId, to: email, subject: renderedSubject, html: renderedHtml });
           }
           if (Array.isArray(sched.notificationTypes) && sched.notificationTypes.includes('SMS') && phone && template.text_message) {
-            await sendSms({ clinicId, to: phone, body: template.text_message });
+            const renderedSms = renderTemplate(template.text_message, templateContext);
+            await sendSms({ clinicId, to: phone, body: renderedSms });
           }
         }
         await markRanForClinic(sched.id, clinicId);
@@ -381,10 +462,23 @@ async function markRan(id: string) {
 async function markRanForClinic(id: string, clinicId: string) {
   if (!id || !clinicId) return;
   const nowIso = new Date().toISOString();
+  
+  // First, ensure the map exists (creates empty map if it doesn't exist)
   await doc.send(new UpdateCommand({
     TableName: SCHEDULES_TABLE,
     Key: { id },
-    UpdateExpression: 'SET last_run_at = :ts, #map.#cid = :ts',
+    UpdateExpression: 'SET last_run_at = :ts, #map = if_not_exists(#map, :emptyMap)',
+    ExpressionAttributeNames: {
+      '#map': 'last_run_by_clinic',
+    },
+    ExpressionAttributeValues: { ':ts': nowIso, ':emptyMap': {} },
+  }));
+  
+  // Then, set the nested clinic value
+  await doc.send(new UpdateCommand({
+    TableName: SCHEDULES_TABLE,
+    Key: { id },
+    UpdateExpression: 'SET #map.#cid = :ts',
     ExpressionAttributeNames: {
       '#map': 'last_run_by_clinic',
       '#cid': clinicId,

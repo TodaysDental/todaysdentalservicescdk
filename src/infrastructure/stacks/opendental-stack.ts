@@ -293,12 +293,15 @@ export class OpenDentalStack extends Stack {
     // ========================================
 
     // Open Dental proxy Lambda
+    // Concurrency set to 30 to process all clinics in parallel
+    // Retry logic with exponential backoff handles transient SFTP connection failures
     this.openDentalFn = new lambdaNode.NodejsFunction(this, 'OpenDentalProxyFn', {
       entry: path.join(__dirname, '..', '..', 'integrations', 'open-dental', 'openDentalProxy.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 1024,  // Increased memory for better performance
       timeout: Duration.seconds(120),  // Increased timeout for SFTP operations
+      reservedConcurrentExecutions: 30, // Allow all 30 clinics to process in parallel
       bundling: { 
         format: lambdaNode.OutputFormat.CJS, 
         target: 'node22',

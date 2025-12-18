@@ -1,0 +1,221 @@
+/**
+ * RCS Incoming Message Webhook Handler
+ * 
+ * Handles incoming RCS messages from Twilio for each clinic.
+ * Twilio sends POST requests to this endpoint when a patient sends an RCS message.
+ */
+
+import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import crypto from 'crypto';
+
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+
+const RCS_MESSAGES_TABLE = process.env.RCS_MESSAGES_TABLE!;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN!;
+
+interface TwilioRcsIncomingMessage {
+  MessageSid: string;
+  AccountSid: string;
+  From: string;
+  To: string;
+  Body: string;
+  NumMedia?: string;
+  MediaUrl0?: string;
+  MediaContentType0?: string;
+  RcsSenderId?: string;
+  ProfileName?: string;
+  ApiVersion?: string;
+}
+
+/**
+ * Validates Twilio signature to ensure request authenticity
+ */
+function validateTwilioSignature(
+  authToken: string,
+  signature: string,
+  url: string,
+  params: Record<string, string>
+): boolean {
+  // Skip validation in development/testing
+  if (process.env.SKIP_TWILIO_VALIDATION === 'true') {
+    return true;
+  }
+
+  // Build the data string for signature validation
+  const sortedKeys = Object.keys(params).sort();
+  let data = url;
+  for (const key of sortedKeys) {
+    data += key + params[key];
+  }
+
+  // Create HMAC SHA1 signature
+  const computedSignature = crypto
+    .createHmac('sha1', authToken)
+    .update(data, 'utf8')
+    .digest('base64');
+
+  return computedSignature === signature;
+}
+
+/**
+ * Parse form-urlencoded body from Twilio
+ */
+function parseFormBody(body: string): Record<string, string> {
+  const params: Record<string, string> = {};
+  if (!body || body.trim() === '') return params;
+  
+  const pairs = body.split('&');
+  for (const pair of pairs) {
+    const [key, value] = pair.split('=');
+    if (key && value !== undefined) {
+      params[decodeURIComponent(key)] = decodeURIComponent(value.replace(/\+/g, ' '));
+    }
+  }
+  return params;
+}
+
+/**
+ * Parse JSON body (for testing via Postman)
+ */
+function parseJsonBody(body: string): Record<string, string> {
+  try {
+    const parsed = JSON.parse(body);
+    const params: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (value !== undefined && value !== null) {
+        params[key] = String(value);
+      }
+    }
+    return params;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Generate a unique message ID for testing
+ */
+function generateTestMessageSid(): string {
+  return `TEST_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+}
+
+export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  console.log('RCS Incoming Message Event:', JSON.stringify(event, null, 2));
+
+  const clinicId = event.pathParameters?.clinicId;
+  if (!clinicId) {
+    return {
+      statusCode: 400,
+      body: JSON.stringify({ error: 'Missing clinicId' }),
+    };
+  }
+
+  try {
+    // Parse the incoming body (form-urlencoded from Twilio or JSON from testing)
+    const rawBody = event.isBase64Encoded
+      ? Buffer.from(event.body || '', 'base64').toString('utf8')
+      : event.body || '';
+
+    const contentType = event.headers['Content-Type'] || event.headers['content-type'] || '';
+    
+    // Parse based on content type
+    let params: Record<string, string>;
+    if (contentType.includes('application/json')) {
+      params = parseJsonBody(rawBody);
+    } else {
+      params = parseFormBody(rawBody);
+    }
+    
+    // Validate Twilio signature (skip for JSON/test requests)
+    const twilioSignature = event.headers['X-Twilio-Signature'] || event.headers['x-twilio-signature'];
+    const webhookUrl = `https://${event.headers.Host || event.headers.host}${event.path}`;
+    
+    if (TWILIO_AUTH_TOKEN && twilioSignature && !contentType.includes('application/json')) {
+      const isValid = validateTwilioSignature(TWILIO_AUTH_TOKEN, twilioSignature, webhookUrl, params);
+      if (!isValid) {
+        console.error('Invalid Twilio signature');
+        return {
+          statusCode: 403,
+          body: JSON.stringify({ error: 'Invalid signature' }),
+        };
+      }
+    }
+
+    // Generate a test message SID if not provided (for testing)
+    const messageSid = params.MessageSid || params.messageSid || generateTestMessageSid();
+
+    const message: TwilioRcsIncomingMessage = {
+      MessageSid: messageSid,
+      AccountSid: params.AccountSid || params.accountSid || 'TEST_ACCOUNT',
+      From: params.From || params.from || '+10000000000',
+      To: params.To || params.to || '+10000000001',
+      Body: params.Body || params.body || '',
+      NumMedia: params.NumMedia || params.numMedia,
+      MediaUrl0: params.MediaUrl0 || params.mediaUrl,
+      MediaContentType0: params.MediaContentType0 || params.mediaContentType,
+      RcsSenderId: params.RcsSenderId || params.rcsSenderId,
+      ProfileName: params.ProfileName || params.profileName,
+      ApiVersion: params.ApiVersion || params.apiVersion,
+    };
+
+    // Store the message in DynamoDB
+    const timestamp = Date.now();
+    const messageId = `${clinicId}#${message.MessageSid}`;
+
+    // Build item, avoiding empty strings for GSI key attributes
+    const item: Record<string, any> = {
+      pk: `CLINIC#${clinicId}`,
+      sk: `MSG#${timestamp}#${message.MessageSid}`,
+      messageId,
+      clinicId,
+      direction: 'inbound',
+      messageSid: message.MessageSid, // Always has a value now
+      timestamp,
+      createdAt: new Date().toISOString(),
+      ttl: Math.floor(Date.now() / 1000) + 90 * 24 * 60 * 60, // 90 days TTL
+      status: 'received',
+    };
+
+    // Only add non-empty string values
+    if (message.AccountSid) item.accountSid = message.AccountSid;
+    if (message.From) item.from = message.From;
+    if (message.To) item.to = message.To;
+    if (message.Body) item.body = message.Body;
+    if (message.NumMedia) item.numMedia = parseInt(message.NumMedia);
+    if (message.MediaUrl0) item.mediaUrl = message.MediaUrl0;
+    if (message.MediaContentType0) item.mediaContentType = message.MediaContentType0;
+    if (message.RcsSenderId) item.rcsSenderId = message.RcsSenderId;
+    if (message.ProfileName) item.profileName = message.ProfileName;
+
+    await ddb.send(new PutCommand({
+      TableName: RCS_MESSAGES_TABLE,
+      Item: item,
+    }));
+
+    console.log(`RCS message stored for clinic ${clinicId}:`, message.MessageSid);
+
+    // TODO: Implement additional logic such as:
+    // - Auto-reply based on message content
+    // - Forward to chatbot for AI processing
+    // - Notify staff via WebSocket
+    // - Integration with patient records
+
+    // Return TwiML response (empty for RCS, just acknowledge receipt)
+    return {
+      statusCode: 200,
+      headers: {
+        'Content-Type': 'text/xml',
+      },
+      body: '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+    };
+  } catch (error) {
+    console.error('Error processing RCS incoming message:', error);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: 'Internal server error' }),
+    };
+  }
+};
+

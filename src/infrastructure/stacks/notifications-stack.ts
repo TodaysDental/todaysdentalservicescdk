@@ -1,15 +1,16 @@
-import { Duration, Stack, StackProps, CfnOutput, Fn, Tags } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, Fn, Tags, RemovalPolicy } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
-
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
-import { RemovalPolicy } from 'aws-cdk-lib';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
+import * as ses from 'aws-cdk-lib/aws-ses';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface NotificationsStackProps extends StackProps {
   templatesTableName: string;
@@ -20,6 +21,12 @@ export class NotificationsStack extends Stack {
   public readonly notificationsApi: apigw.RestApi;
   public readonly authorizer: apigw.RequestAuthorizer;
   public readonly notificationsTable: dynamodb.Table;
+  public readonly emailAnalyticsTable: dynamodb.Table;
+  public readonly emailStatsTable: dynamodb.Table;
+  public readonly emailAnalyticsFn: lambdaNode.NodejsFunction;
+  public readonly emailEventProcessorFn: lambdaNode.NodejsFunction;
+  public readonly sesConfigurationSet: ses.ConfigurationSet;
+  public readonly sesEventsTopic: sns.Topic;
 
   constructor(scope: Construct, id: string, props: NotificationsStackProps) {
     super(scope, id, props);
@@ -90,6 +97,144 @@ export class NotificationsStack extends Stack {
       tableName: `${id}-Notifications`,
     });
     applyTags(this.notificationsTable, { Table: 'notifications' });
+
+    // ========================================
+    // EMAIL ANALYTICS TABLES
+    // ========================================
+
+    // Email Analytics Table - Tracks individual email events
+    // Partition Key: messageId (SES Message ID)
+    this.emailAnalyticsTable = new dynamodb.Table(this, 'EmailAnalyticsTable', {
+      partitionKey: { name: 'messageId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      tableName: `${id}-EmailAnalytics`,
+      timeToLiveAttribute: 'ttl', // Auto-cleanup old records after 1 year
+    });
+    
+    // GSI for querying by clinic and date
+    this.emailAnalyticsTable.addGlobalSecondaryIndex({
+      indexName: 'clinicId-sentAt-index',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'sentAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    
+    // GSI for querying by status
+    this.emailAnalyticsTable.addGlobalSecondaryIndex({
+      indexName: 'clinicId-status-index',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    
+    // GSI for querying by recipient email
+    this.emailAnalyticsTable.addGlobalSecondaryIndex({
+      indexName: 'recipientEmail-sentAt-index',
+      partitionKey: { name: 'recipientEmail', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'sentAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    applyTags(this.emailAnalyticsTable, { Table: 'email-analytics' });
+
+    // Email Stats Table - Aggregated statistics per clinic/period
+    // Partition Key: clinicId, Sort Key: period (YYYY-MM)
+    this.emailStatsTable = new dynamodb.Table(this, 'EmailStatsTable', {
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'period', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      tableName: `${id}-EmailStats`,
+    });
+    applyTags(this.emailStatsTable, { Table: 'email-stats' });
+
+    // ========================================
+    // SES CONFIGURATION SET FOR EVENT TRACKING
+    // ========================================
+
+    // SNS Topic for SES events
+    this.sesEventsTopic = new sns.Topic(this, 'SESEventsTopic', {
+      topicName: `${id}-SESEvents`,
+      displayName: 'SES Email Events for Analytics',
+    });
+    applyTags(this.sesEventsTopic, { Resource: 'ses-events-topic' });
+
+    // SES Configuration Set with event destinations
+    this.sesConfigurationSet = new ses.ConfigurationSet(this, 'EmailAnalyticsConfigSet', {
+      configurationSetName: `${id}-EmailAnalytics`,
+      // Enable reputation metrics (bounce/complaint rates)
+      reputationMetrics: true,
+      // Enable engagement tracking (opens/clicks)
+      sendingEnabled: true,
+    });
+    applyTags(this.sesConfigurationSet, { Resource: 'ses-config-set' });
+
+    // Add SNS event destination for all email events
+    new ses.ConfigurationSetEventDestination(this, 'SESEventDestination', {
+      configurationSet: this.sesConfigurationSet,
+      configurationSetEventDestinationName: 'SNSEventDestination',
+      destination: ses.EventDestination.snsTopic(this.sesEventsTopic),
+      events: [
+        ses.EmailSendingEvent.SEND,
+        ses.EmailSendingEvent.DELIVERY,
+        ses.EmailSendingEvent.BOUNCE,
+        ses.EmailSendingEvent.COMPLAINT,
+        ses.EmailSendingEvent.OPEN,
+        ses.EmailSendingEvent.CLICK,
+        ses.EmailSendingEvent.REJECT,
+        ses.EmailSendingEvent.RENDERING_FAILURE,
+        ses.EmailSendingEvent.DELIVERY_DELAY,
+      ],
+    });
+
+    // ========================================
+    // EMAIL EVENT PROCESSOR LAMBDA
+    // ========================================
+
+    this.emailEventProcessorFn = new lambdaNode.NodejsFunction(this, 'EmailEventProcessorFn', {
+      entry: path.join(__dirname, '..', '..', 'integrations', 'communication', 'email-analytics-processor.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        EMAIL_ANALYTICS_TABLE: this.emailAnalyticsTable.tableName,
+        EMAIL_STATS_TABLE: this.emailStatsTable.tableName,
+      },
+    });
+    applyTags(this.emailEventProcessorFn, { Function: 'email-event-processor' });
+
+    // Grant DynamoDB permissions to event processor
+    this.emailAnalyticsTable.grantReadWriteData(this.emailEventProcessorFn);
+    this.emailStatsTable.grantReadWriteData(this.emailEventProcessorFn);
+
+    // Subscribe Lambda to SNS topic
+    this.sesEventsTopic.addSubscription(
+      new snsSubscriptions.LambdaSubscription(this.emailEventProcessorFn)
+    );
+
+    // ========================================
+    // EMAIL ANALYTICS API LAMBDA
+    // ========================================
+
+    this.emailAnalyticsFn = new lambdaNode.NodejsFunction(this, 'EmailAnalyticsFn', {
+      entry: path.join(__dirname, '..', '..', 'integrations', 'communication', 'email-analytics-api.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(20),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        EMAIL_ANALYTICS_TABLE: this.emailAnalyticsTable.tableName,
+        EMAIL_STATS_TABLE: this.emailStatsTable.tableName,
+      },
+    });
+    applyTags(this.emailAnalyticsFn, { Function: 'email-analytics-api' });
+
+    // Grant DynamoDB read permissions to analytics API
+    this.emailAnalyticsTable.grantReadData(this.emailAnalyticsFn);
+    this.emailStatsTable.grantReadData(this.emailAnalyticsFn);
 
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
@@ -166,6 +311,8 @@ export class NotificationsStack extends Stack {
       environment: {
         TEMPLATES_TABLE: props.templatesTableName,
         NOTIFICATIONS_TABLE: this.notificationsTable.tableName,
+        EMAIL_ANALYTICS_TABLE: this.emailAnalyticsTable.tableName,
+        SES_CONFIGURATION_SET_NAME: this.sesConfigurationSet.configurationSetName,
       },
     });
     applyTags(this.notifyFn, { Function: 'notifications' });
@@ -199,6 +346,15 @@ export class NotificationsStack extends Stack {
         'dynamodb:Scan'
       ],
       resources: [this.notificationsTable.tableArn],
+    }));
+
+    // Grant write access to email analytics table for tracking
+    this.notifyFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'dynamodb:PutItem',
+        'dynamodb:UpdateItem',
+      ],
+      resources: [this.emailAnalyticsTable.tableArn],
     }));
 
     // ========================================
@@ -292,6 +448,109 @@ export class NotificationsStack extends Stack {
     });
 
     // ========================================
+    // EMAIL ANALYTICS API ROUTES
+    // ========================================
+
+    const analyticsIntegration = new apigw.LambdaIntegration(this.emailAnalyticsFn);
+
+    // GET /email-analytics/stats - Get aggregated statistics
+    const emailAnalyticsResource = this.notificationsApi.root.addResource('email-analytics');
+    const statsResource = emailAnalyticsResource.addResource('stats');
+    statsResource.addMethod('GET', analyticsIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      requestParameters: {
+        'method.request.querystring.clinicId': false,
+        'method.request.querystring.period': false,
+      },
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Access-Control-Allow-Origin': true,
+            'method.response.header.Access-Control-Allow-Headers': true,
+            'method.response.header.Access-Control-Allow-Methods': true
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' }
+      ],
+    });
+
+    // GET /email-analytics/dashboard - Get dashboard summary
+    const dashboardResource = emailAnalyticsResource.addResource('dashboard');
+    dashboardResource.addMethod('GET', analyticsIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      requestParameters: {
+        'method.request.querystring.clinicId': false,
+      },
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Access-Control-Allow-Origin': true,
+            'method.response.header.Access-Control-Allow-Headers': true,
+            'method.response.header.Access-Control-Allow-Methods': true
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' }
+      ],
+    });
+
+    // GET /email-analytics/emails - List emails with filtering
+    const emailsResource = emailAnalyticsResource.addResource('emails');
+    emailsResource.addMethod('GET', analyticsIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      requestParameters: {
+        'method.request.querystring.clinicId': false,
+        'method.request.querystring.status': false,
+        'method.request.querystring.startDate': false,
+        'method.request.querystring.endDate': false,
+        'method.request.querystring.limit': false,
+        'method.request.querystring.nextToken': false,
+      },
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Access-Control-Allow-Origin': true,
+            'method.response.header.Access-Control-Allow-Headers': true,
+            'method.response.header.Access-Control-Allow-Methods': true
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' }
+      ],
+    });
+
+    // GET /email-analytics/emails/{messageId} - Get specific email details
+    const emailDetailResource = emailsResource.addResource('{messageId}');
+    emailDetailResource.addMethod('GET', analyticsIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Access-Control-Allow-Origin': true,
+            'method.response.header.Access-Control-Allow-Headers': true,
+            'method.response.header.Access-Control-Allow-Methods': true
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' },
+        { statusCode: '404' }
+      ],
+    });
+
+    // ========================================
     // DOMAIN MAPPING
     // ========================================
 
@@ -324,6 +583,8 @@ export class NotificationsStack extends Stack {
     // ========================================
     [
       { fn: this.notifyFn, name: 'notifications', durationMs: Math.floor(Duration.seconds(20).toMilliseconds() * 0.8) },
+      { fn: this.emailAnalyticsFn, name: 'email-analytics-api', durationMs: Math.floor(Duration.seconds(20).toMilliseconds() * 0.8) },
+      { fn: this.emailEventProcessorFn, name: 'email-event-processor', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
     ].forEach(({ fn, name, durationMs }) => {
       createLambdaErrorAlarm(fn, name);
       createLambdaThrottleAlarm(fn, name);
@@ -331,5 +592,35 @@ export class NotificationsStack extends Stack {
     });
 
     createDynamoThrottleAlarm(this.notificationsTable.tableName, 'NotificationsTable');
+    createDynamoThrottleAlarm(this.emailAnalyticsTable.tableName, 'EmailAnalyticsTable');
+    createDynamoThrottleAlarm(this.emailStatsTable.tableName, 'EmailStatsTable');
+
+    // ========================================
+    // ADDITIONAL OUTPUTS
+    // ========================================
+
+    new CfnOutput(this, 'EmailAnalyticsTableName', {
+      value: this.emailAnalyticsTable.tableName,
+      description: 'Email Analytics DynamoDB Table Name',
+      exportName: `${Stack.of(this).stackName}-EmailAnalyticsTableName`,
+    });
+
+    new CfnOutput(this, 'EmailStatsTableName', {
+      value: this.emailStatsTable.tableName,
+      description: 'Email Stats DynamoDB Table Name',
+      exportName: `${Stack.of(this).stackName}-EmailStatsTableName`,
+    });
+
+    new CfnOutput(this, 'SESConfigurationSetName', {
+      value: this.sesConfigurationSet.configurationSetName,
+      description: 'SES Configuration Set Name for Email Tracking',
+      exportName: `${Stack.of(this).stackName}-SESConfigurationSetName`,
+    });
+
+    new CfnOutput(this, 'EmailAnalyticsApiEndpoint', {
+      value: 'https://apig.todaysdentalinsights.com/notifications/email-analytics/',
+      description: 'Email Analytics API Endpoint',
+      exportName: `${Stack.of(this).stackName}-EmailAnalyticsApiEndpoint`,
+    });
   }
 }
