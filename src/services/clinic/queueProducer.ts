@@ -72,7 +72,14 @@ function isDueLocal(schedule: any, now: Date, timeZone: string, lastRunAtIso?: s
   }
   const [hh, mm] = time.split(':').map((s: string) => parseInt(s, 10));
   if (Number.isNaN(hh) || Number.isNaN(mm)) return false;
-  const isNow = nowL.hour === hh && nowL.minute === mm;
+  
+  // Use a 2-minute window to account for producer running every 2 minutes
+  // e.g., if schedule is 3:05, match at 3:04, 3:05, or 3:06
+  const isHourMatch = nowL.hour === hh;
+  const minuteDiff = Math.abs(nowL.minute - mm);
+  const isWithinWindow = minuteDiff <= 1 || minuteDiff >= 59; // Handle hour wraparound (e.g., 00 vs 59)
+  const isNow = isHourMatch && isWithinWindow;
+  
   if (!isNow) return false;
   return shouldRunByFrequencyLocal(freq, nowL, lastL, startDate);
 }

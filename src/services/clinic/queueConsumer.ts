@@ -1,11 +1,13 @@
 import https from 'https';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, UpdateCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
-import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
-import { SQSEvent, SQSRecord } from 'aws-lambda';
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand, ScanCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { SQSClient, SendMessageBatchCommand } from '@aws-sdk/client-sqs';
+import { v4 as uuidv4 } from 'uuid';
+import { SQSEvent } from 'aws-lambda';
 import { parse as parseCsv } from 'csv-parse/sync';
 import { Client as SSH2Client } from 'ssh2';
 import clinicsData from '../../infrastructure/configs/clinics.json';
+import { buildTemplateContext, renderTemplate } from '../../shared/utils/clinic-placeholders';
 // Use require to avoid type resolution issues if types aren't present
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { PinpointSMSVoiceV2Client, SendTextMessageCommand } = require('@aws-sdk/client-pinpoint-sms-voice-v2');
@@ -32,12 +34,17 @@ type ClinicCreds = {
 
 const ddb = new DynamoDBClient({});
 const doc = DynamoDBDocumentClient.from(ddb);
-const ses = new SESv2Client({});
+const sqsClient = new SQSClient({});
 const sms = new (PinpointSMSVoiceV2Client as any)({});
 
 const SCHEDULES_TABLE = process.env.SCHEDULES_TABLE || process.env.SCHEDULER || 'SCHEDULER';
 const TEMPLATES_TABLE = process.env.TEMPLATES_TABLE || 'Templates';
 const QUERIES_TABLE = process.env.QUERIES_TABLE || 'SQLQueries-V3';
+const EMAIL_ANALYTICS_TABLE = process.env.EMAIL_ANALYTICS_TABLE || '';
+const EMAIL_QUEUE_URL = process.env.EMAIL_QUEUE_URL || '';
+
+// Batch size for SQS SendMessageBatch (max 10)
+const SQS_BATCH_SIZE = 10;
 
 // Build clinic credentials from imported clinic data to avoid large env vars
 const CONSOLIDATED_SFTP_HOST = process.env.CONSOLIDATED_SFTP_HOST || '';
@@ -76,6 +83,15 @@ const CLINIC_SMS_ORIGINATION_ARN_MAP: Record<string, string> = (() => {
   return acc;
 })();
 
+// Build clinic email map from imported clinic data for sending emails from clinic addresses
+const CLINIC_EMAIL_MAP: Record<string, string> = (() => {
+  const acc: Record<string, string> = {};
+  (clinicsData as any[]).forEach((c: any) => {
+    if (c.clinicEmail) acc[String(c.clinicId)] = String(c.clinicEmail);
+  });
+  return acc;
+})();
+
 async function fetchTemplateByName(templateName: string): Promise<any | null> {
   if (!templateName) return null;
   const res = await doc.send(new ScanCommand({ TableName: TEMPLATES_TABLE }));
@@ -97,8 +113,11 @@ async function runOpenDentalQuery({ clinicId, sql }: { clinicId: string; sql: st
   const API_BASE = '/api/v1';
 
   const remoteDir = (creds.sftpRemoteDir || 'QuerytemplateCSV').replace(/^\/+|\/+$/g, '');
+  // Include clinicId in filename to prevent race conditions between concurrent Lambda executions
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const sftpAddress = `${creds.sftpHost}/${remoteDir}/query_${timestamp}.csv`;
+  const uniqueId = uuidv4().slice(0, 8); // Add random suffix for extra uniqueness
+  const csvFilename = `query_${clinicId}_${timestamp}_${uniqueId}.csv`;
+  const sftpAddress = `${creds.sftpHost}/${remoteDir}/${csvFilename}`;
 
   const headers = {
     Authorization: `ODFHIR ${creds.developerKey}/${creds.customerKey}`,
@@ -114,27 +133,48 @@ async function runOpenDentalQuery({ clinicId, sql }: { clinicId: string; sql: st
     IsAsync: 'false',
   });
 
+  console.log(`Uploading query results to: ${csvFilename}`);
   const apiResp = await httpRequest({ hostname: API_HOST, path: `${API_BASE}/queries`, method: 'POST', headers }, body);
   if (apiResp.statusCode !== 201) {
+    console.error(`OpenDental API failed with status ${apiResp.statusCode}: ${apiResp.body}`);
     return [];
   }
 
-  const csvData: string = await downloadLatestCsv({
+  // Download the SPECIFIC file we just uploaded (not just "latest") to avoid race conditions
+  const csvData: string = await downloadSpecificCsv({
     host: creds.sftpHost,
     port: creds.sftpPort || 22,
     username: creds.sftpUsername,
     password: creds.sftpPassword,
     remoteDir: remoteDir,
+    filename: csvFilename,
   });
 
   if (csvData.trim() === 'OK') return [];
-  const records = parseCsv(csvData, { columns: true, skip_empty_lines: true, trim: true });
+  const records = parseCsv(csvData, { 
+    columns: true, 
+    skip_empty_lines: true, 
+    trim: true,
+    quote: false,  // Disable quote parsing - OpenDental CSV has malformed quotes in patient names
+    relax_column_count: true,  // Handle rows with missing/extra columns
+  });
   return Array.isArray(records) ? records : [];
 }
 
 async function httpRequest(opts: { hostname: string; path: string; method: string; headers?: Record<string, string>; }, body?: string): Promise<{ statusCode: number; headers: any; body: string; }> {
   return new Promise((resolve, reject) => {
-    const req = https.request({ hostname: opts.hostname, path: opts.path, method: opts.method, headers: opts.headers }, (res) => {
+    // Add Content-Length header for POST requests with body (required by OpenDental API)
+    const requestHeaders = { ...opts.headers };
+    if (body) {
+      requestHeaders['Content-Length'] = Buffer.byteLength(body).toString();
+    }
+    
+    const req = https.request({ 
+      hostname: opts.hostname, 
+      path: opts.path, 
+      method: opts.method, 
+      headers: requestHeaders 
+    }, (res) => {
       let data = '';
       res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => resolve({ statusCode: res.statusCode || 500, headers: res.headers, body: data }));
@@ -145,30 +185,123 @@ async function httpRequest(opts: { hostname: string; path: string; method: strin
   });
 }
 
-async function downloadLatestCsv(opts: { host: string; port: number; username: string; password: string; remoteDir: string; }): Promise<string> {
+// Retry helper with exponential backoff
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelayMs: number = 1000
+): Promise<T> {
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      if (attempt < maxRetries - 1) {
+        const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 500;
+        console.log(`SFTP attempt ${attempt + 1} failed, retrying in ${Math.round(delay)}ms: ${err.message}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  throw lastError;
+}
+
+async function downloadLatestCsvOnce(opts: { host: string; port: number; username: string; password: string; remoteDir: string; }): Promise<string> {
   const { host, port, username, password, remoteDir } = opts;
   const conn = new SSH2Client();
   return new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      conn.end();
+      reject(new Error('SFTP connection timeout'));
+    }, 30000); // 30 second timeout
+
     conn.on('ready', () => {
       conn.sftp((err: any, sftp: any) => {
-        if (err) { conn.end(); reject(err); return; }
+        if (err) { clearTimeout(timeout); conn.end(); reject(err); return; }
         setTimeout(() => {
           sftp.readdir(remoteDir, (err2: any, list: any[]) => {
-            if (err2) { conn.end(); reject(err2); return; }
+            if (err2) { clearTimeout(timeout); conn.end(); reject(err2); return; }
             const csvFiles = list.filter((f: any) => String(f.filename).endsWith('.csv'));
-            if (csvFiles.length === 0) { conn.end(); reject(new Error('No CSV files found')); return; }
+            if (csvFiles.length === 0) { clearTimeout(timeout); conn.end(); reject(new Error('No CSV files found')); return; }
             const latest = csvFiles.sort((a: any, b: any) => b.attrs.mtime - a.attrs.mtime)[0];
             const actualPath = `${remoteDir}/${latest.filename}`;
             const readStream = sftp.createReadStream(actualPath);
             let csvContent = '';
             readStream.on('data', (chunk: any) => { csvContent += chunk.toString(); });
-            readStream.on('end', () => { conn.end(); resolve(csvContent); });
-            readStream.on('error', (e: any) => { conn.end(); reject(e); });
+            readStream.on('end', () => { clearTimeout(timeout); conn.end(); resolve(csvContent); });
+            readStream.on('error', (e: any) => { clearTimeout(timeout); conn.end(); reject(e); });
           });
         }, 3000);
       });
-    }).on('error', (e: any) => { reject(e); }).connect({ host, port, username, password, readyTimeout: 10000 });
+    }).on('error', (e: any) => { clearTimeout(timeout); reject(e); }).connect({ host, port, username, password, readyTimeout: 15000 });
   });
+}
+
+async function downloadLatestCsv(opts: { host: string; port: number; username: string; password: string; remoteDir: string; }): Promise<string> {
+  return retryWithBackoff(() => downloadLatestCsvOnce(opts), 3, 2000);
+}
+
+// Download a SPECIFIC file by name (prevents race conditions with concurrent Lambda executions)
+async function downloadSpecificCsvOnce(opts: { host: string; port: number; username: string; password: string; remoteDir: string; filename: string; }): Promise<string> {
+  const { host, port, username, password, remoteDir, filename } = opts;
+  const conn = new SSH2Client();
+  return new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      conn.end();
+      reject(new Error('SFTP connection timeout'));
+    }, 30000);
+
+    conn.on('ready', () => {
+      conn.sftp((err: any, sftp: any) => {
+        if (err) { clearTimeout(timeout); conn.end(); reject(err); return; }
+        // Wait for file to be available (OpenDental may still be writing)
+        setTimeout(() => {
+          const filePath = `${remoteDir}/${filename}`;
+          console.log(`Downloading specific file: ${filePath}`);
+          
+          // First check if the file exists
+          sftp.stat(filePath, (statErr: any) => {
+            if (statErr) {
+              // File doesn't exist yet, fall back to finding by pattern
+              console.warn(`Specific file not found, searching for pattern: ${filename.split('_').slice(0, 2).join('_')}`);
+              sftp.readdir(remoteDir, (err2: any, list: any[]) => {
+                if (err2) { clearTimeout(timeout); conn.end(); reject(err2); return; }
+                // Look for files matching our clinic pattern
+                const pattern = filename.split('_').slice(0, 2).join('_'); // e.g., "query_clinicId"
+                const matchingFiles = list.filter((f: any) => String(f.filename).includes(pattern) && String(f.filename).endsWith('.csv'));
+                if (matchingFiles.length === 0) { 
+                  clearTimeout(timeout); conn.end(); 
+                  reject(new Error(`No matching CSV files found for pattern: ${pattern}`)); 
+                  return; 
+                }
+                const latest = matchingFiles.sort((a: any, b: any) => b.attrs.mtime - a.attrs.mtime)[0];
+                const actualPath = `${remoteDir}/${latest.filename}`;
+                console.log(`Using fallback file: ${latest.filename}`);
+                readCsvFile(sftp, actualPath, timeout, conn, resolve, reject);
+              });
+              return;
+            }
+            
+            // File exists, download it
+            readCsvFile(sftp, filePath, timeout, conn, resolve, reject);
+          });
+        }, 3000); // Wait 3 seconds for file to be written
+      });
+    }).on('error', (e: any) => { clearTimeout(timeout); reject(e); }).connect({ host, port, username, password, readyTimeout: 15000 });
+  });
+}
+
+function readCsvFile(sftp: any, filePath: string, timeout: NodeJS.Timeout, conn: any, resolve: (value: string) => void, reject: (reason: any) => void) {
+  const readStream = sftp.createReadStream(filePath);
+  let csvContent = '';
+  readStream.on('data', (chunk: any) => { csvContent += chunk.toString(); });
+  readStream.on('end', () => { clearTimeout(timeout); conn.end(); resolve(csvContent); });
+  readStream.on('error', (e: any) => { clearTimeout(timeout); conn.end(); reject(e); });
+}
+
+async function downloadSpecificCsv(opts: { host: string; port: number; username: string; password: string; remoteDir: string; filename: string; }): Promise<string> {
+  return retryWithBackoff(() => downloadSpecificCsvOnce(opts), 3, 2000);
 }
 
 function extractEmailAndPhone(row: any): { email?: string; phone?: string } {
@@ -177,7 +310,11 @@ function extractEmailAndPhone(row: any): { email?: string; phone?: string } {
   let phone: string | undefined;
   for (const [k, v] of entries) {
     const key = String(k).toLowerCase();
-    const val = String(v || '').trim();
+    let val = String(v || '').trim();
+    // Strip surrounding quotes (CSV parsing with quote:false keeps them)
+    if (val.startsWith('"') && val.endsWith('"')) {
+      val = val.slice(1, -1).trim();
+    }
     if (!email && /email/.test(key) && /@/.test(val)) email = val;
     if (!phone && /(cell|wireless|mobile|phone)/.test(key)) phone = normalizePhone(val);
   }
@@ -192,24 +329,8 @@ function normalizePhone(p: string): string | undefined {
   return undefined;
 }
 
-async function sendEmail({ clinicId, to, subject, html, text }: { clinicId: string; to: string; subject: string; html: string; text?: string; }) {
-  const identityArn = CLINIC_SES_IDENTITY_ARN_MAP[clinicId];
-  if (!identityArn) return;
-  const fromDomain = identityArn.split(':identity/')[1] || 'todaysdentalinsights.com';
-  const from = `no-reply@${fromDomain}`;
-  const cmd = new SendEmailCommand({
-    FromEmailAddress: from,
-    FromEmailAddressIdentityArn: identityArn,
-    Destination: { ToAddresses: [to] },
-    Content: {
-      Simple: {
-        Subject: { Data: subject },
-        Body: { Html: { Data: html }, Text: { Data: text || html.replace(/<[^>]+>/g, ' ') } },
-      },
-    },
-  });
-  await ses.send(cmd);
-}
+// Email sending is now handled by the emailSender Lambda via the email queue
+// This consumer only enqueues emails, doesn't send them directly
 
 async function sendSms({ clinicId, to, body }: { clinicId: string; to: string; body: string; }) {
   const originationArn = CLINIC_SMS_ORIGINATION_ARN_MAP[clinicId];
@@ -223,18 +344,120 @@ async function sendSms({ clinicId, to, body }: { clinicId: string; to: string; b
   await sms.send(cmd);
 }
 
+// Track email in analytics table with status
+async function trackEmailStatus(params: {
+  clinicId: string;
+  recipientEmail: string;
+  scheduleId: string;
+  templateName: string;
+  status: 'SCHEDULED' | 'SENT' | 'FAILED';
+  messageId?: string;
+  errorMessage?: string;
+}): Promise<string> {
+  if (!EMAIL_ANALYTICS_TABLE) return '';
+  
+  const trackingId = params.messageId || uuidv4();
+  const now = new Date().toISOString();
+  const ttl = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60); // 1 year TTL
+  
+  try {
+    await doc.send(new PutCommand({
+      TableName: EMAIL_ANALYTICS_TABLE,
+      Item: {
+        messageId: trackingId,
+        clinicId: params.clinicId,
+        recipientEmail: params.recipientEmail,
+        scheduleId: params.scheduleId,
+        templateName: params.templateName,
+        status: params.status,
+        sentAt: now,
+        scheduledAt: now,
+        ...(params.errorMessage && { errorMessage: params.errorMessage }),
+        source: 'scheduled-queue',
+        ttl,
+      },
+    }));
+  } catch (err) {
+    console.warn(`Failed to track email status for ${params.recipientEmail}:`, err);
+  }
+  return trackingId;
+}
+
+// Update email status in analytics table
+async function updateEmailStatus(messageId: string, status: string, sesMessageId?: string): Promise<void> {
+  if (!EMAIL_ANALYTICS_TABLE || !messageId) return;
+  
+  try {
+    await doc.send(new UpdateCommand({
+      TableName: EMAIL_ANALYTICS_TABLE,
+      Key: { messageId },
+      UpdateExpression: 'SET #status = :status, sentAt = :now' + (sesMessageId ? ', sesMessageId = :sesId' : ''),
+      ExpressionAttributeNames: { '#status': 'status' },
+      ExpressionAttributeValues: {
+        ':status': status,
+        ':now': new Date().toISOString(),
+        ...(sesMessageId && { ':sesId': sesMessageId }),
+      },
+    }));
+  } catch (err) {
+    console.warn(`Failed to update email status for ${messageId}:`, err);
+  }
+}
+
 async function markRanForClinic(id: string, clinicId: string) {
   if (!id || !clinicId) return;
   const nowIso = new Date().toISOString();
+  
+  // First, ensure the map exists (creates empty map if it doesn't exist)
   await doc.send(new UpdateCommand({
     TableName: SCHEDULES_TABLE,
     Key: { id },
-    UpdateExpression: 'SET last_run_at = :ts, #map.#cid = :ts',
+    UpdateExpression: 'SET last_run_at = :ts, #map = if_not_exists(#map, :emptyMap)',
+    ExpressionAttributeNames: {
+      '#map': 'last_run_by_clinic',
+    },
+    ExpressionAttributeValues: { ':ts': nowIso, ':emptyMap': {} },
+  }));
+  
+  // Then, set the nested clinic value
+  await doc.send(new UpdateCommand({
+    TableName: SCHEDULES_TABLE,
+    Key: { id },
+    UpdateExpression: 'SET #map.#cid = :ts',
     ExpressionAttributeNames: {
       '#map': 'last_run_by_clinic',
       '#cid': clinicId,
     },
     ExpressionAttributeValues: { ':ts': nowIso },
+  }));
+}
+
+// Interface for email task that goes to the email queue
+interface EmailQueueTask {
+  trackingId: string;
+  clinicId: string;
+  recipientEmail: string;
+  subject: string;
+  htmlBody: string;
+  textBody?: string;
+  templateName?: string;
+  scheduleId: string;
+}
+
+// Send batch of email tasks to SQS (max 10 per batch)
+async function enqueueEmailBatch(tasks: EmailQueueTask[]): Promise<void> {
+  if (!EMAIL_QUEUE_URL || tasks.length === 0) return;
+  
+  const entries = tasks.map((task, index) => ({
+    Id: `${index}`,
+    MessageBody: JSON.stringify(task),
+    // Group by clinic to help with ordering if needed
+    MessageGroupId: undefined, // Standard queue, not FIFO
+  }));
+  
+  await sqsClient.send(new SendMessageBatchCommand({
+    QueueUrl: EMAIL_QUEUE_URL,
+    Entries: entries,
   }));
 }
 
@@ -255,30 +478,83 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   // Run the OpenDental query for this clinic
   const rows = await runOpenDentalQuery({ clinicId, sql });
   
-  let emailsSent = 0;
+  let emailsEnqueued = 0;
   let smsSent = 0;
 
-  // Process each row and send notifications
-  for (const row of rows) {
-    const { email, phone } = extractEmailAndPhone(row);
+  // Collect email tasks to enqueue in batches
+  const emailTasksToEnqueue: EmailQueueTask[] = [];
+  
+  // Debug: Log why emails might not be processed
+  const hasEmailType = notificationTypes.includes('EMAIL');
+  const hasEmailBody = !!template.email_body;
+  console.log(`Email processing check: notificationTypes=${JSON.stringify(notificationTypes)}, hasEmailType=${hasEmailType}, hasEmailBody=${hasEmailBody}`);
+  
+  if (hasEmailType && hasEmailBody) {
+    // Debug: Log first row to check CSV parsing
+    if (rows.length > 0) {
+      console.log(`Sample row keys: ${Object.keys(rows[0]).join(', ')}`);
+      const sampleEmail = extractEmailAndPhone(rows[0]);
+      console.log(`Sample email extraction: ${JSON.stringify(sampleEmail)}`);
+    }
     
-    if (notificationTypes.includes('EMAIL') && email && template.email_body) {
-      try {
-        await sendEmail({ 
-          clinicId, 
-          to: email, 
-          subject: template.email_subject || 'Notification', 
-          html: template.email_body,
+    for (const row of rows) {
+      const { email } = extractEmailAndPhone(row);
+      if (email) {
+        const templateContext = buildTemplateContext(clinicId, row);
+        
+        // Track as SCHEDULED in analytics table
+        const trackingId = await trackEmailStatus({
+          clinicId,
+          recipientEmail: email,
+          scheduleId,
+          templateName: templateMessage,
+          status: 'SCHEDULED',
         });
-        emailsSent++;
-      } catch (error) {
-        console.error(`Failed to send email to ${email}:`, error);
+        
+        // Render template
+        const renderedSubject = renderTemplate(template.email_subject || 'Notification', templateContext);
+        const renderedHtml = renderTemplate(template.email_body, templateContext);
+        const renderedText = template.text_body ? renderTemplate(template.text_body, templateContext) : undefined;
+        
+        // Add to batch
+        emailTasksToEnqueue.push({
+          trackingId,
+          clinicId,
+          recipientEmail: email,
+          subject: renderedSubject,
+          htmlBody: renderedHtml,
+          textBody: renderedText,
+          templateName: templateMessage,
+          scheduleId,
+        });
+        
+        // Send batch when we reach SQS limit
+        if (emailTasksToEnqueue.length >= SQS_BATCH_SIZE) {
+          await enqueueEmailBatch(emailTasksToEnqueue);
+          emailsEnqueued += emailTasksToEnqueue.length;
+          emailTasksToEnqueue.length = 0; // Clear array
+        }
       }
     }
     
+    // Send remaining emails
+    if (emailTasksToEnqueue.length > 0) {
+      await enqueueEmailBatch(emailTasksToEnqueue);
+      emailsEnqueued += emailTasksToEnqueue.length;
+    }
+  }
+  
+  console.log(`Enqueued ${emailsEnqueued} emails to email queue for ${clinicId}`);
+
+  // Process SMS directly (usually lower volume, keep simple)
+  for (const row of rows) {
+    const { phone } = extractEmailAndPhone(row);
+    
     if (notificationTypes.includes('SMS') && phone && template.text_message) {
       try {
-        await sendSms({ clinicId, to: phone, body: template.text_message });
+        const templateContext = buildTemplateContext(clinicId, row);
+        const renderedSms = renderTemplate(template.text_message, templateContext);
+        await sendSms({ clinicId, to: phone, body: renderedSms });
         smsSent++;
       } catch (error) {
         console.error(`Failed to send SMS to ${phone}:`, error);
@@ -289,7 +565,7 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   // Mark the schedule as run for this clinic
   await markRanForClinic(scheduleId, clinicId);
   
-  console.log(`Completed schedule ${scheduleId} for clinic ${clinicId}: ${emailsSent} emails, ${smsSent} SMS sent from ${rows.length} rows`);
+  console.log(`Completed schedule ${scheduleId} for clinic ${clinicId}: ${emailsEnqueued} emails enqueued, ${smsSent} SMS sent from ${rows.length} rows`);
 }
 
 export const handler = async (event: SQSEvent) => {

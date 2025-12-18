@@ -34,6 +34,8 @@ import { AnalyticsStack } from './stacks/analytics-stack';
 import { ClinicImagesStack } from './stacks/clinic-images-stack';
 import { AiAgentsStack } from './stacks/ai-agents-stack';
 import { QueryGeneratorStack } from './stacks/query-generator-stack';
+import { RcsStack } from './stacks/rcs-stack';
+import { CredentialingStack } from './stacks/credentialing-stack';
 // import { DentalSoftwareStack } from './stacks/dental-software-stack';
 
 const app = new cdk.App();
@@ -425,6 +427,13 @@ const hrStack = new HrStack(app, 'TodaysDentalInsightsHrN1', {
 });
 // hrStack.addDependency(coreStack); // Implicit
 
+// Credentialing Stack - Provider credentialing and payer enrollment management
+const credentialingStack = new CredentialingStack(app, 'TodaysDentalInsightsCredentialingN1', {
+  env,
+  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+});
+credentialingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+
 
 // Schedules service (depends on other services for cross-table access)
 const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesN1', {
@@ -523,6 +532,15 @@ const queryGeneratorStack = new QueryGeneratorStack(app, 'TodaysDentalInsightsQu
   env,
 });
 
+// RCS Messaging Stack - Twilio RCS messaging webhooks for all clinics
+// Provides incoming message, fallback, and status callback webhooks
+const rcsStack = new RcsStack(app, 'TodaysDentalInsightsRcsN1', {
+  env,
+  // Twilio credentials from environment variables
+  twilioAccountSid: process.env.TWILIO_ACCOUNT_SID,
+  twilioAuthToken: process.env.TWILIO_AUTH_TOKEN,
+});
+
 // Dental Software Stack - RDS MySQL database and S3 for clinic management
 // const dentalSoftwareStack = new DentalSoftwareStack(app, 'TodaysDentalInsightsDentalSoftwareN1', {
 //   env,
@@ -570,6 +588,7 @@ patientPortalApptTypesStack.addDependency(coreStack); // Explicit - imports Auth
 clinicImagesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 aiAgentsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 queryGeneratorStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+rcsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 // dentalSoftwareStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 // patientPortalStack.addDependency(coreStack); // Note: PatientPortalStack might not import it - verify
 patientPortalStack.addDependency(openDentalStack); // Explicit - uses SFTP resources

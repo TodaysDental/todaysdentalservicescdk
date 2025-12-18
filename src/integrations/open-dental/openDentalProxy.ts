@@ -276,30 +276,61 @@ function safeParse(str: string): any {
   try { return JSON.parse(str); } catch { return {}; }
 }
 
-async function downloadLatestCsv(opts: { host: string; port: number; username: string; password: string; remoteDir: string; }): Promise<string> {
+// Retry helper with exponential backoff
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelayMs: number = 1000
+): Promise<T> {
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      if (attempt < maxRetries - 1) {
+        const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 500;
+        console.log(`SFTP attempt ${attempt + 1} failed, retrying in ${Math.round(delay)}ms: ${err.message}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  throw lastError;
+}
+
+async function downloadLatestCsvOnce(opts: { host: string; port: number; username: string; password: string; remoteDir: string; }): Promise<string> {
   const { host, port, username, password, remoteDir } = opts;
   const conn = new SSH2Client();
   return new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      conn.end();
+      reject(new Error('SFTP connection timeout'));
+    }, 30000); // 30 second timeout
+
     conn.on('ready', () => {
       conn.sftp((err: any, sftp: any) => {
-        if (err) { conn.end(); reject(err); return; }
+        if (err) { clearTimeout(timeout); conn.end(); reject(err); return; }
         setTimeout(() => {
           sftp.readdir(remoteDir, (err2: any, list: any[]) => {
-            if (err2) { conn.end(); reject(err2); return; }
+            if (err2) { clearTimeout(timeout); conn.end(); reject(err2); return; }
             const csvFiles = list.filter((f: any) => String(f.filename).endsWith('.csv'));
-            if (csvFiles.length === 0) { conn.end(); reject(new Error('No CSV files found')); return; }
+            if (csvFiles.length === 0) { clearTimeout(timeout); conn.end(); reject(new Error('No CSV files found')); return; }
             const latest = csvFiles.sort((a: any, b: any) => b.attrs.mtime - a.attrs.mtime)[0];
             const actualPath = `${remoteDir}/${latest.filename}`;
             const readStream = sftp.createReadStream(actualPath);
             let csvContent = '';
             readStream.on('data', (chunk: any) => { csvContent += chunk.toString(); });
-            readStream.on('end', () => { conn.end(); resolve(csvContent); });
-            readStream.on('error', (e: any) => { conn.end(); reject(e); });
+            readStream.on('end', () => { clearTimeout(timeout); conn.end(); resolve(csvContent); });
+            readStream.on('error', (e: any) => { clearTimeout(timeout); conn.end(); reject(e); });
           });
         }, 3000);
       });
-    }).on('error', (e: any) => { reject(e); }).connect({ host, port, username, password, readyTimeout: 10000 });
+    }).on('error', (e: any) => { clearTimeout(timeout); reject(e); }).connect({ host, port, username, password, readyTimeout: 15000 });
   });
+}
+
+async function downloadLatestCsv(opts: { host: string; port: number; username: string; password: string; remoteDir: string; }): Promise<string> {
+  return retryWithBackoff(() => downloadLatestCsvOnce(opts), 3, 2000);
 }
 
 function httpErr(event: APIGatewayProxyEvent, code: number, message: string): APIGatewayProxyResult {

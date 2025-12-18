@@ -15,6 +15,9 @@ import {
   GetAgentCommand,
   PrepareAgentCommand,
   CreateAgentActionGroupCommand,
+  UpdateAgentActionGroupCommand,
+  ListAgentActionGroupsCommand,
+  GetAgentActionGroupCommand,
   CreateAgentAliasCommand,
   GetAgentAliasCommand,
   ListAgentAliasesCommand,
@@ -220,6 +223,16 @@ When in doubt, direct the patient to contact the clinic directly.`;
 // OPENAPI SCHEMA FOR ACTION GROUP
 // ========================================================================
 
+/**
+ * OpenAPI Schema for Bedrock Agent Action Groups
+ * 
+ * IMPORTANT: Bedrock Agents have specific requirements for OpenAPI schemas:
+ * 1. Must have 'openapi' version 3.0.0
+ * 2. Must have 'info' with title and version
+ * 3. Each path must have unique operationId
+ * 4. Response schemas should have proper content types
+ * 5. Parameters must have 'description' field for Bedrock to understand them
+ */
 const OPENAPI_SCHEMA = {
   openapi: '3.0.0',
   info: {
@@ -231,7 +244,8 @@ const OPENAPI_SCHEMA = {
     '/searchPatients': {
       post: {
         operationId: 'searchPatients',
-        description: 'Searches for patients by name and birthdate',
+        summary: 'Search for patients',
+        description: 'Searches for patients by first name, last name, and date of birth. Returns matching patient records.',
         requestBody: {
           required: true,
           content: {
@@ -239,22 +253,39 @@ const OPENAPI_SCHEMA = {
               schema: {
                 type: 'object',
                 properties: {
-                  LName: { type: 'string', description: 'Last name' },
-                  FName: { type: 'string', description: 'First name' },
-                  Birthdate: { type: 'string', description: 'YYYY-MM-DD format' },
+                  LName: { type: 'string', description: 'Patient last name' },
+                  FName: { type: 'string', description: 'Patient first name' },
+                  Birthdate: { type: 'string', description: 'Patient date of birth in YYYY-MM-DD format' },
                 },
                 required: ['LName', 'FName', 'Birthdate'],
               },
             },
           },
         },
-        responses: { '200': { description: 'Search results' } },
+        responses: {
+          '200': {
+            description: 'Patient search results',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string' },
+                    data: { type: 'object' },
+                    message: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     '/createPatient': {
       post: {
         operationId: 'createPatient',
-        description: 'Creates a new patient record',
+        summary: 'Create a new patient',
+        description: 'Creates a new patient record in the dental practice management system.',
         requestBody: {
           required: true,
           content: {
@@ -262,50 +293,142 @@ const OPENAPI_SCHEMA = {
               schema: {
                 type: 'object',
                 properties: {
-                  LName: { type: 'string' },
-                  FName: { type: 'string' },
-                  WirelessPhone: { type: 'string' },
-                  Birthdate: { type: 'string' },
+                  LName: { type: 'string', description: 'Patient last name' },
+                  FName: { type: 'string', description: 'Patient first name' },
+                  WirelessPhone: { type: 'string', description: 'Patient mobile phone number' },
+                  Birthdate: { type: 'string', description: 'Patient date of birth in YYYY-MM-DD format' },
                 },
                 required: ['LName', 'FName', 'Birthdate'],
               },
             },
           },
         },
-        responses: { '201': { description: 'Patient created' } },
+        responses: {
+          '201': {
+            description: 'Patient created successfully',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string' },
+                    data: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     '/getPatientByPatNum': {
       get: {
         operationId: 'getPatientByPatNum',
-        description: 'Retrieves a patient by PatNum',
-        parameters: [{ name: 'PatNum', in: 'query', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: 'Patient data' } },
+        summary: 'Get patient by ID',
+        description: 'Retrieves a patient record by their PatNum (patient number).',
+        parameters: [
+          {
+            name: 'PatNum',
+            in: 'query',
+            required: true,
+            description: 'The patient number (unique identifier)',
+            schema: { type: 'integer' },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Patient data',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string' },
+                    data: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     '/getProcedureLogs': {
       get: {
         operationId: 'getProcedureLogs',
-        description: 'Gets procedure logs for a patient',
+        summary: 'Get procedure logs',
+        description: 'Gets procedure logs for a patient, optionally filtered by status. Use ProcStatus "TP" for treatment-planned procedures.',
         parameters: [
-          { name: 'PatNum', in: 'query', required: true, schema: { type: 'integer' } },
-          { name: 'ProcStatus', in: 'query', required: false, schema: { type: 'string' } },
+          {
+            name: 'PatNum',
+            in: 'query',
+            required: true,
+            description: 'The patient number',
+            schema: { type: 'integer' },
+          },
+          {
+            name: 'ProcStatus',
+            in: 'query',
+            required: false,
+            description: 'Filter by procedure status (e.g., "TP" for treatment planned, "C" for complete)',
+            schema: { type: 'string' },
+          },
         ],
-        responses: { '200': { description: 'Procedure logs' } },
+        responses: {
+          '200': {
+            description: 'Procedure logs',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string' },
+                    data: { type: 'array' },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     '/getTreatmentPlans': {
       get: {
         operationId: 'getTreatmentPlans',
-        description: 'Gets treatment plans for a patient',
-        parameters: [{ name: 'PatNum', in: 'query', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: 'Treatment plans' } },
+        summary: 'Get treatment plans',
+        description: 'Gets active treatment plans for a patient.',
+        parameters: [
+          {
+            name: 'PatNum',
+            in: 'query',
+            required: true,
+            description: 'The patient number',
+            schema: { type: 'integer' },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Treatment plans',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string' },
+                    data: { type: 'array' },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     '/scheduleAppointment': {
       post: {
         operationId: 'scheduleAppointment',
-        description: 'Schedules an appointment',
+        summary: 'Schedule an appointment',
+        description: 'Schedules a new appointment for a patient.',
         requestBody: {
           required: true,
           content: {
@@ -313,32 +436,73 @@ const OPENAPI_SCHEMA = {
               schema: {
                 type: 'object',
                 properties: {
-                  PatNum: { type: 'integer' },
-                  Reason: { type: 'string' },
-                  Date: { type: 'string', description: 'YYYY-MM-DD HH:mm:ss format' },
-                  OpName: { type: 'string' },
-                  Note: { type: 'string' },
+                  PatNum: { type: 'integer', description: 'The patient number' },
+                  Reason: { type: 'string', description: 'Reason for the appointment' },
+                  Date: { type: 'string', description: 'Appointment date and time in YYYY-MM-DD HH:mm:ss format' },
+                  OpName: { type: 'string', description: 'Operatory name (e.g., ONLINE_BOOKING_EXAM for new patients)' },
+                  Note: { type: 'string', description: 'Additional notes for the appointment' },
                 },
                 required: ['PatNum', 'Reason', 'Date', 'OpName'],
               },
             },
           },
         },
-        responses: { '201': { description: 'Appointment created' } },
+        responses: {
+          '201': {
+            description: 'Appointment created',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string' },
+                    data: { type: 'object' },
+                    message: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     '/getUpcomingAppointments': {
       get: {
         operationId: 'getUpcomingAppointments',
-        description: 'Gets upcoming appointments for a patient',
-        parameters: [{ name: 'PatNum', in: 'query', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: 'Upcoming appointments' } },
+        summary: 'Get upcoming appointments',
+        description: 'Gets all upcoming appointments for a patient.',
+        parameters: [
+          {
+            name: 'PatNum',
+            in: 'query',
+            required: true,
+            description: 'The patient number',
+            schema: { type: 'integer' },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Upcoming appointments',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string' },
+                    data: { type: 'array' },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     '/rescheduleAppointment': {
       post: {
         operationId: 'rescheduleAppointment',
-        description: 'Reschedules an appointment',
+        summary: 'Reschedule an appointment',
+        description: 'Reschedules an existing appointment to a new date and time.',
         requestBody: {
           required: true,
           content: {
@@ -346,22 +510,39 @@ const OPENAPI_SCHEMA = {
               schema: {
                 type: 'object',
                 properties: {
-                  AptNum: { type: 'integer' },
-                  NewDateTime: { type: 'string' },
-                  Note: { type: 'string' },
+                  AptNum: { type: 'integer', description: 'The appointment number to reschedule' },
+                  NewDateTime: { type: 'string', description: 'New date and time in YYYY-MM-DD HH:mm:ss format' },
+                  Note: { type: 'string', description: 'Note explaining the reschedule reason' },
                 },
                 required: ['AptNum', 'NewDateTime'],
               },
             },
           },
         },
-        responses: { '200': { description: 'Appointment rescheduled' } },
+        responses: {
+          '200': {
+            description: 'Appointment rescheduled',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string' },
+                    data: { type: 'object' },
+                    message: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     '/cancelAppointment': {
       post: {
         operationId: 'cancelAppointment',
-        description: 'Cancels an appointment',
+        summary: 'Cancel an appointment',
+        description: 'Cancels an existing appointment.',
         requestBody: {
           required: true,
           content: {
@@ -369,134 +550,230 @@ const OPENAPI_SCHEMA = {
               schema: {
                 type: 'object',
                 properties: {
-                  AptNum: { type: 'integer' },
-                  SendToUnscheduledList: { type: 'boolean' },
-                  Note: { type: 'string' },
+                  AptNum: { type: 'integer', description: 'The appointment number to cancel' },
+                  SendToUnscheduledList: { type: 'boolean', description: 'Whether to add to unscheduled list' },
+                  Note: { type: 'string', description: 'Cancellation reason' },
                 },
                 required: ['AptNum'],
               },
             },
           },
         },
-        responses: { '200': { description: 'Appointment cancelled' } },
-      },
-    },
-    '/getAppointment': {
-      get: {
-        operationId: 'getAppointment',
-        description: 'Gets a single appointment by AptNum',
-        parameters: [{ name: 'AptNum', in: 'query', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: 'Appointment data' } },
-      },
-    },
-    '/getAppointments': {
-      get: {
-        operationId: 'getAppointments',
-        description: 'Gets appointments with optional filtering',
-        parameters: [
-          { name: 'PatNum', in: 'query', required: false, schema: { type: 'integer' } },
-          { name: 'AptStatus', in: 'query', required: false, schema: { type: 'string' } },
-          { name: 'date', in: 'query', required: false, schema: { type: 'string' } },
-          { name: 'dateStart', in: 'query', required: false, schema: { type: 'string' } },
-          { name: 'dateEnd', in: 'query', required: false, schema: { type: 'string' } },
-        ],
-        responses: { '200': { description: 'Appointments list' } },
+        responses: {
+          '200': {
+            description: 'Appointment cancelled',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string' },
+                    message: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     '/getAccountAging': {
       get: {
         operationId: 'getAccountAging',
-        description: 'Gets account aging for a patient',
-        parameters: [{ name: 'PatNum', in: 'query', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: 'Account aging data' } },
+        summary: 'Get account aging',
+        description: 'Gets account aging information showing outstanding balances by age.',
+        parameters: [
+          {
+            name: 'PatNum',
+            in: 'query',
+            required: true,
+            description: 'The patient number',
+            schema: { type: 'integer' },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Account aging data',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string' },
+                    data: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     '/getPatientBalances': {
       get: {
         operationId: 'getPatientBalances',
-        description: 'Gets patient balances',
-        parameters: [{ name: 'PatNum', in: 'query', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: 'Patient balances' } },
-      },
-    },
-    '/getServiceDateView': {
-      get: {
-        operationId: 'getServiceDateView',
-        description: 'Gets service date view for a patient',
+        summary: 'Get patient balances',
+        description: 'Gets current account balances for a patient.',
         parameters: [
-          { name: 'PatNum', in: 'query', required: true, schema: { type: 'integer' } },
-          { name: 'isFamily', in: 'query', required: false, schema: { type: 'boolean' } },
+          {
+            name: 'PatNum',
+            in: 'query',
+            required: true,
+            description: 'The patient number',
+            schema: { type: 'integer' },
+          },
         ],
-        responses: { '200': { description: 'Service date view' } },
+        responses: {
+          '200': {
+            description: 'Patient balances',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string' },
+                    data: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     '/getAllergies': {
       get: {
         operationId: 'getAllergies',
-        description: 'Gets allergies for a patient',
-        parameters: [{ name: 'PatNum', in: 'query', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: 'Allergies list' } },
-      },
-    },
-    '/getProgNotes': {
-      get: {
-        operationId: 'getProgNotes',
-        description: 'Gets progress notes for a patient',
-        parameters: [{ name: 'PatNum', in: 'query', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: 'Progress notes' } },
+        summary: 'Get patient allergies',
+        description: 'Gets allergy information for a patient.',
+        parameters: [
+          {
+            name: 'PatNum',
+            in: 'query',
+            required: true,
+            description: 'The patient number',
+            schema: { type: 'integer' },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Allergies list',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string' },
+                    data: { type: 'array' },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     '/getPatientInfo': {
       get: {
         operationId: 'getPatientInfo',
-        description: 'Gets comprehensive patient info',
-        parameters: [{ name: 'PatNum', in: 'query', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: 'Patient info' } },
-      },
-    },
-    '/getPlannedAppts': {
-      get: {
-        operationId: 'getPlannedAppts',
-        description: 'Gets planned appointments for a patient',
-        parameters: [{ name: 'PatNum', in: 'query', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: 'Planned appointments' } },
+        summary: 'Get patient info',
+        description: 'Gets comprehensive patient information including demographics and medical history.',
+        parameters: [
+          {
+            name: 'PatNum',
+            in: 'query',
+            required: true,
+            description: 'The patient number',
+            schema: { type: 'integer' },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Patient info',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string' },
+                    data: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     '/getBenefits': {
       get: {
         operationId: 'getBenefits',
-        description: 'Gets insurance benefits',
+        summary: 'Get insurance benefits',
+        description: 'Gets insurance benefit information for a plan.',
         parameters: [
-          { name: 'PlanNum', in: 'query', required: false, schema: { type: 'integer' } },
-          { name: 'PatPlanNum', in: 'query', required: false, schema: { type: 'integer' } },
+          {
+            name: 'PlanNum',
+            in: 'query',
+            required: false,
+            description: 'The insurance plan number',
+            schema: { type: 'integer' },
+          },
+          {
+            name: 'PatPlanNum',
+            in: 'query',
+            required: false,
+            description: 'The patient plan number',
+            schema: { type: 'integer' },
+          },
         ],
-        responses: { '200': { description: 'Benefits data' } },
-      },
-    },
-    '/getCarriers': {
-      get: {
-        operationId: 'getCarriers',
-        description: 'Gets insurance carriers',
-        responses: { '200': { description: 'Carriers list' } },
-      },
-    },
-    '/getClaims': {
-      get: {
-        operationId: 'getClaims',
-        description: 'Gets insurance claims',
-        parameters: [
-          { name: 'PatNum', in: 'query', required: false, schema: { type: 'integer' } },
-          { name: 'ClaimStatus', in: 'query', required: false, schema: { type: 'string' } },
-        ],
-        responses: { '200': { description: 'Claims list' } },
+        responses: {
+          '200': {
+            description: 'Benefits data',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string' },
+                    data: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
     '/getFamilyInsurance': {
       get: {
         operationId: 'getFamilyInsurance',
-        description: 'Gets family insurance info',
-        parameters: [{ name: 'PatNum', in: 'query', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: 'Family insurance data' } },
+        summary: 'Get family insurance',
+        description: 'Gets insurance information for the patient and their family.',
+        parameters: [
+          {
+            name: 'PatNum',
+            in: 'query',
+            required: true,
+            description: 'The patient number',
+            schema: { type: 'integer' },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Family insurance data',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string' },
+                    data: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
   },
@@ -712,6 +989,8 @@ async function createAgent(event: APIGatewayProxyEvent, userPerms: UserPermissio
   // Create Bedrock Agent
   let bedrockAgentId: string | undefined;
   let bedrockAgentStatus: string = 'CREATING';
+  let actionGroupCreated = false;
+  let actionGroupError: string | undefined;
 
   try {
     const createResponse = await bedrockAgentClient.send(
@@ -728,22 +1007,30 @@ async function createAgent(event: APIGatewayProxyEvent, userPerms: UserPermissio
     bedrockAgentId = createResponse.agent?.agentId;
     bedrockAgentStatus = createResponse.agent?.agentStatus || 'CREATING';
 
-    // Create Action Group
+    // Create Action Group (separate try-catch to track action group errors specifically)
     if (bedrockAgentId) {
-      await bedrockAgentClient.send(
-        new CreateAgentActionGroupCommand({
-          agentId: bedrockAgentId,
-          agentVersion: 'DRAFT',
-          actionGroupName: 'OpenDentalTools',
-          description: 'OpenDental API tools for patient and appointment management',
-          actionGroupExecutor: {
-            lambda: ACTION_GROUP_LAMBDA_ARN,
-          },
-          apiSchema: {
-            payload: JSON.stringify(OPENAPI_SCHEMA),
-          },
-        })
-      );
+      try {
+        await bedrockAgentClient.send(
+          new CreateAgentActionGroupCommand({
+            agentId: bedrockAgentId,
+            agentVersion: 'DRAFT',
+            actionGroupName: 'OpenDentalTools',
+            description: 'OpenDental API tools for patient and appointment management',
+            actionGroupExecutor: {
+              lambda: ACTION_GROUP_LAMBDA_ARN,
+            },
+            apiSchema: {
+              payload: JSON.stringify(OPENAPI_SCHEMA),
+            },
+          })
+        );
+        actionGroupCreated = true;
+        console.log(`[createAgent] Action group created successfully for agent ${bedrockAgentId}`);
+      } catch (agError: any) {
+        console.error('Failed to create Action Group:', agError);
+        actionGroupError = agError.message;
+        // Don't fail the whole agent creation - it can be fixed via /prepare
+      }
     }
   } catch (error: any) {
     console.error('Failed to create Bedrock Agent:', error);
@@ -806,16 +1093,26 @@ async function createAgent(event: APIGatewayProxyEvent, userPerms: UserPermissio
 
   await docClient.send(new PutCommand({ TableName: AGENTS_TABLE, Item: agent }));
 
+  // Build response message based on status
+  let message = 'Agent created. Call /prepare to make it ready for invocation.';
+  if (bedrockAgentStatus === 'FAILED') {
+    message = 'Agent created but Bedrock Agent creation failed';
+  } else if (!actionGroupCreated) {
+    message = 'Agent created but Action Group (function tools) failed. Call /prepare to retry.';
+  }
+
   return {
     statusCode: 201,
     headers: getCorsHeaders(event),
     body: JSON.stringify({
-      message:
-        bedrockAgentStatus === 'FAILED'
-          ? 'Agent created but Bedrock Agent creation failed'
-          : 'Agent created. Call /prepare to make it ready for invocation.',
+      message,
       agent,
       nextStep: bedrockAgentStatus !== 'FAILED' ? 'POST /agents/{agentId}/prepare' : undefined,
+      actionGroup: {
+        created: actionGroupCreated,
+        error: actionGroupError,
+        lambdaArn: ACTION_GROUP_LAMBDA_ARN,
+      },
     }),
   };
 }
@@ -849,6 +1146,82 @@ async function prepareAgent(
   }
 
   try {
+    // ========================================
+    // FIX: Check and create/update Action Group before preparing
+    // This ensures the action group exists and has the correct Lambda ARN
+    // ========================================
+    let actionGroupStatus = 'unknown';
+    try {
+      // List existing action groups
+      const actionGroupsResponse = await bedrockAgentClient.send(
+        new ListAgentActionGroupsCommand({
+          agentId: agent.bedrockAgentId,
+          agentVersion: 'DRAFT',
+        })
+      );
+
+      const existingActionGroup = actionGroupsResponse.actionGroupSummaries?.find(
+        (ag) => ag.actionGroupName === 'OpenDentalTools'
+      );
+
+      if (existingActionGroup) {
+        // Action group exists - ALWAYS update to ensure schema and Lambda ARN are current
+        // This is important because the OpenAPI schema may have changed in the code
+        console.log(`[prepareAgent] Updating action group to ensure schema and Lambda ARN are current`);
+        
+        await bedrockAgentClient.send(
+          new UpdateAgentActionGroupCommand({
+            agentId: agent.bedrockAgentId,
+            agentVersion: 'DRAFT',
+            actionGroupId: existingActionGroup.actionGroupId!,
+            actionGroupName: 'OpenDentalTools',
+            description: 'OpenDental API tools for patient and appointment management',
+            actionGroupExecutor: {
+              lambda: ACTION_GROUP_LAMBDA_ARN,
+            },
+            apiSchema: {
+              payload: JSON.stringify(OPENAPI_SCHEMA),
+            },
+          })
+        );
+        actionGroupStatus = 'updated';
+      } else {
+        // Action group doesn't exist - create it
+        console.log(`[prepareAgent] Creating missing action group for agent ${agent.bedrockAgentId}`);
+        
+        await bedrockAgentClient.send(
+          new CreateAgentActionGroupCommand({
+            agentId: agent.bedrockAgentId,
+            agentVersion: 'DRAFT',
+            actionGroupName: 'OpenDentalTools',
+            description: 'OpenDental API tools for patient and appointment management',
+            actionGroupExecutor: {
+              lambda: ACTION_GROUP_LAMBDA_ARN,
+            },
+            apiSchema: {
+              payload: JSON.stringify(OPENAPI_SCHEMA),
+            },
+          })
+        );
+        actionGroupStatus = 'created';
+      }
+      
+      console.log(`[prepareAgent] Action group status: ${actionGroupStatus}`);
+    } catch (actionGroupError: any) {
+      console.error('[prepareAgent] Failed to check/create action group:', actionGroupError);
+      // Return error - action group is critical for tools to work
+      return {
+        statusCode: 500,
+        headers: getCorsHeaders(event),
+        body: JSON.stringify({
+          error: 'Failed to configure action group (function tools)',
+          details: actionGroupError.message,
+          actionGroupLambdaArn: ACTION_GROUP_LAMBDA_ARN,
+          hint: 'Check that the ACTION_GROUP_LAMBDA_ARN environment variable is correct',
+        }),
+      };
+    }
+
     // Prepare the agent
     const prepareResponse = await bedrockAgentClient.send(
       new PrepareAgentCommand({ agentId: agent.bedrockAgentId })
@@ -861,6 +1234,8 @@ async function prepareAgent(
     // Poll for up to 20 seconds (5 iterations x 4 seconds)
     // This leaves ~30 seconds for alias creation and response
     let prepared = false;
+    let failureReasons: string[] = [];
+    let recommendedActions: string[] = [];
     const MAX_POLL_ITERATIONS = 5;
     const POLL_INTERVAL_MS = 4000;
     
@@ -873,6 +1248,14 @@ async function prepareAgent(
         prepared = true;
         break;
       } else if (agent.bedrockAgentStatus === AgentStatus.FAILED) {
+        // Capture failure reasons from Bedrock
+        failureReasons = getResponse.agent?.failureReasons || [];
+        recommendedActions = getResponse.agent?.recommendedActions || [];
+        console.error('[prepareAgent] Agent preparation failed:', {
+          failureReasons,
+          recommendedActions,
+          agentId: agent.bedrockAgentId,
+        });
         break;
       }
     }
@@ -891,6 +1274,39 @@ async function prepareAgent(
           agent,
           isReady: false,
           checkAgain: true,
+          actionGroup: {
+            status: actionGroupStatus,
+            lambdaArn: ACTION_GROUP_LAMBDA_ARN,
+          },
+        }),
+      };
+    }
+    
+    // If agent failed, return detailed error info
+    if (agent.bedrockAgentStatus === AgentStatus.FAILED) {
+      agent.isActive = false;
+      agent.updatedAt = new Date().toISOString();
+      agent.updatedBy = getUserDisplayName(userPerms);
+      await docClient.send(new PutCommand({ TableName: AGENTS_TABLE, Item: agent }));
+      
+      return {
+        statusCode: 400,
+        headers: getCorsHeaders(event),
+        body: JSON.stringify({
+          error: 'Agent preparation failed',
+          message: 'Bedrock Agent failed to prepare. Check the failure reasons below.',
+          agent,
+          isReady: false,
+          failureReasons: failureReasons.length > 0 ? failureReasons : ['Unknown - check AWS Console for details'],
+          recommendedActions: recommendedActions.length > 0 ? recommendedActions : [
+            'Check the Bedrock Agent in AWS Console for detailed error messages',
+            'Ensure the agent instruction is valid and not too long',
+            'Verify the model is available in your region',
+          ],
+          actionGroup: {
+            status: actionGroupStatus,
+            lambdaArn: ACTION_GROUP_LAMBDA_ARN,
+          },
         }),
       };
     }
@@ -933,6 +1349,10 @@ async function prepareAgent(
         message: prepared ? 'Agent prepared and ready for invocation!' : `Agent status: ${agent.bedrockAgentStatus}`,
         agent,
         isReady: prepared && !!agent.bedrockAgentAliasId,
+        actionGroup: {
+          status: actionGroupStatus,
+          lambdaArn: ACTION_GROUP_LAMBDA_ARN,
+        },
       }),
     };
   } catch (error: any) {

@@ -37,6 +37,15 @@ export interface Clinic {
   // Authorize.Net payment processing credentials
   authorizeNetApiLoginId: string;
   authorizeNetTransactionKey: string;
+  // RCS Messaging configuration (Twilio)
+  rcs?: {
+    /** Twilio RCS Sender ID for this clinic */
+    rcsSenderId?: string;
+    /** Twilio Messaging Service SID (alternative to rcsSenderId) */
+    messagingServiceSid?: string;
+    /** Whether RCS messaging is enabled for this clinic */
+    enabled?: boolean;
+  };
 }
 
 // Backend only

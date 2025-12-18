@@ -112,18 +112,39 @@ export class SchedulesStack extends Stack {
     });
     applyTags(this.schedulerDLQ, { Queue: 'scheduler-dlq' });
 
-    // Main queue for schedule processing tasks
+    // Main queue for schedule processing tasks (queries patients, enqueues emails)
     this.schedulerQueue = new sqs.Queue(this, 'SchedulerQueue', {
       queueName: 'todaysdentalinsights-scheduler-queue-v3',
-      visibilityTimeout: Duration.seconds(180), // 3x Lambda timeout
+      visibilityTimeout: Duration.minutes(10), // Reduced - now only queries patients, doesn't send emails
       receiveMessageWaitTime: Duration.seconds(20), // Long polling
       deadLetterQueue: {
         queue: this.schedulerDLQ,
-        maxReceiveCount: 3, // Retry failed messages 3 times
+        maxReceiveCount: 7, // Retry failed messages 7 times
       },
       removalPolicy: RemovalPolicy.RETAIN,
     });
     applyTags(this.schedulerQueue, { Queue: 'scheduler-main' });
+
+    // Dead Letter Queue for failed individual email sends
+    const emailDLQ = new sqs.Queue(this, 'EmailSenderDLQ', {
+      queueName: 'todaysdentalinsights-email-sender-dlq',
+      retentionPeriod: Duration.days(14),
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    applyTags(emailDLQ, { Queue: 'email-sender-dlq' });
+
+    // Queue for individual email tasks (one message per email)
+    const emailQueue = new sqs.Queue(this, 'EmailSenderQueue', {
+      queueName: 'todaysdentalinsights-email-sender-queue',
+      visibilityTimeout: Duration.seconds(60), // 1 min per email is plenty
+      receiveMessageWaitTime: Duration.seconds(10),
+      deadLetterQueue: {
+        queue: emailDLQ,
+        maxReceiveCount: 3, // Retry failed emails 3 times
+      },
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    applyTags(emailQueue, { Queue: 'email-sender-main' });
 
     // ========================================
     // API GATEWAY SETUP
@@ -222,6 +243,8 @@ export class SchedulesStack extends Stack {
         CLINIC_HOURS_TABLE: props.clinicHoursTableName,
         CONSOLIDATED_SFTP_HOST: props.consolidatedTransferServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',
         CONSOLIDATED_SFTP_PASSWORD: 'Clinic@2020!',
+        // Email analytics configuration set (imported from notifications stack)
+        SES_CONFIGURATION_SET_NAME: Fn.importValue('TodaysDentalInsightsNotificationsN1-SESConfigurationSetName'),
       },
     });
     applyTags(this.schedulerWorkerFn, { Function: 'scheduler-worker' });
@@ -242,13 +265,15 @@ export class SchedulesStack extends Stack {
     });
     applyTags(this.schedulerQueueProducerFn, { Function: 'scheduler-producer' });
 
-    // Queue Consumer Lambda - processes individual schedule tasks
+    // Queue Consumer Lambda - queries patients and enqueues individual email tasks
+    // No longer sends emails directly - just enqueues them to the email queue
     this.schedulerQueueConsumerFn = new lambdaNode.NodejsFunction(this, 'SchedulerQueueConsumerFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'queueConsumer.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 512,
-      timeout: Duration.seconds(60),
+      timeout: Duration.minutes(5), // Reduced - only queries patients and enqueues, doesn't send emails
+      reservedConcurrentExecutions: 3, // Can increase since we're not hitting SES directly
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
         SCHEDULES_TABLE: this.schedulesTable.tableName,
@@ -257,9 +282,52 @@ export class SchedulesStack extends Stack {
         CLINIC_HOURS_TABLE: props.clinicHoursTableName,
         CONSOLIDATED_SFTP_HOST: props.consolidatedTransferServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',
         CONSOLIDATED_SFTP_PASSWORD: 'Clinic@2020!',
+        // Email queue for individual email tasks
+        EMAIL_QUEUE_URL: emailQueue.queueUrl,
+        // Email analytics table for tracking scheduled emails
+        EMAIL_ANALYTICS_TABLE: Fn.importValue('TodaysDentalInsightsNotificationsN1-EmailAnalyticsTableName'),
       },
     });
     applyTags(this.schedulerQueueConsumerFn, { Function: 'scheduler-consumer' });
+
+    // Email Sender Lambda - processes individual email tasks from the email queue
+    // High concurrency to maximize throughput while staying under SES rate limits
+    const emailSenderFn = new lambdaNode.NodejsFunction(this, 'EmailSenderFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'emailSender.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256, // Small - only sends one email per invocation
+      timeout: Duration.seconds(30), // Plenty for one email
+      reservedConcurrentExecutions: 10, // 10 concurrent × ~10 emails/sec each = ~100/sec (SES limit)
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        // Email analytics configuration set (imported from notifications stack)
+        SES_CONFIGURATION_SET_NAME: Fn.importValue('TodaysDentalInsightsNotificationsN1-SESConfigurationSetName'),
+        // Email analytics table for updating status
+        EMAIL_ANALYTICS_TABLE: Fn.importValue('TodaysDentalInsightsNotificationsN1-EmailAnalyticsTableName'),
+      },
+    });
+    applyTags(emailSenderFn, { Function: 'email-sender' });
+
+    // Grant email sender permissions
+    emailSenderFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:SendEmail', 'ses:SendRawEmail'],
+      resources: ['*'],
+    }));
+    emailSenderFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:GetItem'],
+      resources: [`arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/TodaysDentalInsightsNotificationsN1-EmailAnalytics`],
+    }));
+
+    // Add SQS event source for email sender (batch of 10 for efficiency)
+    emailSenderFn.addEventSource(new lambdaEventSources.SqsEventSource(emailQueue, {
+      batchSize: 10, // Process 10 emails per Lambda invocation
+      maxBatchingWindow: Duration.seconds(5),
+      reportBatchItemFailures: true,
+    }));
+
+    // Grant queue consumer permission to send to email queue
+    emailQueue.grantSendMessages(this.schedulerQueueConsumerFn);
 
     // Grant permissions to scheduler worker (legacy)
     this.schedulesTable.grantReadWriteData(this.schedulerWorkerFn);
@@ -294,6 +362,13 @@ export class SchedulesStack extends Stack {
     templatesTable.grantReadData(this.schedulerQueueConsumerFn);
     queriesTable.grantReadData(this.schedulerQueueConsumerFn);
     clinicHoursTable.grantReadData(this.schedulerQueueConsumerFn);
+    
+    // Grant email analytics table access for tracking scheduled/sent/failed emails
+    // Using IAM policy directly since we import by name from cross-stack
+    this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:GetItem'],
+      resources: [`arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/TodaysDentalInsightsNotificationsN1-EmailAnalytics`],
+    }));
 
     // Add SQS event source for queue consumer
     this.schedulerQueueConsumerFn.addEventSource(new lambdaEventSources.SqsEventSource(this.schedulerQueue, {
