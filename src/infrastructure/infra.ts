@@ -35,8 +35,9 @@ import { ClinicImagesStack } from './stacks/clinic-images-stack';
 import { AiAgentsStack } from './stacks/ai-agents-stack';
 import { QueryGeneratorStack } from './stacks/query-generator-stack';
 import { RcsStack } from './stacks/rcs-stack';
-import { CredentialingStack } from './stacks/credentialing-stack';
+// import { CredentialingStack } from './stacks/credentialing-stack'; // TEMPORARILY DISABLED
 import { LeaseManagementStack } from './stacks/lease-management-stack';
+import { InsurancePlanSyncStack } from './stacks/insurance-plan-sync-stack';
 // import { DentalSoftwareStack } from './stacks/dental-software-stack';
 
 const app = new cdk.App();
@@ -428,12 +429,12 @@ const hrStack = new HrStack(app, 'TodaysDentalInsightsHrN1', {
 });
 // hrStack.addDependency(coreStack); // Implicit
 
-// Credentialing Stack - Provider credentialing and payer enrollment management
-const credentialingStack = new CredentialingStack(app, 'TodaysDentalInsightsCredentialingN1', {
-  env,
-  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
-});
-credentialingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+// TEMPORARILY DISABLED - Credentialing Stack
+// const credentialingStack = new CredentialingStack(app, 'TodaysDentalInsightsCredentialingN1', {
+//   env,
+//   staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+// });
+// credentialingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 
 
 // Schedules service (depends on other services for cross-table access)
@@ -610,6 +611,13 @@ const leaseManagementStack = new LeaseManagementStack(app, 'TodaysDentalInsights
 });
 leaseManagementStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 
+// Insurance Plan Sync Stack - Syncs insurance plan data from OpenDental every 15 minutes
+// Stores comprehensive plan info: maximums, deductibles, coverage percentages, waiting periods, etc.
+const insurancePlanSyncStack = new InsurancePlanSyncStack(app, 'TodaysDentalInsightsInsurancePlanSyncN1', {
+  env,
+  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
+});
+insurancePlanSyncStack.addDependency(openDentalStack); // Explicit - uses SFTP server ID
 
 // CRITICAL FIX: Remove commented-out code that could lead to circular dependencies
 // Note: The proper dependencies are already set above:

@@ -376,9 +376,20 @@ export class AdminStack extends Stack {
         FRONTEND_DOMAIN: String(frontendDomain),
         // USER_POOL_ID removed - using JWT-based authentication now
         CLINIC_HOURS_TABLE: props.clinicHoursTableName,
+        STAFF_USER_TABLE: props.staffUserTableName,
+        STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName ?? '',
       },
     });
     applyTags(this.meFn, { Function: 'me' });
+    
+    // Grant read permissions to StaffUser table for me API
+    staffUserTable.grantReadData(this.meFn);
+    
+    // Grant read permissions to StaffClinicInfo table if configured
+    if (props.staffClinicInfoTableName) {
+      const staffClinicInfoTableMe = dynamodb.Table.fromTableName(this, 'StaffClinicInfoTableMe', props.staffClinicInfoTableName);
+      staffClinicInfoTableMe.grantReadData(this.meFn);
+    }
 
     // MePresence lambda owned by Admin stack. It will read AGENT_PRESENCE_TABLE_NAME
     // from its environment. infra.ts will set this env var to the proper table name.

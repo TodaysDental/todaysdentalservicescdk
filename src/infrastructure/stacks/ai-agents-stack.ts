@@ -586,6 +586,8 @@ export class AiAgentsStack extends Stack {
         CLINICS_TABLE: props.clinicsTableName,
         // ARCHITECTURE FIX: Distributed circuit breaker table
         CIRCUIT_BREAKER_TABLE: this.circuitBreakerTable.tableName,
+        // Insurance plans table for coverage lookup (synced from OpenDental every 15 mins)
+        INSURANCE_PLANS_TABLE: 'TodaysDentalInsightsInsurancePlanSyncN1-InsurancePlans',
       },
     });
     applyTags(this.actionGroupFn, { Function: 'action-group' });
@@ -602,6 +604,18 @@ export class AiAgentsStack extends Stack {
       effect: iam.Effect.ALLOW,
       actions: ['dynamodb:GetItem'],
       resources: [clinicsTableArnForActionGroup],
+    }));
+
+    // Grant read access to Insurance Plans table for coverage lookup
+    // This table is synced every 15 mins from OpenDental by InsurancePlanSyncStack
+    const insurancePlansTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/TodaysDentalInsightsInsurancePlanSyncN1-InsurancePlans`;
+    this.actionGroupFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
+      resources: [
+        insurancePlansTableArn,
+        `${insurancePlansTableArn}/index/*`, // Include GSIs for efficient lookups
+      ],
     }));
 
     // Allow Bedrock Agent role to invoke the action group Lambda

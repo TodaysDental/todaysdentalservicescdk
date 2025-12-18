@@ -3,6 +3,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { getUserPermissions, hasModulePermission } from '../../shared/utils/permissions-helper';
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
@@ -10,16 +11,36 @@ const s3Client = new S3Client({});
 
 const LEASE_TABLE_NAME = process.env.LEASE_TABLE_NAME!;
 const LEASE_DOCUMENTS_BUCKET = process.env.LEASE_DOCUMENTS_BUCKET!;
+const LEGAL_MODULE = 'Legal';
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   console.log('Get Lease Event:', JSON.stringify(event, null, 2));
 
   try {
+    // Check user permissions
+    const userPerms = getUserPermissions(event);
+    if (!userPerms) {
+      return createResponse(401, { success: false, error: 'Unauthorized' });
+    }
+
     const clinicId = event.pathParameters?.clinicId;
     const leaseId = event.pathParameters?.leaseId;
 
     if (!clinicId || !leaseId) {
       return createResponse(400, { success: false, error: 'clinicId and leaseId are required' });
+    }
+
+    // Check if user has Legal module read permission for this clinic
+    const canRead = hasModulePermission(
+      userPerms.clinicRoles,
+      LEGAL_MODULE,
+      'read',
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin,
+      clinicId
+    );
+    if (!canRead) {
+      return createResponse(403, { success: false, error: 'Permission denied. Legal module access required.' });
     }
 
     const result = await docClient.send(new GetCommand({

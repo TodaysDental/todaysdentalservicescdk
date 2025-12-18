@@ -137,7 +137,35 @@ export interface AiAgent {
 // ========================================================================
 
 /**
+ * Get current date info for system prompt
+ * Returns today's date and day name for accurate date calculations
+ */
+function getDateContext(): { today: string; dayName: string; tomorrowDate: string; nextWeekDates: Record<string, string> } {
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10); // YYYY-MM-DD
+  const dayName = now.toLocaleDateString('en-US', { weekday: 'long' });
+  
+  // Calculate tomorrow
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowDate = tomorrow.toISOString().slice(0, 10);
+  
+  // Calculate next 7 days for day name reference
+  const nextWeekDates: Record<string, string> = {};
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  for (let i = 0; i < 7; i++) {
+    const futureDate = new Date(now);
+    futureDate.setDate(futureDate.getDate() + i);
+    const futureDayName = dayNames[futureDate.getDay()];
+    nextWeekDates[futureDayName] = futureDate.toISOString().slice(0, 10);
+  }
+  
+  return { today, dayName, tomorrowDate, nextWeekDates };
+}
+
+/**
  * Default system prompt for the Bedrock Agent instruction
+ * NOTE: This is a template - actual prompt should include current date info
  */
 export const DEFAULT_SYSTEM_PROMPT = `You are ToothFairy, a AI dental assistant. Manage appointment booking, cancellation, rescheduling, and details using API tools. Follow these principles:
 
@@ -147,14 +175,15 @@ export const DEFAULT_SYSTEM_PROMPT = `You are ToothFairy, a AI dental assistant.
    - If 'AppointmentType' is present, prompt for the appointment date and time unless provided.
    - If 'ProcedureDescripts' is present, confirm with the user if they want to book an appointment for these procedures, then prompt for date and time.
 
-2. **Efficient Communication**: Perform tasks (e.g., patient lookup, procedure log checks) without intermediate prompts unless needed.
+2. **Efficient Communication**: Perform tasks (e.g., patient lookup, procedure log checks) without intermediate prompts unless needed. Do not use systematic prompts like "let me check in our system" - this is a strict rule.
 
-3. **Continuous Flow**: After any successful tool call, ALWAYS continue the conversation. Never stop after a single tool call.
+3. **Continuous Flow**: After any successful tool call, ALWAYS continue the conversation. Never stop after a single tool call - proceed to the next logical step.
 
-4. **Patient Identification**:
-   - NEVER use hardcoded PatNum values.
+4. **Patient Identification** (ONLY for patient-specific operations like appointments, account, claims):
+   - NEVER use hardcoded PatNum values like 12345 or any other arbitrary numbers.
    - ONLY call appointment-related functions if 'PatNum' exists in session attributes.
-   - If no PatNum, collect First Name, Last Name, and Date of Birth (YYYY-MM-DD) first.
+   - Collect First Name, Last Name, and Date of Birth ONLY when needed for: appointments, account info, claims, or patient-specific benefits.
+   - **DO NOT collect patient info for insurance coverage questions** - use suggestInsuranceCoverage instead.
    - If 'searchPatients' returns FAILURE, offer to create a new patient profile.
    - If multiple patients found, list them numbered for selection.
    - After patient found, call 'getProcedureLogs' for treatment-planned procedures.
@@ -171,7 +200,21 @@ export const DEFAULT_SYSTEM_PROMPT = `You are ToothFairy, a AI dental assistant.
 
 7. **Error Handling**: Respond clearly with helpful guidance on failures.
 
-8. **Date Format**: Use 'YYYY-MM-DD HH:mm:ss'. Validate dates are today or later.
+8. **Date Format & Calculation - CRITICAL**:
+   - Use 'YYYY-MM-DD HH:mm:ss' for scheduling. Validate dates are today or later.
+   - Do NOT ask user for a particular format. Accept any format they provide.
+   - **CRITICAL DATE CALCULATION**: When user says day names, you MUST calculate the correct date:
+     * "today" = the current date provided in session
+     * "tomorrow" = current date + 1 day
+     * "Friday" = find the next Friday from current date (could be today if today is Friday)
+     * "next Monday" = find the Monday of next week
+     * "this Saturday" = the Saturday of the current week
+   - **VALIDATION REQUIRED**: Always double-check your date calculation before calling scheduleAppointment.
+   - Example: If today is Thursday Dec 19, 2024:
+     * "Friday" = 2024-12-20 (tomorrow)
+     * "Monday" = 2024-12-23 (next Monday)
+     * "Saturday" = 2024-12-21 (this Saturday)
+   - NEVER schedule appointments in the past. If user asks for a past date, inform them and ask for a future date.
 
 9. **Reschedule**: Use 'getUpcomingAppointments' first, then 'rescheduleAppointment'.
 
@@ -179,11 +222,49 @@ export const DEFAULT_SYSTEM_PROMPT = `You are ToothFairy, a AI dental assistant.
 
 **Account Information**: Use getAccountAging, getPatientBalances, getServiceDateView for account queries.
 
-**Insurance Information**: Use getBenefits, getCarriers, getClaims, getFamilyInsurance for insurance queries.
+**Insurance Information - IMPORTANT**:
+When a patient asks about insurance coverage, benefits, or what their insurance covers:
+1. **NEVER ask for patient name or date of birth for insurance coverage questions.**
+2. **IMMEDIATELY use suggestInsuranceCoverage or getInsurancePlanBenefits** with the insurance name they provide.
+3. These tools search the clinic's database directly by insurance name - NO PatNum needed!
+
+Examples - when user asks about insurance, call suggestInsuranceCoverage with {"insuranceName": "NAME"}:
+- "Does Cigna cover crowns?" → Call: suggestInsuranceCoverage({"insuranceName": "Cigna"})
+- "What does Delta Dental cover?" → Call: suggestInsuranceCoverage({"insuranceName": "Delta Dental"})
+- "husky medicaid" or "what benefits does husky give" → Call: suggestInsuranceCoverage({"insuranceName": "Husky"})
+- "I have Aetna, am I covered for fillings?" → Call: suggestInsuranceCoverage({"insuranceName": "Aetna"})
+- "What's my coverage with BCBS?" → Call: suggestInsuranceCoverage({"insuranceName": "BCBS"})
+- "United Healthcare benefits" → Call: suggestInsuranceCoverage({"insuranceName": "United Healthcare"})
+
+Patient-specific insurance tools (ONLY use when patient is already identified with PatNum):
+- getBenefits, getFamilyInsurance - Use only when patient is identified and you need their specific benefit usage
+- getClaims - Use only when patient needs their claims history
+- getCarriers - List of carriers (rarely needed)
+
+**If the patient asks for anytime sooner or earliest available appointment, book the appointment for the next day at 8:00 AM for the requested appointment type.**
 
 **DO NOT CHECK FOR AVAILABILITY. BOOK THE APPOINTMENT FOR THE ASKED DATE AND TIME.**
 
 **DO NOT MENTION THE PROVIDER NAME IN THE RESPONSE.**`;
+
+/**
+ * Build system prompt with current date context
+ * This should be called when creating/updating agents to include accurate date info
+ */
+export function buildSystemPromptWithDate(basePrompt?: string): string {
+  const dateContext = getDateContext();
+  const prompt = basePrompt || DEFAULT_SYSTEM_PROMPT;
+  
+  const dateSection = `
+**CURRENT DATE CONTEXT**:
+- Today is ${dateContext.dayName}, ${dateContext.today}
+- Tomorrow is ${dateContext.tomorrowDate}
+- Next week dates: ${JSON.stringify(dateContext.nextWeekDates)}
+- All appointments must be scheduled on or after ${dateContext.today}
+`;
+  
+  return prompt + '\n' + dateSection;
+}
 
 /**
  * Default negative prompt (restrictions)
@@ -220,348 +301,292 @@ export const DEFAULT_NEGATIVE_PROMPT = `=== CRITICAL RESTRICTIONS ===
 When in doubt, direct the patient to contact the clinic directly.`;
 
 // ========================================================================
-// OPENAPI SCHEMA FOR ACTION GROUP
+// OPENAPI SCHEMA FOR ACTION GROUP (PROXY PATTERN)
 // ========================================================================
 
 /**
  * OpenAPI Schema for Bedrock Agent Action Groups
  * 
- * IMPORTANT: Bedrock Agents have specific requirements for OpenAPI schemas:
- * 1. Must have 'openapi' version 3.0.0
- * 2. Must have 'info' with title and version
- * 3. Each path must have unique operationId
- * 4. Response schemas should have proper content types
- * 5. Parameters must have 'description' field for Bedrock to understand them
+ * PROXY PATTERN: Uses a single endpoint to avoid the 11 API limit per action group.
+ * The agent learns about available tools from the detailed description and enum.
+ * 
+ * This approach:
+ * 1. Reduces API count from 15+ to just 1
+ * 2. Avoids "Number of enabled APIs exceeded limit" error
+ * 3. Still provides full tool documentation for the agent
  */
 const OPENAPI_SCHEMA = {
   openapi: '3.0.0',
   info: {
     title: 'OpenDental Tools API',
-    version: '1.0.0',
-    description: 'API for OpenDental operations used by Bedrock Agent',
+    version: '2.0.0',
+    description: 'Unified proxy API for OpenDental operations used by Bedrock Agent',
   },
   paths: {
-    '/searchPatients': {
+    '/open-dental/{toolName}': {
       post: {
-        operationId: 'searchPatients',
-        summary: 'Search for patients',
-        description: 'Searches for patients by first name, last name, and date of birth. Returns matching patient records.',
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  LName: { type: 'string', description: 'Patient last name' },
-                  FName: { type: 'string', description: 'Patient first name' },
-                  Birthdate: { type: 'string', description: 'Patient date of birth in YYYY-MM-DD format' },
-                },
-                required: ['LName', 'FName', 'Birthdate'],
-              },
-            },
-          },
-        },
-        responses: {
-          '200': {
-            description: 'Patient search results',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    status: { type: 'string' },
-                    data: { type: 'object' },
-                    message: { type: 'string' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    '/createPatient': {
-      post: {
-        operationId: 'createPatient',
-        summary: 'Create a new patient',
-        description: 'Creates a new patient record in the dental practice management system.',
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  LName: { type: 'string', description: 'Patient last name' },
-                  FName: { type: 'string', description: 'Patient first name' },
-                  WirelessPhone: { type: 'string', description: 'Patient mobile phone number' },
-                  Birthdate: { type: 'string', description: 'Patient date of birth in YYYY-MM-DD format' },
-                },
-                required: ['LName', 'FName', 'Birthdate'],
-              },
-            },
-          },
-        },
-        responses: {
-          '201': {
-            description: 'Patient created successfully',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    status: { type: 'string' },
-                    data: { type: 'object' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    '/getPatientByPatNum': {
-      get: {
-        operationId: 'getPatientByPatNum',
-        summary: 'Get patient by ID',
-        description: 'Retrieves a patient record by their PatNum (patient number).',
+        operationId: 'executeOpenDentalTool',
+        summary: 'Execute an OpenDental tool',
+        description: `Execute any OpenDental tool by specifying the tool name and parameters.
+
+=== PATIENT TOOLS ===
+• searchPatients - Search for patients by name and birthdate
+  Required: LName, FName, Birthdate (YYYY-MM-DD)
+  
+• createPatient - Create a new patient record
+  Required: LName, FName, Birthdate
+  Optional: WirelessPhone
+  
+• getPatientByPatNum - Get patient details by ID
+  Required: PatNum
+
+=== PROCEDURE TOOLS ===
+• getProcedureLogs - Get procedure logs for a patient
+  Required: PatNum
+  Optional: ProcStatus (use "TP" for treatment-planned)
+  
+• getTreatmentPlans - Get active treatment plans
+  Required: PatNum
+
+=== APPOINTMENT TOOLS ===
+• scheduleAppointment - Schedule a new appointment
+  Required: PatNum, Reason, Date (YYYY-MM-DD HH:mm:ss), OpName
+  Optional: Note
+  OpName values: ONLINE_BOOKING_EXAM (new patients), ONLINE_BOOKING_MINOR, ONLINE_BOOKING_MAJOR
+  
+• getUpcomingAppointments - Get future appointments
+  Required: PatNum
+  
+• rescheduleAppointment - Change appointment date/time
+  Required: AptNum, NewDateTime (YYYY-MM-DD HH:mm:ss)
+  Optional: Note
+  
+• cancelAppointment - Cancel an appointment
+  Required: AptNum
+  Optional: SendToUnscheduledList, Note
+
+=== ACCOUNT TOOLS ===
+• getAccountAging - Get outstanding balance aging
+  Required: PatNum
+  
+• getPatientBalances - Get current account balances
+  Required: PatNum
+  
+• getServiceDateView - Get services by date
+  Required: PatNum
+  Optional: isFamily
+
+=== MEDICAL TOOLS ===
+• getAllergies - Get patient allergies
+  Required: PatNum
+  
+• getPatientInfo - Get comprehensive patient info
+  Required: PatNum
+
+=== INSURANCE TOOLS (Patient-Specific - requires PatNum) ===
+• getBenefits - Get patient's specific insurance benefits usage
+  Optional: PlanNum, PatPlanNum (at least one required)
+  NOTE: Only use after patient is identified!
+  
+• getCarriers - Get insurance carriers list
+  No parameters required
+  
+• getClaims - Get patient's insurance claims history
+  Optional: PatNum, ClaimStatus
+  NOTE: Only use after patient is identified!
+  
+• getFamilyInsurance - Get family insurance info
+  Required: PatNum
+  NOTE: Only use after patient is identified!
+
+=== INSURANCE COVERAGE LOOKUP (USE THESE FIRST - NO PatNum Required!) ===
+**IMPORTANT**: When patient asks about insurance coverage, USE THESE TOOLS FIRST!
+Do NOT ask for patient name or DOB - just use the insurance name they provide.
+
+• suggestInsuranceCoverage - Get formatted coverage suggestions with smart recommendations
+  **CALL THIS TOOL with just the insuranceName parameter!**
+  Example: User asks "what does Husky cover?" → Call with: {"insuranceName": "Husky"}
+  Example: User asks "Cigna benefits?" → Call with: {"insuranceName": "Cigna"}
+  NO PatNum needed! Just pass insuranceName.
+  Optional: groupName, groupNumber (if patient provides them)
+  Returns: Human-readable summary with recommendations
+  
+• getInsurancePlanBenefits - Look up raw insurance plan coverage details
+  Call with: {"insuranceName": "Delta Dental"} or {"groupNumber": "12345"}
+  NO PatNum needed! 
+  Returns: Annual max, deductibles, coverage percentages, waiting periods, frequency limits`,
         parameters: [
           {
-            name: 'PatNum',
-            in: 'query',
+            name: 'toolName',
+            in: 'path',
             required: true,
-            description: 'The patient number (unique identifier)',
-            schema: { type: 'integer' },
-          },
-        ],
-        responses: {
-          '200': {
-            description: 'Patient data',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    status: { type: 'string' },
-                    data: { type: 'object' },
-                  },
-                },
-              },
+            description: 'The OpenDental tool to execute',
+            schema: {
+              type: 'string',
+              enum: [
+                'searchPatients',
+                'createPatient',
+                'getPatientByPatNum',
+                'getProcedureLogs',
+                'getTreatmentPlans',
+                'scheduleAppointment',
+                'getUpcomingAppointments',
+                'rescheduleAppointment',
+                'cancelAppointment',
+                'getAccountAging',
+                'getPatientBalances',
+                'getServiceDateView',
+                'getAllergies',
+                'getPatientInfo',
+                'getBenefits',
+                'getCarriers',
+                'getClaims',
+                'getFamilyInsurance',
+                'getInsurancePlanBenefits',
+                'suggestInsuranceCoverage',
+              ],
             },
           },
-        },
-      },
-    },
-    '/getProcedureLogs': {
-      get: {
-        operationId: 'getProcedureLogs',
-        summary: 'Get procedure logs',
-        description: 'Gets procedure logs for a patient, optionally filtered by status. Use ProcStatus "TP" for treatment-planned procedures.',
-        parameters: [
-          {
-            name: 'PatNum',
-            in: 'query',
-            required: true,
-            description: 'The patient number',
-            schema: { type: 'integer' },
-          },
-          {
-            name: 'ProcStatus',
-            in: 'query',
-            required: false,
-            description: 'Filter by procedure status (e.g., "TP" for treatment planned, "C" for complete)',
-            schema: { type: 'string' },
-          },
         ],
-        responses: {
-          '200': {
-            description: 'Procedure logs',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    status: { type: 'string' },
-                    data: { type: 'array' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    '/getTreatmentPlans': {
-      get: {
-        operationId: 'getTreatmentPlans',
-        summary: 'Get treatment plans',
-        description: 'Gets active treatment plans for a patient.',
-        parameters: [
-          {
-            name: 'PatNum',
-            in: 'query',
-            required: true,
-            description: 'The patient number',
-            schema: { type: 'integer' },
-          },
-        ],
-        responses: {
-          '200': {
-            description: 'Treatment plans',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    status: { type: 'string' },
-                    data: { type: 'array' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    '/scheduleAppointment': {
-      post: {
-        operationId: 'scheduleAppointment',
-        summary: 'Schedule an appointment',
-        description: 'Schedules a new appointment for a patient.',
         requestBody: {
           required: true,
           content: {
             'application/json': {
               schema: {
                 type: 'object',
+                description: `Parameters for the tool. Required fields depend on the toolName selected.
+
+INSURANCE LOOKUP EXAMPLES (no PatNum needed):
+- suggestInsuranceCoverage: {"insuranceName": "Husky"}
+- suggestInsuranceCoverage: {"insuranceName": "Cigna"}
+- getInsurancePlanBenefits: {"insuranceName": "Delta Dental"}
+
+PATIENT LOOKUP EXAMPLE:
+- searchPatients: {"LName": "Smith", "FName": "John", "Birthdate": "1990-01-15"}`,
                 properties: {
-                  PatNum: { type: 'integer', description: 'The patient number' },
-                  Reason: { type: 'string', description: 'Reason for the appointment' },
-                  Date: { type: 'string', description: 'Appointment date and time in YYYY-MM-DD HH:mm:ss format' },
-                  OpName: { type: 'string', description: 'Operatory name (e.g., ONLINE_BOOKING_EXAM for new patients)' },
-                  Note: { type: 'string', description: 'Additional notes for the appointment' },
-                },
-                required: ['PatNum', 'Reason', 'Date', 'OpName'],
-              },
-            },
-          },
-        },
-        responses: {
-          '201': {
-            description: 'Appointment created',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    status: { type: 'string' },
-                    data: { type: 'object' },
-                    message: { type: 'string' },
+                  // Patient identifiers
+                  PatNum: {
+                    type: 'integer',
+                    description: 'Patient number (unique ID). Required for most tools after patient lookup.',
+                  },
+                  LName: {
+                    type: 'string',
+                    description: 'Patient last name. Required for searchPatients and createPatient.',
+                  },
+                  FName: {
+                    type: 'string',
+                    description: 'Patient first name. Required for searchPatients and createPatient.',
+                  },
+                  Birthdate: {
+                    type: 'string',
+                    description: 'Patient date of birth in YYYY-MM-DD format. Required for searchPatients and createPatient.',
+                  },
+                  WirelessPhone: {
+                    type: 'string',
+                    description: 'Patient mobile phone number. Optional for createPatient.',
+                  },
+                  // Procedure parameters
+                  ProcStatus: {
+                    type: 'string',
+                    description: 'Procedure status filter. Use "TP" for treatment-planned, "C" for complete.',
+                  },
+                  // Appointment parameters
+                  AptNum: {
+                    type: 'integer',
+                    description: 'Appointment number (unique ID). Required for reschedule/cancel.',
+                  },
+                  Date: {
+                    type: 'string',
+                    description: 'Appointment date and time in YYYY-MM-DD HH:mm:ss format. Required for scheduleAppointment.',
+                  },
+                  NewDateTime: {
+                    type: 'string',
+                    description: 'New date and time in YYYY-MM-DD HH:mm:ss format. Required for rescheduleAppointment.',
+                  },
+                  Reason: {
+                    type: 'string',
+                    description: 'Reason for the appointment. Required for scheduleAppointment.',
+                  },
+                  OpName: {
+                    type: 'string',
+                    description: 'Operatory name. Use ONLINE_BOOKING_EXAM for new patients, ONLINE_BOOKING_MINOR or ONLINE_BOOKING_MAJOR for existing.',
+                  },
+                  Note: {
+                    type: 'string',
+                    description: 'Additional notes for the appointment or action.',
+                  },
+                  SendToUnscheduledList: {
+                    type: 'boolean',
+                    description: 'Whether to add cancelled appointment to unscheduled list. Default true.',
+                  },
+                  // Account parameters
+                  isFamily: {
+                    type: 'boolean',
+                    description: 'Include family members in account view. For getServiceDateView.',
+                  },
+                  // Insurance parameters
+                  PlanNum: {
+                    type: 'integer',
+                    description: 'Insurance plan number. For getBenefits.',
+                  },
+                  PatPlanNum: {
+                    type: 'integer',
+                    description: 'Patient plan number. For getBenefits.',
+                  },
+                  ClaimStatus: {
+                    type: 'string',
+                    description: 'Claim status filter. For getClaims.',
+                  },
+                  // Insurance Plan Benefits lookup parameters (NO PatNum required!)
+                  insuranceName: {
+                    type: 'string',
+                    description: 'Insurance carrier name to search for. Examples: "Husky", "Delta Dental", "Cigna", "Aetna", "BCBS", "United Healthcare", "Metlife". REQUIRED for getInsurancePlanBenefits and suggestInsuranceCoverage. NO PatNum needed - just provide the insurance name.',
+                  },
+                  groupName: {
+                    type: 'string',
+                    description: 'Insurance group name (employer group). For getInsurancePlanBenefits/suggestInsuranceCoverage. NO PatNum needed.',
+                  },
+                  groupNumber: {
+                    type: 'string',
+                    description: 'Insurance group number from the insurance card. For getInsurancePlanBenefits/suggestInsuranceCoverage. NO PatNum needed.',
+                  },
+                  clinicId: {
+                    type: 'string',
+                    description: 'Clinic ID (auto-filled from session). For getInsurancePlanBenefits/suggestInsuranceCoverage.',
                   },
                 },
               },
             },
           },
         },
-      },
-    },
-    '/getUpcomingAppointments': {
-      get: {
-        operationId: 'getUpcomingAppointments',
-        summary: 'Get upcoming appointments',
-        description: 'Gets all upcoming appointments for a patient.',
-        parameters: [
-          {
-            name: 'PatNum',
-            in: 'query',
-            required: true,
-            description: 'The patient number',
-            schema: { type: 'integer' },
-          },
-        ],
         responses: {
           '200': {
-            description: 'Upcoming appointments',
+            description: 'Successful tool execution',
             content: {
               'application/json': {
                 schema: {
                   type: 'object',
                   properties: {
-                    status: { type: 'string' },
-                    data: { type: 'array' },
+                    status: {
+                      type: 'string',
+                      enum: ['SUCCESS', 'FAILURE'],
+                      description: 'Result status of the tool execution',
+                    },
+                    data: {
+                      type: 'object',
+                      description: 'The returned data from the tool',
+                    },
+                    message: {
+                      type: 'string',
+                      description: 'Human-readable message about the result',
+                    },
                   },
                 },
               },
             },
           },
-        },
-      },
-    },
-    '/rescheduleAppointment': {
-      post: {
-        operationId: 'rescheduleAppointment',
-        summary: 'Reschedule an appointment',
-        description: 'Reschedules an existing appointment to a new date and time.',
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  AptNum: { type: 'integer', description: 'The appointment number to reschedule' },
-                  NewDateTime: { type: 'string', description: 'New date and time in YYYY-MM-DD HH:mm:ss format' },
-                  Note: { type: 'string', description: 'Note explaining the reschedule reason' },
-                },
-                required: ['AptNum', 'NewDateTime'],
-              },
-            },
-          },
-        },
-        responses: {
-          '200': {
-            description: 'Appointment rescheduled',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    status: { type: 'string' },
-                    data: { type: 'object' },
-                    message: { type: 'string' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    '/cancelAppointment': {
-      post: {
-        operationId: 'cancelAppointment',
-        summary: 'Cancel an appointment',
-        description: 'Cancels an existing appointment.',
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  AptNum: { type: 'integer', description: 'The appointment number to cancel' },
-                  SendToUnscheduledList: { type: 'boolean', description: 'Whether to add to unscheduled list' },
-                  Note: { type: 'string', description: 'Cancellation reason' },
-                },
-                required: ['AptNum'],
-              },
-            },
-          },
-        },
-        responses: {
-          '200': {
-            description: 'Appointment cancelled',
+          '400': {
+            description: 'Invalid request - missing required parameters',
             content: {
               'application/json': {
                 schema: {
@@ -574,200 +599,15 @@ const OPENAPI_SCHEMA = {
               },
             },
           },
-        },
-      },
-    },
-    '/getAccountAging': {
-      get: {
-        operationId: 'getAccountAging',
-        summary: 'Get account aging',
-        description: 'Gets account aging information showing outstanding balances by age.',
-        parameters: [
-          {
-            name: 'PatNum',
-            in: 'query',
-            required: true,
-            description: 'The patient number',
-            schema: { type: 'integer' },
-          },
-        ],
-        responses: {
-          '200': {
-            description: 'Account aging data',
+          '404': {
+            description: 'Resource not found',
             content: {
               'application/json': {
                 schema: {
                   type: 'object',
                   properties: {
                     status: { type: 'string' },
-                    data: { type: 'object' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    '/getPatientBalances': {
-      get: {
-        operationId: 'getPatientBalances',
-        summary: 'Get patient balances',
-        description: 'Gets current account balances for a patient.',
-        parameters: [
-          {
-            name: 'PatNum',
-            in: 'query',
-            required: true,
-            description: 'The patient number',
-            schema: { type: 'integer' },
-          },
-        ],
-        responses: {
-          '200': {
-            description: 'Patient balances',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    status: { type: 'string' },
-                    data: { type: 'object' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    '/getAllergies': {
-      get: {
-        operationId: 'getAllergies',
-        summary: 'Get patient allergies',
-        description: 'Gets allergy information for a patient.',
-        parameters: [
-          {
-            name: 'PatNum',
-            in: 'query',
-            required: true,
-            description: 'The patient number',
-            schema: { type: 'integer' },
-          },
-        ],
-        responses: {
-          '200': {
-            description: 'Allergies list',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    status: { type: 'string' },
-                    data: { type: 'array' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    '/getPatientInfo': {
-      get: {
-        operationId: 'getPatientInfo',
-        summary: 'Get patient info',
-        description: 'Gets comprehensive patient information including demographics and medical history.',
-        parameters: [
-          {
-            name: 'PatNum',
-            in: 'query',
-            required: true,
-            description: 'The patient number',
-            schema: { type: 'integer' },
-          },
-        ],
-        responses: {
-          '200': {
-            description: 'Patient info',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    status: { type: 'string' },
-                    data: { type: 'object' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    '/getBenefits': {
-      get: {
-        operationId: 'getBenefits',
-        summary: 'Get insurance benefits',
-        description: 'Gets insurance benefit information for a plan.',
-        parameters: [
-          {
-            name: 'PlanNum',
-            in: 'query',
-            required: false,
-            description: 'The insurance plan number',
-            schema: { type: 'integer' },
-          },
-          {
-            name: 'PatPlanNum',
-            in: 'query',
-            required: false,
-            description: 'The patient plan number',
-            schema: { type: 'integer' },
-          },
-        ],
-        responses: {
-          '200': {
-            description: 'Benefits data',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    status: { type: 'string' },
-                    data: { type: 'object' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    '/getFamilyInsurance': {
-      get: {
-        operationId: 'getFamilyInsurance',
-        summary: 'Get family insurance',
-        description: 'Gets insurance information for the patient and their family.',
-        parameters: [
-          {
-            name: 'PatNum',
-            in: 'query',
-            required: true,
-            description: 'The patient number',
-            schema: { type: 'integer' },
-          },
-        ],
-        responses: {
-          '200': {
-            description: 'Family insurance data',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    status: { type: 'string' },
-                    data: { type: 'object' },
+                    message: { type: 'string' },
                   },
                 },
               },

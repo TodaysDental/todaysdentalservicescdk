@@ -1,17 +1,38 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { getUserPermissions, hasModulePermission } from '../../shared/utils/permissions-helper';
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
 const LEASE_TABLE_NAME = process.env.LEASE_TABLE_NAME!;
+const LEGAL_MODULE = 'Legal';
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   console.log('List Leases Event:', JSON.stringify(event, null, 2));
 
   try {
+    // Check user permissions
+    const userPerms = getUserPermissions(event);
+    if (!userPerms) {
+      return createResponse(401, { success: false, error: 'Unauthorized' });
+    }
+
     // clinicId from header or query param
     const clinicId = event.headers['x-clinic-id'] || event.queryStringParameters?.clinicId;
+
+    // Check if user has Legal module read permission
+    const canRead = hasModulePermission(
+      userPerms.clinicRoles,
+      LEGAL_MODULE,
+      'read',
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin,
+      clinicId || undefined
+    );
+    if (!canRead) {
+      return createResponse(403, { success: false, error: 'Permission denied. Legal module access required.' });
+    }
     const status = event.queryStringParameters?.status;
     const limit = event.queryStringParameters?.limit ? parseInt(event.queryStringParameters.limit) : 100;
     const lastKey = event.queryStringParameters?.lastEvaluatedKey;

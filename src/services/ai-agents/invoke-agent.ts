@@ -513,11 +513,39 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // Build session attributes (passed to action group Lambda)
+    // Include current date information for accurate date calculations
+    const now = new Date();
+    const todayDate = now.toISOString().slice(0, 10); // YYYY-MM-DD
+    const dayName = now.toLocaleDateString('en-US', { weekday: 'long' });
+    const todayFormatted = now.toLocaleDateString('en-US'); // MM/DD/YYYY
+    
+    // Calculate next 7 days for day name reference
+    const nextWeekDates: Record<string, string> = {};
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    for (let i = 0; i < 7; i++) {
+      const futureDate = new Date(now);
+      futureDate.setDate(futureDate.getDate() + i);
+      const futureDayName = dayNames[futureDate.getDay()];
+      nextWeekDates[futureDayName] = futureDate.toISOString().slice(0, 10);
+    }
+    
     const sessionAttributes: Record<string, string> = {
       clinicId: clinicId,
       userId: userId,
       userName: userName,
       isPublicRequest: isPublic ? 'true' : 'false',
+      // Current date information for accurate scheduling
+      todayDate: todayDate,
+      todayFormatted: todayFormatted,
+      dayName: dayName,
+      nextWeekDates: JSON.stringify(nextWeekDates),
+    };
+
+    // Build prompt session attributes (visible to the agent as context)
+    // These appear in the agent's prompt and help with date calculations
+    const promptSessionAttributes: Record<string, string> = {
+      currentDate: `Today is ${dayName}, ${todayFormatted} (${todayDate})`,
+      dateContext: `When scheduling appointments, use ${todayDate} as today's date. Next week dates: ${JSON.stringify(nextWeekDates)}`,
     };
 
     // Invoke the Bedrock Agent
@@ -530,6 +558,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       endSession: shouldEndSession,
       sessionState: {
         sessionAttributes,
+        promptSessionAttributes,
       },
     });
 

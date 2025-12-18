@@ -123,12 +123,25 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // Find this clinic's role and permissions
         const clinicRole = clinicRoles.find((cr: any) => cr.clinicId === c.clinicId);
         
-        // Build complete access info
+        // Build complete access info with sanitized clinic details
+        // SECURITY: Excludes sensitive fields like API keys, ARNs, ayrshare config
         return {
+          // Safe clinic information
           clinicId: c.clinicId,
           clinicName: c.clinicName,
-          clinicPhone: c.clinicPhone,
           clinicAddress: c.clinicAddress,
+          clinicCity: c.clinicCity || '',
+          clinicState: c.clinicState || '',
+          clinicZipCode: c.CliniczipCode || '',
+          clinicPhone: c.clinicPhone,
+          clinicFax: c.clinicFax || '',
+          clinicEmail: c.clinicEmail || '',
+          timezone: c.timeZone || 'America/New_York',
+          logoUrl: c.logoUrl || '',
+          mapsUrl: c.mapsUrl || '',
+          scheduleUrl: c.scheduleUrl || '',
+          websiteLink: c.websiteLink || '',
+          phoneNumber: c.phoneNumber || '', // Clinic's dedicated phone number
           
           // Role information
           role: clinicRole?.role || 'patient coordinator',

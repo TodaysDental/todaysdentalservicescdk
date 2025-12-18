@@ -60,6 +60,7 @@ export const SYSTEM_MODULES = [
   'Marketing',
   'Insurance',
   'IT',
+  'Legal',
 ] as const;
 
 export type SystemModule = typeof SYSTEM_MODULES[number];

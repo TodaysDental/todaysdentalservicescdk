@@ -26,21 +26,21 @@ async function loadClinicsData() {
         
         for (const clinic of clinicsData) {
             try {
-                // Create item for DynamoDB insertion
-                const item = {
-                    clinicId: clinic.clinicId,
-                    phoneNumber: clinic.phoneNumber || null,
-                    clinicName: clinic.clinicName || clinic.clinicId,
-                    // Add any other fields you need in the clinics table
-                };
-                
-                // Skip if no phone number
-                if (!item.phoneNumber) {
-                    console.log(`Skipping ${clinic.clinicId} - No phone number defined`);
+                // Skip if missing required fields
+                if (!clinic.phoneNumber || !clinic.clinicId) {
+                    console.log(`Skipping ${clinic.clinicId || 'unknown'} - Missing clinicId or phoneNumber`);
                     continue;
                 }
                 
-                console.log(`Inserting clinic ${clinic.clinicId} with phone ${item.phoneNumber}`);
+                // Copy ALL fields from clinics.json to preserve OpenDental credentials and other config
+                const item = { ...clinic };
+                
+                // Validate OpenDental credentials exist
+                if (!item.developerKey || !item.customerKey) {
+                    console.warn(`Warning: ${clinic.clinicId} missing OpenDental credentials (developerKey/customerKey)`);
+                }
+                
+                console.log(`Inserting clinic ${clinic.clinicId} with phone ${item.phoneNumber} (has credentials: ${!!item.developerKey && !!item.customerKey})`);
                 
                 // Insert into DynamoDB
                 await ddb.send(new PutCommand({
@@ -67,3 +67,4 @@ async function loadClinicsData() {
 loadClinicsData().then(() => {
     console.log('Script execution completed');
 });
+

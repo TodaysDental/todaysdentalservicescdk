@@ -11,7 +11,7 @@
 import axios from 'axios';
 import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 
 // ========================================================================
 // CONFIGURATION
@@ -35,6 +35,7 @@ const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
 
 const CLINICS_TABLE = process.env.CLINICS_TABLE || 'Clinics';
+const INSURANCE_PLANS_TABLE = process.env.INSURANCE_PLANS_TABLE || 'TodaysDentalInsightsInsurancePlanSyncN1-InsurancePlans';
 
 // ========================================================================
 // CIRCUIT BREAKER & RATE LIMITING (DynamoDB-backed for distributed state)
@@ -827,6 +828,50 @@ async function handleTool(
         return { statusCode: 200, body: { status: 'SUCCESS', data: insurance } };
       }
 
+      // ===== INSURANCE PLAN BENEFITS LOOKUP (from synced DynamoDB table) =====
+      case 'getInsurancePlanBenefits': {
+        // This tool reads from the InsurancePlans DynamoDB table (synced every 15 mins from OpenDental)
+        // It can search by: insuranceName, groupName, groupNumber, or clinicId
+        const result = await lookupInsurancePlanBenefits(params, sessionAttributes.clinicId || params.clinicId);
+        return result;
+      }
+
+      case 'suggestInsuranceCoverage': {
+        // This is a higher-level tool that looks up insurance and formats coverage suggestions
+        const lookupResult = await lookupInsurancePlanBenefits(params, sessionAttributes.clinicId || params.clinicId);
+        
+        if (lookupResult.statusCode !== 200 || !lookupResult.body.data?.plans?.length) {
+          return {
+            statusCode: 404,
+            body: {
+              status: 'FAILURE',
+              message: 'No matching insurance plans found. Please verify the insurance name, group name, or group number.',
+              suggestions: [
+                'Check if the insurance carrier name is spelled correctly',
+                'Verify the group number with the patient',
+                'Ask for the insurance card to confirm details',
+              ],
+            },
+          };
+        }
+
+        // Format coverage suggestions from the plan data
+        const plans = lookupResult.body.data.plans;
+        const coverageSuggestions = plans.map((plan: any) => formatCoverageSuggestion(plan));
+
+        return {
+          statusCode: 200,
+          body: {
+            status: 'SUCCESS',
+            message: `Found ${plans.length} matching insurance plan(s)`,
+            data: {
+              plans: coverageSuggestions,
+              summary: generateCoverageSummary(plans),
+            },
+          },
+        };
+      }
+
       default:
         return {
           statusCode: 400,
@@ -843,14 +888,418 @@ async function handleTool(
 }
 
 // ========================================================================
+// INSURANCE PLAN BENEFITS LOOKUP FUNCTIONS
+// ========================================================================
+
+interface InsurancePlanRecord {
+  pk: string;
+  sk: string;
+  clinicId: string;
+  clinicName: string;
+  insuranceName: string | null;
+  groupName: string | null;
+  groupNumber: string | null;
+  employer: string | null;
+  feeSchedule: string | null;
+  planNote: string | null;
+  downgrades: string | null;
+  annualMaxIndividual: number | null;
+  annualMaxFamily: number | null;
+  deductibleIndividual: number | null;
+  deductibleFamily: number | null;
+  deductibleOnPreventiveOverride: number | null;
+  preventiveDiagnosticsPct: number | null;
+  preventiveXRaysPct: number | null;
+  preventiveRoutinePreventivePct: number | null;
+  basicRestorativePct: number | null;
+  basicEndoPct: number | null;
+  basicPerioPct: number | null;
+  basicOralSurgeryPct: number | null;
+  majorCrownsPct: number | null;
+  majorProsthodonticsPct: number | null;
+  orthoPct: number | null;
+  orthoLifetimeMax: number | null;
+  waitingPeriods: string | null;
+  frequencyLimits: string | null;
+  ageLimits: string | null;
+  lastSyncAt: string;
+}
+
+/**
+ * Look up insurance plan benefits from the synced DynamoDB table
+ * Supports searching by: insuranceName, groupName, groupNumber, or clinicId
+ */
+async function lookupInsurancePlanBenefits(
+  params: Record<string, any>,
+  clinicId?: string
+): Promise<{ statusCode: number; body: any }> {
+  try {
+    const { insuranceName, groupName, groupNumber } = params;
+    const searchClinicId = clinicId || params.clinicId;
+
+    console.log(`[InsurancePlanLookup] Searching with: insuranceName=${insuranceName}, groupName=${groupName}, groupNumber=${groupNumber}, clinicId=${searchClinicId}`);
+
+    let plans: InsurancePlanRecord[] = [];
+
+    // Strategy 1: If we have clinicId and groupNumber, use direct key lookup
+    if (searchClinicId && groupNumber) {
+      const pk = `${searchClinicId}#${groupNumber}`;
+      
+      // Query all items with this partition key
+      const result = await docClient.send(new QueryCommand({
+        TableName: INSURANCE_PLANS_TABLE,
+        KeyConditionExpression: 'pk = :pk',
+        ExpressionAttributeValues: { ':pk': pk },
+      }));
+
+      plans = (result.Items || []) as InsurancePlanRecord[];
+
+      // If insuranceName provided, filter further
+      if (insuranceName && plans.length > 0) {
+        const searchTerm = insuranceName.toLowerCase();
+        plans = plans.filter(p => 
+          p.insuranceName?.toLowerCase().includes(searchTerm) ||
+          p.sk.toLowerCase().includes(searchTerm)
+        );
+      }
+    }
+    // Strategy 2: Query by clinicId GSI
+    else if (searchClinicId) {
+      const result = await docClient.send(new QueryCommand({
+        TableName: INSURANCE_PLANS_TABLE,
+        IndexName: 'clinicId-index',
+        KeyConditionExpression: 'clinicId = :clinicId',
+        ExpressionAttributeValues: { ':clinicId': searchClinicId },
+        Limit: 100, // Limit results for performance
+      }));
+
+      plans = (result.Items || []) as InsurancePlanRecord[];
+
+      // Filter by provided criteria
+      if (insuranceName) {
+        const searchTerm = insuranceName.toLowerCase();
+        plans = plans.filter(p => p.insuranceName?.toLowerCase().includes(searchTerm));
+      }
+      if (groupName) {
+        const searchTerm = groupName.toLowerCase();
+        plans = plans.filter(p => p.groupName?.toLowerCase().includes(searchTerm));
+      }
+      if (groupNumber) {
+        plans = plans.filter(p => p.groupNumber === groupNumber);
+      }
+    }
+    // Strategy 3: Query by insuranceName GSI (cross-clinic search)
+    else if (insuranceName) {
+      const result = await docClient.send(new QueryCommand({
+        TableName: INSURANCE_PLANS_TABLE,
+        IndexName: 'insuranceName-index',
+        KeyConditionExpression: 'insuranceName = :insuranceName',
+        ExpressionAttributeValues: { ':insuranceName': insuranceName },
+        Limit: 50,
+      }));
+
+      plans = (result.Items || []) as InsurancePlanRecord[];
+
+      // Filter by group criteria if provided
+      if (groupName) {
+        const searchTerm = groupName.toLowerCase();
+        plans = plans.filter(p => p.groupName?.toLowerCase().includes(searchTerm));
+      }
+      if (groupNumber) {
+        plans = plans.filter(p => p.groupNumber === groupNumber);
+      }
+    }
+    // Strategy 4: Scan with filters (fallback, less efficient)
+    else {
+      const filterExpressions: string[] = [];
+      const expressionValues: Record<string, any> = {};
+
+      if (groupName) {
+        filterExpressions.push('contains(groupName, :groupName)');
+        expressionValues[':groupName'] = groupName;
+      }
+      if (groupNumber) {
+        filterExpressions.push('groupNumber = :groupNumber');
+        expressionValues[':groupNumber'] = groupNumber;
+      }
+
+      if (filterExpressions.length > 0) {
+        const result = await docClient.send(new ScanCommand({
+          TableName: INSURANCE_PLANS_TABLE,
+          FilterExpression: filterExpressions.join(' AND '),
+          ExpressionAttributeValues: expressionValues,
+          Limit: 50,
+        }));
+
+        plans = (result.Items || []) as InsurancePlanRecord[];
+      }
+    }
+
+    if (plans.length === 0) {
+      return {
+        statusCode: 404,
+        body: {
+          status: 'FAILURE',
+          message: 'No matching insurance plans found',
+          searchCriteria: { insuranceName, groupName, groupNumber, clinicId: searchClinicId },
+        },
+      };
+    }
+
+    console.log(`[InsurancePlanLookup] Found ${plans.length} matching plan(s)`);
+
+    return {
+      statusCode: 200,
+      body: {
+        status: 'SUCCESS',
+        message: `Found ${plans.length} matching insurance plan(s)`,
+        data: {
+          plans,
+          count: plans.length,
+        },
+      },
+    };
+  } catch (error: any) {
+    console.error('[InsurancePlanLookup] Error:', error);
+    return {
+      statusCode: 500,
+      body: {
+        status: 'FAILURE',
+        message: `Failed to lookup insurance plans: ${error.message}`,
+      },
+    };
+  }
+}
+
+/**
+ * Format a single insurance plan into human-readable coverage suggestions
+ */
+function formatCoverageSuggestion(plan: InsurancePlanRecord): any {
+  const formatPercent = (pct: number | null): string => {
+    if (pct === null || pct === undefined) return 'Not specified';
+    return `${Math.round(pct * 100)}%`;
+  };
+
+  const formatMoney = (amt: number | null): string => {
+    if (amt === null || amt === undefined) return 'Not specified';
+    return `$${amt.toLocaleString()}`;
+  };
+
+  return {
+    planInfo: {
+      insuranceName: plan.insuranceName || 'Unknown',
+      groupName: plan.groupName || 'Unknown',
+      groupNumber: plan.groupNumber || 'Unknown',
+      employer: plan.employer,
+      feeSchedule: plan.feeSchedule,
+      downgrades: plan.downgrades,
+    },
+    maximumsAndDeductibles: {
+      annualMaxIndividual: formatMoney(plan.annualMaxIndividual),
+      annualMaxFamily: formatMoney(plan.annualMaxFamily),
+      deductibleIndividual: formatMoney(plan.deductibleIndividual),
+      deductibleFamily: formatMoney(plan.deductibleFamily),
+      deductibleOnPreventive: plan.deductibleOnPreventiveOverride !== null 
+        ? formatMoney(plan.deductibleOnPreventiveOverride)
+        : 'Standard deductible applies',
+    },
+    coveragePercentages: {
+      preventive: {
+        diagnostics: formatPercent(plan.preventiveDiagnosticsPct),
+        xrays: formatPercent(plan.preventiveXRaysPct),
+        routinePreventive: formatPercent(plan.preventiveRoutinePreventivePct),
+        summary: calculateCategoryAverage([
+          plan.preventiveDiagnosticsPct,
+          plan.preventiveXRaysPct,
+          plan.preventiveRoutinePreventivePct,
+        ]),
+      },
+      basic: {
+        restorative: formatPercent(plan.basicRestorativePct),
+        endodontics: formatPercent(plan.basicEndoPct),
+        periodontics: formatPercent(plan.basicPerioPct),
+        oralSurgery: formatPercent(plan.basicOralSurgeryPct),
+        summary: calculateCategoryAverage([
+          plan.basicRestorativePct,
+          plan.basicEndoPct,
+          plan.basicPerioPct,
+          plan.basicOralSurgeryPct,
+        ]),
+      },
+      major: {
+        crowns: formatPercent(plan.majorCrownsPct),
+        prosthodontics: formatPercent(plan.majorProsthodonticsPct),
+        summary: calculateCategoryAverage([
+          plan.majorCrownsPct,
+          plan.majorProsthodonticsPct,
+        ]),
+      },
+      orthodontics: {
+        coverage: formatPercent(plan.orthoPct),
+        lifetimeMax: formatMoney(plan.orthoLifetimeMax),
+      },
+    },
+    limitations: {
+      waitingPeriods: plan.waitingPeriods || 'None specified',
+      frequencyLimits: plan.frequencyLimits || 'None specified',
+      ageLimits: plan.ageLimits || 'None specified',
+    },
+    notes: plan.planNote,
+    lastUpdated: plan.lastSyncAt,
+  };
+}
+
+/**
+ * Calculate average coverage percentage for a category
+ */
+function calculateCategoryAverage(percentages: (number | null)[]): string {
+  const validPcts = percentages.filter((p): p is number => p !== null && p !== undefined);
+  if (validPcts.length === 0) return 'Not specified';
+  const avg = validPcts.reduce((a, b) => a + b, 0) / validPcts.length;
+  return `~${Math.round(avg * 100)}% average`;
+}
+
+/**
+ * Generate a summary of coverage across all matching plans
+ */
+function generateCoverageSummary(plans: InsurancePlanRecord[]): any {
+  if (plans.length === 0) return null;
+
+  // For single plan, provide detailed summary
+  if (plans.length === 1) {
+    const plan = plans[0];
+    const preventiveAvg = calculateCategoryAverage([
+      plan.preventiveDiagnosticsPct,
+      plan.preventiveXRaysPct,
+      plan.preventiveRoutinePreventivePct,
+    ]);
+    const basicAvg = calculateCategoryAverage([
+      plan.basicRestorativePct,
+      plan.basicEndoPct,
+      plan.basicPerioPct,
+      plan.basicOralSurgeryPct,
+    ]);
+    const majorAvg = calculateCategoryAverage([
+      plan.majorCrownsPct,
+      plan.majorProsthodonticsPct,
+    ]);
+
+    return {
+      planType: determinePlanType(plan),
+      quickSummary: `Annual Max: ${plan.annualMaxIndividual ? '$' + plan.annualMaxIndividual : 'N/A'} | Deductible: ${plan.deductibleIndividual ? '$' + plan.deductibleIndividual : 'N/A'} | Preventive: ${preventiveAvg} | Basic: ${basicAvg} | Major: ${majorAvg}`,
+      recommendations: generateRecommendations(plan),
+    };
+  }
+
+  // For multiple plans, show comparison
+  return {
+    multiplePlansFound: true,
+    message: `Found ${plans.length} plans. Please specify more details to narrow down.`,
+    planSummaries: plans.slice(0, 5).map(p => ({
+      insuranceName: p.insuranceName,
+      groupName: p.groupName,
+      groupNumber: p.groupNumber,
+      annualMax: p.annualMaxIndividual ? `$${p.annualMaxIndividual}` : 'N/A',
+    })),
+  };
+}
+
+/**
+ * Determine the type of insurance plan based on coverage levels
+ */
+function determinePlanType(plan: InsurancePlanRecord): string {
+  const preventive = plan.preventiveRoutinePreventivePct ?? plan.preventiveDiagnosticsPct ?? 0;
+  const basic = plan.basicRestorativePct ?? 0;
+  const major = plan.majorCrownsPct ?? 0;
+
+  if (preventive >= 0.9 && basic >= 0.7 && major >= 0.5) return 'Comprehensive (100-80-50 or better)';
+  if (preventive >= 0.8 && basic >= 0.6 && major >= 0.4) return 'Standard (80-60-40 or similar)';
+  if (preventive >= 0.8 && basic >= 0.5) return 'Basic Coverage';
+  if (preventive >= 0.8) return 'Preventive-focused';
+  return 'Limited Coverage';
+}
+
+/**
+ * Generate treatment recommendations based on insurance coverage
+ */
+function generateRecommendations(plan: InsurancePlanRecord): string[] {
+  const recommendations: string[] = [];
+
+  // Preventive recommendations
+  const preventiveCoverage = plan.preventiveRoutinePreventivePct ?? plan.preventiveDiagnosticsPct;
+  if (preventiveCoverage && preventiveCoverage >= 0.8) {
+    recommendations.push('✓ Preventive services (cleanings, exams) are well covered - encourage regular visits');
+  }
+
+  // Deductible recommendations
+  if (plan.deductibleOnPreventiveOverride === 0) {
+    recommendations.push('✓ No deductible on preventive services');
+  } else if (plan.deductibleIndividual && plan.deductibleIndividual > 0) {
+    recommendations.push(`Note: $${plan.deductibleIndividual} individual deductible applies before benefits kick in`);
+  }
+
+  // Basic services
+  if (plan.basicRestorativePct && plan.basicRestorativePct >= 0.7) {
+    recommendations.push('✓ Good coverage for fillings and basic restorative work');
+  } else if (plan.basicRestorativePct && plan.basicRestorativePct < 0.5) {
+    recommendations.push('⚠ Limited coverage for fillings - patient should expect higher out-of-pocket');
+  }
+
+  // Major services
+  if (plan.majorCrownsPct && plan.majorCrownsPct >= 0.5) {
+    recommendations.push('✓ Reasonable coverage for crowns and major work');
+  } else if (plan.majorCrownsPct && plan.majorCrownsPct < 0.4) {
+    recommendations.push('⚠ Low coverage for major procedures - discuss payment options with patient');
+  }
+
+  // Waiting periods
+  if (plan.waitingPeriods && plan.waitingPeriods.length > 0) {
+    recommendations.push(`⏳ Waiting periods apply: ${plan.waitingPeriods}`);
+  }
+
+  // Annual max
+  if (plan.annualMaxIndividual) {
+    if (plan.annualMaxIndividual >= 2000) {
+      recommendations.push(`✓ Good annual maximum of $${plan.annualMaxIndividual}`);
+    } else if (plan.annualMaxIndividual < 1000) {
+      recommendations.push(`⚠ Low annual maximum of $${plan.annualMaxIndividual} - may run out quickly with major work`);
+    }
+  }
+
+  // Frequency limits
+  if (plan.frequencyLimits) {
+    recommendations.push(`📋 Frequency limits: ${plan.frequencyLimits}`);
+  }
+
+  return recommendations;
+}
+
+// ========================================================================
 // MAIN HANDLER
 // ========================================================================
 
 export const handler = async (event: ActionGroupEvent): Promise<ActionGroupResponse> => {
   console.log('Action Group Event:', JSON.stringify(event, null, 2));
 
-  // Extract tool name from apiPath (e.g., "/searchPatients" -> "searchPatients")
-  const toolName = event.apiPath.replace(/^\//, '');
+  // Extract tool name from apiPath or parameters
+  // The apiPath may contain a template like "/open-dental/{toolName}" 
+  // In that case, the actual tool name is in the parameters array
+  let toolName = event.apiPath.replace(/^\//, '');
+  
+  // Handle proxy pattern: /open-dental/{toolName} or /open-dental/searchPatients
+  if (toolName.startsWith('open-dental/')) {
+    toolName = toolName.replace('open-dental/', '');
+  }
+  
+  // If toolName is still a template placeholder like "{toolName}", extract from parameters
+  if (toolName === '{toolName}' || toolName.includes('{')) {
+    const toolNameParam = event.parameters?.find((p: { name: string; value: string }) => p.name === 'toolName');
+    if (toolNameParam?.value) {
+      toolName = toolNameParam.value;
+    }
+  }
+  
+  console.log(`[ActionGroup] Executing tool: ${toolName}`);
   const params = parseParameters(event);
 
   // Get clinic ID from session attributes
@@ -924,4 +1373,3 @@ export const handler = async (event: ActionGroupEvent): Promise<ActionGroupRespo
   console.log('Action Group Response:', JSON.stringify(response, null, 2));
   return response;
 };
-

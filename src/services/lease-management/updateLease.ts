@@ -2,20 +2,41 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
+import { getUserPermissions, hasModulePermission } from '../../shared/utils/permissions-helper';
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
 const LEASE_TABLE_NAME = process.env.LEASE_TABLE_NAME!;
+const LEGAL_MODULE = 'Legal';
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   console.log('Update Lease Event:', JSON.stringify(event, null, 2));
 
   try {
+    // Check user permissions
+    const userPerms = getUserPermissions(event);
+    if (!userPerms) {
+      return createResponse(401, { success: false, error: 'Unauthorized' });
+    }
+
     const clinicId = event.pathParameters?.clinicId;
     const leaseId = event.pathParameters?.leaseId;
 
     if (!clinicId || !leaseId) {
       return createResponse(400, { success: false, error: 'clinicId and leaseId are required' });
+    }
+
+    // Check if user has Legal module put permission for this clinic
+    const canUpdate = hasModulePermission(
+      userPerms.clinicRoles,
+      LEGAL_MODULE,
+      'put',
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin,
+      clinicId
+    );
+    if (!canUpdate) {
+      return createResponse(403, { success: false, error: 'Permission denied. Legal module access required.' });
     }
 
     if (!event.body) {

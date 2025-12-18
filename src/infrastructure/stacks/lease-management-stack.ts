@@ -216,8 +216,8 @@ export class LeaseManagementStack extends cdk.Stack {
     extractedResource.addMethod('GET', new apigateway.LambdaIntegration(getExtractedDataLambda));
 
     // Outputs
-    new cdk.CfnOutput(this, 'LeaseTableName', { value: this.leaseTable.tableName });
-    new cdk.CfnOutput(this, 'LeaseDocumentsBucket', { value: this.leaseDocumentsBucket.bucketName });
-    new cdk.CfnOutput(this, 'LeaseApiUrl', { value: this.api.url });
+    new cdk.CfnOutput(this, 'LeaseTableNameOutput', { value: this.leaseTable.tableName });
+    new cdk.CfnOutput(this, 'LeaseDocumentsBucketOutput', { value: this.leaseDocumentsBucket.bucketName });
+    new cdk.CfnOutput(this, 'LeaseApiUrlOutput', { value: this.api.url });
   }
 }

@@ -2,14 +2,22 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v4 as uuidv4 } from 'uuid';
+import { getUserPermissions, hasModulePermission } from '../../shared/utils/permissions-helper';
 
 const s3Client = new S3Client({});
 const LEASE_DOCUMENTS_BUCKET = process.env.LEASE_DOCUMENTS_BUCKET!;
+const LEGAL_MODULE = 'Legal';
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   console.log('Upload Document Event:', JSON.stringify(event, null, 2));
 
   try {
+    // Check user permissions
+    const userPerms = getUserPermissions(event);
+    if (!userPerms) {
+      return createResponse(401, { success: false, error: 'Unauthorized' });
+    }
+
     if (!event.body) {
       return createResponse(400, { success: false, error: 'Request body is required' });
     }
@@ -21,6 +29,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     if (!clinic) {
       return createResponse(400, { success: false, error: 'clinicId is required' });
+    }
+
+    // Check if user has Legal module write permission for this clinic
+    const canUpload = hasModulePermission(
+      userPerms.clinicRoles,
+      LEGAL_MODULE,
+      'write',
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin,
+      clinic
+    );
+    if (!canUpload) {
+      return createResponse(403, { success: false, error: 'Permission denied. Legal module access required.' });
     }
 
     if (!fileName || !contentType) {
