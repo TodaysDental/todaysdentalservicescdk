@@ -36,6 +36,7 @@ import { AiAgentsStack } from './stacks/ai-agents-stack';
 import { QueryGeneratorStack } from './stacks/query-generator-stack';
 import { RcsStack } from './stacks/rcs-stack';
 import { CredentialingStack } from './stacks/credentialing-stack';
+import { LeaseManagementStack } from './stacks/lease-management-stack';
 // import { DentalSoftwareStack } from './stacks/dental-software-stack';
 
 const app = new cdk.App();
@@ -601,6 +602,14 @@ chatbotStack.addDependency(clinicInsuranceStack); // Explicit - uses table name
 //  env,
 // });
 // fluorideAutomationStack.addDependency(openDentalStack); // Add dependency on OpenDental stack for SFTP server
+
+// Lease Management Stack - Manages lease documents for all 28 clinics
+// Features: CRUD operations, S3 document storage, Textract OCR extraction
+const leaseManagementStack = new LeaseManagementStack(app, 'TodaysDentalInsightsLeaseManagementN1', {
+  env,
+});
+leaseManagementStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+
 
 // CRITICAL FIX: Remove commented-out code that could lead to circular dependencies
 // Note: The proper dependencies are already set above:
