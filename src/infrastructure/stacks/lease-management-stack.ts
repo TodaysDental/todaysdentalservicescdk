@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import { Fn } from 'aws-cdk-lib';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
@@ -13,6 +14,7 @@ export class LeaseManagementStack extends cdk.Stack {
   public readonly leaseTable: dynamodb.Table;
   public readonly leaseDocumentsBucket: s3.Bucket;
   public readonly api: apigateway.RestApi;
+  public readonly authorizer: apigateway.RequestAuthorizer;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -190,31 +192,95 @@ export class LeaseManagementStack extends cdk.Stack {
         allowMethods: apigateway.Cors.ALL_METHODS,
         allowHeaders: ['Content-Type', 'X-Amz-Date', 'Authorization', 'X-Api-Key', 'x-clinic-id'],
       },
+      deployOptions: {
+        stageName: 'prod',
+        metricsEnabled: true,
+        loggingLevel: apigateway.MethodLoggingLevel.INFO,
+      },
     });
 
+    // Add CORS error responses for proper error handling
+    new apigateway.GatewayResponse(this, 'GatewayResponseDefault4XX', {
+      restApi: this.api,
+      type: apigateway.ResponseType.DEFAULT_4XX,
+      responseHeaders: {
+        'Access-Control-Allow-Origin': "'*'",
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization,x-clinic-id'",
+      },
+    });
+
+    new apigateway.GatewayResponse(this, 'GatewayResponseDefault5XX', {
+      restApi: this.api,
+      type: apigateway.ResponseType.DEFAULT_5XX,
+      responseHeaders: {
+        'Access-Control-Allow-Origin': "'*'",
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization,x-clinic-id'",
+      },
+    });
+
+    new apigateway.GatewayResponse(this, 'GatewayResponseUnauthorized', {
+      restApi: this.api,
+      type: apigateway.ResponseType.UNAUTHORIZED,
+      responseHeaders: {
+        'Access-Control-Allow-Origin': "'*'",
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization,x-clinic-id'",
+      },
+    });
+
+    // Import the authorizer function ARN from CoreStack's export
+    const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
+
+    // Create a reference to the authorizer function
+    const authorizerFn = lambda.Function.fromFunctionArn(
+      this,
+      'ImportedAuthorizerFn',
+      authorizerFunctionArn
+    );
+
+    // Create authorizer for this stack's API
+    this.authorizer = new apigateway.RequestAuthorizer(this, 'LeaseManagementAuthorizer', {
+      handler: authorizerFn,
+      identitySources: [apigateway.IdentitySource.header('Authorization')],
+      resultsCacheTtl: cdk.Duration.minutes(5),
+    });
+
+    // Grant API Gateway permission to invoke the authorizer Lambda
+    new lambda.CfnPermission(this, 'AuthorizerInvokePermission', {
+      action: 'lambda:InvokeFunction',
+      functionName: authorizerFunctionArn,
+      principal: 'apigateway.amazonaws.com',
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${this.api.restApiId}/authorizers/*`,
+    });
+
+    // Method options with authorizer
+    const methodOptionsWithAuth = {
+      authorizer: this.authorizer,
+      authorizationType: apigateway.AuthorizationType.CUSTOM,
+    };
+
     const leasesResource = this.api.root.addResource('leases');
-    leasesResource.addMethod('POST', new apigateway.LambdaIntegration(createLeaseLambda));
-    leasesResource.addMethod('GET', new apigateway.LambdaIntegration(listLeasesLambda));
+    leasesResource.addMethod('POST', new apigateway.LambdaIntegration(createLeaseLambda), methodOptionsWithAuth);
+    leasesResource.addMethod('GET', new apigateway.LambdaIntegration(listLeasesLambda), methodOptionsWithAuth);
 
     // /leases/{clinicId}/{leaseId}
     const clinicResource = leasesResource.addResource('{clinicId}');
     const leaseResource = clinicResource.addResource('{leaseId}');
-    leaseResource.addMethod('GET', new apigateway.LambdaIntegration(getLeaseLambda));
-    leaseResource.addMethod('PUT', new apigateway.LambdaIntegration(updateLeaseLambda));
-    leaseResource.addMethod('DELETE', new apigateway.LambdaIntegration(deleteLeaseLambda));
+    leaseResource.addMethod('GET', new apigateway.LambdaIntegration(getLeaseLambda), methodOptionsWithAuth);
+    leaseResource.addMethod('PUT', new apigateway.LambdaIntegration(updateLeaseLambda), methodOptionsWithAuth);
+    leaseResource.addMethod('DELETE', new apigateway.LambdaIntegration(deleteLeaseLambda), methodOptionsWithAuth);
 
     // /leases/documents/upload
     const documentsResource = leasesResource.addResource('documents');
     const uploadResource = documentsResource.addResource('upload');
-    uploadResource.addMethod('POST', new apigateway.LambdaIntegration(uploadDocumentLambda));
+    uploadResource.addMethod('POST', new apigateway.LambdaIntegration(uploadDocumentLambda), methodOptionsWithAuth);
 
     // /leases/documents/download
     const downloadResource = documentsResource.addResource('download');
-    downloadResource.addMethod('GET', new apigateway.LambdaIntegration(getDocumentLambda));
+    downloadResource.addMethod('GET', new apigateway.LambdaIntegration(getDocumentLambda), methodOptionsWithAuth);
 
     // /leases/documents/extracted - Get extracted data from Textract
     const extractedResource = documentsResource.addResource('extracted');
-    extractedResource.addMethod('GET', new apigateway.LambdaIntegration(getExtractedDataLambda));
+    extractedResource.addMethod('GET', new apigateway.LambdaIntegration(getExtractedDataLambda), methodOptionsWithAuth);
 
     // ========================================
     // CUSTOM DOMAIN MAPPING

@@ -1,5 +1,3 @@
-'use strict';
-
 /**
  * IMAP/SMTP Email Handler - Fetches emails via IMAP and sends via SMTP
  * 
@@ -108,6 +106,31 @@ function normalizeResponse(resp: { statusCode?: number; headers?: Record<string,
   };
 }
 
+function getLimitFromEvent(event: APIGatewayProxyEvent, def = 50): number {
+  const raw = event?.queryStringParameters?.limit;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return def;
+  return Math.min(500, Math.floor(n)); // Max 500 emails
+}
+
+function getDaysFromEvent(event: APIGatewayProxyEvent, def = 7): number {
+  const raw = event?.queryStringParameters?.days;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return def;
+  return Math.min(90, Math.floor(n)); // Max 90 days
+}
+
+function getImapDateString(daysAgo: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() - daysAgo);
+  // IMAP uses DD-MMM-YYYY format (e.g., "12-Dec-2024")
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = months[date.getMonth()];
+  const year = date.getFullYear();
+  return `${day}-${month}-${year}`;
+}
+
 function getPostPayload(event: APIGatewayProxyEvent): SendEmailPayload {
   if (typeof event.body === 'string') {
     const trimmed = event.body.trim();
@@ -190,15 +213,17 @@ async function handleSendEmail(
   }
 }
 
-// -------------------- IMAP: Fetch Emails --------------------
+// -------------------- IMAP: Fetch Emails by Date Range --------------------
 
 async function handleFetchEmails(
   user: string,
   password: string,
   host: string,
   port: number,
+  days: number,
+  limit: number,
   mailbox = 'INBOX'
-): Promise<{ statusCode: number; body: { message: string; count: number; emails: EmailResponse[] } }> {
+): Promise<{ statusCode: number; body: { message: string; count: number; emails: EmailResponse[]; searchCriteria?: string } }> {
   if (!user || !password || !host) {
     return {
       statusCode: 500,
@@ -213,13 +238,15 @@ async function handleFetchEmails(
       host,
       port,
       tls: true,
-      authTimeout: 15000,
-      connTimeout: 15000,
+      authTimeout: 30000,
+      connTimeout: 30000,
       tlsOptions: { servername: host },
     },
   };
 
   let connection: imaps.ImapSimple | null = null;
+  const sinceDate = getImapDateString(days);
+  const searchCriteria = `SINCE ${sinceDate}`;
   
   try {
     console.log('IMAP: connecting...');
@@ -228,50 +255,52 @@ async function handleFetchEmails(
     console.log('IMAP: opening box...', mailbox);
     await connection.openBox(mailbox);
 
-    const total = (connection as unknown as { imap?: { _box?: { messages?: { total?: number } } } }).imap?._box?.messages?.total || 0;
-    console.log('IMAP: total messages =', total);
+    // Use IMAP SEARCH to find messages from the last N days
+    console.log(`IMAP: searching with criteria: ${searchCriteria}`);
+    const searchResults = await connection.search([['SINCE', sinceDate]], {
+      bodies: ['HEADER', 'TEXT', ''],
+      struct: true,
+    });
 
-    if (total === 0) {
+    console.log(`IMAP: found ${searchResults.length} messages since ${sinceDate}`);
+
+    if (searchResults.length === 0) {
       connection.end();
       return {
         statusCode: 200,
-        body: { message: 'Emails fetched successfully', count: 0, emails: [] },
+        body: { message: `No emails found in the last ${days} days`, count: 0, emails: [], searchCriteria },
       };
     }
 
-    const start = Math.max(1, total - 4);
-    const range = `${start}:${total}`;
-    console.log('IMAP: fetching range', range);
+    // Sort by UID descending (newest first) and limit
+    searchResults.sort((a, b) => (b.attributes?.uid || 0) - (a.attributes?.uid || 0));
+    const limitedResults = searchResults.slice(0, limit);
 
-    const emails: EmailResponse[] = await new Promise((resolve, reject) => {
-      const out: EmailResponse[] = [];
-      const f = (connection as unknown as { imap: { seq: { fetch: (range: string, options: { bodies: string }) => NodeJS.EventEmitter } } }).imap.seq.fetch(range, { bodies: '' });
+    const emails: EmailResponse[] = [];
+    
+    for (const message of limitedResults) {
+      try {
+        // Get the full raw email from the parts
+        const allParts = message.parts || [];
+        const bodyPart = allParts.find((p: { which: string }) => p.which === '');
+        const raw = bodyPart?.body || '';
 
-      f.on('message', (msg: NodeJS.EventEmitter) => {
-        let raw = '';
-        let uid: number | undefined;
-
-        msg.on('body', (stream: NodeJS.ReadableStream) => {
-          stream.on('data', (chunk: Buffer) => (raw += chunk.toString('utf8')));
-        });
-
-        msg.once('attributes', (attrs: { uid: number }) => {
-          uid = attrs.uid;
-        });
-
-        msg.once('end', async () => {
-          try {
-            const parsed = await simpleParser(raw);
+        if (!raw) {
+          // Try to get header and text separately
+          const headerPart = allParts.find((p: { which: string }) => p.which === 'HEADER');
+          const textPart = allParts.find((p: { which: string }) => p.which === 'TEXT');
+          const combined = (headerPart?.body || '') + '\r\n\r\n' + (textPart?.body || '');
+          
+          if (combined.trim()) {
+            const parsed = await simpleParser(combined);
             const text = (parsed.text || '').trim();
             const snippet = text.replace(/\s+/g, ' ').slice(0, 300);
-
-            // Handle 'to' which can be AddressObject or AddressObject[]
             const toAddress = Array.isArray(parsed.to)
               ? parsed.to.map(a => a.text).join(', ')
               : (parsed.to?.text || '');
 
-            out.push({
-              uid,
+            emails.push({
+              uid: message.attributes?.uid,
               from: parsed.from?.text || '',
               to: toAddress,
               subject: parsed.subject || '',
@@ -279,21 +308,60 @@ async function handleFetchEmails(
               snippet,
               text,
             });
-          } catch (e) {
-            out.push({ uid, from: '', to: '', subject: '', date: '', snippet: '', text: '', error: 'Parse failed', detail: String((e as Error)?.message || e) });
           }
-        });
-      });
+          continue;
+        }
 
-      f.once('error', reject);
-      f.once('end', () => resolve(out));
-    });
+        const parsed = await simpleParser(raw);
+        const text = (parsed.text || '').trim();
+        const snippet = text.replace(/\s+/g, ' ').slice(0, 300);
+
+        const toAddress = Array.isArray(parsed.to)
+          ? parsed.to.map(a => a.text).join(', ')
+          : (parsed.to?.text || '');
+
+        emails.push({
+          uid: message.attributes?.uid,
+          from: parsed.from?.text || '',
+          to: toAddress,
+          subject: parsed.subject || '',
+          date: parsed.date ? parsed.date.toISOString() : '',
+          snippet,
+          text,
+        });
+      } catch (e) {
+        console.error('Error parsing message:', e);
+        emails.push({
+          uid: message.attributes?.uid,
+          from: '',
+          to: '',
+          subject: '',
+          date: '',
+          snippet: '',
+          text: '',
+          error: 'Parse failed',
+          detail: String((e as Error)?.message || e),
+        });
+      }
+    }
 
     connection.end();
 
+    // Sort by date (newest first)
+    emails.sort((a, b) => {
+      const ta = Date.parse(a.date || '') || 0;
+      const tb = Date.parse(b.date || '') || 0;
+      return tb - ta;
+    });
+
     return {
       statusCode: 200,
-      body: { message: 'Emails fetched successfully', count: emails.length, emails },
+      body: { 
+        message: `Emails from the last ${days} days fetched successfully`, 
+        count: emails.length, 
+        emails,
+        searchCriteria 
+      },
     };
   } catch (err) {
     console.error('IMAP fetch error:', err);
@@ -453,7 +521,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     if (event.httpMethod === 'GET') {
-      const result = await handleFetchEmails(smtpUser, smtpPassword, imapHost, imapPort);
+      const days = getDaysFromEvent(event, 7);
+      const limit = getLimitFromEvent(event, 50);
+      const result = await handleFetchEmails(smtpUser, smtpPassword, imapHost, imapPort, days, limit);
       return normalizeResponse({ ...result, headers: corsHeaders });
     }
 

@@ -1,5 +1,3 @@
-'use strict';
-
 /**
  * Gmail REST API Handler - Fetches and sends emails using Gmail OAuth2 REST API
  * 
@@ -93,11 +91,28 @@ function normalizeResponse(resp: { statusCode?: number; headers?: Record<string,
   };
 }
 
-function getLimitFromEvent(event: APIGatewayProxyEvent, def = 5): number {
+function getLimitFromEvent(event: APIGatewayProxyEvent, def = 50): number {
   const raw = event?.queryStringParameters?.limit;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return def;
-  return Math.min(20, Math.floor(n));
+  return Math.min(500, Math.floor(n)); // Increased max to 500 for date-based queries
+}
+
+function getDaysFromEvent(event: APIGatewayProxyEvent, def = 7): number {
+  const raw = event?.queryStringParameters?.days;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return def;
+  return Math.min(90, Math.floor(n)); // Max 90 days
+}
+
+function getDateNDaysAgo(days: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  // Gmail uses YYYY/MM/DD format
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}/${month}/${day}`;
 }
 
 function getPostPayload(event: APIGatewayProxyEvent): SendEmailPayload {
@@ -199,12 +214,13 @@ async function gmailRequest(
   return json;
 }
 
-// -------------------- GET: Fetch Latest INBOX Emails --------------------
+// -------------------- GET: Fetch INBOX Emails by Date Range --------------------
 
 async function handleFetchLatestInboxEmails(
   clinicConfig: ClinicConfig,
-  limit = 5
-): Promise<{ statusCode: number; body: { message: string; count: number; emails: EmailResponse[] } }> {
+  limit = 50,
+  days = 7
+): Promise<{ statusCode: number; body: { message: string; count: number; emails: EmailResponse[]; query?: string } }> {
   const email = clinicConfig.email;
   if (!email?.gmailRefreshToken) {
     throw new Error(`Clinic ${clinicConfig.clinicId} does not have Gmail OAuth configured`);
@@ -213,54 +229,93 @@ async function handleFetchLatestInboxEmails(
   const userId = email.gmailUserId || 'me';
   const refreshToken = email.gmailRefreshToken;
 
-  const list = (await gmailRequest(
-    'GET',
-    `users/${encodeURIComponent(userId)}/messages?labelIds=INBOX&maxResults=${limit}&includeSpamTrash=false`,
-    refreshToken
-  )) as { messages?: { id: string }[] };
+  // Build query to filter emails from the last N days
+  const afterDate = getDateNDaysAgo(days);
+  const query = `in:inbox after:${afterDate}`;
+  const encodedQuery = encodeURIComponent(query);
 
-  const msgs = list?.messages || [];
-  if (!msgs.length) {
-    return { statusCode: 200, body: { message: 'No INBOX messages found', count: 0, emails: [] } };
+  console.log(`Fetching emails with query: ${query}, limit: ${limit}`);
+
+  // Fetch message IDs matching the query
+  let allMessageIds: { id: string }[] = [];
+  let pageToken: string | undefined;
+  
+  do {
+    const pageUrl = `users/${encodeURIComponent(userId)}/messages?q=${encodedQuery}&maxResults=${Math.min(limit - allMessageIds.length, 100)}&includeSpamTrash=false${pageToken ? `&pageToken=${pageToken}` : ''}`;
+    
+    const list = (await gmailRequest('GET', pageUrl, refreshToken)) as { 
+      messages?: { id: string }[]; 
+      nextPageToken?: string 
+    };
+
+    const msgs = list?.messages || [];
+    allMessageIds = allMessageIds.concat(msgs);
+    pageToken = list?.nextPageToken;
+
+    // Stop if we've reached the limit or no more pages
+    if (allMessageIds.length >= limit || !pageToken) break;
+  } while (pageToken);
+
+  // Trim to limit
+  allMessageIds = allMessageIds.slice(0, limit);
+
+  if (!allMessageIds.length) {
+    return { statusCode: 200, body: { message: `No INBOX messages found in the last ${days} days`, count: 0, emails: [], query } };
   }
 
-  const emails: EmailResponse[] = await Promise.all(
-    msgs.map(async ({ id }) => {
-      const msg = (await gmailRequest(
-        'GET',
-        `users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(id)}?format=raw`,
-        refreshToken
-      )) as { id: string; threadId: string; raw: string; internalDate: string };
+  console.log(`Found ${allMessageIds.length} messages in the last ${days} days`);
 
-      const buf = base64UrlDecodeToBuffer(msg.raw || '');
-      const parsed = await simpleParser(buf);
+  // Fetch full message details in batches to avoid overwhelming the API
+  const batchSize = 10;
+  const emails: EmailResponse[] = [];
+  
+  for (let i = 0; i < allMessageIds.length; i += batchSize) {
+    const batch = allMessageIds.slice(i, i + batchSize);
+    const batchResults = await Promise.all(
+      batch.map(async ({ id }) => {
+        try {
+          const msg = (await gmailRequest(
+            'GET',
+            `users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(id)}?format=raw`,
+            refreshToken
+          )) as { id: string; threadId: string; raw: string; internalDate: string };
 
-      const text = (parsed.text && parsed.text.trim())
-        ? parsed.text.trim()
-        : stripHtml(parsed.html || '');
-      const cleanText = truncate(text, 8000);
+          const buf = base64UrlDecodeToBuffer(msg.raw || '');
+          const parsed = await simpleParser(buf);
 
-      const internalDateMs = Number(msg.internalDate || 0);
+          const text = (parsed.text && parsed.text.trim())
+            ? parsed.text.trim()
+            : stripHtml(parsed.html || '');
+          const cleanText = truncate(text, 8000);
 
-      // Handle 'to' which can be AddressObject or AddressObject[]
-      const toAddress = Array.isArray(parsed.to) 
-        ? parsed.to.map(a => a.text).join(', ') 
-        : (parsed.to?.text || '');
+          const internalDateMs = Number(msg.internalDate || 0);
 
-      return {
-        id: msg.id || id,
-        threadId: msg.threadId || '',
-        from: parsed.from?.text || '',
-        to: toAddress,
-        subject: parsed.subject || '',
-        date: parsed.date ? parsed.date.toISOString() : '',
-        internalDate: internalDateMs ? new Date(internalDateMs).toISOString() : '',
-        snippet: truncate(cleanText.replace(/\s+/g, ' ').trim(), 200),
-        text: cleanText,
-      };
-    })
-  );
+          // Handle 'to' which can be AddressObject or AddressObject[]
+          const toAddress = Array.isArray(parsed.to) 
+            ? parsed.to.map(a => a.text).join(', ') 
+            : (parsed.to?.text || '');
 
+          return {
+            id: msg.id || id,
+            threadId: msg.threadId || '',
+            from: parsed.from?.text || '',
+            to: toAddress,
+            subject: parsed.subject || '',
+            date: parsed.date ? parsed.date.toISOString() : '',
+            internalDate: internalDateMs ? new Date(internalDateMs).toISOString() : '',
+            snippet: truncate(cleanText.replace(/\s+/g, ' ').trim(), 200),
+            text: cleanText,
+          };
+        } catch (err) {
+          console.error(`Error fetching message ${id}:`, err);
+          return null;
+        }
+      })
+    );
+    emails.push(...batchResults.filter((e): e is EmailResponse => e !== null));
+  }
+
+  // Sort by date (newest first)
   emails.sort((a, b) => {
     const ta = Date.parse(a.internalDate || a.date || '') || 0;
     const tb = Date.parse(b.internalDate || b.date || '') || 0;
@@ -269,7 +324,12 @@ async function handleFetchLatestInboxEmails(
 
   return {
     statusCode: 200,
-    body: { message: 'Most recent INBOX emails fetched successfully (Gmail REST)', count: emails.length, emails },
+    body: { 
+      message: `INBOX emails from the last ${days} days fetched successfully (Gmail REST)`, 
+      count: emails.length, 
+      emails,
+      query 
+    },
   };
 }
 
@@ -384,8 +444,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     console.log(`User ${userPermissions.email} accessing email for clinic ${clinicId}`);
 
     if (event.httpMethod === 'GET') {
-      const limit = getLimitFromEvent(event, 5);
-      const result = await handleFetchLatestInboxEmails(clinicConfig, limit);
+      const limit = getLimitFromEvent(event, 50);
+      const days = getDaysFromEvent(event, 7);
+      const result = await handleFetchLatestInboxEmails(clinicConfig, limit, days);
       return normalizeResponse({ ...result, headers: corsHeaders });
     }
 

@@ -112,10 +112,9 @@ export class EmailStack extends Stack {
       memorySize: 512,
       timeout: Duration.seconds(30),
       bundling: { 
-        format: lambdaNode.OutputFormat.ESM, 
+        // Use CJS format - google-auth-library uses dynamic require() for Node.js built-ins
+        format: lambdaNode.OutputFormat.CJS, 
         target: 'node20',
-        // Externalize modules that don't work well with ESM bundling
-        externalModules: ['aws-sdk'],
       },
       environment: {
         GMAIL_CLIENT_ID: GMAIL_CLIENT_ID,
@@ -137,9 +136,9 @@ export class EmailStack extends Stack {
       memorySize: 512,
       timeout: Duration.seconds(60), // IMAP can be slow
       bundling: { 
-        format: lambdaNode.OutputFormat.ESM, 
+        // Use CJS format - imap-simple uses dynamic require() patterns
+        format: lambdaNode.OutputFormat.CJS, 
         target: 'node20',
-        externalModules: ['aws-sdk'],
       },
       environment: {
         DOMAIN_SMTP_USER: DOMAIN_SMTP_USER,

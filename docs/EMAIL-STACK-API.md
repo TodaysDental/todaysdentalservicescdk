@@ -60,14 +60,22 @@ Retrieves the most recent emails from the clinic's Gmail inbox using the Gmail R
 
 #### Query Parameters
 
-| Parameter | Type   | Required | Default | Description                          |
-|-----------|--------|----------|---------|--------------------------------------|
-| limit     | number | No       | 5       | Number of emails to retrieve (max: 20) |
+| Parameter | Type   | Required | Default | Description                              |
+|-----------|--------|----------|---------|------------------------------------------|
+| days      | number | No       | 7       | Fetch emails from the last N days (max: 90) |
+| limit     | number | No       | 50      | Maximum number of emails to retrieve (max: 500) |
 
-#### Example Request
+#### Example Requests
 
+**Fetch emails from the last 7 days (default):**
 ```bash
-curl -X GET "https://apig.todaysdentalinsights.com/email/gmail/TD-001?limit=10" \
+curl -X GET "https://apig.todaysdentalinsights.com/email/gmail/TD-001" \
+  -H "Authorization: Bearer <your-jwt-token>"
+```
+
+**Fetch emails from the last 14 days with limit of 100:**
+```bash
+curl -X GET "https://apig.todaysdentalinsights.com/email/gmail/TD-001?days=14&limit=100" \
   -H "Authorization: Bearer <your-jwt-token>"
 ```
 
@@ -75,8 +83,9 @@ curl -X GET "https://apig.todaysdentalinsights.com/email/gmail/TD-001?limit=10" 
 
 ```json
 {
-  "message": "Most recent INBOX emails fetched successfully (Gmail REST)",
-  "count": 5,
+  "message": "INBOX emails from the last 7 days fetched successfully (Gmail REST)",
+  "count": 25,
+  "query": "in:inbox after:2024/12/12",
   "emails": [
     {
       "id": "18c3f5a7b9d0e123",
@@ -238,21 +247,21 @@ Retrieves the most recent emails from the clinic's mailbox using IMAP protocol.
 
 #### Example Requests
 
-**Fetch clinic Gmail inbox:**
+**Fetch clinic Gmail inbox (last 7 days, default):**
 ```bash
 curl -X GET "https://apig.todaysdentalinsights.com/email/imap/TD-001?emailType=gmail" \
   -H "Authorization: Bearer <your-jwt-token>"
 ```
 
-**Fetch clinic domain inbox:**
+**Fetch clinic domain inbox (last 14 days, up to 100 emails):**
 ```bash
-curl -X GET "https://apig.todaysdentalinsights.com/email/imap/TD-001?emailType=domain" \
+curl -X GET "https://apig.todaysdentalinsights.com/email/imap/TD-001?emailType=domain&days=14&limit=100" \
   -H "Authorization: Bearer <your-jwt-token>"
 ```
 
-**Fetch domain-level inbox (super admin only):**
+**Fetch domain-level inbox (super admin only, last 30 days):**
 ```bash
-curl -X GET "https://apig.todaysdentalinsights.com/email/imap/domain" \
+curl -X GET "https://apig.todaysdentalinsights.com/email/imap/domain?days=30" \
   -H "Authorization: Bearer <your-jwt-token>"
 ```
 
@@ -534,10 +543,17 @@ curl -X POST "https://apig.todaysdentalinsights.com/email/gmail/TD-001" \
   }'
 ```
 
-### Check Inbox for New Messages
+### Check Inbox for Last 7 Days
 
 ```bash
-curl -X GET "https://apig.todaysdentalinsights.com/email/gmail/TD-001?limit=20" \
+curl -X GET "https://apig.todaysdentalinsights.com/email/imap/TD-001?emailType=gmail&days=7" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Fetch All Emails from Last 30 Days
+
+```bash
+curl -X GET "https://apig.todaysdentalinsights.com/email/imap/TD-001?emailType=gmail&days=30&limit=500" \
   -H "Authorization: Bearer <token>"
 ```
 
