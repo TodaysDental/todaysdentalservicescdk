@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
@@ -55,83 +56,83 @@ export class LeaseManagementStack extends cdk.Stack {
     };
 
     // Create Lease Lambda
-    const createLeaseLambda = new lambda.Function(this, 'CreateLeaseLambda', {
+    const createLeaseLambda = new lambdaNode.NodejsFunction(this, 'CreateLeaseLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/createLease.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'createLease.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(30),
     });
 
     // Get Lease Lambda
-    const getLeaseLambda = new lambda.Function(this, 'GetLeaseLambda', {
+    const getLeaseLambda = new lambdaNode.NodejsFunction(this, 'GetLeaseLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/getLease.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'getLease.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(30),
     });
 
     // Update Lease Lambda
-    const updateLeaseLambda = new lambda.Function(this, 'UpdateLeaseLambda', {
+    const updateLeaseLambda = new lambdaNode.NodejsFunction(this, 'UpdateLeaseLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/updateLease.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'updateLease.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(30),
     });
 
     // Delete Lease Lambda
-    const deleteLeaseLambda = new lambda.Function(this, 'DeleteLeaseLambda', {
+    const deleteLeaseLambda = new lambdaNode.NodejsFunction(this, 'DeleteLeaseLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/deleteLease.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'deleteLease.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(30),
     });
 
     // List Leases Lambda
-    const listLeasesLambda = new lambda.Function(this, 'ListLeasesLambda', {
+    const listLeasesLambda = new lambdaNode.NodejsFunction(this, 'ListLeasesLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/listLeases.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'listLeases.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(30),
     });
 
     // Upload Document Lambda
-    const uploadDocumentLambda = new lambda.Function(this, 'UploadDocumentLambda', {
+    const uploadDocumentLambda = new lambdaNode.NodejsFunction(this, 'UploadDocumentLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/uploadDocument.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'uploadDocument.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(30),
     });
 
     // Get Document Lambda
-    const getDocumentLambda = new lambda.Function(this, 'GetDocumentLambda', {
+    const getDocumentLambda = new lambdaNode.NodejsFunction(this, 'GetDocumentLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/getDocument.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'getDocument.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(30),
     });
 
     // Process Document Lambda (Textract)
-    const processDocumentLambda = new lambda.Function(this, 'ProcessDocumentLambda', {
+    const processDocumentLambda = new lambdaNode.NodejsFunction(this, 'ProcessDocumentLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/processDocument.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'processDocument.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.minutes(5),
       memorySize: 1024,
     });
 
     // Get Extracted Data Lambda
-    const getExtractedDataLambda = new lambda.Function(this, 'GetExtractedDataLambda', {
+    const getExtractedDataLambda = new lambdaNode.NodejsFunction(this, 'GetExtractedDataLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/getExtractedData.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'getExtractedData.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(30),
     });
@@ -215,9 +216,24 @@ export class LeaseManagementStack extends cdk.Stack {
     const extractedResource = documentsResource.addResource('extracted');
     extractedResource.addMethod('GET', new apigateway.LambdaIntegration(getExtractedDataLambda));
 
+    // ========================================
+    // CUSTOM DOMAIN MAPPING
+    // ========================================
+    // Map this API under the existing custom domain as /lease
+    new apigateway.CfnBasePathMapping(this, 'LeaseBasePathMapping', {
+      domainName: 'apig.todaysdentalinsights.com',
+      basePath: 'lease',
+      restApiId: this.api.restApiId,
+      stage: this.api.deploymentStage.stageName,
+    });
+
     // Outputs
     new cdk.CfnOutput(this, 'LeaseTableNameOutput', { value: this.leaseTable.tableName });
     new cdk.CfnOutput(this, 'LeaseDocumentsBucketOutput', { value: this.leaseDocumentsBucket.bucketName });
     new cdk.CfnOutput(this, 'LeaseApiUrlOutput', { value: this.api.url });
+    new cdk.CfnOutput(this, 'LeaseCustomDomainUrl', {
+      value: 'https://apig.todaysdentalinsights.com/lease',
+      description: 'Lease Management API Custom Domain URL',
+    });
   }
 }
