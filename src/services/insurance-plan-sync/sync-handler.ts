@@ -293,10 +293,10 @@ ORDER BY c.CarrierName, isp.GroupName;`;
 // Interface for insurance plan record
 interface InsurancePlanRecord {
   pk: string; // clinicId#groupNumber
-  sk: string; // insuranceName#groupName
+  sk: string; // insuranceName#groupName#employer
   clinicId: string;
   clinicName: string;
-  insuranceName: string | null;
+  insuranceName: string; // Always a string for GSI compatibility (uses 'UNKNOWN_CARRIER' if null)
   groupName: string | null;
   groupNumber: string | null;
   employer: string | null;
@@ -341,10 +341,18 @@ function parseNumber(value: string | null | undefined): number | null {
   return isNaN(num) ? null : num;
 }
 
-// Helper to clean string values
+// Helper to clean string values - also strips surrounding quotes
 function cleanString(value: string | null | undefined): string | null {
   if (!value || value.trim() === '' || value === 'NULL') return null;
-  return value.trim();
+  let cleaned = value.trim();
+  // Remove surrounding quotes if present (CSV parsing artifact)
+  if ((cleaned.startsWith('"') && cleaned.endsWith('"')) || 
+      (cleaned.startsWith("'") && cleaned.endsWith("'"))) {
+    cleaned = cleaned.slice(1, -1);
+  }
+  // Also handle escaped quotes
+  cleaned = cleaned.replace(/\\"/g, '"').replace(/\\'/g, "'");
+  return cleaned.trim() || null;
 }
 
 // Convert a CSV row to an InsurancePlanRecord
@@ -352,20 +360,28 @@ function rowToRecord(row: Record<string, string>, clinicId: string, clinicName: 
   const insuranceName = cleanString(row['Insurance_Name']);
   const groupName = cleanString(row['Group_Name']);
   const groupNumber = cleanString(row['Group_Number']);
+  const employer = cleanString(row['Employer']);
   
-  // Create unique keys
+  // Create unique keys - use employer as part of key to handle duplicates
+  // pk: clinicId#groupNumber (or UNKNOWN if null)
+  // sk: insuranceName#groupName#employer (to ensure uniqueness)
   const pk = `${clinicId}#${groupNumber || 'UNKNOWN'}`;
-  const sk = `${insuranceName || 'UNKNOWN'}#${groupName || 'UNKNOWN'}`;
+  const sk = `${insuranceName || 'UNKNOWN'}#${groupName || 'UNKNOWN'}#${employer || 'UNKNOWN'}`;
+  
+  // IMPORTANT: insuranceName MUST be a string for the GSI to work
+  // Use a placeholder if null, otherwise DynamoDB will reject the write
+  const insuranceNameForGsi = insuranceName || 'UNKNOWN_CARRIER';
   
   return {
     pk,
     sk,
     clinicId,
     clinicName,
-    insuranceName,
+    // Use the GSI-safe value for insuranceName
+    insuranceName: insuranceNameForGsi,
     groupName,
     groupNumber,
-    employer: cleanString(row['Employer']),
+    employer,
     feeSchedule: cleanString(row['Fee_Schedule']),
     planNote: cleanString(row['Plan_Note']),
     downgrades: cleanString(row['Downgrades']),
@@ -711,14 +727,32 @@ async function processClinic(creds: ClinicCreds): Promise<{ added: number; updat
     const existingRecords = await getExistingRecords(creds.clinicId);
 
     // Convert rows to records and track changes
-    const newRecords: InsurancePlanRecord[] = [];
+    // Use a Map to deduplicate by key (last one wins if duplicates exist)
+    const recordsByKey = new Map<string, InsurancePlanRecord>();
     const currentKeys = new Set<string>();
 
     for (const row of rows) {
       const record = rowToRecord(row, creds.clinicId, creds.clinicName);
       const key = `${record.pk}#${record.sk}`;
+      
+      // Deduplicate: if we already have this key, keep the one with more data
+      if (recordsByKey.has(key)) {
+        const existing = recordsByKey.get(key)!;
+        // Keep the one with more non-null fields
+        const existingNonNull = Object.values(existing).filter(v => v !== null).length;
+        const recordNonNull = Object.values(record).filter(v => v !== null).length;
+        if (recordNonNull <= existingNonNull) {
+          continue; // Skip this duplicate, keep the existing one
+        }
+      }
+      
+      recordsByKey.set(key, record);
       currentKeys.add(key);
+    }
 
+    // Now process deduplicated records
+    const newRecords: InsurancePlanRecord[] = [];
+    for (const [key, record] of recordsByKey) {
       const existing = existingRecords.get(key);
       if (!existing) {
         // New record

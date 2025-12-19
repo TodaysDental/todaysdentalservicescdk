@@ -988,8 +988,9 @@ async function lookupInsurancePlanBenefits(
         plans = plans.filter(p => p.groupNumber === groupNumber);
       }
     }
-    // Strategy 3: Query by insuranceName GSI (cross-clinic search)
+    // Strategy 3: Search by insuranceName with partial match
     else if (insuranceName) {
+      // First try exact match on GSI
       const result = await docClient.send(new QueryCommand({
         TableName: INSURANCE_PLANS_TABLE,
         IndexName: 'insuranceName-index',
@@ -999,6 +1000,47 @@ async function lookupInsurancePlanBenefits(
       }));
 
       plans = (result.Items || []) as InsurancePlanRecord[];
+
+      // If no exact match, try partial match with scan
+      if (plans.length === 0) {
+        console.log(`[InsurancePlanLookup] No exact match for "${insuranceName}", trying partial match...`);
+        const searchTerm = insuranceName.toLowerCase();
+        
+        // Scan with contains filter for partial insurance name match
+        const scanResult = await docClient.send(new ScanCommand({
+          TableName: INSURANCE_PLANS_TABLE,
+          FilterExpression: 'contains(#insuranceName, :searchTerm) OR contains(#sk, :searchTerm)',
+          ExpressionAttributeNames: {
+            '#insuranceName': 'insuranceName',
+            '#sk': 'sk',
+          },
+          ExpressionAttributeValues: { 
+            ':searchTerm': searchTerm,
+          },
+          Limit: 50,
+        }));
+        
+        plans = (scanResult.Items || []) as InsurancePlanRecord[];
+        
+        // Also try uppercase version
+        if (plans.length === 0) {
+          const upperSearchTerm = insuranceName.toUpperCase();
+          const upperScanResult = await docClient.send(new ScanCommand({
+            TableName: INSURANCE_PLANS_TABLE,
+            FilterExpression: 'contains(#insuranceName, :searchTerm) OR contains(#sk, :searchTerm)',
+            ExpressionAttributeNames: {
+              '#insuranceName': 'insuranceName',
+              '#sk': 'sk',
+            },
+            ExpressionAttributeValues: { 
+              ':searchTerm': upperSearchTerm,
+            },
+            Limit: 50,
+          }));
+          
+          plans = (upperScanResult.Items || []) as InsurancePlanRecord[];
+        }
+      }
 
       // Filter by group criteria if provided
       if (groupName) {
@@ -1035,13 +1077,22 @@ async function lookupInsurancePlanBenefits(
       }
     }
 
+    // Filter out UNKNOWN_CARRIER plans (these have no real insurance name)
+    plans = plans.filter(p => p.insuranceName && p.insuranceName !== 'UNKNOWN_CARRIER');
+
     if (plans.length === 0) {
+      console.log(`[InsurancePlanLookup] No plans found for: insuranceName=${insuranceName}, clinicId=${searchClinicId}`);
       return {
         statusCode: 404,
         body: {
           status: 'FAILURE',
-          message: 'No matching insurance plans found',
+          message: `No insurance plan details found for "${insuranceName || groupName || groupNumber}" in the clinic's database. The insurance plan benefits may not have been synced yet. Please contact the clinic directly for coverage information or provide more details like the group number from the insurance card.`,
           searchCriteria: { insuranceName, groupName, groupNumber, clinicId: searchClinicId },
+          suggestions: [
+            'Verify the insurance carrier name spelling',
+            'Provide the group number from the insurance card for a more specific lookup',
+            'Contact the dental office directly for coverage details',
+          ],
         },
       };
     }
