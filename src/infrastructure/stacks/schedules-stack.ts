@@ -235,7 +235,12 @@ export class SchedulesStack extends Stack {
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 512,
       timeout: Duration.seconds(120),
-      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      bundling: { 
+        format: lambdaNode.OutputFormat.CJS, 
+        target: 'node22',
+        externalModules: ['ssh2', 'cpu-features'],  // Native .node binaries can't be bundled
+        nodeModules: ['ssh2'],  // Include ssh2 in node_modules for Lambda
+      },
       environment: {
         SCHEDULES_TABLE: this.schedulesTable.tableName,
         TEMPLATES_TABLE: props.templatesTableName,
@@ -274,7 +279,12 @@ export class SchedulesStack extends Stack {
       memorySize: 512,
       timeout: Duration.minutes(5), // Reduced - only queries patients and enqueues, doesn't send emails
       reservedConcurrentExecutions: 3, // Can increase since we're not hitting SES directly
-      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      bundling: { 
+        format: lambdaNode.OutputFormat.CJS, 
+        target: 'node22',
+        externalModules: ['ssh2', 'cpu-features'],  // Native .node binaries can't be bundled
+        nodeModules: ['ssh2'],  // Include ssh2 in node_modules for Lambda
+      },
       environment: {
         SCHEDULES_TABLE: this.schedulesTable.tableName,
         TEMPLATES_TABLE: props.templatesTableName,

@@ -142,7 +142,12 @@ export class PatientPortalStack extends Stack {
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 1024,
       timeout: Duration.seconds(30),
-      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      bundling: { 
+        format: lambdaNode.OutputFormat.CJS, 
+        target: 'node22',
+        externalModules: ['ssh2', 'cpu-features'],  // Native .node binaries can't be bundled
+        nodeModules: ['ssh2'],  // Include ssh2 in node_modules for Lambda
+      },
       environment: {
         REGION: Stack.of(this).region,
         SESSION_TABLE_PREFIX: sessionTablePrefix,

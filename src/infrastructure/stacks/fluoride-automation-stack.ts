@@ -34,7 +34,8 @@ export class FluorideAutomationStack extends Stack {
         CONSOLIDATED_SFTP_PASSWORD: 'Clinic2020',
       },
       bundling: {
-        externalModules: [], // Include all dependencies in the bundle
+        externalModules: ['ssh2', 'cpu-features'],  // Native .node binaries can't be bundled
+        nodeModules: ['ssh2'],  // Include ssh2 in node_modules for Lambda
         // Copy the clinics.json file to the bundle
         commandHooks: {
           beforeBundling(inputDir: string, outputDir: string): string[] {

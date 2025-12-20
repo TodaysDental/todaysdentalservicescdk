@@ -305,9 +305,10 @@ export class OpenDentalStack extends Stack {
       bundling: { 
         format: lambdaNode.OutputFormat.CJS, 
         target: 'node22',
-        externalModules: [],
+        externalModules: ['ssh2', 'cpu-features'],  // Native .node binaries can't be bundled
         minify: true,
-        sourceMap: true
+        sourceMap: true,
+        nodeModules: ['ssh2'],  // Include ssh2 in node_modules for Lambda
       },
       environment: {
         CONSOLIDATED_SFTP_HOST: this.consolidatedTransferServer.attrServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',

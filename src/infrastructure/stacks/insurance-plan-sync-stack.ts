@@ -117,7 +117,8 @@ export class InsurancePlanSyncStack extends Stack {
       bundling: {
         format: lambdaNode.OutputFormat.CJS,
         target: 'node22',
-        externalModules: [],
+        externalModules: ['ssh2', 'cpu-features'],  // Native .node binaries can't be bundled
+        nodeModules: ['ssh2'],  // Include ssh2 in node_modules for Lambda
         minify: true,
         sourceMap: true,
       },
