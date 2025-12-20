@@ -42,7 +42,7 @@ const CLINIC_CREDS: ClinicCreds[] = (clinicsData as any[]).map((c: any) => ({
 }));
 
 // The comprehensive insurance plan query
-const INSURANCE_PLAN_QUERY = `/* OPENDENTAL – CATEGORY % + MAX/DED + DOWNGRADES + WAIT/FREQ/AGE (PLAN LEVEL) */
+const INSURANCE_PLAN_QUERY = `/* OPENDENTAL – CATEGORY % + MAX/DED + DOWNGRADES + WAIT/FREQ/AGE + OTHER BENEFIT TYPES (PLAN LEVEL) */
 
 SELECT
   c.CarrierName  AS Insurance_Name,
@@ -60,11 +60,11 @@ SELECT
 
   /* ---------------- MAXIMUMS ---------------- */
   MAX(CASE
-        WHEN b.BenefitType = 5                 /* Limitations */
+        WHEN b.BenefitType = 5
          AND b.CovCatNum = 0
          AND b.CodeNum = 0 AND b.CodeGroupNum = 0
-         AND b.TimePeriod IN (1,2)             /* ServiceYear / CalendarYear */
-         AND b.CoverageLevel = 1               /* Individual */
+         AND b.TimePeriod IN (1,2)
+         AND b.CoverageLevel = 1
         THEN NULLIF(b.MonetaryAmt,-1)
       END) AS Annual_Max_Individual,
 
@@ -73,13 +73,13 @@ SELECT
          AND b.CovCatNum = 0
          AND b.CodeNum = 0 AND b.CodeGroupNum = 0
          AND b.TimePeriod IN (1,2)
-         AND b.CoverageLevel = 2               /* Family */
+         AND b.CoverageLevel = 2
         THEN NULLIF(b.MonetaryAmt,-1)
       END) AS Annual_Max_Family,
 
   /* ---------------- DEDUCTIBLES ---------------- */
   MAX(CASE
-        WHEN b.BenefitType = 2                 /* Deductible */
+        WHEN b.BenefitType = 2
          AND b.CovCatNum = 0
          AND b.TimePeriod IN (1,2)
          AND b.CoverageLevel = 1
@@ -108,7 +108,6 @@ SELECT
 
   /* =======================================================================
      CATEGORY PERCENTAGES (BenefitType = CoInsurance)
-     NOTE: covcat.Description names can be customized; LIKE patterns make this portable.
      ======================================================================= */
 
   /* ---------------- PREVENTIVE umbrella ---------------- */
@@ -192,7 +191,7 @@ SELECT
         WHEN b.BenefitType = 5
          AND b.CodeNum = 0 AND b.CodeGroupNum = 0
          AND cat.Description LIKE '%Ortho%'
-         AND b.TimePeriod = 3                 /* Lifetime */
+         AND b.TimePeriod = 3
         THEN NULLIF(b.MonetaryAmt,-1)
       END) AS Ortho_Lifetime_Max,
 
@@ -218,7 +217,7 @@ SELECT
   GROUP_CONCAT(DISTINCT
     CASE
       WHEN b.BenefitType = 5
-       AND b.QuantityQualifier IN (1,3,4,5)      /* #Services, Visits, Years, Months */
+       AND b.QuantityQualifier IN (1,3,4,5)
        AND (b.CodeGroupNum <> 0 OR b.CodeNum <> 0)
       THEN CONCAT(
         COALESCE(cg.GroupName, pc.ProcCode, 'Unknown'),
@@ -264,7 +263,7 @@ SELECT
   GROUP_CONCAT(DISTINCT
     CASE
       WHEN b.BenefitType = 5
-       AND b.QuantityQualifier = 2               /* AgeLimit */
+       AND b.QuantityQualifier = 2
       THEN CONCAT(
         COALESCE(cg.GroupName, pc.ProcCode, cat.Description, 'General'),
         ': Age ≤ ', FLOOR(b.Quantity)
@@ -272,20 +271,198 @@ SELECT
     END
     ORDER BY cg.GroupName, pc.ProcCode, cat.Description
     SEPARATOR ' | '
-  ) AS Age_Limits
+  ) AS Age_Limits,
+
+  /* =======================================================================
+     ADD: OTHER BENEFIT CATEGORIES (what you were missing)
+     ======================================================================= */
+
+  /* Deductible overrides by category (ALL categories, not only preventive) */
+  GROUP_CONCAT(DISTINCT
+    CASE
+      WHEN b.BenefitType = 2
+       AND b.CovCatNum <> 0
+      THEN CONCAT(
+        COALESCE(cat.Description,'Category'),
+        ': $', ROUND(NULLIF(b.MonetaryAmt,-1),2),
+        CASE b.CoverageLevel WHEN 1 THEN ' [Ind]' WHEN 2 THEN ' [Fam]' ELSE '' END,
+        ' / ',
+        CASE b.TimePeriod
+          WHEN 0 THEN 'None'
+          WHEN 1 THEN 'ServiceYear'
+          WHEN 2 THEN 'CalendarYear'
+          WHEN 3 THEN 'Lifetime'
+          WHEN 5 THEN 'Last12Months'
+          ELSE CONCAT('TP',b.TimePeriod)
+        END
+      )
+    END
+    ORDER BY cat.Description
+    SEPARATOR ' | '
+  ) AS Deductible_Overrides_By_Category,
+
+  /* Coinsurance overrides by procedure OR codegroup (not category-level) */
+  GROUP_CONCAT(DISTINCT
+    CASE
+      WHEN b.BenefitType = 1
+       AND (b.CodeNum <> 0 OR b.CodeGroupNum <> 0)
+      THEN CONCAT(
+        COALESCE(cg.GroupName, pc.ProcCode, 'Unknown'),
+        ': ', NULLIF(b.Percent,-1), '%',
+        CASE b.CoverageLevel WHEN 1 THEN ' [Ind]' WHEN 2 THEN ' [Fam]' ELSE '' END
+      )
+    END
+    ORDER BY cg.GroupName, pc.ProcCode
+    SEPARATOR ' | '
+  ) AS Coinsurance_Overrides_By_CodeOrGroup,
+
+  /* Copayments (BenefitType=3) */
+  GROUP_CONCAT(DISTINCT
+    CASE
+      WHEN b.BenefitType = 3
+      THEN CONCAT(
+        COALESCE(cat.Description,'General'),
+        IF(pc.ProcCode IS NOT NULL, CONCAT(' / ', pc.ProcCode), ''),
+        IF(cg.GroupName IS NOT NULL, CONCAT(' / ', cg.GroupName), ''),
+        ': $', ROUND(NULLIF(b.MonetaryAmt,-1),2),
+        CASE b.CoverageLevel WHEN 1 THEN ' [Ind]' WHEN 2 THEN ' [Fam]' ELSE '' END,
+        CASE b.TimePeriod
+          WHEN 0 THEN ''
+          WHEN 1 THEN ' / ServiceYear'
+          WHEN 2 THEN ' / CalendarYear'
+          WHEN 3 THEN ' / Lifetime'
+          WHEN 5 THEN ' / Last12Months'
+          ELSE CONCAT(' / TP',b.TimePeriod)
+        END
+      )
+    END
+    ORDER BY cat.Description, pc.ProcCode, cg.GroupName
+    SEPARATOR ' | '
+  ) AS Copayments,
+
+  /* Exclusions (BenefitType=4) */
+  GROUP_CONCAT(DISTINCT
+    CASE
+      WHEN b.BenefitType = 4
+      THEN CONCAT(
+        COALESCE(cat.Description,'General'),
+        IF(pc.ProcCode IS NOT NULL, CONCAT(' / ', pc.ProcCode), ''),
+        IF(cg.GroupName IS NOT NULL, CONCAT(' / ', cg.GroupName), '')
+      )
+    END
+    ORDER BY cat.Description, pc.ProcCode, cg.GroupName
+    SEPARATOR ' | '
+  ) AS Exclusions,
+
+  /* ActiveCoverage flags (BenefitType=0) */
+  GROUP_CONCAT(DISTINCT
+    CASE
+      WHEN b.BenefitType = 0
+      THEN CONCAT(
+        COALESCE(cat.Description,'General'),
+        IF(pc.ProcCode IS NOT NULL, CONCAT(' / ', pc.ProcCode), ''),
+        IF(cg.GroupName IS NOT NULL, CONCAT(' / ', cg.GroupName), '')
+      )
+    END
+    ORDER BY cat.Description, pc.ProcCode, cg.GroupName
+    SEPARATOR ' | '
+  ) AS Active_Coverage_Flags,
+
+  /* Other Limitations (BenefitType=5) excluding ones already shown as AnnualMax/OrthoMax/Frequency/Age */
+  GROUP_CONCAT(DISTINCT
+    CASE
+      WHEN b.BenefitType = 5
+       AND NOT (
+         (b.CovCatNum=0 AND b.CodeNum=0 AND b.CodeGroupNum=0 AND b.TimePeriod IN (1,2) AND b.CoverageLevel IN (1,2))
+         OR (cat.Description LIKE '%Ortho%' AND b.TimePeriod=3 AND b.CodeNum=0 AND b.CodeGroupNum=0)
+         OR (b.QuantityQualifier=2)
+         OR (b.QuantityQualifier IN (1,3,4,5) AND (b.CodeGroupNum<>0 OR b.CodeNum<>0))
+       )
+      THEN CONCAT(
+        COALESCE(cat.Description,'General'),
+        IF(pc.ProcCode IS NOT NULL, CONCAT(' / ', pc.ProcCode), ''),
+        IF(cg.GroupName IS NOT NULL, CONCAT(' / ', cg.GroupName), ''),
+        ': ',
+        CASE
+          WHEN NULLIF(b.MonetaryAmt,-1) IS NOT NULL THEN CONCAT('$', ROUND(b.MonetaryAmt,2))
+          WHEN NULLIF(b.Percent,-1) IS NOT NULL THEN CONCAT(NULLIF(b.Percent,-1), '%')
+          ELSE 'Limitation'
+        END,
+        CASE b.TimePeriod
+          WHEN 0 THEN ''
+          WHEN 1 THEN ' / ServiceYear'
+          WHEN 2 THEN ' / CalendarYear'
+          WHEN 3 THEN ' / Lifetime'
+          WHEN 4 THEN ' / Years'
+          WHEN 5 THEN ' / Last12Months'
+          ELSE CONCAT(' / TP',b.TimePeriod)
+        END,
+        CASE b.CoverageLevel WHEN 1 THEN ' [Ind]' WHEN 2 THEN ' [Fam]' ELSE '' END
+      )
+    END
+    ORDER BY cat.Description, pc.ProcCode, cg.GroupName
+    SEPARATOR ' | '
+  ) AS Other_Limitations,
+
+  /* RAW benefit rows dump (close to the OpenDental "benefit info" format) */
+  GROUP_CONCAT(DISTINCT
+    CONCAT(
+      COALESCE(cat.Description,'General'), ',',
+      COALESCE(pc.ProcCode, CONCAT('CodeGroup:', cg.GroupName), '-'), ',',
+      CASE b.BenefitType
+        WHEN 0 THEN 'ActiveCoverage'
+        WHEN 1 THEN 'CoInsurance'
+        WHEN 2 THEN 'Deductible'
+        WHEN 3 THEN 'CoPayment'
+        WHEN 4 THEN 'Exclusions'
+        WHEN 5 THEN 'Limitations'
+        WHEN 6 THEN 'WaitingPeriod'
+        ELSE CONCAT('Type',b.BenefitType)
+      END, ',',
+      IFNULL(NULLIF(b.Percent,-1),-1), ',',
+      IFNULL(NULLIF(b.MonetaryAmt,-1),-1), ',',
+      CASE b.TimePeriod
+        WHEN 0 THEN 'None'
+        WHEN 1 THEN 'ServiceYear'
+        WHEN 2 THEN 'CalendarYear'
+        WHEN 3 THEN 'Lifetime'
+        WHEN 4 THEN 'Years'
+        WHEN 5 THEN 'NumberInLast12Months'
+        ELSE CONCAT('TP',b.TimePeriod)
+      END, ',',
+      CASE b.QuantityQualifier
+        WHEN 0 THEN 'None'
+        WHEN 1 THEN 'NumberOfServices'
+        WHEN 2 THEN 'AgeLimit'
+        WHEN 3 THEN 'Visits'
+        WHEN 4 THEN 'Years'
+        WHEN 5 THEN 'Months'
+        ELSE CONCAT('QQ',b.QuantityQualifier)
+      END, ',',
+      IFNULL(b.Quantity,0), ',',
+      CASE b.CoverageLevel
+        WHEN 0 THEN 'None'
+        WHEN 1 THEN 'Individual'
+        WHEN 2 THEN 'Family'
+        ELSE CONCAT('Level',b.CoverageLevel)
+      END
+    )
+    ORDER BY b.BenefitType, cat.Description, pc.ProcCode, cg.GroupName
+    SEPARATOR ' || '
+  ) AS Benefit_Rows_Raw
 
 FROM insplan isp
-LEFT JOIN carrier  c  ON isp.CarrierNum  = c.CarrierNum
-LEFT JOIN employer e  ON isp.EmployerNum = e.EmployerNum
-LEFT JOIN feesched  fs ON isp.FeeSched   = fs.FeeSchedNum
+LEFT JOIN carrier   c  ON isp.CarrierNum  = c.CarrierNum
+LEFT JOIN employer  e  ON isp.EmployerNum = e.EmployerNum
+LEFT JOIN feesched  fs ON isp.FeeSched    = fs.FeeSchedNum
 
 LEFT JOIN benefit b
   ON b.PlanNum = isp.PlanNum
- AND b.PatPlanNum = 0                     /* plan-level only */
+ AND b.PatPlanNum = 0   /* plan-level only */
 
-LEFT JOIN covcat       cat ON b.CovCatNum    = cat.CovCatNum
-LEFT JOIN codegroup    cg  ON b.CodeGroupNum = cg.CodeGroupNum
-LEFT JOIN procedurecode pc ON b.CodeNum      = pc.CodeNum
+LEFT JOIN covcat        cat ON b.CovCatNum    = cat.CovCatNum
+LEFT JOIN codegroup     cg  ON b.CodeGroupNum = cg.CodeGroupNum
+LEFT JOIN procedurecode pc  ON b.CodeNum      = pc.CodeNum
 
 GROUP BY isp.PlanNum
 ORDER BY c.CarrierName, isp.GroupName;`;
@@ -322,6 +499,14 @@ interface InsurancePlanRecord {
   waitingPeriods: string | null;
   frequencyLimits: string | null;
   ageLimits: string | null;
+  // New comprehensive benefit fields
+  deductibleOverridesByCategory: string | null;
+  coinsuranceOverridesByCodeOrGroup: string | null;
+  copayments: string | null;
+  exclusions: string | null;
+  activeCoverageFlags: string | null;
+  otherLimitations: string | null;
+  benefitRowsRaw: string | null;
   lastSyncAt: string;
   contentHash: string;
 }
@@ -404,6 +589,14 @@ function rowToRecord(row: Record<string, string>, clinicId: string, clinicName: 
     waitingPeriods: cleanString(row['Waiting_Periods']),
     frequencyLimits: cleanString(row['Frequency_Limits']),
     ageLimits: cleanString(row['Age_Limits']),
+    // New comprehensive benefit fields
+    deductibleOverridesByCategory: cleanString(row['Deductible_Overrides_By_Category']),
+    coinsuranceOverridesByCodeOrGroup: cleanString(row['Coinsurance_Overrides_By_CodeOrGroup']),
+    copayments: cleanString(row['Copayments']),
+    exclusions: cleanString(row['Exclusions']),
+    activeCoverageFlags: cleanString(row['Active_Coverage_Flags']),
+    otherLimitations: cleanString(row['Other_Limitations']),
+    benefitRowsRaw: cleanString(row['Benefit_Rows_Raw']),
     lastSyncAt: new Date().toISOString(),
     contentHash: createContentHash(row),
   };

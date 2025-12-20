@@ -1091,6 +1091,84 @@ async function handleTool(
             directAnswer += `\n`;
           }
 
+          // Deductible Overrides by Category
+          if (mainPlan.deductibleOverridesByCategory) {
+            directAnswer += `=== DEDUCTIBLE OVERRIDES BY CATEGORY ===\n`;
+            mainPlan.deductibleOverridesByCategory
+              .split('|')
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .forEach((item) => {
+                directAnswer += `- ${item}\n`;
+              });
+            directAnswer += `\n`;
+          }
+
+          // Coinsurance Overrides by Procedure/CodeGroup
+          if (mainPlan.coinsuranceOverridesByCodeOrGroup) {
+            directAnswer += `=== COINSURANCE OVERRIDES BY PROCEDURE ===\n`;
+            mainPlan.coinsuranceOverridesByCodeOrGroup
+              .split('|')
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .forEach((item) => {
+                directAnswer += `- ${item}\n`;
+              });
+            directAnswer += `\n`;
+          }
+
+          // Copayments
+          if (mainPlan.copayments) {
+            directAnswer += `=== COPAYMENTS ===\n`;
+            mainPlan.copayments
+              .split('|')
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .forEach((item) => {
+                directAnswer += `- ${item}\n`;
+              });
+            directAnswer += `\n`;
+          }
+
+          // Exclusions
+          if (mainPlan.exclusions) {
+            directAnswer += `=== EXCLUSIONS (NOT COVERED) ===\n`;
+            mainPlan.exclusions
+              .split('|')
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .forEach((item) => {
+                directAnswer += `- ${item}\n`;
+              });
+            directAnswer += `\n`;
+          }
+
+          // Other Limitations
+          if (mainPlan.otherLimitations) {
+            directAnswer += `=== OTHER LIMITATIONS ===\n`;
+            mainPlan.otherLimitations
+              .split('|')
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .forEach((item) => {
+                directAnswer += `- ${item}\n`;
+              });
+            directAnswer += `\n`;
+          }
+
+          // Active Coverage Flags
+          if (mainPlan.activeCoverageFlags) {
+            directAnswer += `=== ACTIVE COVERAGE FLAGS ===\n`;
+            mainPlan.activeCoverageFlags
+              .split('|')
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .forEach((item) => {
+                directAnswer += `- ${item}\n`;
+              });
+            directAnswer += `\n`;
+          }
+
           // Fluoride-specific hint (often requested; stored in limitations rather than a dedicated % field)
           const fluorideFreq = mainPlan.frequencyLimits
             ? mainPlan.frequencyLimits
@@ -1283,6 +1361,14 @@ interface InsurancePlanRecord {
   waitingPeriods: string | null;
   frequencyLimits: string | null;
   ageLimits: string | null;
+  // New comprehensive benefit fields
+  deductibleOverridesByCategory: string | null;
+  coinsuranceOverridesByCodeOrGroup: string | null;
+  copayments: string | null;
+  exclusions: string | null;
+  activeCoverageFlags: string | null;
+  otherLimitations: string | null;
+  benefitRowsRaw: string | null;
   lastSyncAt: string;
 }
 
@@ -1686,7 +1772,16 @@ function formatCoverageSuggestion(plan: InsurancePlanRecord): any {
       waitingPeriods: plan.waitingPeriods || 'None specified',
       frequencyLimits: plan.frequencyLimits || 'None specified',
       ageLimits: plan.ageLimits || 'None specified',
+      otherLimitations: plan.otherLimitations || 'None specified',
     },
+    overrides: {
+      deductiblesByCategory: plan.deductibleOverridesByCategory || 'None specified',
+      coinsuranceByCodeOrGroup: plan.coinsuranceOverridesByCodeOrGroup || 'None specified',
+    },
+    copayments: plan.copayments || 'None specified',
+    exclusions: plan.exclusions || 'None specified',
+    activeCoverageFlags: plan.activeCoverageFlags || 'None specified',
+    benefitRowsRaw: plan.benefitRowsRaw, // Raw dump for debugging/advanced analysis
     notes: plan.planNote,
     lastUpdated: plan.lastSyncAt,
   };
@@ -1832,6 +1927,21 @@ function generateRecommendations(plan: InsurancePlanRecord): string[] {
   // Frequency limits
   if (plan.frequencyLimits) {
     recommendations.push(`📋 Frequency limits: ${plan.frequencyLimits}`);
+  }
+
+  // Exclusions (services NOT covered)
+  if (plan.exclusions) {
+    recommendations.push(`🚫 Exclusions: ${plan.exclusions}`);
+  }
+
+  // Copayments
+  if (plan.copayments) {
+    recommendations.push(`💵 Copayments apply: ${plan.copayments}`);
+  }
+
+  // Other limitations
+  if (plan.otherLimitations) {
+    recommendations.push(`⚠️ Other limitations: ${plan.otherLimitations}`);
   }
 
   return recommendations;
