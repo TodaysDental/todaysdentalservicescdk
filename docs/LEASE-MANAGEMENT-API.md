@@ -4,8 +4,15 @@
 The Lease Management API provides comprehensive CRUD operations for managing dental clinic leases across 28 clinics. The system uses a flexible, schema-less approach with DynamoDB to accommodate varying lease structures and hidden charges.
 
 ## Base URL
+
+**Custom Domain (Recommended):**
 ```
-https://your-api-gateway-url/prod
+https://apig.todaysdentalinsights.com/lease
+```
+
+**Default API Gateway URL:**
+```
+https://{api-id}.execute-api.{region}.amazonaws.com/prod
 ```
 
 ## Authentication

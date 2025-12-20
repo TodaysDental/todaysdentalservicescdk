@@ -38,6 +38,7 @@ import { RcsStack } from './stacks/rcs-stack';
 // import { CredentialingStack } from './stacks/credentialing-stack'; // TEMPORARILY DISABLED
 import { LeaseManagementStack } from './stacks/lease-management-stack';
 import { InsurancePlanSyncStack } from './stacks/insurance-plan-sync-stack';
+import { EmailStack } from './stacks/email-stack';
 // import { DentalSoftwareStack } from './stacks/dental-software-stack';
 
 const app = new cdk.App();
@@ -618,6 +619,15 @@ const insurancePlanSyncStack = new InsurancePlanSyncStack(app, 'TodaysDentalInsi
   consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
 });
 insurancePlanSyncStack.addDependency(openDentalStack); // Explicit - uses SFTP server ID
+
+// Email Stack - Clinic-specific email operations (Gmail REST API + IMAP/SMTP)
+// Domain-level credentials are defined as constants in email-stack.ts:
+// - GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET: Google OAuth2 credentials
+// - DOMAIN_SMTP_USER, DOMAIN_SMTP_PASSWORD: Domain email credentials
+const emailStack = new EmailStack(app, 'TodaysDentalInsightsEmailN1', {
+  env,
+});
+emailStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn (if needed later)
 
 // CRITICAL FIX: Remove commented-out code that could lead to circular dependencies
 // Note: The proper dependencies are already set above:

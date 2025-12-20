@@ -162,7 +162,7 @@ async function handleGetSelf(email: string): Promise<APIGatewayProxyResult> {
   return httpOk({
     ...publicUser,
     staffDetails,
-    rolesByClinic: buildRolesByClinic(staffDetails),
+    rolesByClinic: buildRolesByClinicFromUser(user, staffDetails),
   });
 }
 
@@ -196,7 +196,7 @@ async function handleListUsers(
       items.push({
         ...toPublicUser(user),
         staffDetails,
-        rolesByClinic: buildRolesByClinic(staffDetails),
+        rolesByClinic: buildRolesByClinicFromUser(user, staffDetails),
       });
     } else {
       // Non-global admins can only see users in their clinics
@@ -214,7 +214,7 @@ async function handleListUsers(
       items.push({
         ...toPublicUser(user),
         staffDetails: filteredStaffDetails,
-        rolesByClinic: buildRolesByClinic(filteredStaffDetails),
+        rolesByClinic: buildRolesByClinicFromUser(user, filteredStaffDetails),
       });
     }
   }
@@ -264,7 +264,7 @@ async function handleGetUser(
   return httpOk({
     ...toPublicUser(user),
     staffDetails: filteredStaffDetails,
-    rolesByClinic: buildRolesByClinic(filteredStaffDetails),
+    rolesByClinic: buildRolesByClinicFromUser(user, filteredStaffDetails),
   });
 }
 
@@ -353,7 +353,7 @@ async function handleUpdateUser(
   return httpOk({
     ...toPublicUser(updatedUser),
     staffDetails,
-    rolesByClinic: buildRolesByClinic(staffDetails),
+    rolesByClinic: buildRolesByClinicFromUser(updatedUser, staffDetails),
   });
 }
 
@@ -521,15 +521,23 @@ function toPublicUser(user: StaffUser): PublicStaffUser {
 }
 
 /**
- * Build rolesByClinic map from staff details
+ * Build rolesByClinic map from user clinicRoles and staff details
  */
-function buildRolesByClinic(staffDetails: StaffClinicDetail[]): Record<string, string> {
+function buildRolesByClinicFromUser(user: StaffUser, staffDetails: StaffClinicDetail[]): Record<string, string> {
   const rolesByClinic: Record<string, string> = {};
 
+  // First, add roles from user's clinicRoles (primary source)
+  if (user.clinicRoles && Array.isArray(user.clinicRoles)) {
+    for (const cr of user.clinicRoles) {
+      if (cr.clinicId && cr.role) {
+        rolesByClinic[String(cr.clinicId)] = cr.role;
+      }
+    }
+  }
+
+  // Then, add any clinics from staffDetails that aren't already covered
   for (const detail of staffDetails) {
-    if (detail.clinicId) {
-      // You can add role logic here based on staff details
-      // For now, we just mark that they have access to this clinic
+    if (detail.clinicId && !rolesByClinic[String(detail.clinicId)]) {
       rolesByClinic[String(detail.clinicId)] = 'USER';
     }
   }

@@ -1,6 +1,8 @@
 import * as cdk from 'aws-cdk-lib';
+import { Fn } from 'aws-cdk-lib';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
@@ -12,6 +14,7 @@ export class LeaseManagementStack extends cdk.Stack {
   public readonly leaseTable: dynamodb.Table;
   public readonly leaseDocumentsBucket: s3.Bucket;
   public readonly api: apigateway.RestApi;
+  public readonly authorizer: apigateway.RequestAuthorizer;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -55,83 +58,83 @@ export class LeaseManagementStack extends cdk.Stack {
     };
 
     // Create Lease Lambda
-    const createLeaseLambda = new lambda.Function(this, 'CreateLeaseLambda', {
+    const createLeaseLambda = new lambdaNode.NodejsFunction(this, 'CreateLeaseLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/createLease.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'createLease.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(30),
     });
 
     // Get Lease Lambda
-    const getLeaseLambda = new lambda.Function(this, 'GetLeaseLambda', {
+    const getLeaseLambda = new lambdaNode.NodejsFunction(this, 'GetLeaseLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/getLease.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'getLease.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(30),
     });
 
     // Update Lease Lambda
-    const updateLeaseLambda = new lambda.Function(this, 'UpdateLeaseLambda', {
+    const updateLeaseLambda = new lambdaNode.NodejsFunction(this, 'UpdateLeaseLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/updateLease.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'updateLease.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(30),
     });
 
     // Delete Lease Lambda
-    const deleteLeaseLambda = new lambda.Function(this, 'DeleteLeaseLambda', {
+    const deleteLeaseLambda = new lambdaNode.NodejsFunction(this, 'DeleteLeaseLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/deleteLease.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'deleteLease.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(30),
     });
 
     // List Leases Lambda
-    const listLeasesLambda = new lambda.Function(this, 'ListLeasesLambda', {
+    const listLeasesLambda = new lambdaNode.NodejsFunction(this, 'ListLeasesLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/listLeases.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'listLeases.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(30),
     });
 
     // Upload Document Lambda
-    const uploadDocumentLambda = new lambda.Function(this, 'UploadDocumentLambda', {
+    const uploadDocumentLambda = new lambdaNode.NodejsFunction(this, 'UploadDocumentLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/uploadDocument.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'uploadDocument.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(30),
     });
 
     // Get Document Lambda
-    const getDocumentLambda = new lambda.Function(this, 'GetDocumentLambda', {
+    const getDocumentLambda = new lambdaNode.NodejsFunction(this, 'GetDocumentLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/getDocument.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'getDocument.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(30),
     });
 
     // Process Document Lambda (Textract)
-    const processDocumentLambda = new lambda.Function(this, 'ProcessDocumentLambda', {
+    const processDocumentLambda = new lambdaNode.NodejsFunction(this, 'ProcessDocumentLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/processDocument.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'processDocument.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.minutes(5),
       memorySize: 1024,
     });
 
     // Get Extracted Data Lambda
-    const getExtractedDataLambda = new lambda.Function(this, 'GetExtractedDataLambda', {
+    const getExtractedDataLambda = new lambdaNode.NodejsFunction(this, 'GetExtractedDataLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/getExtractedData.ts'),
+      handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'getExtractedData.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../services/lease-management')),
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(30),
     });
@@ -189,35 +192,114 @@ export class LeaseManagementStack extends cdk.Stack {
         allowMethods: apigateway.Cors.ALL_METHODS,
         allowHeaders: ['Content-Type', 'X-Amz-Date', 'Authorization', 'X-Api-Key', 'x-clinic-id'],
       },
+      deployOptions: {
+        stageName: 'prod',
+        metricsEnabled: true,
+        loggingLevel: apigateway.MethodLoggingLevel.INFO,
+      },
     });
 
+    // Add CORS error responses for proper error handling
+    new apigateway.GatewayResponse(this, 'GatewayResponseDefault4XX', {
+      restApi: this.api,
+      type: apigateway.ResponseType.DEFAULT_4XX,
+      responseHeaders: {
+        'Access-Control-Allow-Origin': "'*'",
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization,x-clinic-id'",
+      },
+    });
+
+    new apigateway.GatewayResponse(this, 'GatewayResponseDefault5XX', {
+      restApi: this.api,
+      type: apigateway.ResponseType.DEFAULT_5XX,
+      responseHeaders: {
+        'Access-Control-Allow-Origin': "'*'",
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization,x-clinic-id'",
+      },
+    });
+
+    new apigateway.GatewayResponse(this, 'GatewayResponseUnauthorized', {
+      restApi: this.api,
+      type: apigateway.ResponseType.UNAUTHORIZED,
+      responseHeaders: {
+        'Access-Control-Allow-Origin': "'*'",
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization,x-clinic-id'",
+      },
+    });
+
+    // Import the authorizer function ARN from CoreStack's export
+    const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
+
+    // Create a reference to the authorizer function
+    const authorizerFn = lambda.Function.fromFunctionArn(
+      this,
+      'ImportedAuthorizerFn',
+      authorizerFunctionArn
+    );
+
+    // Create authorizer for this stack's API
+    this.authorizer = new apigateway.RequestAuthorizer(this, 'LeaseManagementAuthorizer', {
+      handler: authorizerFn,
+      identitySources: [apigateway.IdentitySource.header('Authorization')],
+      resultsCacheTtl: cdk.Duration.minutes(5),
+    });
+
+    // Grant API Gateway permission to invoke the authorizer Lambda
+    new lambda.CfnPermission(this, 'AuthorizerInvokePermission', {
+      action: 'lambda:InvokeFunction',
+      functionName: authorizerFunctionArn,
+      principal: 'apigateway.amazonaws.com',
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${this.api.restApiId}/authorizers/*`,
+    });
+
+    // Method options with authorizer
+    const methodOptionsWithAuth = {
+      authorizer: this.authorizer,
+      authorizationType: apigateway.AuthorizationType.CUSTOM,
+    };
+
     const leasesResource = this.api.root.addResource('leases');
-    leasesResource.addMethod('POST', new apigateway.LambdaIntegration(createLeaseLambda));
-    leasesResource.addMethod('GET', new apigateway.LambdaIntegration(listLeasesLambda));
+    leasesResource.addMethod('POST', new apigateway.LambdaIntegration(createLeaseLambda), methodOptionsWithAuth);
+    leasesResource.addMethod('GET', new apigateway.LambdaIntegration(listLeasesLambda), methodOptionsWithAuth);
 
     // /leases/{clinicId}/{leaseId}
     const clinicResource = leasesResource.addResource('{clinicId}');
     const leaseResource = clinicResource.addResource('{leaseId}');
-    leaseResource.addMethod('GET', new apigateway.LambdaIntegration(getLeaseLambda));
-    leaseResource.addMethod('PUT', new apigateway.LambdaIntegration(updateLeaseLambda));
-    leaseResource.addMethod('DELETE', new apigateway.LambdaIntegration(deleteLeaseLambda));
+    leaseResource.addMethod('GET', new apigateway.LambdaIntegration(getLeaseLambda), methodOptionsWithAuth);
+    leaseResource.addMethod('PUT', new apigateway.LambdaIntegration(updateLeaseLambda), methodOptionsWithAuth);
+    leaseResource.addMethod('DELETE', new apigateway.LambdaIntegration(deleteLeaseLambda), methodOptionsWithAuth);
 
     // /leases/documents/upload
     const documentsResource = leasesResource.addResource('documents');
     const uploadResource = documentsResource.addResource('upload');
-    uploadResource.addMethod('POST', new apigateway.LambdaIntegration(uploadDocumentLambda));
+    uploadResource.addMethod('POST', new apigateway.LambdaIntegration(uploadDocumentLambda), methodOptionsWithAuth);
 
     // /leases/documents/download
     const downloadResource = documentsResource.addResource('download');
-    downloadResource.addMethod('GET', new apigateway.LambdaIntegration(getDocumentLambda));
+    downloadResource.addMethod('GET', new apigateway.LambdaIntegration(getDocumentLambda), methodOptionsWithAuth);
 
     // /leases/documents/extracted - Get extracted data from Textract
     const extractedResource = documentsResource.addResource('extracted');
-    extractedResource.addMethod('GET', new apigateway.LambdaIntegration(getExtractedDataLambda));
+    extractedResource.addMethod('GET', new apigateway.LambdaIntegration(getExtractedDataLambda), methodOptionsWithAuth);
+
+    // ========================================
+    // CUSTOM DOMAIN MAPPING
+    // ========================================
+    // Map this API under the existing custom domain as /lease
+    new apigateway.CfnBasePathMapping(this, 'LeaseBasePathMapping', {
+      domainName: 'apig.todaysdentalinsights.com',
+      basePath: 'lease',
+      restApiId: this.api.restApiId,
+      stage: this.api.deploymentStage.stageName,
+    });
 
     // Outputs
     new cdk.CfnOutput(this, 'LeaseTableNameOutput', { value: this.leaseTable.tableName });
     new cdk.CfnOutput(this, 'LeaseDocumentsBucketOutput', { value: this.leaseDocumentsBucket.bucketName });
     new cdk.CfnOutput(this, 'LeaseApiUrlOutput', { value: this.api.url });
+    new cdk.CfnOutput(this, 'LeaseCustomDomainUrl', {
+      value: 'https://apig.todaysdentalinsights.com/lease',
+      description: 'Lease Management API Custom Domain URL',
+    });
   }
 }

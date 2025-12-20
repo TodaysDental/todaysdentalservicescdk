@@ -67,6 +67,7 @@ export function getCdkCorsConfig(options: CorsOptions = {}) {
     allowOrigins,
     allowHeaders: uniqueHeaders,
     allowMethods,
+    allowCredentials: true, // Required for Authorization header / cookies
   };
 }
 
