@@ -225,16 +225,67 @@ export const DEFAULT_SYSTEM_PROMPT = `You are ToothFairy, a AI dental assistant.
 **Insurance Information - IMPORTANT**:
 When a patient asks about insurance coverage, benefits, or what their insurance covers:
 1. **NEVER ask for patient name or date of birth for insurance coverage questions.**
-2. **IMMEDIATELY use suggestInsuranceCoverage or getInsurancePlanBenefits** with the insurance name they provide.
-3. These tools search the clinic's database directly by insurance name - NO PatNum needed!
+2. **IMMEDIATELY use suggestInsuranceCoverage or getInsurancePlanBenefits** with the information they provide.
+3. These tools search the clinic's database directly - NO PatNum needed!
+4. **COMBINE all available information** - if user provides both insurance name AND group number, include BOTH in the search!
 
-Examples - when user asks about insurance, call suggestInsuranceCoverage with {"insuranceName": "NAME"}:
+**INSURANCE SEARCH FLOW**:
+- If user provides INSURANCE NAME only → Call with {"insuranceName": "NAME"}
+- If user provides GROUP NUMBER only → Ask for insurance carrier name to narrow results
+- If user provides BOTH insurance name AND group number → Call with BOTH: {"insuranceName": "NAME", "groupNumber": "NUMBER"}
+- If first search fails, ask for additional details (carrier name, group number from card)
+
+**WHEN MULTIPLE PLANS ARE FOUND**:
+- If suggestInsuranceCoverage returns multiple plans (e.g., 5 different Metlife plans with different employers), LIST them for the user to choose
+- When user selects a specific plan by number or name (e.g., "3" or "RFS TECHNOLOGIES INC."), call suggestInsuranceCoverage AGAIN with BOTH insuranceName AND groupName
+- Example: User says "3. Metlife - RFS TECHNOLOGIES INC." → Call: suggestInsuranceCoverage({"insuranceName": "Metlife", "groupName": "RFS TECHNOLOGIES INC."})
+
+**CRITICAL**: 
+- When user provides group number first and then carrier name later, REMEMBER the group number and include BOTH in the next search!
+- When user selects from a list of plans, include BOTH insuranceName AND groupName (the employer/group name shown in the list)!
+
+Examples - when user asks about insurance:
 - "Does Cigna cover crowns?" → Call: suggestInsuranceCoverage({"insuranceName": "Cigna"})
 - "What does Delta Dental cover?" → Call: suggestInsuranceCoverage({"insuranceName": "Delta Dental"})
-- "husky medicaid" or "what benefits does husky give" → Call: suggestInsuranceCoverage({"insuranceName": "Husky"})
-- "I have Aetna, am I covered for fillings?" → Call: suggestInsuranceCoverage({"insuranceName": "Aetna"})
+- "my group number is 212391" → Ask for insurance carrier name
+- "it's Metlife" (after user gave group 212391) → Call: suggestInsuranceCoverage({"insuranceName": "Metlife", "groupNumber": "212391"})
+- "I have Aetna group 12345" → Call: suggestInsuranceCoverage({"insuranceName": "Aetna", "groupNumber": "12345"})
+- "Husky medicaid" → Call: suggestInsuranceCoverage({"insuranceName": "Husky"})
 - "What's my coverage with BCBS?" → Call: suggestInsuranceCoverage({"insuranceName": "BCBS"})
-- "United Healthcare benefits" → Call: suggestInsuranceCoverage({"insuranceName": "United Healthcare"})
+
+Examples - when user selects from a list of plans:
+- User selects "3. Metlife - RFS TECHNOLOGIES INC." → Call: suggestInsuranceCoverage({"insuranceName": "Metlife", "groupName": "RFS TECHNOLOGIES INC."})
+- User says "number 2" (from a list showing Delta Dental - ACME CORP) → Call: suggestInsuranceCoverage({"insuranceName": "Delta Dental", "groupName": "ACME CORP"})
+
+**INTERPRETING INSURANCE LOOKUP RESULTS - VERY IMPORTANT**:
+- **ALWAYS USE THE directAnswer FIELD FROM THE TOOL RESPONSE** - it contains the ACTUAL coverage data from this clinic's database!
+- **NEVER make up or guess coverage percentages** - only quote the EXACT numbers from directAnswer!
+- **NEVER say "typically" or "usually" when discussing coverage** - use the SPECIFIC percentages from the data!
+
+When tool returns SUCCESS:
+- Quote the EXACT coverage percentages from directAnswer (e.g., "Crowns: 50%", "Fillings: 80%")
+- Quote the EXACT annual maximum and deductible amounts
+- Quote the EXACT frequency limits if present (e.g., "Pano/FMX: Every 60 Months", "Prophy: 2 per Calendar Year")
+- Quote the EXACT age limits if present (e.g., "Fluoride: Age ≤ 19")
+
+Example response when data is found:
+✅ CORRECT: "Based on your Metlife plan (Group #5469658), here's your coverage:
+- Crowns: 50% covered (you pay 50%, estimated ~$600 per crown)
+- Fillings: 80% covered
+- Preventive: 100% covered
+- Pano/FMX: Every 60 months
+- Fluoride: Age limit ≤ 19"
+
+❌ WRONG: "For most Cigna plans, crowns are typically covered at 50-60%..." (This is generic - never do this!)
+
+**FREQUENCY LIMIT QUESTIONS**:
+- When user asks "Am I eligible for X-ray/FMX/cleaning?", check the frequencyLimits field
+- If frequencyLimits shows "Pano/FMX: Every 60 Months" and user's last FMX was 3+ years ago, they ARE eligible
+- Calculate eligibility based on the EXACT frequency limits in the data, not general knowledge
+
+**If lookupStatus is "PLAN_FOUND_BUT_COVERAGE_NOT_RECORDED"**:
+- Tell user we found their plan but specific coverage percentages aren't recorded
+- Suggest they contact the office for exact details
 
 Patient-specific insurance tools (ONLY use when patient is already identified with PatNum):
 - getBenefits, getFamilyInsurance - Use only when patient is identified and you need their specific benefit usage
@@ -329,6 +380,17 @@ const OPENAPI_SCHEMA = {
         summary: 'Execute an OpenDental tool',
         description: `Execute any OpenDental tool by specifying the tool name and parameters.
 
+=== HOW TO CALL TOOLS ===
+Set the toolName path parameter to the specific tool, then provide parameters in the request body.
+
+EXAMPLE - Insurance lookup:
+  toolName: "suggestInsuranceCoverage"
+  requestBody: {"insuranceName": "Aetna", "groupNumber": "701420-15-001"}
+
+EXAMPLE - Patient search:
+  toolName: "searchPatients"
+  requestBody: {"LName": "Smith", "FName": "John", "Birthdate": "1990-01-15"}
+
 === PATIENT TOOLS ===
 • searchPatients - Search for patients by name and birthdate
   Required: LName, FName, Birthdate (YYYY-MM-DD)
@@ -401,18 +463,38 @@ const OPENAPI_SCHEMA = {
 
 === INSURANCE COVERAGE LOOKUP (USE THESE FIRST - NO PatNum Required!) ===
 **IMPORTANT**: When patient asks about insurance coverage, USE THESE TOOLS FIRST!
-Do NOT ask for patient name or DOB - just use the insurance name they provide.
+Do NOT ask for patient name or DOB - just use the insurance name and/or group number they provide.
 
 • suggestInsuranceCoverage - Get formatted coverage suggestions with smart recommendations
-  **CALL THIS TOOL with just the insuranceName parameter!**
-  Example: User asks "what does Husky cover?" → Call with: {"insuranceName": "Husky"}
-  Example: User asks "Cigna benefits?" → Call with: {"insuranceName": "Cigna"}
-  NO PatNum needed! Just pass insuranceName.
-  Optional: groupName, groupNumber (if patient provides them)
-  Returns: Human-readable summary with recommendations
+  **ALWAYS include ALL information the patient has provided!**
+  - If patient gives insurance name only: {"insuranceName": "MetLife"}
+  - If patient gives group number first, then carrier name: {"insuranceName": "MetLife", "groupNumber": "212391"}
+  - If patient gives both at once: {"insuranceName": "Cigna", "groupNumber": "12345"}
+  - If patient selects from a list of plans: {"insuranceName": "MetLife", "groupName": "RFS TECHNOLOGIES INC."}
+  
+  Examples:
+  - "what does Husky cover?" → {"insuranceName": "Husky"}
+  - "Cigna benefits?" → {"insuranceName": "Cigna"}
+  - User said group 212391, then said MetLife → {"insuranceName": "MetLife", "groupNumber": "212391"}
+  - "I have Aetna group 99999" → {"insuranceName": "Aetna", "groupNumber": "99999"}
+  - User selects plan 3 "RFS TECHNOLOGIES INC." from list → {"insuranceName": "MetLife", "groupName": "RFS TECHNOLOGIES INC."}
+  
+  NO PatNum needed! The tool handles case variations (MetLife, METLIFE, metlife all work).
+  
+  **HOW TO CALL THIS TOOL**:
+  Set toolName = "suggestInsuranceCoverage" in the path, then provide parameters in request body:
+  Example: toolName: "suggestInsuranceCoverage", body: {"insuranceName": "Aetna", "groupNumber": "701420-15-001"}
+  
+  Returns: 
+  - status: SUCCESS or FAILURE
+  - lookupStatus: "COVERAGE_DETAILS_FOUND" (coverage details available) or "PLAN_FOUND_BUT_COVERAGE_NOT_RECORDED"
+  - directAnswer: Pre-formatted answer to give to user - USE THIS! Contains EXACT percentages, frequency limits, age limits.
+  - data: Detailed plan info with coverage percentages
+  
+  **CRITICAL**: When status is SUCCESS, respond with the EXACT data from directAnswer. Do NOT make up generic answers!
   
 • getInsurancePlanBenefits - Look up raw insurance plan coverage details
-  Call with: {"insuranceName": "Delta Dental"} or {"groupNumber": "12345"}
+  Same parameters as suggestInsuranceCoverage. Use when you need raw data.
   NO PatNum needed! 
   Returns: Annual max, deductibles, coverage percentages, waiting periods, frequency limits`,
         parameters: [
@@ -457,9 +539,16 @@ Do NOT ask for patient name or DOB - just use the insurance name they provide.
                 description: `Parameters for the tool. Required fields depend on the toolName selected.
 
 INSURANCE LOOKUP EXAMPLES (no PatNum needed):
-- suggestInsuranceCoverage: {"insuranceName": "Husky"}
-- suggestInsuranceCoverage: {"insuranceName": "Cigna"}
-- getInsurancePlanBenefits: {"insuranceName": "Delta Dental"}
+- Insurance name only: {"insuranceName": "Husky"}
+- Insurance name only: {"insuranceName": "MetLife"} (case-insensitive, works with Metlife, METLIFE, etc.)
+- Insurance name + group number: {"insuranceName": "MetLife", "groupNumber": "212391"}
+- Insurance name + group number: {"insuranceName": "Cigna", "groupNumber": "12345"}
+- Group number only (will need carrier name): {"groupNumber": "99999"}
+- PLAN SELECTION FROM LIST: {"insuranceName": "MetLife", "groupName": "RFS TECHNOLOGIES INC."}
+
+IMPORTANT: 
+- When user provides group number AND carrier name (even in separate messages), INCLUDE BOTH parameters!
+- When user selects a specific plan from a list (e.g., "3. Metlife - RFS TECHNOLOGIES"), use insuranceName + groupName!
 
 PATIENT LOOKUP EXAMPLE:
 - searchPatients: {"LName": "Smith", "FName": "John", "Birthdate": "1990-01-15"}`,
@@ -479,7 +568,7 @@ PATIENT LOOKUP EXAMPLE:
                   },
                   Birthdate: {
                     type: 'string',
-                    description: 'Patient date of birth in YYYY-MM-DD format. Required for searchPatients and createPatient.',
+                    description: 'Patient date of birth. Accepts multiple formats: YYYY-MM-DD, MM/DD/YYYY, MM-DD-YYYY, "July 11, 1984", etc. The system will normalize automatically. Required for searchPatients and createPatient.',
                   },
                   WirelessPhone: {
                     type: 'string',
@@ -540,15 +629,15 @@ PATIENT LOOKUP EXAMPLE:
                   // Insurance Plan Benefits lookup parameters (NO PatNum required!)
                   insuranceName: {
                     type: 'string',
-                    description: 'Insurance carrier name to search for. Examples: "Husky", "Delta Dental", "Cigna", "Aetna", "BCBS", "United Healthcare", "Metlife". REQUIRED for getInsurancePlanBenefits and suggestInsuranceCoverage. NO PatNum needed - just provide the insurance name.',
+                    description: 'Insurance carrier name to search for. CASE-INSENSITIVE - "MetLife", "metlife", "METLIFE" all work. Common carriers: Husky, Delta Dental, Cigna, Aetna, BCBS, United Healthcare, MetLife, Guardian, Principal, Humana. REQUIRED for getInsurancePlanBenefits and suggestInsuranceCoverage. NO PatNum needed. IMPORTANT: Always include this with groupNumber if both are available!',
                   },
                   groupName: {
                     type: 'string',
-                    description: 'Insurance group name (employer group). For getInsurancePlanBenefits/suggestInsuranceCoverage. NO PatNum needed.',
+                    description: 'Insurance group/employer name (e.g., "RFS TECHNOLOGIES INC.", "ACME CORP"). USE THIS when user selects a specific plan from a list of multiple plans. Combine with insuranceName for best results. NO PatNum needed.',
                   },
                   groupNumber: {
                     type: 'string',
-                    description: 'Insurance group number from the insurance card. For getInsurancePlanBenefits/suggestInsuranceCoverage. NO PatNum needed.',
+                    description: 'Insurance group number from the insurance card. IMPORTANT: When user provides this, also include the insuranceName for better results! For getInsurancePlanBenefits/suggestInsuranceCoverage. NO PatNum needed.',
                   },
                   clinicId: {
                     type: 'string',
