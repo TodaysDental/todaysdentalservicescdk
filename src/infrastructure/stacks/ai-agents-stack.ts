@@ -588,6 +588,8 @@ export class AiAgentsStack extends Stack {
         CIRCUIT_BREAKER_TABLE: this.circuitBreakerTable.tableName,
         // Insurance plans table for coverage lookup (synced from OpenDental every 15 mins)
         INSURANCE_PLANS_TABLE: 'TodaysDentalInsightsInsurancePlanSyncN1-InsurancePlans',
+        // Fee schedules table for fee lookup (synced from OpenDental every 15 mins)
+        FEE_SCHEDULES_TABLE: 'TodaysDentalInsightsFeeScheduleSyncN1-FeeSchedules',
       },
     });
     applyTags(this.actionGroupFn, { Function: 'action-group' });
@@ -615,6 +617,18 @@ export class AiAgentsStack extends Stack {
       resources: [
         insurancePlansTableArn,
         `${insurancePlansTableArn}/index/*`, // Include GSIs for efficient lookups
+      ],
+    }));
+
+    // Grant read access to Fee Schedules table for fee lookup
+    // This table is synced every 15 mins from OpenDental by FeeScheduleSyncStack
+    const feeSchedulesTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/TodaysDentalInsightsFeeScheduleSyncN1-FeeSchedules`;
+    this.actionGroupFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
+      resources: [
+        feeSchedulesTableArn,
+        `${feeSchedulesTableArn}/index/*`, // Include GSIs for efficient lookups
       ],
     }));
 

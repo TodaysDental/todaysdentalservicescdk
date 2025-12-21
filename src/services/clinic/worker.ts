@@ -112,6 +112,34 @@ function isDueLocal(schedule: any, now: Date, timeZone: string, lastRunAtIso?: s
   const nowL = getLocalParts(now, timeZone);
   const lastL = lastRunAt ? getLocalParts(lastRunAt, timeZone) : undefined;
 
+  // For "once" frequency schedules: if already run, never run again
+  if (freq === 'once' && lastRunAt) {
+    console.log(`[isDueLocal] Skipping "once" schedule ${schedule.id} - already ran at ${lastRunAtIso}`);
+    return false;
+  }
+
+  // Check the "date" field for "once" schedules (format: DD-MM-YYYY)
+  // This ensures the schedule only runs on the specified date
+  const scheduleDate = String(schedule.date || '').trim();
+  if (freq === 'once' && scheduleDate) {
+    const dateParts = scheduleDate.split('-').map((x: string) => parseInt(x, 10));
+    if (dateParts.length === 3) {
+      // Format is DD-MM-YYYY
+      const [schedDay, schedMonth, schedYear] = dateParts;
+      const scheduledDateKey = schedYear * 10000 + schedMonth * 100 + schedDay;
+      const todayKey = nowL.year * 10000 + nowL.month * 100 + nowL.day;
+      
+      if (todayKey !== scheduledDateKey) {
+        // Not the scheduled date - don't run
+        // Also skip if the date has passed (schedule is stale)
+        if (todayKey > scheduledDateKey) {
+          console.log(`[isDueLocal] Skipping "once" schedule ${schedule.id} - scheduled date ${scheduleDate} has passed`);
+        }
+        return false;
+      }
+    }
+  }
+
   // Date window filtering (inclusive), based on local date
   const startDate = String(schedule.startDate || schedule.start_date || '').trim(); // YYYY-MM-DD
   const endDate = String(schedule.endDate || schedule.end_date || '').trim(); // YYYY-MM-DD
@@ -164,6 +192,10 @@ function shouldRunByFrequencyLocal(freq: string, nowL: LocalParts, lastL?: Local
       const crossedMonth = nowL.month !== lastL.month || nowL.year !== lastL.year;
       return isAnchorToday && crossedMonth;
     }
+    case 'once':
+      // "once" schedules should NEVER run again once they've already run
+      // If lastL exists, the schedule has already been executed
+      return false;
     default: return true;
   }
 }

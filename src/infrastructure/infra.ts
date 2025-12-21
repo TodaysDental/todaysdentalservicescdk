@@ -38,7 +38,9 @@ import { RcsStack } from './stacks/rcs-stack';
 // import { CredentialingStack } from './stacks/credentialing-stack'; // TEMPORARILY DISABLED
 import { LeaseManagementStack } from './stacks/lease-management-stack';
 import { InsurancePlanSyncStack } from './stacks/insurance-plan-sync-stack';
+import { FeeScheduleSyncStack } from './stacks/fee-schedule-sync-stack';
 import { EmailStack } from './stacks/email-stack';
+// import { PushNotificationsStack } from './stacks/push-notifications-stack';
 // import { DentalSoftwareStack } from './stacks/dental-software-stack';
 
 const app = new cdk.App();
@@ -620,6 +622,14 @@ const insurancePlanSyncStack = new InsurancePlanSyncStack(app, 'TodaysDentalInsi
 });
 insurancePlanSyncStack.addDependency(openDentalStack); // Explicit - uses SFTP server ID
 
+// Fee Schedule Sync Stack - Syncs fee schedule data from OpenDental every 15 minutes
+// Stores fee amounts for procedure codes across all fee schedules (feesched, fee, procedurecode)
+const feeScheduleSyncStack = new FeeScheduleSyncStack(app, 'TodaysDentalInsightsFeeScheduleSyncN1', {
+  env,
+  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
+});
+feeScheduleSyncStack.addDependency(openDentalStack); // Explicit - uses SFTP server ID
+
 // Email Stack - Clinic-specific email operations (Gmail REST API + IMAP/SMTP)
 // Domain-level credentials are defined as constants in email-stack.ts:
 // - GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET: Google OAuth2 credentials
@@ -628,6 +638,19 @@ const emailStack = new EmailStack(app, 'TodaysDentalInsightsEmailN1', {
   env,
 });
 emailStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn (if needed later)
+
+// Push Notifications Stack - Mobile push notifications via SNS (iOS APNs + Android FCM)
+// Prerequisites: Store credentials in Secrets Manager before enabling platform applications:
+// - todaysdentalinsights/push/apns - APNs credentials (signingKey, keyId, teamId, bundleId)
+// - todaysdentalinsights/push/fcm - FCM credentials (serverKey)
+// const pushNotificationsStack = new PushNotificationsStack(app, 'TodaysDentalInsightsPushN1', {
+//   env,
+//   // Uncomment and set these after creating the Secrets Manager secrets:
+//   // apnsSecretName: 'todaysdentalinsights/push/apns',
+//   // fcmSecretName: 'todaysdentalinsights/push/fcm',
+//   enableApnsSandbox: true,
+// });
+// pushNotificationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 
 // CRITICAL FIX: Remove commented-out code that could lead to circular dependencies
 // Note: The proper dependencies are already set above:

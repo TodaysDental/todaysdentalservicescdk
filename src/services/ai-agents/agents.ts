@@ -496,7 +496,102 @@ Do NOT ask for patient name or DOB - just use the insurance name and/or group nu
 • getInsurancePlanBenefits - Look up raw insurance plan coverage details
   Same parameters as suggestInsuranceCoverage. Use when you need raw data.
   NO PatNum needed! 
-  Returns: Annual max, deductibles, coverage percentages, waiting periods, frequency limits`,
+  Returns: Annual max, deductibles, coverage percentages, waiting periods, frequency limits
+
+=== DETAILED INSURANCE QUESTION TOOLS (NO PatNum Required!) ===
+Use these for specific insurance questions:
+
+• getInsuranceDetails - Comprehensive insurance details
+  Params: insuranceName, groupName, groupNumber (at least one required)
+  Returns: Deductibles, maximums, waiting periods, frequency limits, age limits, exclusions
+  Use for: "What are the details of my insurance?"
+
+• getDeductibleInfo - Detailed deductible information
+  Params: insuranceName, groupName, groupNumber
+  Returns: Individual/family deductibles, met status, what deductible applies to
+  Use for: "What's my deductible?", "Has my deductible been met?", "Does deductible apply to preventive?"
+
+• getAnnualMaxInfo - Annual maximum and remaining benefits
+  Params: insuranceName, groupName, groupNumber, patientName, patientDOB (optional for remaining)
+  Returns: Annual max, remaining benefits, ortho max, reset date
+  Use for: "What's my annual max?", "How much is remaining?", "When does my max reset?"
+
+• checkProcedureCoverage - Check if specific procedure is covered
+  Params: insuranceName, groupName, groupNumber, procedure (e.g., "crown", "implant", "cleaning")
+  Returns: Coverage %, category, deductible applicability
+  Use for: "Is a crown covered?", "Are implants covered?", "Is orthodontics covered?"
+
+• getCoverageBreakdown - Coverage percentages by category
+  Params: insuranceName, groupName, groupNumber
+  Returns: Preventive/Basic/Major percentages, downgrades, implant coverage, perio vs cleaning, in/out of network
+  Use for: "What % does insurance pay?", "Are crowns downgraded?", "In-network vs out-of-network?"
+
+• getCopayAndFrequencyInfo - Copays and frequency limits
+  Params: insuranceName, groupName, groupNumber
+  Returns: Copay vs coinsurance, cleaning/x-ray frequency, fluoride/sealant limits
+  Use for: "How many cleanings per year?", "Do I have a copay?", "How often are x-rays covered?"
+
+• getWaitingPeriodInfo - Waiting periods and exclusions
+  Params: insuranceName, groupName, groupNumber
+  Returns: Waiting periods by category, exclusions, missing tooth clause, pre-existing conditions
+  Use for: "Is there a waiting period?", "Missing tooth clause?", "What's excluded?"
+
+• getEstimateExplanation - Why estimates can change
+  Params: insuranceName, groupName, groupNumber (optional)
+  Returns: Explanation of estimate vs guarantee, reasons for price changes, balance billing info
+  Use for: "Is this estimate guaranteed?", "What could change my price?", "If insurance pays less, do I owe more?"
+
+• getCoordinationOfBenefits - Dual insurance / secondary insurance
+  Params: insuranceName, groupName, groupNumber (optional)
+  Returns: How dual insurance works, primary vs secondary rules, out-of-pocket with two plans
+  Use for: "Will you bill both insurances?", "Which is primary?", "Will my out-of-pocket be zero?"
+
+• getPaymentInfo - Payment timing and options
+  No insurance params required
+  Returns: When to pay, payment methods, payment plans, financing (CareCredit, Sunbit), HSA/FSA info
+  Use for: "Do you have payment plans?", "Can I use HSA?", "When do I pay?"
+
+=== FEE SCHEDULE TOOLS (NO PatNum Required!) ===
+Use these for pricing questions without insurance:
+
+• getFeeSchedules - Look up fee schedules
+  Params: feeSchedule, feeSchedNum, procCode
+  Returns: Fee schedule details, procedure fees
+  
+• getFeeForProcedure - Get fee for specific procedure
+  Params: procCode OR procedure (natural language like "cleaning", "crown", "root canal")
+  Returns: Fee amount for the procedure
+  Use for: "How much is a cleaning?", "What's the cost of a crown?"
+  
+• getFeeScheduleAmounts - Get fees for multiple procedures
+  Params: procedures (list like "cleaning and exam")
+  Returns: Fees for each procedure
+  Use for: "How much for cleaning and exams?"
+
+• listFeeSchedules - List available fee schedules
+  No params required
+  Returns: List of all fee schedules
+
+• compareProcedureFees - Compare fees across schedules
+  Params: procCode
+  Returns: Fee comparison across different schedules
+
+=== COST ESTIMATION TOOLS (May require PatNum for patient-specific estimates) ===
+
+• estimateTreatmentCost - Estimate out-of-pocket cost for treatment
+  Params: procedure, insuranceName, groupNumber, patientName, patientDOB (all optional)
+  Returns: Estimated insurance payment, patient responsibility, remaining deductible/max
+  Use for: "What will I pay for a crown with Delta Dental?", "Estimate for root canal"
+
+• calculateOutOfPocket - Calculate out-of-pocket for procedure
+  Params: procedure, insuranceName, groupNumber
+  Returns: Fee, coverage %, estimated patient portion
+  Use for: "What's my out-of-pocket for this procedure?"
+
+• getPatientAccountSummary - Comprehensive account overview
+  Params: PatNum (required)
+  Returns: Current balance, aging, insurance pending, payment history
+  Use for: "What's my account balance?", "Do I owe anything?"`,
         parameters: [
           {
             name: 'toolName',
@@ -506,26 +601,54 @@ Do NOT ask for patient name or DOB - just use the insurance name and/or group nu
             schema: {
               type: 'string',
               enum: [
+                // Patient Tools
                 'searchPatients',
                 'createPatient',
                 'getPatientByPatNum',
+                // Procedure Tools
                 'getProcedureLogs',
                 'getTreatmentPlans',
+                // Appointment Tools
                 'scheduleAppointment',
                 'getUpcomingAppointments',
                 'rescheduleAppointment',
                 'cancelAppointment',
+                // Account Tools
                 'getAccountAging',
                 'getPatientBalances',
                 'getServiceDateView',
+                'getPatientAccountSummary',
+                // Medical Tools
                 'getAllergies',
                 'getPatientInfo',
+                // Insurance Tools (Patient-Specific)
                 'getBenefits',
                 'getCarriers',
                 'getClaims',
                 'getFamilyInsurance',
+                // Insurance Coverage Lookup (NO PatNum Required)
                 'getInsurancePlanBenefits',
                 'suggestInsuranceCoverage',
+                // Detailed Insurance Question Tools
+                'getInsuranceDetails',
+                'getDeductibleInfo',
+                'getAnnualMaxInfo',
+                'checkProcedureCoverage',
+                'getCoverageBreakdown',
+                'getCopayAndFrequencyInfo',
+                'getWaitingPeriodInfo',
+                'getEstimateExplanation',
+                'getCoordinationOfBenefits',
+                'getPaymentInfo',
+                // Fee Schedule Tools
+                'getFeeSchedules',
+                'getFeeForProcedure',
+                'getFeeScheduleAmounts',
+                'listFeeSchedules',
+                'compareProcedureFees',
+                // Cost Estimation Tools
+                'estimateTreatmentCost',
+                'calculateOutOfPocket',
               ],
             },
           },
@@ -642,6 +765,45 @@ PATIENT LOOKUP EXAMPLE:
                   clinicId: {
                     type: 'string',
                     description: 'Clinic ID (auto-filled from session). For getInsurancePlanBenefits/suggestInsuranceCoverage.',
+                  },
+                  // Procedure/Fee parameters
+                  procedure: {
+                    type: 'string',
+                    description: 'Procedure name in natural language. Examples: "cleaning", "crown", "root canal", "filling", "extraction", "implant", "dentures", "braces", "Invisalign", "deep cleaning", "x-rays", "exam". Used for estimateTreatmentCost, checkProcedureCoverage, getFeeForProcedure.',
+                  },
+                  procedureName: {
+                    type: 'string',
+                    description: 'Alias for procedure. Procedure name in natural language.',
+                  },
+                  procCode: {
+                    type: 'string',
+                    description: 'CDT procedure code. Examples: D0120 (exam), D1110 (cleaning), D2750 (crown), D3310 (root canal), D7140 (extraction). Used for getFeeForProcedure, checkProcedureCoverage.',
+                  },
+                  procedureCode: {
+                    type: 'string',
+                    description: 'Alias for procCode. CDT procedure code.',
+                  },
+                  // Fee Schedule parameters
+                  feeSchedule: {
+                    type: 'string',
+                    description: 'Fee schedule name to look up. For getFeeSchedules, getFeeForProcedure.',
+                  },
+                  feeScheduleName: {
+                    type: 'string',
+                    description: 'Alias for feeSchedule. Fee schedule name.',
+                  },
+                  feeSchedNum: {
+                    type: 'string',
+                    description: 'Fee schedule number/ID. For getFeeSchedules.',
+                  },
+                  // Patient identification for cost estimates
+                  patientName: {
+                    type: 'string',
+                    description: 'Patient full name for looking up remaining benefits. Format: "First Last". Optional for estimateTreatmentCost, getAnnualMaxInfo.',
+                  },
+                  patientDOB: {
+                    type: 'string',
+                    description: 'Patient date of birth for verification. Format: YYYY-MM-DD or natural language. Optional for estimateTreatmentCost, getAnnualMaxInfo.',
                   },
                 },
               },

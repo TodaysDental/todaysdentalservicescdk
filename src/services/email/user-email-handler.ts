@@ -45,6 +45,24 @@ interface SendEmailPayload {
   bcc?: string;
 }
 
+interface EmailActionPayload {
+  action: 'delete' | 'star' | 'unstar' | 'spam' | 'unspam' | 'archive';
+  uid: number;
+}
+
+// Standard IMAP folder names
+type ImapFolder = 'inbox' | 'sent' | 'spam' | 'trash' | 'drafts' | 'starred';
+
+// Mapping to common IMAP mailbox names
+const FOLDER_MAPPINGS: Record<ImapFolder, string[]> = {
+  inbox: ['INBOX'],
+  sent: ['Sent', '[Gmail]/Sent Mail', 'Sent Items', 'Sent Messages', 'INBOX.Sent'],
+  spam: ['Spam', '[Gmail]/Spam', 'Junk', 'Junk E-mail', 'INBOX.Spam', 'INBOX.Junk'],
+  trash: ['Trash', '[Gmail]/Trash', 'Deleted Items', 'Deleted Messages', 'INBOX.Trash'],
+  drafts: ['Drafts', '[Gmail]/Drafts', 'INBOX.Drafts'],
+  starred: ['[Gmail]/Starred', 'Flagged', 'INBOX.Flagged'],
+};
+
 // -------------------- Helpers --------------------
 
 function normalizeResponse(resp: { statusCode?: number; headers?: Record<string, string>; body?: unknown }): APIGatewayProxyResult {
@@ -102,6 +120,54 @@ function getPostPayload(event: APIGatewayProxyEvent): SendEmailPayload {
     return event.body as SendEmailPayload;
   }
   return { to: '', subject: '', body: '' };
+}
+
+function getFolderFromEvent(event: APIGatewayProxyEvent): ImapFolder {
+  const raw = event?.queryStringParameters?.folder?.toLowerCase();
+  if (raw && raw in FOLDER_MAPPINGS) {
+    return raw as ImapFolder;
+  }
+  return 'inbox';
+}
+
+/**
+ * Find the actual mailbox name on the server for a given folder type
+ */
+async function findMailboxName(connection: imaps.ImapSimple, folder: ImapFolder): Promise<string | null> {
+  const possibleNames = FOLDER_MAPPINGS[folder];
+  
+  try {
+    const boxes = await connection.getBoxes();
+    const flattenBoxes = (boxes: any, prefix = ''): string[] => {
+      const result: string[] = [];
+      for (const name of Object.keys(boxes)) {
+        const fullName = prefix ? `${prefix}${boxes[name].delimiter || '/'}${name}` : name;
+        result.push(fullName);
+        if (boxes[name].children) {
+          result.push(...flattenBoxes(boxes[name].children, fullName));
+        }
+      }
+      return result;
+    };
+    
+    const allBoxes = flattenBoxes(boxes);
+    
+    for (const possibleName of possibleNames) {
+      const found = allBoxes.find(b => b.toLowerCase() === possibleName.toLowerCase());
+      if (found) {
+        return found;
+      }
+    }
+    
+    if (folder === 'starred') {
+      return 'INBOX';
+    }
+    
+    return null;
+  } catch (err) {
+    console.error('Error getting mailboxes:', err);
+    return null;
+  }
 }
 
 /**
@@ -193,14 +259,14 @@ async function handleSendEmail(
   }
 }
 
-// -------------------- IMAP: Fetch Emails --------------------
+// -------------------- IMAP: Fetch Emails by Folder --------------------
 
 async function handleFetchEmails(
   creds: UserEmailCredentials,
   days: number,
   limit: number,
-  mailbox = 'INBOX'
-): Promise<{ statusCode: number; body: { message: string; count: number; emails: EmailResponse[]; userEmail?: string } }> {
+  folder: ImapFolder = 'inbox'
+): Promise<{ statusCode: number; body: { message: string; count: number; emails: EmailResponse[]; userEmail?: string; folder?: string } }> {
   const { email, password, imapHost, imapPort } = creds;
 
   if (!email || !password || !imapHost) {
@@ -230,12 +296,27 @@ async function handleFetchEmails(
     console.log('IMAP: connecting...');
     connection = await imaps.connect(config);
 
-    console.log('IMAP: opening box...', mailbox);
-    await connection.openBox(mailbox);
+    // Find the actual mailbox name for the requested folder
+    const mailboxName = await findMailboxName(connection, folder);
+    if (!mailboxName) {
+      connection.end();
+      return {
+        statusCode: 404,
+        body: { message: `Folder '${folder}' not found`, count: 0, emails: [], userEmail: email, folder },
+      };
+    }
 
-    // Search for messages from the last N days
-    console.log(`IMAP: searching since ${sinceDate}`);
-    const searchResults = await connection.search([['SINCE', sinceDate]], {
+    console.log(`IMAP: opening box '${mailboxName}' for folder '${folder}'`);
+    await connection.openBox(mailboxName);
+
+    // Build search criteria
+    const searchCriteria: any[] = [['SINCE', sinceDate]];
+    if (folder === 'starred') {
+      searchCriteria.push('FLAGGED');
+    }
+
+    console.log(`IMAP: searching since ${sinceDate}${folder === 'starred' ? ' (flagged)' : ''}`);
+    const searchResults = await connection.search(searchCriteria, {
       bodies: ['HEADER', 'TEXT', ''],
       struct: true,
     });
@@ -246,7 +327,7 @@ async function handleFetchEmails(
       connection.end();
       return {
         statusCode: 200,
-        body: { message: `No emails found in the last ${days} days`, count: 0, emails: [], userEmail: email },
+        body: { message: `No ${folder} emails found in the last ${days} days`, count: 0, emails: [], userEmail: email, folder },
       };
     }
 
@@ -333,10 +414,11 @@ async function handleFetchEmails(
     return {
       statusCode: 200,
       body: { 
-        message: `Emails from the last ${days} days fetched successfully`, 
+        message: `${folder.charAt(0).toUpperCase() + folder.slice(1)} emails from the last ${days} days fetched successfully`, 
         count: emails.length, 
         emails,
         userEmail: email,
+        folder,
       },
     };
   } catch (err) {
@@ -344,8 +426,109 @@ async function handleFetchEmails(
     try { if (connection) connection.end(); } catch { /* ignore */ }
     return {
       statusCode: 500,
-      body: { message: 'Error fetching emails via IMAP', count: 0, emails: [] },
+      body: { message: 'Error fetching emails via IMAP', count: 0, emails: [], folder },
     };
+  }
+}
+
+// -------------------- IMAP: Email Actions --------------------
+
+async function handleEmailAction(
+  creds: UserEmailCredentials,
+  payload: EmailActionPayload
+): Promise<{ statusCode: number; body: { message: string; success: boolean } }> {
+  const { email, password, imapHost, imapPort } = creds;
+
+  if (!email || !password || !imapHost) {
+    return { statusCode: 500, body: { message: 'Missing IMAP credentials', success: false } };
+  }
+
+  const { action, uid } = payload;
+  if (!uid) {
+    return { statusCode: 400, body: { message: 'Missing uid', success: false } };
+  }
+
+  const config = {
+    imap: {
+      user: email,
+      password: password,
+      host: imapHost,
+      port: imapPort,
+      tls: true,
+      authTimeout: 30000,
+      connTimeout: 30000,
+      tlsOptions: { servername: imapHost },
+    },
+  };
+
+  let connection: imaps.ImapSimple | null = null;
+
+  try {
+    console.log('IMAP: connecting for action...');
+    connection = await imaps.connect(config);
+
+    switch (action) {
+      case 'delete': {
+        await connection.openBox('INBOX');
+        await connection.addFlags(uid, ['\\Deleted']);
+        await (connection as any).imap.expunge();
+        connection.end();
+        return { statusCode: 200, body: { message: 'Email deleted successfully', success: true } };
+      }
+
+      case 'star': {
+        await connection.openBox('INBOX');
+        await connection.addFlags(uid, ['\\Flagged']);
+        connection.end();
+        return { statusCode: 200, body: { message: 'Email starred', success: true } };
+      }
+
+      case 'unstar': {
+        await connection.openBox('INBOX');
+        await connection.delFlags(uid, ['\\Flagged']);
+        connection.end();
+        return { statusCode: 200, body: { message: 'Email unstarred', success: true } };
+      }
+
+      case 'spam': {
+        const spamBox = await findMailboxName(connection, 'spam');
+        if (!spamBox || spamBox === 'INBOX') {
+          connection.end();
+          return { statusCode: 400, body: { message: 'Spam folder not found', success: false } };
+        }
+        await connection.openBox('INBOX');
+        await connection.moveMessage(String(uid), spamBox);
+        connection.end();
+        return { statusCode: 200, body: { message: 'Email moved to spam', success: true } };
+      }
+
+      case 'unspam': {
+        const spamBox = await findMailboxName(connection, 'spam');
+        if (!spamBox || spamBox === 'INBOX') {
+          connection.end();
+          return { statusCode: 400, body: { message: 'Spam folder not found', success: false } };
+        }
+        await connection.openBox(spamBox);
+        await connection.moveMessage(String(uid), 'INBOX');
+        connection.end();
+        return { statusCode: 200, body: { message: 'Email moved to inbox', success: true } };
+      }
+
+      case 'archive': {
+        await connection.openBox('INBOX');
+        await connection.addFlags(uid, ['\\Seen']);
+        connection.end();
+        return { statusCode: 200, body: { message: 'Email archived (marked as read)', success: true } };
+      }
+
+      default:
+        connection.end();
+        return { statusCode: 400, body: { message: `Unknown action: ${action}`, success: false } };
+    }
+  } catch (err) {
+    console.error(`IMAP action error (${action}):`, err);
+    try { if (connection) connection.end(); } catch { /* ignore */ }
+    return { statusCode: 500, body: { message: `Failed to ${action}: ${(err as Error).message}`, success: false } };
   }
 }
 
@@ -408,20 +591,45 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (event.httpMethod === 'GET') {
       const days = getDaysFromEvent(event, 7);
       const limit = getLimitFromEvent(event, 50);
-      const result = await handleFetchEmails(emailCreds, days, limit);
+      const folder = getFolderFromEvent(event);
+      const result = await handleFetchEmails(emailCreds, days, limit, folder);
       return normalizeResponse({ ...result, headers: corsHeaders });
     }
 
     if (event.httpMethod === 'POST') {
+      const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body || {});
+      
+      // Check if this is an email action (delete, star, spam, archive)
+      if (body.action && body.uid) {
+        const result = await handleEmailAction(emailCreds, body as EmailActionPayload);
+        return normalizeResponse({ ...result, headers: corsHeaders });
+      }
+      
+      // Regular send email
       const payload = getPostPayload(event);
       const result = await handleSendEmail(emailCreds, payload, senderName);
       return normalizeResponse({ ...result, headers: corsHeaders });
     }
 
+    if (event.httpMethod === 'DELETE') {
+      const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body || {});
+      
+      if (body.uid) {
+        const result = await handleEmailAction(emailCreds, { action: 'delete', uid: body.uid });
+        return normalizeResponse({ ...result, headers: corsHeaders });
+      }
+      
+      return normalizeResponse({
+        statusCode: 400,
+        headers: corsHeaders,
+        body: { message: 'Missing uid for DELETE' },
+      });
+    }
+
     return normalizeResponse({
       statusCode: 400,
       headers: corsHeaders,
-      body: { message: 'Invalid method. Use GET to fetch emails or POST to send.' },
+      body: { message: 'Invalid method. Use GET, POST, or DELETE.' },
     });
   } catch (err) {
     console.error('Unhandled error:', err);

@@ -251,18 +251,35 @@ export class EmailStack extends Stack {
     const gmailClinicResource = gmailResource.addResource('{clinicId}');
     const gmailIntegration = new apigw.LambdaIntegration(this.gmailHandlerFn);
     
-    // GET /gmail/{clinicId} - Fetch inbox emails (authorized)
+    // GET /gmail/{clinicId} - Fetch emails by folder (authorized)
+    // Query params: ?folder=inbox|sent|spam|trash|starred|drafts&limit=50&days=7
     gmailClinicResource.addMethod('GET', gmailIntegration, {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
       requestParameters: {
         'method.request.path.clinicId': true,
         'method.request.querystring.limit': false,
+        'method.request.querystring.days': false,
+        'method.request.querystring.folder': false,
       },
     });
     
-    // POST /gmail/{clinicId} - Send email (authorized)
+    // POST /gmail/{clinicId} - Send email, email actions, or draft operations (authorized)
+    // Body for send: { to, subject, body }
+    // Body for action: { action: 'archive'|'delete'|'star'|'unstar'|'spam'|'unspam'|'trash'|'untrash', messageId }
+    // Body for draft: { to, subject, body, isDraft: true, draftId?: string }
+    // Body for send draft: { sendDraftId: string }
     gmailClinicResource.addMethod('POST', gmailIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      requestParameters: {
+        'method.request.path.clinicId': true,
+      },
+    });
+    
+    // DELETE /gmail/{clinicId} - Delete email or draft (authorized)
+    // Body: { messageId } for emails or { draftId } for drafts
+    gmailClinicResource.addMethod('DELETE', gmailIntegration, {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
       requestParameters: {
@@ -275,8 +292,23 @@ export class EmailStack extends Stack {
     const imapClinicResource = imapResource.addResource('{clinicId}');
     const imapIntegration = new apigw.LambdaIntegration(this.imapSmtpHandlerFn);
     
-    // GET /imap/{clinicId} - Fetch emails via IMAP (authorized)
+    // GET /imap/{clinicId} - Fetch emails by folder via IMAP (authorized)
+    // Query params: ?folder=inbox|sent|spam|trash|starred|drafts&limit=50&days=7
     imapClinicResource.addMethod('GET', imapIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      requestParameters: {
+        'method.request.path.clinicId': true,
+        'method.request.querystring.limit': false,
+        'method.request.querystring.days': false,
+        'method.request.querystring.folder': false,
+      },
+    });
+    
+    // POST /imap/{clinicId} - Send email or perform actions via IMAP (authorized)
+    // Body for send: { to, subject, body }
+    // Body for action: { action: 'delete'|'star'|'unstar'|'spam'|'unspam'|'archive', uid }
+    imapClinicResource.addMethod('POST', imapIntegration, {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
       requestParameters: {
@@ -284,8 +316,9 @@ export class EmailStack extends Stack {
       },
     });
     
-    // POST /imap/{clinicId} - Send email via SMTP (authorized)
-    imapClinicResource.addMethod('POST', imapIntegration, {
+    // DELETE /imap/{clinicId} - Delete email via IMAP (authorized)
+    // Body: { uid }
+    imapClinicResource.addMethod('DELETE', imapIntegration, {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
       requestParameters: {
@@ -301,18 +334,29 @@ export class EmailStack extends Stack {
     const userEmailResource = this.emailApi.root.addResource('user');
     const userEmailIntegration = new apigw.LambdaIntegration(this.userEmailHandlerFn);
     
-    // GET /user - Fetch authenticated user's emails (authorized)
+    // GET /user - Fetch authenticated user's emails by folder (authorized)
+    // Query params: ?folder=inbox|sent|spam|trash|starred|drafts&limit=50&days=7
     userEmailResource.addMethod('GET', userEmailIntegration, {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
       requestParameters: {
         'method.request.querystring.limit': false,
         'method.request.querystring.days': false,
+        'method.request.querystring.folder': false,
       },
     });
     
-    // POST /user - Send email from authenticated user's account (authorized)
+    // POST /user - Send email or perform actions (authorized)
+    // Body for send: { to, subject, body, cc?, bcc? }
+    // Body for action: { action: 'delete'|'star'|'unstar'|'spam'|'unspam'|'archive', uid }
     userEmailResource.addMethod('POST', userEmailIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+    
+    // DELETE /user - Delete email (authorized)
+    // Body: { uid }
+    userEmailResource.addMethod('DELETE', userEmailIntegration, {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
     });

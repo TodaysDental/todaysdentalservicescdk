@@ -63,6 +63,38 @@ interface SendEmailPayload {
   body: string;
 }
 
+interface EmailActionPayload {
+  action: 'archive' | 'delete' | 'star' | 'unstar' | 'spam' | 'unspam' | 'trash' | 'untrash';
+  messageId: string;
+}
+
+interface DraftPayload {
+  to: string;
+  subject: string;
+  body: string;
+  draftId?: string; // If provided, updates existing draft
+}
+
+interface ScheduledEmailPayload {
+  to: string;
+  subject: string;
+  body: string;
+  scheduledTime: string; // ISO timestamp
+}
+
+// Gmail label/folder types
+type GmailFolder = 'inbox' | 'sent' | 'spam' | 'trash' | 'starred' | 'drafts' | 'all';
+
+const FOLDER_TO_LABEL: Record<GmailFolder, string> = {
+  inbox: 'INBOX',
+  sent: 'SENT',
+  spam: 'SPAM',
+  trash: 'TRASH',
+  starred: 'STARRED',
+  drafts: 'DRAFT',
+  all: '',
+};
+
 // -------------------- Helpers --------------------
 
 const GMAIL_CLIENT_ID = process.env.GMAIL_CLIENT_ID || '';
@@ -103,6 +135,14 @@ function getDaysFromEvent(event: APIGatewayProxyEvent, def = 7): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return def;
   return Math.min(90, Math.floor(n)); // Max 90 days
+}
+
+function getFolderFromEvent(event: APIGatewayProxyEvent): GmailFolder {
+  const raw = event?.queryStringParameters?.folder?.toLowerCase();
+  if (raw && raw in FOLDER_TO_LABEL) {
+    return raw as GmailFolder;
+  }
+  return 'inbox'; // Default to inbox
 }
 
 function getDateNDaysAgo(days: number): string {
@@ -214,13 +254,14 @@ async function gmailRequest(
   return json;
 }
 
-// -------------------- GET: Fetch INBOX Emails by Date Range --------------------
+// -------------------- GET: Fetch Emails by Folder and Date Range --------------------
 
-async function handleFetchLatestInboxEmails(
+async function handleFetchEmails(
   clinicConfig: ClinicConfig,
   limit = 50,
-  days = 7
-): Promise<{ statusCode: number; body: { message: string; count: number; emails: EmailResponse[]; query?: string } }> {
+  days = 7,
+  folder: GmailFolder = 'inbox'
+): Promise<{ statusCode: number; body: { message: string; count: number; emails: EmailResponse[]; query?: string; folder?: string } }> {
   const email = clinicConfig.email;
   if (!email?.gmailRefreshToken) {
     throw new Error(`Clinic ${clinicConfig.clinicId} does not have Gmail OAuth configured`);
@@ -229,9 +270,10 @@ async function handleFetchLatestInboxEmails(
   const userId = email.gmailUserId || 'me';
   const refreshToken = email.gmailRefreshToken;
 
-  // Build query to filter emails from the last N days
+  // Build query to filter emails by folder and date
   const afterDate = getDateNDaysAgo(days);
-  const query = `in:inbox after:${afterDate}`;
+  const labelQuery = folder === 'all' ? '' : `in:${folder}`;
+  const query = labelQuery ? `${labelQuery} after:${afterDate}` : `after:${afterDate}`;
   const encodedQuery = encodeURIComponent(query);
 
   console.log(`Fetching emails with query: ${query}, limit: ${limit}`);
@@ -260,7 +302,7 @@ async function handleFetchLatestInboxEmails(
   allMessageIds = allMessageIds.slice(0, limit);
 
   if (!allMessageIds.length) {
-    return { statusCode: 200, body: { message: `No INBOX messages found in the last ${days} days`, count: 0, emails: [], query } };
+    return { statusCode: 200, body: { message: `No ${folder.toUpperCase()} messages found in the last ${days} days`, count: 0, emails: [], query, folder } };
   }
 
   console.log(`Found ${allMessageIds.length} messages in the last ${days} days`);
@@ -325,10 +367,11 @@ async function handleFetchLatestInboxEmails(
   return {
     statusCode: 200,
     body: { 
-      message: `INBOX emails from the last ${days} days fetched successfully (Gmail REST)`, 
+      message: `${folder.toUpperCase()} emails from the last ${days} days fetched successfully (Gmail REST)`, 
       count: emails.length, 
       emails,
-      query 
+      query,
+      folder,
     },
   };
 }
@@ -375,6 +418,267 @@ async function handleSendEmail(
     statusCode: 200,
     body: { message: 'Email sent successfully (Gmail REST)', id: sent?.id || '', threadId: sent?.threadId || '' },
   };
+}
+
+// -------------------- Email Actions (Archive, Delete, Star, Spam, Trash) --------------------
+
+async function handleEmailAction(
+  clinicConfig: ClinicConfig,
+  payload: EmailActionPayload
+): Promise<{ statusCode: number; body: { message: string; success: boolean } }> {
+  const email = clinicConfig.email;
+  if (!email?.gmailRefreshToken) {
+    throw new Error(`Clinic ${clinicConfig.clinicId} does not have Gmail OAuth configured`);
+  }
+
+  const userId = email.gmailUserId || 'me';
+  const refreshToken = email.gmailRefreshToken;
+  const { action, messageId } = payload;
+
+  if (!messageId) {
+    return { statusCode: 400, body: { message: 'Missing messageId', success: false } };
+  }
+
+  try {
+    switch (action) {
+      case 'archive':
+        // Archive = remove INBOX label
+        await gmailRequest('POST', `users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}/modify`, refreshToken, {
+          removeLabelIds: ['INBOX'],
+        });
+        return { statusCode: 200, body: { message: 'Email archived successfully', success: true } };
+
+      case 'delete':
+        // Permanently delete (not trash)
+        await gmailRequest('DELETE', `users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}`, refreshToken);
+        return { statusCode: 200, body: { message: 'Email permanently deleted', success: true } };
+
+      case 'star':
+        await gmailRequest('POST', `users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}/modify`, refreshToken, {
+          addLabelIds: ['STARRED'],
+        });
+        return { statusCode: 200, body: { message: 'Email starred', success: true } };
+
+      case 'unstar':
+        await gmailRequest('POST', `users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}/modify`, refreshToken, {
+          removeLabelIds: ['STARRED'],
+        });
+        return { statusCode: 200, body: { message: 'Email unstarred', success: true } };
+
+      case 'spam':
+        await gmailRequest('POST', `users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}/modify`, refreshToken, {
+          addLabelIds: ['SPAM'],
+          removeLabelIds: ['INBOX'],
+        });
+        return { statusCode: 200, body: { message: 'Email marked as spam', success: true } };
+
+      case 'unspam':
+        await gmailRequest('POST', `users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}/modify`, refreshToken, {
+          removeLabelIds: ['SPAM'],
+          addLabelIds: ['INBOX'],
+        });
+        return { statusCode: 200, body: { message: 'Email removed from spam', success: true } };
+
+      case 'trash':
+        await gmailRequest('POST', `users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}/trash`, refreshToken);
+        return { statusCode: 200, body: { message: 'Email moved to trash', success: true } };
+
+      case 'untrash':
+        await gmailRequest('POST', `users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}/untrash`, refreshToken);
+        return { statusCode: 200, body: { message: 'Email restored from trash', success: true } };
+
+      default:
+        return { statusCode: 400, body: { message: `Unknown action: ${action}`, success: false } };
+    }
+  } catch (err) {
+    console.error(`Error performing action ${action}:`, err);
+    return { statusCode: 500, body: { message: `Failed to ${action} email: ${(err as Error).message}`, success: false } };
+  }
+}
+
+// -------------------- Drafts --------------------
+
+async function handleCreateOrUpdateDraft(
+  clinicConfig: ClinicConfig,
+  payload: DraftPayload
+): Promise<{ statusCode: number; body: { message: string; draftId?: string; success: boolean } }> {
+  const email = clinicConfig.email;
+  if (!email?.gmailRefreshToken) {
+    throw new Error(`Clinic ${clinicConfig.clinicId} does not have Gmail OAuth configured`);
+  }
+
+  const userId = email.gmailUserId || 'me';
+  const refreshToken = email.gmailRefreshToken;
+  const { to, subject, body, draftId } = payload;
+
+  if (!to || !subject) {
+    return { statusCode: 400, body: { message: 'Missing to/subject in request', success: false } };
+  }
+
+  const mime = [
+    `To: ${to}`,
+    `Subject: ${encodeHeaderIfNeeded(subject)}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset="UTF-8"',
+    'Content-Transfer-Encoding: 7bit',
+    '',
+    String(body || ''),
+  ].join('\r\n');
+
+  const raw = base64UrlEncode(Buffer.from(mime, 'utf8'));
+
+  try {
+    if (draftId) {
+      // Update existing draft
+      const updated = (await gmailRequest(
+        'PUT',
+        `users/${encodeURIComponent(userId)}/drafts/${encodeURIComponent(draftId)}`,
+        refreshToken,
+        { message: { raw } }
+      )) as { id?: string };
+
+      return {
+        statusCode: 200,
+        body: { message: 'Draft updated successfully', draftId: updated?.id || draftId, success: true },
+      };
+    } else {
+      // Create new draft
+      const created = (await gmailRequest(
+        'POST',
+        `users/${encodeURIComponent(userId)}/drafts`,
+        refreshToken,
+        { message: { raw } }
+      )) as { id?: string };
+
+      return {
+        statusCode: 200,
+        body: { message: 'Draft created successfully', draftId: created?.id || '', success: true },
+      };
+    }
+  } catch (err) {
+    console.error('Error creating/updating draft:', err);
+    return { statusCode: 500, body: { message: `Failed to save draft: ${(err as Error).message}`, success: false } };
+  }
+}
+
+async function handleDeleteDraft(
+  clinicConfig: ClinicConfig,
+  draftId: string
+): Promise<{ statusCode: number; body: { message: string; success: boolean } }> {
+  const email = clinicConfig.email;
+  if (!email?.gmailRefreshToken) {
+    throw new Error(`Clinic ${clinicConfig.clinicId} does not have Gmail OAuth configured`);
+  }
+
+  const userId = email.gmailUserId || 'me';
+  const refreshToken = email.gmailRefreshToken;
+
+  if (!draftId) {
+    return { statusCode: 400, body: { message: 'Missing draftId', success: false } };
+  }
+
+  try {
+    await gmailRequest('DELETE', `users/${encodeURIComponent(userId)}/drafts/${encodeURIComponent(draftId)}`, refreshToken);
+    return { statusCode: 200, body: { message: 'Draft deleted successfully', success: true } };
+  } catch (err) {
+    console.error('Error deleting draft:', err);
+    return { statusCode: 500, body: { message: `Failed to delete draft: ${(err as Error).message}`, success: false } };
+  }
+}
+
+async function handleSendDraft(
+  clinicConfig: ClinicConfig,
+  draftId: string
+): Promise<{ statusCode: number; body: { message: string; messageId?: string; success: boolean } }> {
+  const email = clinicConfig.email;
+  if (!email?.gmailRefreshToken) {
+    throw new Error(`Clinic ${clinicConfig.clinicId} does not have Gmail OAuth configured`);
+  }
+
+  const userId = email.gmailUserId || 'me';
+  const refreshToken = email.gmailRefreshToken;
+
+  if (!draftId) {
+    return { statusCode: 400, body: { message: 'Missing draftId', success: false } };
+  }
+
+  try {
+    const sent = (await gmailRequest(
+      'POST',
+      `users/${encodeURIComponent(userId)}/drafts/send`,
+      refreshToken,
+      { id: draftId }
+    )) as { id?: string };
+
+    return { statusCode: 200, body: { message: 'Draft sent successfully', messageId: sent?.id, success: true } };
+  } catch (err) {
+    console.error('Error sending draft:', err);
+    return { statusCode: 500, body: { message: `Failed to send draft: ${(err as Error).message}`, success: false } };
+  }
+}
+
+// -------------------- Fetch Drafts --------------------
+
+async function handleFetchDrafts(
+  clinicConfig: ClinicConfig,
+  limit = 50
+): Promise<{ statusCode: number; body: { message: string; count: number; drafts: Array<{ draftId: string; to: string; subject: string; snippet: string }> } }> {
+  const email = clinicConfig.email;
+  if (!email?.gmailRefreshToken) {
+    throw new Error(`Clinic ${clinicConfig.clinicId} does not have Gmail OAuth configured`);
+  }
+
+  const userId = email.gmailUserId || 'me';
+  const refreshToken = email.gmailRefreshToken;
+
+  try {
+    // List drafts
+    const list = (await gmailRequest(
+      'GET',
+      `users/${encodeURIComponent(userId)}/drafts?maxResults=${limit}`,
+      refreshToken
+    )) as { drafts?: Array<{ id: string; message: { id: string } }> };
+
+    const draftsList = list?.drafts || [];
+    
+    if (!draftsList.length) {
+      return { statusCode: 200, body: { message: 'No drafts found', count: 0, drafts: [] } };
+    }
+
+    // Fetch details for each draft
+    const drafts = await Promise.all(
+      draftsList.slice(0, limit).map(async (draft) => {
+        try {
+          const draftDetail = (await gmailRequest(
+            'GET',
+            `users/${encodeURIComponent(userId)}/drafts/${encodeURIComponent(draft.id)}?format=metadata&metadataHeaders=To&metadataHeaders=Subject`,
+            refreshToken
+          )) as { id: string; message: { id: string; snippet: string; payload?: { headers?: Array<{ name: string; value: string }> } } };
+
+          const headers = draftDetail?.message?.payload?.headers || [];
+          const toHeader = headers.find(h => h.name.toLowerCase() === 'to');
+          const subjectHeader = headers.find(h => h.name.toLowerCase() === 'subject');
+
+          return {
+            draftId: draft.id,
+            to: toHeader?.value || '',
+            subject: subjectHeader?.value || '',
+            snippet: draftDetail?.message?.snippet || '',
+          };
+        } catch {
+          return { draftId: draft.id, to: '', subject: '', snippet: '' };
+        }
+      })
+    );
+
+    return {
+      statusCode: 200,
+      body: { message: 'Drafts fetched successfully', count: drafts.length, drafts },
+    };
+  } catch (err) {
+    console.error('Error fetching drafts:', err);
+    return { statusCode: 500, body: { message: `Failed to fetch drafts: ${(err as Error).message}`, count: 0, drafts: [] } };
+  }
 }
 
 // -------------------- Main Handler --------------------
@@ -443,23 +747,78 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     console.log(`User ${userPermissions.email} accessing email for clinic ${clinicId}`);
 
+    // Get action from path or query parameter
+    const actionPath = event.pathParameters?.action;
+    const actionQuery = event.queryStringParameters?.action;
+
     if (event.httpMethod === 'GET') {
       const limit = getLimitFromEvent(event, 50);
       const days = getDaysFromEvent(event, 7);
-      const result = await handleFetchLatestInboxEmails(clinicConfig, limit, days);
+      const folder = getFolderFromEvent(event);
+      
+      // Special handling for drafts folder
+      if (folder === 'drafts') {
+        const result = await handleFetchDrafts(clinicConfig, limit);
+        return normalizeResponse({ ...result, headers: corsHeaders });
+      }
+      
+      const result = await handleFetchEmails(clinicConfig, limit, days, folder);
       return normalizeResponse({ ...result, headers: corsHeaders });
     }
 
     if (event.httpMethod === 'POST') {
+      const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body || {});
+      
+      // Check if this is an email action (archive, delete, star, spam, trash)
+      if (body.action && body.messageId) {
+        const result = await handleEmailAction(clinicConfig, body as EmailActionPayload);
+        return normalizeResponse({ ...result, headers: corsHeaders });
+      }
+      
+      // Check if this is a draft operation
+      if (actionPath === 'drafts' || actionQuery === 'drafts' || body.isDraft) {
+        // If sending a draft
+        if (body.sendDraftId) {
+          const result = await handleSendDraft(clinicConfig, body.sendDraftId);
+          return normalizeResponse({ ...result, headers: corsHeaders });
+        }
+        // Create or update draft
+        const result = await handleCreateOrUpdateDraft(clinicConfig, body as DraftPayload);
+        return normalizeResponse({ ...result, headers: corsHeaders });
+      }
+      
+      // Regular send email
       const payload = getPostPayload(event);
       const result = await handleSendEmail(clinicConfig, payload);
       return normalizeResponse({ ...result, headers: corsHeaders });
     }
 
+    if (event.httpMethod === 'DELETE') {
+      const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body || {});
+      
+      // Delete draft
+      if (body.draftId) {
+        const result = await handleDeleteDraft(clinicConfig, body.draftId);
+        return normalizeResponse({ ...result, headers: corsHeaders });
+      }
+      
+      // Delete message permanently
+      if (body.messageId) {
+        const result = await handleEmailAction(clinicConfig, { action: 'delete', messageId: body.messageId });
+        return normalizeResponse({ ...result, headers: corsHeaders });
+      }
+      
+      return normalizeResponse({
+        statusCode: 400,
+        headers: corsHeaders,
+        body: { message: 'Missing draftId or messageId for DELETE' },
+      });
+    }
+
     return normalizeResponse({
       statusCode: 400,
       headers: corsHeaders,
-      body: { message: 'Invalid action. Use GET or POST.' },
+      body: { message: 'Invalid method. Use GET, POST, or DELETE.' },
     });
   } catch (err) {
     console.error('Unhandled error:', err);
