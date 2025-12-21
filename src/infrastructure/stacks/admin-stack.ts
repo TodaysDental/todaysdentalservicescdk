@@ -230,6 +230,12 @@ export class AdminStack extends Stack {
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName ?? '',
         CORS_ORIGIN: 'https://todaysdentalinsights.com',
         JWT_SECRET: props.jwtSecretValue ?? '',
+        // cPanel credentials for creating user email accounts
+        CPANEL_HOST: 'box2383.bluehost.com',
+        CPANEL_PORT: '2083',
+        CPANEL_USER: 'todayse4',
+        CPANEL_PASSWORD: 'James!007',
+        CPANEL_DOMAIN: 'todaysdentalpartners.com',
       },
     });
     applyTags(this.registerFnV3, { Function: 'register' });

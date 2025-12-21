@@ -115,6 +115,22 @@ export interface StaffUser {
   hourlyPay?: string;
   opendentalUsernum?: string;
   opendentalUsername?: string;
+  // User email credentials (todaysdentalservices.com)
+  userEmail?: UserEmailCredentials;
+}
+
+/**
+ * User-specific email credentials for todaysdentalservices.com
+ * Created during user registration
+ */
+export interface UserEmailCredentials {
+  email: string;           // e.g., john.doe@todaysdentalservices.com
+  password: string;        // Email password (encrypted in transit)
+  imapHost: string;        // e.g., mail.todaysdentalservices.com
+  imapPort: number;        // e.g., 993 (SSL)
+  smtpHost: string;        // e.g., mail.todaysdentalservices.com
+  smtpPort: number;        // e.g., 465 (SSL)
+  createdAt?: string;      // When the email was created
 }
 
 /**

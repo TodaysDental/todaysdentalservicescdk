@@ -8,7 +8,8 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { hashPassword } from '../../shared/utils/jwt';
-import { StaffUser, UserRole, USER_ROLES, ModuleAccess, SYSTEM_MODULES, MODULE_PERMISSIONS, WorkLocation } from '../../shared/types/user';
+import { StaffUser, UserRole, USER_ROLES, ModuleAccess, SYSTEM_MODULES, MODULE_PERMISSIONS, WorkLocation, UserEmailCredentials } from '../../shared/types/user';
+import { createEmailAccount, getEmailCredentials } from '../../shared/utils/cpanel-email';
 import {
   getUserPermissions,
   isAdminUser,
@@ -18,7 +19,11 @@ import {
 } from '../../shared/utils/permissions-helper';
 
 const ddbClient = new DynamoDBClient({});
-const ddb = DynamoDBDocumentClient.from(ddbClient);
+const ddb = DynamoDBDocumentClient.from(ddbClient, {
+  marshallOptions: {
+    removeUndefinedValues: true, // Remove undefined values from objects
+  },
+});
 
 const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE || 'StaffUser';
 const STAFF_INFO_TABLE = process.env.STAFF_CLINIC_INFO_TABLE;
@@ -146,6 +151,33 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Generate password hash only if password is provided (optional for OTP-only users)
     const passwordHash = body.password ? hashPassword(body.password) : undefined;
 
+    // Create user email account on todaysdentalservices.com
+    let userEmailCredentials: UserEmailCredentials | undefined;
+    try {
+      console.log(`[register] Creating email account for user: ${username}`);
+      const emailResult = await createEmailAccount(username, givenName, familyName);
+      
+      if (emailResult.success && emailResult.email) {
+        const creds = getEmailCredentials(emailResult.email);
+        userEmailCredentials = {
+          email: creds.email,
+          password: creds.password,
+          imapHost: creds.imapHost,
+          imapPort: creds.imapPort,
+          smtpHost: creds.smtpHost,
+          smtpPort: creds.smtpPort,
+          createdAt: new Date().toISOString(),
+        };
+        console.log(`[register] Successfully created email: ${emailResult.email}`);
+      } else {
+        console.warn(`[register] Failed to create email for ${username}: ${emailResult.error}`);
+        // Continue with registration even if email creation fails
+      }
+    } catch (emailError: any) {
+      console.error(`[register] Error creating email for ${username}:`, emailError?.message || emailError);
+      // Continue with registration even if email creation fails
+    }
+
     // Build per-clinic role assignments with module permissions and additional fields
     const clinicRoles = body.makeGlobalSuperAdmin 
       ? [] 
@@ -180,6 +212,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       emailVerified: true, // Auto-verify for admin-created users
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      // Only include userEmail if it was successfully created (DynamoDB doesn't accept undefined)
+      ...(userEmailCredentials ? { userEmail: userEmailCredentials } : {}),
     };
 
     await ddb.send(new PutCommand({
@@ -202,7 +236,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       username,
       email: username,
       clinicRoles,
-      message: 'User created successfully. They can now log in using OTP sent to their email.',
+      userEmail: userEmailCredentials?.email || null,
+      message: userEmailCredentials 
+        ? `User created successfully with email ${userEmailCredentials.email}. They can now log in using OTP sent to their email.`
+        : 'User created successfully. They can now log in using OTP sent to their email.',
     });
   } catch (err: any) {
     console.error('Registration error:', err);

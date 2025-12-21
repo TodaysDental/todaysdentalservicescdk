@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, CfnOutput, Tags, Fn } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, Tags, Fn, Aws } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -24,6 +24,16 @@ const DOMAIN_SMTP_USER = 'no-reply@todaysdentalinsights.com';
 const DOMAIN_SMTP_PASSWORD = 'REPLACE_WITH_DOMAIN_APP_PASSWORD';
 const DOMAIN_IMAP_HOST = 'imap.gmail.com';
 const DOMAIN_IMAP_PORT = 993;
+
+// ========================================
+// CPANEL CREDENTIALS (todaysdentalpartners.com)
+// ========================================
+// Used for creating user email accounts during registration
+const CPANEL_HOST = 'box2383.bluehost.com';
+const CPANEL_PORT = '2083';
+const CPANEL_USER = 'todayse4';
+const CPANEL_PASSWORD = 'James!007';
+const CPANEL_DOMAIN = 'todaysdentalpartners.com';
 
 /**
  * Email Stack - Handles clinic-specific email operations
@@ -52,11 +62,15 @@ export interface EmailStackProps extends StackProps {
   // All domain-level credentials are defined as constants at the top of this file.
   // No additional props required for basic email functionality.
   // Add custom props here if needed for future extensions.
+  
+  // StaffUser table name for user email lookups
+  staffUserTableName?: string;
 }
 
 export class EmailStack extends Stack {
   public readonly gmailHandlerFn: lambdaNode.NodejsFunction;
   public readonly imapSmtpHandlerFn: lambdaNode.NodejsFunction;
+  public readonly userEmailHandlerFn: lambdaNode.NodejsFunction;
   public readonly emailApi: apigw.RestApi;
   public readonly authorizer: apigw.RequestAuthorizer;
 
@@ -152,6 +166,42 @@ export class EmailStack extends Stack {
     createLambdaThrottleAlarm(this.imapSmtpHandlerFn, 'imap-smtp-handler');
 
     // ========================================
+    // USER EMAIL HANDLER (todaysdentalpartners.com)
+    // ========================================
+    // Allows users to GET/POST their own emails from their todaysdentalpartners.com account
+    
+    // Import StaffUser table name from CoreStack
+    const staffUserTableName = props.staffUserTableName || Fn.importValue('CoreStack-StaffUserTableName');
+    
+    this.userEmailHandlerFn = new lambdaNode.NodejsFunction(this, 'UserEmailHandlerFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'email', 'user-email-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      memorySize: 512,
+      timeout: Duration.seconds(60), // IMAP can be slow
+      bundling: { 
+        format: lambdaNode.OutputFormat.CJS, 
+        target: 'node20',
+      },
+      environment: {
+        STAFF_USER_TABLE: staffUserTableName.toString(),
+      },
+    });
+    applyTags(this.userEmailHandlerFn, { Function: 'user-email-handler' });
+    createLambdaErrorAlarm(this.userEmailHandlerFn, 'user-email-handler');
+    createLambdaThrottleAlarm(this.userEmailHandlerFn, 'user-email-handler');
+
+    // Grant DynamoDB read access to StaffUser table for user email lookup
+    // Use wildcard pattern to match any stack's StaffUser table
+    this.userEmailHandlerFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/*-StaffUser`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/StaffUser`,
+      ],
+    }));
+
+    // ========================================
     // API GATEWAY
     // ========================================
     
@@ -244,6 +294,30 @@ export class EmailStack extends Stack {
     });
 
     // ========================================
+    // USER EMAIL API ROUTES (/user)
+    // ========================================
+    // Users can only access their own todaysdentalservices.com email
+    
+    const userEmailResource = this.emailApi.root.addResource('user');
+    const userEmailIntegration = new apigw.LambdaIntegration(this.userEmailHandlerFn);
+    
+    // GET /user - Fetch authenticated user's emails (authorized)
+    userEmailResource.addMethod('GET', userEmailIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      requestParameters: {
+        'method.request.querystring.limit': false,
+        'method.request.querystring.days': false,
+      },
+    });
+    
+    // POST /user - Send email from authenticated user's account (authorized)
+    userEmailResource.addMethod('POST', userEmailIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // ========================================
     // OUTPUTS
     // ========================================
     
@@ -263,6 +337,18 @@ export class EmailStack extends Stack {
       value: this.imapSmtpHandlerFn.functionArn,
       description: 'IMAP/SMTP Handler Lambda ARN',
       exportName: `${this.stackName}-ImapSmtpHandlerFnArn`,
+    });
+
+    new CfnOutput(this, 'UserEmailHandlerFnArn', {
+      value: this.userEmailHandlerFn.functionArn,
+      description: 'User Email Handler Lambda ARN',
+      exportName: `${this.stackName}-UserEmailHandlerFnArn`,
+    });
+
+    new CfnOutput(this, 'UserEmailApiUrl', {
+      value: 'https://apig.todaysdentalinsights.com/email/user',
+      description: 'User Email API URL (GET/POST for authenticated users)',
+      exportName: `${this.stackName}-UserEmailApiUrl`,
     });
 
     // ========================================
