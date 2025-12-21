@@ -32,7 +32,6 @@ export const SYSTEM_MODULES = [
   'Operations',
   'Finance',
   'Marketing',
-  'Insurance',
   'Legal',
   'IT',
 ] as const;
