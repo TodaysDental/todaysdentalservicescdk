@@ -3,10 +3,10 @@
  */
 export const USER_ROLES = [
   'Accounting',
-  'patient coordinator',
-  'treatment coordinator',
-  'patient coordinator (remote)',
-  'Regional manager',
+  'Patient Coordinator',
+  'Treatment Coordinator',
+  'Patient Coordinator (Remote)',
+  'Regional Manager',
   'Office Manager',
   'Dentist',
   'Dental Hygienist',
@@ -18,7 +18,13 @@ export const USER_ROLES = [
   'Credentialing',
   'Admin',
   'SuperAdmin',
-  'Global super admin',
+  'Global Super Admin',
+  // Additional roles for scheduling/HR workflows
+  'DOCTOR',
+  'HYGIENIST',
+  'DENTAL_ASSISTANT',
+  'TRAINEE',
+  'PROVIDER',
 ] as const;
 
 export type UserRole = typeof USER_ROLES[number];

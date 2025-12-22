@@ -1306,9 +1306,18 @@ async function deleteLeave(leaveId: string, userPerms: any, isAdmin:boolean) {
 
 async function approveLeave(leaveId: string) {
     console.log('🔄 Starting approveLeave for leaveId:', leaveId);
+    console.log('🔄 LEAVE_TABLE:', LEAVE_TABLE);
+    console.log('🔄 SHIFTS_TABLE:', SHIFTS_TABLE);
     
     try {
+        // Validate input
+        if (!leaveId || leaveId === 'undefined') {
+            console.error('❌ Invalid leaveId:', leaveId);
+            return httpErr(400, "Invalid leave ID");
+        }
+        
         // Get the leave request
+        console.log('🔄 Getting leave request from DynamoDB...');
         const { Item: leave } = await ddb.send(new GetCommand({ 
             TableName: LEAVE_TABLE, 
             Key: { leaveId }
@@ -1320,8 +1329,15 @@ async function approveLeave(leaveId: string) {
         }
 
         console.log('✅ Found leave request:', JSON.stringify(leave, null, 2));
+        
+        // Validate leave object has required fields
+        if (!leave.staffId) {
+            console.error('❌ Leave request missing staffId:', leave);
+            return httpErr(400, "Leave request is missing staffId");
+        }
 
         // Update leave status to approved
+        console.log('🔄 Updating leave status to approved...');
         await ddb.send(new UpdateCommand({
             TableName: LEAVE_TABLE,
             Key: { leaveId },
@@ -1332,32 +1348,47 @@ async function approveLeave(leaveId: string) {
 
         console.log('✅ Leave status updated to approved');
 
-        // Find overlapping shifts
-        const overlappingShifts = await getOverlappingShifts(
-            leave.staffId, 
-            leave.startDate, 
-            leave.endDate
-        );
-        
-        console.log(`📊 Found ${overlappingShifts.length} overlapping shifts:`, 
-            overlappingShifts.map(s => ({ shiftId: s.shiftId, startTime: s.startTime }))
-        );
+        // Find overlapping shifts (only if we have valid date range)
+        let overlappingShifts: any[] = [];
+        if (leave.startDate && leave.endDate) {
+            try {
+                overlappingShifts = await getOverlappingShifts(
+                    leave.staffId, 
+                    leave.startDate, 
+                    leave.endDate
+                );
+                
+                console.log(`📊 Found ${overlappingShifts.length} overlapping shifts:`, 
+                    overlappingShifts.map(s => ({ shiftId: s.shiftId, startTime: s.startTime }))
+                );
+            } catch (shiftError) {
+                console.error('⚠️ Error finding overlapping shifts (continuing anyway):', shiftError);
+                // Don't fail the approval if shift lookup fails
+            }
+        } else {
+            console.warn('⚠️ Leave request missing dates, skipping shift cancellation');
+        }
 
         // Cancel overlapping shifts
         if (overlappingShifts.length > 0) {
-            const cancelPromises = overlappingShifts.map(shift => {
-                console.log('🔄 Cancelling shift:', shift.shiftId);
-                return ddb.send(new UpdateCommand({
-                    TableName: SHIFTS_TABLE,
-                    Key: { shiftId: shift.shiftId },
-                    UpdateExpression: 'set #status = :status',
-                    ExpressionAttributeNames: { '#status': 'status' },
-                    ExpressionAttributeValues: { ':status': 'rejected' }
-                }));
-            });
+            try {
+                const cancelPromises = overlappingShifts.map(shift => {
+                    console.log('🔄 Cancelling shift:', shift.shiftId);
+                    return ddb.send(new UpdateCommand({
+                        TableName: SHIFTS_TABLE,
+                        Key: { shiftId: shift.shiftId },
+                        UpdateExpression: 'set #status = :status',
+                        ExpressionAttributeNames: { '#status': 'status' },
+                        ExpressionAttributeValues: { ':status': 'rejected' }
+                    }));
+                });
 
-            await Promise.all(cancelPromises);
-            console.log('✅ All overlapping shifts cancelled');
+                await Promise.all(cancelPromises);
+                console.log('✅ All overlapping shifts cancelled');
+            } catch (cancelError) {
+                console.error('⚠️ Error cancelling shifts (leave still approved):', cancelError);
+                // Don't fail the approval if shift cancellation fails
+            }
         }
 
         const response = {
@@ -1372,9 +1403,12 @@ async function approveLeave(leaveId: string) {
         console.log('✅ Returning response:', response);
         return httpOk(response);
 
-    } catch (error) {
+    } catch (error: any) {
         console.error('❌ Error in approveLeave:', error);
-        throw error;
+        console.error('❌ Error message:', error?.message);
+        console.error('❌ Error stack:', error?.stack);
+        // Return a proper error response instead of throwing
+        return httpErr(500, `Failed to approve leave: ${error?.message || 'Unknown error'}`);
     }
 }
 

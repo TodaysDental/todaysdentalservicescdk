@@ -741,22 +741,58 @@ async function handleTool(
       // ===== PROCEDURE TOOLS =====
       case 'getProcedureLogs': {
         const procParams: any = { PatNum: params.PatNum };
+        // Always filter by ProcStatus if provided, default to TP for efficiency
         if (params.ProcStatus) procParams.ProcStatus = params.ProcStatus;
         const resp = await odClient.request('GET', 'procedurelogs', { params: procParams });
-        const procedures = Array.isArray(resp) ? resp : resp?.items ?? [];
+        const allProcedures = Array.isArray(resp) ? resp : resp?.items ?? [];
 
-        const treatmentPlanned = procedures.filter((p: any) => p.ProcStatus === 'TP');
-        if (treatmentPlanned.length > 0) {
-          updatedSessionAttributes.ProcedureDescripts = treatmentPlanned.map((p: any) => p.descript).join(', ');
-          updatedSessionAttributes.ProcNums = JSON.stringify(treatmentPlanned.map((p: any) => p.ProcNum));
+        // OPTIMIZATION: Filter to treatment-planned (TP) by default for efficiency
+        // This prevents returning thousands of completed procedures
+        const filterStatus = params.ProcStatus || 'TP';
+        const procedures = allProcedures.filter((p: any) => p.ProcStatus === filterStatus);
+        
+        // OPTIMIZATION: Return only essential fields to reduce payload size for Bedrock
+        const minimalProcedures = procedures.slice(0, 50).map((p: any) => ({
+          ProcNum: p.ProcNum,
+          ProcCode: p.ProcCode || p.CodeNum,
+          descript: p.descript || p.Descript,
+          ProcStatus: p.ProcStatus,
+          ProcDate: p.ProcDate,
+          ToothNum: p.ToothNum,
+          Surf: p.Surf,
+          ProcFee: p.ProcFee,
+        }));
+
+        if (procedures.length > 0) {
+          updatedSessionAttributes.ProcedureDescripts = procedures.slice(0, 20).map((p: any) => p.descript || p.Descript).join(', ');
+          updatedSessionAttributes.ProcNums = JSON.stringify(procedures.slice(0, 20).map((p: any) => p.ProcNum));
+        }
+
+        // Build a concise summary for the AI
+        let directAnswer = '';
+        if (procedures.length > 0) {
+          directAnswer = `=== PROCEDURE LOGS (${filterStatus}) ===\n`;
+          directAnswer += `Found ${procedures.length} procedure(s):\n\n`;
+          const uniqueDescripts = [...new Set(procedures.map((p: any) => p.descript || p.Descript))];
+          uniqueDescripts.slice(0, 15).forEach((desc, i) => {
+            const count = procedures.filter((p: any) => (p.descript || p.Descript) === desc).length;
+            directAnswer += `${i + 1}. ${desc}${count > 1 ? ` (x${count})` : ''}\n`;
+          });
+          if (uniqueDescripts.length > 15) {
+            directAnswer += `... and ${uniqueDescripts.length - 15} more unique procedures\n`;
+          }
         }
 
         return {
           statusCode: procedures.length > 0 ? 200 : 404,
           body: {
             status: procedures.length > 0 ? 'SUCCESS' : 'FAILURE',
-            data: procedures,
-            message: procedures.length > 0 ? `Found ${procedures.length} procedure(s)` : 'No procedures found',
+            directAnswer,
+            data: minimalProcedures,
+            totalCount: procedures.length,
+            message: procedures.length > 0 
+              ? `Found ${procedures.length} ${filterStatus} procedure(s)` 
+              : `No ${filterStatus} procedures found`,
           },
           updatedSessionAttributes,
         };
@@ -807,11 +843,40 @@ async function handleTool(
         const resp = await odClient.request('GET', 'appointments', { params: { PatNum: params.PatNum } });
         const apts = Array.isArray(resp) ? resp : resp?.items ?? [];
         const futureApts = apts.filter((apt: any) => new Date(apt.AptDateTime) >= new Date());
+        
+        // OPTIMIZATION: Return only essential fields to reduce payload size for Bedrock
+        const minimalApts = futureApts.slice(0, 20).map((apt: any) => ({
+          AptNum: apt.AptNum,
+          AptDateTime: apt.AptDateTime,
+          ProcDescript: apt.ProcDescript,
+          AptStatus: apt.AptStatus,
+          Note: apt.Note ? (apt.Note.length > 100 ? apt.Note.substring(0, 100) + '...' : apt.Note) : undefined,
+          ProvNum: apt.ProvNum,
+          Op: apt.Op,
+        }));
+
+        // Build a concise summary for the AI
+        let directAnswer = '';
+        if (futureApts.length > 0) {
+          directAnswer = `=== UPCOMING APPOINTMENTS ===\n`;
+          directAnswer += `Found ${futureApts.length} upcoming appointment(s):\n\n`;
+          minimalApts.slice(0, 10).forEach((apt: any, i: number) => {
+            const date = new Date(apt.AptDateTime);
+            directAnswer += `${i + 1}. ${date.toLocaleDateString()} at ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}\n`;
+            directAnswer += `   Reason: ${apt.ProcDescript || 'Not specified'}\n`;
+          });
+          if (futureApts.length > 10) {
+            directAnswer += `\n... and ${futureApts.length - 10} more appointments\n`;
+          }
+        }
+
         return {
           statusCode: futureApts.length > 0 ? 200 : 404,
           body: {
             status: futureApts.length > 0 ? 'SUCCESS' : 'FAILURE',
-            data: futureApts,
+            directAnswer,
+            data: minimalApts,
+            totalCount: futureApts.length,
             message: futureApts.length > 0 ? `Found ${futureApts.length} upcoming appointment(s)` : 'No upcoming appointments',
           },
         };
@@ -857,8 +922,30 @@ async function handleTool(
         if (params.date) aptParams.date = params.date;
         if (params.dateStart) aptParams.dateStart = params.dateStart;
         if (params.dateEnd) aptParams.dateEnd = params.dateEnd;
-        const apts = await odClient.request('GET', 'appointments', { params: aptParams });
-        return { statusCode: 200, body: { status: 'SUCCESS', data: apts } };
+        const resp = await odClient.request('GET', 'appointments', { params: aptParams });
+        const apts = Array.isArray(resp) ? resp : resp?.items ?? [];
+        
+        // OPTIMIZATION: Return only essential fields to reduce payload size for Bedrock
+        const minimalApts = apts.slice(0, 30).map((apt: any) => ({
+          AptNum: apt.AptNum,
+          AptDateTime: apt.AptDateTime,
+          ProcDescript: apt.ProcDescript,
+          AptStatus: apt.AptStatus,
+          PatNum: apt.PatNum,
+          ProvNum: apt.ProvNum,
+          Op: apt.Op,
+        }));
+
+        return { 
+          statusCode: 200, 
+          body: { 
+            status: 'SUCCESS', 
+            data: minimalApts,
+            totalCount: apts.length,
+            truncated: apts.length > 30,
+            message: `Found ${apts.length} appointment(s)${apts.length > 30 ? ' (showing first 30)' : ''}`,
+          } 
+        };
       }
 
       case 'createAppointment': {
@@ -1371,13 +1458,22 @@ async function handleTool(
           }
           
         } else {
-          directAnswer = `MULTIPLE PLANS FOUND (${plans.length}). Please ask the user which specific plan they have:\n`;
+          // MULTIPLE PLANS FOUND - Format for easy user selection
+          directAnswer = `=== MULTIPLE ${mainPlan.insuranceName?.toUpperCase() || 'INSURANCE'} PLANS FOUND ===\n\n`;
+          directAnswer += `I found ${plans.length} plan(s) matching that insurance. Please select your plan:\n\n`;
+          
           plans.slice(0, 10).forEach((p, i) => {
-            directAnswer += `${i + 1}. ${p.insuranceName} - ${p.groupName || 'Unknown Group'}${p.groupNumber ? ` (Group #${p.groupNumber})` : ''}\n`;
+            directAnswer += `${i + 1}. ${p.insuranceName || 'Unknown'} - ${p.groupName || 'Unknown Group'}\n`;
+            if (p.groupNumber) {
+              directAnswer += `   Group #: ${p.groupNumber}\n`;
+            }
           });
+          
           if (plans.length > 10) {
-            directAnswer += `... and ${plans.length - 10} more plans\n`;
+            directAnswer += `\n... and ${plans.length - 10} more plans\n`;
           }
+          
+          directAnswer += `\n📋 Please tell me your plan number (1-${Math.min(plans.length, 10)}) or provide your group number from your insurance card.\n`;
         }
         
         // Determine lookup status
@@ -1386,16 +1482,32 @@ async function handleTool(
                                mainPlan.basicRestorativePct !== null || 
                                mainPlan.majorCrownsPct !== null;
 
+        // OPTIMIZATION: Include a simple plan selection list for multiple plans
+        // This helps the bot reference specific plans when user selects
+        const planSelectionList = plans.length > 1 ? plans.slice(0, 10).map((p, i) => ({
+          index: i + 1,
+          insuranceName: p.insuranceName,
+          groupName: p.groupName,
+          groupNumber: p.groupNumber,
+        })) : undefined;
+
         return {
           statusCode: 200,
           body: {
             status: 'SUCCESS',
-            lookupStatus: hasAnyCoverage ? 'COVERAGE_DETAILS_FOUND' : 'PLAN_FOUND_BUT_COVERAGE_NOT_RECORDED',
-            message: `Successfully found insurance plan details. Use the directAnswer field to respond to the user.`,
+            lookupStatus: plans.length > 1 
+              ? 'MULTIPLE_PLANS_FOUND' 
+              : (hasAnyCoverage ? 'COVERAGE_DETAILS_FOUND' : 'PLAN_FOUND_BUT_COVERAGE_NOT_RECORDED'),
+            message: plans.length > 1 
+              ? `Found ${plans.length} matching plans. Ask user to select their plan.`
+              : `Successfully found insurance plan details. Use the directAnswer field to respond to the user.`,
             directAnswer: directAnswer,
+            multiplePlansFound: plans.length > 1,
+            planCount: plans.length,
+            planSelectionList,
             data: {
-              plans: coverageSuggestions,
-              summary: generateCoverageSummary(plans),
+              plans: plans.length > 1 ? planSelectionList : coverageSuggestions,
+              summary: plans.length === 1 ? generateCoverageSummary(plans) : undefined,
             },
           },
         };
@@ -1590,13 +1702,14 @@ async function lookupInsurancePlanBenefits(
 
     // Strategy 1: If we have clinicId, query by clinicId GSI first (most common case)
     // This allows us to filter by insuranceName and/or groupNumber locally
+    // OPTIMIZATION: Reduced limit from 500 to 100 to prevent large payloads for Bedrock
     if (searchClinicId) {
       const result = await docClient.send(new QueryCommand({
         TableName: INSURANCE_PLANS_TABLE,
         IndexName: 'clinicId-index',
         KeyConditionExpression: 'clinicId = :clinicId',
         ExpressionAttributeValues: { ':clinicId': searchClinicId },
-        Limit: 500, // Get more to allow for filtering
+        Limit: 100, // OPTIMIZED: Reduced limit to prevent large payloads
       }));
 
       plans = (result.Items || []) as InsurancePlanRecord[];
@@ -2179,24 +2292,26 @@ async function lookupFeeSchedules(
       fees = (result.Items || []) as FeeScheduleRecord[];
     }
     // Strategy 2: All procedures in a specific fee schedule for a clinic
+    // OPTIMIZATION: Reduced limit from 1000 to 100 to prevent hitting Bedrock limits
     else if (searchClinicId && feeSchedNum) {
       const pk = `${searchClinicId}#${feeSchedNum}`;
       const result = await docClient.send(new QueryCommand({
         TableName: FEE_SCHEDULES_TABLE,
         KeyConditionExpression: 'pk = :pk',
         ExpressionAttributeValues: { ':pk': pk },
-        Limit: 1000, // Fee schedules can have many procedures
+        Limit: 100, // OPTIMIZED: Reduced limit to prevent large payloads
       }));
       fees = (result.Items || []) as FeeScheduleRecord[];
     }
     // Strategy 3: Search by procedure code across all schedules/clinics (procCode-index)
+    // OPTIMIZATION: Reduced limit from 500 to 50 for targeted procedure lookups
     else if (searchProcCode) {
       const result = await docClient.send(new QueryCommand({
         TableName: FEE_SCHEDULES_TABLE,
         IndexName: 'procCode-index',
         KeyConditionExpression: 'procCode = :procCode',
         ExpressionAttributeValues: { ':procCode': searchProcCode.toUpperCase() },
-        Limit: 500,
+        Limit: 50, // OPTIMIZED: Reduced limit for procedure code lookups
       }));
       fees = (result.Items || []) as FeeScheduleRecord[];
 
@@ -2215,6 +2330,7 @@ async function lookupFeeSchedules(
       }
     }
     // Strategy 4: Search by fee schedule name (feeSchedule-index)
+    // OPTIMIZATION: Reduced limits from 500 to 50 and avoid expensive scans
     else if (searchFeeSchedule) {
       // Try exact match first
       const result = await docClient.send(new QueryCommand({
@@ -2222,19 +2338,19 @@ async function lookupFeeSchedules(
         IndexName: 'feeSchedule-index',
         KeyConditionExpression: 'feeSchedule = :feeSchedule',
         ExpressionAttributeValues: { ':feeSchedule': searchFeeSchedule },
-        Limit: 500,
+        Limit: 50, // OPTIMIZED: Reduced limit
       }));
       fees = (result.Items || []) as FeeScheduleRecord[];
 
-      // If no exact match, try partial match with scan
+      // OPTIMIZATION: If no exact match, try partial match with scan but with strict limit
       if (fees.length === 0) {
-        console.log(`[FeeScheduleLookup] No exact match for "${searchFeeSchedule}", trying partial scan...`);
+        console.log(`[FeeScheduleLookup] No exact match for "${searchFeeSchedule}", trying partial scan with limit...`);
         const scanResult = await docClient.send(new ScanCommand({
           TableName: FEE_SCHEDULES_TABLE,
           FilterExpression: 'contains(#feeSchedule, :searchTerm)',
           ExpressionAttributeNames: { '#feeSchedule': 'feeSchedule' },
           ExpressionAttributeValues: { ':searchTerm': searchFeeSchedule },
-          Limit: 500,
+          Limit: 30, // OPTIMIZED: Strict limit on scans to prevent large payloads
         }));
         fees = (scanResult.Items || []) as FeeScheduleRecord[];
       }
@@ -2245,13 +2361,14 @@ async function lookupFeeSchedules(
       }
     }
     // Strategy 5: Get all fee schedules for a clinic (clinicId-index)
+    // OPTIMIZATION: Only get unique schedules, not all fee entries
     else if (searchClinicId) {
       const result = await docClient.send(new QueryCommand({
         TableName: FEE_SCHEDULES_TABLE,
         IndexName: 'clinicId-index',
         KeyConditionExpression: 'clinicId = :clinicId',
         ExpressionAttributeValues: { ':clinicId': searchClinicId },
-        Limit: 100, // Just get a sample to list available schedules
+        Limit: 50, // OPTIMIZED: Reduced from 100, just enough to extract unique schedules
       }));
       fees = (result.Items || []) as FeeScheduleRecord[];
     }
@@ -2275,27 +2392,58 @@ async function lookupFeeSchedules(
 
     console.log(`[FeeScheduleLookup] Found ${fees.length} fee entries`);
 
-    // Group by fee schedule for better presentation
-    const bySchedule = fees.reduce((acc, fee) => {
-      const key = `${fee.feeSchedule} (${fee.feeSchedNum})`;
-      if (!acc[key]) acc[key] = [];
-      acc[key].push(fee);
-      return acc;
-    }, {} as Record<string, FeeScheduleRecord[]>);
+    // OPTIMIZATION: Return only essential fields to reduce payload size for Bedrock
+    const minimalFees = fees.slice(0, 30).map(f => ({
+      procCode: f.procCode,
+      description: f.description || f.abbrDesc,
+      amount: f.amount,
+      feeSchedule: f.feeSchedule,
+      feeSchedNum: f.feeSchedNum,
+    }));
 
     // Get unique fee schedules for summary
     const uniqueSchedules = [...new Set(fees.map(f => f.feeSchedule))];
+
+    // Build a concise summary for the AI
+    let directAnswer = `=== FEE SCHEDULE LOOKUP ===\n`;
+    directAnswer += `Found ${fees.length} fee entries across ${uniqueSchedules.length} schedule(s):\n\n`;
+    
+    // Group and summarize
+    const bySchedule: Record<string, { count: number; sample: any[] }> = {};
+    for (const fee of fees.slice(0, 30)) {
+      const key = fee.feeSchedule;
+      if (!bySchedule[key]) {
+        bySchedule[key] = { count: 0, sample: [] };
+      }
+      bySchedule[key].count++;
+      if (bySchedule[key].sample.length < 5) {
+        bySchedule[key].sample.push({
+          code: fee.procCode,
+          desc: fee.description || fee.abbrDesc,
+          amount: fee.amount,
+        });
+      }
+    }
+
+    for (const [schedule, info] of Object.entries(bySchedule)) {
+      directAnswer += `${schedule} (${info.count} entries):\n`;
+      for (const item of info.sample) {
+        directAnswer += `  - ${item.code}: ${item.desc ? item.desc + ' - ' : ''}${item.amount !== null ? '$' + item.amount.toFixed(2) : 'N/A'}\n`;
+      }
+      directAnswer += '\n';
+    }
 
     return {
       statusCode: 200,
       body: {
         status: 'SUCCESS',
+        directAnswer,
         message: `Found ${fees.length} fee entries across ${uniqueSchedules.length} fee schedule(s)`,
         data: {
-          fees,
-          bySchedule,
+          fees: minimalFees,
           uniqueSchedules,
           count: fees.length,
+          truncated: fees.length > 30,
         },
       },
     };
@@ -2428,13 +2576,13 @@ async function listFeeSchedules(
   }
 
   try {
-    // Query by clinic to get all fee entries, then extract unique schedules
+    // OPTIMIZATION: Query with reduced limit - we only need enough to extract unique schedules
     const result = await docClient.send(new QueryCommand({
       TableName: FEE_SCHEDULES_TABLE,
       IndexName: 'clinicId-index',
       KeyConditionExpression: 'clinicId = :clinicId',
       ExpressionAttributeValues: { ':clinicId': searchClinicId },
-      Limit: 1000,
+      Limit: 200, // OPTIMIZED: Reduced from 1000 - enough to identify unique schedules
     }));
 
     const fees = (result.Items || []) as FeeScheduleRecord[];
@@ -2479,9 +2627,13 @@ async function listFeeSchedules(
     let directAnswer = `=== FEE SCHEDULES FOR CLINIC ===\n`;
     directAnswer += `Found ${schedules.length} fee schedule(s):\n\n`;
     
-    for (const schedule of schedules) {
+    // OPTIMIZATION: Limit output to prevent large responses
+    const displaySchedules = schedules.slice(0, 15);
+    for (const schedule of displaySchedules) {
       directAnswer += `• ${schedule.feeSchedule} (ID: ${schedule.feeSchedNum})\n`;
-      directAnswer += `  - ${schedule.count} procedures with fees set\n`;
+    }
+    if (schedules.length > 15) {
+      directAnswer += `... and ${schedules.length - 15} more schedules\n`;
     }
 
     return {
@@ -2491,8 +2643,9 @@ async function listFeeSchedules(
         message: `Found ${schedules.length} fee schedule(s) for clinic`,
         directAnswer,
         data: {
-          schedules,
-          totalFeeEntries: fees.length,
+          schedules: displaySchedules,
+          totalSchedules: schedules.length,
+          truncated: schedules.length > 15,
         },
       },
     };
@@ -2547,14 +2700,14 @@ async function compareProcedureFees(
   try {
     const allFees: FeeScheduleRecord[] = [];
 
-    // Look up each procedure code
-    for (const code of searchProcCodes) {
+    // OPTIMIZATION: Look up each procedure code with reduced limits
+    for (const code of searchProcCodes.slice(0, 10)) { // Limit to 10 procedure codes
       const result = await docClient.send(new QueryCommand({
         TableName: FEE_SCHEDULES_TABLE,
         IndexName: 'procCode-index',
         KeyConditionExpression: 'procCode = :procCode',
         ExpressionAttributeValues: { ':procCode': code },
-        Limit: 200,
+        Limit: 30, // OPTIMIZED: Reduced from 200
       }));
 
       let fees = (result.Items || []) as FeeScheduleRecord[];
@@ -2564,7 +2717,7 @@ async function compareProcedureFees(
         fees = fees.filter(f => f.clinicId === searchClinicId);
       }
 
-      allFees.push(...fees);
+      allFees.push(...fees.slice(0, 20)); // OPTIMIZED: Limit per procedure
     }
 
     if (allFees.length === 0) {
@@ -2577,31 +2730,42 @@ async function compareProcedureFees(
       };
     }
 
-    // Group by procedure code, then by fee schedule
-    const byProcCode = allFees.reduce((acc, fee) => {
-      if (!acc[fee.procCode]) acc[fee.procCode] = {};
-      if (!acc[fee.procCode][fee.feeSchedule]) {
-        acc[fee.procCode][fee.feeSchedule] = fee;
+    // OPTIMIZATION: Group by procedure code, return minimal data
+    const byProcCode: Record<string, { description: string; fees: { schedule: string; amount: number | null }[] }> = {};
+    
+    for (const fee of allFees) {
+      if (!byProcCode[fee.procCode]) {
+        byProcCode[fee.procCode] = {
+          description: fee.description || fee.abbrDesc || '',
+          fees: [],
+        };
       }
-      return acc;
-    }, {} as Record<string, Record<string, FeeScheduleRecord>>);
+      // Only add if we haven't seen this schedule yet
+      if (!byProcCode[fee.procCode].fees.find(f => f.schedule === fee.feeSchedule)) {
+        byProcCode[fee.procCode].fees.push({
+          schedule: fee.feeSchedule,
+          amount: fee.amount,
+        });
+      }
+    }
 
     let directAnswer = `=== FEE COMPARISON ===\n\n`;
 
-    for (const [code, schedules] of Object.entries(byProcCode)) {
-      const firstFee = Object.values(schedules)[0];
-      directAnswer += `${code} - ${firstFee.description || firstFee.abbrDesc || 'No description'}\n`;
-      directAnswer += `${'─'.repeat(50)}\n`;
+    for (const [code, data] of Object.entries(byProcCode)) {
+      directAnswer += `${code} - ${data.description || 'No description'}\n`;
+      directAnswer += `${'─'.repeat(40)}\n`;
 
-      const sortedSchedules = Object.entries(schedules).sort((a, b) => {
-        const aAmt = a[1].amount ?? 0;
-        const bAmt = b[1].amount ?? 0;
-        return bAmt - aAmt; // Highest first
-      });
+      // Sort by amount descending and limit to 10 schedules
+      const sortedFees = data.fees
+        .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0))
+        .slice(0, 10);
 
-      for (const [scheduleName, fee] of sortedSchedules) {
+      for (const fee of sortedFees) {
         const amountStr = fee.amount !== null ? `$${fee.amount.toFixed(2)}` : 'Not set';
-        directAnswer += `  ${scheduleName.padEnd(30)} ${amountStr}\n`;
+        directAnswer += `  ${fee.schedule.substring(0, 28).padEnd(30)} ${amountStr}\n`;
+      }
+      if (data.fees.length > 10) {
+        directAnswer += `  ... and ${data.fees.length - 10} more schedules\n`;
       }
       directAnswer += `\n`;
     }
@@ -5350,9 +5514,60 @@ async function checkProcedureCoverage(
     }
   }
 
-  // Add codes for reference
+  // OPTIMIZATION: Look up office fee for this procedure to provide cost estimate
+  let officeFee: number | null = null;
+  let estimatedInsurancePays: number | null = null;
+  let estimatedPatientCost: number | null = null;
+  
+  try {
+    // Get fee for the first procedure code
+    const primaryCode = procedureMapping.codes[0];
+    const feeResult = await lookupFeeSchedules(
+      { procCode: primaryCode, clinicId: searchClinicId },
+      searchClinicId
+    );
+    
+    if (feeResult.statusCode === 200 && feeResult.body.data?.fees?.length > 0) {
+      const fees = feeResult.body.data.fees;
+      // Get the fee (prefer UCR or first available)
+      const feeRecord = fees.find((f: any) => f.feeSchedule?.toLowerCase().includes('ucr')) || fees[0];
+      officeFee = feeRecord.amount;
+      
+      if (officeFee && coveragePercent !== null && coveragePercent > 0 && !procedureExcluded) {
+        estimatedInsurancePays = Math.round(officeFee * (coveragePercent / 100));
+        estimatedPatientCost = Math.round(officeFee - estimatedInsurancePays);
+        
+        // Account for deductible if applicable
+        if (plan.deductibleIndividual && plan.deductibleIndividual > 0 && 
+            !(categoryName === 'Preventive' && plan.deductibleOnPreventiveOverride === 0)) {
+          directAnswer += `\n=== COST ESTIMATE ===\n`;
+          directAnswer += `Office Fee: $${officeFee.toLocaleString()}\n`;
+          directAnswer += `Your Coverage: ${Math.round(coveragePercent)}%\n`;
+          directAnswer += `Estimated Insurance Pays: $${estimatedInsurancePays.toLocaleString()}\n`;
+          directAnswer += `Estimated Your Cost: $${estimatedPatientCost.toLocaleString()}\n`;
+          directAnswer += `Note: Deductible of $${plan.deductibleIndividual} may apply if not yet met.\n`;
+        } else {
+          directAnswer += `\n=== COST ESTIMATE ===\n`;
+          directAnswer += `Office Fee: $${officeFee.toLocaleString()}\n`;
+          directAnswer += `Your Coverage: ${Math.round(coveragePercent)}%\n`;
+          directAnswer += `Estimated Insurance Pays: $${estimatedInsurancePays.toLocaleString()}\n`;
+          directAnswer += `Estimated Your Cost: $${estimatedPatientCost.toLocaleString()}\n`;
+        }
+      } else if (officeFee && (procedureExcluded || coveragePercent === 0 || coveragePercent === null)) {
+        directAnswer += `\n=== COST ESTIMATE ===\n`;
+        directAnswer += `Office Fee: $${officeFee.toLocaleString()}\n`;
+        directAnswer += `Since this is not covered, you would pay the full amount.\n`;
+        estimatedPatientCost = officeFee;
+      }
+    }
+  } catch (feeError) {
+    console.log(`[checkProcedureCoverage] Could not fetch fee for ${procedureMapping.codes[0]}:`, feeError);
+  }
+
+  // Add prompt for exact cost lookup
   directAnswer += `\n───────────────────────────\n`;
   directAnswer += `CDT Codes: ${procedureMapping.codes.join(', ')}\n`;
+  directAnswer += `\n💡 Want the EXACT cost? Provide your name and date of birth to check your remaining benefits and account balance.\n`;
 
   return {
     statusCode: 200,
@@ -5370,6 +5585,9 @@ async function checkProcedureCoverage(
         frequencyLimit: frequencyMatch || null,
         ageLimit: ageMatch || null,
         additionalInfo,
+        officeFee,
+        estimatedInsurancePays,
+        estimatedPatientCost,
         plan: {
           name: plan.insuranceName,
           groupName: plan.groupName,
@@ -5411,17 +5629,21 @@ async function getFeeScheduleAmounts(
     }
   }
   
-  // If no specific procedures provided, return common pricing (cleaning, exam, x-rays)
+  // OPTIMIZATION: Limit to specific procedures to reduce API calls and data
+  // If no specific procedures provided, return just the most common ones
   if (procedures.length === 0) {
-    procedures.push('cleaning', 'exam', 'xray', 'fluoride');
+    procedures.push('cleaning', 'exam');
   }
+
+  // OPTIMIZATION: Limit to max 5 procedures to prevent large responses
+  const limitedProcedures = procedures.slice(0, 5);
 
   let directAnswer = `=== FEE SCHEDULE ===\n`;
   directAnswer += `Clinic: ${searchClinicId || 'Unknown'}\n\n`;
 
   const allFees: { procedure: string; codes: string[]; fees: any[] }[] = [];
 
-  for (const procedureName of procedures) {
+  for (const procedureName of limitedProcedures) {
     // Map procedure name to CDT codes
     const mapping = mapProcedureToCode(procedureName);
     
