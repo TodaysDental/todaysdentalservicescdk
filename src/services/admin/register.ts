@@ -41,29 +41,40 @@ type RegisterClinic = {
   basePay?: number; // Annual base pay in dollars
   workLocation?: WorkLocation; // Remote/on-premise configuration
   hourlyPay?: number; // Hourly pay rate in dollars
-  openDentalUserNum?: number; // Open Dental user number
-  openDentalUsername?: string; // Open Dental username
-  employeeNum?: number; // Employee number
   moduleAccess?: RegisterModuleAccess[]; // Optional - module-level permissions
-  // Legacy fields for backward compatibility
-  UserNum?: number;
-  UserName?: string;
-  EmployeeNum?: number;
-  employeeName?: string;
-  ProviderNum?: string;
-  providerName?: string;
-  ClinicNum?: string;
+  
+  // Open Dental user fields (stored in StaffUser.clinicRoles)
+  UserNum?: number; // Open Dental user number (primary key in userod table)
+  UserName?: string; // Open Dental username
+  userGroupNums?: number[]; // Array of user group numbers the user belongs to
+  EmployeeNum?: number; // FK to employee table
+  employeeName?: string; // Employee name for display
+  ProviderNum?: number; // FK to provider table (if user is a provider)
+  providerName?: string; // Provider name for display
+  ClinicNum?: number; // FK to clinic table in Open Dental
+  emailAddress?: string; // Open Dental email address
+  IsHidden?: boolean; // Whether user is hidden/inactive in Open Dental
+  UserNumCEMT?: number; // Central Enterprise Management Tool user number
+  
+  // Legacy aliases (for backward compatibility)
+  openDentalUserNum?: number; // Alias for UserNum
+  openDentalUsername?: string; // Alias for UserName
+  employeeNum?: number; // Alias for EmployeeNum (lowercase)
 };
 
 type StaffClinicDetail = {
   clinicId: string;
   UserNum?: number;
   UserName?: string;
+  userGroupNums?: number[];
   EmployeeNum?: number;
   employeeName?: string;
-  ProviderNum?: string;
+  ProviderNum?: number;
   providerName?: string;
-  ClinicNum?: string;
+  ClinicNum?: number;
+  emailAddress?: string;
+  IsHidden?: boolean;
+  UserNumCEMT?: number;
   hourlyPay?: string | number;
 };
 
@@ -178,7 +189,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       // Continue with registration even if email creation fails
     }
 
-    // Build per-clinic role assignments with module permissions and additional fields
+    // Build per-clinic role assignments with module permissions and Open Dental fields
     const clinicRoles = body.makeGlobalSuperAdmin 
       ? [] 
       : body.clinics.map(c => ({
@@ -187,13 +198,28 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           basePay: c.basePay,
           workLocation: c.workLocation,
           hourlyPay: c.hourlyPay,
-          openDentalUserNum: c.openDentalUserNum || c.UserNum,
-          openDentalUsername: c.openDentalUsername || c.UserName,
-          employeeNum: c.employeeNum || c.EmployeeNum,
           moduleAccess: c.moduleAccess?.map(ma => ({
             module: ma.module,
             permissions: ma.permissions,
           })) as ModuleAccess[] | undefined,
+          
+          // Open Dental user fields
+          UserNum: c.UserNum ?? c.openDentalUserNum,
+          UserName: c.UserName ?? c.openDentalUsername,
+          userGroupNums: c.userGroupNums,
+          EmployeeNum: c.EmployeeNum ?? c.employeeNum,
+          employeeName: c.employeeName,
+          ProviderNum: c.ProviderNum,
+          providerName: c.providerName,
+          ClinicNum: c.ClinicNum,
+          emailAddress: c.emailAddress,
+          IsHidden: c.IsHidden,
+          UserNumCEMT: c.UserNumCEMT,
+          
+          // Keep legacy aliases for backward compatibility
+          openDentalUserNum: c.UserNum ?? c.openDentalUserNum,
+          openDentalUsername: c.UserName ?? c.openDentalUsername,
+          employeeNum: c.EmployeeNum ?? c.employeeNum,
         }));
 
     // Check if user has SuperAdmin role at any clinic

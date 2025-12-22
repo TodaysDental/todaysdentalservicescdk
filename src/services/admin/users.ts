@@ -34,11 +34,15 @@ type StaffClinicDetail = {
   clinicId: string;
   UserNum?: number;
   UserName?: string;
+  userGroupNums?: number[];
   EmployeeNum?: number;
   employeeName?: string;
-  ProviderNum?: string;
+  ProviderNum?: number;
   providerName?: string;
-  ClinicNum?: string;
+  ClinicNum?: number;
+  emailAddress?: string;
+  IsHidden?: boolean;
+  UserNumCEMT?: number;
   hourlyPay?: string | number;
 };
 
