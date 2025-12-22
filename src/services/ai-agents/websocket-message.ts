@@ -19,6 +19,7 @@ import {
   DynamoDBDocumentClient,
   GetCommand,
   UpdateCommand,
+  PutCommand,
 } from '@aws-sdk/lib-dynamodb';
 import {
   BedrockAgentRuntimeClient,
@@ -31,6 +32,7 @@ import {
 } from '@aws-sdk/client-apigatewaymanagementapi';
 import { v4 as uuidv4 } from 'uuid';
 import { AiAgent } from './agents';
+import { ConversationMessage } from './conversation-history';
 
 // ========================================================================
 // CLIENTS
@@ -44,6 +46,34 @@ const bedrockAgentClient = new BedrockAgentRuntimeClient({
 
 const AGENTS_TABLE = process.env.AGENTS_TABLE || 'AiAgents';
 const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || 'AiAgentConnections';
+const CONVERSATIONS_TABLE = process.env.CONVERSATIONS_TABLE || 'AiAgentConversations';
+
+// ========================================================================
+// CONVERSATION LOGGING
+// ========================================================================
+
+/**
+ * Log a conversation message to DynamoDB for history and analytics.
+ * This function does not throw - logging failures should not break the main flow.
+ */
+async function logMessage(
+  message: Omit<ConversationMessage, 'ttl'>
+): Promise<void> {
+  const ttl = Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60); // 90 days
+  
+  try {
+    await docClient.send(new PutCommand({
+      TableName: CONVERSATIONS_TABLE,
+      Item: {
+        ...message,
+        ttl,
+      },
+    }));
+  } catch (error) {
+    console.error('[LogMessage] Failed to log conversation message:', error);
+    // Don't throw - logging should not break the main flow
+  }
+}
 
 // ========================================================================
 // TYPES
@@ -355,6 +385,25 @@ export const handler = async (event: WebSocketMessageEvent) => {
       connectionId, // Track which connection owns this session
     };
 
+    // Log user message to conversation history
+    const userMessageTimestamp = Date.now();
+    const visitorId = sessionAttributes.userId;
+    const visitorName = sessionAttributes.userName;
+    
+    // Fire and forget - don't await to not slow down the response
+    logMessage({
+      sessionId,
+      timestamp: userMessageTimestamp,
+      messageType: 'user',
+      content: body.message,
+      clinicId,
+      agentId: agent.agentId,
+      agentName: agent.name,
+      visitorId,
+      channel: 'websocket',
+      isPublicChat: true,
+    });
+
     // Send thinking start
     await sendToClient(apiClient, connectionId, {
       type: 'thinking',
@@ -362,6 +411,8 @@ export const handler = async (event: WebSocketMessageEvent) => {
       sessionId,
       timestamp: new Date().toISOString(),
     });
+
+    const invokeStartTime = Date.now();
 
     // Invoke Bedrock Agent with trace enabled
     const invokeCommand = new InvokeAgentCommand({
@@ -497,6 +548,23 @@ export const handler = async (event: WebSocketMessageEvent) => {
       content: fullResponse || 'No response from agent',
       sessionId,
       timestamp: new Date().toISOString(),
+    });
+
+    const responseTimeMs = Date.now() - invokeStartTime;
+
+    // Log assistant response to conversation history
+    logMessage({
+      sessionId,
+      timestamp: Date.now(),
+      messageType: 'assistant',
+      content: fullResponse || 'No response from agent',
+      clinicId,
+      agentId: agent.agentId,
+      agentName: agent.name,
+      visitorId,
+      channel: 'websocket',
+      isPublicChat: true,
+      responseTimeMs,
     });
 
     // Update agent usage count

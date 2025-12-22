@@ -147,6 +147,7 @@ export interface AiAgentsStackProps extends StackProps {
 export class AiAgentsStack extends Stack {
   public readonly agentsTable: dynamodb.Table;
   public readonly sessionsTable: dynamodb.Table;
+  public readonly conversationsTable: dynamodb.Table;
   public readonly connectionsTable: dynamodb.Table;
   public readonly voiceSessionsTable: dynamodb.Table;
   /**
@@ -176,6 +177,7 @@ export class AiAgentsStack extends Stack {
   public readonly wsMessageFn: lambdaNode.NodejsFunction;
   public readonly voiceAiFn: lambdaNode.NodejsFunction;
   public readonly voiceConfigFn: lambdaNode.NodejsFunction;
+  public readonly conversationHistoryFn: lambdaNode.NodejsFunction;
   public readonly outboundSchedulerFn: lambdaNode.NodejsFunction;
   public readonly outboundExecutorFn: lambdaNode.NodejsFunction;
   public readonly api: apigw.RestApi;
@@ -328,6 +330,49 @@ export class AiAgentsStack extends Stack {
       indexName: 'UserIndex',
       partitionKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+    });
+
+    // ========================================
+    // CONVERSATIONS TABLE - Stores all AI Agent chat messages
+    // ========================================
+    // This table stores complete conversation history for:
+    // - Audit/compliance: See who chatted with which agent
+    // - Analytics: Track usage patterns, response times, etc.
+    // - Debugging: Review what the agent said
+    // - Training: Analyze conversation quality
+    this.conversationsTable = new dynamodb.Table(this, 'AiAgentConversationsTable', {
+      partitionKey: { name: 'sessionId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN, // Keep conversation history
+      tableName: `${this.stackName}-AiAgentConversations`,
+      timeToLiveAttribute: 'ttl', // Auto-delete after 90 days (configurable)
+      pointInTimeRecovery: true,
+    });
+    applyTags(this.conversationsTable, { Table: 'ai-agent-conversations' });
+
+    // GSI for clinic-based queries: "Show all conversations for this clinic"
+    this.conversationsTable.addGlobalSecondaryIndex({
+      indexName: 'ClinicTimestampIndex',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI for agent-based queries: "Show all conversations with this agent"
+    this.conversationsTable.addGlobalSecondaryIndex({
+      indexName: 'AgentTimestampIndex',
+      partitionKey: { name: 'agentId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI for user-based queries: "Show all conversations by this user"
+    this.conversationsTable.addGlobalSecondaryIndex({
+      indexName: 'UserTimestampIndex',
+      partitionKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     // Circuit Breaker Table - distributed circuit breaker state
@@ -778,12 +823,15 @@ export class AiAgentsStack extends Stack {
         AGENTS_TABLE: this.agentsTable.tableName,
         // SECURITY FIX: Sessions table for user-bound session management
         SESSIONS_TABLE: this.sessionsTable.tableName,
+        // Conversation history logging
+        CONVERSATIONS_TABLE: this.conversationsTable.tableName,
       },
     });
     applyTags(this.invokeAgentFn, { Function: 'invoke-agent' });
 
     this.agentsTable.grantReadWriteData(this.invokeAgentFn);
     this.sessionsTable.grantReadWriteData(this.invokeAgentFn);
+    this.conversationsTable.grantWriteData(this.invokeAgentFn);
 
     // Bedrock Agent invocation permissions
     this.invokeAgentFn.addToRolePolicy(new iam.PolicyStatement({
@@ -922,6 +970,33 @@ export class AiAgentsStack extends Stack {
     this.agentsTable.grantReadData(this.voiceConfigFn);
     this.voiceConfigTable.grantReadWriteData(this.voiceConfigFn);
     this.clinicHoursTable.grantReadWriteData(this.voiceConfigFn);
+
+    // ========================================
+    // CONVERSATION HISTORY HANDLER
+    // ========================================
+    // Provides endpoints for viewing and analyzing AI agent conversations:
+    // - GET /conversations - List all conversations with filters
+    // - GET /conversations/{sessionId} - Get conversation details with messages
+    // - GET /conversations/stats - Get conversation analytics
+    // - DELETE /conversations/{sessionId} - Delete conversation (admin only)
+    this.conversationHistoryFn = new lambdaNode.NodejsFunction(this, 'ConversationHistoryFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'conversation-history.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 512,
+      timeout: Duration.seconds(60), // Stats queries may take time
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        CONVERSATIONS_TABLE: this.conversationsTable.tableName,
+        SESSIONS_TABLE: this.sessionsTable.tableName,
+        AGENTS_TABLE: this.agentsTable.tableName,
+      },
+    });
+    applyTags(this.conversationHistoryFn, { Function: 'conversation-history' });
+
+    this.conversationsTable.grantReadWriteData(this.conversationHistoryFn);
+    this.sessionsTable.grantReadData(this.conversationHistoryFn);
+    this.agentsTable.grantReadData(this.conversationHistoryFn);
 
     // ========================================
     // OUTBOUND CALL EXECUTOR (Invoked by Scheduler)
@@ -1115,12 +1190,15 @@ export class AiAgentsStack extends Stack {
       environment: {
         AGENTS_TABLE: this.agentsTable.tableName,
         CONNECTIONS_TABLE: this.connectionsTable.tableName,
+        // Conversation history logging
+        CONVERSATIONS_TABLE: this.conversationsTable.tableName,
       },
     });
     applyTags(this.wsMessageFn, { Function: 'ws-message' });
     
     this.agentsTable.grantReadWriteData(this.wsMessageFn);
     this.connectionsTable.grantReadWriteData(this.wsMessageFn);
+    this.conversationsTable.grantWriteData(this.wsMessageFn);
 
     // Bedrock Agent invocation for WebSocket
     this.wsMessageFn.addToRolePolicy(new iam.PolicyStatement({
@@ -1261,6 +1339,36 @@ export class AiAgentsStack extends Stack {
     });
 
     // ========================================
+    // CONVERSATION HISTORY ENDPOINTS
+    // ========================================
+    // Provides visibility into AI agent conversations for audit and analytics
+
+    // /conversations - List conversations with filters
+    const conversationsRes = this.api.root.addResource('conversations');
+    conversationsRes.addMethod('GET', new apigw.LambdaIntegration(this.conversationHistoryFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /conversations/stats - Get conversation analytics/statistics
+    const conversationsStatsRes = conversationsRes.addResource('stats');
+    conversationsStatsRes.addMethod('GET', new apigw.LambdaIntegration(this.conversationHistoryFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /conversations/{sessionId} - Get or delete specific conversation
+    const conversationIdRes = conversationsRes.addResource('{sessionId}');
+    conversationIdRes.addMethod('GET', new apigw.LambdaIntegration(this.conversationHistoryFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+    conversationIdRes.addMethod('DELETE', new apigw.LambdaIntegration(this.conversationHistoryFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // ========================================
     // WEBSOCKET API (Public - for website chatbot)
     // ========================================
 
@@ -1358,6 +1466,18 @@ export class AiAgentsStack extends Stack {
       exportName: `${Stack.of(this).stackName}-ConnectionsTableName`,
     });
 
+    new CfnOutput(this, 'ConversationsTableName', {
+      value: this.conversationsTable.tableName,
+      description: 'AI Agent Conversations table for chat history and analytics',
+      exportName: `${Stack.of(this).stackName}-ConversationsTableName`,
+    });
+
+    new CfnOutput(this, 'ConversationsTableArn', {
+      value: this.conversationsTable.tableArn,
+      description: 'Conversations table ARN for cross-stack IAM policies',
+      exportName: `${Stack.of(this).stackName}-ConversationsTableArn`,
+    });
+
     new CfnOutput(this, 'VoiceSessionsTableName', {
       value: this.voiceSessionsTable.tableName,
       exportName: `${Stack.of(this).stackName}-VoiceSessionsTableName`,
@@ -1430,6 +1550,7 @@ export class AiAgentsStack extends Stack {
       { fn: this.wsMessageFn, name: 'ws-message', durationMs: 240000 },
       { fn: this.voiceAiFn, name: 'voice-ai', durationMs: 240000 },
       { fn: this.voiceConfigFn, name: 'voice-config', durationMs: 24000 },
+      { fn: this.conversationHistoryFn, name: 'conversation-history', durationMs: 48000 },
       { fn: this.outboundSchedulerFn, name: 'outbound-scheduler', durationMs: 144000 }, // 3 min timeout for bulk
       { fn: this.outboundExecutorFn, name: 'outbound-executor', durationMs: 240000 },
     ].forEach(({ fn, name, durationMs }) => {
@@ -1440,6 +1561,7 @@ export class AiAgentsStack extends Stack {
 
     createDynamoThrottleAlarm(this.agentsTable.tableName, 'AiAgentTable');
     createDynamoThrottleAlarm(this.sessionsTable.tableName, 'AiAgentSessionsTable');
+    createDynamoThrottleAlarm(this.conversationsTable.tableName, 'AiAgentConversationsTable');
     createDynamoThrottleAlarm(this.circuitBreakerTable.tableName, 'CircuitBreakerTable');
     createDynamoThrottleAlarm(this.voiceSessionsTable.tableName, 'VoiceSessionsTable');
     createDynamoThrottleAlarm(this.clinicHoursTable.tableName, 'ClinicHoursTable');

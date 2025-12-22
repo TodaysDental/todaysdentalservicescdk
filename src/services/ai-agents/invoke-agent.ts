@@ -27,6 +27,7 @@ import {
   UserPermissions,
 } from '../../shared/utils/permissions-helper';
 import { AiAgent } from './agents';
+import { ConversationMessage } from './conversation-history';
 
 // ========================================================================
 // CLIENTS
@@ -40,8 +41,36 @@ const bedrockAgentRuntimeClient = new BedrockAgentRuntimeClient({
 
 const AGENTS_TABLE = process.env.AGENTS_TABLE || 'AiAgents';
 const SESSIONS_TABLE = process.env.SESSIONS_TABLE || 'AiAgentSessions';
+const CONVERSATIONS_TABLE = process.env.CONVERSATIONS_TABLE || 'AiAgentConversations';
 
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
+
+// ========================================================================
+// CONVERSATION LOGGING
+// ========================================================================
+
+/**
+ * Log a conversation message to DynamoDB for history and analytics.
+ * This function does not throw - logging failures should not break the main flow.
+ */
+async function logMessage(
+  message: Omit<ConversationMessage, 'ttl'>
+): Promise<void> {
+  const ttl = Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60); // 90 days
+  
+  try {
+    await docClient.send(new PutCommand({
+      TableName: CONVERSATIONS_TABLE,
+      Item: {
+        ...message,
+        ttl,
+      },
+    }));
+  } catch (error) {
+    console.error('[LogMessage] Failed to log conversation message:', error);
+    // Don't throw - logging should not break the main flow
+  }
+}
 
 // ========================================================================
 // TYPES
@@ -548,6 +577,26 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       dateContext: `When scheduling appointments, use ${todayDate} as today's date. Next week dates: ${JSON.stringify(nextWeekDates)}`,
     };
 
+    // Log user message to conversation history
+    const userMessageTimestamp = Date.now();
+    const visitorId = isPublic ? userId : undefined;
+    
+    // Fire and forget - don't await to not slow down the response
+    logMessage({
+      sessionId,
+      timestamp: userMessageTimestamp,
+      messageType: 'user',
+      content: body.message,
+      clinicId,
+      agentId: agent.agentId,
+      agentName: agent.name,
+      userId: isPublic ? undefined : userId,
+      userName: isPublic ? undefined : userName,
+      visitorId,
+      channel: 'api',
+      isPublicChat: isPublic,
+    });
+
     // Invoke the Bedrock Agent
     const invokeCommand = new InvokeAgentCommand({
       agentId: agent.bedrockAgentId,
@@ -581,6 +630,24 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const latencyMs = Date.now() - startTime;
+
+    // Log assistant response to conversation history
+    logMessage({
+      sessionId,
+      timestamp: Date.now(),
+      messageType: 'assistant',
+      content: responseText || 'No response from agent',
+      clinicId,
+      agentId: agent.agentId,
+      agentName: agent.name,
+      userId: isPublic ? undefined : userId,
+      userName: isPublic ? undefined : userName,
+      visitorId,
+      channel: 'api',
+      isPublicChat: isPublic,
+      responseTimeMs: latencyMs,
+      traceData: traceEvents.length > 0 ? JSON.stringify(traceEvents) : undefined,
+    });
 
     // Update usage count
     await docClient.send(
