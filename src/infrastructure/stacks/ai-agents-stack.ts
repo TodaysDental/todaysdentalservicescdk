@@ -169,6 +169,12 @@ export class AiAgentsStack extends Stack {
    * or a dedicated bucket if no shared bucket was provided.
    */
   public readonly callRecordingsBucket: s3.IBucket;
+  /**
+   * S3 bucket for temporary storage of insurance card images during Textract processing.
+   * Images are automatically deleted after processing via lifecycle rules.
+   */
+  public readonly insuranceImageBucket: s3.Bucket;
+  public readonly insuranceTextractFn: lambdaNode.NodejsFunction;
   public readonly agentsFn: lambdaNode.NodejsFunction;
   public readonly invokeAgentFn: lambdaNode.NodejsFunction;
   public readonly actionGroupFn: lambdaNode.NodejsFunction;
@@ -585,6 +591,34 @@ export class AiAgentsStack extends Stack {
     this.callRecordingsBucket = recordingsBucket;
 
     // ========================================
+    // S3 BUCKET FOR INSURANCE CARD IMAGES (Textract Processing)
+    // ========================================
+    // Temporary storage for insurance card images during Textract OCR processing.
+    // Images are automatically deleted after 1 day to minimize storage costs and
+    // comply with data retention best practices.
+    
+    this.insuranceImageBucket = new s3.Bucket(this, 'InsuranceImageBucket', {
+      bucketName: `${this.stackName.toLowerCase()}-insurance-images-${this.account}`,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy: RemovalPolicy.DESTROY, // Images are temporary
+      autoDeleteObjects: true, // Clean up on stack deletion
+      lifecycleRules: [{
+        id: 'delete-after-processing',
+        expiration: Duration.days(1), // Delete images after 1 day
+        enabled: true,
+      }],
+      versioned: false,
+      cors: [{
+        allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.POST],
+        allowedOrigins: ['*'], // Will be secured via API Gateway
+        allowedHeaders: ['*'],
+        maxAge: 3000,
+      }],
+    });
+    applyTags(this.insuranceImageBucket, { Bucket: 'insurance-images' });
+
+    // ========================================
     // IAM ROLE FOR BEDROCK AGENTS
     // ========================================
 
@@ -686,6 +720,44 @@ export class AiAgentsStack extends Stack {
       action: 'lambda:InvokeFunction',
       sourceArn: `arn:aws:bedrock:${this.region}:${this.account}:agent/*`,
     });
+
+    // ========================================
+    // INSURANCE TEXTRACT HANDLER
+    // ========================================
+    // Processes uploaded insurance card images using AWS Textract to extract:
+    // - Insurance Company Name, Group Name/Number, Member ID
+    // - Coverage details, deductibles, maximums
+    // - Can optionally upload to OpenDental as patient document
+
+    this.insuranceTextractFn = new lambdaNode.NodejsFunction(this, 'InsuranceTextractFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'insurance-textract-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 1024,
+      timeout: Duration.seconds(60), // Textract can take time for complex images
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        IMAGE_BUCKET: this.insuranceImageBucket.bucketName,
+        AGENTS_TABLE: this.agentsTable.tableName,
+      },
+    });
+    applyTags(this.insuranceTextractFn, { Function: 'insurance-textract' });
+
+    // Grant S3 permissions for image storage
+    this.insuranceImageBucket.grantReadWrite(this.insuranceTextractFn);
+
+    // Grant Textract permissions
+    this.insuranceTextractFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'textract:AnalyzeDocument',
+        'textract:DetectDocumentText',
+      ],
+      resources: ['*'], // Textract doesn't support resource-level permissions
+    }));
+
+    // Grant read access to agents table for clinic config lookup
+    this.agentsTable.grantReadData(this.insuranceTextractFn);
 
     // ========================================
     // API GATEWAY SETUP
@@ -1278,6 +1350,31 @@ export class AiAgentsStack extends Stack {
       authorizationType: apigw.AuthorizationType.NONE,
     });
 
+    // ========================================
+    // INSURANCE CARD TEXTRACT ENDPOINTS
+    // ========================================
+    // Processes uploaded insurance card images using AWS Textract to extract:
+    // - Insurance Company, Group Name/Number, Member ID
+    // - Coverage details, deductibles, annual maximums
+    // Returns structured data that can be used by the chatbot for context
+
+    // /insurance/extract - Authenticated endpoint (for admin portal)
+    const insuranceRes = this.api.root.addResource('insurance');
+    const extractRes = insuranceRes.addResource('extract');
+    extractRes.addMethod('POST', new apigw.LambdaIntegration(this.insuranceTextractFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /public/clinic/{clinicId}/insurance/extract - Public endpoint for website chatbot
+    // Used when patients upload insurance cards via the chat widget
+    const publicInsuranceRes = publicClinicIdRes.addResource('insurance');
+    const publicExtractRes = publicInsuranceRes.addResource('extract');
+    publicExtractRes.addMethod('POST', new apigw.LambdaIntegration(this.insuranceTextractFn), {
+      // No authorizer - public access for website visitors
+      authorizationType: apigw.AuthorizationType.NONE,
+    });
+
     // /models - List available models
     const modelsRes = this.api.root.addResource('models');
     modelsRes.addMethod('GET', new apigw.LambdaIntegration(this.agentsFn), {
@@ -1534,6 +1631,18 @@ export class AiAgentsStack extends Stack {
       exportName: `${Stack.of(this).stackName}-CallRecordingsBucketName`,
     });
 
+    new CfnOutput(this, 'InsuranceImageBucketName', {
+      value: this.insuranceImageBucket.bucketName,
+      description: 'Temporary storage for insurance card images during Textract processing',
+      exportName: `${Stack.of(this).stackName}-InsuranceImageBucketName`,
+    });
+
+    new CfnOutput(this, 'InsuranceTextractFunctionArn', {
+      value: this.insuranceTextractFn.functionArn,
+      description: 'Insurance card Textract handler Lambda ARN',
+      exportName: `${Stack.of(this).stackName}-InsuranceTextractFunctionArn`,
+    });
+
     // NOTE: Table name exports for ChimeStack Voice AI integration are already
     // defined above (AiAgentsTableName, ClinicHoursTableName, VoiceConfigTableName,
     // ScheduledCallsTableName). Do not add duplicate exports here.
@@ -1553,6 +1662,7 @@ export class AiAgentsStack extends Stack {
       { fn: this.conversationHistoryFn, name: 'conversation-history', durationMs: 48000 },
       { fn: this.outboundSchedulerFn, name: 'outbound-scheduler', durationMs: 144000 }, // 3 min timeout for bulk
       { fn: this.outboundExecutorFn, name: 'outbound-executor', durationMs: 240000 },
+      { fn: this.insuranceTextractFn, name: 'insurance-textract', durationMs: 48000 },
     ].forEach(({ fn, name, durationMs }) => {
       createLambdaErrorAlarm(fn, name);
       createLambdaThrottleAlarm(fn, name);
