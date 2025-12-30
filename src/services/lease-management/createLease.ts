@@ -53,6 +53,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const leaseId = `${year}-${uuidv4().substring(0, 8)}`;
     const now = new Date().toISOString();
 
+    // Get user info for audit trail
+    const createdBy = userPerms.email || 'unknown';
+
     // Ensure clinicId is set in propertyInformation
     if (!leaseInput.propertyInformation) {
       leaseInput.propertyInformation = {};
@@ -63,25 +66,51 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       PK: `CLINIC#${clinicId}`,
       SK: `LEASE#${leaseId}`,
       entityType: 'Lease',
+      leaseId,
+      clinicId,
       createdAt: now,
       updatedAt: now,
+      createdBy,
+      lastModifiedBy: createdBy,
       status: leaseInput.leaseTerms?.status || 'Draft',
       endDate: leaseInput.leaseTerms?.endDate,
       ...leaseInput,
       documents: (leaseInput.documents || []).map((doc: any) => ({
         documentId: doc.documentId || `DOC-${uuidv4().substring(0, 8)}`,
         uploadedAt: doc.uploadedAt || now,
+        uploadedBy: createdBy,
+        extractionStatus: 'pending',
+        hasExtractedData: false,
         ...doc
       })),
       assets: (leaseInput.assets || []).map((asset: any) => ({
         assetId: asset.assetId || `AST-${uuidv4().substring(0, 8)}`,
+        addedBy: createdBy,
+        addedAt: now,
         ...asset
       })),
       events: (leaseInput.events || []).map((evt: any) => ({
         eventId: evt.eventId || `EVT-${uuidv4().substring(0, 8)}`,
+        addedBy: createdBy,
+        addedAt: now,
         ...evt
       })),
       hiddenCharges: leaseInput.hiddenCharges || {},
+      contacts: (leaseInput.contacts || []).map((contact: any) => ({
+        contactId: contact.contactId || `CON-${uuidv4().substring(0, 8)}`,
+        addedBy: createdBy,
+        addedAt: now,
+        ...contact
+      })),
+      customFields: leaseInput.customFields || {},
+      auditLog: [
+        {
+          action: 'created',
+          timestamp: now,
+          userId: createdBy,
+          details: 'Lease record created'
+        }
+      ]
     };
 
     await docClient.send(new PutCommand({
@@ -90,7 +119,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       ConditionExpression: 'attribute_not_exists(PK) AND attribute_not_exists(SK)'
     }));
 
-    console.log('Lease created:', leaseRecord.PK, leaseRecord.SK);
+    console.log('Lease created:', leaseRecord.PK, leaseRecord.SK, 'by', createdBy);
 
     return createResponse(201, { success: true, data: leaseRecord, message: 'Lease created successfully' });
 

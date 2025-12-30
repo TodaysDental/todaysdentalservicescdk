@@ -1,7 +1,7 @@
 import { S3Event } from 'aws-lambda';
 import { TextractClient, StartDocumentAnalysisCommand, GetDocumentAnalysisCommand, FeatureType } from '@aws-sdk/client-textract';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, HeadObjectCommand } from '@aws-sdk/client-s3';
 
 const textractClient = new TextractClient({});
@@ -26,12 +26,17 @@ export const handler = async (event: S3Event): Promise<void> => {
     try {
       const headResult = await s3Client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
       const metadata = headResult.Metadata || {};
-      const clinicId = metadata['clinic-id'] || 'unknown';
-      const leaseId = metadata['lease-id'] || 'pending';
+      const clinicId = metadata['clinic-id'] || extractClinicIdFromKey(key);
+      const leaseId = metadata['lease-id'] || extractLeaseIdFromKey(key);
       const documentType = metadata['document-type'] || 'Document';
       const originalFilename = metadata['original-filename'] || key.split('/').pop();
 
-      console.log(`Processing: ${key} | Clinic: ${clinicId} | Type: ${documentType}`);
+      // Extract documentId from the filename pattern: DOC-xxxxxxxx-filename.ext
+      const filename = key.split('/').pop() || '';
+      const docIdMatch = filename.match(/^(DOC-[a-zA-Z0-9]+)/);
+      const documentId = docIdMatch ? docIdMatch[1] : `DOC-${Date.now()}`;
+
+      console.log(`Processing: ${key} | Clinic: ${clinicId} | Lease: ${leaseId} | DocId: ${documentId} | Type: ${documentType}`);
 
       const startResult = await textractClient.send(new StartDocumentAnalysisCommand({
         DocumentLocation: { S3Object: { Bucket: bucket, Name: key } },
@@ -41,19 +46,25 @@ export const handler = async (event: S3Event): Promise<void> => {
       const jobId = startResult.JobId!;
       const blocks = await waitForTextractCompletion(jobId);
       const extractedData = extractAllData(blocks);
-      const documentId = key.split('/').pop()?.split('-')[0] || `DOC-${Date.now()}`;
+      const now = new Date().toISOString();
 
+      // Store extracted data with proper document ID linking
       await docClient.send(new PutCommand({
         TableName: LEASE_TABLE_NAME,
         Item: {
           PK: `CLINIC#${clinicId}`,
           SK: `EXTRACTED#${documentId}`,
           entityType: 'ExtractedDocument',
+          documentId,
+          leaseId: leaseId !== 'pending' ? leaseId : null,
           documentType,
           source: {
-            bucket, key, filename: originalFilename,
+            bucket,
+            key,
+            fileKey: key,
+            filename: originalFilename,
             leaseId: leaseId !== 'pending' ? leaseId : null,
-            processedAt: new Date().toISOString(),
+            processedAt: now,
             textractJobId: jobId
           },
           fields: extractedData.fields,
@@ -66,17 +77,110 @@ export const handler = async (event: S3Event): Promise<void> => {
             totalLines: extractedData.lines.length,
             averageConfidence: extractedData.averageConfidence
           },
-          createdAt: new Date().toISOString()
+          createdAt: now,
+          updatedAt: now
         }
       }));
 
-      console.log(`Extracted ${Object.keys(extractedData.fields).length} fields`);
+      // Update the lease record to link the extracted data if leaseId exists
+      if (leaseId && leaseId !== 'pending') {
+        await linkExtractedDataToLease(clinicId, leaseId, documentId, key, documentType, now);
+      }
+
+      console.log(`Extracted ${Object.keys(extractedData.fields).length} fields for document ${documentId}`);
     } catch (error) {
       console.error('Error processing document:', key, error);
       throw error;
     }
   }
 };
+
+// Extract clinicId from S3 key pattern: clinicId/leaseId/filename or clinicId/temp/filename
+function extractClinicIdFromKey(key: string): string {
+  const parts = key.split('/');
+  return parts[0] || 'unknown';
+}
+
+// Extract leaseId from S3 key pattern: clinicId/leaseId/filename
+function extractLeaseIdFromKey(key: string): string {
+  const parts = key.split('/');
+  if (parts.length >= 2 && parts[1] !== 'temp') {
+    return parts[1];
+  }
+  return 'pending';
+}
+
+// Link extracted data to the lease document record
+async function linkExtractedDataToLease(
+  clinicId: string,
+  leaseId: string,
+  documentId: string,
+  fileKey: string,
+  documentType: string,
+  processedAt: string
+): Promise<void> {
+  try {
+    const PK = `CLINIC#${clinicId}`;
+    const SK = `LEASE#${leaseId}`;
+
+    // Get existing lease
+    const existing = await docClient.send(new GetCommand({
+      TableName: LEASE_TABLE_NAME,
+      Key: { PK, SK }
+    }));
+
+    if (!existing.Item) {
+      console.log(`Lease not found for ${clinicId}/${leaseId}, skipping link`);
+      return;
+    }
+
+    // Find and update the document in the documents array
+    const documents = existing.Item.documents || [];
+    const docIndex = documents.findIndex((doc: any) => doc.documentId === documentId);
+
+    if (docIndex >= 0) {
+      // Update existing document with extraction info
+      documents[docIndex] = {
+        ...documents[docIndex],
+        fileKey,
+        extractionStatus: 'completed',
+        extractedAt: processedAt,
+        hasExtractedData: true
+      };
+    } else {
+      // Add new document reference if not found
+      documents.push({
+        documentId,
+        fileKey,
+        type: documentType,
+        extractionStatus: 'completed',
+        extractedAt: processedAt,
+        hasExtractedData: true,
+        uploadedAt: processedAt
+      });
+    }
+
+    // Update lease with linked document
+    await docClient.send(new UpdateCommand({
+      TableName: LEASE_TABLE_NAME,
+      Key: { PK, SK },
+      UpdateExpression: 'SET #documents = :documents, #updatedAt = :updatedAt',
+      ExpressionAttributeNames: {
+        '#documents': 'documents',
+        '#updatedAt': 'updatedAt'
+      },
+      ExpressionAttributeValues: {
+        ':documents': documents,
+        ':updatedAt': processedAt
+      }
+    }));
+
+    console.log(`Linked extracted data ${documentId} to lease ${leaseId}`);
+  } catch (error) {
+    console.error('Error linking extracted data to lease:', error);
+    // Don't throw - extraction succeeded, linking is secondary
+  }
+}
 
 async function waitForTextractCompletion(jobId: string): Promise<any[]> {
   const allBlocks: any[] = [];

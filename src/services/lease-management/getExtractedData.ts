@@ -20,6 +20,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     const clinicId = event.headers['x-clinic-id'] || event.queryStringParameters?.clinicId;
     const documentId = event.queryStringParameters?.documentId;
+    const leaseId = event.queryStringParameters?.leaseId;
 
     if (!clinicId) {
       return createResponse(400, { success: false, error: 'clinicId is required' });
@@ -49,9 +50,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return createResponse(404, { success: false, error: 'Extracted data not found' });
       }
 
-      return createResponse(200, { success: true, data: result.Item });
+      return createResponse(200, { 
+        success: true, 
+        data: formatExtractedDocument(result.Item)
+      });
     } else {
-      // List all extracted documents for clinic
+      // List all extracted documents for clinic (optionally filtered by leaseId)
       const result = await docClient.send(new QueryCommand({
         TableName: LEASE_TABLE_NAME,
         KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
@@ -61,17 +65,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
       }));
 
-      const extractedDocs = (result.Items || []).map((item: any) => ({
-        documentId: item.SK.replace('EXTRACTED#', ''),
-        clinicId: item.PK.replace('CLINIC#', ''),
-        leaseId: item.leaseId,
-        sourceDocument: item.sourceDocument,
-        extractedAt: item.extractedAt,
-        leaseFields: item.leaseFields,
-        confidence: item.confidence,
-        keyValuePairsCount: Object.keys(item.keyValuePairs || {}).length,
-        tablesCount: (item.tables || []).length
-      }));
+      let extractedDocs = (result.Items || []).map(formatExtractedDocument);
+
+      // Filter by leaseId if provided
+      if (leaseId) {
+        extractedDocs = extractedDocs.filter((doc: any) => doc.leaseId === leaseId);
+      }
+
+      // Sort by processedAt (newest first)
+      extractedDocs.sort((a: any, b: any) => 
+        new Date(b.processedAt || b.createdAt).getTime() - new Date(a.processedAt || a.createdAt).getTime()
+      );
 
       return createResponse(200, {
         success: true,
@@ -85,6 +89,36 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return createResponse(500, { success: false, error: 'Internal server error', message: error.message });
   }
 };
+
+// Format extracted document for consistent response
+function formatExtractedDocument(item: any): any {
+  return {
+    documentId: item.documentId || item.SK?.replace('EXTRACTED#', ''),
+    clinicId: item.PK?.replace('CLINIC#', ''),
+    leaseId: item.leaseId || item.source?.leaseId,
+    documentType: item.documentType,
+    source: {
+      bucket: item.source?.bucket,
+      fileKey: item.source?.key || item.source?.fileKey,
+      filename: item.source?.filename,
+      processedAt: item.source?.processedAt,
+      textractJobId: item.source?.textractJobId
+    },
+    fields: item.fields || {},
+    tables: item.tables || [],
+    rawText: item.rawText,
+    lines: item.lines || [],
+    extraction: {
+      totalFields: item.extraction?.totalFields || Object.keys(item.fields || {}).length,
+      totalTables: item.extraction?.totalTables || (item.tables || []).length,
+      totalLines: item.extraction?.totalLines || (item.lines || []).length,
+      averageConfidence: item.extraction?.averageConfidence || 0
+    },
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    processedAt: item.source?.processedAt || item.createdAt
+  };
+}
 
 function createResponse(statusCode: number, body: any): APIGatewayProxyResult {
   return {

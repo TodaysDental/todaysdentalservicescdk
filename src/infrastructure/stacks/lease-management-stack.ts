@@ -139,6 +139,16 @@ export class LeaseManagementStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // Parse Document for Autofill Lambda (synchronous Textract for form autofill)
+    const parseDocumentLambda = new lambdaNode.NodejsFunction(this, 'ParseDocumentLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/parseDocumentForAutofill.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_18_X,
+      environment: lambdaEnv,
+      timeout: cdk.Duration.seconds(60),  // Longer timeout for Textract processing
+      memorySize: 512,
+    });
+
     // Grant DynamoDB permissions
     this.leaseTable.grantReadWriteData(createLeaseLambda);
     this.leaseTable.grantReadData(getLeaseLambda);
@@ -155,6 +165,16 @@ export class LeaseManagementStack extends cdk.Stack {
     this.leaseDocumentsBucket.grantReadWrite(uploadDocumentLambda);
     this.leaseDocumentsBucket.grantRead(getDocumentLambda);
     this.leaseDocumentsBucket.grantRead(processDocumentLambda);
+    this.leaseDocumentsBucket.grantRead(parseDocumentLambda);
+
+    // Grant additional S3 List permission for getDocumentLambda (needed for documentId lookup)
+    getDocumentLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:ListBucket'],
+      resources: [this.leaseDocumentsBucket.bucketArn]
+    }));
+
+    // Grant DynamoDB permissions to uploadDocumentLambda (needed to add document to lease)
+    this.leaseTable.grantReadWriteData(uploadDocumentLambda);
 
     // Grant Textract permissions to processDocumentLambda
     processDocumentLambda.addToRolePolicy(new iam.PolicyStatement({
@@ -163,6 +183,12 @@ export class LeaseManagementStack extends cdk.Stack {
         'textract:GetDocumentAnalysis',
         'textract:AnalyzeDocument'
       ],
+      resources: ['*']
+    }));
+
+    // Grant Textract permissions to parseDocumentLambda (synchronous analysis)
+    parseDocumentLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['textract:AnalyzeDocument'],
       resources: ['*']
     }));
 
@@ -281,6 +307,10 @@ export class LeaseManagementStack extends cdk.Stack {
     // /leases/documents/extracted - Get extracted data from Textract
     const extractedResource = documentsResource.addResource('extracted');
     extractedResource.addMethod('GET', new apigateway.LambdaIntegration(getExtractedDataLambda), methodOptionsWithAuth);
+
+    // /leases/documents/parse - Parse document for form autofill (synchronous)
+    const parseResource = documentsResource.addResource('parse');
+    parseResource.addMethod('POST', new apigateway.LambdaIntegration(parseDocumentLambda), methodOptionsWithAuth);
 
     // ========================================
     // CUSTOM DOMAIN MAPPING
