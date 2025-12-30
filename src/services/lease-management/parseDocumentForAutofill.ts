@@ -1,6 +1,12 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { TextractClient, AnalyzeDocumentCommand, FeatureType } from '@aws-sdk/client-textract';
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { 
+  TextractClient, 
+  AnalyzeDocumentCommand, 
+  StartDocumentAnalysisCommand,
+  GetDocumentAnalysisCommand,
+  FeatureType 
+} from '@aws-sdk/client-textract';
+import { S3Client, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getUserPermissions, hasModulePermission } from '../../shared/utils/permissions-helper';
 
 const textractClient = new TextractClient({});
@@ -9,7 +15,6 @@ const LEASE_DOCUMENTS_BUCKET = process.env.LEASE_DOCUMENTS_BUCKET!;
 const LEGAL_MODULE = 'Legal';
 
 // Mapping of extracted field names to form field names
-// This maps common lease document fields to your form structure
 const FIELD_MAPPINGS: Record<string, string> = {
   // Property Information
   'property_address': 'propertyInformation.address',
@@ -32,7 +37,6 @@ const FIELD_MAPPINGS: Record<string, string> = {
   'sqft': 'leaseTerms.sqft',
   'square_footage': 'leaseTerms.sqft',
   'rentable_area': 'leaseTerms.sqft',
-  
   // Financial Details
   'monthly_rent': 'financialDetails.baseRent',
   'base_rent': 'financialDetails.baseRent',
@@ -45,7 +49,6 @@ const FIELD_MAPPINGS: Record<string, string> = {
   'deposit': 'financialDetails.securityDeposit',
   'total_rent': 'financialDetails.currentRentInclCAM',
   'total_monthly': 'financialDetails.currentRentInclCAM',
-  
   // Lease Terms
   'lease_start': 'leaseTerms.startDate',
   'start_date': 'leaseTerms.startDate',
@@ -58,18 +61,12 @@ const FIELD_MAPPINGS: Record<string, string> = {
   'term': 'leaseTerms.termLength',
   'term_length': 'leaseTerms.termLength',
   'lease_type': 'leaseTerms.leaseType',
-  
-  // Tenant Info
-  'tenant': 'propertyInformation.clinicName',
-  'tenant_name': 'propertyInformation.clinicName',
-  'lessee': 'propertyInformation.clinicName',
 };
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   console.log('Parse Document for Autofill Event:', JSON.stringify(event, null, 2));
 
   try {
-    // Check user permissions
     const userPerms = getUserPermissions(event);
     if (!userPerms) {
       return createResponse(401, { success: false, error: 'Unauthorized' });
@@ -85,61 +82,74 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (!clinic) {
       return createResponse(400, { success: false, error: 'clinicId is required' });
     }
-
     if (!fileKey) {
       return createResponse(400, { success: false, error: 'fileKey is required' });
     }
 
-    // Check permissions
     const canRead = hasModulePermission(
-      userPerms.clinicRoles,
-      LEGAL_MODULE,
-      'read',
-      userPerms.isSuperAdmin,
-      userPerms.isGlobalSuperAdmin,
-      clinic
+      userPerms.clinicRoles, LEGAL_MODULE, 'read',
+      userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin, clinic
     );
     if (!canRead) {
       return createResponse(403, { success: false, error: 'Permission denied' });
     }
 
-    // Get the document from S3
-    const s3Response = await s3Client.send(new GetObjectCommand({
+    // Check file type
+    const headResult = await s3Client.send(new HeadObjectCommand({
       Bucket: LEASE_DOCUMENTS_BUCKET,
       Key: fileKey
     }));
 
-    const documentBytes = await s3Response.Body?.transformToByteArray();
-    if (!documentBytes) {
-      return createResponse(400, { success: false, error: 'Could not read document' });
+    const contentType = headResult.ContentType || '';
+    const isPdf = fileKey.toLowerCase().endsWith('.pdf') || contentType.includes('pdf');
+    const isImage = /\.(png|jpg|jpeg)$/i.test(fileKey) || contentType.includes('image');
+
+    if (!isPdf && !isImage) {
+      return createResponse(400, { 
+        success: false, 
+        error: 'Unsupported file format. Please upload PDF, PNG, or JPEG.' 
+      });
     }
 
-    // Use synchronous AnalyzeDocument (for documents up to 10MB)
-    const analyzeResult = await textractClient.send(new AnalyzeDocumentCommand({
-      Document: { Bytes: documentBytes },
-      FeatureTypes: [FeatureType.FORMS, FeatureType.TABLES]
-    }));
+    let blocks: any[] = [];
 
-    const blocks = analyzeResult.Blocks || [];
-    
-    // Extract all data
+    if (isPdf) {
+      // PDFs use async API (StartDocumentAnalysis)
+      console.log('Processing PDF with async Textract API...');
+      blocks = await processWithAsyncTextract(fileKey);
+    } else {
+      // Images use sync API (AnalyzeDocument)
+      console.log('Processing image with sync Textract API...');
+      const s3Response = await s3Client.send(new GetObjectCommand({
+        Bucket: LEASE_DOCUMENTS_BUCKET,
+        Key: fileKey
+      }));
+
+      const documentBytes = await s3Response.Body?.transformToByteArray();
+      if (!documentBytes) {
+        return createResponse(400, { success: false, error: 'Could not read document' });
+      }
+
+      const analyzeResult = await textractClient.send(new AnalyzeDocumentCommand({
+        Document: { Bytes: documentBytes },
+        FeatureTypes: [FeatureType.FORMS, FeatureType.TABLES]
+      }));
+      blocks = analyzeResult.Blocks || [];
+    }
+
     const extractedData = extractAllData(blocks);
-    
-    // Map to form fields
     const formData = mapToFormFields(extractedData.fields);
-    
-    // Also extract any tables that might contain rent schedules
     const rentSchedule = extractRentSchedule(extractedData.tables);
 
     return createResponse(200, {
       success: true,
       data: {
-        formData,           // Mapped form fields ready for autofill
-        rawFields: extractedData.fields,  // All extracted key-value pairs
-        tables: extractedData.tables,     // Extracted tables
-        rentSchedule,       // Parsed rent schedule if found
+        formData,
+        rawFields: extractedData.fields,
+        tables: extractedData.tables,
+        rentSchedule,
         confidence: extractedData.averageConfidence,
-        unmappedFields: getUnmappedFields(extractedData.fields)  // Fields that couldn't be mapped
+        unmappedFields: getUnmappedFields(extractedData.fields)
       },
       message: 'Document parsed successfully'
     });
@@ -149,6 +159,46 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return createResponse(500, { success: false, error: 'Internal server error', message: error.message });
   }
 };
+
+// Process PDF with async Textract API
+async function processWithAsyncTextract(fileKey: string): Promise<any[]> {
+  const startResult = await textractClient.send(new StartDocumentAnalysisCommand({
+    DocumentLocation: { S3Object: { Bucket: LEASE_DOCUMENTS_BUCKET, Name: fileKey } },
+    FeatureTypes: [FeatureType.FORMS, FeatureType.TABLES]
+  }));
+
+  const jobId = startResult.JobId!;
+  console.log('Started Textract job:', jobId);
+
+  // Wait for completion (poll every 2 seconds, max 60 attempts = 2 minutes)
+  const allBlocks: any[] = [];
+  let nextToken: string | undefined;
+
+  for (let attempt = 0; attempt < 60; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    const result = await textractClient.send(new GetDocumentAnalysisCommand({
+      JobId: jobId,
+      NextToken: nextToken
+    }));
+
+    if (result.JobStatus === 'SUCCEEDED') {
+      allBlocks.push(...(result.Blocks || []));
+      if (result.NextToken) {
+        nextToken = result.NextToken;
+        continue;
+      }
+      console.log('Textract job completed, blocks:', allBlocks.length);
+      return allBlocks;
+    } else if (result.JobStatus === 'FAILED') {
+      throw new Error(`Textract job failed: ${result.StatusMessage}`);
+    }
+    // Still IN_PROGRESS, continue polling
+  }
+
+  throw new Error('Textract job timed out after 2 minutes');
+}
+
 
 // Extract all data from Textract blocks
 function extractAllData(blocks: any[]) {
@@ -218,7 +268,6 @@ function mapToFormFields(fields: Record<string, any>): Record<string, any> {
       const [section, field] = formPath.split('.');
       let value = fieldData.value;
 
-      // Parse numeric values
       if (fieldData.type === 'currency') {
         value = parseFloat(value.replace(/[$,]/g, '')) || 0;
       } else if (fieldData.type === 'number') {
@@ -227,14 +276,11 @@ function mapToFormFields(fields: Record<string, any>): Record<string, any> {
         value = normalizeDate(value);
       }
 
-      if (!formData[section]) {
-        formData[section] = {};
-      }
+      if (!formData[section]) formData[section] = {};
       formData[section][field] = value;
     }
   }
 
-  // Calculate derived fields
   if (formData.financialDetails.baseRent && formData.financialDetails.camCharges) {
     formData.financialDetails.currentRentInclCAM = 
       formData.financialDetails.baseRent + formData.financialDetails.camCharges;
@@ -243,81 +289,55 @@ function mapToFormFields(fields: Record<string, any>): Record<string, any> {
   return formData;
 }
 
-// Get fields that couldn't be mapped
 function getUnmappedFields(fields: Record<string, any>): Record<string, string> {
   const unmapped: Record<string, string> = {};
-  
   for (const [key, fieldData] of Object.entries(fields)) {
     if (!FIELD_MAPPINGS[key]) {
       unmapped[fieldData.originalKey] = fieldData.value;
     }
   }
-  
   return unmapped;
 }
 
-// Extract rent schedule from tables
 function extractRentSchedule(tables: any[]): any[] {
   const schedule: any[] = [];
-  
   for (const table of tables) {
     const headers = table.headers?.map((h: string) => h?.toLowerCase() || '') || [];
-    
-    // Check if this looks like a rent schedule
-    const hasYearOrPeriod = headers.some((h: string) => 
-      h.includes('year') || h.includes('period') || h.includes('month')
-    );
-    const hasRent = headers.some((h: string) => 
-      h.includes('rent') || h.includes('amount') || h.includes('payment')
-    );
+    const hasYearOrPeriod = headers.some((h: string) => h.includes('year') || h.includes('period') || h.includes('month'));
+    const hasRent = headers.some((h: string) => h.includes('rent') || h.includes('amount') || h.includes('payment'));
     
     if (hasYearOrPeriod && hasRent) {
-      // Parse the rent schedule
       for (let i = 1; i < table.rows.length; i++) {
         const row = table.rows[i];
         const entry: any = {};
-        
         headers.forEach((header: string, idx: number) => {
-          if (row[idx]) {
-            entry[header || `col${idx}`] = row[idx];
-          }
+          if (row[idx]) entry[header || `col${idx}`] = row[idx];
         });
-        
-        if (Object.keys(entry).length > 0) {
-          schedule.push(entry);
-        }
+        if (Object.keys(entry).length > 0) schedule.push(entry);
       }
     }
   }
-  
   return schedule;
 }
 
-// Normalize date to ISO format
 function normalizeDate(dateStr: string): string {
   if (!dateStr) return '';
-  
-  // Try common date formats
   const formats = [
-    /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/,  // MM/DD/YYYY
-    /^(\d{1,2})-(\d{1,2})-(\d{4})$/,    // MM-DD-YYYY
-    /^(\d{4})-(\d{1,2})-(\d{1,2})$/,    // YYYY-MM-DD
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/,
+    /^(\d{1,2})-(\d{1,2})-(\d{4})$/,
+    /^(\d{4})-(\d{1,2})-(\d{1,2})$/,
   ];
-  
   for (const format of formats) {
     const match = dateStr.match(format);
     if (match) {
       if (format === formats[2]) {
-        // Already YYYY-MM-DD
         return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
       } else {
-        // MM/DD/YYYY or MM-DD-YYYY
         return `${match[3]}-${match[1].padStart(2, '0')}-${match[2].padStart(2, '0')}`;
       }
     }
   }
-  
-  return dateStr; // Return as-is if can't parse
+  return dateStr;
 }
 
 function getTextFromBlock(block: any, blockMap: Record<string, any>): string {
@@ -363,15 +383,10 @@ function detectValueType(value: string): string {
 function extractTableData(tableBlock: any, blockMap: Record<string, any>) {
   const cells: any[] = [];
   const childRel = tableBlock.Relationships?.find((r: any) => r.Type === 'CHILD');
-  
   childRel?.Ids.forEach((id: string) => {
     const cell = blockMap[id];
     if (cell?.BlockType === 'CELL') {
-      cells.push({
-        rowIndex: cell.RowIndex,
-        colIndex: cell.ColumnIndex,
-        text: getTextFromBlock(cell, blockMap)
-      });
+      cells.push({ rowIndex: cell.RowIndex, colIndex: cell.ColumnIndex, text: getTextFromBlock(cell, blockMap) });
     }
   });
 
@@ -382,9 +397,7 @@ function extractTableData(tableBlock: any, blockMap: Record<string, any>) {
   });
 
   const rows = Object.keys(rowMap).sort((a, b) => Number(a) - Number(b)).map(idx => rowMap[Number(idx)]);
-  const headers = rows.length > 0 ? rows[0] : [];
-
-  return { rows, headers };
+  return { rows, headers: rows.length > 0 ? rows[0] : [] };
 }
 
 function createResponse(statusCode: number, body: any): APIGatewayProxyResult {

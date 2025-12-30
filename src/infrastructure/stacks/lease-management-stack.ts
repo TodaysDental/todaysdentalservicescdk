@@ -186,9 +186,13 @@ export class LeaseManagementStack extends cdk.Stack {
       resources: ['*']
     }));
 
-    // Grant Textract permissions to parseDocumentLambda (synchronous analysis)
+    // Grant Textract permissions to parseDocumentLambda (synchronous and async analysis)
     parseDocumentLambda.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['textract:AnalyzeDocument'],
+      actions: [
+        'textract:AnalyzeDocument',
+        'textract:StartDocumentAnalysis',
+        'textract:GetDocumentAnalysis'
+      ],
       resources: ['*']
     }));
 
