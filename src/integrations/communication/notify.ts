@@ -15,6 +15,14 @@ import {
 import clinicsData from '../../infrastructure/configs/clinics.json';
 import { renderTemplate, buildTemplateContext } from '../../shared/utils/clinic-placeholders';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
+import {
+  isUnsubscribed,
+  generateUnsubscribeLink,
+  generateEmailUnsubscribeFooter,
+  generateSmsUnsubscribeText,
+  generateListUnsubscribeHeader,
+  CommunicationChannel,
+} from '../../services/shared/unsubscribe';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { PinpointSMSVoiceV2Client, SendTextMessageCommand } = require('@aws-sdk/client-pinpoint-sms-voice-v2');
@@ -82,6 +90,18 @@ const CLINIC_EMAIL_MAP: Record<string, string> = (() => {
   });
   return acc;
 })();
+
+const CLINIC_NAME_MAP: Record<string, string> = (() => {
+  const acc: Record<string, string> = {};
+  (clinicsData as any[]).forEach((c: any) => {
+    if (c.clinicName) acc[String(c.clinicId)] = String(c.clinicName);
+  });
+  return acc;
+})();
+
+// Unsubscribe configuration
+const UNSUBSCRIBE_TABLE = process.env.UNSUBSCRIBE_TABLE || '';
+const UNSUBSCRIBE_BASE_URL = process.env.UNSUBSCRIBE_BASE_URL || 'https://apig.todaysdentalinsights.com/notifications';
 
 // Dynamic CORS helper
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
@@ -205,43 +225,23 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
     }
   }
 
-  const results: any = { email: null, sms: null };
+  const results: any = { email: null, sms: null, skipped: [] };
   // Build template context with patient data - supports {patient_name}, {first_name}, {last_name}, {FName}, {LName}
   const mergedCtx = buildTemplateContext(clinicId, { FName: fname, LName: lname });
 
   if (notificationTypes.includes('EMAIL')) {
-    try {
-      const subjectStr = template ? renderTemplateString(String(template.email_subject || 'Notification'), mergedCtx) : 'Notification';
-      const htmlStr = template ? renderTemplateString(String(template.email_body || ''), mergedCtx) : '';
-      const textAltStr = htmlStr ? htmlStr.replace(/<[^>]+>/g, ' ') : '';
+    // Check if recipient has unsubscribed from email
+    const emailUnsubscribed = UNSUBSCRIBE_TABLE ? await isUnsubscribed(
+      ddb,
+      UNSUBSCRIBE_TABLE,
+      { patientId: patNum, email },
+      clinicId,
+      'EMAIL'
+    ) : false;
 
-      await sendEmail({ 
-        clinicId, 
-        to: email, 
-        subject: subjectStr, 
-        html: htmlStr || textAltStr, 
-        text: textAltStr || htmlStr,
-        patNum,
-        templateName: templateMessage,
-        sentBy,
-      });
-
-      results.email = email;
-
-      // Store notification in DynamoDB
-      await storeNotification({
-        patNum,
-        clinicId,
-        type: 'EMAIL',
-        email: email,
-        subject: subjectStr,
-        message: htmlStr || textAltStr,
-        templateName: templateMessage,
-        sentBy,
-        status: 'SENT'
-      });
-    } catch (error) {
-      console.error('Failed to send email:', error);
+    if (emailUnsubscribed) {
+      console.log(`Skipping EMAIL for patient ${patNum} - unsubscribed`);
+      results.skipped.push({ channel: 'EMAIL', reason: 'unsubscribed' });
       await storeNotification({
         patNum,
         clinicId,
@@ -249,9 +249,64 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
         email: email,
         templateName: templateMessage,
         sentBy,
-        status: 'FAILED'
+        status: 'SKIPPED_UNSUBSCRIBED'
       });
-      return http(500, { error: 'Failed to send email notification' }, event);
+    } else {
+      try {
+        const subjectStr = template ? renderTemplateString(String(template.email_subject || 'Notification'), mergedCtx) : 'Notification';
+        let htmlStr = template ? renderTemplateString(String(template.email_body || ''), mergedCtx) : '';
+        const textAltStr = htmlStr ? htmlStr.replace(/<[^>]+>/g, ' ') : '';
+
+        // Generate unsubscribe link and add footer to email
+        const unsubscribeLink = generateUnsubscribeLink(UNSUBSCRIBE_BASE_URL, {
+          patientId: patNum,
+          email,
+          clinicId,
+          channel: 'EMAIL',
+        });
+        const clinicName = CLINIC_NAME_MAP[clinicId] || 'Dental Clinic';
+        const unsubscribeFooter = generateEmailUnsubscribeFooter(unsubscribeLink, clinicName);
+        htmlStr = htmlStr + unsubscribeFooter;
+
+        await sendEmail({ 
+          clinicId, 
+          to: email, 
+          subject: subjectStr, 
+          html: htmlStr || textAltStr, 
+          text: textAltStr || htmlStr,
+          patNum,
+          templateName: templateMessage,
+          sentBy,
+          unsubscribeLink,
+        });
+
+        results.email = email;
+
+        // Store notification in DynamoDB
+        await storeNotification({
+          patNum,
+          clinicId,
+          type: 'EMAIL',
+          email: email,
+          subject: subjectStr,
+          message: htmlStr || textAltStr,
+          templateName: templateMessage,
+          sentBy,
+          status: 'SENT'
+        });
+      } catch (error) {
+        console.error('Failed to send email:', error);
+        await storeNotification({
+          patNum,
+          clinicId,
+          type: 'EMAIL',
+          email: email,
+          templateName: templateMessage,
+          sentBy,
+          status: 'FAILED'
+        });
+        return http(500, { error: 'Failed to send email notification' }, event);
+      }
     }
   }
 
@@ -259,35 +314,62 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
     const phoneRaw = String(body.toPhone || body.phone || body.phoneNumber || body.SMS || '').trim();
     const normalizedPhone = normalizePhone(phoneRaw);
     if (!normalizedPhone) return http(400, { error: 'No phone provided for SMS' }, event);
-    const smsBody = template ? renderTemplateString(String(template.text_message || ''), mergedCtx) : (body.textMessage || body.customSmsText || '');
-    if (!smsBody) return http(400, { error: 'No SMS content provided (template or custom)' }, event);
 
-    try {
-      await sendSms({ clinicId, to: normalizedPhone, body: smsBody });
-      results.sms = normalizedPhone;
+    // Check if recipient has unsubscribed from SMS
+    const smsUnsubscribed = UNSUBSCRIBE_TABLE ? await isUnsubscribed(
+      ddb,
+      UNSUBSCRIBE_TABLE,
+      { patientId: patNum, phone: normalizedPhone },
+      clinicId,
+      'SMS'
+    ) : false;
+
+    if (smsUnsubscribed) {
+      console.log(`Skipping SMS for patient ${patNum} - unsubscribed`);
+      results.skipped.push({ channel: 'SMS', reason: 'unsubscribed' });
       await storeNotification({
         patNum,
         clinicId,
         type: 'SMS',
         phone: normalizedPhone,
-        message: smsBody,
         templateName: templateMessage,
         sentBy,
-        status: 'SENT'
+        status: 'SKIPPED_UNSUBSCRIBED'
       });
-    } catch (error) {
-      console.error('Failed to send SMS:', error);
-      await storeNotification({
-        patNum,
-        clinicId,
-        type: 'SMS',
-        phone: normalizedPhone,
-        message: smsBody,
-        templateName: templateMessage,
-        sentBy,
-        status: 'FAILED'
-      });
-      return http(500, { error: 'Failed to send SMS notification' }, event);
+    } else {
+      let smsBody = template ? renderTemplateString(String(template.text_message || ''), mergedCtx) : (body.textMessage || body.customSmsText || '');
+      if (!smsBody) return http(400, { error: 'No SMS content provided (template or custom)' }, event);
+
+      // Add unsubscribe text to SMS (Reply STOP to unsubscribe)
+      smsBody = smsBody + generateSmsUnsubscribeText();
+
+      try {
+        await sendSms({ clinicId, to: normalizedPhone, body: smsBody });
+        results.sms = normalizedPhone;
+        await storeNotification({
+          patNum,
+          clinicId,
+          type: 'SMS',
+          phone: normalizedPhone,
+          message: smsBody,
+          templateName: templateMessage,
+          sentBy,
+          status: 'SENT'
+        });
+      } catch (error) {
+        console.error('Failed to send SMS:', error);
+        await storeNotification({
+          patNum,
+          clinicId,
+          type: 'SMS',
+          phone: normalizedPhone,
+          message: smsBody,
+          templateName: templateMessage,
+          sentBy,
+          status: 'FAILED'
+        });
+        return http(500, { error: 'Failed to send SMS notification' }, event);
+      }
     }
   }
 
@@ -521,6 +603,7 @@ interface SendEmailOptions {
   patNum?: string;
   templateName?: string;
   sentBy?: string;
+  unsubscribeLink?: string;
 }
 
 interface SendEmailResult {
@@ -529,7 +612,7 @@ interface SendEmailResult {
 }
 
 async function sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
-  const { clinicId, to, subject, html, text, patNum, templateName, sentBy } = options;
+  const { clinicId, to, subject, html, text, patNum, templateName, sentBy, unsubscribeLink } = options;
   const identityArn = CLINIC_SES_IDENTITY_ARN_MAP[clinicId];
   if (!identityArn) return { success: false };
   
@@ -546,6 +629,14 @@ async function sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
   }
   
   const configurationSetName = process.env.SES_CONFIGURATION_SET_NAME;
+
+  // Generate List-Unsubscribe headers if unsubscribe link is provided
+  const listUnsubscribeHeaders: Record<string, string> = {};
+  if (unsubscribeLink && clinicEmail) {
+    const { listUnsubscribe, listUnsubscribePost } = generateListUnsubscribeHeader(unsubscribeLink, clinicEmail);
+    listUnsubscribeHeaders['List-Unsubscribe'] = listUnsubscribe;
+    listUnsubscribeHeaders['List-Unsubscribe-Post'] = listUnsubscribePost;
+  }
   
   const cmd = new SendEmailCommand({
     FromEmailAddress: from,
@@ -557,7 +648,12 @@ async function sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
         Body: { 
           Html: { Data: html }, 
           Text: { Data: text || html.replace(/<[^>]+>/g, ' ') } 
-        } 
+        },
+        // Add List-Unsubscribe headers for RFC 8058 compliance
+        Headers: Object.entries(listUnsubscribeHeaders).map(([name, value]) => ({
+          Name: name,
+          Value: value,
+        })),
       } 
     },
     // Add configuration set for event tracking
@@ -648,7 +744,7 @@ async function storeNotification(notification: {
   message?: string;
   templateName?: string;
   sentBy: string;
-  status: 'SENT' | 'FAILED';
+  status: 'SENT' | 'FAILED' | 'SKIPPED_UNSUBSCRIBED';
 }): Promise<void> {
   const NOTIFICATIONS_TABLE = process.env.NOTIFICATIONS_TABLE;
   if (!NOTIFICATIONS_TABLE) return;

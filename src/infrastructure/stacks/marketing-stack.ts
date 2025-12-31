@@ -401,6 +401,15 @@ wlYXO5lFMbXxxeTKZao2DZfQ
       environment: envVars,
     });
 
+    // Ads Lambda (Meta Ads via Ayrshare)
+    const adsFn = new lambdaNode.NodejsFunction(this, 'MarketingAdsFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'ads.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(60),
+      environment: envVars,
+    });
+
     // ============================================
     // EventBridge Rule for Analytics Sync (runs every 6 hours)
     // ============================================
@@ -468,6 +477,10 @@ wlYXO5lFMbXxxeTKZao2DZfQ
     // Validate Lambda permissions (only needs profiles for API key)
     this.marketingProfilesTable.grantReadData(validateFn);
 
+    // Ads Lambda permissions
+    this.marketingProfilesTable.grantReadData(adsFn);
+    this.marketingPostsTable.grantReadData(adsFn);
+
     // ============================================
     // 8. API Routes
     // ============================================
@@ -478,9 +491,13 @@ wlYXO5lFMbXxxeTKZao2DZfQ
     // -----------------------------------------
     const profilesRes = root.addResource('profiles');
 
-    // POST /profiles/initialize - Create Ayrshare profiles for all clinics
+    // POST /profiles/initialize - Create Ayrshare profiles for all clinics (deprecated, use /sync)
     const initializeRes = profilesRes.addResource('initialize');
     initializeRes.addMethod('POST', new apigw.LambdaIntegration(profilesFn), { authorizer });
+
+    // POST /profiles/sync - Sync profiles from clinics.json to DynamoDB
+    const syncRes = profilesRes.addResource('sync');
+    syncRes.addMethod('POST', new apigw.LambdaIntegration(profilesFn), { authorizer });
 
     // GET /profiles - Get all clinic profiles
     profilesRes.addMethod('GET', new apigw.LambdaIntegration(profilesFn), { authorizer });
@@ -691,6 +708,40 @@ wlYXO5lFMbXxxeTKZao2DZfQ
     // POST /webhooks/ayrshare - Ayrshare webhook handler (no auth - but HMAC signature verified)
     const ayrshareWebhookRes = webhooksRes.addResource('ayrshare');
     ayrshareWebhookRes.addMethod('POST', new apigw.LambdaIntegration(webhooksFn));
+
+    // -----------------------------------------
+    // Ads Routes (/ads) - Meta Ads via Ayrshare
+    // -----------------------------------------
+    const adsRes = root.addResource('ads');
+
+    // Clinic-specific ads routes
+    const adsClinicRes = adsRes.addResource('{clinicId}');
+
+    // POST /ads/{clinicId}/boost - Boost an existing post
+    const adsBoostRes = adsClinicRes.addResource('boost');
+    adsBoostRes.addMethod('POST', new apigw.LambdaIntegration(adsFn), { authorizer });
+
+    // GET /ads/{clinicId}/campaigns - List all ad campaigns
+    // POST /ads/{clinicId}/campaigns - Create a new ad campaign
+    const adsCampaignsRes = adsClinicRes.addResource('campaigns');
+    adsCampaignsRes.addMethod('GET', new apigw.LambdaIntegration(adsFn), { authorizer });
+    adsCampaignsRes.addMethod('POST', new apigw.LambdaIntegration(adsFn), { authorizer });
+
+    // GET /ads/{clinicId}/campaigns/{campaignId} - Get single campaign
+    // PUT /ads/{clinicId}/campaigns/{campaignId} - Update campaign
+    // DELETE /ads/{clinicId}/campaigns/{campaignId} - Delete campaign
+    const adsCampaignByIdRes = adsCampaignsRes.addResource('{campaignId}');
+    adsCampaignByIdRes.addMethod('GET', new apigw.LambdaIntegration(adsFn), { authorizer });
+    adsCampaignByIdRes.addMethod('PUT', new apigw.LambdaIntegration(adsFn), { authorizer });
+    adsCampaignByIdRes.addMethod('DELETE', new apigw.LambdaIntegration(adsFn), { authorizer });
+
+    // GET /ads/{clinicId}/analytics - Get ad analytics
+    const adsAnalyticsRes = adsClinicRes.addResource('analytics');
+    adsAnalyticsRes.addMethod('GET', new apigw.LambdaIntegration(adsFn), { authorizer });
+
+    // GET /ads/{clinicId}/account - Get ad account info
+    const adsAccountRes = adsClinicRes.addResource('account');
+    adsAccountRes.addMethod('GET', new apigw.LambdaIntegration(adsFn), { authorizer });
 
     // ============================================
     // 9. Outputs

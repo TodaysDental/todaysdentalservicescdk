@@ -40,6 +40,7 @@ import { LeaseManagementStack } from './stacks/lease-management-stack';
 import { InsurancePlanSyncStack } from './stacks/insurance-plan-sync-stack';
 import { FeeScheduleSyncStack } from './stacks/fee-schedule-sync-stack';
 import { EmailStack } from './stacks/email-stack';
+import { AccountingStack } from './stacks/accounting-stack';
 // import { PushNotificationsStack } from './stacks/push-notifications-stack';
 // import { DentalSoftwareStack } from './stacks/dental-software-stack';
 
@@ -594,6 +595,7 @@ clinicImagesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunc
 aiAgentsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 queryGeneratorStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 rcsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+rcsStack.addDependency(notificationsStack); // Explicit - imports UnsubscribeTableName
 // dentalSoftwareStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 // patientPortalStack.addDependency(coreStack); // Note: PatientPortalStack might not import it - verify
 patientPortalStack.addDependency(openDentalStack); // Explicit - uses SFTP resources
@@ -638,6 +640,14 @@ const emailStack = new EmailStack(app, 'TodaysDentalInsightsEmailN1', {
   env,
 });
 emailStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn (if needed later)
+
+// Accounting Stack - Invoice intake (Accounts Payable) and Bank Reconciliation
+// Integrates with OpenDental for payment data and Odoo for bank transactions
+const accountingStack = new AccountingStack(app, 'TodaysDentalInsightsAccountingN1', {
+  env,
+  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+});
+accountingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 
 // Push Notifications Stack - Mobile push notifications via SNS (iOS APNs + Android FCM)
 // Prerequisites: Store credentials in Secrets Manager before enabling platform applications:

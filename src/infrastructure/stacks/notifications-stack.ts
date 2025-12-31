@@ -23,8 +23,10 @@ export class NotificationsStack extends Stack {
   public readonly notificationsTable: dynamodb.Table;
   public readonly emailAnalyticsTable: dynamodb.Table;
   public readonly emailStatsTable: dynamodb.Table;
+  public readonly unsubscribeTable: dynamodb.Table;
   public readonly emailAnalyticsFn: lambdaNode.NodejsFunction;
   public readonly emailEventProcessorFn: lambdaNode.NodejsFunction;
+  public readonly unsubscribeFn: lambdaNode.NodejsFunction;
   public readonly sesConfigurationSet: ses.ConfigurationSet;
   public readonly sesEventsTopic: sns.Topic;
 
@@ -149,6 +151,42 @@ export class NotificationsStack extends Stack {
     applyTags(this.emailStatsTable, { Table: 'email-stats' });
 
     // ========================================
+    // UNSUBSCRIBE PREFERENCES TABLE
+    // ========================================
+    // Tracks unsubscribe preferences for email, SMS, and RCS
+    // pk: PREF#<patientId> or EMAIL#<email> or PHONE#<phone>
+    // sk: CLINIC#<clinicId> or GLOBAL
+    this.unsubscribeTable = new dynamodb.Table(this, 'UnsubscribeTable', {
+      partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      tableName: `${id}-UnsubscribePreferences`,
+    });
+    
+    // GSI for querying by email
+    this.unsubscribeTable.addGlobalSecondaryIndex({
+      indexName: 'email-index',
+      partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    
+    // GSI for querying by phone
+    this.unsubscribeTable.addGlobalSecondaryIndex({
+      indexName: 'phone-index',
+      partitionKey: { name: 'phone', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    
+    // GSI for querying by patient ID
+    this.unsubscribeTable.addGlobalSecondaryIndex({
+      indexName: 'patientId-index',
+      partitionKey: { name: 'patientId', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    applyTags(this.unsubscribeTable, { Table: 'unsubscribe-preferences' });
+
+    // ========================================
     // SES CONFIGURATION SET FOR EVENT TRACKING
     // ========================================
 
@@ -236,6 +274,27 @@ export class NotificationsStack extends Stack {
     this.emailAnalyticsTable.grantReadData(this.emailAnalyticsFn);
     this.emailStatsTable.grantReadData(this.emailAnalyticsFn);
 
+    // ========================================
+    // UNSUBSCRIBE HANDLER LAMBDA
+    // ========================================
+
+    this.unsubscribeFn = new lambdaNode.NodejsFunction(this, 'UnsubscribeFn', {
+      entry: path.join(__dirname, '..', '..', 'integrations', 'communication', 'unsubscribe-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(20),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        UNSUBSCRIBE_TABLE: this.unsubscribeTable.tableName,
+        UNSUBSCRIBE_SECRET: process.env.UNSUBSCRIBE_SECRET || 'todays-dental-unsubscribe-secret-key-2024',
+      },
+    });
+    applyTags(this.unsubscribeFn, { Function: 'unsubscribe-handler' });
+
+    // Grant DynamoDB permissions to unsubscribe handler
+    this.unsubscribeTable.grantReadWriteData(this.unsubscribeFn);
+
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
     const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
@@ -312,10 +371,15 @@ export class NotificationsStack extends Stack {
         TEMPLATES_TABLE: props.templatesTableName,
         NOTIFICATIONS_TABLE: this.notificationsTable.tableName,
         EMAIL_ANALYTICS_TABLE: this.emailAnalyticsTable.tableName,
+        UNSUBSCRIBE_TABLE: this.unsubscribeTable.tableName,
         SES_CONFIGURATION_SET_NAME: this.sesConfigurationSet.configurationSetName,
+        UNSUBSCRIBE_BASE_URL: 'https://apig.todaysdentalinsights.com/notifications',
       },
     });
     applyTags(this.notifyFn, { Function: 'notifications' });
+
+    // Grant read access to unsubscribe table for checking preferences
+    this.unsubscribeTable.grantReadData(this.notifyFn);
 
     // Grant SES and SMS permissions
     this.notifyFn.addToRolePolicy(new iam.PolicyStatement({ 
@@ -551,6 +615,94 @@ export class NotificationsStack extends Stack {
     });
 
     // ========================================
+    // UNSUBSCRIBE API ROUTES
+    // ========================================
+
+    const unsubscribeIntegration = new apigw.LambdaIntegration(this.unsubscribeFn);
+
+    // Public unsubscribe endpoints (no auth required)
+    // GET /unsubscribe/{token} - Render unsubscribe page
+    const unsubscribeResource = this.notificationsApi.root.addResource('unsubscribe');
+    const unsubscribeTokenResource = unsubscribeResource.addResource('{token}');
+    
+    unsubscribeTokenResource.addMethod('GET', unsubscribeIntegration, {
+      authorizationType: apigw.AuthorizationType.NONE,
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Content-Type': true,
+            'method.response.header.Access-Control-Allow-Origin': true,
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '500' }
+      ],
+    });
+
+    // POST /unsubscribe/{token} - Process unsubscribe request
+    unsubscribeTokenResource.addMethod('POST', unsubscribeIntegration, {
+      authorizationType: apigw.AuthorizationType.NONE,
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Content-Type': true,
+            'method.response.header.Access-Control-Allow-Origin': true,
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '500' }
+      ],
+    });
+
+    // Protected preferences endpoints (auth required)
+    // GET /preferences - Get preferences for authenticated user
+    const preferencesResource = this.notificationsApi.root.addResource('preferences');
+    
+    preferencesResource.addMethod('GET', unsubscribeIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      requestParameters: {
+        'method.request.querystring.email': false,
+        'method.request.querystring.phone': false,
+        'method.request.querystring.patientId': false,
+      },
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Access-Control-Allow-Origin': true,
+            'method.response.header.Access-Control-Allow-Headers': true,
+            'method.response.header.Access-Control-Allow-Methods': true
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' }
+      ],
+    });
+
+    // PUT /preferences - Update preferences for authenticated user
+    preferencesResource.addMethod('PUT', unsubscribeIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Access-Control-Allow-Origin': true,
+            'method.response.header.Access-Control-Allow-Headers': true,
+            'method.response.header.Access-Control-Allow-Methods': true
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' }
+      ],
+    });
+
+    // ========================================
     // DOMAIN MAPPING
     // ========================================
 
@@ -585,6 +737,7 @@ export class NotificationsStack extends Stack {
       { fn: this.notifyFn, name: 'notifications', durationMs: Math.floor(Duration.seconds(20).toMilliseconds() * 0.8) },
       { fn: this.emailAnalyticsFn, name: 'email-analytics-api', durationMs: Math.floor(Duration.seconds(20).toMilliseconds() * 0.8) },
       { fn: this.emailEventProcessorFn, name: 'email-event-processor', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
+      { fn: this.unsubscribeFn, name: 'unsubscribe-handler', durationMs: Math.floor(Duration.seconds(20).toMilliseconds() * 0.8) },
     ].forEach(({ fn, name, durationMs }) => {
       createLambdaErrorAlarm(fn, name);
       createLambdaThrottleAlarm(fn, name);
@@ -594,6 +747,7 @@ export class NotificationsStack extends Stack {
     createDynamoThrottleAlarm(this.notificationsTable.tableName, 'NotificationsTable');
     createDynamoThrottleAlarm(this.emailAnalyticsTable.tableName, 'EmailAnalyticsTable');
     createDynamoThrottleAlarm(this.emailStatsTable.tableName, 'EmailStatsTable');
+    createDynamoThrottleAlarm(this.unsubscribeTable.tableName, 'UnsubscribeTable');
 
     // ========================================
     // ADDITIONAL OUTPUTS
@@ -621,6 +775,24 @@ export class NotificationsStack extends Stack {
       value: 'https://apig.todaysdentalinsights.com/notifications/email-analytics/',
       description: 'Email Analytics API Endpoint',
       exportName: `${Stack.of(this).stackName}-EmailAnalyticsApiEndpoint`,
+    });
+
+    new CfnOutput(this, 'UnsubscribeTableName', {
+      value: this.unsubscribeTable.tableName,
+      description: 'Unsubscribe Preferences DynamoDB Table Name',
+      exportName: `${Stack.of(this).stackName}-UnsubscribeTableName`,
+    });
+
+    new CfnOutput(this, 'UnsubscribeApiEndpoint', {
+      value: 'https://apig.todaysdentalinsights.com/notifications/unsubscribe/',
+      description: 'Unsubscribe API Endpoint (public)',
+      exportName: `${Stack.of(this).stackName}-UnsubscribeApiEndpoint`,
+    });
+
+    new CfnOutput(this, 'PreferencesApiEndpoint', {
+      value: 'https://apig.todaysdentalinsights.com/notifications/preferences',
+      description: 'Communication Preferences API Endpoint (authenticated)',
+      exportName: `${Stack.of(this).stackName}-PreferencesApiEndpoint`,
     });
   }
 }

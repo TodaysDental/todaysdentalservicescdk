@@ -25,12 +25,14 @@ export interface RcsStackProps extends StackProps {
 
 export class RcsStack extends Stack {
   public readonly rcsMessagesTable: dynamodb.Table;
+  public readonly rcsTemplatesTable: dynamodb.Table;
   public readonly rcsApi: apigw.RestApi;
   public readonly incomingMessageFn: lambdaNode.NodejsFunction;
   public readonly fallbackMessageFn: lambdaNode.NodejsFunction;
   public readonly statusCallbackFn: lambdaNode.NodejsFunction;
   public readonly sendMessageFn: lambdaNode.NodejsFunction;
   public readonly getMessagesFn: lambdaNode.NodejsFunction;
+  public readonly templatesFn: lambdaNode.NodejsFunction;
   public readonly authorizer: apigw.RequestAuthorizer;
 
   constructor(scope: Construct, id: string, props: RcsStackProps = {}) {
@@ -126,6 +128,25 @@ export class RcsStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // RCS Templates Table - Stores rich message templates per clinic
+    this.rcsTemplatesTable = new dynamodb.Table(this, 'RcsTemplatesTable', {
+      tableName: `${this.stackName}-RcsTemplates`,
+      partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING }, // CLINIC#<clinicId>
+      sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING }, // TEMPLATE#<templateId>
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+    });
+    applyTags(this.rcsTemplatesTable, { Table: 'rcs-templates' });
+
+    // GSI for querying templates by category
+    this.rcsTemplatesTable.addGlobalSecondaryIndex({
+      indexName: 'CategoryIndex',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'category', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // ========================================
     // API GATEWAY SETUP
     // ========================================
@@ -185,11 +206,33 @@ export class RcsStack extends Stack {
     // LAMBDA ENVIRONMENT VARIABLES
     // ========================================
 
+    // Import the unsubscribe table name from NotificationsStack (if deployed)
+    // The notifications stack is deployed as TodaysDentalInsightsNotificationsN1
+    let unsubscribeTableName = '';
+    try {
+      unsubscribeTableName = Fn.importValue('TodaysDentalInsightsNotificationsN1-UnsubscribeTableName').toString();
+    } catch {
+      // NotificationsStack not deployed yet - unsubscribe checking will be disabled
+      console.log('TodaysDentalInsightsNotificationsN1-UnsubscribeTableName not available - unsubscribe checking disabled');
+    }
+
     const defaultLambdaEnv = {
       RCS_MESSAGES_TABLE: this.rcsMessagesTable.tableName,
+      RCS_TEMPLATES_TABLE: this.rcsTemplatesTable.tableName,
       TWILIO_ACCOUNT_SID: twilioAccountSid,
       TWILIO_AUTH_TOKEN: twilioAuthToken,
       SKIP_TWILIO_VALIDATION: process.env.SKIP_TWILIO_VALIDATION || 'false',
+    };
+
+    // Extended environment for send message function (includes unsubscribe table)
+    const sendMessageEnv = {
+      ...defaultLambdaEnv,
+      UNSUBSCRIBE_TABLE: unsubscribeTableName,
+    };
+
+    // Environment for templates function
+    const templatesEnv = {
+      RCS_TEMPLATES_TABLE: this.rcsTemplatesTable.tableName,
     };
 
     // ========================================
@@ -243,10 +286,21 @@ export class RcsStack extends Stack {
       memorySize: 256,
       timeout: Duration.seconds(30),
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
-      environment: defaultLambdaEnv,
+      environment: sendMessageEnv,
     });
     applyTags(this.sendMessageFn, { Function: 'rcs-send' });
     this.rcsMessagesTable.grantWriteData(this.sendMessageFn);
+
+    // Grant read access to unsubscribe table for checking preferences
+    if (unsubscribeTableName) {
+      this.sendMessageFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/*-UnsubscribePreferences`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/*-UnsubscribePreferences/index/*`,
+        ],
+      }));
+    }
 
     // Get Messages Handler - Internal API for retrieving message history
     this.getMessagesFn = new lambdaNode.NodejsFunction(this, 'RcsGetMessagesFn', {
@@ -260,6 +314,23 @@ export class RcsStack extends Stack {
     });
     applyTags(this.getMessagesFn, { Function: 'rcs-get' });
     this.rcsMessagesTable.grantReadData(this.getMessagesFn);
+
+    // Templates Handler - CRUD for RCS rich message templates
+    this.templatesFn = new lambdaNode.NodejsFunction(this, 'RcsTemplatesFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'rcs', 'templates.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: { 
+        format: lambdaNode.OutputFormat.CJS, 
+        target: 'node22',
+        externalModules: ['uuid'],
+      },
+      environment: templatesEnv,
+    });
+    applyTags(this.templatesFn, { Function: 'rcs-templates' });
+    this.rcsTemplatesTable.grantReadWriteData(this.templatesFn);
 
     // ========================================
     // API ROUTES
@@ -305,6 +376,41 @@ export class RcsStack extends Stack {
       methodResponses: [{ statusCode: '200' }],
     });
 
+    // RCS Templates Routes (Protected)
+    // GET /{clinicId}/templates - List all templates
+    // POST /{clinicId}/templates - Create a new template
+    const templatesResource = clinicResource.addResource('templates');
+    templatesResource.addMethod('GET', new apigw.LambdaIntegration(this.templatesFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }],
+    });
+    templatesResource.addMethod('POST', new apigw.LambdaIntegration(this.templatesFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '201' }],
+    });
+
+    // GET /{clinicId}/templates/{templateId} - Get single template
+    // PUT /{clinicId}/templates/{templateId} - Update template
+    // DELETE /{clinicId}/templates/{templateId} - Delete template
+    const templateByIdResource = templatesResource.addResource('{templateId}');
+    templateByIdResource.addMethod('GET', new apigw.LambdaIntegration(this.templatesFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }],
+    });
+    templateByIdResource.addMethod('PUT', new apigw.LambdaIntegration(this.templatesFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }],
+    });
+    templateByIdResource.addMethod('DELETE', new apigw.LambdaIntegration(this.templatesFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }],
+    });
+
     // ========================================
     // CloudWatch Alarms
     // ========================================
@@ -314,6 +420,7 @@ export class RcsStack extends Stack {
       { fn: this.statusCallbackFn, name: 'rcs-status', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
       { fn: this.sendMessageFn, name: 'rcs-send', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
       { fn: this.getMessagesFn, name: 'rcs-get', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
+      { fn: this.templatesFn, name: 'rcs-templates', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
     ].forEach(({ fn, name, durationMs }) => {
       createLambdaErrorAlarm(fn, name);
       createLambdaThrottleAlarm(fn, name);
@@ -321,6 +428,7 @@ export class RcsStack extends Stack {
     });
 
     createDynamoThrottleAlarm(this.rcsMessagesTable.tableName, 'RcsMessagesTable');
+    createDynamoThrottleAlarm(this.rcsTemplatesTable.tableName, 'RcsTemplatesTable');
 
     // ========================================
     // DOMAIN MAPPING
@@ -354,6 +462,12 @@ export class RcsStack extends Stack {
       value: this.rcsMessagesTable.tableName,
       description: 'RCS Messages DynamoDB Table Name',
       exportName: `${Stack.of(this).stackName}-RcsMessagesTableName`,
+    });
+
+    new CfnOutput(this, 'RcsTemplatesTableName', {
+      value: this.rcsTemplatesTable.tableName,
+      description: 'RCS Templates DynamoDB Table Name',
+      exportName: `${Stack.of(this).stackName}-RcsTemplatesTableName`,
     });
 
     // Output webhook URLs for each clinic (for Twilio configuration)

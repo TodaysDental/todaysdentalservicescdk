@@ -46,6 +46,11 @@ export interface Clinic {
     /** Whether RCS messaging is enabled for this clinic */
     enabled?: boolean;
   };
+  // Odoo integration for accounting
+  /** Odoo company ID for this clinic (for bank reconciliation) */
+  odooCompanyId?: number;
+  /** Odoo bank journal ID for this clinic */
+  odooBankJournalId?: number;
 }
 
 // Backend only

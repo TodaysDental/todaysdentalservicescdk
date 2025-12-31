@@ -319,3 +319,240 @@ function formatDuration(seconds: number): string {
     : `${hours}h`;
 }
 
+// ========================================
+// PAYMENT-RELATED FUNCTIONS (for Accounting Module)
+// ========================================
+
+/**
+ * OpenDental Payment Types
+ * These map to Definition Category 10 (PaymentTypes) in OpenDental
+ */
+export interface PatientPayment {
+  PayNum: number;
+  PatNum: number;
+  PayDate: string;
+  PayAmt: number;
+  PayType: number;
+  PayNote: string;
+  CheckNum: string;
+  ClinicNum: number;
+  DateEntry: string;
+  IsSplit: boolean;
+  ProcessStatus: number;
+  PaymentSource: number;
+}
+
+export interface ClaimPayment {
+  ClaimPaymentNum: number;
+  CheckDate: string;
+  CheckAmt: number;
+  CheckNum: string;
+  BankBranch: string;
+  CarrierName: string;
+  ClinicNum: number;
+  DateIssued: string;
+  IsPartial: boolean;
+  Note: string;
+  PayType: number;
+}
+
+export interface PaymentFetchOptions {
+  dateStart: string;  // Format: YYYY-MM-DD
+  dateEnd: string;    // Format: YYYY-MM-DD
+  payType?: number;   // Optional: filter by payment type
+}
+
+/**
+ * Fetch patient payments from OpenDental
+ * Uses the Payments GET endpoint with date filtering
+ * 
+ * @param clinicId - The clinic ID to fetch payments for
+ * @param options - Date range and optional payment type filter
+ * @returns Array of patient payments
+ */
+export async function getPatientPayments(
+  clinicId: string,
+  options: PaymentFetchOptions
+): Promise<PatientPayment[]> {
+  try {
+    console.log(`[OpenDental] Fetching patient payments for clinic ${clinicId} from ${options.dateStart} to ${options.dateEnd}`);
+    
+    let path = `${API_BASE}/payments?DateStart=${encodeURIComponent(options.dateStart)}&DateEnd=${encodeURIComponent(options.dateEnd)}`;
+    
+    // Add PayType filter if specified
+    if (options.payType !== undefined) {
+      path += `&PayType=${options.payType}`;
+    }
+    
+    const response = await makeOpenDentalRequest('GET', path, clinicId);
+    
+    // Response is an array of payments
+    const payments: PatientPayment[] = Array.isArray(response) ? response : [];
+    
+    console.log(`[OpenDental] Found ${payments.length} patient payments`);
+    return payments;
+  } catch (error: any) {
+    // Handle 404 as empty result (no payments found)
+    if (error.statusCode === 404) {
+      console.log(`[OpenDental] No patient payments found for the specified date range`);
+      return [];
+    }
+    console.error('[OpenDental] Error fetching patient payments:', error);
+    throw error;
+  }
+}
+
+/**
+ * Fetch a single patient payment by PayNum
+ * 
+ * @param payNum - The payment number
+ * @param clinicId - The clinic ID
+ * @returns The payment details
+ */
+export async function getPatientPaymentByPayNum(
+  payNum: number,
+  clinicId: string
+): Promise<PatientPayment | null> {
+  try {
+    console.log(`[OpenDental] Fetching payment PayNum: ${payNum}`);
+    
+    const path = `${API_BASE}/payments/${payNum}`;
+    const payment = await makeOpenDentalRequest('GET', path, clinicId);
+    
+    return payment;
+  } catch (error: any) {
+    if (error.statusCode === 404) {
+      return null;
+    }
+    console.error(`[OpenDental] Error fetching payment ${payNum}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Fetch insurance claim payments from OpenDental
+ * Uses the ClaimPayments GET endpoint
+ * 
+ * @param clinicId - The clinic ID to fetch claim payments for
+ * @param options - Date range filter
+ * @returns Array of claim payments
+ */
+export async function getClaimPayments(
+  clinicId: string,
+  options: PaymentFetchOptions
+): Promise<ClaimPayment[]> {
+  try {
+    console.log(`[OpenDental] Fetching claim payments for clinic ${clinicId} from ${options.dateStart} to ${options.dateEnd}`);
+    
+    const path = `${API_BASE}/claimpayments?DateStart=${encodeURIComponent(options.dateStart)}&DateEnd=${encodeURIComponent(options.dateEnd)}`;
+    
+    const response = await makeOpenDentalRequest('GET', path, clinicId);
+    
+    const claimPayments: ClaimPayment[] = Array.isArray(response) ? response : [];
+    
+    console.log(`[OpenDental] Found ${claimPayments.length} claim payments`);
+    return claimPayments;
+  } catch (error: any) {
+    if (error.statusCode === 404) {
+      console.log(`[OpenDental] No claim payments found for the specified date range`);
+      return [];
+    }
+    console.error('[OpenDental] Error fetching claim payments:', error);
+    throw error;
+  }
+}
+
+/**
+ * Fetch a single claim payment by ClaimPaymentNum
+ * 
+ * @param claimPaymentNum - The claim payment number
+ * @param clinicId - The clinic ID
+ * @returns The claim payment details
+ */
+export async function getClaimPaymentByNum(
+  claimPaymentNum: number,
+  clinicId: string
+): Promise<ClaimPayment | null> {
+  try {
+    console.log(`[OpenDental] Fetching claim payment: ${claimPaymentNum}`);
+    
+    const path = `${API_BASE}/claimpayments/${claimPaymentNum}`;
+    const claimPayment = await makeOpenDentalRequest('GET', path, clinicId);
+    
+    return claimPayment;
+  } catch (error: any) {
+    if (error.statusCode === 404) {
+      return null;
+    }
+    console.error(`[OpenDental] Error fetching claim payment ${claimPaymentNum}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Get payment type definitions from OpenDental
+ * These are the payment methods configured in the practice (Cash, Check, Credit Card, etc.)
+ * Uses Definitions endpoint with Category=10 (PaymentTypes)
+ * 
+ * @param clinicId - The clinic ID
+ * @returns Array of payment type definitions
+ */
+export async function getPaymentTypeDefinitions(
+  clinicId: string
+): Promise<Array<{ DefNum: number; ItemName: string; ItemValue: string }>> {
+  try {
+    console.log(`[OpenDental] Fetching payment type definitions for clinic ${clinicId}`);
+    
+    const path = `${API_BASE}/definitions?Category=10`; // Category 10 = PaymentTypes
+    const response = await makeOpenDentalRequest('GET', path, clinicId);
+    
+    const definitions = Array.isArray(response) ? response : [];
+    
+    console.log(`[OpenDental] Found ${definitions.length} payment type definitions`);
+    return definitions;
+  } catch (error: any) {
+    console.error('[OpenDental] Error fetching payment type definitions:', error);
+    throw error;
+  }
+}
+
+/**
+ * Map payment type number to a standardized payment mode for reconciliation
+ * 
+ * @param payType - The OpenDental PayType number
+ * @param payTypeName - The payment type name (if available)
+ * @returns Standardized payment mode
+ */
+export function mapPayTypeToPaymentMode(payType: number, payTypeName?: string): string {
+  // These mappings may need to be customized based on the clinic's configuration
+  const nameUpper = (payTypeName || '').toUpperCase();
+  
+  if (nameUpper.includes('EFT') || nameUpper.includes('ACH') || nameUpper.includes('DIRECT DEPOSIT')) {
+    return 'EFT';
+  }
+  if (nameUpper.includes('CHECK') || nameUpper.includes('CHEQUE')) {
+    return 'CHEQUE';
+  }
+  if (nameUpper.includes('CREDIT') || nameUpper.includes('CARD') || nameUpper.includes('VISA') || nameUpper.includes('MASTERCARD')) {
+    return 'CREDIT_CARD';
+  }
+  if (nameUpper.includes('PAYCONNECT')) {
+    return 'PAYCONNECT';
+  }
+  if (nameUpper.includes('SUNBIT')) {
+    return 'SUNBIT';
+  }
+  if (nameUpper.includes('AUTHORIZE') || nameUpper.includes('AUTHNET')) {
+    return 'AUTHORIZE_NET';
+  }
+  if (nameUpper.includes('CHERRY')) {
+    return 'CHERRY';
+  }
+  if (nameUpper.includes('CARECREDIT') || nameUpper.includes('CARE CREDIT')) {
+    return 'CARE_CREDIT';
+  }
+  
+  // Default to credit card for unknown electronic payments
+  return 'CREDIT_CARD';
+}
+

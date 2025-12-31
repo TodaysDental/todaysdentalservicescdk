@@ -617,3 +617,302 @@ export async function ayrshareGetLinkAnalytics(
     throw new Error(err.response?.data?.message || 'Failed to get link analytics');
   }
 }
+
+// ============================================
+// META ADS API (Facebook/Instagram Ads via Ayrshare)
+// ============================================
+
+/**
+ * Boost an existing Facebook/Instagram post
+ * Requires the Ads add-on enabled in your Ayrshare account
+ */
+export interface BoostPostParams {
+  postId: string;            // The Ayrshare post ID to boost
+  budget: number;            // Daily budget in USD (min $1)
+  durationDays: number;      // Number of days to run the ad (1-30)
+  targetAudience?: {
+    ageMin?: number;         // Minimum age (13-65)
+    ageMax?: number;         // Maximum age (13-65)
+    genders?: ('male' | 'female' | 'all')[];
+    locations?: string[];    // Country codes (e.g., 'US', 'CA')
+    interests?: string[];    // Interest targeting keywords
+  };
+  objective?: 'engagement' | 'reach' | 'traffic' | 'awareness';
+}
+
+export async function ayrshareBoostPost(
+  apiKey: string,
+  profileKey: string,
+  params: BoostPostParams
+) {
+  try {
+    const res = await axios.post(`${AYRSHARE_URL}/ads/boost`,
+      {
+        id: params.postId,
+        budget: params.budget,
+        durationDays: params.durationDays,
+        ...(params.targetAudience && {
+          targeting: {
+            ageMin: params.targetAudience.ageMin,
+            ageMax: params.targetAudience.ageMax,
+            genders: params.targetAudience.genders,
+            geoLocations: params.targetAudience.locations,
+            interests: params.targetAudience.interests
+          }
+        }),
+        objective: params.objective || 'engagement'
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Profile-Key': profileKey
+        }
+      }
+    );
+    return res.data;
+  } catch (err: any) {
+    console.error('Boost Post Error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || 'Failed to boost post');
+  }
+}
+
+/**
+ * Create a new Facebook/Instagram ad campaign
+ */
+export interface CreateAdCampaignParams {
+  name: string;              // Campaign name
+  objective: 'engagement' | 'reach' | 'traffic' | 'awareness' | 'conversions';
+  budget: number;            // Daily budget in USD
+  startDate: string;         // ISO date string
+  endDate?: string;          // Optional end date (ISO string)
+  platforms: ('facebook' | 'instagram')[];
+  creative: {
+    headline: string;
+    body: string;
+    mediaUrls?: string[];
+    callToAction?: 'LEARN_MORE' | 'SHOP_NOW' | 'BOOK_NOW' | 'CONTACT_US' | 'SIGN_UP';
+    link?: string;           // Destination URL
+  };
+  targeting?: {
+    ageMin?: number;
+    ageMax?: number;
+    genders?: ('male' | 'female' | 'all')[];
+    locations?: string[];
+    interests?: string[];
+    customAudiences?: string[];
+  };
+}
+
+export async function ayrshareCreateAdCampaign(
+  apiKey: string,
+  profileKey: string,
+  params: CreateAdCampaignParams
+) {
+  try {
+    const res = await axios.post(`${AYRSHARE_URL}/ads/campaign`,
+      {
+        name: params.name,
+        objective: params.objective,
+        budget: params.budget,
+        schedule: {
+          startDate: params.startDate,
+          endDate: params.endDate
+        },
+        platforms: params.platforms,
+        creative: params.creative,
+        targeting: params.targeting
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Profile-Key': profileKey
+        }
+      }
+    );
+    return res.data;
+  } catch (err: any) {
+    console.error('Create Ad Campaign Error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || 'Failed to create ad campaign');
+  }
+}
+
+/**
+ * Get all ad campaigns for a profile
+ */
+export async function ayrshareGetAdCampaigns(
+  apiKey: string,
+  profileKey: string,
+  params?: {
+    status?: 'active' | 'paused' | 'completed' | 'all';
+    limit?: number;
+  }
+) {
+  try {
+    const res = await axios.get(`${AYRSHARE_URL}/ads/campaigns`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Profile-Key': profileKey
+      },
+      params: {
+        status: params?.status || 'all',
+        limit: params?.limit || 50
+      }
+    });
+    return res.data;
+  } catch (err: any) {
+    console.error('Get Ad Campaigns Error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || 'Failed to get ad campaigns');
+  }
+}
+
+/**
+ * Get a single ad campaign by ID
+ */
+export async function ayrshareGetAdCampaign(
+  apiKey: string,
+  profileKey: string,
+  campaignId: string
+) {
+  try {
+    const res = await axios.get(`${AYRSHARE_URL}/ads/campaign`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Profile-Key': profileKey
+      },
+      params: { id: campaignId }
+    });
+    return res.data;
+  } catch (err: any) {
+    console.error('Get Ad Campaign Error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || 'Failed to get ad campaign');
+  }
+}
+
+/**
+ * Update an existing ad campaign
+ */
+export async function ayrshareUpdateAdCampaign(
+  apiKey: string,
+  profileKey: string,
+  campaignId: string,
+  updates: {
+    status?: 'active' | 'paused';
+    budget?: number;
+    endDate?: string;
+  }
+) {
+  try {
+    const res = await axios.put(`${AYRSHARE_URL}/ads/campaign`,
+      {
+        id: campaignId,
+        ...updates
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Profile-Key': profileKey
+        }
+      }
+    );
+    return res.data;
+  } catch (err: any) {
+    console.error('Update Ad Campaign Error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || 'Failed to update ad campaign');
+  }
+}
+
+/**
+ * Delete/stop an ad campaign
+ */
+export async function ayrshareDeleteAdCampaign(
+  apiKey: string,
+  profileKey: string,
+  campaignId: string
+) {
+  try {
+    const res = await axios.delete(`${AYRSHARE_URL}/ads/campaign`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Profile-Key': profileKey,
+        'Content-Type': 'application/json'
+      },
+      data: { id: campaignId }
+    });
+    return res.data;
+  } catch (err: any) {
+    console.error('Delete Ad Campaign Error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || 'Failed to delete ad campaign');
+  }
+}
+
+/**
+ * Get ad analytics for a campaign or boosted post
+ */
+export interface AdAnalyticsResponse {
+  campaignId?: string;
+  postId?: string;
+  platform: string;
+  metrics: {
+    impressions: number;
+    reach: number;
+    clicks: number;
+    ctr: number;            // Click-through rate
+    spend: number;          // Amount spent in USD
+    cpc: number;            // Cost per click
+    cpm: number;            // Cost per 1000 impressions
+    engagements: number;
+    conversions?: number;
+  };
+  dateRange: {
+    start: string;
+    end: string;
+  };
+}
+
+export async function ayrshareGetAdAnalytics(
+  apiKey: string,
+  profileKey: string,
+  params: {
+    campaignId?: string;
+    postId?: string;        // For boosted posts
+    startDate?: string;
+    endDate?: string;
+  }
+): Promise<AdAnalyticsResponse> {
+  try {
+    const res = await axios.get(`${AYRSHARE_URL}/ads/analytics`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Profile-Key': profileKey
+      },
+      params: {
+        id: params.campaignId,
+        postId: params.postId,
+        startDate: params.startDate,
+        endDate: params.endDate
+      }
+    });
+    return res.data;
+  } catch (err: any) {
+    console.error('Get Ad Analytics Error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || 'Failed to get ad analytics');
+  }
+}
+
+/**
+ * Get ad account info and billing status
+ */
+export async function ayrshareGetAdAccount(apiKey: string, profileKey: string) {
+  try {
+    const res = await axios.get(`${AYRSHARE_URL}/ads/account`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Profile-Key': profileKey
+      }
+    });
+    return res.data;
+  } catch (err: any) {
+    console.error('Get Ad Account Error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || 'Failed to get ad account info');
+  }
+}
