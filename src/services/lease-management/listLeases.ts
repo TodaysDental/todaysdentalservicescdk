@@ -111,9 +111,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       assetsCount: lease.assets?.length || 0,
       eventsCount: lease.events?.length || 0,
       
-      // Timestamps
+      // Timestamps and audit info
       createdAt: lease.createdAt,
-      updatedAt: lease.updatedAt
+      updatedAt: lease.updatedAt,
+      createdBy: lease.createdBy || '',
+      lastModifiedBy: lease.lastModifiedBy || ''
     }));
 
     return createResponse(200, {

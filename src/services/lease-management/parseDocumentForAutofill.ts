@@ -7,11 +7,16 @@ import {
   FeatureType 
 } from '@aws-sdk/client-textract';
 import { S3Client, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { getUserPermissions, hasModulePermission } from '../../shared/utils/permissions-helper';
 
 const textractClient = new TextractClient({});
 const s3Client = new S3Client({});
+const dynamoClient = new DynamoDBClient({});
+const docClient = DynamoDBDocumentClient.from(dynamoClient);
 const LEASE_DOCUMENTS_BUCKET = process.env.LEASE_DOCUMENTS_BUCKET!;
+const LEASE_TABLE_NAME = process.env.LEASE_TABLE_NAME!;
 const LEGAL_MODULE = 'Legal';
 
 // Mapping of extracted field names to form field names
@@ -111,6 +116,35 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       });
     }
 
+    // Extract documentId from fileKey (format: clinicId/leaseId/DOC-xxx-filename.ext)
+    const filename = fileKey.split('/').pop() || '';
+    const docIdMatch = filename.match(/^(DOC-[a-zA-Z0-9]+)/);
+    const documentId = docIdMatch ? docIdMatch[1] : null;
+
+    // First, check if we already have extracted data from S3 trigger processing
+    if (documentId) {
+      const existingData = await getExistingExtractedData(clinic, documentId);
+      if (existingData) {
+        console.log('Using existing extracted data for document:', documentId);
+        const formData = mapToFormFields(existingData.fields || {});
+        return createResponse(200, {
+          success: true,
+          data: {
+            formData,
+            rawFields: existingData.fields || {},
+            tables: existingData.tables || [],
+            rentSchedule: extractRentSchedule(existingData.tables || []),
+            confidence: existingData.extraction?.averageConfidence || 0,
+            unmappedFields: getUnmappedFields(existingData.fields || {}),
+            source: 'cached'
+          },
+          message: 'Document data retrieved from cache'
+        });
+      }
+    }
+
+    // No cached data, process with Textract
+    console.log('No cached data found, processing with Textract...');
     let blocks: any[] = [];
 
     if (isPdf) {
@@ -170,12 +204,12 @@ async function processWithAsyncTextract(fileKey: string): Promise<any[]> {
   const jobId = startResult.JobId!;
   console.log('Started Textract job:', jobId);
 
-  // Wait for completion (poll every 2 seconds, max 60 attempts = 2 minutes)
+  // Wait for completion (poll every 3 seconds, max 30 attempts = 90 seconds)
   const allBlocks: any[] = [];
   let nextToken: string | undefined;
 
-  for (let attempt = 0; attempt < 60; attempt++) {
-    await new Promise(resolve => setTimeout(resolve, 2000));
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
     const result = await textractClient.send(new GetDocumentAnalysisCommand({
       JobId: jobId,
@@ -196,7 +230,29 @@ async function processWithAsyncTextract(fileKey: string): Promise<any[]> {
     // Still IN_PROGRESS, continue polling
   }
 
-  throw new Error('Textract job timed out after 2 minutes');
+  throw new Error('Textract job timed out after 90 seconds');
+}
+
+// Get existing extracted data from DynamoDB (from S3 trigger processing)
+async function getExistingExtractedData(clinicId: string, documentId: string): Promise<any | null> {
+  try {
+    const result = await docClient.send(new QueryCommand({
+      TableName: LEASE_TABLE_NAME,
+      KeyConditionExpression: 'PK = :pk AND SK = :sk',
+      ExpressionAttributeValues: {
+        ':pk': `CLINIC#${clinicId}`,
+        ':sk': `EXTRACTED#${documentId}`
+      }
+    }));
+
+    if (result.Items && result.Items.length > 0) {
+      return result.Items[0];
+    }
+    return null;
+  } catch (error) {
+    console.error('Error fetching existing extracted data:', error);
+    return null;
+  }
 }
 
 

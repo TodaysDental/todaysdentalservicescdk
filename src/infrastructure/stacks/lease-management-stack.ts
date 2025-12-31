@@ -145,8 +145,8 @@ export class LeaseManagementStack extends cdk.Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_18_X,
       environment: lambdaEnv,
-      timeout: cdk.Duration.seconds(60),  // Longer timeout for Textract processing
-      memorySize: 512,
+      timeout: cdk.Duration.minutes(2),  // 2 minutes for PDF processing
+      memorySize: 1024,
     });
 
     // Grant DynamoDB permissions
@@ -195,6 +195,9 @@ export class LeaseManagementStack extends cdk.Stack {
       ],
       resources: ['*']
     }));
+
+    // Grant DynamoDB read permission to parseDocumentLambda (to check for cached extracted data)
+    this.leaseTable.grantReadData(parseDocumentLambda);
 
     // S3 trigger for document processing
     this.leaseDocumentsBucket.addEventNotification(
