@@ -185,10 +185,10 @@ const clinicPricingStack = new ClinicPricingStack(app, 'TodaysDentalInsightsClin
   env,
 });
 
-// Clinic Insurance service
-const clinicInsuranceStack = new ClinicInsuranceStack(app, 'TodaysDentalInsightsClinicInsuranceN1', {
-  env,
-});
+// Clinic Insurance service - TEMPORARILY DISABLED
+// const clinicInsuranceStack = new ClinicInsuranceStack(app, 'TodaysDentalInsightsClinicInsuranceN1', {
+//   env,
+// });
 
 // Templates service
 const templatesStack = new TemplatesStack(app, 'TodaysDentalInsightsTemplatesN1', {
@@ -358,7 +358,7 @@ const chatbotStack = new ChatbotStack(app, CHATBOT_STACK_NAME, {
   // Chatbot reads directly from DynamoDB tables - no API calls needed
   clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
   clinicPricingTableName: clinicPricingStack.clinicPricingTable.tableName,
-  clinicInsuranceTableName: clinicInsuranceStack.clinicInsuranceTable.tableName,
+  clinicInsuranceTableName: 'TodaysDentalInsightsClinicInsuranceN1-ClinicInsurance', // TEMP: hardcoded while stack disabled
 });
 
 // Admin services (AdminStack will import Chime lambda ARNs and wire API
@@ -566,7 +566,7 @@ queriesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionA
 reportsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 clinicHoursStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 clinicPricingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-clinicInsuranceStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+// clinicInsuranceStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn - DISABLED
 openDentalStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 hrStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 
@@ -599,7 +599,7 @@ rcsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 patientPortalStack.addDependency(openDentalStack); // Explicit - uses SFTP resources
 chatbotStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 chatbotStack.addDependency(clinicPricingStack); // Explicit - uses table name
-chatbotStack.addDependency(clinicInsuranceStack); // Explicit - uses table name
+// chatbotStack.addDependency(clinicInsuranceStack); // Explicit - uses table name - DISABLED
 
 // Fluoride Automation Stack - Run automation for adding fluoride treatments every hour
 // const fluorideAutomationStack = new FluorideAutomationStack(app, 'TodaysDentalInsightsFluorideAutomationV1', {
