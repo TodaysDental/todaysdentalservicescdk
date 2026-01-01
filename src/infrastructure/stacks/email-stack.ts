@@ -9,31 +9,19 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 // ========================================
-// GMAIL OAUTH2 CREDENTIALS (Domain-level)
+// SECRETS MANAGEMENT
 // ========================================
-// These are shared across all clinics for OAuth2 authentication
-// Each clinic has its own refresh token stored in clinics.json
-const GMAIL_CLIENT_ID = 'REPLACE_WITH_YOUR_GMAIL_CLIENT_ID.apps.googleusercontent.com';
-const GMAIL_CLIENT_SECRET = 'REPLACE_WITH_YOUR_GMAIL_CLIENT_SECRET';
-
-// ========================================
-// DOMAIN EMAIL CREDENTIALS (todaysdentalinsights.com)
-// ========================================
-// Used when clinicId='domain' for domain-level email access
-const DOMAIN_SMTP_USER = 'no-reply@todaysdentalinsights.com';
-const DOMAIN_SMTP_PASSWORD = 'REPLACE_WITH_DOMAIN_APP_PASSWORD';
-const DOMAIN_IMAP_HOST = 'imap.gmail.com';
-const DOMAIN_IMAP_PORT = 993;
-
-// ========================================
-// CPANEL CREDENTIALS (todaysdentalpartners.com)
-// ========================================
-// Used for creating user email accounts during registration
-const CPANEL_HOST = 'box2383.bluehost.com';
-const CPANEL_PORT = '2083';
-const CPANEL_USER = 'todayse4';
-const CPANEL_PASSWORD = 'James!007';
-const CPANEL_DOMAIN = 'todaysdentalpartners.com';
+// All sensitive credentials (Gmail OAuth, Domain SMTP, cPanel) are now stored in 
+// the GlobalSecrets DynamoDB table and retrieved dynamically at runtime using
+// the secrets-helper utility. This eliminates hardcoded secrets in the codebase.
+//
+// GlobalSecrets table entries:
+// - gmail/client_id, gmail/client_secret: Gmail OAuth2 credentials
+// - domain_email/smtp_password: Domain SMTP password
+// - cpanel/password, cpanel/config: cPanel credentials
+//
+// ClinicSecrets table entries (per-clinic):
+// - gmailSmtpPassword, domainSmtpPassword: Per-clinic email passwords
 
 /**
  * Email Stack - Handles clinic-specific email operations
@@ -59,12 +47,16 @@ const CPANEL_DOMAIN = 'todaysdentalpartners.com';
  * - email.imapPort
  */
 export interface EmailStackProps extends StackProps {
-  // All domain-level credentials are defined as constants at the top of this file.
-  // No additional props required for basic email functionality.
-  // Add custom props here if needed for future extensions.
-  
   // StaffUser table name for user email lookups
   staffUserTableName?: string;
+  /** GlobalSecrets DynamoDB table name for retrieving Gmail/cPanel credentials */
+  globalSecretsTableName: string;
+  /** ClinicSecrets DynamoDB table name for per-clinic email credentials */
+  clinicSecretsTableName: string;
+  /** ClinicConfig DynamoDB table name for clinic email configuration */
+  clinicConfigTableName: string;
+  /** KMS key ARN for decrypting secrets */
+  secretsEncryptionKeyArn: string;
 }
 
 export class EmailStack extends Stack {
@@ -131,8 +123,10 @@ export class EmailStack extends Stack {
         target: 'node20',
       },
       environment: {
-        GMAIL_CLIENT_ID: GMAIL_CLIENT_ID,
-        GMAIL_CLIENT_SECRET: GMAIL_CLIENT_SECRET,
+        // Secrets tables for dynamic credential retrieval
+        GLOBAL_SECRETS_TABLE: props.globalSecretsTableName,
+        CLINIC_SECRETS_TABLE: props.clinicSecretsTableName,
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName,
       },
     });
     applyTags(this.gmailHandlerFn, { Function: 'gmail-handler' });
@@ -155,10 +149,10 @@ export class EmailStack extends Stack {
         target: 'node20',
       },
       environment: {
-        DOMAIN_SMTP_USER: DOMAIN_SMTP_USER,
-        DOMAIN_SMTP_PASSWORD: DOMAIN_SMTP_PASSWORD,
-        DOMAIN_IMAP_HOST: DOMAIN_IMAP_HOST,
-        DOMAIN_IMAP_PORT: String(DOMAIN_IMAP_PORT),
+        // Secrets tables for dynamic credential retrieval
+        GLOBAL_SECRETS_TABLE: props.globalSecretsTableName,
+        CLINIC_SECRETS_TABLE: props.clinicSecretsTableName,
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName,
       },
     });
     applyTags(this.imapSmtpHandlerFn, { Function: 'imap-smtp-handler' });
@@ -185,6 +179,10 @@ export class EmailStack extends Stack {
       },
       environment: {
         STAFF_USER_TABLE: staffUserTableName.toString(),
+        // Secrets tables for dynamic credential retrieval
+        GLOBAL_SECRETS_TABLE: props.globalSecretsTableName,
+        CLINIC_SECRETS_TABLE: props.clinicSecretsTableName,
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName,
       },
     });
     applyTags(this.userEmailHandlerFn, { Function: 'user-email-handler' });
@@ -200,6 +198,33 @@ export class EmailStack extends Stack {
         `arn:aws:dynamodb:${this.region}:${this.account}:table/StaffUser`,
       ],
     }));
+
+    // ========================================
+    // SECRETS TABLES PERMISSIONS
+    // ========================================
+    // Grant all Lambda functions read access to secrets tables for dynamic credential retrieval
+    const allLambdas = [this.gmailHandlerFn, this.imapSmtpHandlerFn, this.userEmailHandlerFn];
+
+    // IAM policy for reading from secrets tables
+    const secretsReadPolicy = new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName}`,
+      ],
+    });
+
+    // IAM policy for KMS decryption
+    const kmsDecryptPolicy = new iam.PolicyStatement({
+      actions: ['kms:Decrypt', 'kms:DescribeKey'],
+      resources: [props.secretsEncryptionKeyArn],
+    });
+
+    allLambdas.forEach(fn => {
+      fn.addToRolePolicy(secretsReadPolicy);
+      fn.addToRolePolicy(kmsDecryptPolicy);
+    });
 
     // ========================================
     // API GATEWAY

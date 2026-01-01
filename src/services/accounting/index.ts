@@ -23,12 +23,18 @@ import {
   Reconciliation,
   ReconciliationRow,
   ColumnConfig,
-  UserPermissions,
   UploadInvoiceRequest,
   FetchPaymentsRequest,
   GenerateReconciliationRequest,
 } from './types';
-import { getClinicConfig } from '../../shared/utils/opendental-api';
+import { getClinicConfig } from '../../shared/utils/secrets-helper';
+import { 
+  getUserPermissions, 
+  getAllowedClinicIds as getAllowedClinicIdsHelper,
+  hasClinicAccess as hasClinicAccessHelper,
+  isAdminUser,
+  UserPermissions,
+} from '../../shared/utils/permissions-helper';
 
 // Environment Variables
 const INVOICES_TABLE = process.env.INVOICES_TABLE!;
@@ -76,16 +82,15 @@ const httpCreated = (data: Record<string, any>) => ({
 // ========================================
 
 function hasClinicAccess(allowedClinics: Set<string>, clinicId: string): boolean {
-  return allowedClinics.has(clinicId);
+  return hasClinicAccessHelper(allowedClinics, clinicId);
 }
 
 function isAdmin(userPerms: UserPermissions): boolean {
-  if (userPerms.isGlobalSuperAdmin) return true;
-  return userPerms.clinicRoles.some(cr => cr.role === 'ADMIN' || cr.role === 'SUPER_ADMIN');
+  return isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
 }
 
 function getAllowedClinics(userPerms: UserPermissions): Set<string> {
-  return new Set(userPerms.clinicRoles.map(cr => cr.clinicId));
+  return getAllowedClinicIdsHelper(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
 }
 
 // ========================================
@@ -96,7 +101,9 @@ export async function handler(event: any) {
   console.log('[Accounting] Event:', JSON.stringify(event, null, 2));
 
   const method = event.httpMethod || event.requestContext?.http?.method;
-  const path = event.path || event.rawPath || '';
+  // Strip /accounting prefix from path for route matching
+  let path = event.path || event.rawPath || '';
+  path = path.replace(/^\/accounting/, '');
 
   // Handle CORS preflight
   if (method === 'OPTIONS') {
@@ -104,18 +111,9 @@ export async function handler(event: any) {
   }
 
   // Get user permissions from authorizer context
-  const authContext = event.requestContext?.authorizer;
-  if (!authContext) {
-    return httpErr(401, 'Unauthorized: No authorizer context');
-  }
-
-  let userPerms: UserPermissions;
-  try {
-    userPerms = typeof authContext.userPermissions === 'string'
-      ? JSON.parse(authContext.userPermissions)
-      : authContext.userPermissions;
-  } catch {
-    return httpErr(401, 'Unauthorized: Invalid user permissions');
+  const userPerms = getUserPermissions(event);
+  if (!userPerms) {
+    return httpErr(401, 'Unauthorized: No authorizer context or invalid permissions');
   }
 
   const allowedClinics = getAllowedClinics(userPerms);
@@ -272,7 +270,7 @@ export async function handler(event: any) {
       if (!hasClinicAccess(allowedClinics, clinicId)) {
         return httpErr(403, 'Forbidden: no access to this clinic');
       }
-      return await updateColumnConfig(clinicId, paymentMode, columns, userPerms.username);
+      return await updateColumnConfig(clinicId, paymentMode, columns, userPerms.email);
     }
 
     return httpErr(404, `Not found: ${method} ${path}`);
@@ -461,12 +459,12 @@ async function fetchOpenDentalPayments(
 
 async function fetchOdooBankTransactions(clinicId: string, dateStart: string, dateEnd: string) {
   // Get clinic config to find Odoo company ID
-  const clinicConfig = getClinicConfig(clinicId);
+  const clinicConfig = await getClinicConfig(clinicId);
   if (!clinicConfig) {
     return httpErr(404, `Clinic config not found for ${clinicId}`);
   }
 
-  const odooCompanyId = (clinicConfig as any).odooCompanyId;
+  const odooCompanyId = clinicConfig.odooCompanyId;
   if (!odooCompanyId) {
     return httpErr(400, `Odoo company ID not configured for clinic ${clinicId}`);
   }
@@ -613,11 +611,11 @@ async function approveReconciliation(
     ExpressionAttributeValues: {
       ':status': 'APPROVED',
       ':approvedAt': now,
-      ':approvedBy': userPerms.username,
+      ':approvedBy': userPerms.email,
     },
   }));
 
-  return httpOk({ status: 'APPROVED', approvedAt: now, approvedBy: userPerms.username });
+  return httpOk({ status: 'APPROVED', approvedAt: now, approvedBy: userPerms.email });
 }
 
 async function getColumnConfig(clinicId: string, paymentMode: PaymentMode) {

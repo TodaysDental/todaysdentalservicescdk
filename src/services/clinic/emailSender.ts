@@ -13,7 +13,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { SQSEvent } from 'aws-lambda';
-import clinicsData from '../../infrastructure/configs/clinics.json';
+import { getClinicConfig, ClinicConfig } from '../../shared/utils/secrets-helper';
 
 interface EmailTask {
   trackingId: string;
@@ -33,46 +33,45 @@ const ses = new SESv2Client({});
 const EMAIL_ANALYTICS_TABLE = process.env.EMAIL_ANALYTICS_TABLE || '';
 const SES_CONFIGURATION_SET_NAME = process.env.SES_CONFIGURATION_SET_NAME || '';
 
-// Build clinic SES identity map from imported clinic data
-const CLINIC_SES_IDENTITY_ARN_MAP: Record<string, string> = (() => {
-  const acc: Record<string, string> = {};
-  (clinicsData as any[]).forEach((c: any) => {
-    if (c.sesIdentityArn) acc[String(c.clinicId)] = String(c.sesIdentityArn);
-  });
-  return acc;
-})();
+// Cache for clinic config (populated on demand from DynamoDB)
+const clinicConfigCache: Record<string, ClinicConfig> = {};
 
-// Build clinic email map from imported clinic data
-const CLINIC_EMAIL_MAP: Record<string, string> = (() => {
-  const acc: Record<string, string> = {};
-  (clinicsData as any[]).forEach((c: any) => {
-    if (c.clinicEmail) acc[String(c.clinicId)] = String(c.clinicEmail);
-  });
-  return acc;
-})();
+/**
+ * Get clinic config from DynamoDB (cached)
+ */
+async function getCachedClinicConfig(clinicId: string): Promise<ClinicConfig | null> {
+  if (clinicConfigCache[clinicId]) {
+    return clinicConfigCache[clinicId];
+  }
+
+  const config = await getClinicConfig(clinicId);
+  if (config) {
+    clinicConfigCache[clinicId] = config;
+  }
+  return config;
+}
 
 async function sendEmail(task: EmailTask): Promise<string | undefined> {
   const { clinicId, recipientEmail, subject, htmlBody, textBody, templateName } = task;
   
-  const identityArn = CLINIC_SES_IDENTITY_ARN_MAP[clinicId];
-  if (!identityArn) {
+  const config = await getCachedClinicConfig(clinicId);
+  if (!config?.sesIdentityArn) {
     throw new Error(`No SES identity configured for clinic: ${clinicId}`);
   }
   
   // Use the clinic's verified email address
-  const clinicEmail = CLINIC_EMAIL_MAP[clinicId];
   let from: string;
   
-  if (!clinicEmail) {
-    const fromDomain = identityArn.split(':identity/')[1] || 'todaysdentalinsights.com';
+  if (!config.clinicEmail) {
+    const fromDomain = config.sesIdentityArn.split(':identity/')[1] || 'todaysdentalinsights.com';
     from = `no-reply@${fromDomain}`;
   } else {
-    from = clinicEmail;
+    from = config.clinicEmail;
   }
   
   const cmd = new SendEmailCommand({
     FromEmailAddress: from,
-    FromEmailAddressIdentityArn: identityArn,
+    FromEmailAddressIdentityArn: config.sesIdentityArn,
     Destination: { ToAddresses: [recipientEmail] },
     Content: {
       Simple: {

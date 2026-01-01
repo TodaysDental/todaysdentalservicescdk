@@ -18,6 +18,12 @@ export interface SchedulesStackProps extends StackProps {
   queriesTableName: string;
   clinicHoursTableName: string;
   consolidatedTransferServerId: string;
+  /** GlobalSecrets DynamoDB table name for retrieving SFTP credentials */
+  globalSecretsTableName?: string;
+  /** ClinicConfig DynamoDB table name for clinic configuration */
+  clinicConfigTableName?: string;
+  /** KMS key ARN for decrypting secrets */
+  secretsEncryptionKeyArn?: string;
 }
 
 export class SchedulesStack extends Stack {
@@ -247,7 +253,9 @@ export class SchedulesStack extends Stack {
         QUERIES_TABLE: props.queriesTableName,
         CLINIC_HOURS_TABLE: props.clinicHoursTableName,
         CONSOLIDATED_SFTP_HOST: props.consolidatedTransferServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',
-        CONSOLIDATED_SFTP_PASSWORD: 'Clinic@2020!',
+        // SFTP password now retrieved from GlobalSecrets table
+        GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
         // Email analytics configuration set (imported from notifications stack)
         SES_CONFIGURATION_SET_NAME: Fn.importValue('TodaysDentalInsightsNotificationsN1-SESConfigurationSetName'),
       },
@@ -291,7 +299,9 @@ export class SchedulesStack extends Stack {
         QUERIES_TABLE: props.queriesTableName,
         CLINIC_HOURS_TABLE: props.clinicHoursTableName,
         CONSOLIDATED_SFTP_HOST: props.consolidatedTransferServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',
-        CONSOLIDATED_SFTP_PASSWORD: 'Clinic@2020!',
+        // SFTP password now retrieved from GlobalSecrets table
+        GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
         // Email queue for individual email tasks
         EMAIL_QUEUE_URL: emailQueue.queueUrl,
         // Email analytics table for tracking scheduled emails
@@ -386,6 +396,38 @@ export class SchedulesStack extends Stack {
       maxBatchingWindow: Duration.seconds(5),
       reportBatchItemFailures: true, // Enable partial batch failure handling
     }));
+
+    // ========================================
+    // SECRETS TABLES PERMISSIONS
+    // ========================================
+    // Grant read access to secrets tables for dynamic SFTP credential retrieval
+    if (props.globalSecretsTableName) {
+      const secretsReadPolicy = new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
+        ],
+      });
+
+      this.schedulesFn.addToRolePolicy(secretsReadPolicy);
+      this.schedulerWorkerFn.addToRolePolicy(secretsReadPolicy);
+      this.schedulerQueueProducerFn.addToRolePolicy(secretsReadPolicy);
+      this.schedulerQueueConsumerFn.addToRolePolicy(secretsReadPolicy);
+    }
+
+    // Grant KMS decryption for secrets encryption key
+    if (props.secretsEncryptionKeyArn) {
+      const kmsDecryptPolicy = new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      });
+
+      this.schedulesFn.addToRolePolicy(kmsDecryptPolicy);
+      this.schedulerWorkerFn.addToRolePolicy(kmsDecryptPolicy);
+      this.schedulerQueueProducerFn.addToRolePolicy(kmsDecryptPolicy);
+      this.schedulerQueueConsumerFn.addToRolePolicy(kmsDecryptPolicy);
+    }
 
     // Grant SES and SMS permissions to legacy worker (kept for compatibility)
     this.schedulerWorkerFn.addToRolePolicy(new iam.PolicyStatement({ 

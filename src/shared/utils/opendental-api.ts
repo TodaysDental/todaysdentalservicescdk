@@ -1,31 +1,61 @@
 /**
  * OpenDental API Utility Functions
  * Provides reusable functions for interacting with the OpenDental API
+ * 
+ * Uses DynamoDB secrets tables for clinic configuration and API credentials.
  */
 
 import https from 'https';
-import clinicsData from '../../infrastructure/configs/clinics.json';
+import { getClinicConfig, getClinicSecrets, ClinicConfig, ClinicSecrets } from './secrets-helper';
 
 const API_HOST = 'api.opendental.com';
 const API_BASE = '/api/v1';
 
-interface ClinicConfig {
+interface OpenDentalClinicConfig {
   clinicId: string;
   developerKey: string;
   customerKey: string;
-  [key: string]: any;
+  config: ClinicConfig;
 }
 
+// Cache for clinic configs to avoid repeated DynamoDB calls
+const clinicConfigCache = new Map<string, OpenDentalClinicConfig>();
+
 /**
- * Get clinic configuration by ID
+ * Get clinic configuration by ID (async - fetches from DynamoDB)
  */
-export function getClinicConfig(clinicId: string): ClinicConfig | null {
-  const clinic = (clinicsData as any[]).find(c => c.clinicId === clinicId);
-  if (!clinic) {
+export async function getOpenDentalClinicConfig(clinicId: string): Promise<OpenDentalClinicConfig | null> {
+  // Check cache first
+  if (clinicConfigCache.has(clinicId)) {
+    return clinicConfigCache.get(clinicId)!;
+  }
+
+  const [config, secrets] = await Promise.all([
+    getClinicConfig(clinicId),
+    getClinicSecrets(clinicId),
+  ]);
+
+  if (!config || !secrets) {
     console.error(`Clinic configuration not found for clinicId: ${clinicId}`);
     return null;
   }
-  return clinic as ClinicConfig;
+
+  const result: OpenDentalClinicConfig = {
+    clinicId,
+    developerKey: secrets.openDentalDeveloperKey,
+    customerKey: secrets.openDentalCustomerKey,
+    config,
+  };
+
+  clinicConfigCache.set(clinicId, result);
+  return result;
+}
+
+/**
+ * Clear the clinic config cache
+ */
+export function clearClinicConfigCache(): void {
+  clinicConfigCache.clear();
 }
 
 /**
@@ -37,7 +67,7 @@ export async function makeOpenDentalRequest(
   clinicId: string,
   body?: any
 ): Promise<any> {
-  const clinic = getClinicConfig(clinicId);
+  const clinic = await getOpenDentalClinicConfig(clinicId);
   if (!clinic) {
     throw new Error(`Clinic configuration not found for ${clinicId}`);
   }
@@ -555,4 +585,3 @@ export function mapPayTypeToPaymentMode(payType: number, payTypeName?: string): 
   // Default to credit card for unknown electronic payments
   return 'CREDIT_CARD';
 }
-

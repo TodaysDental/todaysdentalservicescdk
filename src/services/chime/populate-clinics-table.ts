@@ -1,6 +1,9 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
-import clinicsData from '../../infrastructure/configs/clinics.json';
+import { 
+  getAllClinicConfigs,
+  ClinicConfig 
+} from '../../shared/utils/secrets-helper';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const CLINICS_TABLE_NAME = process.env.CLINICS_TABLE_NAME;
@@ -107,6 +110,9 @@ export const handler = async (event: CloudFormationCustomResourceEvent): Promise
     if (event.RequestType === 'Create' || event.RequestType === 'Update') {
       console.log('[populate-clinics] Processing CREATE/UPDATE request');
       
+      // Fetch all clinic configs from DynamoDB
+      const clinicsData = await getAllClinicConfigs();
+      
       // Process items in batches of 25 (DynamoDB BatchWrite limit)
       const batches = [];
       
@@ -115,8 +121,8 @@ export const handler = async (event: CloudFormationCustomResourceEvent): Promise
       });
       
       const items = clinicsData
-        .filter(clinic => clinic.phoneNumber && clinic.clinicId)
-        .map(clinic => ({
+        .filter((clinic: ClinicConfig) => clinic.phoneNumber && clinic.clinicId)
+        .map((clinic: ClinicConfig) => ({
           PutRequest: {
             Item: {
               ...clinic

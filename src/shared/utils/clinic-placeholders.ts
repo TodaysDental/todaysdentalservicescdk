@@ -1,4 +1,11 @@
-import clinicsData from '../../infrastructure/configs/clinics.json';
+/**
+ * Clinic Placeholders Utility
+ * 
+ * Provides functions to build template context with clinic data.
+ * Uses DynamoDB ClinicConfig table for dynamic clinic configuration.
+ */
+
+import { getClinicConfig, getAllClinicConfigs, ClinicConfig } from './secrets-helper';
 
 /**
  * Standard clinic placeholder interface
@@ -36,10 +43,11 @@ export interface ClinicPlaceholders {
  * @param clinicId - The clinic ID to look up
  * @returns Record containing all clinic placeholders with their values
  */
-export function buildClinicPlaceholders(clinicId: string): Record<string, string> {
-  const clinic = (clinicsData as any[]).find((c) => String(c.clinicId) === String(clinicId));
+export async function buildClinicPlaceholders(clinicId: string): Promise<Record<string, string>> {
+  const clinic = await getClinicConfig(clinicId);
   
   if (!clinic) {
+    console.warn(`[ClinicPlaceholders] No config found for clinic: ${clinicId}`);
     // Return empty placeholders if clinic not found
     return {
       clinic_name: '',
@@ -79,7 +87,7 @@ export function buildClinicPlaceholders(clinicId: string): Record<string, string
     fax_number: String(clinic.clinicFax || ''),
     clinic_city: String(clinic.clinicCity || ''),
     clinic_state: String(clinic.clinicState || ''),
-    clinic_zip: String(clinic.CliniczipCode || ''),
+    clinic_zip: String(clinic.clinicZipCode || ''),
     
     // Also include original field names for backwards compatibility
     clinicName: String(clinic.clinicName || ''),
@@ -88,7 +96,7 @@ export function buildClinicPlaceholders(clinicId: string): Record<string, string
     clinicEmail: String(clinic.clinicEmail || ''),
     clinicCity: String(clinic.clinicCity || ''),
     clinicState: String(clinic.clinicState || ''),
-    CliniczipCode: String(clinic.CliniczipCode || ''),
+    CliniczipCode: String(clinic.clinicZipCode || ''),
     clinicFax: String(clinic.clinicFax || ''),
     websiteLink: String(clinic.websiteLink || ''),
     mapsUrl: String(clinic.mapsUrl || ''),
@@ -144,11 +152,11 @@ export function renderTemplate(template: string, context: Record<string, string>
  * @param additionalData - Additional data to merge (e.g., patient data from query results)
  * @returns Complete context for template rendering
  */
-export function buildTemplateContext(
+export async function buildTemplateContext(
   clinicId: string,
   additionalData?: Record<string, any>
-): Record<string, string> {
-  const clinicContext = buildClinicPlaceholders(clinicId);
+): Promise<Record<string, string>> {
+  const clinicContext = await buildClinicPlaceholders(clinicId);
   
   if (!additionalData) {
     return clinicContext;
@@ -178,4 +186,13 @@ export function buildTemplateContext(
   }
   
   return mergedContext;
+}
+
+/**
+ * Get all clinic IDs
+ * @returns Array of clinic IDs
+ */
+export async function getAllClinicIds(): Promise<string[]> {
+  const configs = await getAllClinicConfigs();
+  return configs.map(c => c.clinicId);
 }

@@ -95,7 +95,7 @@ async function makeJsonRpcCall<T>(
     throw new Error(`Odoo HTTP error: ${response.status} ${response.statusText}`);
   }
 
-  const result: JsonRpcResponse<T> = await response.json();
+  const result = await response.json() as JsonRpcResponse<T>;
 
   if (result.error) {
     console.error('[Odoo] JSON-RPC error:', result.error);

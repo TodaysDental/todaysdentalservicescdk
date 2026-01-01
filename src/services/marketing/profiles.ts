@@ -3,7 +3,14 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ayrshareCreateProfile, ayrshareGenerateJWT, ayrshareDeleteProfile, ayrshareGetProfile } from './ayrshare-client';
 import { buildCorsHeaders } from '../../shared/utils/cors';
-import clinicsData from '../../infrastructure/configs/clinics.json';
+import { 
+  getClinicConfig as getClinicConfigFromDynamo, 
+  getClinicSecrets,
+  getAllClinicConfigs,
+  getAllClinicSecrets,
+  ClinicConfig,
+  ClinicSecrets
+} from '../../shared/utils/secrets-helper';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true }
@@ -13,41 +20,31 @@ const API_KEY = process.env.AYRSHARE_API_KEY!;
 const AYRSHARE_DOMAIN = process.env.AYRSHARE_DOMAIN || 'id-lJiXe';
 const AYRSHARE_PRIVATE_KEY = process.env.AYRSHARE_PRIVATE_KEY!;
 
-// Type for clinic config from clinics.json
-interface ClinicConfig {
-  clinicId: string;
-  clinicName: string;
-  clinicAddress?: string;
-  clinicCity?: string;
-  clinicState?: string;
-  clinicEmail?: string;
-  clinicPhone?: string;
-  CliniczipCode?: string;
-  websiteLink?: string;
-  logoUrl?: string;
-  mapsUrl?: string;
-  scheduleUrl?: string;
-  ayrshare?: {
-    profileKey: string;
-    refId: string;
-    enabled: boolean;
-    connectedPlatforms: string[];
-    facebook?: {
-      connected: boolean;
-      pageId: string;
-      pageName: string;
-    };
-  };
-}
-
-// Helper to get clinic config from clinics.json
-function getClinicConfig(clinicId: string): ClinicConfig | undefined {
-  return (clinicsData as ClinicConfig[]).find(c => c.clinicId === clinicId);
+// Helper to get clinic config from DynamoDB
+async function getClinicConfigWithSecrets(clinicId: string): Promise<{ config: ClinicConfig | null, secrets: ClinicSecrets | null }> {
+  const [config, secrets] = await Promise.all([
+    getClinicConfigFromDynamo(clinicId),
+    getClinicSecrets(clinicId),
+  ]);
+  return { config, secrets };
 }
 
 // Helper to get all enabled Ayrshare clinics
-function getEnabledAyrshareClinics(): ClinicConfig[] {
-  return (clinicsData as ClinicConfig[]).filter(c => c.ayrshare?.enabled && c.ayrshare?.profileKey);
+async function getEnabledAyrshareClinics(): Promise<Array<{ config: ClinicConfig, secrets: ClinicSecrets }>> {
+  const [configs, allSecrets] = await Promise.all([
+    getAllClinicConfigs(),
+    getAllClinicSecrets(),
+  ]);
+  
+  const secretsMap = new Map(allSecrets.map(s => [s.clinicId, s]));
+  
+  return configs
+    .filter(c => c.ayrshare?.enabled)
+    .map(config => ({
+      config,
+      secrets: secretsMap.get(config.clinicId)!,
+    }))
+    .filter(item => item.secrets?.ayrshareProfileKey);
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
@@ -70,19 +67,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const body = JSON.parse(event.body || '{}');
       const { clinicIds } = body; // Optional: specific clinic IDs to sync
 
+      const allEnabledClinics = await getEnabledAyrshareClinics();
       const clinicsToSync = clinicIds && Array.isArray(clinicIds) && clinicIds.length > 0
-        ? getEnabledAyrshareClinics().filter(c => clinicIds.includes(c.clinicId))
-        : getEnabledAyrshareClinics();
+        ? allEnabledClinics.filter(c => clinicIds.includes(c.config.clinicId))
+        : allEnabledClinics;
 
       const results: any[] = [];
       const failed: any[] = [];
 
       for (const clinic of clinicsToSync) {
+        const { config, secrets } = clinic;
         try {
-          if (!clinic.ayrshare?.profileKey) {
+          if (!secrets?.ayrshareProfileKey) {
             failed.push({
-              clinicId: clinic.clinicId,
-              error: 'No Ayrshare profile configured in clinics.json'
+              clinicId: config.clinicId,
+              error: 'No Ayrshare profile configured'
             });
             continue;
           }
@@ -90,33 +89,33 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           // Check if already synced in DynamoDB
           const existing = await ddb.send(new GetCommand({
             TableName: PROFILES_TABLE,
-            Key: { clinicId: clinic.clinicId }
+            Key: { clinicId: config.clinicId }
           }));
 
           const now = new Date().toISOString();
           const profileData = {
-            clinicId: clinic.clinicId,
-            clinicName: clinic.clinicName,
-            ayrshareProfileKey: clinic.ayrshare.profileKey,
-            ayrshareRefId: clinic.ayrshare.refId,
-            connectedPlatforms: clinic.ayrshare.connectedPlatforms || [],
-            profileStatus: clinic.ayrshare.enabled ? 'active' : 'inactive',
+            clinicId: config.clinicId,
+            clinicName: config.clinicName,
+            ayrshareProfileKey: secrets.ayrshareProfileKey,
+            ayrshareRefId: secrets.ayrshareRefId,
+            connectedPlatforms: config.ayrshare?.connectedPlatforms || [],
+            profileStatus: config.ayrshare?.enabled ? 'active' : 'inactive',
             createdAt: existing.Item?.createdAt || now,
             updatedAt: now,
-            createdBy: existing.Item?.createdBy || 'clinics.json',
+            createdBy: existing.Item?.createdBy || 'config',
             syncedFromConfig: true,
             clinicMetadata: {
-              address: clinic.clinicAddress,
-              city: clinic.clinicCity,
-              state: clinic.clinicState,
-              phone: clinic.clinicPhone,
-              email: clinic.clinicEmail,
-              website: clinic.websiteLink,
-              logoUrl: clinic.logoUrl,
-              mapsUrl: clinic.mapsUrl,
-              scheduleUrl: clinic.scheduleUrl
+              address: config.clinicAddress,
+              city: config.clinicCity,
+              state: config.clinicState,
+              phone: config.clinicPhone,
+              email: config.clinicEmail,
+              website: config.websiteLink,
+              logoUrl: config.logoUrl,
+              mapsUrl: config.mapsUrl,
+              scheduleUrl: config.scheduleUrl
             },
-            facebook: clinic.ayrshare.facebook
+            facebook: config.ayrshare?.facebook
           };
 
           // Upsert to DynamoDB
@@ -126,17 +125,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           }));
 
           results.push({
-            clinicId: clinic.clinicId,
-            clinicName: clinic.clinicName,
-            ayrshareProfileKey: clinic.ayrshare.profileKey,
-            ayrshareRefId: clinic.ayrshare.refId,
-            status: clinic.ayrshare.enabled ? 'active' : 'inactive',
-            connectedPlatforms: clinic.ayrshare.connectedPlatforms || [],
-            message: existing.Item ? 'Profile updated from clinics.json' : 'Profile synced from clinics.json'
+            clinicId: config.clinicId,
+            clinicName: config.clinicName,
+            ayrshareProfileKey: secrets.ayrshareProfileKey,
+            ayrshareRefId: secrets.ayrshareRefId,
+            status: config.ayrshare?.enabled ? 'active' : 'inactive',
+            connectedPlatforms: config.ayrshare?.connectedPlatforms || [],
+            message: existing.Item ? 'Profile updated from config' : 'Profile synced from config'
           });
         } catch (err: any) {
           failed.push({
-            clinicId: clinic.clinicId,
+            clinicId: config.clinicId,
             error: err.message
           });
         }
@@ -147,10 +146,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         headers: corsHeaders,
         body: JSON.stringify({
           success: true,
-          message: `Synced ${results.length} profiles from clinics.json`,
+          message: `Synced ${results.length} profiles from config`,
           profiles: results,
           failed,
-          totalClinicsInConfig: getEnabledAyrshareClinics().length
+          totalClinicsInConfig: allEnabledClinics.length
         })
       };
     }
@@ -161,29 +160,30 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ---------------------------------------------------------
     if (path.endsWith('/initialize') && method === 'POST') {
       // Redirect to sync - no longer creates new Ayrshare profiles
-      const clinicsToSync = getEnabledAyrshareClinics();
+      const clinicsToSync = await getEnabledAyrshareClinics();
       const results: any[] = [];
       const failed: any[] = [];
 
       for (const clinic of clinicsToSync) {
+        const { config, secrets } = clinic;
         try {
-          if (!clinic.ayrshare?.profileKey) {
+          if (!secrets?.ayrshareProfileKey) {
             failed.push({
-              clinicId: clinic.clinicId,
-              error: 'No Ayrshare profile configured in clinics.json'
+              clinicId: config.clinicId,
+              error: 'No Ayrshare profile configured'
             });
             continue;
           }
 
           const existing = await ddb.send(new GetCommand({
             TableName: PROFILES_TABLE,
-            Key: { clinicId: clinic.clinicId }
+            Key: { clinicId: config.clinicId }
           }));
 
           if (existing.Item?.ayrshareProfileKey) {
             results.push({
-              clinicId: clinic.clinicId,
-              clinicName: clinic.clinicName,
+              clinicId: config.clinicId,
+              clinicName: config.clinicName,
               ayrshareProfileKey: existing.Item.ayrshareProfileKey,
               ayrshareRefId: existing.Item.ayrshareRefId,
               status: 'active',
@@ -196,39 +196,39 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           await ddb.send(new PutCommand({
             TableName: PROFILES_TABLE,
             Item: {
-              clinicId: clinic.clinicId,
-              clinicName: clinic.clinicName,
-              ayrshareProfileKey: clinic.ayrshare.profileKey,
-              ayrshareRefId: clinic.ayrshare.refId,
-              connectedPlatforms: clinic.ayrshare.connectedPlatforms || [],
+              clinicId: config.clinicId,
+              clinicName: config.clinicName,
+              ayrshareProfileKey: secrets.ayrshareProfileKey,
+              ayrshareRefId: secrets.ayrshareRefId,
+              connectedPlatforms: config.ayrshare?.connectedPlatforms || [],
               profileStatus: 'active',
               createdAt: now,
               updatedAt: now,
               createdBy: event.requestContext.authorizer?.email || 'system',
               syncedFromConfig: true,
               clinicMetadata: {
-                address: clinic.clinicAddress,
-                city: clinic.clinicCity,
-                state: clinic.clinicState,
-                phone: clinic.clinicPhone,
-                email: clinic.clinicEmail,
-                website: clinic.websiteLink,
-                logoUrl: clinic.logoUrl
+                address: config.clinicAddress,
+                city: config.clinicCity,
+                state: config.clinicState,
+                phone: config.clinicPhone,
+                email: config.clinicEmail,
+                website: config.websiteLink,
+                logoUrl: config.logoUrl
               }
             }
           }));
 
           results.push({
-            clinicId: clinic.clinicId,
-            clinicName: clinic.clinicName,
-            ayrshareProfileKey: clinic.ayrshare.profileKey,
-            ayrshareRefId: clinic.ayrshare.refId,
+            clinicId: config.clinicId,
+            clinicName: config.clinicName,
+            ayrshareProfileKey: secrets.ayrshareProfileKey,
+            ayrshareRefId: secrets.ayrshareRefId,
             status: 'active',
-            message: 'Synced from clinics.json (no new Ayrshare profile created)'
+            message: 'Synced from config (no new Ayrshare profile created)'
           });
         } catch (err: any) {
           failed.push({
-            clinicId: clinic.clinicId,
+            clinicId: config.clinicId,
             error: err.message
           });
         }
@@ -264,30 +264,31 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const dbProfiles = scanRes.Items || [];
       const dbClinicIds = new Set(dbProfiles.map(p => p.clinicId));
 
-      // Merge with clinics.json profiles that aren't in DynamoDB
+      // Merge with config profiles that aren't in DynamoDB
       let allProfiles = [...dbProfiles];
       
       if (includeConfigOnly) {
-        const configClinics = getEnabledAyrshareClinics();
+        const configClinics = await getEnabledAyrshareClinics();
         for (const clinic of configClinics) {
-          if (!dbClinicIds.has(clinic.clinicId) && clinic.ayrshare?.profileKey) {
+          const { config, secrets } = clinic;
+          if (!dbClinicIds.has(config.clinicId) && secrets?.ayrshareProfileKey) {
             allProfiles.push({
-              clinicId: clinic.clinicId,
-              clinicName: clinic.clinicName,
-              ayrshareProfileKey: clinic.ayrshare.profileKey,
-              ayrshareRefId: clinic.ayrshare.refId,
-              connectedPlatforms: clinic.ayrshare.connectedPlatforms || [],
-              profileStatus: clinic.ayrshare.enabled ? 'active' : 'inactive',
+              clinicId: config.clinicId,
+              clinicName: config.clinicName,
+              ayrshareProfileKey: secrets.ayrshareProfileKey,
+              ayrshareRefId: secrets.ayrshareRefId,
+              connectedPlatforms: config.ayrshare?.connectedPlatforms || [],
+              profileStatus: config.ayrshare?.enabled ? 'active' : 'inactive',
               syncedFromConfig: false,
               configOnly: true,
               clinicMetadata: {
-                address: clinic.clinicAddress,
-                city: clinic.clinicCity,
-                state: clinic.clinicState,
-                phone: clinic.clinicPhone,
-                email: clinic.clinicEmail,
-                website: clinic.websiteLink,
-                logoUrl: clinic.logoUrl
+                address: config.clinicAddress,
+                city: config.clinicCity,
+                state: config.clinicState,
+                phone: config.clinicPhone,
+                email: config.clinicEmail,
+                website: config.websiteLink,
+                logoUrl: config.logoUrl
               }
             });
           }
@@ -350,29 +351,32 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       let profileData = dbRes.Item;
       let configOnly = false;
 
-      // If not in DynamoDB, check clinics.json
+      // If not in DynamoDB, check config from DynamoDB
       if (!profileData) {
-        const clinicConfig = getClinicConfig(clinicId);
-        if (clinicConfig?.ayrshare?.profileKey) {
+        const [clinicConfig, clinicSecrets] = await Promise.all([
+          getClinicConfigFromDynamo(clinicId),
+          getClinicSecrets(clinicId)
+        ]);
+        if (clinicSecrets?.ayrshareProfileKey) {
           profileData = {
-            clinicId: clinicConfig.clinicId,
-            clinicName: clinicConfig.clinicName,
-            ayrshareProfileKey: clinicConfig.ayrshare.profileKey,
-            ayrshareRefId: clinicConfig.ayrshare.refId,
-            connectedPlatforms: clinicConfig.ayrshare.connectedPlatforms || [],
-            profileStatus: clinicConfig.ayrshare.enabled ? 'active' : 'inactive',
+            clinicId: clinicConfig?.clinicId || clinicId,
+            clinicName: clinicConfig?.clinicName || clinicId,
+            ayrshareProfileKey: clinicSecrets.ayrshareProfileKey,
+            ayrshareRefId: clinicSecrets.ayrshareRefId,
+            connectedPlatforms: clinicConfig?.ayrshare?.connectedPlatforms || [],
+            profileStatus: clinicConfig?.ayrshare?.enabled ? 'active' : 'inactive',
             clinicMetadata: {
-              address: clinicConfig.clinicAddress,
-              city: clinicConfig.clinicCity,
-              state: clinicConfig.clinicState,
-              phone: clinicConfig.clinicPhone,
-              email: clinicConfig.clinicEmail,
-              website: clinicConfig.websiteLink,
-              logoUrl: clinicConfig.logoUrl,
-              mapsUrl: clinicConfig.mapsUrl,
-              scheduleUrl: clinicConfig.scheduleUrl
+              address: clinicConfig?.clinicAddress,
+              city: clinicConfig?.clinicCity,
+              state: clinicConfig?.clinicState,
+              phone: clinicConfig?.clinicPhone,
+              email: clinicConfig?.clinicEmail,
+              website: clinicConfig?.websiteLink,
+              logoUrl: clinicConfig?.logoUrl,
+              mapsUrl: clinicConfig?.mapsUrl,
+              scheduleUrl: clinicConfig?.scheduleUrl
             },
-            facebook: clinicConfig.ayrshare.facebook
+            facebook: clinicConfig?.ayrshare?.facebook
           };
           configOnly = true;
         }
@@ -453,14 +457,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       let clinicName = dbRes.Item?.clinicName;
       let fromConfig = false;
 
-      // If not in DynamoDB, check clinics.json
+      // If not in DynamoDB, check config from DynamoDB
       if (!profileKey) {
-        const clinicConfig = getClinicConfig(clinicId);
-        if (clinicConfig?.ayrshare?.profileKey) {
-          profileKey = clinicConfig.ayrshare.profileKey;
-          clinicName = clinicConfig.clinicName;
+        const [clinicConfig, clinicSecrets] = await Promise.all([
+          getClinicConfigFromDynamo(clinicId),
+          getClinicSecrets(clinicId)
+        ]);
+        if (clinicSecrets?.ayrshareProfileKey) {
+          profileKey = clinicSecrets.ayrshareProfileKey;
+          clinicName = clinicConfig?.clinicName || clinicId;
           fromConfig = true;
-          console.log('Using profile from clinics.json:', profileKey);
+          console.log('Using profile from config:', profileKey);
         }
       }
 

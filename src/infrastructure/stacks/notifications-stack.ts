@@ -14,6 +14,12 @@ import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface NotificationsStackProps extends StackProps {
   templatesTableName: string;
+  /** GlobalSecrets DynamoDB table name for retrieving secrets */
+  globalSecretsTableName?: string;
+  /** ClinicConfig DynamoDB table name for clinic configuration */
+  clinicConfigTableName?: string;
+  /** KMS key ARN for decrypting secrets */
+  secretsEncryptionKeyArn?: string;
 }
 
 export class NotificationsStack extends Stack {
@@ -287,13 +293,34 @@ export class NotificationsStack extends Stack {
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
         UNSUBSCRIBE_TABLE: this.unsubscribeTable.tableName,
-        UNSUBSCRIBE_SECRET: process.env.UNSUBSCRIBE_SECRET || 'todays-dental-unsubscribe-secret-key-2024',
+        // Secrets tables for dynamic credential retrieval (unsubscribe secret now from GlobalSecrets)
+        GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
       },
     });
     applyTags(this.unsubscribeFn, { Function: 'unsubscribe-handler' });
 
     // Grant DynamoDB permissions to unsubscribe handler
     this.unsubscribeTable.grantReadWriteData(this.unsubscribeFn);
+
+    // Grant read access to secrets tables for dynamic credential retrieval
+    if (props.globalSecretsTableName) {
+      this.unsubscribeFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
+        ],
+      }));
+    }
+
+    // Grant KMS decryption for secrets encryption key
+    if (props.secretsEncryptionKeyArn) {
+      this.unsubscribeFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      }));
+    }
 
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
@@ -374,12 +401,34 @@ export class NotificationsStack extends Stack {
         UNSUBSCRIBE_TABLE: this.unsubscribeTable.tableName,
         SES_CONFIGURATION_SET_NAME: this.sesConfigurationSet.configurationSetName,
         UNSUBSCRIBE_BASE_URL: 'https://apig.todaysdentalinsights.com/notifications',
+        // Secrets tables for dynamic clinic configuration retrieval
+        GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
       },
     });
     applyTags(this.notifyFn, { Function: 'notifications' });
 
     // Grant read access to unsubscribe table for checking preferences
     this.unsubscribeTable.grantReadData(this.notifyFn);
+
+    // Grant read access to secrets tables for clinic configuration
+    if (props.globalSecretsTableName) {
+      this.notifyFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
+        ],
+      }));
+    }
+
+    // Grant KMS decryption for secrets encryption key (notifyFn)
+    if (props.secretsEncryptionKeyArn) {
+      this.notifyFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      }));
+    }
 
     // Grant SES and SMS permissions
     this.notifyFn.addToRolePolicy(new iam.PolicyStatement({ 
@@ -482,7 +531,8 @@ export class NotificationsStack extends Stack {
           modelName: 'NotificationRequest',
           schema: {
             type: apigw.JsonSchemaType.OBJECT,
-            required: ['PatNum', 'notificationTypes', 'templateMessage'],
+            // Only PatNum and notificationTypes are required - content can come from template OR custom fields
+            required: ['PatNum', 'notificationTypes'],
             properties: {
               PatNum: { type: apigw.JsonSchemaType.STRING },
               FName: { type: apigw.JsonSchemaType.STRING },
@@ -503,7 +553,15 @@ export class NotificationsStack extends Stack {
                 },
                 minItems: 1
               },
+              // Template-based content (optional - use either template OR custom fields)
               templateMessage: { type: apigw.JsonSchemaType.STRING },
+              // Custom email content (used when templateMessage is not provided)
+              customEmailSubject: { type: apigw.JsonSchemaType.STRING },
+              customEmailHtml: { type: apigw.JsonSchemaType.STRING },
+              customEmailBody: { type: apigw.JsonSchemaType.STRING }, // Alias for customEmailHtml
+              // Custom SMS content (used when templateMessage is not provided)
+              customSmsText: { type: apigw.JsonSchemaType.STRING },
+              textMessage: { type: apigw.JsonSchemaType.STRING }, // Alias for customSmsText
               toEmail: { type: apigw.JsonSchemaType.STRING }
             }
           }

@@ -3,7 +3,11 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 // Read clinic data from clinics.json
-import clinicsData from '../../infrastructure/configs/clinics.json';
+import { 
+  getClinicConfig, 
+  getAllClinicConfigs,
+  ClinicConfig 
+} from '../../shared/utils/secrets-helper';
 
 const dynamoClient = new DynamoDBClient({ region: process.env.AWS_REGION });
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -45,8 +49,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    // Validate clinic exists in clinics.json
-    const clinicConfig = clinicsData.find(clinic => clinic.clinicId === clinicId);
+    // Validate clinic exists in DynamoDB
+    const clinicConfig = await getClinicConfig(clinicId);
 
     if (!clinicConfig) {
       console.error(`Invalid clinicId: ${clinicId}`);

@@ -7,7 +7,12 @@ import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as sns from 'aws-cdk-lib/aws-sns';
-import clinicsJson from '../configs/clinics.json';
+// NOTE: clinicConfigData is used at CDK synthesis time for infrastructure creation
+// Lambda functions should use DynamoDB secrets tables at runtime
+import clinicConfigData from '../configs/clinic-config.json';
+
+// Alias for backward compatibility
+const clinicsJson = clinicConfigData;
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
@@ -16,6 +21,14 @@ export interface PatientPortalStackProps extends StackProps {
   // Transfer Family server info for SFTP document downloads
   consolidatedTransferServerId: string;
   consolidatedTransferServerBucket: string;
+  /** GlobalSecrets DynamoDB table name for retrieving SFTP credentials */
+  globalSecretsTableName?: string;
+  /** ClinicSecrets DynamoDB table name for per-clinic credentials */
+  clinicSecretsTableName?: string;
+  /** ClinicConfig DynamoDB table name for clinic configuration */
+  clinicConfigTableName?: string;
+  /** KMS key ARN for decrypting secrets */
+  secretsEncryptionKeyArn?: string;
 }
 
 export class PatientPortalStack extends Stack {
@@ -156,8 +169,11 @@ export class PatientPortalStack extends Stack {
         DEFAULT_SMS_LOG_TABLE: defaultSmsLogTable.tableName,
         TF_BUCKET: props.consolidatedTransferServerBucket,
         TF_SFTP_HOST: props.consolidatedTransferServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',
-        TF_SFTP_PASSWORD: 'Clinic@2020!',
         PATIENT_PORTAL_METRICS_TABLE: portalMetricsTable.tableName,
+        // Secrets tables for dynamic credential retrieval (SFTP password now from GlobalSecrets)
+        GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
+        CLINIC_SECRETS_TABLE: props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets',
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
       },
     });
     applyTags(patientPortalLambda, { Function: 'patient-portal' });
@@ -187,6 +203,26 @@ export class PatientPortalStack extends Stack {
     }));
 
     portalMetricsTable.grantReadWriteData(patientPortalLambda);
+
+    // Grant read access to secrets tables for dynamic SFTP credential retrieval
+    if (props.globalSecretsTableName) {
+      patientPortalLambda.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets'}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
+        ],
+      }));
+    }
+
+    // Grant KMS decryption for secrets encryption key
+    if (props.secretsEncryptionKeyArn) {
+      patientPortalLambda.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      }));
+    }
 
     patientPortalLambda.addToRolePolicy(new iam.PolicyStatement({
       actions: [

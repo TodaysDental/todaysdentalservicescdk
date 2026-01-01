@@ -9,12 +9,25 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as transfer from 'aws-cdk-lib/aws-transfer';
 import * as cr from 'aws-cdk-lib/custom-resources';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
-import clinicsData from '../configs/clinics.json';
-import { Clinic } from '../configs/clinics';
+// NOTE: clinicConfigData is used at CDK synthesis time for infrastructure creation (SFTP folders, etc.)
+// Lambda functions should use DynamoDB secrets tables at runtime for dynamic credential retrieval
+import clinicConfigData from '../configs/clinic-config.json';
+
+// Alias for backward compatibility
+const clinicsData = clinicConfigData;
+type Clinic = typeof clinicsData[number];
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface OpenDentalStackProps extends StackProps {
   // Authorizer imported via CloudFormation export
+  /** GlobalSecrets DynamoDB table name for retrieving SFTP/API credentials */
+  globalSecretsTableName?: string;
+  /** ClinicSecrets DynamoDB table name for per-clinic credentials */
+  clinicSecretsTableName?: string;
+  /** ClinicConfig DynamoDB table name for clinic configuration */
+  clinicConfigTableName?: string;
+  /** KMS key ARN for decrypting secrets */
+  secretsEncryptionKeyArn?: string;
 }
 
 export class OpenDentalStack extends Stack {
@@ -313,10 +326,13 @@ export class OpenDentalStack extends Stack {
       environment: {
         CONSOLIDATED_SFTP_HOST: this.consolidatedTransferServer.attrServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',
         CONSOLIDATED_SFTP_USERNAME: 'sftpuser', // Fixed username for Open Dental queries
-        CONSOLIDATED_SFTP_PASSWORD: 'Clinic2020',
         CONSOLIDATED_SFTP_PORT: '22',
         NODE_OPTIONS: '--enable-source-maps',
-        AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1'
+        AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1',
+        // Secrets tables for dynamic credential retrieval (SFTP password now from GlobalSecrets)
+        GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
+        CLINIC_SECRETS_TABLE: props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets',
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
       },
       retryAttempts: 2
     });
@@ -324,6 +340,26 @@ export class OpenDentalStack extends Stack {
 
     // Add explicit dependency on Transfer Server to ensure it exists before Lambda
     this.openDentalFn.node.addDependency(this.consolidatedTransferServer);
+
+    // Grant read access to secrets tables for dynamic SFTP credential retrieval
+    if (props.globalSecretsTableName) {
+      this.openDentalFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets'}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
+        ],
+      }));
+    }
+
+    // Grant KMS decryption for secrets encryption key
+    if (props.secretsEncryptionKeyArn) {
+      this.openDentalFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      }));
+    }
 
     // ========================================
     // API ROUTES

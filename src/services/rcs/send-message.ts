@@ -105,33 +105,43 @@ interface TwilioMessageResponse {
  * Render placeholders in a string using clinic and patient data
  * Supports: {clinic_name}, {phone_number}, {first_name}, {patient_name}, etc.
  */
-function renderPlaceholders(
+async function renderPlaceholders(
   text: string | undefined,
   clinicId: string,
   patientData?: PatientData
-): string {
+): Promise<string> {
   if (!text) return '';
-  const context = buildTemplateContext(clinicId, patientData);
+  const context = await buildTemplateContext(clinicId, patientData);
   return renderTemplate(text, context);
 }
 
 /**
  * Render placeholders in a rich card
  */
-function renderRichCardPlaceholders(
+async function renderRichCardPlaceholders(
   card: RCSRichCard,
   clinicId: string,
   patientData?: PatientData
-): RCSRichCard {
+): Promise<RCSRichCard> {
+  const [title, description] = await Promise.all([
+    renderPlaceholders(card.title, clinicId, patientData),
+    renderPlaceholders(card.description, clinicId, patientData)
+  ]);
+  
+  let buttons = card.buttons;
+  if (card.buttons) {
+    buttons = await Promise.all(card.buttons.map(async btn => ({
+      ...btn,
+      label: await renderPlaceholders(btn.label, clinicId, patientData),
+      value: btn.type === 'url' ? await renderPlaceholders(btn.value, clinicId, patientData) : btn.value
+    })));
+  }
+  
   return {
     ...card,
-    title: renderPlaceholders(card.title, clinicId, patientData),
-    description: renderPlaceholders(card.description, clinicId, patientData),
-    buttons: card.buttons?.map(btn => ({
-      ...btn,
-      label: renderPlaceholders(btn.label, clinicId, patientData),
-      value: btn.type === 'url' ? renderPlaceholders(btn.value, clinicId, patientData) : btn.value
-    }))
+    title,
+    description,
+    buttons
   };
 }
 
@@ -484,20 +494,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // Apply placeholder rendering
-    const renderedBody = renderPlaceholders(messageBody, clinicId, patientData);
+    const renderedBody = await renderPlaceholders(messageBody, clinicId, patientData);
     
     // Render placeholders in rich card if present
     let renderedRichCard: RCSRichCard | undefined;
     if (richCard) {
-      renderedRichCard = renderRichCardPlaceholders(richCard, clinicId, patientData);
+      renderedRichCard = await renderRichCardPlaceholders(richCard, clinicId, patientData);
     }
 
     // Render placeholders in carousel if present
     let renderedCarousel: RCSCarousel | undefined;
     if (carousel) {
+      const renderedCards = await Promise.all(
+        carousel.cards.map(card => renderRichCardPlaceholders(card, clinicId, patientData))
+      );
       renderedCarousel = {
         ...carousel,
-        cards: carousel.cards.map(card => renderRichCardPlaceholders(card, clinicId, patientData))
+        cards: renderedCards
       };
     }
 

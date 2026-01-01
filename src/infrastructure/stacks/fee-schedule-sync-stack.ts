@@ -4,12 +4,19 @@ import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 
 export interface FeeScheduleSyncStackProps extends StackProps {
   consolidatedTransferServerId: string;
+  /** GlobalSecrets DynamoDB table name for retrieving SFTP credentials */
+  globalSecretsTableName?: string;
+  /** ClinicConfig DynamoDB table name for clinic configuration */
+  clinicConfigTableName?: string;
+  /** KMS key ARN for decrypting secrets */
+  secretsEncryptionKeyArn?: string;
 }
 
 export class FeeScheduleSyncStack extends Stack {
@@ -167,9 +174,11 @@ export class FeeScheduleSyncStack extends Stack {
       environment: {
         FEE_SCHEDULES_TABLE: this.feeSchedulesTable.tableName,
         CONSOLIDATED_SFTP_HOST: props.consolidatedTransferServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',
-        CONSOLIDATED_SFTP_PASSWORD: 'Clinic@2020!',
         NODE_OPTIONS: '--enable-source-maps',
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1',
+        // Secrets tables for dynamic SFTP credential retrieval
+        GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
       },
       retryAttempts: 0, // Don't retry on failure - next scheduled run will pick up
     });
@@ -177,6 +186,25 @@ export class FeeScheduleSyncStack extends Stack {
 
     // Grant permissions to DynamoDB table
     this.feeSchedulesTable.grantReadWriteData(this.syncFn);
+
+    // Grant read access to secrets tables for dynamic SFTP credential retrieval
+    if (props.globalSecretsTableName) {
+      this.syncFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
+        ],
+      }));
+    }
+
+    // Grant KMS decryption for secrets encryption key
+    if (props.secretsEncryptionKeyArn) {
+      this.syncFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      }));
+    }
 
     // ========================================
     // EVENTBRIDGE SCHEDULE

@@ -26,23 +26,33 @@ import {
   getUserPermissions,
   UserPermissions,
 } from '../../shared/utils/permissions-helper';
-import clinicsData from '../../infrastructure/configs/clinics.json';
+import { 
+  getClinicConfig, 
+  getAllClinicConfigs,
+  getGlobalSecret,
+  ClinicConfig 
+} from '../../shared/utils/secrets-helper';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const UNSUBSCRIBE_TABLE = process.env.UNSUBSCRIBE_TABLE!;
 
-// Clinic info lookup
-const CLINIC_INFO: Record<string, { name: string; email: string; phone: string }> = (() => {
-  const acc: Record<string, { name: string; email: string; phone: string }> = {};
-  (clinicsData as any[]).forEach((c: any) => {
-    acc[String(c.clinicId)] = {
-      name: c.clinicName || 'Dental Clinic',
-      email: c.clinicEmail || '',
-      phone: c.phone || '',
-    };
-  });
-  return acc;
-})();
+// Cache for clinic info lookups
+const clinicInfoCache = new Map<string, { name: string; email: string; phone: string }>();
+
+// Clinic info lookup - fetch from DynamoDB
+async function getClinicInfo(clinicId: string): Promise<{ name: string; email: string; phone: string }> {
+  if (clinicInfoCache.has(clinicId)) {
+    return clinicInfoCache.get(clinicId)!;
+  }
+  const config = await getClinicConfig(clinicId);
+  const info = {
+    name: config?.clinicName || 'Dental Clinic',
+    email: config?.clinicEmail || '',
+    phone: config?.clinicPhone || '',
+  };
+  clinicInfoCache.set(clinicId, info);
+  return info;
+}
 
 // Helper functions
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
@@ -67,8 +77,10 @@ function parseBody(body: any): Record<string, any> {
 /**
  * Render the unsubscribe confirmation page (HTML)
  */
-function renderUnsubscribePage(tokenPayload: UnsubscribeTokenPayload, success?: boolean, error?: string): string {
-  const clinicInfo = CLINIC_INFO[tokenPayload.clinicId] || { name: 'Dental Clinic', email: '', phone: '' };
+async function renderUnsubscribePage(tokenPayload: UnsubscribeTokenPayload, success?: boolean, error?: string): Promise<string> {
+  const clinicInfo = tokenPayload.clinicId 
+    ? await getClinicInfo(tokenPayload.clinicId) 
+    : { name: 'Dental Clinic', email: '', phone: '' };
   const channelName = tokenPayload.channel === 'EMAIL' ? 'emails' : 
                       tokenPayload.channel === 'SMS' ? 'text messages' : 'RCS messages';
 
@@ -326,17 +338,17 @@ async function handleGetUnsubscribe(event: APIGatewayProxyEvent): Promise<APIGat
   const token = event.pathParameters?.token;
   
   if (!token) {
-    return http(400, renderUnsubscribePage({} as UnsubscribeTokenPayload, false, 'Invalid unsubscribe link.'), event, 'text/html');
+    return http(400, await renderUnsubscribePage({} as UnsubscribeTokenPayload, false, 'Invalid unsubscribe link.'), event, 'text/html');
   }
 
   const payload = verifyUnsubscribeToken(decodeURIComponent(token));
   
   if (!payload) {
-    return http(400, renderUnsubscribePage({} as UnsubscribeTokenPayload, false, 
+    return http(400, await renderUnsubscribePage({} as UnsubscribeTokenPayload, false, 
       'This unsubscribe link has expired or is invalid. Please contact the clinic directly.'), event, 'text/html');
   }
 
-  return http(200, renderUnsubscribePage(payload), event, 'text/html');
+  return http(200, await renderUnsubscribePage(payload), event, 'text/html');
 }
 
 /**
@@ -346,13 +358,13 @@ async function handlePostUnsubscribe(event: APIGatewayProxyEvent): Promise<APIGa
   const token = event.pathParameters?.token;
   
   if (!token) {
-    return http(400, renderUnsubscribePage({} as UnsubscribeTokenPayload, false, 'Invalid unsubscribe link.'), event, 'text/html');
+    return http(400, await renderUnsubscribePage({} as UnsubscribeTokenPayload, false, 'Invalid unsubscribe link.'), event, 'text/html');
   }
 
   const payload = verifyUnsubscribeToken(decodeURIComponent(token));
   
   if (!payload) {
-    return http(400, renderUnsubscribePage({} as UnsubscribeTokenPayload, false, 
+    return http(400, await renderUnsubscribePage({} as UnsubscribeTokenPayload, false, 
       'This unsubscribe link has expired or is invalid. Please contact the clinic directly.'), event, 'text/html');
   }
 
@@ -395,10 +407,10 @@ async function handlePostUnsubscribe(event: APIGatewayProxyEvent): Promise<APIGa
 
     console.log(`Unsubscribe recorded: ${JSON.stringify(identifier)}, clinic: ${clinicId}, channels: ${channels.join(',')}`);
 
-    return http(200, renderUnsubscribePage(payload, true), event, 'text/html');
+    return http(200, await renderUnsubscribePage(payload, true), event, 'text/html');
   } catch (error) {
     console.error('Error processing unsubscribe:', error);
-    return http(500, renderUnsubscribePage(payload, false, 
+    return http(500, await renderUnsubscribePage(payload, false, 
       'We encountered an error processing your request. Please try again or contact the clinic directly.'), event, 'text/html');
   }
 }

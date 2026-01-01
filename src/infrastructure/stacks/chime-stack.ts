@@ -19,8 +19,29 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
-import clinicsData from '../configs/clinics.json';
-import { Clinic } from '../configs/clinics';
+// Use clinic-config.json for CDK synthesis (non-sensitive data only)
+import clinicConfigData from '../configs/clinic-config.json';
+
+// Map clinic config to the format expected by the stack
+const clinicsData = clinicConfigData.map((c: any) => ({
+  clinicId: c.clinicId,
+  clinicName: c.clinicName,
+  phoneNumber: c.phoneNumber,
+  timezone: c.timezone,
+  clinicAddress: c.clinicAddress,
+  clinicCity: c.clinicCity,
+  clinicState: c.clinicState,
+  clinicZipCode: c.clinicZipCode,
+  clinicPhone: c.clinicPhone,
+  clinicEmail: c.clinicEmail,
+  websiteLink: c.websiteLink,
+  logoUrl: c.logoUrl,
+  mapsUrl: c.mapsUrl,
+  scheduleUrl: c.scheduleUrl,
+}));
+
+// Type alias for backward compatibility
+type Clinic = typeof clinicsData[number];
 
 export interface ChimeStackProps extends StackProps {
   jwtSecret: string;

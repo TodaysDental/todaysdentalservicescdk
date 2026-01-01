@@ -41,6 +41,7 @@ import { InsurancePlanSyncStack } from './stacks/insurance-plan-sync-stack';
 import { FeeScheduleSyncStack } from './stacks/fee-schedule-sync-stack';
 import { EmailStack } from './stacks/email-stack';
 import { AccountingStack } from './stacks/accounting-stack';
+import { SecretsStack } from './stacks/secrets-stack';
 // import { PushNotificationsStack } from './stacks/push-notifications-stack';
 // import { DentalSoftwareStack } from './stacks/dental-software-stack';
 
@@ -173,6 +174,21 @@ if (voiceConnectorOriginationRoutes && voiceConnectorOriginationRoutes.length ==
 // 1. Core Stack - JWT-based authentication (minimal resources)
 const coreStack = new CoreStack(app, 'TodaysDentalInsightsCoreN1', { env });
 
+// ========================================
+// SECRETS STACK - Centralized secrets management with KMS-encrypted DynamoDB tables
+// ========================================
+// This stack creates:
+// - KMS CMK for encryption
+// - ClinicSecrets table (per-clinic API keys, passwords)
+// - GlobalSecrets table (system-wide secrets: Ayrshare, Odoo, Gmail, Twilio)
+// - ClinicConfig table (non-sensitive clinic configuration)
+// - Seeder CustomResource to populate tables on deployment
+const secretsStack = new SecretsStack(app, 'TodaysDentalInsightsSecretsN1', {
+  env,
+  seedInitialData: true,
+});
+
+// SecretsStack has no dependencies - it's a foundational stack
 
 // 3. Granular Service Stacks - Each service has its own stack with table and API endpoints
 
@@ -217,17 +233,34 @@ const reportsStack = new ReportsStack(app, 'TodaysDentalInsightsReportsN1', {
 // OpenDental service with SFTP resources
 const openDentalStack = new OpenDentalStack(app, 'TodaysDentalInsightsOpenDentalN1', {
   env,
+  // Pass secrets table names for dynamic SFTP credential retrieval
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
+openDentalStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
 
 // Notifications service
 const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNotificationsN1', {
   env,
   templatesTableName: templatesStack.templatesTable.tableName,
+  // Pass secrets table names for dynamic secret retrieval (unsubscribe secret)
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
+notificationsStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for unsubscribe secret
 const marketingStack = new MarketingStack(app, 'TodaysDentalInsightsMarketingN1', {
   env,
   authorizerFunctionArn: coreStack.authorizerFunction.functionArn,
+  // Pass secrets table names for dynamic secret retrieval
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
+marketingStack.addDependency(secretsStack); // Explicit - uses secrets tables for Ayrshare credentials
 // Amazon Chime Voice Integration - create Chime stack first and export
 // Lambda ARNs. We intentionally do NOT pass the Admin API object into the
 // Chime stack to avoid a two-way construct dependency which leads to
@@ -376,6 +409,10 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
   // implicit exports which cause UPDATE_ROLLBACK failures when the table needs replacement
   analyticsTableName: ANALYTICS_TABLE_NAME,
   jwtSecretValue: coreStack.jwtSecretValue,
+  // Pass secrets table names for dynamic credential retrieval (cPanel credentials)
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
  // Additional table names for detailed analytics
  callQueueTableName: chimeStack.callQueueTable.tableName,
  recordingMetadataTableName: chimeStack.recordingMetadataTable?.tableName,
@@ -448,7 +485,12 @@ const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesN1'
  queriesTableName: queriesStack.queriesTable.tableName,
  clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
+ // Pass secrets table names for dynamic SFTP credential retrieval
+ globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+ clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+ secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
+schedulesStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
 
 const callbackStack = new CallbackStack(app, 'TodaysDentalInsightsCallbackN1', {
  env,
@@ -459,7 +501,13 @@ const patientPortalStack = new PatientPortalStack(app, 'TodaysDentalInsightsPati
  env,
  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
  consolidatedTransferServerBucket: openDentalStack.consolidatedSftpBucket.bucketName,
+ // Pass secrets table names for dynamic SFTP credential retrieval
+ globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+ clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
+ clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+ secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
+patientPortalStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
 const patientPortalApptTypesStack = new PatientPortalApptTypesStack(app, 'TodaysDentalInsightsPatientPortalApptTypesN1', {
  env,
 });
@@ -468,7 +516,12 @@ const patientPortalApptTypesStack = new PatientPortalApptTypesStack(app, 'Todays
 // Clinic Images Stack - S3 bucket and API for clinic image management
 const clinicImagesStack = new ClinicImagesStack(app, 'TodaysDentalInsightsClinicImagesN1', {
   env,
+  // Pass secrets table names for dynamic clinic configuration retrieval
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
+clinicImagesStack.addDependency(secretsStack); // Explicit - uses ClinicConfig for clinic data
 
 // AI Agents Stack - Customizable AI agents with 3-level prompt system
 // Integrates with existing Chime infrastructure for voice AI
@@ -545,7 +598,13 @@ const rcsStack = new RcsStack(app, 'TodaysDentalInsightsRcsN1', {
   // Twilio credentials from environment variables
   twilioAccountSid: process.env.TWILIO_ACCOUNT_SID,
   twilioAuthToken: process.env.TWILIO_AUTH_TOKEN,
+  // Pass secrets table names for dynamic Twilio credential retrieval
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
+rcsStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for Twilio credentials
 
 // Dental Software Stack - RDS MySQL database and S3 for clinic management
 // const dentalSoftwareStack = new DentalSoftwareStack(app, 'TodaysDentalInsightsDentalSoftwareN1', {
@@ -581,6 +640,7 @@ analyticsStack.addDependency(coreStack);
 notificationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 notificationsStack.addDependency(templatesStack); // Explicit - uses table name
 adminStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+adminStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for cPanel credentials
 schedulesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 schedulesStack.addDependency(templatesStack); // Explicit - uses table name
 schedulesStack.addDependency(queriesStack); // Explicit - uses table name
@@ -621,16 +681,26 @@ leaseManagementStack.addDependency(coreStack); // Explicit - imports AuthorizerF
 const insurancePlanSyncStack = new InsurancePlanSyncStack(app, 'TodaysDentalInsightsInsurancePlanSyncN1', {
   env,
   consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
+  // Pass secrets table names for dynamic SFTP credential retrieval
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
 insurancePlanSyncStack.addDependency(openDentalStack); // Explicit - uses SFTP server ID
+insurancePlanSyncStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
 
 // Fee Schedule Sync Stack - Syncs fee schedule data from OpenDental every 15 minutes
 // Stores fee amounts for procedure codes across all fee schedules (feesched, fee, procedurecode)
 const feeScheduleSyncStack = new FeeScheduleSyncStack(app, 'TodaysDentalInsightsFeeScheduleSyncN1', {
   env,
   consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
+  // Pass secrets table names for dynamic SFTP credential retrieval
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
 feeScheduleSyncStack.addDependency(openDentalStack); // Explicit - uses SFTP server ID
+feeScheduleSyncStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
 
 // Email Stack - Clinic-specific email operations (Gmail REST API + IMAP/SMTP)
 // Domain-level credentials are defined as constants in email-stack.ts:
@@ -638,16 +708,27 @@ feeScheduleSyncStack.addDependency(openDentalStack); // Explicit - uses SFTP ser
 // - DOMAIN_SMTP_USER, DOMAIN_SMTP_PASSWORD: Domain email credentials
 const emailStack = new EmailStack(app, 'TodaysDentalInsightsEmailN1', {
   env,
+  // Pass secrets table names for dynamic secret retrieval
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
 emailStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn (if needed later)
+emailStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets table for Gmail/cPanel credentials
 
 // Accounting Stack - Invoice intake (Accounts Payable) and Bank Reconciliation
 // Integrates with OpenDental for payment data and Odoo for bank transactions
 const accountingStack = new AccountingStack(app, 'TodaysDentalInsightsAccountingN1', {
   env,
   staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+  // Pass secrets table names for dynamic secret retrieval
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
 accountingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+accountingStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets table for Odoo credentials
 
 // Push Notifications Stack - Mobile push notifications via SNS (iOS APNs + Android FCM)
 // Prerequisites: Store credentials in Secrets Manager before enabling platform applications:

@@ -6,8 +6,14 @@ import { v4 as uuidv4 } from 'uuid';
 import { SQSEvent } from 'aws-lambda';
 import { parse as parseCsv } from 'csv-parse/sync';
 import { Client as SSH2Client } from 'ssh2';
-import clinicsData from '../../infrastructure/configs/clinics.json';
 import { buildTemplateContext, renderTemplate } from '../../shared/utils/clinic-placeholders';
+import { 
+  getClinicConfig, 
+  getClinicSecrets, 
+  getGlobalSecret,
+  ClinicConfig, 
+  ClinicSecrets 
+} from '../../shared/utils/secrets-helper';
 // Use require to avoid type resolution issues if types aren't present
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { PinpointSMSVoiceV2Client, SendTextMessageCommand } = require('@aws-sdk/client-pinpoint-sms-voice-v2');
@@ -22,7 +28,7 @@ interface ScheduleTask {
   enqueuedAt: string;
 }
 
-type ClinicCreds = {
+interface ClinicCreds {
   developerKey: string;
   customerKey: string;
   sftpHost: string;
@@ -30,7 +36,10 @@ type ClinicCreds = {
   sftpUsername: string;
   sftpPassword: string;
   sftpRemoteDir?: string;
-};
+  sesIdentityArn?: string;
+  smsOriginationArn?: string;
+  clinicEmail?: string;
+}
 
 const ddb = new DynamoDBClient({});
 const doc = DynamoDBDocumentClient.from(ddb);
@@ -46,51 +55,47 @@ const EMAIL_QUEUE_URL = process.env.EMAIL_QUEUE_URL || '';
 // Batch size for SQS SendMessageBatch (max 10)
 const SQS_BATCH_SIZE = 10;
 
-// Build clinic credentials from imported clinic data to avoid large env vars
+// SFTP connection info from environment (host is dynamic, password from GlobalSecrets)
 const CONSOLIDATED_SFTP_HOST = process.env.CONSOLIDATED_SFTP_HOST || '';
-const CONSOLIDATED_SFTP_PASSWORD = process.env.CONSOLIDATED_SFTP_PASSWORD || '';
 
-const CLINIC_CREDS: Record<string, ClinicCreds> = (() => {
-  const acc: Record<string, ClinicCreds> = {};
-  (clinicsData as any[]).forEach((c: any) => {
-    acc[String(c.clinicId)] = {
-      developerKey: c.developerKey,
-      customerKey: c.customerKey,
-      sftpHost: CONSOLIDATED_SFTP_HOST,
-      sftpPort: 22,
-      sftpUsername: 'sftpuser',
-      sftpPassword: CONSOLIDATED_SFTP_PASSWORD,
-      sftpRemoteDir: 'QuerytemplateCSV',
-    };
-  });
-  return acc;
-})();
+// Cache for clinic credentials (populated on demand from DynamoDB)
+const clinicCredsCache: Record<string, ClinicCreds> = {};
 
-// Build clinic mappings from imported clinic data to avoid large env vars
-const CLINIC_SES_IDENTITY_ARN_MAP: Record<string, string> = (() => {
-  const acc: Record<string, string> = {};
-  (clinicsData as any[]).forEach((c: any) => {
-    if (c.sesIdentityArn) acc[String(c.clinicId)] = String(c.sesIdentityArn);
-  });
-  return acc;
-})();
+/**
+ * Get clinic credentials from DynamoDB (cached)
+ */
+async function getClinicCreds(clinicId: string): Promise<ClinicCreds | null> {
+  if (clinicCredsCache[clinicId]) {
+    return clinicCredsCache[clinicId];
+  }
 
-const CLINIC_SMS_ORIGINATION_ARN_MAP: Record<string, string> = (() => {
-  const acc: Record<string, string> = {};
-  (clinicsData as any[]).forEach((c: any) => {
-    if (c.smsOriginationArn) acc[String(c.clinicId)] = String(c.smsOriginationArn);
-  });
-  return acc;
-})();
+  const [config, secrets, sftpPassword] = await Promise.all([
+    getClinicConfig(clinicId),
+    getClinicSecrets(clinicId),
+    getGlobalSecret('consolidated_sftp', 'password'),
+  ]);
 
-// Build clinic email map from imported clinic data for sending emails from clinic addresses
-const CLINIC_EMAIL_MAP: Record<string, string> = (() => {
-  const acc: Record<string, string> = {};
-  (clinicsData as any[]).forEach((c: any) => {
-    if (c.clinicEmail) acc[String(c.clinicId)] = String(c.clinicEmail);
-  });
-  return acc;
-})();
+  if (!config || !secrets) {
+    console.error(`[QueueConsumer] No credentials found for clinic: ${clinicId}`);
+    return null;
+  }
+
+  const creds: ClinicCreds = {
+    developerKey: secrets.openDentalDeveloperKey,
+    customerKey: secrets.openDentalCustomerKey,
+    sftpHost: CONSOLIDATED_SFTP_HOST,
+    sftpPort: 22,
+    sftpUsername: 'sftpuser',
+    sftpPassword: sftpPassword || '',
+    sftpRemoteDir: 'QuerytemplateCSV',
+    sesIdentityArn: config.sesIdentityArn,
+    smsOriginationArn: config.smsOriginationArn,
+    clinicEmail: config.clinicEmail,
+  };
+
+  clinicCredsCache[clinicId] = creds;
+  return creds;
+}
 
 async function fetchTemplateByName(templateName: string): Promise<any | null> {
   if (!templateName) return null;
@@ -107,7 +112,7 @@ async function fetchQueryByName(queryName: string): Promise<string | null> {
 }
 
 async function runOpenDentalQuery({ clinicId, sql }: { clinicId: string; sql: string; }): Promise<any[]> {
-  const creds = CLINIC_CREDS[clinicId];
+  const creds = await getClinicCreds(clinicId);
   if (!creds) return [];
   const API_HOST = 'api.opendental.com';
   const API_BASE = '/api/v1';
@@ -207,41 +212,6 @@ async function retryWithBackoff<T>(
   throw lastError;
 }
 
-async function downloadLatestCsvOnce(opts: { host: string; port: number; username: string; password: string; remoteDir: string; }): Promise<string> {
-  const { host, port, username, password, remoteDir } = opts;
-  const conn = new SSH2Client();
-  return new Promise<string>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      conn.end();
-      reject(new Error('SFTP connection timeout'));
-    }, 30000); // 30 second timeout
-
-    conn.on('ready', () => {
-      conn.sftp((err: any, sftp: any) => {
-        if (err) { clearTimeout(timeout); conn.end(); reject(err); return; }
-        setTimeout(() => {
-          sftp.readdir(remoteDir, (err2: any, list: any[]) => {
-            if (err2) { clearTimeout(timeout); conn.end(); reject(err2); return; }
-            const csvFiles = list.filter((f: any) => String(f.filename).endsWith('.csv'));
-            if (csvFiles.length === 0) { clearTimeout(timeout); conn.end(); reject(new Error('No CSV files found')); return; }
-            const latest = csvFiles.sort((a: any, b: any) => b.attrs.mtime - a.attrs.mtime)[0];
-            const actualPath = `${remoteDir}/${latest.filename}`;
-            const readStream = sftp.createReadStream(actualPath);
-            let csvContent = '';
-            readStream.on('data', (chunk: any) => { csvContent += chunk.toString(); });
-            readStream.on('end', () => { clearTimeout(timeout); conn.end(); resolve(csvContent); });
-            readStream.on('error', (e: any) => { clearTimeout(timeout); conn.end(); reject(e); });
-          });
-        }, 3000);
-      });
-    }).on('error', (e: any) => { clearTimeout(timeout); reject(e); }).connect({ host, port, username, password, readyTimeout: 15000 });
-  });
-}
-
-async function downloadLatestCsv(opts: { host: string; port: number; username: string; password: string; remoteDir: string; }): Promise<string> {
-  return retryWithBackoff(() => downloadLatestCsvOnce(opts), 3, 2000);
-}
-
 // Download a SPECIFIC file by name (prevents race conditions with concurrent Lambda executions)
 async function downloadSpecificCsvOnce(opts: { host: string; port: number; username: string; password: string; remoteDir: string; filename: string; }): Promise<string> {
   const { host, port, username, password, remoteDir, filename } = opts;
@@ -333,12 +303,12 @@ function normalizePhone(p: string): string | undefined {
 // This consumer only enqueues emails, doesn't send them directly
 
 async function sendSms({ clinicId, to, body }: { clinicId: string; to: string; body: string; }) {
-  const originationArn = CLINIC_SMS_ORIGINATION_ARN_MAP[clinicId];
-  if (!originationArn) return;
+  const creds = await getClinicCreds(clinicId);
+  if (!creds?.smsOriginationArn) return;
   const cmd = new SendTextMessageCommand({
     DestinationPhoneNumber: to,
     MessageBody: body,
-    OriginationIdentity: originationArn,
+    OriginationIdentity: creds.smsOriginationArn,
     MessageType: 'TRANSACTIONAL',
   });
   await sms.send(cmd);
@@ -381,27 +351,6 @@ async function trackEmailStatus(params: {
     console.warn(`Failed to track email status for ${params.recipientEmail}:`, err);
   }
   return trackingId;
-}
-
-// Update email status in analytics table
-async function updateEmailStatus(messageId: string, status: string, sesMessageId?: string): Promise<void> {
-  if (!EMAIL_ANALYTICS_TABLE || !messageId) return;
-  
-  try {
-    await doc.send(new UpdateCommand({
-      TableName: EMAIL_ANALYTICS_TABLE,
-      Key: { messageId },
-      UpdateExpression: 'SET #status = :status, sentAt = :now' + (sesMessageId ? ', sesMessageId = :sesId' : ''),
-      ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: {
-        ':status': status,
-        ':now': new Date().toISOString(),
-        ...(sesMessageId && { ':sesId': sesMessageId }),
-      },
-    }));
-  } catch (err) {
-    console.warn(`Failed to update email status for ${messageId}:`, err);
-  }
 }
 
 async function markRanForClinic(id: string, clinicId: string) {
@@ -500,7 +449,7 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
     for (const row of rows) {
       const { email } = extractEmailAndPhone(row);
       if (email) {
-        const templateContext = buildTemplateContext(clinicId, row);
+        const templateContext = await buildTemplateContext(clinicId, row);
         
         // Track as SCHEDULED in analytics table
         const trackingId = await trackEmailStatus({
@@ -552,7 +501,7 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
     
     if (notificationTypes.includes('SMS') && phone && template.text_message) {
       try {
-        const templateContext = buildTemplateContext(clinicId, row);
+        const templateContext = await buildTemplateContext(clinicId, row);
         const renderedSms = renderTemplate(template.text_message, templateContext);
         await sendSms({ clinicId, to: phone, body: renderedSms });
         smsSent++;

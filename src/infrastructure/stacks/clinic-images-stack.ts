@@ -13,8 +13,12 @@ import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
-// Import clinics data for Route 53 configuration
-import clinicsData from '../configs/clinics.json';
+// Import clinic config data for Route 53 configuration and CORS origins (CDK synthesis time)
+// NOTE: This is used at build-time for infrastructure creation, not runtime
+import clinicConfigData from '../configs/clinic-config.json';
+
+// Alias for backward compatibility
+const clinicsData = clinicConfigData;
 
 export interface ClinicImagesStackProps extends StackProps {
   /**
@@ -30,6 +34,12 @@ export interface ClinicImagesStackProps extends StackProps {
    * Optional: Enable public access to images via CloudFront (future enhancement)
    */
   enablePublicAccess?: boolean;
+  /** GlobalSecrets DynamoDB table name for retrieving credentials */
+  globalSecretsTableName?: string;
+  /** ClinicConfig DynamoDB table name for clinic configuration */
+  clinicConfigTableName?: string;
+  /** KMS key ARN for decrypting secrets */
+  secretsEncryptionKeyArn?: string;
 }
 
 export class ClinicImagesStack extends Stack {
@@ -258,9 +268,31 @@ export class ClinicImagesStack extends Stack {
         TABLE_NAME: this.imagesTable.tableName,
         BUCKET_NAME: this.imagesBucket.bucketName,
         PRESIGNED_URL_EXPIRY: '3600', // 1 hour
+        // Secrets tables for dynamic clinic configuration retrieval
+        GLOBAL_SECRETS_TABLE: props?.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
+        CLINIC_CONFIG_TABLE: props?.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
       },
     });
     applyTags(this.imagesFn, { Function: 'clinic-images' });
+
+    // Grant read access to secrets tables for dynamic clinic configuration
+    if (props?.globalSecretsTableName) {
+      this.imagesFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
+        ],
+      }));
+    }
+
+    // Grant KMS decryption for secrets encryption key
+    if (props?.secretsEncryptionKeyArn) {
+      this.imagesFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      }));
+    }
 
     // Grant permissions
     this.imagesTable.grantReadWriteData(this.imagesFn);

@@ -14,7 +14,11 @@ import {
   CreateAdCampaignParams
 } from './ayrshare-client';
 import { buildCorsHeaders } from '../../shared/utils/cors';
-import clinicsData from '../../infrastructure/configs/clinics.json';
+import { 
+  getClinicConfig as getClinicConfigFromDynamo, 
+  getClinicSecrets,
+  ClinicConfig 
+} from '../../shared/utils/secrets-helper';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true }
@@ -24,31 +28,22 @@ const PROFILES_TABLE = process.env.MARKETING_PROFILES_TABLE!;
 const POSTS_TABLE = process.env.MARKETING_POSTS_TABLE!;
 const API_KEY = process.env.AYRSHARE_API_KEY!;
 
-// Type for clinic config from clinics.json
-interface ClinicConfig {
-  clinicId: string;
-  clinicName: string;
-  ayrshare?: {
-    profileKey: string;
-    refId: string;
-    enabled: boolean;
-    connectedPlatforms: string[];
-    facebook?: {
-      connected: boolean;
-      pageId: string;
-      pageName: string;
-    };
-  };
-}
+// Cache for clinic config lookups
+const clinicConfigCache: Record<string, ClinicConfig | null> = {};
 
-// Helper to get clinic config from clinics.json
-function getClinicConfig(clinicId: string): ClinicConfig | undefined {
-  return (clinicsData as ClinicConfig[]).find(c => c.clinicId === clinicId);
+// Helper to get clinic config from DynamoDB (cached)
+async function getClinicConfigCached(clinicId: string): Promise<ClinicConfig | null> {
+  if (clinicConfigCache[clinicId] !== undefined) {
+    return clinicConfigCache[clinicId];
+  }
+  const config = await getClinicConfigFromDynamo(clinicId);
+  clinicConfigCache[clinicId] = config;
+  return config;
 }
 
 // Helper to get Ayrshare profile key for a clinic
 async function getProfileKey(clinicId: string): Promise<string | null> {
-  // First check DynamoDB
+  // First check DynamoDB profiles table
   const dbRes = await ddb.send(new GetCommand({
     TableName: PROFILES_TABLE,
     Key: { clinicId }
@@ -58,9 +53,9 @@ async function getProfileKey(clinicId: string): Promise<string | null> {
     return dbRes.Item.ayrshareProfileKey;
   }
 
-  // Fallback to clinics.json
-  const clinicConfig = getClinicConfig(clinicId);
-  return clinicConfig?.ayrshare?.profileKey || null;
+  // Fallback to secrets helper (ClinicSecrets table)
+  const secrets = await getClinicSecrets(clinicId);
+  return secrets?.ayrshareProfileKey || null;
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {

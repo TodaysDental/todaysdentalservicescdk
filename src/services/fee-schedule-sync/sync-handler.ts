@@ -4,7 +4,15 @@ import { parse as parseCsv } from 'csv-parse/sync';
 import { Client as SSH2Client } from 'ssh2';
 import https from 'https';
 import { v4 as uuidv4 } from 'uuid';
-import clinicsData from '../../infrastructure/configs/clinics.json';
+import { 
+  getClinicConfig, 
+  getClinicSecrets, 
+  getAllClinicConfigs,
+  getAllClinicSecrets,
+  getGlobalSecret,
+  ClinicConfig, 
+  ClinicSecrets 
+} from '../../shared/utils/secrets-helper';
 
 // DynamoDB setup
 const ddb = new DynamoDBClient({});
@@ -28,18 +36,30 @@ interface ClinicCreds {
   sftpRemoteDir: string;
 }
 
-// Build clinic credentials from imported clinic data
-const CLINIC_CREDS: ClinicCreds[] = (clinicsData as any[]).map((c: any) => ({
-  clinicId: String(c.clinicId),
-  clinicName: String(c.clinicName || c.clinicId),
-  developerKey: c.developerKey,
-  customerKey: c.customerKey,
-  sftpHost: CONSOLIDATED_SFTP_HOST,
-  sftpPort: 22,
-  sftpUsername: 'sftpuser',
-  sftpPassword: CONSOLIDATED_SFTP_PASSWORD,
-  sftpRemoteDir: 'QuerytemplateCSV',
-}));
+// Helper to build clinic credentials from DynamoDB
+async function buildClinicCreds(): Promise<ClinicCreds[]> {
+  const [configs, secrets] = await Promise.all([
+    getAllClinicConfigs(),
+    getAllClinicSecrets()
+  ]);
+  
+  const secretsMap = new Map(secrets.map(s => [s.clinicId, s]));
+  
+  return configs.map((config: ClinicConfig) => {
+    const secret = secretsMap.get(config.clinicId);
+    return {
+      clinicId: config.clinicId,
+      clinicName: config.clinicName || config.clinicId,
+      developerKey: secret?.openDentalDeveloperKey || '',
+      customerKey: secret?.openDentalCustomerKey || '',
+      sftpHost: CONSOLIDATED_SFTP_HOST,
+      sftpPort: 22,
+      sftpUsername: 'sftpuser',
+      sftpPassword: CONSOLIDATED_SFTP_PASSWORD,
+      sftpRemoteDir: 'QuerytemplateCSV',
+    };
+  });
+}
 
 // The fee schedule query - joins feesched, procedurecode, and fee tables
 const FEE_SCHEDULE_QUERY = `/* OPENDENTAL – FEE SCHEDULES WITH PROCEDURE CODES AND AMOUNTS */
@@ -546,8 +566,11 @@ export const handler = async (event: any): Promise<any> => {
   const totalStats = { added: 0, updated: 0, deleted: 0, unchanged: 0, errors: 0 };
   let processedClinics = 0;
 
+  // Build clinic credentials from DynamoDB
+  const clinicCreds = await buildClinicCreds();
+
   // Process clinics sequentially to avoid SFTP connection limits
-  for (const creds of CLINIC_CREDS) {
+  for (const creds of clinicCreds) {
     try {
       const stats = await processClinic(creds);
       totalStats.added += stats.added;
@@ -565,7 +588,7 @@ export const handler = async (event: any): Promise<any> => {
   const executionTime = (endTime.getTime() - startTime.getTime()) / 1000;
 
   console.log('\n=== Fee Schedule Sync Summary ===');
-  console.log(`Total clinics: ${CLINIC_CREDS.length}`);
+  console.log(`Total clinics: ${clinicCreds.length}`);
   console.log(`Successfully processed: ${processedClinics}`);
   console.log(`Errors: ${totalStats.errors}`);
   console.log(`Records added: ${totalStats.added}`);

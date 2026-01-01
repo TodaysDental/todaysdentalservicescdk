@@ -8,8 +8,13 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
-import clinicsData from '../configs/clinics.json';
-import { Clinic } from '../configs/clinics';
+// NOTE: clinicConfigData is used at CDK synthesis time for webhook URL generation
+// Lambda functions should use DynamoDB secrets tables at runtime for Twilio credentials
+import clinicConfigData from '../configs/clinic-config.json';
+
+// Alias for backward compatibility
+const clinicsData = clinicConfigData;
+type Clinic = typeof clinicsData[number];
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface RcsStackProps extends StackProps {
@@ -21,6 +26,14 @@ export interface RcsStackProps extends StackProps {
    * Twilio Auth Token (for webhook signature validation)
    */
   twilioAuthToken?: string;
+  /** GlobalSecrets DynamoDB table name for retrieving Twilio credentials */
+  globalSecretsTableName?: string;
+  /** ClinicSecrets DynamoDB table name for per-clinic credentials */
+  clinicSecretsTableName?: string;
+  /** ClinicConfig DynamoDB table name for clinic configuration */
+  clinicConfigTableName?: string;
+  /** KMS key ARN for decrypting secrets */
+  secretsEncryptionKeyArn?: string;
 }
 
 export class RcsStack extends Stack {
@@ -222,6 +235,10 @@ export class RcsStack extends Stack {
       TWILIO_ACCOUNT_SID: twilioAccountSid,
       TWILIO_AUTH_TOKEN: twilioAuthToken,
       SKIP_TWILIO_VALIDATION: process.env.SKIP_TWILIO_VALIDATION || 'false',
+      // Secrets tables for dynamic credential retrieval (Twilio credentials can be fetched from GlobalSecrets)
+      GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
+      CLINIC_SECRETS_TABLE: props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets',
+      CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
     };
 
     // Extended environment for send message function (includes unsubscribe table)
@@ -331,6 +348,43 @@ export class RcsStack extends Stack {
     });
     applyTags(this.templatesFn, { Function: 'rcs-templates' });
     this.rcsTemplatesTable.grantReadWriteData(this.templatesFn);
+
+    // ========================================
+    // SECRETS TABLES PERMISSIONS
+    // ========================================
+    // Grant read access to secrets tables for dynamic Twilio credential retrieval
+    if (props.globalSecretsTableName) {
+      const secretsReadPolicy = new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets'}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
+        ],
+      });
+
+      this.incomingMessageFn.addToRolePolicy(secretsReadPolicy);
+      this.fallbackMessageFn.addToRolePolicy(secretsReadPolicy);
+      this.statusCallbackFn.addToRolePolicy(secretsReadPolicy);
+      this.sendMessageFn.addToRolePolicy(secretsReadPolicy);
+      this.getMessagesFn.addToRolePolicy(secretsReadPolicy);
+      this.templatesFn.addToRolePolicy(secretsReadPolicy);
+    }
+
+    // Grant KMS decryption for secrets encryption key
+    if (props.secretsEncryptionKeyArn) {
+      const kmsDecryptPolicy = new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      });
+
+      this.incomingMessageFn.addToRolePolicy(kmsDecryptPolicy);
+      this.fallbackMessageFn.addToRolePolicy(kmsDecryptPolicy);
+      this.statusCallbackFn.addToRolePolicy(kmsDecryptPolicy);
+      this.sendMessageFn.addToRolePolicy(kmsDecryptPolicy);
+      this.getMessagesFn.addToRolePolicy(kmsDecryptPolicy);
+      this.templatesFn.addToRolePolicy(kmsDecryptPolicy);
+    }
 
     // ========================================
     // API ROUTES

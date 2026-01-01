@@ -14,6 +14,12 @@ import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface AccountingStackProps extends StackProps {
   staffClinicInfoTableName: string;
+  /** GlobalSecrets DynamoDB table name for retrieving Odoo credentials */
+  globalSecretsTableName: string;
+  /** ClinicConfig DynamoDB table name for clinic configuration */
+  clinicConfigTableName: string;
+  /** KMS key ARN for decrypting secrets */
+  secretsEncryptionKeyArn: string;
 }
 
 export class AccountingStack extends Stack {
@@ -255,10 +261,10 @@ export class AccountingStack extends Stack {
         DOCUMENTS_BUCKET: this.documentsBucket.bucketName,
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName,
         STAFF_USER_TABLE: staffUserTableName,
-        // Odoo integration
-        ODOO_URL: 'https://todays-dental-services.odoo.com',
-        ODOO_DATABASE: 'todays-dental-services',
-        ODOO_API_KEY: '1a0e921ab53be80da6eac315d56c400cf749ce80',
+        // Secrets tables for dynamic credential retrieval
+        // Odoo credentials are now stored in GlobalSecrets table
+        GLOBAL_SECRETS_TABLE: props.globalSecretsTableName,
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName,
       },
     });
     applyTags(this.accountingFn, { Function: 'accounting' });
@@ -299,6 +305,21 @@ export class AccountingStack extends Stack {
         'textract:AnalyzeExpense',
       ],
       resources: ['*'],
+    }));
+
+    // Grant read access to secrets tables for dynamic Odoo credential retrieval
+    this.accountingFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName}`,
+      ],
+    }));
+
+    // Grant KMS decryption for secrets encryption key
+    this.accountingFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['kms:Decrypt', 'kms:DescribeKey'],
+      resources: [props.secretsEncryptionKeyArn],
     }));
 
     // ========================================

@@ -13,6 +13,14 @@ import { getCdkCorsConfig, getCorsErrorHeaders, ALLOWED_ORIGINS_LIST } from '../
 
 export interface MarketingStackProps extends StackProps {
   authorizerFunctionArn: string;
+  /** GlobalSecrets DynamoDB table name for retrieving Ayrshare credentials */
+  globalSecretsTableName: string;
+  /** ClinicSecrets DynamoDB table name for per-clinic credentials */
+  clinicSecretsTableName: string;
+  /** ClinicConfig DynamoDB table name for clinic configuration */
+  clinicConfigTableName: string;
+  /** KMS key ARN for decrypting secrets */
+  secretsEncryptionKeyArn: string;
 }
 
 export class MarketingStack extends Stack {
@@ -242,37 +250,9 @@ export class MarketingStack extends Stack {
     // 5. Environment Variables
     // ============================================
     
-    // Ayrshare Business Integration Configuration
-    // Domain: id-lJiXe (from Ayrshare Business Integration Guide)
-    // SSO URL: https://profile.ayrshare.com/social-accounts?domain=id-lJiXe&jwt=TOKEN
-    const AYRSHARE_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
-MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDIqgfoHL/oJPQb
-Ud5t2Y8I24eMKys3SI9bfHsVLEFFc4WCda5pvrBb8+l0H051V4bUGdhJoeJyskur
-0Gwyn3DmnA+sopOsphdCB7QvbS4cyhIb0eqjFuRAP3pedqitleKsLPUoU0nJoOeH
-OK9Tl0hh1PJp4ozl3uWZuTVZTHSW82C/h/r0h9fB477loGWMCYdFWBt7DEDj8CqN
-8e7tSaFom8NKUFpstP1Na5cWN1QUK4/Kwmt3QiFv94e0rPmbnrCt2vO0PTIZwcj+
-meqHRmhhCKJQ4rt1J8mLDbTXRjC3Sfooetn46zhWp1BzUUU8N34kraO+2Uj9swX8
-KmHJVPRlAgMBAAECggEAVTuLojbb+MIBgb0ziltXmv6MQ6huccv7QHPOX/7tNo/M
-DM7pp3bcuCIRbkaB7+uelGbp7NS7N9att6wO2S3KKdnt+nkP2sytolldWqu4Y3gd
-Wv29+UoW54dO9eLW4OyCXHm4JEnEVMVospIMPqhKkWt/ECSvjlAwHCyEEYsdFqRG
-bTWSpPOICzRQD4M+WpaoPkIXxLur1Dp/CAdnM9JeN8i2UOYYjZEODRhx2j4JPDYh
-xitrOYNlfGsxtTjFUO6vpfGIy0t6PrH4obckYnjxJb6fZnUK1zgWOmVlRHMWem5g
-Wsh9j0WG6hjHSY6y3QpTFnQAYvuUL+5WBQSVc8OtXQKBgQD5dWBHjsTW7AL1Ql2A
-W4GkucqcNeq9HG3r7+BPfWKyxQ0j+UysPHDPYwk8fxtDI8u2BDSPE85Rr3sKsJ6+
-Bm4iagT9i6ZzBz2kU1hArTwwaooVbo4K0rQWkiHhhShZJ4C8jJZWSLC8HEE7nucP
-mhQSuFY4rbOSsHcnFTDomJmgKwKBgQDN7RjGwEe8H1hDxtIqx7zgSJmSX1+V0tXy
-ocxvq0Jx8+p040wwmLREvVhLIk6pC4cqV6mJ1UU7V5q3OaXUkUf7mFlVnmIJcSUk
-OKJ9y5uW6Mjdc/X5PNnSKX2lhi7rn5iVoqdFwLw1N49VNepIp2Wfj0JlkVOzo6XG
-3mqTVR7lrwKBgHHryYlESN5Br+QjZ6HbqCv68O0/rjCo0AYkaNLEVxN+685W5k3t
-2DLNboVjIqcZrMk1yG7iw6EIO2+ZUxVCyH8M3bSQVvZHAz6NFUuMEWWm8eJxt4p3
-yOhZ2gEsl02HvcHdjjZfQd7WJHA+1BSK78nQxwdhRBWkYvXFNq2yKs47AoGBAI/z
-Xy+IuFy8eKIgeUhoihMrDReyTgpY8TCEhHnHeVJZVRtSzS7ngJTQ28jh+aTYJyul
-TiHJEXVzPvc4eEEJMg2hqUldx2CcVH9mi8huLZynq8qKxnbtX8M3N9se2uvhi/OG
-WXI8UhTNewfxAY66XiLVLW/80Esyaa+ESXImvcuHAoGBALUQ0cLIgSPOs3GD6UxQ
-mLeIFNO6iIxHmr2tLExxuL9oy/UaY0YbuseOv7uL5bbJfJbTsazDkDCOo+j3DEnP
-Qha+zBk6Bl9njkhrtdrZPoiow2WevXi9eT6+0DluulxlQGCy2ZcKGZmJDejlNHBl
-wlYXO5lFMbXxxeTKZao2DZfQ
------END PRIVATE KEY-----`;
+    // Ayrshare credentials are now stored in GlobalSecrets DynamoDB table
+    // Lambda functions will retrieve them at runtime using secrets-helper utility
+    // This removes hardcoded secrets from the codebase
 
     const envVars = {
       MARKETING_PROFILES_TABLE: this.marketingProfilesTable.tableName,
@@ -281,11 +261,11 @@ wlYXO5lFMbXxxeTKZao2DZfQ
       MARKETING_MEDIA_TABLE: this.marketingMediaTable.tableName,
       MARKETING_ANALYTICS_TABLE: this.marketingAnalyticsTable.tableName,
       MEDIA_BUCKET: this.mediaBucket.bucketName,
-      // Ayrshare API Configuration - Business Integration
-      AYRSHARE_API_KEY: 'A7DD2620-39C046C1-ABAAA24C-64B16202',
-      AYRSHARE_PRIVATE_KEY: AYRSHARE_PRIVATE_KEY,
-      AYRSHARE_DOMAIN: 'id-lJiXe',
-      // Webhook secret for HMAC signature verification
+      // Secrets tables for dynamic credential retrieval
+      GLOBAL_SECRETS_TABLE: props.globalSecretsTableName,
+      CLINIC_SECRETS_TABLE: props.clinicSecretsTableName,
+      CLINIC_CONFIG_TABLE: props.clinicConfigTableName,
+      // Webhook secret for HMAC signature verification (still from env var)
       AYRSHARE_WEBHOOK_SECRET: process.env.AYRSHARE_WEBHOOK_SECRET || '',
     };
 
@@ -480,6 +460,36 @@ wlYXO5lFMbXxxeTKZao2DZfQ
     // Ads Lambda permissions
     this.marketingProfilesTable.grantReadData(adsFn);
     this.marketingPostsTable.grantReadData(adsFn);
+
+    // ============================================
+    // 7b. Secrets Tables Permissions
+    // ============================================
+    // Grant all Lambda functions read access to secrets tables for dynamic credential retrieval
+    const allLambdas = [
+      profilesFn, postsFn, commentsFn, analyticsFn, mediaFn, webhooksFn,
+      analyticsSyncFn, autoScheduleFn, hashtagsFn, historyFn, messagesFn, validateFn, adsFn,
+    ];
+
+    // IAM policy for reading from secrets tables
+    const secretsReadPolicy = new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName}`,
+      ],
+    });
+
+    // IAM policy for KMS decryption
+    const kmsDecryptPolicy = new iam.PolicyStatement({
+      actions: ['kms:Decrypt', 'kms:DescribeKey'],
+      resources: [props.secretsEncryptionKeyArn],
+    });
+
+    allLambdas.forEach(fn => {
+      fn.addToRolePolicy(secretsReadPolicy);
+      fn.addToRolePolicy(kmsDecryptPolicy);
+    });
 
     // ============================================
     // 8. API Routes

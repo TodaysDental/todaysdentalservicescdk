@@ -12,7 +12,11 @@ import {
   PermissionType,
   UserPermissions,
 } from '../../shared/utils/permissions-helper';
-import clinicsData from '../../infrastructure/configs/clinics.json';
+import { 
+  getClinicConfig, 
+  getAllClinicConfigs, 
+  ClinicConfig 
+} from '../../shared/utils/secrets-helper';
 import { renderTemplate, buildTemplateContext } from '../../shared/utils/clinic-placeholders';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import {
@@ -41,63 +45,26 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ses = new SESv2Client({});
 const sms = new (PinpointSMSVoiceV2Client as any)({});
 
-type ClinicCreds = {
-  developerKey: string;
-  customerKey: string;
-  sftpHost: string;
-  sftpPort: number;
-  sftpUsername: string;
-  sftpPassword: string;
-  sftpRemoteDir?: string;
-};
+// Clinic lookup helpers - fetch from DynamoDB via secrets-helper
+async function getClinicSesIdentityArn(clinicId: string): Promise<string | undefined> {
+  const config = await getClinicConfig(clinicId);
+  return config?.sesIdentityArn;
+}
 
-// Build clinic credentials from imported clinic data to avoid large env vars
-const CLINIC_CREDS: Record<string, ClinicCreds> = (() => {
-  const acc: Record<string, ClinicCreds> = {};
-  (clinicsData as any[]).forEach((c: any) => {
-    acc[String(c.clinicId)] = {
-      developerKey: c.developerKey,
-      customerKey: c.customerKey,
-      sftpHost: '', // Not used in notification function
-      sftpPort: 22,
-      sftpUsername: '',
-      sftpPassword: '',
-    };
-  });
-  return acc;
-})();
+async function getClinicSmsOriginationArn(clinicId: string): Promise<string | undefined> {
+  const config = await getClinicConfig(clinicId);
+  return config?.smsOriginationArn;
+}
 
-const CLINIC_SES_IDENTITY_ARN_MAP: Record<string, string> = (() => {
-  const acc: Record<string, string> = {};
-  (clinicsData as any[]).forEach((c: any) => {
-    if (c.sesIdentityArn) acc[String(c.clinicId)] = String(c.sesIdentityArn);
-  });
-  return acc;
-})();
+async function getClinicEmail(clinicId: string): Promise<string | undefined> {
+  const config = await getClinicConfig(clinicId);
+  return config?.clinicEmail;
+}
 
-const CLINIC_SMS_ORIGINATION_ARN_MAP: Record<string, string> = (() => {
-  const acc: Record<string, string> = {};
-  (clinicsData as any[]).forEach((c: any) => {
-    if (c.smsOriginationArn) acc[String(c.clinicId)] = String(c.smsOriginationArn);
-  });
-  return acc;
-})();
-
-const CLINIC_EMAIL_MAP: Record<string, string> = (() => {
-  const acc: Record<string, string> = {};
-  (clinicsData as any[]).forEach((c: any) => {
-    if (c.clinicEmail) acc[String(c.clinicId)] = String(c.clinicEmail);
-  });
-  return acc;
-})();
-
-const CLINIC_NAME_MAP: Record<string, string> = (() => {
-  const acc: Record<string, string> = {};
-  (clinicsData as any[]).forEach((c: any) => {
-    if (c.clinicName) acc[String(c.clinicId)] = String(c.clinicName);
-  });
-  return acc;
-})();
+async function getClinicName(clinicId: string): Promise<string> {
+  const config = await getClinicConfig(clinicId);
+  return config?.clinicName || 'Dental Clinic';
+}
 
 // Unsubscribe configuration
 const UNSUBSCRIBE_TABLE = process.env.UNSUBSCRIBE_TABLE || '';
@@ -132,8 +99,17 @@ async function processNotification(event: APIGatewayProxyEvent, body: any, clini
     firstName: String(body.firstName || body.FName || '').trim(),
     lastName: String(body.lastName || body.LName || '').trim(),
     email: String(body.email || '').trim().toLowerCase(),
-    phone: String(body.phone || '').trim().replace(/[^0-9+]/g, '')
+    phone: String(body.phone || '').trim().replace(/[^0-9+]/g, ''),
+    // Custom content fields
+    customEmailSubject: String(body.customEmailSubject || '').trim(),
+    customEmailHtml: String(body.customEmailHtml || body.customEmailBody || '').trim(),
+    customSmsText: String(body.customSmsText || body.textMessage || '').trim()
   };
+
+  // Determine if using custom content
+  const hasCustomEmail = !!input.customEmailSubject || !!input.customEmailHtml;
+  const hasCustomSms = !!input.customSmsText;
+  const hasTemplateOrCustom = !!input.templateName || hasCustomEmail || hasCustomSms;
 
   // Validation errors array
   const errors: string[] = [];
@@ -141,7 +117,11 @@ async function processNotification(event: APIGatewayProxyEvent, body: any, clini
   // Required field validation
   if (!input.patNum) errors.push('PatNum is required');
   if (input.notificationTypes.length === 0) errors.push('At least one notification type is required');
-  if (!input.templateName) errors.push('templateMessage is required');
+  
+  // Validate content - either template or custom content is required
+  if (!hasTemplateOrCustom) {
+    errors.push('Either templateMessage or custom content (customEmailSubject/customEmailHtml/customSmsText) is required');
+  }
 
   // Format validation
   if (input.notificationTypes.includes('EMAIL') && input.email) {
@@ -167,7 +147,7 @@ async function processNotification(event: APIGatewayProxyEvent, body: any, clini
     patNum: input.patNum,
     sentBy: sentBy,
     notificationTypes: input.notificationTypes,
-    templateName: input.templateName,
+    templateName: input.templateName || 'custom',
     recipient: { 
       firstName: input.firstName, 
       lastName: input.lastName,
@@ -209,6 +189,11 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
   const lname = String(body.LName || '').trim();
   const email = String(body.email || body.toEmail || body.Email || '').trim();
 
+  // Custom content fields (when not using a template)
+  const customEmailSubject = String(body.customEmailSubject || '').trim();
+  const customEmailHtml = String(body.customEmailHtml || body.customEmailBody || '').trim();
+  const customSmsText = String(body.customSmsText || body.textMessage || '').trim();
+
   // Validate required fields
   if (!patNum) return http(400, { error: 'PatNum is required' }, event);
 
@@ -216,7 +201,11 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
     return http(400, { error: 'Valid email is required for EMAIL notification type' }, event);
   }
 
-  // Load template if provided
+  // Determine if we're using template or custom content
+  const isCustomEmail = !templateMessage && (!!customEmailSubject || !!customEmailHtml);
+  const isCustomSms = !templateMessage && !!customSmsText;
+
+  // Load template if provided (only when not using custom content)
   let template: any = null;
   if (templateMessage) {
     template = await fetchTemplateByName(templateMessage);
@@ -225,9 +214,17 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
     }
   }
 
+  // Validate that we have content for the requested notification types
+  if (notificationTypes.includes('EMAIL') && !template && !isCustomEmail) {
+    return http(400, { error: 'Either templateMessage or custom email content (customEmailSubject/customEmailHtml) is required for EMAIL' }, event);
+  }
+  if (notificationTypes.includes('SMS') && !template && !isCustomSms) {
+    return http(400, { error: 'Either templateMessage or customSmsText is required for SMS' }, event);
+  }
+
   const results: any = { email: null, sms: null, skipped: [] };
   // Build template context with patient data - supports {patient_name}, {first_name}, {last_name}, {FName}, {LName}
-  const mergedCtx = buildTemplateContext(clinicId, { FName: fname, LName: lname });
+  const mergedCtx = await buildTemplateContext(clinicId, { FName: fname, LName: lname });
 
   if (notificationTypes.includes('EMAIL')) {
     // Check if recipient has unsubscribed from email
@@ -247,14 +244,26 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
         clinicId,
         type: 'EMAIL',
         email: email,
-        templateName: templateMessage,
+        templateName: templateMessage || 'custom',
         sentBy,
         status: 'SKIPPED_UNSUBSCRIBED'
       });
     } else {
       try {
-        const subjectStr = template ? renderTemplateString(String(template.email_subject || 'Notification'), mergedCtx) : 'Notification';
-        let htmlStr = template ? renderTemplateString(String(template.email_body || ''), mergedCtx) : '';
+        // Use custom content if provided, otherwise use template
+        let subjectStr: string;
+        let htmlStr: string;
+
+        if (isCustomEmail) {
+          // Use custom email content - apply template rendering for placeholders
+          subjectStr = renderTemplateString(customEmailSubject || 'Notification', mergedCtx);
+          htmlStr = renderTemplateString(customEmailHtml, mergedCtx);
+        } else {
+          // Use template content
+          subjectStr = template ? renderTemplateString(String(template.email_subject || 'Notification'), mergedCtx) : 'Notification';
+          htmlStr = template ? renderTemplateString(String(template.email_body || ''), mergedCtx) : '';
+        }
+
         const textAltStr = htmlStr ? htmlStr.replace(/<[^>]+>/g, ' ') : '';
 
         // Generate unsubscribe link and add footer to email
@@ -264,7 +273,7 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
           clinicId,
           channel: 'EMAIL',
         });
-        const clinicName = CLINIC_NAME_MAP[clinicId] || 'Dental Clinic';
+        const clinicName = await getClinicName(clinicId);
         const unsubscribeFooter = generateEmailUnsubscribeFooter(unsubscribeLink, clinicName);
         htmlStr = htmlStr + unsubscribeFooter;
 
@@ -275,7 +284,7 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
           html: htmlStr || textAltStr, 
           text: textAltStr || htmlStr,
           patNum,
-          templateName: templateMessage,
+          templateName: templateMessage || 'custom',
           sentBy,
           unsubscribeLink,
         });
@@ -290,7 +299,7 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
           email: email,
           subject: subjectStr,
           message: htmlStr || textAltStr,
-          templateName: templateMessage,
+          templateName: templateMessage || 'custom',
           sentBy,
           status: 'SENT'
         });
@@ -301,7 +310,7 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
           clinicId,
           type: 'EMAIL',
           email: email,
-          templateName: templateMessage,
+          templateName: templateMessage || 'custom',
           sentBy,
           status: 'FAILED'
         });
@@ -332,12 +341,21 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
         clinicId,
         type: 'SMS',
         phone: normalizedPhone,
-        templateName: templateMessage,
+        templateName: templateMessage || 'custom',
         sentBy,
         status: 'SKIPPED_UNSUBSCRIBED'
       });
     } else {
-      let smsBody = template ? renderTemplateString(String(template.text_message || ''), mergedCtx) : (body.textMessage || body.customSmsText || '');
+      // Use custom SMS content if provided, otherwise use template
+      let smsBody: string;
+      if (isCustomSms) {
+        // Use custom SMS content - apply template rendering for placeholders
+        smsBody = renderTemplateString(customSmsText, mergedCtx);
+      } else {
+        // Use template content
+        smsBody = template ? renderTemplateString(String(template.text_message || ''), mergedCtx) : '';
+      }
+
       if (!smsBody) return http(400, { error: 'No SMS content provided (template or custom)' }, event);
 
       // Add unsubscribe text to SMS (Reply STOP to unsubscribe)
@@ -352,7 +370,7 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
           type: 'SMS',
           phone: normalizedPhone,
           message: smsBody,
-          templateName: templateMessage,
+          templateName: templateMessage || 'custom',
           sentBy,
           status: 'SENT'
         });
@@ -364,7 +382,7 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
           type: 'SMS',
           phone: normalizedPhone,
           message: smsBody,
-          templateName: templateMessage,
+          templateName: templateMessage || 'custom',
           sentBy,
           status: 'FAILED'
         });
@@ -373,7 +391,7 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
     }
   }
 
-  return http(200, { success: true, sent: results, clinicId, patNum, template: templateMessage, sent_by: sentBy }, event);
+  return http(200, { success: true, sent: results, clinicId, patNum, template: templateMessage || 'custom', sent_by: sentBy }, event);
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
@@ -517,12 +535,13 @@ function normalizePhone(p: string): string | undefined {
 }
 
 async function fetchPatientContact(clinicId: string, patNum: string): Promise<{ email?: string; phone?: string }> {
-  const creds = CLINIC_CREDS[clinicId];
-  if (!creds) return {};
+  const { getClinicSecrets } = await import('../../shared/utils/secrets-helper');
+  const secrets = await getClinicSecrets(clinicId);
+  if (!secrets) return {};
   const API_HOST = 'api.opendental.com';
   const API_BASE = '/api/v1';
   const path = `${API_BASE}/patients/Simple?PatNum=${encodeURIComponent(patNum)}`;
-  const headers = { Authorization: `ODFHIR ${creds.developerKey}/${creds.customerKey}`, 'Content-Type': 'application/json' };
+  const headers = { Authorization: `ODFHIR ${secrets.openDentalDeveloperKey}/${secrets.openDentalCustomerKey}`, 'Content-Type': 'application/json' };
   const resp = await httpRequest({ hostname: API_HOST, path, method: 'GET', headers });
   let body: any;
   try { body = JSON.parse(resp.body); } catch { body = resp.body; }
@@ -613,11 +632,11 @@ interface SendEmailResult {
 
 async function sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
   const { clinicId, to, subject, html, text, patNum, templateName, sentBy, unsubscribeLink } = options;
-  const identityArn = CLINIC_SES_IDENTITY_ARN_MAP[clinicId];
+  const identityArn = await getClinicSesIdentityArn(clinicId);
   if (!identityArn) return { success: false };
   
   // Use the clinic's verified email address instead of no-reply
-  const clinicEmail = CLINIC_EMAIL_MAP[clinicId];
+  const clinicEmail = await getClinicEmail(clinicId);
   let from: string;
   
   if (!clinicEmail) {
@@ -723,7 +742,7 @@ async function createEmailTrackingRecord(record: {
 }
 
 async function sendSms({ clinicId, to, body }: { clinicId: string; to: string; body: string; }) {
-  const originationArn = CLINIC_SMS_ORIGINATION_ARN_MAP[clinicId];
+  const originationArn = await getClinicSmsOriginationArn(clinicId);
   if (!originationArn) return;
   const cmd = new SendTextMessageCommand({
     DestinationPhoneNumber: to,

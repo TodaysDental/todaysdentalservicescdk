@@ -15,6 +15,12 @@ export interface AdminStackProps extends StackProps {
   staffClinicInfoTableName?: string;
   agentPresenceTableName?: string;
   jwtSecretValue?: string;
+  /** GlobalSecrets DynamoDB table name for retrieving secrets */
+  globalSecretsTableName?: string;
+  /** ClinicConfig DynamoDB table name for clinic configuration */
+  clinicConfigTableName?: string;
+  /** KMS key ARN for decrypting secrets */
+  secretsEncryptionKeyArn?: string;
   // ** NEW: Input for the Communications Module (Favor Requests Table Name) **
   favorsTableName: string;
   // ** NEW: Teams table for group favor requests **
@@ -230,12 +236,9 @@ export class AdminStack extends Stack {
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName ?? '',
         CORS_ORIGIN: 'https://todaysdentalinsights.com',
         JWT_SECRET: props.jwtSecretValue ?? '',
-        // cPanel credentials for creating user email accounts
-        CPANEL_HOST: 'box2383.bluehost.com',
-        CPANEL_PORT: '2083',
-        CPANEL_USER: 'todayse4',
-        CPANEL_PASSWORD: 'James!007',
-        CPANEL_DOMAIN: 'todaysdentalpartners.com',
+        // Secrets tables for dynamic credential retrieval (cPanel credentials now from GlobalSecrets)
+        GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
       },
     });
     applyTags(this.registerFnV3, { Function: 'register' });
@@ -422,6 +425,35 @@ export class AdminStack extends Stack {
     }
 
     // (Agent presence endpoint is wired from the Chime stack to avoid cross-stack cycles)
+
+    // ========================================
+    // SECRETS TABLES PERMISSIONS
+    // ========================================
+    // Grant read access to secrets tables for dynamic credential retrieval
+    if (props.globalSecretsTableName) {
+      const secretsReadPolicy = new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
+        ],
+      });
+
+      // Register function needs cPanel credentials for creating email accounts
+      this.registerFnV3.addToRolePolicy(secretsReadPolicy);
+      this.usersFn.addToRolePolicy(secretsReadPolicy);
+    }
+
+    // Grant KMS decryption for secrets encryption key
+    if (props.secretsEncryptionKeyArn) {
+      const kmsDecryptPolicy = new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      });
+
+      this.registerFnV3.addToRolePolicy(kmsDecryptPolicy);
+      this.usersFn.addToRolePolicy(kmsDecryptPolicy);
+    }
 
     // ** NEW: Analytics Query Lambda **
     if (props.analyticsTableName) {

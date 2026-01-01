@@ -7,8 +7,12 @@ import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
-import clinicsJson from '../configs/clinics.json';
+// Use clinic-config.json for CDK synthesis (non-sensitive data only)
+import clinicConfigData from '../configs/clinic-config.json';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
+
+// Alias for backward compatibility
+const clinicsJson = clinicConfigData;
 
 export interface CallbackStackProps extends StackProps {
   // Authorizer imported via CloudFormation export

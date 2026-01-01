@@ -1,57 +1,120 @@
-import clinicsData from "./clinics.json";
+/**
+ * @deprecated This file is DEPRECATED. Use the secrets-helper utility instead.
+ * 
+ * Clinic data is now stored in three DynamoDB tables:
+ * 1. ClinicSecrets - Sensitive credentials (API keys, passwords)
+ * 2. GlobalSecrets - System-wide secrets (Ayrshare, Odoo, Gmail, Twilio)
+ * 3. ClinicConfig - Non-sensitive configuration (addresses, phone numbers, etc.)
+ * 
+ * Usage:
+ *   import { getClinicConfig, getClinicSecrets, getGlobalSecret } from '../../shared/utils/secrets-helper';
+ *   
+ *   // Get clinic configuration
+ *   const config = await getClinicConfig('dentistinnewbritain');
+ *   
+ *   // Get clinic secrets
+ *   const secrets = await getClinicSecrets('dentistinnewbritain');
+ *   
+ *   // Get global secret
+ *   const ayrshareApiKey = await getGlobalSecret('ayrshare', 'api_key');
+ * 
+ * The bundled JSON is still available for backward compatibility during migration,
+ * but all new code should use the DynamoDB-backed secrets-helper utility.
+ */
 
-// TODO: Implement with zod
+// Use clinic-config.json for non-sensitive configuration data
+import clinicConfigData from "./clinic-config.json";
+
+/**
+ * Clinic interface - now split between ClinicConfig (non-sensitive) and ClinicSecrets (sensitive)
+ * @deprecated Use ClinicConfig and ClinicSecrets from secrets-helper instead
+ */
 export interface Clinic {
   clinicId: string;
   clinicAddress: string;
   clinicCity: string;
   clinicEmail: string;
-  clinicFax: string;
+  clinicFax?: string;
   clinicName: string;
   clinicPhone: string;
   clinicState: string;
-  CliniczipCode: string;
+  clinicZipCode?: string;
+  CliniczipCode?: string; // Legacy field name
   logoUrl: string;
-  mapsUrl: string;
-  scheduleUrl: string;
+  mapsUrl?: string;
+  scheduleUrl?: string;
   websiteLink: string;
-  // Open Dental API credentials
-  developerKey: string;
-  customerKey: string;
   // Phone number for this clinic (inbound/outbound calls)
   phoneNumber: string;
-  // Amazon Connect specific properties
-  connectPhoneNumberId?: string; // Connect phone number ID
-  connectQueueId?: string; // Connect queue ID for this clinic
-  connectRoutingProfileId?: string; // Connect routing profile ID
-  connectContactFlowId?: string; // Connect contact flow ID
   // Clinic time zone (IANA), e.g., 'America/New_York'
-  timeZone?: string;
+  timezone?: string;
+  timeZone?: string; // Legacy field name
   // Per-clinic messaging identities
-  sesIdentityArn?: string; // e.g., arn:aws:ses:us-east-1:...:identity/example.com
-  smsOriginationArn?: string; // e.g., arn:aws:sms-voice:us-east-1:...:phone-number/phone-...
+  sesIdentityArn?: string;
+  smsOriginationArn?: string;
   // SFTP folder path for consolidated Transfer Family setup
-  sftpFolderPath: string;
-  // Optional: Open Dental ObjectStore name to use as first SftpAddress segment
-  odObjectStoreName?: string;
-  // Authorize.Net payment processing credentials
-  authorizeNetApiLoginId: string;
-  authorizeNetTransactionKey: string;
-  // RCS Messaging configuration (Twilio)
-  rcs?: {
-    /** Twilio RCS Sender ID for this clinic */
-    rcsSenderId?: string;
-    /** Twilio Messaging Service SID (alternative to rcsSenderId) */
-    messagingServiceSid?: string;
-    /** Whether RCS messaging is enabled for this clinic */
-    enabled?: boolean;
-  };
+  sftpFolderPath?: string;
   // Odoo integration for accounting
-  /** Odoo company ID for this clinic (for bank reconciliation) */
   odooCompanyId?: number;
-  /** Odoo bank journal ID for this clinic */
-  odooBankJournalId?: number;
+  // Ayrshare configuration (non-sensitive parts)
+  ayrshare?: {
+    enabled: boolean;
+    connectedPlatforms: string[];
+    facebook?: {
+      connected: boolean;
+      pageId: string;
+      pageName: string;
+    };
+  };
+  // Email configuration (non-sensitive parts)
+  email?: {
+    gmail?: {
+      imapHost: string;
+      imapPort: number;
+      smtpHost: string;
+      smtpPort: number;
+      smtpUser: string;
+      fromEmail: string;
+      fromName: string;
+    };
+    domain?: {
+      imapHost: string;
+      imapPort: number;
+      smtpHost: string;
+      smtpPort: number;
+      smtpUser: string;
+      fromEmail: string;
+      fromName: string;
+    };
+  };
+  // NOTE: Sensitive fields have been removed - use getClinicSecrets() instead
+  // - developerKey -> secrets.openDentalDeveloperKey
+  // - customerKey -> secrets.openDentalCustomerKey
+  // - authorizeNetApiLoginId -> secrets.authorizeNetApiLoginId
+  // - authorizeNetTransactionKey -> secrets.authorizeNetTransactionKey
 }
 
-// Backend only
-export const clinics: Clinic[] = clinicsData;
+/**
+ * @deprecated Use getClinicConfig() and getClinicSecrets() from secrets-helper instead.
+ * This export is retained for backward compatibility during migration.
+ * NOTE: This now uses clinic-config.json which does NOT include sensitive fields.
+ */
+export const clinics: Clinic[] = clinicConfigData as Clinic[];
+
+/**
+ * @deprecated Use getClinicConfig() from secrets-helper instead.
+ * Get clinic by ID from bundled data (for backward compatibility only)
+ */
+export function getClinicById(clinicId: string): Clinic | undefined {
+  console.warn(`[DEPRECATED] getClinicById is deprecated. Use getClinicConfig('${clinicId}') from secrets-helper instead.`);
+  return clinics.find(c => c.clinicId === clinicId);
+}
+
+/**
+ * @deprecated Use getAllClinicConfigs() from secrets-helper instead.
+ * Get all clinic IDs from bundled data (for backward compatibility only)
+ */
+export function getAllClinicIds(): string[] {
+  console.warn('[DEPRECATED] getAllClinicIds is deprecated. Use getClinicIds() from secrets-helper instead.');
+  return clinics.map(c => c.clinicId);
+}

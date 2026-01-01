@@ -21,7 +21,12 @@ import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedroc
 import { v4 as uuidv4 } from 'uuid';
 import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import axios from 'axios';
-import clinicsData from '../../infrastructure/configs/clinics.json';
+import { 
+  getClinicConfig as getClinicConfigFromDb, 
+  getClinicSecrets, 
+  ClinicConfig as DbClinicConfig, 
+  ClinicSecrets 
+} from '../../shared/utils/secrets-helper';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 
 // ========================================================================
@@ -427,15 +432,16 @@ async function getClinicInsurance(clinicId: string): Promise<Record<string, stri
 }
 
 async function getEnhancedClinicConfig(clinicId: string): Promise<ClinicConfig | null> {
-  const staticConfig = clinicsData.find(clinic => clinic.clinicId === clinicId);
+  const staticConfig = await getClinicConfigFromDb(clinicId);
   if (!staticConfig) {
     return null;
   }
   
-  const [hours, pricing, insurance] = await Promise.all([
+  const [hours, pricing, insurance, secrets] = await Promise.all([
     getClinicHours(clinicId),
     getClinicPricing(clinicId),
-    getClinicInsurance(clinicId)
+    getClinicInsurance(clinicId),
+    getClinicSecrets(clinicId)
   ]);
   
   return {
@@ -445,8 +451,8 @@ async function getEnhancedClinicConfig(clinicId: string): Promise<ClinicConfig |
     clinicPhone: staticConfig.clinicPhone,
     clinicEmail: staticConfig.clinicEmail,
     clinicFax: staticConfig.clinicFax || staticConfig.clinicPhone,
-    developerKey: staticConfig.developerKey,
-    customerKey: staticConfig.customerKey,
+    developerKey: secrets?.openDentalDeveloperKey || '',
+    customerKey: secrets?.openDentalCustomerKey || '',
     websiteLink: staticConfig.websiteLink,
     clinicHours: hours,
     pricing,

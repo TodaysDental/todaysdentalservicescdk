@@ -9,8 +9,13 @@ import {
   hasModulePermission,
   UserPermissions,
 } from '../../shared/utils/permissions-helper';
-import clinicsData from '../../infrastructure/configs/clinics.json';
-import { Clinic } from '../../infrastructure/configs/clinics';
+import { 
+  getClinicConfig, 
+  getClinicSecrets, 
+  getAllClinicConfigs,
+  ClinicConfig, 
+  ClinicSecrets 
+} from '../../shared/utils/secrets-helper';
 
 // --- CONFIGURATION & CLIENTS ---
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -21,25 +26,41 @@ const OPEN_DENTAL_API_HOST = 'https://api.opendental.com';
 const OPEN_DENTAL_API_BASE = '/api/v1';
 const ALL_CLINIC_IDS = process.env.ALL_CLINIC_IDS?.split(',').map(id => id.trim()).filter(id => id.length > 0) || [];
 
-// Build clinic credentials map from imported clinic data
+// Cache for clinic credentials (populated on demand from DynamoDB)
 interface ClinicCredentials {
   developerKey: string;
   customerKey: string;
   timeZone: string;
 }
+const clinicCredsCache: Record<string, ClinicCredentials> = {};
 
-const CLINIC_CREDENTIALS: Record<string, ClinicCredentials> = (() => {
-  const acc: Record<string, ClinicCredentials> = {};
-  (clinicsData as any[]).forEach((c: any) => {
-    acc[String(c.clinicId)] = {
-      developerKey: c.developerKey,
-      customerKey: c.customerKey,
-      // JSON uses lowercase 'timezone', interface uses camelCase 'timeZone'
-      timeZone: c.timezone || c.timeZone || 'America/New_York',
-    };
-  });
-  return acc;
-})();
+/**
+ * Get clinic credentials from DynamoDB (cached)
+ */
+async function getClinicCredentials(clinicId: string): Promise<ClinicCredentials | null> {
+  if (clinicCredsCache[clinicId]) {
+    return clinicCredsCache[clinicId];
+  }
+
+  const [config, secrets] = await Promise.all([
+    getClinicConfig(clinicId),
+    getClinicSecrets(clinicId),
+  ]);
+
+  if (!config || !secrets) {
+    console.warn(`No credentials found for clinic: ${clinicId}`);
+    return null;
+  }
+
+  const creds: ClinicCredentials = {
+    developerKey: secrets.openDentalDeveloperKey,
+    customerKey: secrets.openDentalCustomerKey,
+    timeZone: config.timezone || 'America/New_York',
+  };
+
+  clinicCredsCache[clinicId] = creds;
+  return creds;
+}
 
 // --- INTERFACES ---
 
@@ -90,8 +111,8 @@ export const schedulerHandler = async (): Promise<APIGatewayProxyResult> => {
         try {
             console.log(`Processing clinic: ${clinicId}`);
 
-            // Get clinic credentials for direct OpenDental API call
-            const creds = CLINIC_CREDENTIALS[clinicId];
+            // Get clinic credentials from DynamoDB
+            const creds = await getClinicCredentials(clinicId);
             if (!creds || !creds.developerKey || !creds.customerKey) {
                 console.warn(`No OpenDental credentials found for clinic: ${clinicId}. Skipping.`);
                 errorCount++;
@@ -254,8 +275,8 @@ async function updateHours(event: APIGatewayProxyEvent, userPerms: UserPermissio
 }
 
 async function saveHours(clinicId: string, body: any, userPerms: UserPermissions, event: APIGatewayProxyEvent, isCreate: boolean) {
-    const clinic = (clinicsData as Clinic[]).find(c => c.clinicId === clinicId);
-    if (!clinic) return err(404, 'Clinic not found', event);
+    const config = await getClinicConfig(clinicId);
+    if (!config) return err(404, 'Clinic not found', event);
 
     const hoursData = validateHoursData(body);
     if (!hoursData.valid) return err(400, hoursData.message, event);
@@ -263,7 +284,7 @@ async function saveHours(clinicId: string, body: any, userPerms: UserPermissions
     const item: ClinicHoursItem = {
       clinicId,
       ...body,
-      timeZone: clinic.timeZone || 'America/New_York',
+      timeZone: config.timezone || 'America/New_York',
       updatedAt: Date.now(),
       updatedBy: userPerms.email,
     };

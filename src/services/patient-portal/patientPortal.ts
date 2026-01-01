@@ -6,8 +6,15 @@ import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, UpdateCo
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { APIContracts, APIControllers, Constants } from 'authorizenet';
-import clinicsJson from '../../infrastructure/configs/clinics.json';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import { 
+  getClinicConfig as getClinicConfigFromDb, 
+  getClinicSecrets, 
+  getAllClinicConfigs,
+  getGlobalSecret,
+  ClinicConfig as DbClinicConfig, 
+  ClinicSecrets 
+} from '../../shared/utils/secrets-helper';
+import { buildCorsHeaders, ALLOWED_ORIGINS_LIST } from '../../shared/utils/cors';
 
 const {
     SESSION_TABLE_PREFIX,
@@ -21,20 +28,44 @@ const {
 
 const API_BASE_URL = 'https://api.opendental.com/api/v1';
 
-// Build allowed origins from imported clinic data to avoid large env vars
-const ALLOWED_ORIGINS_LIST = [
-    'https://todaysdentalinsights.com',
-    ...(clinicsJson as any[])
-        .map(c => String(c.websiteLink))
-        .filter(Boolean)
-];
+// Allowed origins - loaded on first request and cached
+let allowedOriginsCache: string[] | null = null;
+
+// Initialize allowed origins from config (call this early in handler)
+// Combines DynamoDB data with static list from cors.ts for reliability
+async function initAllowedOrigins(): Promise<void> {
+    if (allowedOriginsCache) return;
+    
+    try {
+        const configs = await getAllClinicConfigs();
+        const dynamoOrigins = configs.map(c => c.websiteLink).filter(Boolean);
+        
+        // Combine DynamoDB origins with static list for reliability
+        // Use Set to avoid duplicates
+        allowedOriginsCache = [...new Set([
+            'https://todaysdentalinsights.com',
+            ...dynamoOrigins,
+            ...ALLOWED_ORIGINS_LIST
+        ])];
+        
+        console.log('[CORS] Loaded allowed origins:', allowedOriginsCache.length, 'origins');
+    } catch (error) {
+        console.warn('[CORS] Failed to load clinic configs from DynamoDB, using static list:', error);
+        // Fall back to static list from cors.ts which is built from clinic-config.json
+        allowedOriginsCache = ALLOWED_ORIGINS_LIST;
+    }
+}
+
+function getAllowedOrigins(): string[] {
+    return allowedOriginsCache || ['https://todaysdentalinsights.com'];
+}
 
 if (!SESSION_TABLE_PREFIX || !SMS_LOG_TABLE_PREFIX || !DEFAULT_SESSION_TABLE || !DEFAULT_SMS_LOG_TABLE) {
     console.error('Missing required environment variables');
     throw new Error('Missing SESSION_TABLE_PREFIX, SMS_LOG_TABLE_PREFIX, DEFAULT_SESSION_TABLE, or DEFAULT_SMS_LOG_TABLE environment variables');
 }
 
-// Clinic configuration interface
+// Clinic configuration interface for patient portal
 interface ClinicConfig {
     clinicId: string;
     developerKey: string;
@@ -42,24 +73,50 @@ interface ClinicConfig {
     authorizeNetApiLoginId: string;
     authorizeNetTransactionKey: string;
     phoneNumber: string;
-    sftpPassword?: string; // Optional SFTP password for document downloads
-    sftpHost?: string; // SFTP server hostname
-    sftpPort?: number; // SFTP port (default 22)
-    sftpUsername?: string; // SFTP username (default sftpuser)
+    sftpPassword?: string;
+    sftpHost?: string;
+    sftpPort?: number;
+    sftpUsername?: string;
     [key: string]: any;
 }
 
-// Get clinic configuration by ID
-function getClinicConfig(clinicId: string): ClinicConfig {
-    const clinic = (clinicsJson as any[]).find(c => c.clinicId === clinicId);
-    if (!clinic) {
+// Get clinic configuration by ID - combining config and secrets
+async function getClinicConfig(clinicId: string): Promise<ClinicConfig> {
+    const [config, secrets] = await Promise.all([
+        getClinicConfigFromDb(clinicId),
+        getClinicSecrets(clinicId)
+    ]);
+    
+    if (!config || !secrets) {
         throw new Error(`Clinic configuration not found for clinicId: ${clinicId}`);
     }
-    return clinic as ClinicConfig;
+    
+    return {
+        clinicId: config.clinicId,
+        developerKey: secrets.openDentalDeveloperKey,
+        customerKey: secrets.openDentalCustomerKey,
+        authorizeNetApiLoginId: secrets.authorizeNetApiLoginId,
+        authorizeNetTransactionKey: secrets.authorizeNetTransactionKey,
+        phoneNumber: config.phoneNumber,
+        clinicName: config.clinicName,
+        clinicEmail: config.clinicEmail,
+        clinicPhone: config.clinicPhone,
+    };
 }
 
 function getCorsHeaders(origin?: string) {
-    const allowOrigin = origin && ALLOWED_ORIGINS_LIST.includes(origin) ? origin : 'https://todaysdentalinsights.com';
+    const allowedOrigins = getAllowedOrigins();
+    const isOriginAllowed = origin && allowedOrigins.includes(origin);
+    const allowOrigin = isOriginAllowed ? origin : 'https://todaysdentalinsights.com';
+    
+    if (origin && !isOriginAllowed) {
+        console.warn('[CORS] Origin not in allowed list:', { 
+            requestOrigin: origin, 
+            allowedCount: allowedOrigins.length,
+            sampleAllowed: allowedOrigins.slice(0, 5)
+        });
+    }
+    
     return buildCorsHeaders({ allowOrigin, allowMethods: ['OPTIONS', 'GET', 'POST', 'PUT', 'DELETE'] });
 }
 
@@ -1424,6 +1481,9 @@ async function getChartModuleData(patNum: number, moduleType: string, clinicConf
 
 // Main handler function
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+    // Initialize allowed origins on first request
+    await initAllowedOrigins();
+    
     // Always set CORS headers first, even for early errors
     const origin = event.headers?.origin || event.headers?.Origin;
     const corsHeaders = getCorsHeaders(origin);
@@ -1470,7 +1530,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // Get clinic configuration
         let clinicConfig: ClinicConfig;
         try {
-            clinicConfig = getClinicConfig(clinicId);
+            clinicConfig = await getClinicConfig(clinicId);
         } catch (error: any) {
             console.error('Error getting clinic config:', error);
             return {

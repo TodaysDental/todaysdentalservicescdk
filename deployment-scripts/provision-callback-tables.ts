@@ -1,5 +1,9 @@
 import { DynamoDBClient, CreateTableCommand, DescribeTableCommand } from '@aws-sdk/client-dynamodb';
-import clinics from '../src/infrastructure/configs/clinics.json';
+// Use clinic-config.json for non-sensitive configuration data
+import clinicConfigData from '../src/infrastructure/configs/clinic-config.json';
+
+// Alias for backward compatibility
+const clinics = clinicConfigData;
 
 async function ensureTable(client: DynamoDBClient, tableName: string) {
   try {

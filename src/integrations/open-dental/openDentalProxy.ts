@@ -9,7 +9,12 @@ import {
   PermissionType,
   UserPermissions,
 } from '../../shared/utils/permissions-helper';
-import clinicsData from '../../infrastructure/configs/clinics.json';
+import { 
+  getClinicConfig, 
+  getClinicSecrets, 
+  ClinicConfig, 
+  ClinicSecrets 
+} from '../../shared/utils/secrets-helper';
 import { APIGatewayProxyEvent, APIGatewayProxyResult, APIGatewayProxyEventQueryStringParameters } from 'aws-lambda';
 import { parse as parseCsv } from 'csv-parse/sync';
 import { Client as SSH2Client } from 'ssh2';
@@ -42,25 +47,34 @@ const getCorsHeaders = (event: APIGatewayProxyEvent) =>
 const API_HOST = 'api.opendental.com';
 const API_BASE = '/api/v1';
 
-// Build clinic credentials from imported clinic data to avoid large env vars
+// Build clinic credentials from DynamoDB via secrets-helper
 const CONSOLIDATED_SFTP_HOST = process.env.CONSOLIDATED_SFTP_HOST || '';
 const CONSOLIDATED_SFTP_PASSWORD = process.env.CONSOLIDATED_SFTP_PASSWORD || '';
 
-const CLINIC_CREDS: Record<string, ClinicCreds> = (() => {
-  const acc: Record<string, ClinicCreds> = {};
-  (clinicsData as any[]).forEach((c: any) => {
-    acc[String(c.clinicId)] = {
-      developerKey: c.developerKey,
-      customerKey: c.customerKey,
-      sftpHost: CONSOLIDATED_SFTP_HOST,
-      sftpPort: 22,
-      sftpUsername: 'sftpuser',
-      sftpPassword: CONSOLIDATED_SFTP_PASSWORD,
-      sftpRemoteDir: 'QuerytemplateCSV',
-    };
-  });
-  return acc;
-})();
+// Cache for clinic credentials
+const clinicCredsCache = new Map<string, ClinicCreds>();
+
+async function getClinicCreds(clinicId: string): Promise<ClinicCreds | null> {
+  if (clinicCredsCache.has(clinicId)) {
+    return clinicCredsCache.get(clinicId)!;
+  }
+  
+  const secrets = await getClinicSecrets(clinicId);
+  if (!secrets) return null;
+  
+  const creds: ClinicCreds = {
+    developerKey: secrets.openDentalDeveloperKey,
+    customerKey: secrets.openDentalCustomerKey,
+    sftpHost: CONSOLIDATED_SFTP_HOST,
+    sftpPort: 22,
+    sftpUsername: 'sftpuser',
+    sftpPassword: CONSOLIDATED_SFTP_PASSWORD,
+    sftpRemoteDir: 'QuerytemplateCSV',
+  };
+  
+  clinicCredsCache.set(clinicId, creds);
+  return creds;
+}
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const corsHeaders = getCorsHeaders(event);
@@ -106,7 +120,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return httpErr(event, 403, `You do not have ${permLabel} permission for the ${MODULE_NAME} module`);
     }
 
-    const creds = CLINIC_CREDS[clinicId];
+    const creds = await getClinicCreds(clinicId);
     if (!creds) {
       return httpErr(event, 400, `No Open Dental credentials configured for clinicId=${clinicId}`);
     }

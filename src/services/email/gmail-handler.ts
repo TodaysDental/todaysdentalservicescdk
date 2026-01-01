@@ -13,8 +13,15 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { OAuth2Client } from 'google-auth-library';
 import { simpleParser } from 'mailparser';
-import clinicsData from '../../infrastructure/configs/clinics.json';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { 
+  getClinicConfig, 
+  getClinicSecrets, 
+  getAllClinicConfigs,
+  getGmailOAuthCredentials,
+  ClinicConfig, 
+  ClinicSecrets 
+} from '../../shared/utils/secrets-helper';
 import { getUserPermissions, getAllowedClinicIds, hasClinicAccess } from '../../shared/utils/permissions-helper';
 
 // -------------------- Types --------------------
@@ -29,20 +36,6 @@ interface EmailProviderConfig {
   smtpPassword: string;
   fromEmail: string;
   fromName: string;
-}
-
-interface ClinicConfig {
-  clinicId: string;
-  clinicEmail: string;
-  clinicName: string;
-  email?: {
-    // New structure: separate gmail and domain configs
-    gmail?: EmailProviderConfig;
-    domain?: EmailProviderConfig;
-    // Legacy OAuth fields (for Gmail REST API)
-    gmailUserId?: string;
-    gmailRefreshToken?: string;
-  };
 }
 
 interface EmailResponse {
@@ -95,14 +88,35 @@ const FOLDER_TO_LABEL: Record<GmailFolder, string> = {
   all: '',
 };
 
+// Extended email config with Gmail OAuth fields (legacy support)
+interface GmailEmailConfig {
+  gmail?: EmailProviderConfig;
+  domain?: EmailProviderConfig;
+  // Legacy Gmail OAuth fields (may not exist in all clinics)
+  gmailUserId?: string;
+  gmailRefreshToken?: string;
+}
+
+// Helper to get Gmail OAuth config from clinic
+function getGmailOAuthConfig(clinicConfig: ClinicConfig): { userId: string; refreshToken: string } | null {
+  const email = clinicConfig.email as GmailEmailConfig | undefined;
+  if (!email) return null;
+  
+  // Check for legacy OAuth fields
+  if (email.gmailRefreshToken) {
+    return {
+      userId: email.gmailUserId || 'me',
+      refreshToken: email.gmailRefreshToken,
+    };
+  }
+  
+  return null;
+}
+
 // -------------------- Helpers --------------------
 
 const GMAIL_CLIENT_ID = process.env.GMAIL_CLIENT_ID || '';
 const GMAIL_CLIENT_SECRET = process.env.GMAIL_CLIENT_SECRET || '';
-
-function getClinicConfig(clinicId: string): ClinicConfig | undefined {
-  return (clinicsData as ClinicConfig[]).find(c => c.clinicId === clinicId);
-}
 
 function normalizeResponse(resp: { statusCode?: number; headers?: Record<string, string>; body?: unknown }): APIGatewayProxyResult {
   const statusCode = resp && typeof resp.statusCode === 'number' ? resp.statusCode : 200;
@@ -262,13 +276,12 @@ async function handleFetchEmails(
   days = 7,
   folder: GmailFolder = 'inbox'
 ): Promise<{ statusCode: number; body: { message: string; count: number; emails: EmailResponse[]; query?: string; folder?: string } }> {
-  const email = clinicConfig.email;
-  if (!email?.gmailRefreshToken) {
+  const oauthConfig = getGmailOAuthConfig(clinicConfig);
+  if (!oauthConfig) {
     throw new Error(`Clinic ${clinicConfig.clinicId} does not have Gmail OAuth configured`);
   }
 
-  const userId = email.gmailUserId || 'me';
-  const refreshToken = email.gmailRefreshToken;
+  const { userId, refreshToken } = oauthConfig;
 
   // Build query to filter emails by folder and date
   const afterDate = getDateNDaysAgo(days);
@@ -382,13 +395,12 @@ async function handleSendEmail(
   clinicConfig: ClinicConfig,
   payload: SendEmailPayload
 ): Promise<{ statusCode: number; body: { message: string; id?: string; threadId?: string } }> {
-  const email = clinicConfig.email;
-  if (!email?.gmailRefreshToken) {
+  const oauthConfig = getGmailOAuthConfig(clinicConfig);
+  if (!oauthConfig) {
     throw new Error(`Clinic ${clinicConfig.clinicId} does not have Gmail OAuth configured`);
   }
 
-  const userId = email.gmailUserId || 'me';
-  const refreshToken = email.gmailRefreshToken;
+  const { userId, refreshToken } = oauthConfig;
   const { to, subject, body } = payload || {};
 
   if (!to || !subject || !body) {
@@ -426,13 +438,12 @@ async function handleEmailAction(
   clinicConfig: ClinicConfig,
   payload: EmailActionPayload
 ): Promise<{ statusCode: number; body: { message: string; success: boolean } }> {
-  const email = clinicConfig.email;
-  if (!email?.gmailRefreshToken) {
+  const oauthConfig = getGmailOAuthConfig(clinicConfig);
+  if (!oauthConfig) {
     throw new Error(`Clinic ${clinicConfig.clinicId} does not have Gmail OAuth configured`);
   }
 
-  const userId = email.gmailUserId || 'me';
-  const refreshToken = email.gmailRefreshToken;
+  const { userId, refreshToken } = oauthConfig;
   const { action, messageId } = payload;
 
   if (!messageId) {
@@ -502,13 +513,12 @@ async function handleCreateOrUpdateDraft(
   clinicConfig: ClinicConfig,
   payload: DraftPayload
 ): Promise<{ statusCode: number; body: { message: string; draftId?: string; success: boolean } }> {
-  const email = clinicConfig.email;
-  if (!email?.gmailRefreshToken) {
+  const oauthConfig = getGmailOAuthConfig(clinicConfig);
+  if (!oauthConfig) {
     throw new Error(`Clinic ${clinicConfig.clinicId} does not have Gmail OAuth configured`);
   }
 
-  const userId = email.gmailUserId || 'me';
-  const refreshToken = email.gmailRefreshToken;
+  const { userId, refreshToken } = oauthConfig;
   const { to, subject, body, draftId } = payload;
 
   if (!to || !subject) {
@@ -565,13 +575,12 @@ async function handleDeleteDraft(
   clinicConfig: ClinicConfig,
   draftId: string
 ): Promise<{ statusCode: number; body: { message: string; success: boolean } }> {
-  const email = clinicConfig.email;
-  if (!email?.gmailRefreshToken) {
+  const oauthConfig = getGmailOAuthConfig(clinicConfig);
+  if (!oauthConfig) {
     throw new Error(`Clinic ${clinicConfig.clinicId} does not have Gmail OAuth configured`);
   }
 
-  const userId = email.gmailUserId || 'me';
-  const refreshToken = email.gmailRefreshToken;
+  const { userId, refreshToken } = oauthConfig;
 
   if (!draftId) {
     return { statusCode: 400, body: { message: 'Missing draftId', success: false } };
@@ -590,13 +599,12 @@ async function handleSendDraft(
   clinicConfig: ClinicConfig,
   draftId: string
 ): Promise<{ statusCode: number; body: { message: string; messageId?: string; success: boolean } }> {
-  const email = clinicConfig.email;
-  if (!email?.gmailRefreshToken) {
+  const oauthConfig = getGmailOAuthConfig(clinicConfig);
+  if (!oauthConfig) {
     throw new Error(`Clinic ${clinicConfig.clinicId} does not have Gmail OAuth configured`);
   }
 
-  const userId = email.gmailUserId || 'me';
-  const refreshToken = email.gmailRefreshToken;
+  const { userId, refreshToken } = oauthConfig;
 
   if (!draftId) {
     return { statusCode: 400, body: { message: 'Missing draftId', success: false } };
@@ -623,13 +631,12 @@ async function handleFetchDrafts(
   clinicConfig: ClinicConfig,
   limit = 50
 ): Promise<{ statusCode: number; body: { message: string; count: number; drafts: Array<{ draftId: string; to: string; subject: string; snippet: string }> } }> {
-  const email = clinicConfig.email;
-  if (!email?.gmailRefreshToken) {
+  const oauthConfig = getGmailOAuthConfig(clinicConfig);
+  if (!oauthConfig) {
     throw new Error(`Clinic ${clinicConfig.clinicId} does not have Gmail OAuth configured`);
   }
 
-  const userId = email.gmailUserId || 'me';
-  const refreshToken = email.gmailRefreshToken;
+  const { userId, refreshToken } = oauthConfig;
 
   try {
     // List drafts
@@ -736,7 +743,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       });
     }
 
-    const clinicConfig = getClinicConfig(clinicId);
+    const clinicConfig = await getClinicConfig(clinicId);
     if (!clinicConfig) {
       return normalizeResponse({
         statusCode: 404,

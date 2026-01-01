@@ -20,7 +20,13 @@ import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } fro
 import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 import { buildCorsHeaders, ALLOWED_ORIGINS_LIST } from '../../shared/utils/cors';
-import clinicsJson from '../../infrastructure/configs/clinics.json';
+import { 
+  getClinicConfig, 
+  getClinicSecrets,
+  getAllClinicConfigs,
+  ClinicConfig,
+  ClinicSecrets
+} from '../../shared/utils/secrets-helper';
 
 // Clients
 const textractClient = new TextractClient({
@@ -34,12 +40,11 @@ const s3Client = new S3Client({
 const IMAGE_BUCKET = process.env.IMAGE_BUCKET || '';
 const OPEN_DENTAL_API_BASE = 'https://api.opendental.com/api/v1';
 
-// Clinic configuration interface
-interface ClinicConfig {
+// Clinic credentials interface for OpenDental
+interface ClinicCredentials {
   clinicId: string;
   developerKey: string;
   customerKey: string;
-  [key: string]: any;
 }
 
 // Extracted insurance information
@@ -69,10 +74,15 @@ interface InsuranceInfo {
   confidence: number;
 }
 
-// Get clinic configuration
-function getClinicConfig(clinicId: string): ClinicConfig | null {
-  const clinic = (clinicsJson as any[]).find(c => c.clinicId === clinicId);
-  return clinic || null;
+// Get clinic credentials for OpenDental API
+async function getClinicCredentials(clinicId: string): Promise<ClinicCredentials | null> {
+  const secrets = await getClinicSecrets(clinicId);
+  if (!secrets) return null;
+  return {
+    clinicId,
+    developerKey: secrets.openDentalDeveloperKey,
+    customerKey: secrets.openDentalCustomerKey,
+  };
 }
 
 // Build CORS headers for response
@@ -362,13 +372,13 @@ function formatInsuranceForChatbot(info: InsuranceInfo): string {
  * Upload document to OpenDental
  */
 async function uploadToOpenDental(
-  clinicConfig: ClinicConfig,
+  clinicCreds: ClinicCredentials,
   patNum: number,
   imageBase64: string,
   extension: string,
   description: string
 ): Promise<any> {
-  const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
+  const AUTH_HEADER = `ODFHIR ${clinicCreds.developerKey}/${clinicCreds.customerKey}`;
   
   // Determine image type based on extension
   const isPdfDoc = extension.toLowerCase() === '.pdf';
@@ -445,9 +455,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
     
-    // Get clinic configuration
-    const clinicConfig = getClinicConfig(clinicId);
-    if (!clinicConfig) {
+    // Get clinic credentials for OpenDental API
+    const clinicCreds = await getClinicCredentials(clinicId);
+    if (!clinicCreds) {
       return {
         statusCode: 400,
         headers: corsHeaders,
@@ -552,7 +562,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             const description = `Insurance Card${side ? ` (${side})` : ''} - ${insuranceInfo.insuranceCompany || 'Unknown Insurance'}`;
             
             const uploadResult = await uploadToOpenDental(
-              clinicConfig,
+              clinicCreds,
               patNum,
               base64Content,
               extension,

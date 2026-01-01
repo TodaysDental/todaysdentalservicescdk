@@ -16,8 +16,15 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import * as nodemailer from 'nodemailer';
 import * as imaps from 'imap-simple';
 import { simpleParser } from 'mailparser';
-import clinicsData from '../../infrastructure/configs/clinics.json';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { 
+  getClinicConfig, 
+  getClinicSecrets, 
+  getAllClinicConfigs,
+  getGlobalSecret,
+  ClinicConfig, 
+  ClinicSecrets 
+} from '../../shared/utils/secrets-helper';
 import { getUserPermissions, getAllowedClinicIds, hasClinicAccess } from '../../shared/utils/permissions-helper';
 
 // -------------------- Types --------------------
@@ -32,26 +39,6 @@ interface EmailProviderConfig {
   smtpPassword: string;
   fromEmail: string;
   fromName: string;
-}
-
-interface ClinicConfig {
-  clinicId: string;
-  clinicEmail: string;
-  clinicName: string;
-  email?: {
-    // New structure: separate gmail and domain configs
-    gmail?: EmailProviderConfig;
-    domain?: EmailProviderConfig;
-    // Legacy flat structure (for backward compatibility)
-    imapHost?: string;
-    imapPort?: number;
-    smtpHost?: string;
-    smtpPort?: number;
-    smtpUser?: string;
-    smtpPassword?: string;
-    fromEmail?: string;
-    fromName?: string;
-  };
 }
 
 // Email type parameter: 'gmail' or 'domain'
@@ -101,9 +88,7 @@ const DOMAIN_SMTP_PASSWORD = process.env.DOMAIN_SMTP_PASSWORD || '';
 const DOMAIN_IMAP_HOST = process.env.DOMAIN_IMAP_HOST || 'imap.gmail.com';
 const DOMAIN_IMAP_PORT = parseInt(process.env.DOMAIN_IMAP_PORT || '993', 10);
 
-function getClinicConfig(clinicId: string): ClinicConfig | undefined {
-  return (clinicsData as ClinicConfig[]).find(c => c.clinicId === clinicId);
-}
+// Use getClinicConfig from secrets-helper (imported above)
 
 function normalizeResponse(resp: { statusCode?: number; headers?: Record<string, string>; body?: unknown }): APIGatewayProxyResult {
   const statusCode = resp && typeof resp.statusCode === 'number' ? resp.statusCode : 200;
@@ -663,7 +648,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       console.log(`Super admin ${userPermissions.email} accessing domain email`);
     } else {
       // Use clinic-specific credentials
-      const clinicConfig = getClinicConfig(clinicId);
+      const clinicConfig = await getClinicConfig(clinicId);
       if (!clinicConfig) {
         return normalizeResponse({
           statusCode: 404,
@@ -692,21 +677,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         smtpHost = providerConfig.smtpHost;
         smtpPort = providerConfig.smtpPort;
         smtpUser = providerConfig.smtpUser;
-        smtpPassword = providerConfig.smtpPassword;
+        // smtpPassword should come from secrets in production
+        smtpPassword = (providerConfig as any).smtpPassword || '';
         imapHost = providerConfig.imapHost;
         imapPort = providerConfig.imapPort;
         fromEmail = providerConfig.fromEmail;
         fromName = providerConfig.fromName;
-      } else if (email.smtpUser && email.smtpPassword) {
-        // Fallback to legacy flat structure
-        smtpHost = email.smtpHost || 'smtp.gmail.com';
-        smtpPort = email.smtpPort || 587;
-        smtpUser = email.smtpUser;
-        smtpPassword = email.smtpPassword;
-        imapHost = email.imapHost || 'imap.gmail.com';
-        imapPort = email.imapPort || 993;
-        fromEmail = email.fromEmail || clinicConfig.clinicEmail;
-        fromName = email.fromName || clinicConfig.clinicName;
       } else {
         return normalizeResponse({
           statusCode: 400,

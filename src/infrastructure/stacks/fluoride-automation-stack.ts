@@ -10,6 +10,14 @@ import * as path from 'path';
 
 export interface FluorideAutomationStackProps extends StackProps {
   // No props needed - uses custom JWT authentication, not Cognito
+  /** GlobalSecrets DynamoDB table name for retrieving SFTP credentials */
+  globalSecretsTableName?: string;
+  /** ClinicSecrets DynamoDB table name for per-clinic credentials */
+  clinicSecretsTableName?: string;
+  /** ClinicConfig DynamoDB table name for clinic configuration */
+  clinicConfigTableName?: string;
+  /** KMS key ARN for decrypting secrets */
+  secretsEncryptionKeyArn?: string;
 }
 
 export class FluorideAutomationStack extends Stack {
@@ -31,7 +39,10 @@ export class FluorideAutomationStack extends Stack {
         // Add information about the SFTP server for debugging purposes
         CONSOLIDATED_SFTP_HOST: consolidatedTransferServerEndpoint,
         CONSOLIDATED_SFTP_USERNAME: 'sftpuser', // Fixed username for Open Dental queries
-        CONSOLIDATED_SFTP_PASSWORD: 'Clinic2020',
+        // Secrets tables for dynamic SFTP credential retrieval
+        GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
+        CLINIC_SECRETS_TABLE: props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets',
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
       },
       bundling: {
         externalModules: ['ssh2', 'cpu-features'],  // Native .node binaries can't be bundled
@@ -85,6 +96,26 @@ export class FluorideAutomationStack extends Stack {
       ],
       resources: ['*']
     }));
+
+    // Grant read access to secrets tables for dynamic SFTP credential retrieval
+    if (props.globalSecretsTableName) {
+      fluorideAutomationFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets'}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
+        ],
+      }));
+    }
+
+    // Grant KMS decryption for secrets encryption key
+    if (props.secretsEncryptionKeyArn) {
+      fluorideAutomationFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      }));
+    }
 
     // Create CloudWatch Event Rule to trigger Lambda every hour
     const rule = new events.Rule(this, 'HourlyFluorideAutomationRule', {

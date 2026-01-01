@@ -11,8 +11,11 @@ import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
-// Import clinic data to dynamically configure the scheduler
-import clinicsData from '../configs/clinics.json'; 
+// Import clinic config data for CDK synthesis (non-sensitive data only)
+import clinicConfigData from '../configs/clinic-config.json';
+
+// Alias for backward compatibility
+const clinicsData = clinicConfigData; 
 
 export interface ClinicHoursStackProps extends StackProps {
   // Authorizer imported via CloudFormation export
