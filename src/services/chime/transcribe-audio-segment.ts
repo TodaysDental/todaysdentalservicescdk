@@ -294,9 +294,9 @@ async function sendResponseToCall(
                     actions.push({
                         Type: 'RecordAudio',
                         Parameters: {
-                            DurationInSeconds: 15, // Integer required
-                            SilenceDurationInSeconds: 2, // Integer required (1.5 is invalid)
-                            SilenceThreshold: 200, // 0-1000 range for Chime
+                            DurationInSeconds: 30, // Longer to capture full utterances
+                            SilenceDurationInSeconds: 3, // More time for user to think/respond
+                            SilenceThreshold: 100, // Lower = more sensitive to quiet speech (0-1000 range)
                             RecordingTerminators: ['#'],
                             RecordingDestination: {
                                 Type: 'S3',
@@ -332,6 +332,12 @@ async function sendResponseToCall(
         
         console.log('[TranscribeStreaming] Successfully sent response to call');
     } catch (error: any) {
+        // NotFoundException means the call has already ended (caller hung up)
+        // This is expected behavior when processing audio chunks asynchronously
+        if (error.name === 'NotFoundException') {
+            console.log('[TranscribeStreaming] Call has ended, skipping response (transaction no longer exists)');
+            return;
+        }
         console.error('[TranscribeStreaming] Error sending response to call:', error);
         throw error;
     }
@@ -368,8 +374,11 @@ async function processRecord(record: S3EventRecord): Promise<void> {
         const wavBuffer = await downloadAudio(bucket, key);
         
         // Check for minimum audio size (empty or very short recordings)
-        if (wavBuffer.length < 1000) {
-            console.log('[TranscribeStreaming] Audio too short, sending continue action');
+        // At 8kHz mono 16-bit, 16000 bytes = 1 second of audio
+        // Require at least 0.5 seconds (8000 bytes) to avoid processing noise/silence
+        const MIN_AUDIO_BYTES = 8000;
+        if (wavBuffer.length < MIN_AUDIO_BYTES) {
+            console.log(`[TranscribeStreaming] Audio too short (${wavBuffer.length} bytes < ${MIN_AUDIO_BYTES}), sending continue action`);
             await sendResponseToCall(callRecord, [{ action: 'CONTINUE' }]);
             return;
         }
@@ -411,19 +420,31 @@ async function processRecord(record: S3EventRecord): Promise<void> {
         console.log(`[TranscribeStreaming] Total processing time: ${Date.now() - totalStartTime}ms`);
         
     } catch (error: any) {
+        // NotFoundException means the call has already ended - this is normal
+        if (error.name === 'NotFoundException') {
+            console.log('[TranscribeStreaming] Call ended before processing completed:', callId);
+            return;
+        }
+        
         console.error('[TranscribeStreaming] Error processing recording:', {
             callId,
             error: error.message,
         });
         
         // Try to keep the call alive with a recovery message
+        // (sendResponseToCall will gracefully handle if call has ended)
         try {
             await sendResponseToCall(callRecord, [
                 { action: 'SPEAK', text: 'I apologize, I had trouble understanding. Could you please repeat that?' },
                 { action: 'CONTINUE' }
             ]);
-        } catch (e) {
-            console.error('[TranscribeStreaming] Failed to send error recovery response:', e);
+        } catch (e: any) {
+            // Don't log as error if call just ended
+            if (e.name === 'NotFoundException') {
+                console.log('[TranscribeStreaming] Call ended during error recovery:', callId);
+            } else {
+                console.error('[TranscribeStreaming] Failed to send error recovery response:', e);
+            }
         }
     }
 }

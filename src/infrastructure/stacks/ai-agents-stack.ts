@@ -10,6 +10,8 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 /**
@@ -76,6 +78,16 @@ export interface AiAgentsStackProps extends StackProps {
    * Optional - prefer explicit props over dynamic imports.
    */
   chimeStackName?: string;
+
+  // ========================================
+  // SECRETS STACK INTEGRATION (from SecretsStack)
+  // ========================================
+  /**
+   * KMS Key ARN used to encrypt secrets tables (ClinicSecrets/GlobalSecrets/ClinicConfig).
+   *
+   * Required if this stack reads from KMS-encrypted secrets tables (e.g. ActionGroupFn reads ClinicSecrets).
+   */
+  secretsEncryptionKeyArn?: string;
   
   // ========================================
   // UNIFIED ANALYTICS INTEGRATION (REQUIRED)
@@ -157,6 +169,16 @@ export class AiAgentsStack extends Stack {
   public readonly clinicHoursTable: dynamodb.ITable;
   public readonly voiceConfigTable: dynamodb.Table;
   public readonly scheduledCallsTable: dynamodb.Table;
+  /**
+   * Bulk outbound jobs table - tracks progress of large-scale call scheduling jobs.
+   * Supports scheduling 30,000+ calls with progress tracking and status updates.
+   */
+  public readonly bulkOutboundJobsTable: dynamodb.Table;
+  /**
+   * SQS queue for async processing of bulk outbound call batches.
+   * Enables high-volume scheduling without Lambda timeout issues.
+   */
+  public readonly outboundCallQueue: sqs.Queue;
   public readonly circuitBreakerTable: dynamodb.Table;
   /**
    * Reference to the shared CallAnalytics table from AnalyticsStack.
@@ -458,6 +480,49 @@ export class AiAgentsStack extends Stack {
     });
 
     // ========================================
+    // BULK OUTBOUND JOBS TABLE (30,000+ call scheduling)
+    // ========================================
+    // Tracks progress of large-scale call scheduling jobs with:
+    // - Job status (pending, processing, completed, failed)
+    // - Progress tracking (processedCalls, successfulCalls, failedCalls)
+    // - CSV upload support for bulk scheduling
+    this.bulkOutboundJobsTable = new dynamodb.Table(this, 'BulkOutboundJobsTable', {
+      partitionKey: { name: 'jobId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      tableName: `${this.stackName}-BulkOutboundJobs`,
+      timeToLiveAttribute: 'ttl',
+      pointInTimeRecovery: true,
+    });
+    applyTags(this.bulkOutboundJobsTable, { Table: 'bulk-outbound-jobs' });
+
+    // Add GSI for clinic-based job queries
+    this.bulkOutboundJobsTable.addGlobalSecondaryIndex({
+      indexName: 'ClinicStatusIndex',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+    });
+
+    // ========================================
+    // OUTBOUND CALL QUEUE (async batch processing)
+    // ========================================
+    // SQS queue for processing large batches of scheduled calls asynchronously.
+    // Enables scheduling 30,000+ calls without Lambda timeout issues.
+    this.outboundCallQueue = new sqs.Queue(this, 'OutboundCallQueue', {
+      queueName: `${this.stackName}-OutboundCallQueue`,
+      visibilityTimeout: Duration.minutes(6), // Must be >= Lambda timeout + buffer
+      retentionPeriod: Duration.days(7),
+      deadLetterQueue: {
+        queue: new sqs.Queue(this, 'OutboundCallDLQ', {
+          queueName: `${this.stackName}-OutboundCallDLQ`,
+          retentionPeriod: Duration.days(14),
+        }),
+        maxReceiveCount: 3, // Move to DLQ after 3 failures
+      },
+    });
+    applyTags(this.outboundCallQueue, { Queue: 'outbound-call-queue' });
+
+    // ========================================
     // SHARED CALL ANALYTICS TABLE (from AnalyticsStack)
     // ========================================
     // CRITICAL FIX: Use the shared CallAnalytics table from AnalyticsStack instead of
@@ -663,6 +728,8 @@ export class AiAgentsStack extends Stack {
         AGENTS_TABLE: this.agentsTable.tableName,
         // SECURITY FIX: Clinic credentials loaded from SSM at runtime, not bundled
         CLINICS_TABLE: props.clinicsTableName,
+        // Clinic secrets table for fallback credential lookup (from SecretsStack)
+        CLINIC_SECRETS_TABLE: 'TodaysDentalInsights-ClinicSecrets',
         // ARCHITECTURE FIX: Distributed circuit breaker table
         CIRCUIT_BREAKER_TABLE: this.circuitBreakerTable.tableName,
         // Insurance plans table for coverage lookup (synced from OpenDental every 15 mins)
@@ -686,6 +753,24 @@ export class AiAgentsStack extends Stack {
       actions: ['dynamodb:GetItem'],
       resources: [clinicsTableArnForActionGroup],
     }));
+
+    // Grant read access to ClinicSecrets table for fallback credential lookup
+    // This table is managed by SecretsStack and stores per-clinic OpenDental API credentials
+    const clinicSecretsTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/TodaysDentalInsights-ClinicSecrets`;
+    this.actionGroupFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['dynamodb:GetItem'],
+      resources: [clinicSecretsTableArn],
+    }));
+
+    // Grant KMS decryption for the SecretsStack encryption key (required for KMS-encrypted DynamoDB tables)
+    if (props.secretsEncryptionKeyArn) {
+      this.actionGroupFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      }));
+    }
 
     // Grant read access to Insurance Plans table for coverage lookup
     // This table is synced every 15 mins from OpenDental by InsurancePlanSyncStack
@@ -1213,6 +1298,69 @@ export class AiAgentsStack extends Stack {
       },
     }));
 
+    // Grant SQS permissions for async bulk scheduling
+    this.outboundCallQueue.grantSendMessages(this.outboundSchedulerFn);
+    this.outboundSchedulerFn.addEnvironment('OUTBOUND_CALL_QUEUE_URL', this.outboundCallQueue.queueUrl);
+    this.bulkOutboundJobsTable.grantReadWriteData(this.outboundSchedulerFn);
+    this.outboundSchedulerFn.addEnvironment('BULK_OUTBOUND_JOBS_TABLE', this.bulkOutboundJobsTable.tableName);
+
+    // ========================================
+    // OUTBOUND QUEUE PROCESSOR (async batch handler)
+    // ========================================
+    // Processes batches of scheduled calls from SQS queue.
+    // Enables scheduling 30,000+ calls without Lambda timeout issues.
+    const outboundQueueProcessorFn = new lambdaNode.NodejsFunction(this, 'OutboundQueueProcessorFn', {
+      functionName: `${this.stackName}-OutboundQueueProcessor`,
+      entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'outbound-queue-processor.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 512,
+      timeout: Duration.minutes(5), // Matches SQS visibility timeout
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        AGENTS_TABLE: this.agentsTable.tableName,
+        SCHEDULED_CALLS_TABLE: this.scheduledCallsTable.tableName,
+        BULK_OUTBOUND_JOBS_TABLE: this.bulkOutboundJobsTable.tableName,
+        OUTBOUND_CALL_LAMBDA_ARN: this.outboundExecutorFn.functionArn,
+        SCHEDULER_ROLE_ARN: this.schedulerRole.roleArn,
+      },
+    });
+    applyTags(outboundQueueProcessorFn, { Function: 'outbound-queue-processor' });
+
+    // Grant permissions
+    this.agentsTable.grantReadData(outboundQueueProcessorFn);
+    this.scheduledCallsTable.grantReadWriteData(outboundQueueProcessorFn);
+    this.bulkOutboundJobsTable.grantReadWriteData(outboundQueueProcessorFn);
+
+    // EventBridge Scheduler permissions for queue processor
+    outboundQueueProcessorFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'scheduler:CreateSchedule',
+        'scheduler:DeleteSchedule',
+        'scheduler:GetSchedule',
+      ],
+      resources: [`arn:aws:scheduler:${this.region}:${this.account}:schedule/default/outbound-call-*`],
+    }));
+
+    outboundQueueProcessorFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['iam:PassRole'],
+      resources: [this.schedulerRole.roleArn],
+      conditions: {
+        StringEquals: {
+          'iam:PassedToService': 'scheduler.amazonaws.com',
+        },
+      },
+    }));
+
+    // Add SQS trigger for queue processor
+    outboundQueueProcessorFn.addEventSource(new lambdaEventSources.SqsEventSource(this.outboundCallQueue, {
+      batchSize: 10, // Process up to 10 batches at a time
+      maxBatchingWindow: Duration.seconds(5), // Wait up to 5 seconds for a full batch
+      reportBatchItemFailures: true, // Enable partial batch failure reporting
+    }));
+
     // ========================================
     // WEBSOCKET HANDLERS
     // ========================================
@@ -1405,9 +1553,30 @@ export class AiAgentsStack extends Stack {
       authorizationType: apigw.AuthorizationType.CUSTOM,
     });
 
-    // /scheduled-calls/bulk - Bulk create scheduled calls
+    // /scheduled-calls/bulk - Bulk create scheduled calls (sync, up to 500)
     const scheduledCallsBulkRes = scheduledCallsRes.addResource('bulk');
     scheduledCallsBulkRes.addMethod('POST', new apigw.LambdaIntegration(this.outboundSchedulerFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /scheduled-calls/async-bulk - Async bulk scheduling for 30K+ calls
+    const scheduledCallsAsyncBulkRes = scheduledCallsRes.addResource('async-bulk');
+    scheduledCallsAsyncBulkRes.addMethod('POST', new apigw.LambdaIntegration(this.outboundSchedulerFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /bulk-jobs - List and query bulk scheduling jobs
+    const bulkJobsRes = this.api.root.addResource('bulk-jobs');
+    bulkJobsRes.addMethod('GET', new apigw.LambdaIntegration(this.outboundSchedulerFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /bulk-jobs/{jobId} - Get individual bulk job status
+    const bulkJobIdRes = bulkJobsRes.addResource('{jobId}');
+    bulkJobIdRes.addMethod('GET', new apigw.LambdaIntegration(this.outboundSchedulerFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
     });
@@ -1601,6 +1770,18 @@ export class AiAgentsStack extends Stack {
     new CfnOutput(this, 'ScheduledCallsTableName', {
       value: this.scheduledCallsTable.tableName,
       exportName: `${Stack.of(this).stackName}-ScheduledCallsTableName`,
+    });
+
+    new CfnOutput(this, 'BulkOutboundJobsTableName', {
+      value: this.bulkOutboundJobsTable.tableName,
+      description: 'Bulk outbound jobs table for tracking 30K+ call scheduling',
+      exportName: `${Stack.of(this).stackName}-BulkOutboundJobsTableName`,
+    });
+
+    new CfnOutput(this, 'OutboundCallQueueUrl', {
+      value: this.outboundCallQueue.queueUrl,
+      description: 'SQS queue URL for async bulk call processing',
+      exportName: `${Stack.of(this).stackName}-OutboundCallQueueUrl`,
     });
 
     new CfnOutput(this, 'VoiceAiFunctionArn', {

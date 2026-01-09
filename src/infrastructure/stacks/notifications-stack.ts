@@ -213,7 +213,36 @@ export class NotificationsStack extends Stack {
     });
     applyTags(this.sesConfigurationSet, { Resource: 'ses-config-set' });
 
-    // Add SNS event destination for all email events
+    // ========================================
+    // SES CONTACT LIST FOR SUBSCRIPTION MANAGEMENT
+    // ========================================
+    // This enables automatic unsubscribe handling via SES
+    // Emails using ListManagementOptions will have unsubscribe links automatically managed
+    // The {{amazonSESUnsubscribeUrl}} placeholder in emails will be replaced with the actual URL
+    
+    // Create SES Contact List for patient email subscriptions
+    const patientEmailsContactList = new ses.CfnContactList(this, 'PatientEmailsContactList', {
+      contactListName: 'PatientEmails',
+      description: 'Patient email subscriptions for clinic communications',
+      topics: [
+        {
+          topicName: 'ClinicCommunications',
+          displayName: 'Clinic Communications',
+          description: 'Appointment reminders, treatment follow-ups, and clinic notifications',
+          defaultSubscriptionStatus: 'OPT_IN',
+        },
+        {
+          topicName: 'MarketingPromotions',
+          displayName: 'Marketing & Promotions',
+          description: 'Special offers, seasonal promotions, and newsletters',
+          defaultSubscriptionStatus: 'OPT_IN',
+        },
+      ],
+    });
+    Tags.of(patientEmailsContactList).add('Stack', Stack.of(this).stackName);
+    Tags.of(patientEmailsContactList).add('Resource', 'ses-contact-list');
+
+    // Add SNS event destination for all email events including subscription changes
     new ses.ConfigurationSetEventDestination(this, 'SESEventDestination', {
       configurationSet: this.sesConfigurationSet,
       configurationSetEventDestinationName: 'SNSEventDestination',
@@ -228,6 +257,7 @@ export class NotificationsStack extends Stack {
         ses.EmailSendingEvent.REJECT,
         ses.EmailSendingEvent.RENDERING_FAILURE,
         ses.EmailSendingEvent.DELIVERY_DELAY,
+        ses.EmailSendingEvent.SUBSCRIPTION, // Track unsubscribe events
       ],
     });
 

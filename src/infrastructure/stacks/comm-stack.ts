@@ -15,6 +15,24 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 export interface CommStackProps extends StackProps {
   // Authorizer imported via CloudFormation export
   jwtSecret: string;
+  
+  // ========================================
+  // PUSH NOTIFICATIONS INTEGRATION (from PushNotificationsStack)
+  // ========================================
+  /**
+   * Device tokens table name for looking up registered mobile devices
+   */
+  deviceTokensTableName?: string;
+  
+  /**
+   * Device tokens table ARN for IAM permissions
+   */
+  deviceTokensTableArn?: string;
+  
+  /**
+   * Send push Lambda function ARN for invoking push notifications
+   */
+  sendPushFunctionArn?: string;
 }
 
 export class CommStack extends Stack {
@@ -22,10 +40,12 @@ export class CommStack extends Stack {
   public readonly messagesTable: dynamodb.Table;
   public readonly favorsTable: dynamodb.Table;
   public readonly connectionsTable: dynamodb.Table;
-  public readonly teamsTable: dynamodb.Table; // <--- NEW TABLE PROPERTY
+  public readonly teamsTable: dynamodb.Table;
+  public readonly meetingsTable: dynamodb.Table; // Meetings table for scheduled meetings
   public readonly fileBucket: s3.Bucket;
   public readonly notificationsTopic: sns.Topic;
   public readonly getFileFn: lambdaNode.NodejsFunction;
+  public readonly restApi: apigw.RestApi; // REST API for CRUD operations
 
   constructor(scope: Construct, id: string, props: CommStackProps) {
     super(scope, id, props);
@@ -89,8 +109,8 @@ export class CommStack extends Stack {
     // ========================================
 
     // 1. Connection Mapping Table (For WebSocket connections)
-    this.connectionsTable = new dynamodb.Table(this, 'ConnectionsTable', {
-      tableName: `${this.stackName}-WsConnections`,
+    this.connectionsTable = new dynamodb.Table(this, 'ConnectionsTableV4', {
+      tableName: `${this.stackName}-WsConnectionsV4`,
       partitionKey: { name: 'connectionId', type: dynamodb.AttributeType.STRING },
       timeToLiveAttribute: 'ttl',
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -106,8 +126,8 @@ export class CommStack extends Stack {
     });
 
     // 2. Favor Requests Table (Stores request metadata)
-    this.favorsTable = new dynamodb.Table(this, 'FavorRequestsTable', {
-      tableName: `${this.stackName}-FavorRequests`,
+    this.favorsTable = new dynamodb.Table(this, 'FavorRequestsTableV4', {
+      tableName: `${this.stackName}-FavorRequestsV4`,
       partitionKey: { name: 'favorRequestID', type: dynamodb.AttributeType.STRING },
       removalPolicy: RemovalPolicy.RETAIN,
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -139,10 +159,33 @@ export class CommStack extends Stack {
         sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
         projectionType: dynamodb.ProjectionType.ALL,
     });
+    // GSI for status-based queries (e.g., get all pending/completed tasks)
+    this.favorsTable.addGlobalSecondaryIndex({
+        indexName: 'StatusIndex',
+        partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+    });
+    // GSI for category-based queries (uses SYSTEM_MODULES: HR, Accounting, Operations, Finance, Marketing, Legal, IT)
+    // TODO: Deploy this GSI in next deployment (DynamoDB only allows 1 GSI change per update)
+    // this.favorsTable.addGlobalSecondaryIndex({
+    //     indexName: 'CategoryIndex',
+    //     partitionKey: { name: 'category', type: dynamodb.AttributeType.STRING },
+    //     sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
+    //     projectionType: dynamodb.ProjectionType.ALL,
+    // });
+    // GSI for current assignee lookup (for forwarded tasks)
+    // TODO: Deploy this GSI after CategoryIndex (DynamoDB only allows 1 GSI change per update)
+    // this.favorsTable.addGlobalSecondaryIndex({
+    //     indexName: 'CurrentAssigneeIndex',
+    //     partitionKey: { name: 'currentAssigneeID', type: dynamodb.AttributeType.STRING },
+    //     sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
+    //     projectionType: dynamodb.ProjectionType.ALL,
+    // });
 
     // 3. Messages Table (Stores each message in a separate row)
-    this.messagesTable = new dynamodb.Table(this, 'MessagesTable', {
-      tableName: `${this.stackName}-Messages`,
+    this.messagesTable = new dynamodb.Table(this, 'MessagesTableV4', {
+      tableName: `${this.stackName}-MessagesV4`,
       partitionKey: { name: 'favorRequestID', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
       removalPolicy: RemovalPolicy.RETAIN,
@@ -156,18 +199,45 @@ export class CommStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
-    // 4. Teams Table (Stores Group/Team Metadata) <--- NEW TABLE
-    this.teamsTable = new dynamodb.Table(this, 'TeamsTable', {
-        tableName: `${this.stackName}-Teams`,
+    // 4. Teams Table (Stores Group/Team Metadata)
+    this.teamsTable = new dynamodb.Table(this, 'TeamsTableV4', {
+        tableName: `${this.stackName}-TeamsV4`,
         partitionKey: { name: 'teamID', type: dynamodb.AttributeType.STRING },
-        // GSI: To look up teams by owner (e.g., "teams I manage")
         sortKey: { name: 'ownerID', type: dynamodb.AttributeType.STRING }, 
         removalPolicy: RemovalPolicy.RETAIN,
         billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
     });
     applyTags(this.teamsTable, { Table: 'teams' });
-    // GSI: To look up teams a user is a member of (requires DynamoDB sets or a dedicated table/GSI for complex membership)
-    // For simplicity, we will query/filter in the Lambda if we need 'teams a user is in' rather than adding a complex GSI here.
+
+    // 5. Meetings Table (Stores scheduled meetings for tasks/conversations)
+    this.meetingsTable = new dynamodb.Table(this, 'MeetingsTableV4', {
+        tableName: `${this.stackName}-MeetingsV4`,
+        partitionKey: { name: 'meetingID', type: dynamodb.AttributeType.STRING },
+        removalPolicy: RemovalPolicy.RETAIN,
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+    });
+    applyTags(this.meetingsTable, { Table: 'meetings' });
+    // GSI: Lookup meetings by conversation/favor request
+    this.meetingsTable.addGlobalSecondaryIndex({
+        indexName: 'ConversationIndex',
+        partitionKey: { name: 'conversationID', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'startTime', type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+    });
+    // GSI: Lookup meetings by organizer
+    this.meetingsTable.addGlobalSecondaryIndex({
+        indexName: 'OrganizerIndex',
+        partitionKey: { name: 'organizerID', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'startTime', type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+    });
+    // GSI: Lookup meetings by status (scheduled, completed, cancelled)
+    this.meetingsTable.addGlobalSecondaryIndex({
+        indexName: 'StatusIndex',
+        partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'startTime', type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+    });
 
 
     // ========================================
@@ -212,9 +282,13 @@ export class CommStack extends Stack {
       CONNECTIONS_TABLE: this.connectionsTable.tableName,
       MESSAGES_TABLE: this.messagesTable.tableName,
       FAVORS_TABLE: this.favorsTable.tableName,
-      TEAMS_TABLE: this.teamsTable.tableName, // <--- NEW ENVIRONMENT VARIABLE
+      TEAMS_TABLE: this.teamsTable.tableName,
+      MEETINGS_TABLE: this.meetingsTable.tableName,
       FILE_BUCKET_NAME: this.fileBucket.bucketName,
       NOTIFICATIONS_TOPIC_ARN: this.notificationsTopic.topicArn,
+      // Push Notifications Integration
+      ...(props.deviceTokensTableName && { DEVICE_TOKENS_TABLE: props.deviceTokensTableName }),
+      ...(props.sendPushFunctionArn && { SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn }),
     };
     
     // ** S3 File Download Lambda Deployment (MOVED TO COMM/get-file.ts) **
@@ -282,7 +356,8 @@ export class CommStack extends Stack {
     this.connectionsTable.grantReadWriteData(defaultFn);
     this.messagesTable.grantReadWriteData(defaultFn);
     this.favorsTable.grantReadWriteData(defaultFn);
-    this.teamsTable.grantReadWriteData(defaultFn); // <--- GRANT PERMISSIONS TO NEW TABLE
+    this.teamsTable.grantReadWriteData(defaultFn);
+    this.meetingsTable.grantReadWriteData(defaultFn);
     this.fileBucket.grantReadWrite(defaultFn);
     this.notificationsTopic.grantPublish(defaultFn);
     
@@ -298,6 +373,27 @@ export class CommStack extends Stack {
         resources: ['arn:aws:dynamodb:*:*:table/StaffUser'],
     }));
 
+    // ========================================
+    // PUSH NOTIFICATIONS PERMISSIONS
+    // ========================================
+    // Grant permissions to read device tokens and invoke send-push Lambda
+    if (props.deviceTokensTableArn) {
+      defaultFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:Query', 'dynamodb:GetItem'],
+        resources: [
+          props.deviceTokensTableArn,
+          `${props.deviceTokensTableArn}/index/*`, // Include GSIs
+        ],
+      }));
+    }
+
+    if (props.sendPushFunctionArn) {
+      defaultFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
+
 
     // Grant Lambda permission to use the AWS API Gateway Management API (for sending messages back to client)
     const apiGatewayManagementPolicy = new iam.PolicyStatement({
@@ -307,6 +403,139 @@ export class CommStack extends Stack {
         ],
     });
     defaultFn.addToRolePolicy(apiGatewayManagementPolicy);
+
+    // ========================================
+    // REST API HANDLER LAMBDA
+    // ========================================
+    const restApiHandler = new lambdaNode.NodejsFunction(this, 'RestApiHandler', {
+      entry: path.join(__dirname, '..', '..', 'services', 'comm', 'rest-api-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      memorySize: 512,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      environment: defaultLambdaEnv,
+    });
+    applyTags(restApiHandler, { Function: 'rest-api-handler' });
+
+    // Grant permissions to REST API handler
+    this.connectionsTable.grantReadData(restApiHandler);
+    this.messagesTable.grantReadWriteData(restApiHandler);
+    this.favorsTable.grantReadWriteData(restApiHandler);
+    this.teamsTable.grantReadWriteData(restApiHandler);
+    this.meetingsTable.grantReadWriteData(restApiHandler);
+
+    // Grant push notification permissions to REST API handler
+    if (props.deviceTokensTableArn) {
+      restApiHandler.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:Query', 'dynamodb:GetItem'],
+        resources: [
+          props.deviceTokensTableArn,
+          `${props.deviceTokensTableArn}/index/*`,
+        ],
+      }));
+    }
+    if (props.sendPushFunctionArn) {
+      restApiHandler.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
+
+    // ========================================
+    // REST API GATEWAY
+    // ========================================
+    this.restApi = new apigw.RestApi(this, 'CommRestApi', {
+      restApiName: `${this.stackName}-CommRestApi`,
+      description: 'REST API for Communication module - Tasks, Meetings, Groups',
+      defaultCorsPreflightOptions: {
+        allowOrigins: apigw.Cors.ALL_ORIGINS,
+        allowMethods: apigw.Cors.ALL_METHODS,
+        allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
+      },
+      deployOptions: {
+        stageName: 'prod',
+        throttlingRateLimit: 100,
+        throttlingBurstLimit: 200,
+      },
+    });
+
+    // Create Lambda integration for REST API
+    // Use allowTestInvoke: false to prevent individual permissions per method (avoids 20KB policy limit)
+    const restIntegration = new apigw.LambdaIntegration(restApiHandler, {
+      requestTemplates: { 'application/json': '{ "statusCode": "200" }' },
+      allowTestInvoke: false,
+    });
+
+    // Add a single catch-all permission for API Gateway to invoke Lambda (avoids 20KB policy limit)
+    restApiHandler.addPermission('ApiGatewayInvokePermission', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: this.restApi.arnForExecuteApi('*', '/*', '*'),
+    });
+
+    // API Resources
+    const api = this.restApi.root.addResource('api');
+
+    // /api/conversations endpoints
+    const conversations = api.addResource('conversations');
+    conversations.addMethod('GET', restIntegration);
+    const conversationsSearch = conversations.addResource('search');
+    conversationsSearch.addMethod('GET', restIntegration);
+    const conversationsProfiles = conversations.addResource('profiles');
+    conversationsProfiles.addMethod('GET', restIntegration);
+    const conversationById = conversations.addResource('{favorRequestID}');
+    conversationById.addMethod('DELETE', restIntegration);
+    const conversationComplete = conversationById.addResource('complete');
+    conversationComplete.addMethod('GET', restIntegration);
+    const conversationUserDetails = conversationById.addResource('user-details');
+    conversationUserDetails.addMethod('GET', restIntegration);
+    const conversationDeadline = conversationById.addResource('deadline');
+    conversationDeadline.addMethod('PUT', restIntegration);
+
+    // /api/tasks endpoints
+    const tasks = api.addResource('tasks');
+    tasks.addMethod('POST', restIntegration);
+    const tasksByStatus = tasks.addResource('by-status');
+    tasksByStatus.addMethod('GET', restIntegration);
+    const tasksForwardHistory = tasks.addResource('forward-history');
+    tasksForwardHistory.addMethod('GET', restIntegration);
+    const tasksForwardedToMe = tasks.addResource('forwarded-to-me');
+    tasksForwardedToMe.addMethod('GET', restIntegration);
+    const tasksGroup = tasks.addResource('group');
+    tasksGroup.addMethod('POST', restIntegration);
+    const taskById = tasks.addResource('{taskID}');
+    const taskForward = taskById.addResource('forward');
+    taskForward.addMethod('POST', restIntegration);
+    const taskDeadline = taskById.addResource('deadline');
+    taskDeadline.addMethod('PUT', restIntegration);
+    const taskForwardById = taskForward.addResource('{forwardID}');
+    const taskForwardRespond = taskForwardById.addResource('respond');
+    taskForwardRespond.addMethod('POST', restIntegration);
+
+    // /api/meetings endpoints
+    const meetings = api.addResource('meetings');
+    meetings.addMethod('GET', restIntegration);
+    meetings.addMethod('POST', restIntegration);
+    const meetingById = meetings.addResource('{meetingID}');
+    meetingById.addMethod('PUT', restIntegration);
+    meetingById.addMethod('DELETE', restIntegration);
+
+    // /api/groups endpoints
+    const groups = api.addResource('groups');
+    groups.addMethod('GET', restIntegration);
+    groups.addMethod('POST', restIntegration);
+    const groupById = groups.addResource('{teamID}');
+    groupById.addMethod('GET', restIntegration);
+    groupById.addMethod('PUT', restIntegration);
+    const groupMembers = groupById.addResource('members');
+    groupMembers.addMethod('POST', restIntegration);
+    const groupMemberById = groupMembers.addResource('{memberUserID}');
+    groupMemberById.addMethod('DELETE', restIntegration);
+
+    // CloudWatch alarms for REST API handler
+    createLambdaErrorAlarm(restApiHandler, 'rest-api-handler');
+    createLambdaThrottleAlarm(restApiHandler, 'rest-api-handler');
+    createLambdaDurationAlarm(restApiHandler, 'rest-api-handler', Math.floor(Duration.seconds(30).toMilliseconds() * 0.8));
 
 
     // ========================================
@@ -364,18 +593,28 @@ export class CommStack extends Stack {
     createDynamoThrottleAlarm(this.favorsTable.tableName, 'FavorsTable');
     createDynamoThrottleAlarm(this.messagesTable.tableName, 'MessagesTable');
     createDynamoThrottleAlarm(this.teamsTable.tableName, 'TeamsTable');
+    createDynamoThrottleAlarm(this.meetingsTable.tableName, 'MeetingsTable');
 
     // ========================================
     // OUTPUTS
     // ========================================
-    new CfnOutput(this, 'TeamsTableName', { // <--- NEW TABLE NAME OUTPUT
+    new CfnOutput(this, 'TeamsTableName', {
         value: this.teamsTable.tableName,
         exportName: `${this.stackName}-TeamsTableName`,
+    });
+    new CfnOutput(this, 'MeetingsTableName', {
+        value: this.meetingsTable.tableName,
+        exportName: `${this.stackName}-MeetingsTableName`,
     });
     new CfnOutput(this, 'WebSocketApiUrl', {
       value: this.websocketApi.apiEndpoint,
       description: 'The WebSocket API Endpoint',
       exportName: `${this.stackName}-WebSocketApiUrl`,
+    });
+    new CfnOutput(this, 'RestApiUrl', {
+      value: this.restApi.url,
+      description: 'The REST API Endpoint for Tasks, Meetings, Groups',
+      exportName: `${this.stackName}-RestApiUrl`,
     });
     new CfnOutput(this, 'MessagesTableName', {
       value: this.messagesTable.tableName,

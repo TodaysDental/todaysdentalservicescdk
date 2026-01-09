@@ -557,9 +557,17 @@ async function updateClinicHours(
 
 /**
  * Check if AI inbound calling is enabled for a clinic
- * Returns true only if:
- * 1. aiInboundEnabled is not explicitly false
- * 2. An inboundAgentId is configured
+ * 
+ * FIX: Unified logic with voice-ai-handler.ts getVoiceAgent()
+ * 
+ * Returns true in these cases:
+ * 1. Config exists with aiInboundEnabled=true AND inboundAgentId is set
+ * 2. Config exists with aiInboundEnabled=undefined (legacy) AND inboundAgentId is set
+ * 3. NO config exists at all (new clinic - fallback agents will be used)
+ * 
+ * Returns false when:
+ * 1. Config exists with aiInboundEnabled=false (explicitly disabled)
+ * 2. Config exists but no inboundAgentId (user wants voicemail)
  */
 export async function isAiInboundEnabled(clinicId: string): Promise<boolean> {
   const response = await docClient.send(new GetCommand({
@@ -569,12 +577,29 @@ export async function isAiInboundEnabled(clinicId: string): Promise<boolean> {
 
   const config = response.Item as VoiceAgentConfig | undefined;
 
-  if (!config || !config.inboundAgentId) {
+  // FIX: No config = new clinic, allow fallback agent lookup
+  if (!config) {
+    return true; // voice-ai-handler.ts getVoiceAgent() will find a fallback
+  }
+
+  // Config exists but AI is explicitly disabled
+  if (config.aiInboundEnabled === false) {
     return false;
   }
 
-  // Default to enabled if not explicitly disabled
-  return config.aiInboundEnabled !== false;
+  // Config exists with agent configured
+  if (config.inboundAgentId) {
+    return true;
+  }
+
+  // Config exists but no agent and not explicitly enabled = use voicemail
+  // (Legacy behavior: undefined + no agent = voicemail)
+  if (config.aiInboundEnabled === undefined) {
+    return false;
+  }
+
+  // aiInboundEnabled is true but no agent = try fallback
+  return config.aiInboundEnabled === true;
 }
 
 /**
@@ -582,6 +607,8 @@ export async function isAiInboundEnabled(clinicId: string): Promise<boolean> {
  * Returns true only if:
  * 1. aiOutboundEnabled is not explicitly false
  * 2. An outboundAgentId is configured
+ * 
+ * Note: Outbound has stricter requirements than inbound - must have explicit agent
  */
 export async function isAiOutboundEnabled(clinicId: string): Promise<boolean> {
   const response = await docClient.send(new GetCommand({
@@ -602,6 +629,9 @@ export async function isAiOutboundEnabled(clinicId: string): Promise<boolean> {
 /**
  * Get the configured voice agent for a clinic
  * Returns the currently set inbound agent, or null if not configured OR if disabled
+ * 
+ * FIX: This only returns explicitly configured agents. For fallback agents,
+ * use voice-ai-handler.ts getVoiceAgent() which has full fallback logic.
  */
 export async function getConfiguredVoiceAgent(clinicId: string): Promise<{ agentId: string; agentName?: string } | null> {
   const response = await docClient.send(new GetCommand({

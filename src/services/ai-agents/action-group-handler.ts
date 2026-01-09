@@ -35,6 +35,7 @@ const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
 
 const CLINICS_TABLE = process.env.CLINICS_TABLE || 'Clinics';
+const CLINIC_SECRETS_TABLE = process.env.CLINIC_SECRETS_TABLE || 'ClinicSecrets';
 const INSURANCE_PLANS_TABLE = process.env.INSURANCE_PLANS_TABLE || 'TodaysDentalInsightsInsurancePlanSyncN1-InsurancePlans';
 const FEE_SCHEDULES_TABLE = process.env.FEE_SCHEDULES_TABLE || 'TodaysDentalInsightsFeeScheduleSyncN1-FeeSchedules';
 
@@ -112,10 +113,49 @@ async function getCircuitState(clinicId: string): Promise<CircuitState> {
 
 /**
  * Check circuit breaker and rate limit - uses atomic DynamoDB operations
+ * 
+ * SECURITY FIX: Fails CLOSED instead of open on DynamoDB errors.
+ * Previously, if DynamoDB was unavailable, unlimited requests were allowed.
+ * Now we use an in-memory fallback counter to prevent abuse.
  */
+
+// In-memory fallback rate limiter (used when DynamoDB is unavailable)
+// This is a last resort - not distributed, but prevents complete bypass
+const fallbackRateLimiter: Map<string, { count: number; windowStart: number }> = new Map();
+const FALLBACK_MAX_REQUESTS_PER_WINDOW = 5; // More conservative limit for fallback mode
+const FALLBACK_WINDOW_MS = 1000;
+
 async function checkCircuitBreaker(clinicId: string): Promise<{ allowed: boolean; reason?: string }> {
   const now = Date.now();
-  const state = await getCircuitState(clinicId);
+  
+  let state: CircuitState;
+  let usingFallback = false;
+  
+  try {
+    state = await getCircuitState(clinicId);
+  } catch (error) {
+    // FIX: DynamoDB is unavailable - use in-memory fallback rate limiter
+    console.warn(`[CircuitBreaker] DynamoDB unavailable, using fallback rate limiter for ${clinicId}:`, error);
+    usingFallback = true;
+    
+    // Get or create fallback state
+    let fallback = fallbackRateLimiter.get(clinicId);
+    if (!fallback || now - fallback.windowStart > FALLBACK_WINDOW_MS) {
+      fallback = { count: 0, windowStart: now };
+    }
+    
+    fallback.count++;
+    fallbackRateLimiter.set(clinicId, fallback);
+    
+    if (fallback.count > FALLBACK_MAX_REQUESTS_PER_WINDOW) {
+      return { 
+        allowed: false, 
+        reason: 'Rate limit exceeded (fallback mode). Please try again in a moment.' 
+      };
+    }
+    
+    return { allowed: true };
+  }
   
   // Check if circuit is open
   if (state.isOpen) {
@@ -131,7 +171,9 @@ async function checkCircuitBreaker(clinicId: string): Promise<{ allowed: boolean
         }));
         console.log(`[CircuitBreaker] Circuit half-open for clinic ${clinicId}, allowing test request`);
       } catch (error) {
-        console.warn(`[CircuitBreaker] Failed to reset circuit for ${clinicId}:`, error);
+        // FIX: If we can't reset the circuit, don't allow the request
+        console.error(`[CircuitBreaker] Failed to reset circuit for ${clinicId}:`, error);
+        return { allowed: false, reason: 'Unable to check circuit breaker status. Please try again.' };
       }
     } else {
       return { allowed: false, reason: 'Circuit breaker is open due to repeated failures. Try again later.' };
@@ -157,7 +199,19 @@ async function checkCircuitBreaker(clinicId: string): Promise<{ allowed: boolean
         },
       }));
     } catch (error) {
-      console.warn(`[CircuitBreaker] Failed to reset rate limit window:`, error);
+      // FIX: Failed to reset window - use fallback limiter
+      console.warn(`[CircuitBreaker] Failed to reset rate limit window, using fallback:`, error);
+      let fallback = fallbackRateLimiter.get(clinicId);
+      if (!fallback || now - fallback.windowStart > FALLBACK_WINDOW_MS) {
+        fallback = { count: 1, windowStart: now };
+      } else {
+        fallback.count++;
+      }
+      fallbackRateLimiter.set(clinicId, fallback);
+      
+      if (fallback.count > FALLBACK_MAX_REQUESTS_PER_WINDOW) {
+        return { allowed: false, reason: 'Rate limit exceeded (fallback mode). Please try again.' };
+      }
     }
     return { allowed: true };
   }
@@ -175,8 +229,20 @@ async function checkCircuitBreaker(clinicId: string): Promise<{ allowed: boolean
       ExpressionAttributeValues: { ':zero': 0, ':one': 1 },
     }));
   } catch (error) {
-    // Allow request even if counter update fails
-    console.warn(`[CircuitBreaker] Failed to increment counter:`, error);
+    // FIX: Failed to increment - use in-memory tracking as backup
+    console.warn(`[CircuitBreaker] Failed to increment counter, tracking in memory:`, error);
+    let fallback = fallbackRateLimiter.get(clinicId);
+    if (!fallback || now - fallback.windowStart > FALLBACK_WINDOW_MS) {
+      fallback = { count: 1, windowStart: now };
+    } else {
+      fallback.count++;
+    }
+    fallbackRateLimiter.set(clinicId, fallback);
+    
+    // Still allow this request (we've tracked it in memory), but future ones may be blocked
+    if (fallback.count > FALLBACK_MAX_REQUESTS_PER_WINDOW) {
+      return { allowed: false, reason: 'Rate limit exceeded (fallback mode). Please try again.' };
+    }
   }
   
   return { allowed: true };
@@ -302,17 +368,41 @@ async function getClinicConfigSecure(clinicId: string): Promise<ClinicConfig | u
       Key: { clinicId },
     }));
 
-    if (!clinicResponse.Item) {
-      console.error(`[getClinicConfig] Clinic not found in DynamoDB: ${clinicId}`);
+    let clinicData = clinicResponse.Item;
+    let developerKey: string | undefined;
+    let customerKey: string | undefined;
+
+    if (clinicData) {
+      // Check for credentials in Clinics table (primary location)
+      developerKey = clinicData.developerKey || clinicData.openDentalDeveloperKey;
+      customerKey = clinicData.customerKey || clinicData.openDentalCustomerKey;
+    }
+
+    // If credentials not found in Clinics table, try ClinicSecrets table
+    if (!developerKey || !customerKey) {
+      console.log(`[getClinicConfig] Credentials not in Clinics table for ${clinicId}, checking ClinicSecrets table...`);
+      
+      const secretsResponse = await docClient.send(new GetCommand({
+        TableName: CLINIC_SECRETS_TABLE,
+        Key: { clinicId },
+      }));
+
+      if (secretsResponse.Item) {
+        developerKey = developerKey || secretsResponse.Item.openDentalDeveloperKey || secretsResponse.Item.developerKey;
+        customerKey = customerKey || secretsResponse.Item.openDentalCustomerKey || secretsResponse.Item.customerKey;
+        console.log(`[getClinicConfig] Found credentials in ClinicSecrets table for ${clinicId}`);
+      }
+    }
+
+    // If still no credentials, return undefined
+    if (!developerKey || !customerKey) {
+      console.error(`[getClinicConfig] Clinic ${clinicId} missing OpenDental credentials in both Clinics and ClinicSecrets tables`);
       return undefined;
     }
 
-    const clinicData = clinicResponse.Item;
-
-    // Validate that credentials exist
-    if (!clinicData.developerKey || !clinicData.customerKey) {
-      console.error(`[getClinicConfig] Clinic ${clinicId} missing OpenDental credentials in Clinics table`);
-      return undefined;
+    // If no clinicData from Clinics table, create minimal data
+    if (!clinicData) {
+      clinicData = { clinicId };
     }
 
     const config: ClinicConfig = {
@@ -322,8 +412,8 @@ async function getClinicConfigSecure(clinicId: string): Promise<ClinicConfig | u
       clinicPhone: clinicData.clinicPhone || clinicData.phoneNumber || '',
       clinicEmail: clinicData.clinicEmail || clinicData.email || '',
       clinicFax: clinicData.clinicFax || clinicData.fax,
-      developerKey: clinicData.developerKey,
-      customerKey: clinicData.customerKey,
+      developerKey,
+      customerKey,
     };
 
     // Cache the config
@@ -454,8 +544,53 @@ class OpenDentalClient {
           // FIX: Await the async operation to ensure state is persisted before Lambda terminates
           await recordFailure(this.clinicId);
           
+          // Log useful debugging info WITHOUT leaking keys or PII (only field names + response body)
+          try {
+            const responseData = error.response?.data;
+            const responseText =
+              typeof responseData === 'string'
+                ? responseData
+                : responseData
+                  ? JSON.stringify(responseData)
+                  : undefined;
+
+            const headers = error.response?.headers || {};
+            const safeHeaders: Record<string, any> = {
+              'content-type': headers['content-type'],
+              'x-request-id': headers['x-request-id'] || headers['x-amzn-requestid'] || headers['x-amz-request-id'],
+              date: headers['date'],
+            };
+
+            console.error('[OpenDental] Request failed', {
+              clinicId: this.clinicId,
+              method,
+              endpoint,
+              status,
+              request: {
+                paramsKeys: params ? Object.keys(params) : [],
+                dataKeys: data ? Object.keys(data) : [],
+              },
+              response: {
+                headers: safeHeaders,
+                data: responseText ? responseText.slice(0, 2000) : undefined,
+              },
+            });
+          } catch (logError) {
+            console.error('[OpenDental] Failed to log error details:', logError);
+          }
+
+          const responseData = error.response?.data;
+          const detail =
+            (typeof responseData === 'string' && responseData.trim()) ||
+            responseData?.message ||
+            responseData?.Message ||
+            responseData?.error ||
+            responseData?.Error;
+
           throw new Error(
-            error.response?.data?.message || `OpenDental API call failed: ${error.message}`
+            detail
+              ? `OpenDental API call failed (HTTP ${status}): ${detail}`
+              : `OpenDental API call failed: ${error.message}`
           );
         }
         
@@ -717,13 +852,17 @@ async function handleTool(
         // Normalize birthdate to YYYY-MM-DD format
         const normalizedBirthdate = params.Birthdate ? normalizeDateFormat(params.Birthdate) : undefined;
         
-        const createData = {
+        // NOTE: OpenDental returns 400 if TxtMsgOk='Yes' but WirelessPhone is empty.
+        // Only set TxtMsgOk when we have a valid wireless phone number.
+        const createData: any = {
           LName: params.LName,
           FName: params.FName,
-          WirelessPhone: phoneNumber,
           Birthdate: normalizedBirthdate,
-          TxtMsgOk: 'Yes',
         };
+        if (phoneNumber) {
+          createData.WirelessPhone = phoneNumber;
+          createData.TxtMsgOk = 'Yes';
+        }
         const newPatient = await odClient.request('POST', 'patients', { data: createData });
 
         updatedSessionAttributes.PatNum = newPatient.PatNum.toString();
@@ -1521,9 +1660,16 @@ async function handleTool(
     }
   } catch (error: any) {
     console.error(`Tool ${toolName} error:`, error);
+
+    // For public website visitors, do NOT return internal/OpenDental error text.
+    const isPublicRequest = sessionAttributes?.isPublicRequest === 'true';
+    const safeMessage = isPublicRequest
+      ? 'We couldn’t complete that request right now. Please try again, or call the office and we’ll help you.'
+      : (error.message || 'Tool execution failed');
+
     return {
       statusCode: 500,
-      body: { status: 'FAILURE', message: error.message || 'Tool execution failed' },
+      body: { status: 'FAILURE', message: safeMessage },
     };
   }
 }
@@ -6280,7 +6426,7 @@ export const handler = async (event: ActionGroupEvent): Promise<ActionGroupRespo
           'application/json': {
             body: JSON.stringify({ 
               status: 'FAILURE', 
-              message: `Clinic configuration not found: ${clinicId}. Ensure SSM parameter /clinics/${clinicId}/opendental-credentials exists.` 
+              message: `Clinic configuration not found: ${clinicId}. Ensure clinic credentials are configured in the Clinics or ClinicSecrets DynamoDB table.` 
             }),
           },
         },

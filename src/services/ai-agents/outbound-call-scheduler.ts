@@ -29,6 +29,7 @@ import {
   CreateSipMediaApplicationCallCommand,
 } from '@aws-sdk/client-chime-sdk-voice';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { v4 as uuidv4 } from 'uuid';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { buildCorsHeaders } from '../../shared/utils/cors';
@@ -48,10 +49,19 @@ const docClient = DynamoDBDocumentClient.from(dynamoClient);
 const schedulerClient = new SchedulerClient({
   region: process.env.AWS_REGION || 'us-east-1',
 });
+
+// FIX: Use CHIME_MEDIA_REGION for Chime SDK Voice client
+// Chime resources must be accessed in their deployed media region
+// Previously used AWS_REGION which could mismatch and cause outbound call failures
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
 const chimeVoiceClient = new ChimeSDKVoiceClient({
+  region: CHIME_MEDIA_REGION,
+});
+
+const ssmClient = new SSMClient({
   region: process.env.AWS_REGION || 'us-east-1',
 });
-const ssmClient = new SSMClient({
+const sqsClient = new SQSClient({
   region: process.env.AWS_REGION || 'us-east-1',
 });
 
@@ -61,6 +71,10 @@ const SCHEDULER_ROLE_ARN = process.env.SCHEDULER_ROLE_ARN || '';
 const CLINICS_TABLE = process.env.CLINICS_TABLE || 'Clinics';
 const AGENTS_TABLE = process.env.AGENTS_TABLE || 'AiAgents';
 const SMA_ID_MAP_PARAMETER_NAME = process.env.SMA_ID_MAP_PARAMETER_NAME || '';
+
+// High-volume scheduling infrastructure
+const OUTBOUND_CALL_QUEUE_URL = process.env.OUTBOUND_CALL_QUEUE_URL || '';
+const BULK_OUTBOUND_JOBS_TABLE = process.env.BULK_OUTBOUND_JOBS_TABLE || 'BulkOutboundJobs';
 
 // SMA ID Map - maps clinic regions to SIP Media Application IDs
 // Loaded from SSM Parameter Store at runtime (cached for Lambda instance lifetime)
@@ -222,6 +236,98 @@ function getNextRetryTime(attempts: number): Date {
 }
 
 // ========================================================================
+// PHONE NUMBER VALIDATION
+// ========================================================================
+
+/**
+ * FIX: Enhanced phone number validation with E.164 format and security checks
+ * 
+ * Validates:
+ * - E.164 format (+ followed by 10-15 digits, or 10-15 digits to be normalized)
+ * - Not a blocked number (emergency, premium-rate, internal)
+ * - Valid country code structure
+ */
+interface PhoneValidationResult {
+  valid: boolean;
+  normalized?: string;  // E.164 format: +1234567890
+  error?: string;
+}
+
+// Blocked prefixes for security (emergency services, premium rate, etc.)
+const BLOCKED_PREFIXES = [
+  '911',       // US Emergency
+  '999',       // UK Emergency
+  '112',       // EU Emergency
+  '000',       // AU Emergency
+  '900',       // US Premium rate
+  '976',       // US Premium rate
+  '1900',      // US Premium rate (with country code)
+  '1976',      // US Premium rate (with country code)
+  '0900',      // International premium rate
+  '0906',      // UK Premium rate
+  '0909',      // UK Premium rate
+];
+
+// Valid country codes for basic sanity check (common ones)
+const VALID_COUNTRY_CODE_PREFIXES = ['1', '44', '61', '52', '33', '49', '39', '34', '81', '86', '91'];
+
+function validatePhoneNumber(phoneNumber: string): PhoneValidationResult {
+  if (!phoneNumber || typeof phoneNumber !== 'string') {
+    return { valid: false, error: 'Phone number is required' };
+  }
+
+  // Remove all non-digit characters except leading +
+  let normalized = phoneNumber.trim();
+  const hasPlus = normalized.startsWith('+');
+  const digitsOnly = normalized.replace(/\D/g, '');
+
+  // Check digit count
+  if (digitsOnly.length < 10) {
+    return { valid: false, error: 'Phone number too short. Must have at least 10 digits.' };
+  }
+  if (digitsOnly.length > 15) {
+    return { valid: false, error: 'Phone number too long. Maximum 15 digits allowed.' };
+  }
+
+  // Check for blocked prefixes
+  for (const prefix of BLOCKED_PREFIXES) {
+    if (digitsOnly.startsWith(prefix) || digitsOnly.startsWith('1' + prefix)) {
+      return { 
+        valid: false, 
+        error: `This phone number cannot be used for outbound calls (blocked prefix: ${prefix}).`
+      };
+    }
+  }
+
+  // Normalize to E.164 format
+  if (hasPlus) {
+    normalized = '+' + digitsOnly;
+  } else if (digitsOnly.length === 10) {
+    // Assume US/Canada number, add +1
+    normalized = '+1' + digitsOnly;
+  } else if (digitsOnly.length === 11 && digitsOnly.startsWith('1')) {
+    // US/Canada with country code
+    normalized = '+' + digitsOnly;
+  } else {
+    // Other international, just add +
+    normalized = '+' + digitsOnly;
+  }
+
+  // Basic country code validation (first 1-3 digits after +)
+  const countryDigits = digitsOnly.substring(0, 3);
+  const hasValidCountryCode = VALID_COUNTRY_CODE_PREFIXES.some(prefix => 
+    digitsOnly.startsWith(prefix)
+  );
+
+  // Log warning but don't block - country code list isn't exhaustive
+  if (!hasValidCountryCode && digitsOnly.length >= 11) {
+    console.warn(`[validatePhoneNumber] Uncommon country code prefix: ${countryDigits} in ${normalized}`);
+  }
+
+  return { valid: true, normalized };
+}
+
+// ========================================================================
 // HANDLER
 // ========================================================================
 
@@ -251,9 +357,25 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return await createScheduledCall(event, userPerms);
     }
 
-    // POST /scheduled-calls/bulk - Bulk create scheduled calls
+    // POST /scheduled-calls/bulk - Bulk create scheduled calls (sync - up to 500 calls)
     if (path.endsWith('/scheduled-calls/bulk') && httpMethod === 'POST') {
       return await bulkScheduleCalls(event, userPerms);
+    }
+
+    // POST /scheduled-calls/async-bulk - Async bulk scheduling for 30K+ calls
+    if (path.endsWith('/scheduled-calls/async-bulk') && httpMethod === 'POST') {
+      return await asyncBulkScheduleCalls(event, userPerms);
+    }
+
+    // GET /bulk-jobs - List bulk jobs for a clinic
+    if (path.endsWith('/bulk-jobs') && httpMethod === 'GET') {
+      return await listBulkJobs(event, userPerms);
+    }
+
+    // GET /bulk-jobs/{jobId} - Get bulk job status
+    const bulkJobMatch = path.match(/\/bulk-jobs\/([^/]+)$/);
+    if (bulkJobMatch && httpMethod === 'GET') {
+      return await getBulkJob(event, userPerms, bulkJobMatch[1]);
     }
 
     // GET /scheduled-calls/{callId}
@@ -344,15 +466,16 @@ async function createScheduledCall(event: APIGatewayProxyEvent, userPerms: any):
     };
   }
 
-  // Validate phone number format (E.164)
-  const normalizedPhone = body.phoneNumber.replace(/\D/g, '');
-  if (normalizedPhone.length < 10 || normalizedPhone.length > 15) {
+  // FIX: Enhanced phone number validation with E.164 format check and security blocklist
+  const phoneValidation = validatePhoneNumber(body.phoneNumber);
+  if (!phoneValidation.valid) {
     return {
       statusCode: 400,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ error: 'Invalid phone number. Must be a valid phone number with 10-15 digits.' }),
+      body: JSON.stringify({ error: phoneValidation.error }),
     };
   }
+  const normalizedPhone = phoneValidation.normalized!;
 
   // Check permission
   const canCreate = hasModulePermission(
@@ -466,37 +589,6 @@ async function createScheduledCall(event: APIGatewayProxyEvent, userPerms: any):
     ttl: Math.floor(scheduledDate.getTime() / 1000) + (7 * 24 * 60 * 60), // 7 days after scheduled time
   };
 
-  // Create EventBridge schedule
-  try {
-    const scheduleResponse = await schedulerClient.send(new CreateScheduleCommand({
-      Name: schedulerName,
-      ScheduleExpression: `at(${scheduledDate.toISOString().replace(/\.\d{3}Z$/, '')})`,
-      FlexibleTimeWindow: { Mode: 'OFF' },
-      Target: {
-        Arn: OUTBOUND_CALL_LAMBDA_ARN,
-        RoleArn: SCHEDULER_ROLE_ARN,
-        Input: JSON.stringify({
-          callId,
-          clinicId: body.clinicId,
-          agentId: body.agentId,
-          phoneNumber: body.phoneNumber,
-          patientName: body.patientName,
-          purpose: body.purpose,
-          customMessage: body.customMessage,
-        }),
-      },
-    }));
-
-    scheduledCall.schedulerArn = scheduleResponse.ScheduleArn;
-  } catch (error: any) {
-    console.error('Failed to create EventBridge schedule:', error);
-    return {
-      statusCode: 500,
-      headers: getCorsHeaders(event),
-      body: JSON.stringify({ error: 'Failed to create schedule', details: error.message }),
-    };
-  }
-
   // RACE CONDITION FIX: Use conditional put with idempotency key
   // Store the idempotency key in the record for duplicate detection
   const scheduledCallWithIdempotency = {
@@ -504,9 +596,9 @@ async function createScheduledCall(event: APIGatewayProxyEvent, userPerms: any):
     idempotencyKey,
   };
 
+  // FIX: Check for duplicates BEFORE creating EventBridge schedule
+  // This prevents orphaned schedules when DynamoDB already has the record
   try {
-    // First, check for existing calls with same idempotency key using query
-    // This is faster than scan but still needs conditional put for safety
     const existingCallsResponse = await docClient.send(new QueryCommand({
       TableName: SCHEDULED_CALLS_TABLE,
       IndexName: 'ClinicIndex',
@@ -522,13 +614,6 @@ async function createScheduledCall(event: APIGatewayProxyEvent, userPerms: any):
     }));
 
     if (existingCallsResponse.Items && existingCallsResponse.Items.length > 0) {
-      // Clean up the EventBridge schedule we just created
-      try {
-        await schedulerClient.send(new DeleteScheduleCommand({ Name: schedulerName }));
-      } catch (cleanupError) {
-        console.warn('[createScheduledCall] Failed to cleanup duplicate schedule:', cleanupError);
-      }
-      
       return {
         statusCode: 409,
         headers: getCorsHeaders(event),
@@ -539,34 +624,22 @@ async function createScheduledCall(event: APIGatewayProxyEvent, userPerms: any):
         }),
       };
     }
+  } catch (checkError) {
+    console.error('Failed to check for duplicate calls:', checkError);
+    // Continue - conditional put will catch duplicates
+  }
 
-    // Use conditional put to prevent race condition
-    // Even if query returned empty, another request might be inserting right now
+  // FIX: Write to DynamoDB FIRST, then create EventBridge schedule
+  // This prevents orphaned schedules if DynamoDB write fails
+  // If EventBridge creation fails after DynamoDB write, we can retry or mark as failed
+  try {
     await docClient.send(new PutCommand({
       TableName: SCHEDULED_CALLS_TABLE,
       Item: scheduledCallWithIdempotency,
-      // This condition ensures atomic insert - fails if callId already exists
       ConditionExpression: 'attribute_not_exists(callId)',
     }));
-
-    return {
-      statusCode: 201,
-      headers: getCorsHeaders(event),
-      body: JSON.stringify({
-        message: 'Outbound call scheduled successfully',
-        call: scheduledCallWithIdempotency,
-      }),
-    };
   } catch (error: any) {
-    // Handle race condition: another request inserted first
     if (error.name === 'ConditionalCheckFailedException') {
-      // Clean up the EventBridge schedule we created
-      try {
-        await schedulerClient.send(new DeleteScheduleCommand({ Name: schedulerName }));
-      } catch (cleanupError) {
-        console.warn('[createScheduledCall] Failed to cleanup duplicate schedule:', cleanupError);
-      }
-      
       return {
         statusCode: 409,
         headers: getCorsHeaders(event),
@@ -576,8 +649,82 @@ async function createScheduledCall(event: APIGatewayProxyEvent, userPerms: any):
         }),
       };
     }
-    throw error;
+    console.error('Failed to save scheduled call to DynamoDB:', error);
+    return {
+      statusCode: 500,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({ error: 'Failed to save scheduled call', details: error.message }),
+    };
   }
+
+  // Now create EventBridge schedule
+  try {
+    const scheduleResponse = await schedulerClient.send(new CreateScheduleCommand({
+      Name: schedulerName,
+      ScheduleExpression: `at(${scheduledDate.toISOString().replace(/\.\d{3}Z$/, '')})`,
+      FlexibleTimeWindow: { Mode: 'OFF' },
+      // Auto-delete schedule after execution - prevents orphaned schedules
+      ActionAfterCompletion: 'DELETE',
+      Target: {
+        Arn: OUTBOUND_CALL_LAMBDA_ARN,
+        RoleArn: SCHEDULER_ROLE_ARN,
+        Input: JSON.stringify({
+          callId,
+          clinicId: body.clinicId,
+          agentId: body.agentId,
+          phoneNumber: body.phoneNumber,
+          patientName: body.patientName,
+          purpose: body.purpose,
+          customMessage: body.customMessage,
+        }),
+      },
+    }));
+
+    // Update DynamoDB record with scheduler ARN
+    await docClient.send(new UpdateCommand({
+      TableName: SCHEDULED_CALLS_TABLE,
+      Key: { callId },
+      UpdateExpression: 'SET schedulerArn = :arn',
+      ExpressionAttributeValues: { ':arn': scheduleResponse.ScheduleArn },
+    }));
+    
+    scheduledCallWithIdempotency.schedulerArn = scheduleResponse.ScheduleArn;
+  } catch (error: any) {
+    console.error('Failed to create EventBridge schedule:', error);
+    
+    // FIX: Rollback the DynamoDB record since we couldn't create the schedule
+    try {
+      await docClient.send(new UpdateCommand({
+        TableName: SCHEDULED_CALLS_TABLE,
+        Key: { callId },
+        UpdateExpression: 'SET #status = :failed, failureReason = :reason, updatedAt = :now',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':failed': 'failed',
+          ':reason': `Failed to create EventBridge schedule: ${error.message}`,
+          ':now': new Date().toISOString(),
+        },
+      }));
+    } catch (rollbackError) {
+      console.error('Failed to rollback DynamoDB record:', rollbackError);
+    }
+    
+    return {
+      statusCode: 500,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({ error: 'Failed to create schedule', details: error.message }),
+    };
+  }
+
+  // Success - return the scheduled call details
+  return {
+    statusCode: 201,
+    headers: getCorsHeaders(event),
+    body: JSON.stringify({
+      message: 'Outbound call scheduled successfully',
+      call: scheduledCallWithIdempotency,
+    }),
+  };
 }
 
 async function getScheduledCall(event: APIGatewayProxyEvent, userPerms: any, callId: string): Promise<APIGatewayProxyResult> {
@@ -811,6 +958,8 @@ async function createSingleScheduledCall(
       Name: schedulerName,
       ScheduleExpression: `at(${scheduledDate.toISOString().replace(/\.\d{3}Z$/, '')})`,
       FlexibleTimeWindow: { Mode: 'OFF' },
+      // Auto-delete schedule after execution - prevents orphaned schedules
+      ActionAfterCompletion: 'DELETE',
       Target: {
         Arn: OUTBOUND_CALL_LAMBDA_ARN,
         RoleArn: SCHEDULER_ROLE_ARN,
@@ -1042,7 +1191,48 @@ async function bulkScheduleCalls(event: APIGatewayProxyEvent, userPerms: any): P
 export const executeOutboundCall = async (event: any) => {
   console.log('[ai-outbound] Executing scheduled outbound call:', JSON.stringify(event, null, 2));
 
-  const { callId, clinicId, agentId, phoneNumber, patientName, purpose, customMessage } = event;
+  const { callId, clinicId, agentId, phoneNumber, patientName, purpose, customMessage, isRetry, retryAttempt, isCleanupCheck } = event;
+  
+  // FIX: Handle cleanup check for uncertain calls (missing TransactionId)
+  // This is triggered by the scheduled cleanup 5 minutes after an uncertain call
+  if (isCleanupCheck) {
+    console.log('[ai-outbound] Processing cleanup check for uncertain call:', callId);
+    
+    const callResponse = await docClient.send(new GetCommand({
+      TableName: SCHEDULED_CALLS_TABLE,
+      Key: { callId },
+    }));
+    const call = callResponse.Item as ScheduledCall | undefined;
+    
+    if (!call) {
+      console.log('[ai-outbound] Cleanup: Call not found (already deleted):', callId);
+      return { success: true, message: 'Call already cleaned up' };
+    }
+    
+    // Only clean up if still in uncertain in_progress state
+    if (call.status === 'in_progress' && (call as any).chimeTransactionId === 'UNKNOWN_TXN_ID') {
+      console.warn('[ai-outbound] Cleanup: Marking uncertain call as failed (timeout):', callId);
+      
+      await docClient.send(new UpdateCommand({
+        TableName: SCHEDULED_CALLS_TABLE,
+        Key: { callId },
+        UpdateExpression: 'SET #status = :status, outcome = :outcome, updatedAt = :now, cleanupReason = :reason',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':status': 'failed',
+          ':outcome': 'uncertain_timeout',
+          ':now': new Date().toISOString(),
+          ':reason': 'Call was in uncertain state (missing TransactionId) and no update received within timeout period',
+        },
+      }));
+      
+      return { success: true, callId, message: 'Uncertain call marked as failed due to timeout' };
+    }
+    
+    // Call was already resolved (completed, failed, etc.) - no action needed
+    console.log('[ai-outbound] Cleanup: Call already resolved:', { callId, status: call.status });
+    return { success: true, callId, message: `Call already resolved with status: ${call.status}` };
+  }
 
   // Get scheduled call record
   const scheduledCallResponse = await docClient.send(new GetCommand({
@@ -1060,6 +1250,40 @@ export const executeOutboundCall = async (event: any) => {
   if (scheduledCall.status !== 'scheduled') {
     console.warn('[ai-outbound] Call already processed:', { callId, status: scheduledCall.status });
     return { success: false, error: `Call already ${scheduledCall.status}` };
+  }
+  
+  // FIX: Enhanced idempotency check to prevent duplicate execution from EventBridge duplicate delivery
+  // Use conditional update to atomically claim this execution
+  // FIX: Use UUID instead of Date.now() to prevent collisions during same-millisecond delivery
+  const executionId = `exec-${uuidv4().slice(0, 12)}`;
+  const executionStartTime = new Date().toISOString();
+  
+  try {
+    await docClient.send(new UpdateCommand({
+      TableName: SCHEDULED_CALLS_TABLE,
+      Key: { callId },
+      UpdateExpression: 'SET executionId = :execId, executionStartedAt = :now',
+      // FIX: Enhanced condition - check both executionId and a time window
+      // Only proceed if no execution is already in progress OR if a stale execution is present
+      // Stale execution = started more than 5 minutes ago (Lambda would have timed out)
+      ConditionExpression: isRetry 
+        ? '(attribute_not_exists(executionId) OR executionId = :empty OR executionStartedAt < :staleTime) AND attempts = :expectedAttempts'
+        : 'attribute_not_exists(executionId) OR executionId = :empty OR executionStartedAt < :staleTime',
+      ExpressionAttributeValues: {
+        ':execId': executionId,
+        ':now': executionStartTime,
+        ':empty': '',
+        // FIX: Consider execution stale after 5 minutes (Lambda timeout is typically 30s-5min)
+        ':staleTime': new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+        ...(isRetry ? { ':expectedAttempts': (retryAttempt || 1) - 1 } : {}),
+      },
+    }));
+  } catch (error: any) {
+    if (error.name === 'ConditionalCheckFailedException') {
+      console.warn('[ai-outbound] Duplicate execution detected, skipping:', { callId, isRetry, retryAttempt });
+      return { success: false, error: 'Duplicate execution - another invocation is processing this call' };
+    }
+    throw error;
   }
 
   // RUNTIME CHECK: Verify AI outbound calling is still enabled
@@ -1153,17 +1377,23 @@ export const executeOutboundCall = async (event: any) => {
       throw new Error(`No SIP Media Application configured for clinic ${clinicId}`);
     }
 
+    // Use AI phone number for outbound caller ID if configured
+    // This enables Voice Connector streaming for outbound AI calls
+    // Falls back to clinic's main phone number if aiPhoneNumber not set
+    const fromPhoneNumber = clinic.aiPhoneNumber || clinic.phoneNumber;
+
     console.log('[ai-outbound] Initiating SIP call via existing Chime infrastructure', {
-      fromPhoneNumber: clinic.phoneNumber,
+      fromPhoneNumber,
       toPhoneNumber: phoneNumber,
       smaId,
       purpose,
+      usingAiPhoneNumber: !!clinic.aiPhoneNumber,
     });
 
     // Initiate call using EXISTING Chime SIP Media Application
     // The SMA's Lambda (inbound-router.ts) will route based on callType: 'AiOutbound'
     const callCommandInput = {
-      FromPhoneNumber: clinic.phoneNumber,
+      FromPhoneNumber: fromPhoneNumber,
       ToPhoneNumber: phoneNumber,
       SipMediaApplicationId: smaId,
       ArgumentsMap: {
@@ -1191,26 +1421,56 @@ export const executeOutboundCall = async (event: any) => {
         response: JSON.stringify(callResponse),
       });
       
-      // Update status to indicate uncertain state
+      // FIX: Set a timeout for uncertain calls - if not resolved within 5 minutes, mark as failed
+      // This prevents phantom "in_progress" calls from staying forever
+      const uncertainTimeout = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5 minutes
+      
+      // Update status to indicate uncertain state with timeout
       await docClient.send(new UpdateCommand({
         TableName: SCHEDULED_CALLS_TABLE,
         Key: { callId },
-        UpdateExpression: 'SET #status = :status, chimeTransactionId = :unknown, updatedAt = :now, lastWarning = :warning',
+        UpdateExpression: 'SET #status = :status, chimeTransactionId = :unknown, updatedAt = :now, lastWarning = :warning, uncertainStateTimeout = :timeout, executionId = :empty',
         ExpressionAttributeNames: { '#status': 'status' },
         ExpressionAttributeValues: {
           ':status': 'in_progress', // Keep as in_progress - call may be ringing
           ':unknown': 'UNKNOWN_TXN_ID',
           ':now': new Date().toISOString(),
           ':warning': 'Chime did not return TransactionId - call status uncertain',
+          ':timeout': uncertainTimeout,
+          ':empty': '', // Clear executionId so cleanup can mark as failed
         },
       }));
+      
+      // FIX: Schedule a cleanup check for this uncertain call
+      // If the call hasn't been updated by inbound-router (CALL_ENDED), mark it as failed
+      try {
+        const cleanupSchedulerName = `outbound-cleanup-${callId}`;
+        await schedulerClient.send(new CreateScheduleCommand({
+          Name: cleanupSchedulerName,
+          ScheduleExpression: `at(${uncertainTimeout.replace(/\.\d{3}Z$/, '')})`,
+          FlexibleTimeWindow: { Mode: 'OFF' },
+          ActionAfterCompletion: 'DELETE',
+          Target: {
+            Arn: OUTBOUND_CALL_LAMBDA_ARN,
+            RoleArn: SCHEDULER_ROLE_ARN,
+            Input: JSON.stringify({
+              callId,
+              isCleanupCheck: true, // Signals this is a timeout cleanup, not a new call
+            }),
+          },
+        }));
+        console.log('[ai-outbound] Scheduled cleanup check for uncertain call:', { callId, timeout: uncertainTimeout });
+      } catch (schedulerErr) {
+        console.warn('[ai-outbound] Failed to schedule cleanup for uncertain call:', schedulerErr);
+      }
       
       return { 
         success: true, // Tentatively successful - Chime accepted the call
         callId, 
         transactionId: 'unknown',
         message: 'Call initiated but TransactionId not returned - status uncertain',
-        warning: 'Chime accepted the call but did not return a TransactionId. The call may proceed but cannot be tracked.',
+        warning: 'Chime accepted the call but did not return a TransactionId. A cleanup check is scheduled for 5 minutes.',
+        cleanupScheduled: true,
       };
     }
 
@@ -1274,6 +1534,8 @@ export const executeOutboundCall = async (event: any) => {
           Name: retrySchedulerName,
           ScheduleExpression: `at(${nextRetryTime.toISOString().replace(/\.\d{3}Z$/, '')})`,
           FlexibleTimeWindow: { Mode: 'OFF' },
+          // Auto-delete retry schedule after execution
+          ActionAfterCompletion: 'DELETE',
           Target: {
             Arn: OUTBOUND_CALL_LAMBDA_ARN,
             RoleArn: SCHEDULER_ROLE_ARN,
@@ -1344,3 +1606,302 @@ export const executeOutboundCall = async (event: any) => {
   }
 };
 
+// ========================================================================
+// ASYNC BULK SCHEDULING (30,000+ calls)
+// ========================================================================
+
+interface AsyncBulkScheduleRequest {
+  clinicId: string;
+  agentId: string;
+  calls: Array<{
+    phoneNumber: string;
+    patientName?: string;
+    patientId?: string;
+    scheduledTime: string;
+    purpose: 'appointment_reminder' | 'follow_up' | 'payment_reminder' | 'reengagement' | 'custom';
+    customMessage?: string;
+    appointmentId?: string;
+  }>;
+  timezone?: string;
+  maxAttempts?: number;
+}
+
+interface BulkJob {
+  jobId: string;
+  clinicId: string;
+  agentId: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  totalCalls: number;
+  processedCalls: number;
+  successfulCalls: number;
+  failedCalls: number;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  completedAt?: string;
+  ttl: number;
+}
+
+/**
+ * Async bulk scheduling for 30,000+ calls.
+ * Splits calls into batches and sends to SQS queue for processing.
+ */
+async function asyncBulkScheduleCalls(event: APIGatewayProxyEvent, userPerms: any): Promise<APIGatewayProxyResult> {
+  if (!OUTBOUND_CALL_QUEUE_URL) {
+    return {
+      statusCode: 503,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({ 
+        error: 'Async bulk scheduling is not configured',
+        message: 'OUTBOUND_CALL_QUEUE_URL is not set. Use /scheduled-calls/bulk for smaller batches.',
+      }),
+    };
+  }
+
+  const body = JSON.parse(event.body || '{}') as AsyncBulkScheduleRequest;
+
+  // Validate required fields
+  if (!body.clinicId || !body.agentId || !body.calls || !Array.isArray(body.calls)) {
+    return {
+      statusCode: 400,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({ error: 'clinicId, agentId, and calls array are required' }),
+    };
+  }
+
+  if (body.calls.length === 0) {
+    return {
+      statusCode: 400,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({ error: 'calls array cannot be empty' }),
+    };
+  }
+
+  // Check permission
+  const canCreate = hasModulePermission(
+    userPerms.clinicRoles,
+    AI_AGENTS_MODULE,
+    'write',
+    userPerms.isSuperAdmin,
+    userPerms.isGlobalSuperAdmin,
+    body.clinicId
+  );
+
+  if (!canCreate) {
+    return { statusCode: 403, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Permission denied' }) };
+  }
+
+  // Validate AI outbound is enabled
+  const outboundEnabled = await isAiOutboundEnabled(body.clinicId);
+  if (!outboundEnabled) {
+    return {
+      statusCode: 400,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({ 
+        error: 'AI outbound calling is not enabled for this clinic',
+        message: 'Enable AI outbound calling in Voice Config before scheduling calls.',
+      }),
+    };
+  }
+
+  // Validate agent exists and is ready
+  const agentResponse = await docClient.send(new GetCommand({
+    TableName: AGENTS_TABLE,
+    Key: { agentId: body.agentId },
+  }));
+  const agent = agentResponse.Item;
+
+  if (!agent || !agent.isActive || agent.bedrockAgentStatus !== 'PREPARED') {
+    return {
+      statusCode: 400,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({ error: 'Agent is not ready for outbound calls' }),
+    };
+  }
+
+  const jobId = uuidv4();
+  const createdBy = getUserDisplayName(userPerms);
+  const now = new Date();
+
+  // Create bulk job record
+  const bulkJob: BulkJob = {
+    jobId,
+    clinicId: body.clinicId,
+    agentId: body.agentId,
+    status: 'pending',
+    totalCalls: body.calls.length,
+    processedCalls: 0,
+    successfulCalls: 0,
+    failedCalls: 0,
+    createdAt: now.toISOString(),
+    createdBy,
+    updatedAt: now.toISOString(),
+    ttl: Math.floor(now.getTime() / 1000) + (30 * 24 * 60 * 60), // 30 days
+  };
+
+  await docClient.send(new PutCommand({
+    TableName: BULK_OUTBOUND_JOBS_TABLE,
+    Item: bulkJob,
+  }));
+
+  // Split calls into batches and send to SQS
+  const BATCH_SIZE = 100; // Calls per SQS message
+  const batches = Math.ceil(body.calls.length / BATCH_SIZE);
+
+  for (let i = 0; i < body.calls.length; i += BATCH_SIZE) {
+    const batchCalls = body.calls.slice(i, i + BATCH_SIZE);
+    const batchIndex = Math.floor(i / BATCH_SIZE);
+
+    await sqsClient.send(new SendMessageCommand({
+      QueueUrl: OUTBOUND_CALL_QUEUE_URL,
+      MessageBody: JSON.stringify({
+        jobId,
+        clinicId: body.clinicId,
+        agentId: body.agentId,
+        batchIndex,
+        totalBatches: batches,
+        calls: batchCalls,
+        timezone: body.timezone,
+        maxAttempts: body.maxAttempts,
+        createdBy,
+      }),
+      MessageGroupId: body.clinicId, // FIFO ordering by clinic (if FIFO queue)
+    }));
+  }
+
+  // Update job status to processing
+  await docClient.send(new UpdateCommand({
+    TableName: BULK_OUTBOUND_JOBS_TABLE,
+    Key: { jobId },
+    UpdateExpression: 'SET #status = :processing, updatedAt = :now',
+    ExpressionAttributeNames: { '#status': 'status' },
+    ExpressionAttributeValues: {
+      ':processing': 'processing',
+      ':now': new Date().toISOString(),
+    },
+  }));
+
+  console.log('[asyncBulkScheduleCalls] Job created', {
+    jobId,
+    clinicId: body.clinicId,
+    totalCalls: body.calls.length,
+    batches,
+  });
+
+  return {
+    statusCode: 202, // Accepted - processing async
+    headers: getCorsHeaders(event),
+    body: JSON.stringify({
+      jobId,
+      status: 'processing',
+      totalCalls: body.calls.length,
+      batches,
+      message: 'Bulk scheduling job created. Poll /bulk-jobs/{jobId} for progress.',
+    }),
+  };
+}
+
+/**
+ * List bulk jobs for a clinic
+ */
+async function listBulkJobs(event: APIGatewayProxyEvent, userPerms: any): Promise<APIGatewayProxyResult> {
+  const clinicId = event.queryStringParameters?.clinicId;
+  const status = event.queryStringParameters?.status;
+
+  if (!clinicId) {
+    return {
+      statusCode: 400,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({ error: 'clinicId query parameter is required' }),
+    };
+  }
+
+  // Check permission
+  const canRead = hasModulePermission(
+    userPerms.clinicRoles,
+    AI_AGENTS_MODULE,
+    'read',
+    userPerms.isSuperAdmin,
+    userPerms.isGlobalSuperAdmin,
+    clinicId
+  );
+
+  if (!canRead) {
+    return { statusCode: 403, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Permission denied' }) };
+  }
+
+  const queryParams: any = {
+    TableName: BULK_OUTBOUND_JOBS_TABLE,
+    IndexName: 'ClinicStatusIndex',
+    KeyConditionExpression: status 
+      ? 'clinicId = :clinicId AND #status = :status'
+      : 'clinicId = :clinicId',
+    ExpressionAttributeValues: {
+      ':clinicId': clinicId,
+      ...(status && { ':status': status }),
+    },
+    ScanIndexForward: false, // Most recent first
+    Limit: 50,
+  };
+
+  if (status) {
+    queryParams.ExpressionAttributeNames = { '#status': 'status' };
+  }
+
+  const response = await docClient.send(new QueryCommand(queryParams));
+
+  return {
+    statusCode: 200,
+    headers: getCorsHeaders(event),
+    body: JSON.stringify({
+      jobs: response.Items || [],
+      count: response.Count || 0,
+    }),
+  };
+}
+
+/**
+ * Get bulk job status
+ */
+async function getBulkJob(event: APIGatewayProxyEvent, userPerms: any, jobId: string): Promise<APIGatewayProxyResult> {
+  const response = await docClient.send(new GetCommand({
+    TableName: BULK_OUTBOUND_JOBS_TABLE,
+    Key: { jobId },
+  }));
+
+  const job = response.Item as BulkJob | undefined;
+  if (!job) {
+    return { statusCode: 404, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Job not found' }) };
+  }
+
+  // Check permission
+  const canRead = hasModulePermission(
+    userPerms.clinicRoles,
+    AI_AGENTS_MODULE,
+    'read',
+    userPerms.isSuperAdmin,
+    userPerms.isGlobalSuperAdmin,
+    job.clinicId
+  );
+
+  if (!canRead) {
+    return { statusCode: 403, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Permission denied' }) };
+  }
+
+  // Calculate progress percentage
+  const progress = job.totalCalls > 0 
+    ? Math.round((job.processedCalls / job.totalCalls) * 100) 
+    : 0;
+
+  return {
+    statusCode: 200,
+    headers: getCorsHeaders(event),
+    body: JSON.stringify({
+      ...job,
+      progress: `${progress}%`,
+      successRate: job.processedCalls > 0 
+        ? `${Math.round((job.successfulCalls / job.processedCalls) * 100)}%` 
+        : 'N/A',
+    }),
+  };
+}

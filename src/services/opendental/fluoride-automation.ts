@@ -3,6 +3,7 @@ import * as path from 'path';
 import axios from 'axios';
 import { parse as parseCsv } from 'csv-parse/sync';
 import { Client as SSH2Client } from 'ssh2';
+import { getGlobalSecret } from '../../shared/utils/secrets-helper';
 
 interface ClinicConfig {
   clinicId: string;
@@ -28,22 +29,25 @@ const sanitizeHost = (value: string): string =>
     .replace(/^\/+|\/+$/g, '')
     .trim();
 
-function getSftpConfig(): SftpConfig {
+// SFTP host from environment, password from GlobalSecrets table
+async function getSftpConfig(): Promise<SftpConfig> {
   if (cachedSftpConfig) {
     return cachedSftpConfig;
   }
 
   const hostFromEnv = process.env.CONSOLIDATED_SFTP_HOST || '';
   const username = (process.env.CONSOLIDATED_SFTP_USERNAME || 'sftpuser').trim();
-  const password = (process.env.CONSOLIDATED_SFTP_PASSWORD || '').trim();
   const portValue = Number(process.env.CONSOLIDATED_SFTP_PORT || '22');
+  
+  // Fetch password from GlobalSecrets DynamoDB table
+  const password = await getGlobalSecret('consolidated_sftp', 'password');
 
   const sanitizedHost = sanitizeHost(hostFromEnv);
   if (!sanitizedHost) {
     throw new Error('CONSOLIDATED_SFTP_HOST is not configured or invalid');
   }
   if (!password) {
-    throw new Error('CONSOLIDATED_SFTP_PASSWORD is not configured');
+    throw new Error('CONSOLIDATED_SFTP_PASSWORD is not configured in GlobalSecrets');
   }
 
   cachedSftpConfig = {
@@ -57,7 +61,7 @@ function getSftpConfig(): SftpConfig {
 }
 
 async function downloadCsvResult(fileName: string, clinicId: string): Promise<string> {
-  const sftpConfig = getSftpConfig();
+  const sftpConfig = await getSftpConfig();
   const remotePath = `./${fileName}`;
   const maxAttempts = 5;
   const baseDelayMs = 1500;
@@ -263,7 +267,7 @@ async function runFluorideAutomation(clinic: ClinicConfig): Promise<{
 
     try {
       const url = `${API_BASE_URL}/queries`;
-      const sftpConfig = getSftpConfig();
+      const sftpConfig = await getSftpConfig();
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const safeClinicSegment = clinic.clinicId.replace(/[^a-zA-Z0-9_-]/g, '') || 'clinic';
       const fileName = `${safeClinicSegment}-fluoride-${timestamp}.csv`;

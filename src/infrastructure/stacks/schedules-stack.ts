@@ -312,6 +312,12 @@ export class SchedulesStack extends Stack {
 
     // Email Sender Lambda - processes individual email tasks from the email queue
     // High concurrency to maximize throughput while staying under SES rate limits
+    // 
+    // AWS SES Compliance Features:
+    // - Proper sender branding (clinic name, logo, address)
+    // - Functional unsubscribe links via SES subscription management
+    // - Disclaimer explaining why recipients receive email
+    // - List-Unsubscribe headers for email clients
     const emailSenderFn = new lambdaNode.NodejsFunction(this, 'EmailSenderFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'emailSender.ts'),
       handler: 'handler',
@@ -325,6 +331,8 @@ export class SchedulesStack extends Stack {
         SES_CONFIGURATION_SET_NAME: Fn.importValue('TodaysDentalInsightsNotificationsN1-SESConfigurationSetName'),
         // Email analytics table for updating status
         EMAIL_ANALYTICS_TABLE: Fn.importValue('TodaysDentalInsightsNotificationsN1-EmailAnalyticsTableName'),
+        // Clinic config table for email branding
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
       },
     });
     applyTags(emailSenderFn, { Function: 'email-sender' });
@@ -334,9 +342,33 @@ export class SchedulesStack extends Stack {
       actions: ['ses:SendEmail', 'ses:SendRawEmail'],
       resources: ['*'],
     }));
+    
+    // Grant SES Contact List permissions for subscription management
+    // This enables automatic unsubscribe handling via SES
+    emailSenderFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'ses:GetContact',
+        'ses:CreateContact',
+        'ses:UpdateContact',
+        'ses:ListContacts',
+      ],
+      resources: [
+        `arn:aws:ses:${Stack.of(this).region}:${Stack.of(this).account}:contact-list/PatientEmails`,
+        `arn:aws:ses:${Stack.of(this).region}:${Stack.of(this).account}:contact-list/PatientEmails/*`,
+      ],
+    }));
+    
     emailSenderFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:GetItem'],
       resources: [`arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/TodaysDentalInsightsNotificationsN1-EmailAnalytics`],
+    }));
+    
+    // Grant read access to ClinicConfig table for email branding
+    emailSenderFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+      resources: [
+        `arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
+      ],
     }));
 
     // Add SQS event source for email sender (batch of 10 for efficiency)

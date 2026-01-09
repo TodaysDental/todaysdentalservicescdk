@@ -27,6 +27,7 @@ const clinicsData = clinicConfigData.map((c: any) => ({
   clinicId: c.clinicId,
   clinicName: c.clinicName,
   phoneNumber: c.phoneNumber,
+  aiPhoneNumber: c.aiPhoneNumber || '', // AI-dedicated phone number for Voice Connector routing
   timezone: c.timezone,
   clinicAddress: c.clinicAddress,
   clinicCity: c.clinicCity,
@@ -145,6 +146,13 @@ export interface ChimeStackProps extends StackProps {
   enableRealTimeTranscription?: boolean;
   
   /**
+   * Enable AI phone numbers (default: false)
+   * When enabled, creates SIP Rules for aiPhoneNumber entries in clinic-config.json
+   * and routes calls to those numbers directly to Voice AI (no business hours check)
+   */
+  enableAiPhoneNumbers?: boolean;
+  
+  /**
    * External call recordings bucket name from AiAgentsStack.
    * When provided, ChimeStack will NOT create its own recordings bucket
    * to avoid data fragmentation between AI and human calls.
@@ -167,6 +175,25 @@ export interface ChimeStackProps extends StackProps {
    * NOTE: AiAgentsStack must be deployed before ChimeStack when using this approach.
    */
   aiAgentsStackName?: string;
+
+  // ========================================
+  // PUSH NOTIFICATIONS INTEGRATION (from PushNotificationsStack)
+  // ========================================
+  
+  /**
+   * Device tokens table name for looking up registered mobile devices
+   */
+  deviceTokensTableName?: string;
+  
+  /**
+   * Device tokens table ARN for IAM permissions
+   */
+  deviceTokensTableArn?: string;
+  
+  /**
+   * Send push Lambda function ARN for invoking push notifications
+   */
+  sendPushFunctionArn?: string;
 }
 
 export type VoiceConnectorOriginationProtocol = 'UDP' | 'TCP' | 'TLS';
@@ -307,31 +334,72 @@ export class ChimeStack extends Stack {
 
     // ========================================
     // Seed Clinics Table with data from clinics.json
+    // Uses a single AwsCustomResource with batched SDK calls to avoid
+    // IAM policy size limits (previously used 27+ individual AwsCustomResource
+    // calls which exceeded the 10KB inline policy limit on the shared Lambda role)
     // ========================================
-    (clinicsData as Clinic[]).forEach((clinic) => {
-      // Skip if no phone number defined
-      if (!clinic.phoneNumber) {
-        return;
-      }
+    
+    // Prepare clinic data for seeding - filter to only those with phone numbers
+    const clinicsToSeed = (clinicsData as Clinic[])
+      .filter(c => c.phoneNumber)
+      .map(c => ({
+        PutRequest: {
+          Item: {
+            clinicId: { S: c.clinicId },
+            phoneNumber: { S: c.phoneNumber },
+            clinicName: { S: c.clinicName || c.clinicId },
+            aiPhoneNumber: { S: c.aiPhoneNumber || '' },
+          },
+        },
+      }));
 
-      new customResources.AwsCustomResource(this, `SeedClinic-${clinic.clinicId}`, {
+    // DynamoDB BatchWriteItem supports max 25 items per request, so we need to chunk
+    // For initial seeding, we'll use multiple AwsCustomResource calls but with a
+    // dedicated role to avoid the policy size limit
+    const seedClinicsRole = new iam.Role(this, 'SeedClinicsRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+      ],
+    });
+    
+    // Grant write access to the clinics table
+    this.clinicsTable.grantWriteData(seedClinicsRole);
+
+    // Chunk the clinics into batches of 25 (DynamoDB BatchWriteItem limit)
+    const chunkSize = 25;
+    const clinicChunks: typeof clinicsToSeed[] = [];
+    for (let i = 0; i < clinicsToSeed.length; i += chunkSize) {
+      clinicChunks.push(clinicsToSeed.slice(i, i + chunkSize));
+    }
+
+    // Create one AwsCustomResource per chunk, all sharing the same role
+    clinicChunks.forEach((chunk, index) => {
+      new customResources.AwsCustomResource(this, `SeedClinicsBatch${index}`, {
         onCreate: {
           service: 'DynamoDB',
-          action: 'putItem',
+          action: 'batchWriteItem',
           parameters: {
-            TableName: this.clinicsTable.tableName,
-            Item: {
-              clinicId: { S: clinic.clinicId },
-              phoneNumber: { S: clinic.phoneNumber },
-              clinicName: { S: clinic.clinicName || clinic.clinicId },
+            RequestItems: {
+              [this.clinicsTable.tableName]: chunk,
             },
-            // Only insert if item doesn't exist (don't overwrite existing data)
-            ConditionExpression: 'attribute_not_exists(clinicId)',
           },
-          physicalResourceId: customResources.PhysicalResourceId.of(`SeedClinic-${clinic.clinicId}-v1`),
+          physicalResourceId: customResources.PhysicalResourceId.of(`SeedClinicsBatch${index}-v3`),
         },
+        // On update, we use transactWrite to update existing items
+        onUpdate: {
+          service: 'DynamoDB',
+          action: 'batchWriteItem',
+          parameters: {
+            RequestItems: {
+              [this.clinicsTable.tableName]: chunk,
+            },
+          },
+          physicalResourceId: customResources.PhysicalResourceId.of(`SeedClinicsBatch${index}-v3`),
+        },
+        role: seedClinicsRole,
         policy: customResources.AwsCustomResourcePolicy.fromSdkCalls({
-          resources: [this.clinicsTable.tableArn],
+          resources: customResources.AwsCustomResourcePolicy.ANY_RESOURCE,
         }),
       });
     });
@@ -469,6 +537,19 @@ export class ChimeStack extends Stack {
         VOICE_CONFIG_TABLE: resolvedVoiceConfigTableName?.toString() || '',
         SCHEDULED_CALLS_TABLE: resolvedScheduledCallsTableName?.toString() || '',
         ENABLE_AFTER_HOURS_AI: props.enableAfterHoursAi ? 'true' : 'false',
+        // Push Notifications Integration
+        DEVICE_TOKENS_TABLE: props.deviceTokensTableName || '',
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
+        // AI Phone Numbers - maps aiPhoneNumber -> clinicId for direct AI routing (no hours check)
+        // Only populated when enableAiPhoneNumbers is true and aiPhoneNumber is configured
+        AI_PHONE_NUMBERS_JSON: props.enableAiPhoneNumbers
+          ? JSON.stringify(
+              clinicsData
+                .filter(c => c.aiPhoneNumber)
+                .reduce((acc, c) => ({ ...acc, [c.aiPhoneNumber]: c.clinicId }), {} as Record<string, string>)
+            )
+          : '{}',
+        ENABLE_AI_PHONE_NUMBERS: props.enableAiPhoneNumbers ? 'true' : 'false',
       },
     });
 
@@ -520,6 +601,28 @@ export class ChimeStack extends Stack {
         effect: iam.Effect.ALLOW,
         actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],
         resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${resolvedScheduledCallsTableName}`],
+      }));
+    }
+
+    // ========================================
+    // PUSH NOTIFICATIONS PERMISSIONS
+    // ========================================
+    if (props.deviceTokensTableArn) {
+      smaHandler.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['dynamodb:Query', 'dynamodb:GetItem'],
+        resources: [
+          props.deviceTokensTableArn,
+          `${props.deviceTokensTableArn}/index/*`,
+        ],
+      }));
+    }
+
+    if (props.sendPushFunctionArn) {
+      smaHandler.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
       }));
     }
 
@@ -1060,8 +1163,10 @@ export class ChimeStack extends Stack {
     // CRITICAL FIX: Always add Chime Voice invoke permission regardless of clinic count.
     // This ensures the SMA handler can receive calls even if clinics are added later
     // via DynamoDB or if phone numbers are configured after initial deployment.
-    smaHandler.addPermission('ChimeVoiceInvoke', {
-      principal: new iam.ServicePrincipal('voiceconnector.chime.amazonaws.com'),
+    const chimeVoiceInvokePermission = new lambda.CfnPermission(smaHandler, 'ChimeVoiceInvoke', {
+      action: 'lambda:InvokeFunction',
+      functionName: smaHandler.functionArn,
+      principal: 'voiceconnector.chime.amazonaws.com',
       sourceArn: `arn:aws:chime:${this.region}:${this.account}:vc/*`,
     });
 
@@ -1129,6 +1234,198 @@ export class ChimeStack extends Stack {
         });
         associatePhones.push(resource);
       });
+    }
+
+    // ========================================
+    // AI PHONE NUMBERS - VOICE CONNECTOR INGRESS FOR DIRECT AI ROUTING
+    // ========================================
+    // AI phone numbers are provisioned as ProductType=VoiceConnector so calls can use
+    // Voice Connector streaming + MediaInsightsConfiguration for low-latency transcription.
+    //
+    // IMPORTANT: SIP rules with TriggerType=ToPhoneNumber do NOT support VoiceConnector product type numbers.
+    // Instead, we route calls coming in via the Voice Connector using a SIP rule with:
+    //   TriggerType: RequestUriHostname
+    //   TriggerValue: <Voice Connector OutboundHostName>
+    //
+    // inbound-router.ts will detect AI numbers via AI_PHONE_NUMBERS_JSON and route directly to Voice AI.
+    if (props.enableAiPhoneNumbers) {
+      const clinicsWithAiPhones = (clinicsData as Clinic[])
+        .filter(c => c.aiPhoneNumber && c.aiPhoneNumber.trim() !== '')
+        .map(c => ({
+          clinicId: c.clinicId,
+          aiPhoneNumber: c.aiPhoneNumber!.trim(),
+          clinicName: c.clinicName || c.clinicId,
+        }));
+
+      if (clinicsWithAiPhones.length > 0) {
+        console.log(`[AI Phone Numbers] Configured ${clinicsWithAiPhones.length} AI phone numbers - enabling Voice Connector ingress routing`);
+
+        // IMPORTANT: AwsCustomResource uses a singleton provider Lambda. In practice, passing `role`
+        // does not reliably grant permissions to that provider. Use an explicit `policy` instead.
+        const vcIngressPolicy = customResources.AwsCustomResourcePolicy.fromStatements([
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: [
+              // Legacy namespace
+              'chime:CreateSipMediaApplication',
+              'chime:DeleteSipMediaApplication',
+              'chime:GetSipMediaApplication',
+              'chime:CreateSipRule',
+              'chime:UpdateSipRule',
+              'chime:DeleteSipRule',
+              'chime:GetSipRule',
+              'chime:AssociatePhoneNumbersWithVoiceConnector',
+              'chime:DisassociatePhoneNumbersFromVoiceConnector',
+              // New namespace
+              'chime-sdk-voice:CreateSipMediaApplication',
+              'chime-sdk-voice:DeleteSipMediaApplication',
+              'chime-sdk-voice:GetSipMediaApplication',
+              'chime-sdk-voice:CreateSipRule',
+              'chime-sdk-voice:UpdateSipRule',
+              'chime-sdk-voice:DeleteSipRule',
+              'chime-sdk-voice:GetSipRule',
+              'chime-sdk-voice:AssociatePhoneNumbersWithVoiceConnector',
+              'chime-sdk-voice:DisassociatePhoneNumbersFromVoiceConnector',
+            ],
+            resources: ['*'],
+          }),
+          // `createSipMediaApplication` validates the Lambda endpoint permissions by calling
+          // `lambda:GetPolicy` on the target function. Without this, the custom resource fails
+          // even though the Chime SDK call is the only explicit action.
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: ['lambda:GetPolicy', 'lambda:AddPermission'],
+            resources: [smaHandler.functionArn],
+          }),
+        ]);
+
+        // Create a dedicated SIP Media Application for Voice Connector ingress (all VC calls go to smaHandler).
+        // We still route by dialed number inside inbound-router.ts.
+        const vcIngressSma = new customResources.AwsCustomResource(this, 'SipMediaApp-VoiceConnectorIngress', {
+          onCreate: {
+            service: 'ChimeSDKVoice',
+            action: 'createSipMediaApplication',
+            parameters: {
+              Name: `${this.stackName}-VC-Ingress-SMA`,
+              AwsRegion: this.region,
+              Endpoints: [{
+                LambdaArn: smaHandler.functionArn,
+              }],
+            },
+            physicalResourceId: customResources.PhysicalResourceId.fromResponse('SipMediaApplication.SipMediaApplicationId'),
+          },
+          onDelete: {
+            service: 'ChimeSDKVoice',
+            action: 'deleteSipMediaApplication',
+            parameters: {
+              SipMediaApplicationId: new customResources.PhysicalResourceIdReference(),
+            },
+            // If create never completed we may not have a valid physical ID; treat NotFound/BadRequest as success.
+            ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*|.*DoesNotExist.*|.*BadRequest.*|.*Validation.*',
+          },
+          policy: vcIngressPolicy,
+        });
+
+        // Avoid blasting the Chime API with parallel creates.
+        if (previousClinicResource) {
+          vcIngressSma.node.addDependency(previousClinicResource);
+        }
+        vcIngressSma.node.addDependency(voiceConnector);
+        vcIngressSma.node.addDependency(chimeVoiceInvokePermission);
+
+        const vcIngressSmaId = vcIngressSma.getResponseField('SipMediaApplication.SipMediaApplicationId');
+
+        // Route any SIP traffic hitting this Voice Connector into the SMA.
+        const vcIngressSipRule = new customResources.AwsCustomResource(this, 'SipRule-VoiceConnectorIngress', {
+          onCreate: {
+            service: 'ChimeSDKVoice',
+            action: 'createSipRule',
+            parameters: {
+              Name: `${this.stackName}-VC-Ingress-Rule`,
+              TriggerType: 'RequestUriHostname',
+              TriggerValue: voiceConnectorOutboundHost,
+              TargetApplications: [{
+                SipMediaApplicationId: vcIngressSmaId,
+                Priority: 1,
+                AwsRegion: this.region,
+              }],
+            },
+            physicalResourceId: customResources.PhysicalResourceId.fromResponse('SipRule.SipRuleId'),
+          },
+          onUpdate: {
+            service: 'ChimeSDKVoice',
+            action: 'updateSipRule',
+            parameters: {
+              SipRuleId: new customResources.PhysicalResourceIdReference(),
+              Name: `${this.stackName}-VC-Ingress-Rule`,
+              TriggerType: 'RequestUriHostname',
+              TriggerValue: voiceConnectorOutboundHost,
+              TargetApplications: [{
+                SipMediaApplicationId: vcIngressSmaId,
+                Priority: 1,
+                AwsRegion: this.region,
+              }],
+            },
+            // UpdateSipRule returns SipRule.SipRuleId; keep the physical id stable for delete.
+            physicalResourceId: customResources.PhysicalResourceId.fromResponse('SipRule.SipRuleId'),
+          },
+          onDelete: {
+            service: 'ChimeSDKVoice',
+            action: 'deleteSipRule',
+            parameters: {
+              SipRuleId: new customResources.PhysicalResourceIdReference(),
+            },
+            ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*|.*DoesNotExist.*|.*BadRequest.*|.*Validation.*',
+          },
+          policy: vcIngressPolicy,
+        });
+
+        vcIngressSipRule.node.addDependency(voiceConnector);
+        vcIngressSipRule.node.addDependency(vcIngressSma);
+        if (vcTermination) {
+          vcIngressSipRule.node.addDependency(vcTermination);
+        }
+
+        // Ensure AI phone numbers are associated with the Voice Connector (required for VC media streaming).
+        const aiPhoneNumbers = Array.from(new Set(clinicsWithAiPhones.map(c => c.aiPhoneNumber)));
+        const associateAiPhones = new customResources.AwsCustomResource(this, 'AssociateAiPhoneNumbers', {
+          onCreate: {
+            service: 'ChimeSDKVoice',
+            action: 'associatePhoneNumbersWithVoiceConnector',
+            parameters: {
+              VoiceConnectorId: voiceConnectorId,
+              E164PhoneNumbers: aiPhoneNumbers,
+              ForceAssociate: true,
+            },
+            physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-associate-ai-phones`),
+          },
+          onUpdate: {
+            service: 'ChimeSDKVoice',
+            action: 'associatePhoneNumbersWithVoiceConnector',
+            parameters: {
+              VoiceConnectorId: voiceConnectorId,
+              E164PhoneNumbers: aiPhoneNumbers,
+              ForceAssociate: true,
+            },
+            physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-associate-ai-phones`),
+          },
+          onDelete: {
+            service: 'ChimeSDKVoice',
+            action: 'disassociatePhoneNumbersFromVoiceConnector',
+            parameters: {
+              VoiceConnectorId: voiceConnectorId,
+              E164PhoneNumbers: aiPhoneNumbers,
+            },
+            ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*|.*DoesNotExist.*|.*BadRequest.*|.*Validation.*',
+          },
+          policy: vcIngressPolicy,
+        });
+
+        associateAiPhones.node.addDependency(voiceConnector);
+        associateAiPhones.node.addDependency(vcIngressSipRule);
+      } else {
+        console.log('[AI Phone Numbers] No clinics with aiPhoneNumber configured');
+      }
     }
 
     // ========================================
@@ -1403,12 +1700,31 @@ export class ChimeStack extends Stack {
         JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+        // Push Notifications Integration (for missed call notifications)
+        DEVICE_TOKENS_TABLE: props.deviceTokensTableName || '',
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
       },
     });
     this.agentPresenceTable.grantReadWriteData(callHungupFn);
     this.callQueueTable.grantReadWriteData(callHungupFn);
     this.locksTable.grantReadWriteData(callHungupFn); // CRITICAL FIX: Grant locks table access
-    callHungupFn.addToRolePolicy(chimeSdkPolicy); 
+    callHungupFn.addToRolePolicy(chimeSdkPolicy);
+
+    // Push notifications permissions for call-hungup (missed call notifications)
+    if (props.deviceTokensTableArn) {
+      callHungupFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['dynamodb:Query', 'dynamodb:GetItem'],
+        resources: [props.deviceTokensTableArn, `${props.deviceTokensTableArn}/index/*`],
+      }));
+    }
+    if (props.sendPushFunctionArn) {
+      callHungupFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    } 
     callHungupFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
@@ -2630,6 +2946,9 @@ export class ChimeStack extends Stack {
           VOICE_SESSIONS_TABLE: resolvedVoiceSessionsTableName?.toString() || '',
           // CRITICAL FIX: Pass SSM parameter name for SMA ID Map lookup at runtime
           SMA_ID_MAP_PARAMETER: smaIdMapParameter.parameterName,
+          // FIX: Add VoiceConfig table for clinic-specific voice settings
+          VOICE_CONFIG_TABLE: resolvedVoiceConfigTableName?.toString() || '',
+          CHIME_MEDIA_REGION: chimeMediaRegion,
         },
         logRetention: logs.RetentionDays.ONE_WEEK,
       });
@@ -2665,6 +2984,17 @@ export class ChimeStack extends Stack {
           resources: [
             `arn:aws:dynamodb:${this.region}:${this.account}:table/${resolvedVoiceSessionsTableName}`,
             `arn:aws:dynamodb:${this.region}:${this.account}:table/${resolvedVoiceSessionsTableName}/index/*`,
+          ],
+        }));
+      }
+      
+      // FIX: Grant read access to VoiceConfig table for clinic-specific voice settings
+      if (resolvedVoiceConfigTableName) {
+        aiTranscriptBridgeFn.addToRolePolicy(new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['dynamodb:GetItem'],
+          resources: [
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${resolvedVoiceConfigTableName}`,
           ],
         }));
       }

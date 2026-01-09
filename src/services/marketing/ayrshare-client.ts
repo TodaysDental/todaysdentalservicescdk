@@ -916,3 +916,385 @@ export async function ayrshareGetAdAccount(apiKey: string, profileKey: string) {
     throw new Error(err.response?.data?.message || 'Failed to get ad account info');
   }
 }
+
+// ============================================
+// META LEAD FORM APIs
+// ============================================
+
+/**
+ * Lead form question types
+ */
+export interface LeadFormQuestion {
+  type: 'FULL_NAME' | 'EMAIL' | 'PHONE' | 'CUSTOM';
+  key: string;
+  label: string;
+  required?: boolean;
+  fieldType?: 'TEXT' | 'MULTIPLE_CHOICE' | 'DROPDOWN';
+  options?: { value: string; label: string }[];
+}
+
+/**
+ * Parameters for creating a lead form
+ */
+export interface CreateLeadFormParams {
+  name: string;
+  questions: LeadFormQuestion[];
+  privacyPolicy?: {
+    url: string;
+    text: string;
+  };
+  thankYouPage?: {
+    title: string;
+    body: string;
+  };
+  pageId?: string;
+}
+
+/**
+ * Create a lead generation form on Facebook
+ */
+export async function ayrshareCreateLeadForm(
+  apiKey: string,
+  profileKey: string,
+  params: CreateLeadFormParams
+) {
+  try {
+    const res = await axios.post(`${AYRSHARE_URL}/ads/leadgen/form`,
+      {
+        name: params.name,
+        questions: params.questions.map(q => ({
+          type: q.type,
+          key: q.key,
+          label: q.label,
+          required: q.required !== false,
+          ...(q.fieldType && { fieldType: q.fieldType }),
+          ...(q.options && { options: q.options })
+        })),
+        privacyPolicy: params.privacyPolicy,
+        thankYouScreen: params.thankYouPage ? {
+          title: params.thankYouPage.title,
+          body: params.thankYouPage.body
+        } : undefined,
+        pageId: params.pageId
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Profile-Key': profileKey
+        }
+      }
+    );
+    return res.data;
+  } catch (err: any) {
+    console.error('Create Lead Form Error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || 'Failed to create lead form');
+  }
+}
+
+/**
+ * Get all lead forms for a profile
+ */
+export async function ayrshareGetLeadForms(apiKey: string, profileKey: string) {
+  try {
+    const res = await axios.get(`${AYRSHARE_URL}/ads/leadgen/forms`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Profile-Key': profileKey
+      }
+    });
+    return res.data;
+  } catch (err: any) {
+    console.error('Get Lead Forms Error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || 'Failed to get lead forms');
+  }
+}
+
+/**
+ * Get leads collected from a form
+ */
+export async function ayrshareGetLeads(
+  apiKey: string,
+  profileKey: string,
+  formId: string,
+  params?: {
+    limit?: number;
+    startDate?: string;
+    endDate?: string;
+  }
+) {
+  try {
+    const res = await axios.get(`${AYRSHARE_URL}/ads/leadgen/leads`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Profile-Key': profileKey
+      },
+      params: {
+        formId,
+        limit: params?.limit || 100,
+        startDate: params?.startDate,
+        endDate: params?.endDate
+      }
+    });
+    return res.data;
+  } catch (err: any) {
+    console.error('Get Leads Error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || 'Failed to get leads');
+  }
+}
+
+// ============================================
+// FULL CAMPAIGN CREATION (Campaign + AdSet + Ad)
+// ============================================
+
+/**
+ * Full campaign parameters for 8-step wizard
+ */
+export interface FullCampaignParams {
+  // Step 1: Campaign
+  campaignName: string;
+  objective: 'LEAD_GENERATION' | 'TRAFFIC' | 'ENGAGEMENT' | 'CONVERSIONS' | 'REACH' | 'AWARENESS';
+  budgetType: 'DAILY' | 'LIFETIME';
+  dailyBudget: number;
+  startDate: string;
+  endDate?: string;
+  
+  // Step 2: Audience Targeting
+  targeting: {
+    ageMin: number;
+    ageMax: number;
+    genders?: number[]; // 1=male, 2=female
+    locations?: Array<{
+      city?: string;
+      cityKey?: string;
+      state?: string;
+      country?: string;
+      radius?: number;
+    }>;
+    interests?: Array<{
+      id: string;
+      name: string;
+    }>;
+    behaviors?: Array<{
+      id: string;
+      name: string;
+    }>;
+  };
+  
+  // Step 3: Identity
+  identity: {
+    facebookPageId?: string;
+    instagramAccountId?: string;
+    adFormat: 'SINGLE_IMAGE' | 'VIDEO' | 'CAROUSEL';
+  };
+  
+  // Step 4: Destination
+  destination: {
+    type: 'LEAD_FORM' | 'WEBSITE' | 'PHONE' | 'MESSENGER';
+    leadFormId?: string;
+    websiteUrl?: string;
+    phoneNumber?: string;
+  };
+  
+  // Step 5: Creative
+  creative: {
+    imageUrl?: string;
+    videoUrl?: string;
+    primaryText: string;
+    headline: string;
+    description?: string;
+    callToAction: 'SIGN_UP' | 'BOOK_NOW' | 'LEARN_MORE' | 'CONTACT_US' | 'CALL_NOW' | 'SEND_MESSAGE' | 'APPLY_NOW' | 'GET_QUOTE';
+  };
+  
+  // Step 6: Tracking
+  tracking?: {
+    utmSource?: string;
+    utmMedium?: string;
+    utmCampaign?: string;
+    utmContent?: string;
+    pixelId?: string;
+    conversionEvents?: string[];
+  };
+}
+
+/**
+ * Create a full campaign with Campaign, AdSet, and Ad in one call
+ * This orchestrates the complete 8-step wizard data into Meta Ads
+ */
+export async function ayrshareCreateFullCampaign(
+  apiKey: string,
+  profileKey: string,
+  params: FullCampaignParams
+) {
+  try {
+    // Step 1: Create Campaign
+    console.log(`Creating campaign: ${params.campaignName}`);
+    const campaignRes = await axios.post(`${AYRSHARE_URL}/ads/campaign`,
+      {
+        name: params.campaignName,
+        objective: params.objective,
+        status: 'PAUSED', // Start paused for Meta review
+        specialAdCategories: [], // Required for some objectives
+        budgetType: params.budgetType,
+        dailyBudget: Math.round(params.dailyBudget * 100), // Convert to cents
+        schedule: {
+          startTime: params.startDate,
+          endTime: params.endDate
+        }
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Profile-Key': profileKey
+        }
+      }
+    );
+    
+    const campaignId = campaignRes.data.id || campaignRes.data.campaignId;
+    console.log(`Campaign created: ${campaignId}`);
+
+    // Step 2: Create Ad Set with targeting
+    console.log('Creating ad set...');
+    const adSetRes = await axios.post(`${AYRSHARE_URL}/ads/adset`,
+      {
+        campaignId,
+        name: `${params.campaignName} - Ad Set`,
+        status: 'PAUSED',
+        dailyBudget: Math.round(params.dailyBudget * 100),
+        billingEvent: 'IMPRESSIONS',
+        optimizationGoal: params.objective === 'LEAD_GENERATION' ? 'LEAD_GENERATION' : 'LINK_CLICKS',
+        targeting: {
+          ageMin: params.targeting.ageMin,
+          ageMax: params.targeting.ageMax,
+          genders: params.targeting.genders || [1, 2],
+          geoLocations: params.targeting.locations?.length ? {
+            cities: params.targeting.locations.map(loc => ({
+              key: loc.cityKey,
+              name: loc.city,
+              region: loc.state,
+              country: loc.country || 'US',
+              radius: loc.radius || 25,
+              distanceUnit: 'mile'
+            }))
+          } : undefined,
+          interests: params.targeting.interests?.map(i => ({
+            id: i.id,
+            name: i.name
+          })),
+          behaviors: params.targeting.behaviors?.map(b => ({
+            id: b.id,
+            name: b.name
+          }))
+        },
+        startTime: params.startDate,
+        endTime: params.endDate
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Profile-Key': profileKey
+        }
+      }
+    );
+
+    const adSetId = adSetRes.data.id || adSetRes.data.adSetId;
+    console.log(`Ad Set created: ${adSetId}`);
+
+    // Step 3: Create Ad with creative
+    console.log('Creating ad...');
+    
+    // Build destination URL with UTM parameters
+    let destinationUrl = params.destination.websiteUrl;
+    if (destinationUrl && params.tracking) {
+      const utmParams = new URLSearchParams();
+      if (params.tracking.utmSource) utmParams.set('utm_source', params.tracking.utmSource);
+      if (params.tracking.utmMedium) utmParams.set('utm_medium', params.tracking.utmMedium);
+      if (params.tracking.utmCampaign) utmParams.set('utm_campaign', params.tracking.utmCampaign);
+      if (params.tracking.utmContent) utmParams.set('utm_content', params.tracking.utmContent);
+      
+      const separator = destinationUrl.includes('?') ? '&' : '?';
+      destinationUrl = `${destinationUrl}${separator}${utmParams.toString()}`;
+    }
+
+    const adRes = await axios.post(`${AYRSHARE_URL}/ads/ad`,
+      {
+        adSetId,
+        name: params.campaignName,
+        status: 'PAUSED',
+        creative: {
+          objectStorySpec: {
+            pageId: params.identity.facebookPageId,
+            instagramActorId: params.identity.instagramAccountId,
+            linkData: {
+              message: params.creative.primaryText,
+              name: params.creative.headline,
+              description: params.creative.description,
+              link: destinationUrl,
+              imageUrl: params.creative.imageUrl,
+              callToAction: {
+                type: params.creative.callToAction,
+                value: params.destination.type === 'LEAD_FORM' 
+                  ? { leadGenFormId: params.destination.leadFormId }
+                  : params.destination.type === 'PHONE'
+                    ? { phoneNumber: params.destination.phoneNumber }
+                    : { link: destinationUrl }
+              }
+            }
+          }
+        },
+        trackingSpecs: params.tracking?.pixelId ? [{
+          'action.type': ['offsite_conversion'],
+          fbPixel: [params.tracking.pixelId]
+        }] : undefined
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Profile-Key': profileKey
+        }
+      }
+    );
+
+    const adId = adRes.data.id || adRes.data.adId;
+    console.log(`Ad created: ${adId}`);
+
+    return {
+      success: true,
+      campaignId,
+      adSetId,
+      adId,
+      status: 'PENDING_REVIEW'
+    };
+  } catch (err: any) {
+    console.error('Create Full Campaign Error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || 'Failed to create full campaign');
+  }
+}
+
+/**
+ * Update campaign status (activate/pause)
+ */
+export async function ayrshareActivateCampaign(
+  apiKey: string,
+  profileKey: string,
+  campaignId: string,
+  status: 'ACTIVE' | 'PAUSED'
+) {
+  try {
+    const res = await axios.put(`${AYRSHARE_URL}/ads/campaign`,
+      {
+        id: campaignId,
+        status
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Profile-Key': profileKey
+        }
+      }
+    );
+    return res.data;
+  } catch (err: any) {
+    console.error('Activate Campaign Error:', err.response?.data || err.message);
+    throw new Error(err.response?.data?.message || 'Failed to update campaign status');
+  }
+}

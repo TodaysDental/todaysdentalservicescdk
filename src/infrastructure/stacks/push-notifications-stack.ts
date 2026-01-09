@@ -18,6 +18,7 @@ import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as sns from 'aws-cdk-lib/aws-sns';
+import { CfnResource } from 'aws-cdk-lib';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
@@ -58,9 +59,11 @@ export class PushNotificationsStack extends Stack {
   public readonly registerDeviceFn: lambdaNode.NodejsFunction;
   public readonly unregisterDeviceFn: lambdaNode.NodejsFunction;
   public readonly sendPushFn: lambdaNode.NodejsFunction;
-  public readonly fcmPlatformApp?: sns.CfnPlatformApplication;
-  public readonly apnsPlatformApp?: sns.CfnPlatformApplication;
-  public readonly apnsSandboxPlatformApp?: sns.CfnPlatformApplication;
+  // Platform application types use 'any' for CDK version compatibility
+  // CfnPlatformApplication may not be exported in all CDK versions
+  public readonly fcmPlatformApp?: any;
+  public readonly apnsPlatformApp?: any;
+  public readonly apnsSandboxPlatformApp?: any;
 
   constructor(scope: Construct, id: string, props: PushNotificationsStackProps = {}) {
     super(scope, id, props);
@@ -137,10 +140,15 @@ export class PushNotificationsStack extends Stack {
     if (fcmSecretName) {
       const fcmSecret = secretsmanager.Secret.fromSecretNameV2(this, 'FCMSecret', fcmSecretName);
       
-      this.fcmPlatformApp = new sns.CfnPlatformApplication(this, 'FCMPlatformApp', {
-        name: `${id}-FCM`,
-        platform: 'GCM',
-        platformCredential: fcmSecret.secretValueFromJson('serverKey').unsafeUnwrap(),
+      this.fcmPlatformApp = new CfnResource(this, 'FCMPlatformApp', {
+        type: 'AWS::SNS::PlatformApplication',
+        properties: {
+          Name: `${id}-FCM`,
+          Platform: 'GCM',
+          Attributes: {
+            PlatformCredential: fcmSecret.secretValueFromJson('serverKey').unsafeUnwrap(),
+          },
+        },
       });
       applyTags(this.fcmPlatformApp as unknown as Construct, { Platform: 'fcm' });
       platformArnEnvVars.FCM_PLATFORM_ARN = this.fcmPlatformApp.ref;
@@ -151,16 +159,17 @@ export class PushNotificationsStack extends Stack {
       const apnsSecret = secretsmanager.Secret.fromSecretNameV2(this, 'APNSSecret', apnsSecretName);
       
       // Production APNs
-      this.apnsPlatformApp = new sns.CfnPlatformApplication(this, 'APNSPlatformApp', {
-        name: `${id}-APNS`,
-        platform: 'APNS',
-        platformCredential: apnsSecret.secretValueFromJson('signingKey').unsafeUnwrap(),
-        platformPrincipal: apnsSecret.secretValueFromJson('keyId').unsafeUnwrap(),
-        attributes: {
-          'PlatformCredential': apnsSecret.secretValueFromJson('signingKey').unsafeUnwrap(),
-          'PlatformPrincipal': apnsSecret.secretValueFromJson('keyId').unsafeUnwrap(),
-          'TeamId': apnsSecret.secretValueFromJson('teamId').unsafeUnwrap(),
-          'BundleId': apnsSecret.secretValueFromJson('bundleId').unsafeUnwrap(),
+      this.apnsPlatformApp = new CfnResource(this, 'APNSPlatformApp', {
+        type: 'AWS::SNS::PlatformApplication',
+        properties: {
+          Name: `${id}-APNS`,
+          Platform: 'APNS',
+          Attributes: {
+            PlatformCredential: apnsSecret.secretValueFromJson('signingKey').unsafeUnwrap(),
+            PlatformPrincipal: apnsSecret.secretValueFromJson('keyId').unsafeUnwrap(),
+            TeamId: apnsSecret.secretValueFromJson('teamId').unsafeUnwrap(),
+            BundleId: apnsSecret.secretValueFromJson('bundleId').unsafeUnwrap(),
+          },
         },
       });
       applyTags(this.apnsPlatformApp as unknown as Construct, { Platform: 'apns' });
@@ -168,16 +177,17 @@ export class PushNotificationsStack extends Stack {
 
       // Sandbox APNs (for development)
       if (enableApnsSandbox) {
-        this.apnsSandboxPlatformApp = new sns.CfnPlatformApplication(this, 'APNSSandboxPlatformApp', {
-          name: `${id}-APNS-Sandbox`,
-          platform: 'APNS_SANDBOX',
-          platformCredential: apnsSecret.secretValueFromJson('signingKey').unsafeUnwrap(),
-          platformPrincipal: apnsSecret.secretValueFromJson('keyId').unsafeUnwrap(),
-          attributes: {
-            'PlatformCredential': apnsSecret.secretValueFromJson('signingKey').unsafeUnwrap(),
-            'PlatformPrincipal': apnsSecret.secretValueFromJson('keyId').unsafeUnwrap(),
-            'TeamId': apnsSecret.secretValueFromJson('teamId').unsafeUnwrap(),
-            'BundleId': apnsSecret.secretValueFromJson('bundleId').unsafeUnwrap(),
+        this.apnsSandboxPlatformApp = new CfnResource(this, 'APNSSandboxPlatformApp', {
+          type: 'AWS::SNS::PlatformApplication',
+          properties: {
+            Name: `${id}-APNS-Sandbox`,
+            Platform: 'APNS_SANDBOX',
+            Attributes: {
+              PlatformCredential: apnsSecret.secretValueFromJson('signingKey').unsafeUnwrap(),
+              PlatformPrincipal: apnsSecret.secretValueFromJson('keyId').unsafeUnwrap(),
+              TeamId: apnsSecret.secretValueFromJson('teamId').unsafeUnwrap(),
+              BundleId: apnsSecret.secretValueFromJson('bundleId').unsafeUnwrap(),
+            },
           },
         });
         applyTags(this.apnsSandboxPlatformApp as unknown as Construct, { Platform: 'apns-sandbox' });
@@ -419,6 +429,27 @@ export class PushNotificationsStack extends Stack {
       value: this.deviceTokensTable.tableName,
       description: 'Device Tokens DynamoDB Table Name',
       exportName: `${Stack.of(this).stackName}-DeviceTokensTableName`,
+    });
+
+    // Export table ARN for cross-stack IAM permissions
+    new CfnOutput(this, 'DeviceTokensTableArn', {
+      value: this.deviceTokensTable.tableArn,
+      description: 'Device Tokens DynamoDB Table ARN',
+      exportName: `${Stack.of(this).stackName}-DeviceTokensTableArn`,
+    });
+
+    // Export send-push Lambda function ARN for cross-stack invocation
+    // Other stacks (Comm, Chime) can invoke this Lambda directly
+    new CfnOutput(this, 'SendPushFunctionArn', {
+      value: this.sendPushFn.functionArn,
+      description: 'Send Push Lambda Function ARN for cross-stack invocation',
+      exportName: `${Stack.of(this).stackName}-SendPushFunctionArn`,
+    });
+
+    new CfnOutput(this, 'SendPushFunctionName', {
+      value: this.sendPushFn.functionName,
+      description: 'Send Push Lambda Function Name',
+      exportName: `${Stack.of(this).stackName}-SendPushFunctionName`,
     });
 
     if (this.fcmPlatformApp) {

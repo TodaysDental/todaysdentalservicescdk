@@ -156,7 +156,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }));
 
     if (existingUser.Item) {
-      return httpErr(409, 'user already exists');
+      return httpErr(409, `User with email '${username}' already exists. Use the update endpoint to modify existing users.`);
     }
 
     // Generate password hash only if password is provided (optional for OTP-only users)

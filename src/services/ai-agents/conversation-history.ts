@@ -256,12 +256,17 @@ async function handleListConversations(
       paginationToken = result.nextToken;
     } else {
       // Scan with filters (for admin users)
+      // FIX: Only pass isPublic filter when explicitly specified in query params
+      // Previously: isPublic === 'true' would evaluate to false when undefined,
+      // incorrectly filtering out all public chats
+      const isPublicFilter = isPublic !== undefined ? isPublic === 'true' : undefined;
+      
       const result = await scanConversations(
         authorizedClinics,
         startDate,
         endDate,
         channel,
-        isPublic === 'true',
+        isPublicFilter,
         parsedLimit,
         nextToken
       );

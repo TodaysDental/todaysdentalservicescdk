@@ -42,7 +42,7 @@ import { FeeScheduleSyncStack } from './stacks/fee-schedule-sync-stack';
 import { EmailStack } from './stacks/email-stack';
 import { AccountingStack } from './stacks/accounting-stack';
 import { SecretsStack } from './stacks/secrets-stack';
-// import { PushNotificationsStack } from './stacks/push-notifications-stack';
+import { PushNotificationsStack } from './stacks/push-notifications-stack';
 // import { DentalSoftwareStack } from './stacks/dental-software-stack';
 
 const app = new cdk.App();
@@ -292,6 +292,16 @@ const AGENT_PERFORMANCE_TABLE_NAME = `${CHIME_STACK_NAME}-AgentPerformance`;
 // Define AI Agents stack name for consistent cross-stack references
 const AI_AGENTS_STACK_NAME = 'TodaysDentalInsightsAiAgentsN1';
 
+// Define Push Notifications stack name for consistent cross-stack references
+const PUSH_NOTIFICATIONS_STACK_NAME = 'TodaysDentalInsightsPushN1';
+
+// Define CommStack name and table names for consistent cross-stack references
+// CRITICAL: Using constant names prevents CloudFormation from creating implicit exports
+// which cause UPDATE_ROLLBACK failures when the table needs replacement
+const COMM_STACK_NAME = 'TodaysDentalInsightsCommN1';
+const COMM_FAVORS_TABLE_NAME = `${COMM_STACK_NAME}-FavorRequestsV4`;
+const COMM_TEAMS_TABLE_NAME = `${COMM_STACK_NAME}-TeamsV4`;
+
 // ** ANALYTICS STACK INSTANTIATION (BEFORE CHIME) **
 // ========================================
 // NOTE ON CIRCULAR DEPENDENCY RESOLUTION:
@@ -351,6 +361,24 @@ const ENABLE_AFTER_HOURS_AI = process.env.ENABLE_AFTER_HOURS_AI !== 'false';
 // Supported: us-east-1, us-west-2, eu-west-2, ap-southeast-1, etc.
 const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
 
+// ========================================
+// PUSH NOTIFICATIONS STACK (must be defined before ChimeStack and CommStack)
+// ========================================
+// Mobile push notifications via SNS (iOS APNs + Android FCM)
+// Prerequisites: Store credentials in Secrets Manager before enabling platform applications:
+// - todaysdentalinsights/push/apns - APNs credentials (signingKey, keyId, teamId, bundleId)
+// - todaysdentalinsights/push/fcm - FCM credentials (serverKey)
+//
+// Used by: CommStack (offline messaging), ChimeStack (call notifications)
+const pushNotificationsStack = new PushNotificationsStack(app, PUSH_NOTIFICATIONS_STACK_NAME, {
+  env,
+  // Enable these after creating the Secrets Manager secrets (see docs/PUSH-NOTIFICATIONS-SETUP.md):
+  // apnsSecretName: 'todaysdentalinsights/push/apns',
+  // fcmSecretName: 'todaysdentalinsights/push/fcm',
+  enableApnsSandbox: true,
+});
+pushNotificationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+
 const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
  env,
  jwtSecret: coreStack.jwtSecretValue,
@@ -378,11 +406,29 @@ const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
  // Enable real-time transcription for Voice AI - required for AI to listen to speech
  // This sets up Media Insights Pipeline + Amazon Transcribe + Kinesis for speech-to-text
  enableRealTimeTranscription: ENABLE_AFTER_HOURS_AI,
+ // Enable AI phone numbers - creates SIP Rules for aiPhoneNumber entries in clinic-config.json
+ // Calls to AI phone numbers route directly to Voice AI (no business hours check)
+ enableAiPhoneNumbers: ENABLE_AFTER_HOURS_AI,
+ // ========================================
+ // PUSH NOTIFICATIONS INTEGRATION
+ // ========================================
+ // Enables mobile push notifications for call events (incoming, missed, voicemail)
+ deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
+ deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
+ sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
 });
+// ChimeStack depends on PushNotificationsStack for call notifications
+chimeStack.addDependency(pushNotificationsStack);
+
 // ** COMMUNICATIONS STACK INSTANTIATION **
 const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommN1', {
     env,
     jwtSecret: coreStack.jwtSecretValue,
+    // Push Notifications Integration
+    // Enables mobile push notifications for offline users receiving messages/tasks
+    deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
+    deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
+    sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
 });
 
 // Chatbot Stack - WebSocket-based dental assistant chatbot (depends on core and clinic data)
@@ -402,8 +448,10 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
  env,
  staffUserTableName: coreStack.staffUserTable.tableName,
   staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
-  favorsTableName: communicationsStack.favorsTable.tableName,
-  teamsTableName: communicationsStack.teamsTable.tableName, // For group favor requests
+  // CRITICAL FIX: Use constant table names instead of direct references to avoid CloudFormation
+  // implicit exports which cause UPDATE_ROLLBACK failures when the table needs replacement
+  favorsTableName: COMM_FAVORS_TABLE_NAME,
+  teamsTableName: COMM_TEAMS_TABLE_NAME, // For group favor requests
   clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
   // CRITICAL FIX: Use constant table name instead of direct reference to avoid CloudFormation
   // implicit exports which cause UPDATE_ROLLBACK failures when the table needs replacement
@@ -545,6 +593,12 @@ const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   // SMA ID Map SSM Parameter name (value stored in SSM due to CloudFormation 1024 char limit)
   smaIdMapParameterName: `/${CHIME_STACK_NAME}/SmaIdMap`,
   chimeStackName: CHIME_STACK_NAME,
+
+  // ========================================
+  // SECRETS STACK INTEGRATION (from SecretsStack)
+  // ========================================
+  // Required for Action Group Lambda to read from KMS-encrypted secrets tables (ClinicSecrets fallback)
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
   
   // ========================================
   // UNIFIED ANALYTICS (REQUIRED)
@@ -585,6 +639,7 @@ aiAgentsStack.addDependency(chimeStack);
 aiAgentsStack.addDependency(analyticsStack);
 aiAgentsStack.addDependency(chatbotStack);
 aiAgentsStack.addDependency(clinicHoursStack);
+aiAgentsStack.addDependency(secretsStack);
 
 // Query Generator Stack - AI-powered SQL query generation using Bedrock
 const queryGeneratorStack = new QueryGeneratorStack(app, 'TodaysDentalInsightsQueryGeneratorN1', {
@@ -631,6 +686,7 @@ openDentalStack.addDependency(coreStack); // Explicit - imports AuthorizerFuncti
 hrStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 
 communicationsStack.addDependency(coreStack); // Explicit - uses JWT secret
+communicationsStack.addDependency(pushNotificationsStack); // Explicit - uses push notification Lambda
 
 // Analytics stack dependencies
 // CRITICAL FIX: Explicit dependency on CoreStack for jwtSecret
@@ -730,18 +786,8 @@ const accountingStack = new AccountingStack(app, 'TodaysDentalInsightsAccounting
 accountingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 accountingStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets table for Odoo credentials
 
-// Push Notifications Stack - Mobile push notifications via SNS (iOS APNs + Android FCM)
-// Prerequisites: Store credentials in Secrets Manager before enabling platform applications:
-// - todaysdentalinsights/push/apns - APNs credentials (signingKey, keyId, teamId, bundleId)
-// - todaysdentalinsights/push/fcm - FCM credentials (serverKey)
-// const pushNotificationsStack = new PushNotificationsStack(app, 'TodaysDentalInsightsPushN1', {
-//   env,
-//   // Uncomment and set these after creating the Secrets Manager secrets:
-//   // apnsSecretName: 'todaysdentalinsights/push/apns',
-//   // fcmSecretName: 'todaysdentalinsights/push/fcm',
-//   enableApnsSandbox: true,
-// });
-// pushNotificationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+// Push Notifications Stack is instantiated earlier in the file (before ChimeStack and CommStack)
+// See the PUSH NOTIFICATIONS STACK section above
 
 // CRITICAL FIX: Remove commented-out code that could lead to circular dependencies
 // Note: The proper dependencies are already set above:

@@ -5,6 +5,7 @@ import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { v4 as uuidv4 } from 'uuid';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { CognitoIdentityProviderClient, AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
@@ -14,11 +15,21 @@ const REGION = process.env.AWS_REGION || 'us-east-1';
 const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || '';
 const MESSAGES_TABLE = process.env.MESSAGES_TABLE || ''; 
 const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
-const TEAMS_TABLE = process.env.TEAMS_TABLE || ''; // <--- NEW TEAM TABLE NAME
+const TEAMS_TABLE = process.env.TEAMS_TABLE || '';
+const MEETINGS_TABLE = process.env.MEETINGS_TABLE || '';
 const FILE_BUCKET_NAME = process.env.FILE_BUCKET_NAME || '';
 const NOTIFICATIONS_TOPIC_ARN = process.env.NOTICES_TOPIC_ARN || '';
 const SES_SOURCE_EMAIL = process.env.SES_SOURCE_EMAIL || 'no-reply@todaysdentalinsights.com';
 const USER_POOL_ID = process.env.USER_POOL_ID || '';
+
+// Push Notifications Integration
+const DEVICE_TOKENS_TABLE = process.env.DEVICE_TOKENS_TABLE || '';
+const SEND_PUSH_FUNCTION_ARN = process.env.SEND_PUSH_FUNCTION_ARN || '';
+const PUSH_NOTIFICATIONS_ENABLED = !!(DEVICE_TOKENS_TABLE && SEND_PUSH_FUNCTION_ARN);
+
+// System Modules (from shared/types/user.ts)
+const SYSTEM_MODULES = ['HR', 'Accounting', 'Operations', 'Finance', 'Marketing', 'Legal', 'IT'] as const;
+type SystemModule = typeof SYSTEM_MODULES[number];
 
 // SDK Clients
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
@@ -26,6 +37,7 @@ const sns = new SNSClient({ region: REGION });
 const s3 = new S3Client({ region: REGION });
 const ses = new SESv2Client({ region: REGION });
 const cognito = new CognitoIdentityProviderClient({ region: REGION });
+const lambdaClient = new LambdaClient({ region: REGION });
 
 // ========================================
 // TYPES
@@ -46,22 +58,77 @@ interface Team {
     updatedAt: string;
 }
 
+// Task status values
+type TaskStatus = 'pending' | 'active' | 'in_progress' | 'completed' | 'rejected' | 'forwarded';
+type TaskPriority = 'Low' | 'Medium' | 'High' | 'Urgent';
+
+interface ForwardRecord {
+    forwardID: string;
+    fromUserID: string;
+    toUserID: string;
+    forwardedAt: string;
+    message?: string;
+    deadline?: string;
+    requireAcceptance: boolean;
+    status: 'pending' | 'accepted' | 'rejected';
+    acceptedAt?: string;
+    rejectedAt?: string;
+    rejectionReason?: string;
+}
+
 interface FavorRequest {
     favorRequestID: string;
     senderID: string;
-    // receiverID is optional for group chats
-    receiverID?: string; // <--- MADE OPTIONAL
-    // teamID is present for group chats/assignments
-    teamID?: string; // <--- NEW FIELD
-    status: 'active' | 'resolved';
+    receiverID?: string;
+    teamID?: string;
+    
+    // Enhanced task fields
+    title?: string;
+    description?: string;
+    status: TaskStatus;
+    priority: TaskPriority;
+    category?: SystemModule;
+    tags?: string[];
+    
+    // Forwarding chain
+    forwardingChain?: ForwardRecord[];
+    currentAssigneeID?: string;
+    requiresAcceptance?: boolean;
+    
+    // Completion/Rejection
+    completedAt?: string;
+    completionNotes?: string;
+    rejectionReason?: string;
+    rejectedAt?: string;
+    
+    // Existing fields
     createdAt: string;
     updatedAt: string;
-    userID: string; 
-    
+    userID: string;
     requestType: 'General' | 'Assign Task' | 'Ask a Favor' | 'Other';
     unreadCount: number;
-    initialMessage: string; 
+    initialMessage: string;
     deadline?: string;
+}
+
+interface Meeting {
+    meetingID: string;
+    conversationID: string;
+    title?: string;
+    description: string;
+    startTime: string;
+    endTime?: string;
+    location?: string;
+    meetingLink?: string;
+    organizerID: string;
+    participants: string[];
+    status: 'scheduled' | 'completed' | 'cancelled';
+    reminder?: {
+        enabled: boolean;
+        minutesBefore: number;
+    };
+    createdAt: string;
+    updatedAt: string;
 }
 
 interface FileDetails {
@@ -140,6 +207,44 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 break;
             case 'fetchRequests':
                 await fetchRequests(senderID, payload, connectionId, apiGwManagement);
+                break;
+            // Task Management Actions
+            case 'forwardTask':
+                await forwardTask(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'acceptForwardedTask':
+                await respondToForward(senderID, payload, 'accept', connectionId, apiGwManagement);
+                break;
+            case 'rejectForwardedTask':
+                await respondToForward(senderID, payload, 'reject', connectionId, apiGwManagement);
+                break;
+            case 'markTaskCompleted':
+                await markTaskCompleted(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'updateTaskDeadline':
+                await updateTaskDeadline(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getTaskDetails':
+                await getTaskDetails(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getForwardHistory':
+                await getForwardHistory(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'deleteConversation':
+                await deleteConversation(senderID, payload, connectionId, apiGwManagement);
+                break;
+            // Meeting Actions
+            case 'scheduleMeeting':
+                await scheduleMeeting(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getMeetings':
+                await getMeetings(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'updateMeeting':
+                await updateMeeting(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'deleteMeeting':
+                await deleteMeeting(senderID, payload, connectionId, apiGwManagement);
                 break;
             default:
                 await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unknown action' });
@@ -475,6 +580,7 @@ function sanitizeFileKey(key: string): string {
 
 /**
  * Handles the initiation of a new favor request (1-to-1 or group).
+ * Supports enhanced task fields: title, description, priority, category.
  */
 async function startFavorRequest(
     senderID: string,
@@ -482,8 +588,11 @@ async function startFavorRequest(
     senderConnectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    // UPDATED: Destructure teamID, receiverID, initialMessage, requestType AND deadline
-    const { receiverID, teamID, initialMessage, requestType, deadline } = payload;
+    // Enhanced: Include title, description, priority, category
+    const { 
+        receiverID, teamID, initialMessage, requestType, deadline,
+        title, description, priority = 'Medium', category, tags 
+    } = payload;
     
     if (!initialMessage || !requestType || (!receiverID && !teamID)) {
         await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Missing initialMessage, requestType, and recipient (receiverID or teamID).' });
@@ -541,14 +650,18 @@ async function startFavorRequest(
         senderID,
         // Include receiverID only for 1-to-1, teamID only for group
         ...(isGroupRequest ? { teamID: teamID } : { receiverID: receiverID }),
-        status: 'active',
+        // Enhanced task fields
+        title: title || initialMessage.substring(0, 100),
+        description: description || initialMessage,
+        status: 'pending',
+        priority: priority as TaskPriority,
+        ...(category && { category: category as SystemModule }),
+        ...(tags && { tags }),
+        currentAssigneeID: isGroupRequest ? undefined : receiverID,
         createdAt: nowIso,
         updatedAt: nowIso,
-        // For UserIndex, use senderID for now, though it's less useful for groups
-        // A dedicated TeamIndex/Participant GSI would be better for groups
         userID: senderID, 
         requestType,
-        // Set initial unread count to the number of non-sending recipients
         unreadCount: recipients.length, 
         initialMessage: initialMessage, 
         ...(deadline && { deadline: String(deadline) }),
@@ -581,14 +694,29 @@ async function startFavorRequest(
         }
     }
     
-    // 5. Send confirmation back to the sender
+    // 5. Send push notifications to recipients (for offline users)
+    const senderDetails = await getUserDetails(senderID);
+    await sendTaskPushNotification(
+        recipients,
+        'task_assigned',
+        newFavor.title || initialMessage.substring(0, 50),
+        senderDetails.fullName,
+        favorRequestID,
+        { priority: newFavor.priority, category: newFavor.category }
+    );
+
+    // 6. Send confirmation back to the sender
     await sendToClient(apiGwManagement, senderConnectionId, { 
         type: 'favorRequestStarted', 
-        favorRequestID, 
+        favorRequestID,
+        favor: newFavor,
         receiverID,
         teamID,
         requestType, 
         deadline,
+        title: newFavor.title,
+        priority: newFavor.priority,
+        category: newFavor.category,
     });
 }
 
@@ -1370,7 +1498,12 @@ async function sendToClient(apiGwManagement: ApiGatewayManagementApiClient, conn
 }
 
 /** Sends a message to a list of user IDs by finding their active connections. */
-async function sendToAll(apiGwManagement: ApiGatewayManagementApiClient, userIDs: string[], data: any, options: { notifyOffline: boolean, senderID?: string }): Promise<void> {
+async function sendToAll(
+    apiGwManagement: ApiGatewayManagementApiClient, 
+    userIDs: string[], 
+    data: any, 
+    options: { notifyOffline: boolean; senderID?: string; senderName?: string }
+): Promise<void> {
     const connectionPromises = userIDs.map(id => getSenderInfoByUserID(id));
     const connections = await Promise.all(connectionPromises);
     
@@ -1389,19 +1522,80 @@ async function sendToAll(apiGwManagement: ApiGatewayManagementApiClient, userIDs
         }
     }
     
-    // Trigger a single SNS notification for all offline recipients for this message
+    // Send push notifications to all offline recipients
     if (offlineRecipients.length > 0 && options.notifyOffline) {
-        // Prepare the payload for SNS, which should contain context for all affected users
         const messageData = data.message as MessageData;
         
-        await publishSnsNotification({ 
-            ...messageData, 
-            offlineRecipients, // pass the list of users who are offline
-        });
+        if (messageData) {
+            // For message notifications, use push notifications if available
+            await sendPushNotificationsToOfflineUsers(
+                offlineRecipients,
+                messageData,
+                options.senderName
+            );
+        }
     }
 }
 
-/** Publishes a push notification to the SNS topic. */
+/**
+ * Send push notifications to offline users via the send-push Lambda.
+ * Falls back to SNS topic if push notifications are not configured.
+ */
+async function sendPushNotificationsToOfflineUsers(
+    offlineUserIds: string[],
+    messageData: any,
+    senderName?: string
+): Promise<void> {
+    if (offlineUserIds.length === 0) {
+        return;
+    }
+    
+    // Use the actual content to create a useful preview
+    const preview = messageData.content && messageData.content.length > 100 
+        ? messageData.content.substring(0, 97) + '...' 
+        : messageData.content || '';
+    
+    // If push notifications are enabled, use the send-push Lambda
+    if (PUSH_NOTIFICATIONS_ENABLED && SEND_PUSH_FUNCTION_ARN) {
+        console.log(`[PushNotifications] Sending to ${offlineUserIds.length} offline users via Lambda`);
+        
+        try {
+            const notificationPayload = {
+                _internalCall: true,
+                userIds: offlineUserIds,
+                notification: {
+                    title: senderName ? `Message from ${senderName}` : 'New Message',
+                    body: preview,
+                    type: 'new_message',
+                    data: {
+                        conversationId: messageData.favorRequestID,
+                        senderID: messageData.senderID,
+                        action: 'open_conversation',
+                        timestamp: Date.now(),
+                    },
+                    threadId: `conversation-${messageData.favorRequestID}`,
+                },
+            };
+            
+            const response = await lambdaClient.send(new InvokeCommand({
+                FunctionName: SEND_PUSH_FUNCTION_ARN,
+                Payload: JSON.stringify(notificationPayload),
+                InvocationType: 'Event', // Async invocation - don't wait for response
+            }));
+            
+            console.log(`[PushNotifications] Lambda invoked, StatusCode: ${response.StatusCode}`);
+        } catch (error: any) {
+            console.error('[PushNotifications] Failed to invoke send-push Lambda:', error.message);
+            // Fall back to SNS if push notification fails
+            await publishSnsNotification({ ...messageData, offlineRecipients: offlineUserIds });
+        }
+    } else {
+        // Fallback to SNS topic
+        await publishSnsNotification({ ...messageData, offlineRecipients: offlineUserIds });
+    }
+}
+
+/** Publishes a push notification to the SNS topic (legacy fallback). */
 async function publishSnsNotification(messageData: any): Promise<void> {
     if (!NOTIFICATIONS_TOPIC_ARN) {
         console.warn('SNS Topic ARN not configured. Skipping notification.');
@@ -1409,9 +1603,9 @@ async function publishSnsNotification(messageData: any): Promise<void> {
     }
     
     // Use the actual content to create a useful preview
-    const preview = messageData.content.length > 100 ? 
-        messageData.content.substring(0, 97) + '...' : 
-        messageData.content;
+    const preview = messageData.content && messageData.content.length > 100 
+        ? messageData.content.substring(0, 97) + '...' 
+        : messageData.content || '';
         
     await sns.send(new PublishCommand({
         TopicArn: NOTIFICATIONS_TOPIC_ARN,
@@ -1426,6 +1620,142 @@ async function publishSnsNotification(messageData: any): Promise<void> {
             offlineRecipients: messageData.offlineRecipients, // List of users who should receive the notification
         }),
     }));
+}
+
+/**
+ * Send push notification for task-related events
+ */
+async function sendTaskPushNotification(
+    userIds: string[],
+    type: 'task_assigned' | 'task_forwarded' | 'task_completed',
+    taskTitle: string,
+    senderName: string,
+    taskId: string,
+    additionalData?: Record<string, any>
+): Promise<void> {
+    if (!PUSH_NOTIFICATIONS_ENABLED || userIds.length === 0) {
+        return;
+    }
+    
+    let title: string;
+    let body: string;
+    
+    switch (type) {
+        case 'task_assigned':
+            title = `New Task: ${taskTitle}`;
+            body = `Assigned by ${senderName}`;
+            break;
+        case 'task_forwarded':
+            title = 'Task Forwarded to You';
+            body = `${senderName} forwarded: ${taskTitle}`;
+            break;
+        case 'task_completed':
+            title = 'Task Completed';
+            body = `${senderName} marked "${taskTitle}" as complete`;
+            break;
+        default:
+            return;
+    }
+    
+    try {
+        const notificationPayload = {
+            _internalCall: true,
+            userIds,
+            notification: {
+                title,
+                body,
+                type,
+                data: {
+                    taskId,
+                    action: 'open_task',
+                    ...additionalData,
+                },
+            },
+        };
+        
+        await lambdaClient.send(new InvokeCommand({
+            FunctionName: SEND_PUSH_FUNCTION_ARN,
+            Payload: JSON.stringify(notificationPayload),
+            InvocationType: 'Event',
+        }));
+        
+        console.log(`[PushNotifications] Task notification sent to ${userIds.length} users`);
+    } catch (error: any) {
+        console.error('[PushNotifications] Failed to send task notification:', error.message);
+    }
+}
+
+/**
+ * Send push notification for meeting events
+ */
+async function sendMeetingPushNotification(
+    userIds: string[],
+    type: 'meeting_scheduled' | 'meeting_updated' | 'meeting_deleted',
+    meetingTitle: string,
+    organizerName: string,
+    meetingId: string,
+    startTime?: string
+): Promise<void> {
+    if (!PUSH_NOTIFICATIONS_ENABLED || userIds.length === 0) {
+        return;
+    }
+    
+    let title: string;
+    let body: string;
+    
+    const dateStr = startTime 
+        ? new Date(startTime).toLocaleString('en-US', { 
+            weekday: 'short', 
+            month: 'short', 
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit'
+          })
+        : '';
+    
+    switch (type) {
+        case 'meeting_scheduled':
+            title = `Meeting: ${meetingTitle}`;
+            body = `${organizerName} scheduled for ${dateStr}`;
+            break;
+        case 'meeting_updated':
+            title = 'Meeting Updated';
+            body = `${meetingTitle} has been modified`;
+            break;
+        case 'meeting_deleted':
+            title = 'Meeting Cancelled';
+            body = `${meetingTitle} has been cancelled`;
+            break;
+        default:
+            return;
+    }
+    
+    try {
+        const notificationPayload = {
+            _internalCall: true,
+            userIds,
+            notification: {
+                title,
+                body,
+                type: 'meeting_scheduled',
+                data: {
+                    meetingId,
+                    action: 'open_meeting',
+                    startTime,
+                },
+            },
+        };
+        
+        await lambdaClient.send(new InvokeCommand({
+            FunctionName: SEND_PUSH_FUNCTION_ARN,
+            Payload: JSON.stringify(notificationPayload),
+            InvocationType: 'Event',
+        }));
+        
+        console.log(`[PushNotifications] Meeting notification sent to ${userIds.length} users`);
+    } catch (error: any) {
+        console.error('[PushNotifications] Failed to send meeting notification:', error.message);
+    }
 }
 
 /** * Handles the file sharing request by generating a signed S3 PUT URL.
@@ -1460,4 +1790,780 @@ async function getPresignedUrl(senderID: string, payload: any, connectionId: str
         console.error('Error generating signed URL:', e);
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to generate file upload URL' });
     }
+}
+
+// ========================================
+// TASK MANAGEMENT FUNCTIONS
+// ========================================
+
+/**
+ * Forward a task to another user with optional acceptance requirement.
+ */
+async function forwardTask(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, forwardTo, message, deadline, requireAcceptance = false, notifyOriginalAssignee = true } = payload;
+
+    if (!favorRequestID || !forwardTo) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID or forwardTo.' });
+        return;
+    }
+
+    // 1. Fetch the favor request
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+
+    if (!favor) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Task not found.' });
+        return;
+    }
+
+    // 2. Verify the sender is a participant
+    const isParticipant = await isUserParticipant(favor, senderID);
+    if (!isParticipant) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this task.' });
+        return;
+    }
+
+    // 3. Create forward record
+    const forwardID = uuidv4();
+    const nowIso = new Date().toISOString();
+    const forwardRecord: ForwardRecord = {
+        forwardID,
+        fromUserID: senderID,
+        toUserID: forwardTo,
+        forwardedAt: nowIso,
+        message: message || '',
+        deadline: deadline || favor.deadline,
+        requireAcceptance,
+        status: requireAcceptance ? 'pending' : 'accepted',
+        ...(requireAcceptance ? {} : { acceptedAt: nowIso }),
+    };
+
+    // 4. Update the favor request
+    const existingChain = favor.forwardingChain || [];
+    const updatedChain = [...existingChain, forwardRecord];
+
+    await ddb.send(new UpdateCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+        UpdateExpression: 'SET forwardingChain = :chain, currentAssigneeID = :assignee, #s = :status, updatedAt = :ua, requiresAcceptance = :ra',
+        ExpressionAttributeNames: { '#s': 'status' },
+        ExpressionAttributeValues: {
+            ':chain': updatedChain,
+            ':assignee': forwardTo,
+            ':status': requireAcceptance ? 'forwarded' : 'active',
+            ':ua': nowIso,
+            ':ra': requireAcceptance,
+        },
+    }));
+
+    // 5. Notify participants
+    const notifyList = [forwardTo];
+    if (notifyOriginalAssignee && favor.senderID !== senderID) {
+        notifyList.push(favor.senderID);
+    }
+    notifyList.push(senderID); // Confirm back to sender
+
+    const notificationPayload = {
+        type: 'taskForwarded',
+        favorRequestID,
+        forwardRecord,
+        forwardedBy: senderID,
+    };
+
+    await sendToAll(apiGwManagement, notifyList, notificationPayload, { notifyOffline: true, senderID });
+
+    // Send task-specific push notification to the forwardee
+    const senderDetails = await getUserDetails(senderID);
+    await sendTaskPushNotification(
+        [forwardTo], // Only notify the person receiving the forwarded task
+        'task_forwarded',
+        favor.title || 'Task',
+        senderDetails.fullName,
+        favorRequestID,
+        { requiresAcceptance: requireAcceptance }
+    );
+
+    console.log(`Task ${favorRequestID} forwarded from ${senderID} to ${forwardTo}`);
+}
+
+/**
+ * Accept or reject a forwarded task.
+ */
+async function respondToForward(
+    senderID: string,
+    payload: any,
+    action: 'accept' | 'reject',
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, forwardID, rejectionReason } = payload;
+
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID.' });
+        return;
+    }
+
+    // 1. Fetch the favor request
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+
+    if (!favor) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Task not found.' });
+        return;
+    }
+
+    // 2. Find the forward record for this user
+    const forwardingChain = favor.forwardingChain || [];
+    const forwardIndex = forwardID 
+        ? forwardingChain.findIndex(f => f.forwardID === forwardID)
+        : forwardingChain.findIndex(f => f.toUserID === senderID && f.status === 'pending');
+
+    if (forwardIndex === -1) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'No pending forward found for you.' });
+        return;
+    }
+
+    const forwardRecord = forwardingChain[forwardIndex];
+    if (forwardRecord.toUserID !== senderID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'This forward is not assigned to you.' });
+        return;
+    }
+
+    // 3. Update the forward record
+    const nowIso = new Date().toISOString();
+    forwardingChain[forwardIndex] = {
+        ...forwardRecord,
+        status: action === 'accept' ? 'accepted' : 'rejected',
+        ...(action === 'accept' ? { acceptedAt: nowIso } : { rejectedAt: nowIso, rejectionReason }),
+    };
+
+    // 4. Update the favor request status
+    let newStatus: TaskStatus = favor.status;
+    let newAssignee = favor.currentAssigneeID;
+
+    if (action === 'accept') {
+        newStatus = 'active';
+    } else {
+        // On rejection, return to previous assignee
+        newStatus = 'pending';
+        newAssignee = forwardRecord.fromUserID;
+    }
+
+    await ddb.send(new UpdateCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+        UpdateExpression: 'SET forwardingChain = :chain, #s = :status, currentAssigneeID = :assignee, updatedAt = :ua' + 
+            (action === 'reject' ? ', rejectionReason = :reason, rejectedAt = :rejAt' : ''),
+        ExpressionAttributeNames: { '#s': 'status' },
+        ExpressionAttributeValues: {
+            ':chain': forwardingChain,
+            ':status': newStatus,
+            ':assignee': newAssignee,
+            ':ua': nowIso,
+            ...(action === 'reject' ? { ':reason': rejectionReason, ':rejAt': nowIso } : {}),
+        },
+    }));
+
+    // 5. Notify participants
+    const participants = await getAllParticipants(favor);
+    const notificationPayload = {
+        type: action === 'accept' ? 'taskForwardAccepted' : 'taskForwardRejected',
+        favorRequestID,
+        forwardID: forwardRecord.forwardID,
+        respondedBy: senderID,
+        ...(action === 'reject' ? { rejectionReason } : {}),
+    };
+
+    await sendToAll(apiGwManagement, participants, notificationPayload, { notifyOffline: true, senderID });
+
+    console.log(`Task ${favorRequestID} forward ${action}ed by ${senderID}`);
+}
+
+/**
+ * Mark a task as completed with optional notes.
+ */
+async function markTaskCompleted(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, completionNotes } = payload;
+
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID.' });
+        return;
+    }
+
+    // 1. Fetch the favor request
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+
+    if (!favor) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Task not found.' });
+        return;
+    }
+
+    // 2. Verify the sender is a participant
+    const isParticipant = await isUserParticipant(favor, senderID);
+    if (!isParticipant) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this task.' });
+        return;
+    }
+
+    // 3. Update the task
+    const nowIso = new Date().toISOString();
+    await ddb.send(new UpdateCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+        UpdateExpression: 'SET #s = :status, completedAt = :completedAt, completionNotes = :notes, updatedAt = :ua, unreadCount = :zero',
+        ExpressionAttributeNames: { '#s': 'status' },
+        ExpressionAttributeValues: {
+            ':status': 'completed',
+            ':completedAt': nowIso,
+            ':notes': completionNotes || '',
+            ':ua': nowIso,
+            ':zero': 0,
+        },
+    }));
+
+    // 4. Notify all participants
+    const participants = await getAllParticipants(favor);
+    const notificationPayload = {
+        type: 'taskCompleted',
+        favorRequestID,
+        completedBy: senderID,
+        completedAt: nowIso,
+        completionNotes,
+    };
+
+    await sendToAll(apiGwManagement, participants, notificationPayload, { notifyOffline: true, senderID });
+
+    console.log(`Task ${favorRequestID} marked as completed by ${senderID}`);
+}
+
+/**
+ * Update task deadline.
+ */
+async function updateTaskDeadline(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, deadline, removeDeadline } = payload;
+
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID.' });
+        return;
+    }
+
+    // 1. Fetch the favor request
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+
+    if (!favor) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Task not found.' });
+        return;
+    }
+
+    // 2. Verify the sender is a participant
+    const isParticipant = await isUserParticipant(favor, senderID);
+    if (!isParticipant) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this task.' });
+        return;
+    }
+
+    // 3. Update the deadline
+    const nowIso = new Date().toISOString();
+    
+    if (removeDeadline) {
+        await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+            UpdateExpression: 'REMOVE deadline SET updatedAt = :ua',
+            ExpressionAttributeValues: { ':ua': nowIso },
+        }));
+    } else {
+        await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+            UpdateExpression: 'SET deadline = :deadline, updatedAt = :ua',
+            ExpressionAttributeValues: { ':deadline': deadline, ':ua': nowIso },
+        }));
+    }
+
+    // 4. Notify all participants
+    const participants = await getAllParticipants(favor);
+    const notificationPayload = {
+        type: 'deadlineUpdated',
+        favorRequestID,
+        updatedBy: senderID,
+        deadline: removeDeadline ? null : deadline,
+        updatedAt: nowIso,
+    };
+
+    await sendToAll(apiGwManagement, participants, notificationPayload, { notifyOffline: false });
+
+    console.log(`Task ${favorRequestID} deadline updated by ${senderID}`);
+}
+
+/**
+ * Get detailed task information including forwarding history.
+ */
+async function getTaskDetails(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID } = payload;
+
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID.' });
+        return;
+    }
+
+    // 1. Fetch the favor request
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+
+    if (!favor) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Task not found.' });
+        return;
+    }
+
+    // 2. Verify the sender is a participant
+    const isParticipant = await isUserParticipant(favor, senderID);
+    if (!isParticipant) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this task.' });
+        return;
+    }
+
+    // 3. Get participant details
+    const participants = await getAllParticipants(favor);
+
+    await sendToClient(apiGwManagement, connectionId, {
+        type: 'taskDetails',
+        favor,
+        participants,
+    });
+}
+
+/**
+ * Get forward history for a task.
+ */
+async function getForwardHistory(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID } = payload;
+
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID.' });
+        return;
+    }
+
+    // 1. Fetch the favor request
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+
+    if (!favor) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Task not found.' });
+        return;
+    }
+
+    // 2. Verify the sender is a participant
+    const isParticipant = await isUserParticipant(favor, senderID);
+    if (!isParticipant) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this task.' });
+        return;
+    }
+
+    await sendToClient(apiGwManagement, connectionId, {
+        type: 'forwardHistory',
+        favorRequestID,
+        forwardingChain: favor.forwardingChain || [],
+        senderID: favor.senderID,
+        createdAt: favor.createdAt,
+    });
+}
+
+/**
+ * Delete a conversation/task (soft delete or archive).
+ */
+async function deleteConversation(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID } = payload;
+
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID.' });
+        return;
+    }
+
+    // 1. Fetch the favor request
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+
+    if (!favor) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Task not found.' });
+        return;
+    }
+
+    // 2. Only the sender/creator can delete
+    if (favor.senderID !== senderID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the creator can delete this task.' });
+        return;
+    }
+
+    // 3. Soft delete by updating status
+    const nowIso = new Date().toISOString();
+    await ddb.send(new UpdateCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+        UpdateExpression: 'SET #s = :status, updatedAt = :ua',
+        ExpressionAttributeNames: { '#s': 'status' },
+        ExpressionAttributeValues: {
+            ':status': 'deleted' as any, // Soft delete
+            ':ua': nowIso,
+        },
+    }));
+
+    // 4. Notify all participants
+    const participants = await getAllParticipants(favor);
+    const notificationPayload = {
+        type: 'conversationDeleted',
+        favorRequestID,
+        deletedBy: senderID,
+    };
+
+    await sendToAll(apiGwManagement, participants, notificationPayload, { notifyOffline: false });
+
+    console.log(`Task ${favorRequestID} deleted by ${senderID}`);
+}
+
+// ========================================
+// MEETING FUNCTIONS
+// ========================================
+
+/**
+ * Schedule a new meeting.
+ */
+async function scheduleMeeting(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { conversationID, title, description, startTime, endTime, location, meetingLink, participants } = payload;
+
+    if (!conversationID || !description || !meetingLink) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing required meeting fields.' });
+        return;
+    }
+
+    if (!MEETINGS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Meetings table not configured.' });
+        return;
+    }
+
+    // 1. Verify the conversation exists and sender is a participant
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID: conversationID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+
+    if (!favor) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Conversation not found.' });
+        return;
+    }
+
+    const isParticipant = await isUserParticipant(favor, senderID);
+    if (!isParticipant) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this conversation.' });
+        return;
+    }
+
+    // 2. Create the meeting
+    const meetingID = uuidv4();
+    const nowIso = new Date().toISOString();
+    const meetingParticipants = participants || await getAllParticipants(favor);
+
+    const meeting: Meeting = {
+        meetingID,
+        conversationID,
+        title: title || description.substring(0, 50),
+        description,
+        startTime: startTime || nowIso,
+        endTime,
+        location,
+        meetingLink,
+        organizerID: senderID,
+        participants: meetingParticipants,
+        status: 'scheduled',
+        createdAt: nowIso,
+        updatedAt: nowIso,
+    };
+
+    await ddb.send(new PutCommand({
+        TableName: MEETINGS_TABLE,
+        Item: meeting,
+    }));
+
+    // 3. Create a system message in the conversation
+    const messageData: MessageData = {
+        favorRequestID: conversationID,
+        senderID,
+        content: `Meeting scheduled: ${description}`,
+        timestamp: Date.now(),
+        type: 'text',
+    };
+
+    await _saveAndBroadcastMessage(messageData, apiGwManagement);
+
+    // 4. Notify participants
+    const notificationPayload = {
+        type: 'meetingScheduled',
+        meeting,
+    };
+
+    await sendToAll(apiGwManagement, meetingParticipants, notificationPayload, { notifyOffline: true, senderID });
+
+    // Send meeting-specific push notification
+    const organizerDetails = await getUserDetails(senderID);
+    const otherParticipants = meetingParticipants.filter((p: string) => p !== senderID);
+    await sendMeetingPushNotification(
+        otherParticipants,
+        'meeting_scheduled',
+        meeting.title || description.substring(0, 50),
+        organizerDetails.fullName,
+        meetingID,
+        meeting.startTime
+    );
+
+    console.log(`Meeting ${meetingID} scheduled by ${senderID} for conversation ${conversationID}`);
+}
+
+/**
+ * Get meetings for a conversation or user.
+ */
+async function getMeetings(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { conversationID, status, limit = 50 } = payload;
+
+    if (!MEETINGS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Meetings table not configured.' });
+        return;
+    }
+
+    let meetings: Meeting[] = [];
+
+    if (conversationID) {
+        // Get meetings for a specific conversation
+        const result = await ddb.send(new QueryCommand({
+            TableName: MEETINGS_TABLE,
+            IndexName: 'ConversationIndex',
+            KeyConditionExpression: 'conversationID = :cid',
+            ExpressionAttributeValues: { ':cid': conversationID },
+            ScanIndexForward: false,
+            Limit: limit,
+        }));
+        meetings = (result.Items || []) as Meeting[];
+    } else {
+        // Get meetings organized by the user
+        const result = await ddb.send(new QueryCommand({
+            TableName: MEETINGS_TABLE,
+            IndexName: 'OrganizerIndex',
+            KeyConditionExpression: 'organizerID = :oid',
+            ExpressionAttributeValues: { ':oid': senderID },
+            ScanIndexForward: false,
+            Limit: limit,
+        }));
+        meetings = (result.Items || []) as Meeting[];
+    }
+
+    // Filter by status if provided
+    if (status) {
+        meetings = meetings.filter(m => m.status === status);
+    }
+
+    await sendToClient(apiGwManagement, connectionId, {
+        type: 'meetingsList',
+        meetings,
+        conversationID,
+    });
+}
+
+/**
+ * Update an existing meeting.
+ */
+async function updateMeeting(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { meetingID, title, description, startTime, endTime, location, meetingLink, participants, status } = payload;
+
+    if (!meetingID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing meetingID.' });
+        return;
+    }
+
+    if (!MEETINGS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Meetings table not configured.' });
+        return;
+    }
+
+    // 1. Fetch the meeting
+    const meetingResult = await ddb.send(new GetCommand({
+        TableName: MEETINGS_TABLE,
+        Key: { meetingID },
+    }));
+    const meeting = meetingResult.Item as Meeting;
+
+    if (!meeting) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Meeting not found.' });
+        return;
+    }
+
+    // 2. Only organizer can update
+    if (meeting.organizerID !== senderID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the organizer can update this meeting.' });
+        return;
+    }
+
+    // 3. Update the meeting
+    const nowIso = new Date().toISOString();
+    const updateExpressions: string[] = ['updatedAt = :ua'];
+    const expressionValues: Record<string, any> = { ':ua': nowIso };
+
+    if (title !== undefined) { updateExpressions.push('title = :title'); expressionValues[':title'] = title; }
+    if (description !== undefined) { updateExpressions.push('description = :desc'); expressionValues[':desc'] = description; }
+    if (startTime !== undefined) { updateExpressions.push('startTime = :start'); expressionValues[':start'] = startTime; }
+    if (endTime !== undefined) { updateExpressions.push('endTime = :endT'); expressionValues[':endT'] = endTime; }
+    if (location !== undefined) { updateExpressions.push('location = :loc'); expressionValues[':loc'] = location; }
+    if (meetingLink !== undefined) { updateExpressions.push('meetingLink = :link'); expressionValues[':link'] = meetingLink; }
+    if (participants !== undefined) { updateExpressions.push('participants = :parts'); expressionValues[':parts'] = participants; }
+    if (status !== undefined) { updateExpressions.push('#s = :status'); expressionValues[':status'] = status; }
+
+    await ddb.send(new UpdateCommand({
+        TableName: MEETINGS_TABLE,
+        Key: { meetingID },
+        UpdateExpression: 'SET ' + updateExpressions.join(', '),
+        ExpressionAttributeNames: status !== undefined ? { '#s': 'status' } : undefined,
+        ExpressionAttributeValues: expressionValues,
+    }));
+
+    // 4. Notify participants
+    const notificationPayload = {
+        type: 'meetingUpdated',
+        meetingID,
+        updatedBy: senderID,
+        changes: { title, description, startTime, endTime, location, meetingLink, participants, status },
+    };
+
+    await sendToAll(apiGwManagement, meeting.participants, notificationPayload, { notifyOffline: true, senderID });
+
+    console.log(`Meeting ${meetingID} updated by ${senderID}`);
+}
+
+/**
+ * Delete/cancel a meeting.
+ */
+async function deleteMeeting(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { meetingID, notifyParticipants = true } = payload;
+
+    if (!meetingID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing meetingID.' });
+        return;
+    }
+
+    if (!MEETINGS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Meetings table not configured.' });
+        return;
+    }
+
+    // 1. Fetch the meeting
+    const meetingResult = await ddb.send(new GetCommand({
+        TableName: MEETINGS_TABLE,
+        Key: { meetingID },
+    }));
+    const meeting = meetingResult.Item as Meeting;
+
+    if (!meeting) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Meeting not found.' });
+        return;
+    }
+
+    // 2. Only organizer can delete
+    if (meeting.organizerID !== senderID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the organizer can delete this meeting.' });
+        return;
+    }
+
+    // 3. Update status to cancelled (soft delete)
+    const nowIso = new Date().toISOString();
+    await ddb.send(new UpdateCommand({
+        TableName: MEETINGS_TABLE,
+        Key: { meetingID },
+        UpdateExpression: 'SET #s = :status, updatedAt = :ua',
+        ExpressionAttributeNames: { '#s': 'status' },
+        ExpressionAttributeValues: { ':status': 'cancelled', ':ua': nowIso },
+    }));
+
+    // 4. Notify participants if requested
+    if (notifyParticipants) {
+        const notificationPayload = {
+            type: 'meetingDeleted',
+            meetingID,
+            deletedBy: senderID,
+        };
+
+        await sendToAll(apiGwManagement, meeting.participants, notificationPayload, { notifyOffline: true, senderID });
+    }
+
+    console.log(`Meeting ${meetingID} cancelled by ${senderID}`);
 }

@@ -8,6 +8,8 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 // NOTE: clinicConfigData is used at CDK synthesis time for webhook URL generation
 // Lambda functions should use DynamoDB secrets tables at runtime for Twilio credentials
 import clinicConfigData from '../configs/clinic-config.json';
@@ -47,6 +49,7 @@ export class RcsStack extends Stack {
   public readonly getMessagesFn: lambdaNode.NodejsFunction;
   public readonly templatesFn: lambdaNode.NodejsFunction;
   public readonly authorizer: apigw.RequestAuthorizer;
+  public readonly rcsFallbackTopic: sns.Topic;
 
   constructor(scope: Construct, id: string, props: RcsStackProps = {}) {
     super(scope, id, props);
@@ -161,6 +164,18 @@ export class RcsStack extends Stack {
     });
 
     // ========================================
+    // SNS TOPIC FOR RCS FALLBACK MESSAGES
+    // ========================================
+    // This topic receives messages when the primary incoming webhook fails.
+    // Subscribe processors to handle fallback messages (e.g., SMS fallback, alerting).
+    
+    this.rcsFallbackTopic = new sns.Topic(this, 'RcsFallbackTopic', {
+      topicName: `${this.stackName}-RcsFallback`,
+      displayName: 'RCS Fallback Messages - Triggered when primary webhook fails',
+    });
+    applyTags(this.rcsFallbackTopic, { Resource: 'rcs-fallback-topic' });
+
+    // ========================================
     // API GATEWAY SETUP
     // ========================================
 
@@ -270,6 +285,7 @@ export class RcsStack extends Stack {
     this.rcsMessagesTable.grantWriteData(this.incomingMessageFn);
 
     // Fallback Message Handler - Backup webhook for when primary fails
+    // Also publishes to SNS topic for async processing (SMS fallback, alerts, etc.)
     this.fallbackMessageFn = new lambdaNode.NodejsFunction(this, 'RcsFallbackMessageFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'rcs', 'fallback-message.ts'),
       handler: 'handler',
@@ -277,10 +293,15 @@ export class RcsStack extends Stack {
       memorySize: 256,
       timeout: Duration.seconds(30),
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
-      environment: defaultLambdaEnv,
+      environment: {
+        ...defaultLambdaEnv,
+        RCS_FALLBACK_TOPIC_ARN: this.rcsFallbackTopic.topicArn,
+      },
     });
     applyTags(this.fallbackMessageFn, { Function: 'rcs-fallback' });
     this.rcsMessagesTable.grantWriteData(this.fallbackMessageFn);
+    // Grant permission to publish to SNS fallback topic
+    this.rcsFallbackTopic.grantPublish(this.fallbackMessageFn);
 
     // Status Callback Handler - Webhook for delivery status updates
     this.statusCallbackFn = new lambdaNode.NodejsFunction(this, 'RcsStatusCallbackFn', {
@@ -348,6 +369,61 @@ export class RcsStack extends Stack {
     });
     applyTags(this.templatesFn, { Function: 'rcs-templates' });
     this.rcsTemplatesTable.grantReadWriteData(this.templatesFn);
+
+    // ========================================
+    // SMS FALLBACK PROCESSOR
+    // ========================================
+    // Subscribes to the RCS Fallback SNS topic and sends SMS when RCS fails
+    const smsFallbackProcessorFn = new lambdaNode.NodejsFunction(this, 'SmsFallbackProcessorFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'rcs', 'sms-fallback-processor.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        RCS_MESSAGES_TABLE: this.rcsMessagesTable.tableName,
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
+        GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
+      },
+    });
+    applyTags(smsFallbackProcessorFn, { Function: 'sms-fallback-processor' });
+    
+    // Grant DynamoDB permissions for storing fallback records
+    this.rcsMessagesTable.grantWriteData(smsFallbackProcessorFn);
+    
+    // Grant SMS sending permissions via Pinpoint SMS Voice V2
+    smsFallbackProcessorFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['sms-voice:SendTextMessage'],
+      resources: ['*'],
+    }));
+    
+    // Grant read access to clinic config for getting SMS origination ARN
+    smsFallbackProcessorFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets'}`,
+      ],
+    }));
+    
+    // Grant KMS decryption if encryption key is provided
+    if (props.secretsEncryptionKeyArn) {
+      smsFallbackProcessorFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      }));
+    }
+    
+    // Subscribe the SMS fallback processor to the RCS fallback SNS topic
+    this.rcsFallbackTopic.addSubscription(
+      new snsSubscriptions.LambdaSubscription(smsFallbackProcessorFn)
+    );
+    
+    // Create alarms for SMS fallback processor
+    createLambdaErrorAlarm(smsFallbackProcessorFn, 'sms-fallback-processor');
+    createLambdaThrottleAlarm(smsFallbackProcessorFn, 'sms-fallback-processor');
+    createLambdaDurationAlarm(smsFallbackProcessorFn, 'sms-fallback-processor', Math.floor(Duration.seconds(30).toMilliseconds() * 0.8));
 
     // ========================================
     // SECRETS TABLES PERMISSIONS
@@ -541,6 +617,12 @@ export class RcsStack extends Stack {
     new CfnOutput(this, 'RcsStatusCallbackUrlFormat', {
       value: 'https://apig.todaysdentalinsights.com/rcs/{clinicId}/status',
       description: 'Format for RCS status callback URL (replace {clinicId} with actual clinic ID)',
+    });
+
+    new CfnOutput(this, 'RcsFallbackTopicArn', {
+      value: this.rcsFallbackTopic.topicArn,
+      description: 'SNS Topic ARN for RCS fallback messages - subscribe to receive alerts when primary webhook fails',
+      exportName: `${Stack.of(this).stackName}-RcsFallbackTopicArn`,
     });
 
     // Output first 5 clinic webhook URLs as examples

@@ -563,3 +563,36 @@ export async function getTwilioCredentials(): Promise<{ accountSid: string; auth
 
   return { accountSid, authToken };
 }
+
+/**
+ * Get cPanel credentials for email account management
+ * Uses API Token authentication (preferred over password auth)
+ */
+export async function getCpanelCredentials(): Promise<{
+  host: string;
+  port: number;
+  username: string;
+  apiToken: string;
+  domain: string;
+} | null> {
+  const [apiTokenEntry, configEntry] = await Promise.all([
+    getGlobalSecretEntry('cpanel', 'api_token'),
+    getGlobalSecretEntry('cpanel', 'config'),
+  ]);
+
+  if (!apiTokenEntry) {
+    console.warn('[SecretsHelper] cPanel API token not found in GlobalSecrets');
+    return null;
+  }
+
+  // Get config from api_token metadata or config entry
+  const metadata = apiTokenEntry.metadata || configEntry?.metadata || {};
+  
+  return {
+    host: metadata.host || configEntry?.value || 'box2383.bluehost.com',
+    port: parseInt(metadata.port || '2083', 10),
+    username: metadata.user || 'todayse4',
+    apiToken: apiTokenEntry.value,
+    domain: metadata.domain || 'todaysdentalpartners.com',
+  };
+}

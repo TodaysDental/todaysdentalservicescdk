@@ -358,6 +358,12 @@ POST /public/clinic/{clinicId}/agents/{agentId}/chat
 
 ### 3. Voice Configuration
 
+**After-hours inbound routing note**
+
+- The call router checks Clinic Hours to decide if the clinic is open.
+- When the clinic is closed, after-hours calls to the clinic’s main `phoneNumber` are routed through the AI-phone-number call path **only if** the clinic has a valid `aiPhoneNumber` configured (E.164) in `src/infrastructure/configs/clinic-config.json` (and therefore present in the Clinics table).
+- If `aiPhoneNumber` is missing/blank/invalid, callers hear the standard closed message.
+
 #### Get Voice Config
 
 ```http

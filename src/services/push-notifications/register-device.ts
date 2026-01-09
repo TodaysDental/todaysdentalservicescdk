@@ -209,7 +209,7 @@ async function handleRegister(
     return http(403, { error: 'Forbidden: no access to this clinic' }, event);
   }
 
-  const userId = userPerms.userId || userPerms.email || 'unknown';
+  const userId = userPerms.email || 'unknown';
   const deviceId = createDeviceId(deviceToken);
   const env: Environment = platform === 'android' ? 'production' : (environment as Environment);
 
@@ -268,7 +268,7 @@ async function handleGetDevices(
   event: APIGatewayProxyEvent,
   userPerms: UserPermissions
 ): Promise<APIGatewayProxyResult> {
-  const userId = userPerms.userId || userPerms.email || 'unknown';
+  const userId = userPerms.email || 'unknown';
 
   try {
     const result = await ddb.send(new QueryCommand({

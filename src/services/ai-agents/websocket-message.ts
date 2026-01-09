@@ -160,6 +160,18 @@ async function checkRateLimit(connectionId: string): Promise<{ allowed: boolean;
     }
     
     // Increment counter atomically
+    // FIX: Only include :windowStart in ExpressionAttributeValues when isNewWindow is true
+    // DynamoDB throws ValidationException for unused expression attribute values
+    const expressionAttributeValues: Record<string, any> = {
+      ':one': 1,
+      ':zero': 0,
+      ':ttl': ttl,
+    };
+    
+    if (isNewWindow) {
+      expressionAttributeValues[':windowStart'] = windowStart;
+    }
+    
     await docClient.send(new UpdateCommand({
       TableName: CONNECTIONS_TABLE,
       Key: { connectionId },
@@ -167,12 +179,7 @@ async function checkRateLimit(connectionId: string): Promise<{ allowed: boolean;
         ? 'SET rateLimitCount = :one, rateLimitWindowStart = :windowStart, sessionMessageCount = if_not_exists(sessionMessageCount, :zero) + :one, #ttl = :ttl'
         : 'SET rateLimitCount = rateLimitCount + :one, sessionMessageCount = if_not_exists(sessionMessageCount, :zero) + :one, #ttl = :ttl',
       ExpressionAttributeNames: { '#ttl': 'ttl' },
-      ExpressionAttributeValues: {
-        ':one': 1,
-        ':zero': 0,
-        ':windowStart': windowStart,
-        ':ttl': ttl,
-      },
+      ExpressionAttributeValues: expressionAttributeValues,
     }));
     
     return { allowed: true };

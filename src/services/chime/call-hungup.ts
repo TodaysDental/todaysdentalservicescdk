@@ -12,6 +12,7 @@ import { createCheckQueueForWork } from './utils/check-queue-for-work';
 import { CHIME_CONFIG } from './config';
 import { isValidStateTransition, CALL_STATE_MACHINE, getValidNextStates } from '../shared/utils/state-machine';
 import { DistributedLock } from './utils/distributed-lock';
+import { isPushNotificationsEnabled, sendMissedCallNotification } from './utils/push-notifications';
 
 const ddb = getDynamoDBClient();
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
@@ -295,6 +296,24 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     ]
                 }));
                 console.log('[call-hungup] Hangup completed atomically', { callId, agentId, finalStatus, duration: calculatedDuration });
+
+                // Send missed call notification if call was abandoned (caller hung up while in queue/ringing)
+                if (finalStatus === 'abandoned' && isPushNotificationsEnabled()) {
+                    try {
+                        await sendMissedCallNotification({
+                            callId,
+                            clinicId: callMetadata.clinicId,
+                            clinicName: callMetadata.clinicName || callMetadata.clinicId,
+                            callerPhoneNumber: callMetadata.callerPhoneNumber || callMetadata.phoneNumber,
+                            callerName: callMetadata.callerName,
+                            reason: 'caller_hungup',
+                            callDuration: calculatedDuration,
+                            timestamp: new Date().toISOString(),
+                        });
+                    } catch (pushErr) {
+                        console.warn('[call-hungup] Failed to send missed call notification:', pushErr);
+                    }
+                }
             } catch (txErr: any) {
                 if (txErr.name === 'TransactionCanceledException') {
                     console.warn('[call-hungup] Hangup transaction failed - agent state may be inconsistent', {

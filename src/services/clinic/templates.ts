@@ -20,6 +20,39 @@ const TABLE_NAME = process.env.TABLE_NAME || 'Templates';
 // Dynamic CORS helper
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
 
+// ============================================
+// RCS RICH MEDIA TYPES (matching rcs-stack types)
+// ============================================
+
+/**
+ * RCS Button - supports URL links and quick replies
+ * Twilio RCS supports up to 4 buttons per rich card
+ */
+interface RCSButton {
+  type: 'url' | 'reply' | 'call' | 'location';
+  label: string;              // Max 25 characters
+  value: string;              // URL, reply text, phone number, or location
+}
+
+/**
+ * RCS Rich Card - structured content with optional media and buttons
+ */
+interface RCSRichCard {
+  title?: string;             // Max 200 characters
+  description?: string;       // Max 2000 characters
+  mediaUrl?: string;          // Image/video URL (recommended: 1440x720 for 16:9)
+  mediaHeight?: 'short' | 'medium' | 'tall';  // Card media height
+  buttons?: RCSButton[];      // Max 4 buttons
+}
+
+/**
+ * RCS Carousel - horizontally scrolling collection of rich cards
+ */
+interface RCSCarousel {
+  cards: RCSRichCard[];       // 2-10 cards
+  cardWidth?: 'small' | 'medium';
+}
+
 // Template interface with module categorization
 interface Template {
   template_id: string;
@@ -28,6 +61,10 @@ interface Template {
   email_subject?: string;
   email_body: string;
   text_message?: string;
+  // RCS message fields
+  rcs_message?: string;         // Plain text RCS message
+  rcs_rich_card?: RCSRichCard;  // Single rich card template
+  rcs_carousel?: RCSCarousel;   // Carousel template (2-10 cards)
   modified_at: string;
   modified_by: string;
   created_at: string;
@@ -194,6 +231,30 @@ async function createTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     };
   }
 
+  // Validate RCS rich card if provided
+  if (body.rcs_rich_card) {
+    const validation = validateRichCard(body.rcs_rich_card);
+    if (!validation.valid) {
+      return {
+        statusCode: 400,
+        headers: getCorsHeaders(event),
+        body: JSON.stringify({ error: validation.error }),
+      };
+    }
+  }
+
+  // Validate RCS carousel if provided
+  if (body.rcs_carousel) {
+    const validation = validateCarousel(body.rcs_carousel);
+    if (!validation.valid) {
+      return {
+        statusCode: 400,
+        headers: getCorsHeaders(event),
+        body: JSON.stringify({ error: validation.error }),
+      };
+    }
+  }
+
   const templateId = uuidv4();
   const timestamp = new Date().toISOString();
   const modifiedBy = getUserDisplayName(userPerms);
@@ -205,6 +266,9 @@ async function createTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     email_subject: body.email_subject || '',
     email_body: body.email_body,
     text_message: body.text_message || '',
+    rcs_message: body.rcs_message || '',
+    rcs_rich_card: body.rcs_rich_card,
+    rcs_carousel: body.rcs_carousel,
     created_at: timestamp,
     modified_at: timestamp,
     modified_by: modifiedBy,
@@ -273,6 +337,30 @@ async function updateTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     };
   }
 
+  // Validate RCS rich card if provided
+  if (body.rcs_rich_card) {
+    const validation = validateRichCard(body.rcs_rich_card);
+    if (!validation.valid) {
+      return {
+        statusCode: 400,
+        headers: getCorsHeaders(event),
+        body: JSON.stringify({ error: validation.error }),
+      };
+    }
+  }
+
+  // Validate RCS carousel if provided
+  if (body.rcs_carousel) {
+    const validation = validateCarousel(body.rcs_carousel);
+    if (!validation.valid) {
+      return {
+        statusCode: 400,
+        headers: getCorsHeaders(event),
+        body: JSON.stringify({ error: validation.error }),
+      };
+    }
+  }
+
   const timestamp = new Date().toISOString();
   const modifiedBy = getUserDisplayName(userPerms);
 
@@ -283,6 +371,9 @@ async function updateTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     email_subject: body.email_subject || '',
     email_body: body.email_body,
     text_message: body.text_message || '',
+    rcs_message: body.rcs_message || '',
+    rcs_rich_card: body.rcs_rich_card,
+    rcs_carousel: body.rcs_carousel,
     modified_at: timestamp,
     modified_by: modifiedBy,
     clinic_id: body.clinic_id,
@@ -373,4 +464,69 @@ async function deleteTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
   };
 }
 
+// ============================================
+// RCS VALIDATION HELPERS
+// ============================================
 
+function validateRichCard(card: RCSRichCard): { valid: boolean; error?: string } {
+  // Validate title length
+  if (card.title && card.title.length > 200) {
+    return { valid: false, error: 'Rich card title cannot exceed 200 characters' };
+  }
+
+  // Validate description length
+  if (card.description && card.description.length > 2000) {
+    return { valid: false, error: 'Rich card description cannot exceed 2000 characters' };
+  }
+
+  // Validate buttons
+  if (card.buttons) {
+    if (card.buttons.length > 4) {
+      return { valid: false, error: 'Rich card cannot have more than 4 buttons' };
+    }
+
+    for (const button of card.buttons) {
+      if (!button.label || button.label.length > 25) {
+        return { valid: false, error: 'Button label is required and cannot exceed 25 characters' };
+      }
+      if (!button.type || !['url', 'reply', 'call', 'location'].includes(button.type)) {
+        return { valid: false, error: 'Button type must be url, reply, call, or location' };
+      }
+      if (!button.value) {
+        return { valid: false, error: 'Button value is required' };
+      }
+    }
+  }
+
+  // Validate media height
+  if (card.mediaHeight && !['short', 'medium', 'tall'].includes(card.mediaHeight)) {
+    return { valid: false, error: 'Media height must be short, medium, or tall' };
+  }
+
+  return { valid: true };
+}
+
+function validateCarousel(carousel: RCSCarousel): { valid: boolean; error?: string } {
+  // Validate card count
+  if (!carousel.cards || carousel.cards.length < 2) {
+    return { valid: false, error: 'Carousel must have at least 2 cards' };
+  }
+  if (carousel.cards.length > 10) {
+    return { valid: false, error: 'Carousel cannot have more than 10 cards' };
+  }
+
+  // Validate card width
+  if (carousel.cardWidth && !['small', 'medium'].includes(carousel.cardWidth)) {
+    return { valid: false, error: 'Carousel card width must be small or medium' };
+  }
+
+  // Validate each card
+  for (let i = 0; i < carousel.cards.length; i++) {
+    const cardValidation = validateRichCard(carousel.cards[i]);
+    if (!cardValidation.valid) {
+      return { valid: false, error: `Carousel card ${i + 1}: ${cardValidation.error}` };
+    }
+  }
+
+  return { valid: true };
+}

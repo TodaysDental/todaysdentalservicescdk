@@ -65,7 +65,7 @@ async function handleUnregisterByToken(
     return http(400, { error: 'deviceToken is required' }, event);
   }
 
-  const userId = userPerms.userId || userPerms.email || 'unknown';
+  const userId = userPerms.email || 'unknown';
   const deviceId = createDeviceId(deviceToken);
 
   try {
@@ -132,7 +132,7 @@ async function handleUnregisterById(
     return http(400, { error: 'deviceId is required' }, event);
   }
 
-  const userId = userPerms.userId || userPerms.email || 'unknown';
+  const userId = userPerms.email || 'unknown';
 
   try {
     // Get the device record to find the endpoint ARN
@@ -191,7 +191,7 @@ async function handleUnregisterAll(
   event: APIGatewayProxyEvent,
   userPerms: UserPermissions
 ): Promise<APIGatewayProxyResult> {
-  const userId = userPerms.userId || userPerms.email || 'unknown';
+  const userId = userPerms.email || 'unknown';
 
   try {
     // Query all devices for the user

@@ -12,6 +12,12 @@ import { enrichCallContext, selectAgentsForCall } from './utils/agent-selection'
 import { buildBaseQueueItem, smartAssignCall } from './utils/parallel-assignment';
 import { generateUniqueCallPosition } from '../shared/utils/unique-id';
 import { startMediaPipeline, stopMediaPipeline, isRealTimeTranscriptionEnabled } from './utils/media-pipeline-manager';
+import { 
+    isPushNotificationsEnabled, 
+    sendIncomingCallToAgents, 
+    sendMissedCallNotification,
+    type IncomingCallNotification 
+} from './utils/push-notifications';
 
 // This Lambda is the "brain" for call routing.
 // It is NOT triggered by API Gateway. It is triggered by the Chime SDK SIP Media Application.
@@ -41,6 +47,37 @@ const AI_AGENTS_TABLE = process.env.AI_AGENTS_TABLE;
 const VOICE_CONFIG_TABLE = process.env.VOICE_CONFIG_TABLE;
 const ENABLE_AFTER_HOURS_AI = process.env.ENABLE_AFTER_HOURS_AI === 'true';
 
+// ========================================
+// AI PHONE NUMBERS - Direct AI Routing (no business hours check)
+// ========================================
+// AI phone numbers are dedicated numbers that route directly to Voice AI.
+// Callers to these numbers always get AI (regardless of business hours).
+// Map format: { "+1234567890": "clinicId", ... }
+const ENABLE_AI_PHONE_NUMBERS = process.env.ENABLE_AI_PHONE_NUMBERS === 'true';
+const AI_PHONE_NUMBERS: Record<string, string> = (() => {
+  try {
+    return JSON.parse(process.env.AI_PHONE_NUMBERS_JSON || '{}');
+  } catch {
+    console.warn('[AI_PHONE_NUMBERS] Failed to parse AI_PHONE_NUMBERS_JSON, defaulting to empty');
+    return {};
+  }
+})();
+
+/**
+ * Check if a phone number is an AI-dedicated phone number
+ */
+function isAiPhoneNumber(phoneNumber: string | null | undefined): boolean {
+  if (!phoneNumber || !ENABLE_AI_PHONE_NUMBERS) return false;
+  return phoneNumber in AI_PHONE_NUMBERS;
+}
+
+/**
+ * Get clinic ID for an AI phone number
+ */
+function getClinicIdForAiNumber(phoneNumber: string): string | undefined {
+  return AI_PHONE_NUMBERS[phoneNumber];
+}
+
 function isValidTransactionId(value: unknown): value is string {
     return typeof value === 'string' && UUID_REGEX.test(value);
 }
@@ -67,23 +104,27 @@ type CallStatus =
 // Valid call state transitions
 // FIX #13: Removed backward transitions that could bypass queue logic
 // State machine should be forward-only except for explicit retry scenarios
+// 
+// FIX: Enhanced state transitions for edge cases:
+// - 'dialing' can now transition to 'queued' for retry scenarios
+// - 'escalated' can now transition to 'timeout' for unanswered escalated calls
+// - 'failed' can now transition to 'queued' for retryable failures
 const VALID_STATE_TRANSITIONS: Record<CallStatus, CallStatus[]> = {
-    'queued': ['ringing', 'abandoned', 'timeout', 'no_agents_available'],
-    'ringing': ['connected', 'queued', 'abandoned', 'no_agents_available', 'timeout', 'escalated'], // escalated for excessive rejections
-    'dialing': ['connected', 'timeout', 'abandoned', 'failed'],
-    'connected': ['on_hold', 'completed', 'abandoned'],
+    'queued': ['ringing', 'abandoned', 'timeout', 'no_agents_available', 'failed'],
+    'ringing': ['connected', 'queued', 'abandoned', 'no_agents_available', 'timeout', 'escalated', 'failed'],
+    // FIX: 'dialing' can transition to 'queued' for outbound calls that should be retried
+    'dialing': ['connected', 'timeout', 'abandoned', 'failed', 'queued'],
+    'connected': ['on_hold', 'completed', 'abandoned', 'failed'],
     'on_hold': ['connected', 'abandoned', 'completed'],
-    'timeout': [],
+    'timeout': ['queued'], // FIX: Allow retry from timeout for scheduled retries
     'completed': [],
     'abandoned': [],
-    // FIX #13: no_agents_available can only transition to ringing (agent became available) or abandoned
-    // Removed 'queued' to prevent regression - once no_agents_available, call should either
-    // ring an agent or be abandoned, not go back to queue
-    'no_agents_available': ['ringing', 'abandoned', 'escalated'],
-    // CRITICAL FIX #7: Added 'escalated' status for calls with excessive rejections
-    // Escalated calls require supervisor attention
-    'escalated': ['connected', 'abandoned', 'completed'],
-    'failed': []
+    // FIX #13: no_agents_available can transition to queued for scheduled retries
+    'no_agents_available': ['ringing', 'abandoned', 'escalated', 'queued', 'timeout'],
+    // FIX: Added 'timeout' transition for escalated calls that are never answered
+    'escalated': ['connected', 'abandoned', 'completed', 'timeout'],
+    // FIX: 'failed' can transition to 'queued' for retryable failures (e.g., transient errors)
+    'failed': ['queued']
 };
 
 
@@ -783,7 +824,12 @@ async function isClinicOpen(clinicId: string): Promise<boolean> {
         return isOpen;
     } catch (error) {
         console.error('[isClinicOpen] Error checking clinic hours:', error);
-        return true; // Default to open (human agents) if error
+        // FIX: Consistent default behavior - default to CLOSED (use AI) on error
+        // This matches voice-ai-handler.ts behavior and is safer:
+        // - If we default to "open" but no agents are available, caller gets stuck
+        // - If we default to "closed" but clinic is open, caller still gets help from AI
+        // The AI can always transfer to a human if needed
+        return false;
     }
 }
 
@@ -887,6 +933,7 @@ async function invokeVoiceAiHandler(event: {
     aiAgentId?: string;
     purpose?: string;
     customMessage?: string;
+    isAiPhoneNumber?: boolean; // True if call came to AI-dedicated phone number (no hours check needed)
 }): Promise<{ action: string; text?: string; sessionId?: string }[]> {
     if (!VOICE_AI_LAMBDA_ARN) {
         console.error('[invokeVoiceAiHandler] VOICE_AI_LAMBDA_ARN not configured');
@@ -911,6 +958,248 @@ async function invokeVoiceAiHandler(event: {
         console.error('[invokeVoiceAiHandler] Error invoking Voice AI:', error);
         return [{ action: 'SPEAK', text: 'I apologize, but I am having trouble processing your request. Please try calling back during office hours.' }];
     }
+}
+
+/**
+ * Shared inbound Voice AI routing used by:
+ * - AI-dedicated phone numbers (always AI)
+ * - After-hours forwarding from a clinic's main phone number (treat as AI phone number call)
+ */
+async function routeInboundCallToVoiceAi(params: {
+    clinicId: string;
+    callId: string;
+    fromPhoneNumber: string;
+    pstnLegCallId?: string;
+    isAiPhoneNumber: boolean;
+    source: 'ai_phone_number' | 'after_hours_forward';
+}): Promise<any> {
+    const { clinicId, callId, fromPhoneNumber, pstnLegCallId, isAiPhoneNumber, source } = params;
+
+    // Get Voice AI agent for this clinic
+    const voiceAiAgent = await getVoiceAiAgentForClinic(clinicId);
+
+    if (!voiceAiAgent) {
+        // If AI is unavailable, offer human queue if available; otherwise take a message
+        console.error(`[routeInboundCallToVoiceAi] No Voice AI agent configured`, { callId, clinicId, source });
+
+        // Try to get clinic info for voicemail/transfer options
+        let clinicInfo: any = null;
+        try {
+            const clinicResult = await ddb.send(new GetCommand({
+                TableName: CLINICS_TABLE_NAME,
+                Key: { clinicId },
+            }));
+            clinicInfo = clinicResult.Item;
+        } catch (clinicErr) {
+            console.warn('[routeInboundCallToVoiceAi] Could not fetch clinic info:', clinicErr);
+        }
+
+        const clinicName = clinicInfo?.clinicName || clinicInfo?.name || 'our dental office';
+
+        // Check if there are human agents available
+        const { Items: onlineAgents } = await ddb.send(new QueryCommand({
+            TableName: AGENT_PRESENCE_TABLE_NAME,
+            IndexName: 'status-index',
+            KeyConditionExpression: '#status = :status',
+            FilterExpression: 'contains(activeClinicIds, :clinicId)',
+            ExpressionAttributeNames: { '#status': 'status' },
+            ExpressionAttributeValues: {
+                ':status': 'Online',
+                ':clinicId': clinicId,
+            },
+            Limit: 1,
+        }));
+
+        if (onlineAgents && onlineAgents.length > 0) {
+            console.log(`[routeInboundCallToVoiceAi] AI unavailable but human agents online - routing to queue`, { callId, clinicId, source });
+            await addToQueue(clinicId, callId, fromPhoneNumber);
+            return buildActions([
+                buildSpeakAction(
+                    `Thank you for calling ${clinicName}. Our AI assistant is currently being updated. ` +
+                    `I'm connecting you with one of our team members. Please hold.`
+                ),
+                buildPauseAction(500),
+                buildPlayAudioAction('hold-music.wav', 999)
+            ]);
+        }
+
+        console.log(`[routeInboundCallToVoiceAi] No AI or agents available - offering voicemail`, { callId, clinicId, source });
+        return buildActions([
+            buildSpeakAction(
+                `Thank you for calling ${clinicName}. Our AI assistant is currently unavailable and all of our team members are away. ` +
+                `Please leave a message after the tone, and we'll return your call as soon as possible. ` +
+                `To leave a message, please state your name, phone number, and the reason for your call.`
+            ),
+            buildPauseAction(1000),
+            // TODO: Add dedicated voicemail recording action when available.
+            // For now, use RecordAudio to capture the message (if an S3 bucket is configured).
+            AI_RECORDINGS_BUCKET ? buildRecordAudioAction(callId, clinicId, {
+                durationSeconds: 120, // 2 minutes for voicemail
+                silenceDurationSeconds: 5,
+                silenceThreshold: 200,
+            }) : { Type: 'Hangup', Parameters: { SipResponseCode: '0' } },
+        ]);
+    }
+
+    // Invoke Voice AI handler
+    const voiceAiResponse = await invokeVoiceAiHandler({
+        eventType: 'NEW_CALL',
+        callId,
+        clinicId,
+        callerNumber: fromPhoneNumber,
+        aiAgentId: voiceAiAgent.agentId,
+        isAiPhoneNumber,
+    });
+
+    // Build actions from Voice AI response
+    const actions: any[] = [];
+
+    for (const response of voiceAiResponse) {
+        switch (response.action) {
+            case 'SPEAK':
+                if (response.text) {
+                    actions.push(buildSpeakAction(response.text));
+                }
+                break;
+            case 'HANG_UP':
+                actions.push({ Type: 'Hangup', Parameters: { SipResponseCode: '0' } });
+                break;
+            case 'TRANSFER':
+                actions.push(buildSpeakAction('Please hold while I transfer your call.'));
+                break;
+            case 'CONTINUE':
+                // CONTINUE is handled after - we'll add appropriate action based on mode
+                break;
+        }
+    }
+
+    // ========== DETERMINE TRANSCRIPTION MODE ==========
+    // MODE 1: MEETING-BASED KVS (Real-time, ~1s latency)
+    // MODE 2: RECORD-TRANSCRIBE (Fallback, ~3-5s latency)
+    // MODE 3: DTMF (Fallback when no audio capture available)
+    const realTimeEnabled = isRealTimeTranscriptionEnabled();
+    let pipelineMode: 'meeting-kvs' | 'record-transcribe' | 'dtmf-dialogue' = 'dtmf-dialogue';
+    let meetingInfo: any = null;
+    let attendeeInfo: any = null;
+    const aiSessionId = voiceAiResponse[0]?.sessionId || randomUUID();
+
+    // Try meeting-based KVS first for best latency
+    if (realTimeEnabled && pstnLegCallId) {
+        console.log('[routeInboundCallToVoiceAi] Attempting meeting-kvs mode', { callId, clinicId, source });
+
+        const meetingResult = await createAiMeetingWithPipeline({
+            callId,
+            clinicId,
+            aiAgentId: voiceAiAgent.agentId,
+            aiSessionId,
+            callerNumber: fromPhoneNumber,
+        });
+
+        if (meetingResult) {
+            pipelineMode = 'meeting-kvs';
+            meetingInfo = meetingResult.meetingInfo;
+            attendeeInfo = meetingResult.attendeeInfo;
+            console.log('[routeInboundCallToVoiceAi] Using meeting-kvs mode', {
+                callId,
+                clinicId,
+                meetingId: meetingInfo?.MeetingId,
+                attendeeId: attendeeInfo?.AttendeeId,
+                source,
+            });
+        } else {
+            console.warn('[routeInboundCallToVoiceAi] Failed to create AI meeting, falling back', { callId, clinicId, source });
+        }
+    }
+
+    // Fallback to record-transcribe if meeting creation failed
+    if (pipelineMode !== 'meeting-kvs' && AI_RECORDINGS_BUCKET) {
+        pipelineMode = 'record-transcribe';
+        console.log('[routeInboundCallToVoiceAi] Using record-transcribe mode', { callId, clinicId, source });
+    }
+
+    const transcriptionEnabled = pipelineMode !== 'dtmf-dialogue';
+    const useDtmfFallback = pipelineMode === 'dtmf-dialogue';
+    const pipelineStatus =
+        pipelineMode === 'meeting-kvs'
+            ? 'starting'
+            : (transcriptionEnabled ? 'active' : 'disabled');
+
+    // Store AI call record in queue table for tracking
+    const { queuePosition, uniquePositionId } = generateUniqueCallPosition();
+    const now = Math.floor(Date.now() / 1000);
+
+    try {
+        await ddb.send(new PutCommand({
+            TableName: CALL_QUEUE_TABLE_NAME,
+            Item: {
+                clinicId,
+                callId,
+                queuePosition,
+                uniquePositionId,
+                queueEntryTime: now,
+                queueEntryTimeIso: new Date().toISOString(),
+                phoneNumber: fromPhoneNumber,
+                status: 'connected' as CallStatus,
+                ttl: now + QUEUE_TIMEOUT,
+                direction: 'inbound',
+                callType: 'ai_direct',
+                isAiPhoneNumber,
+                isAiCall: true, // CRITICAL: Required for ai-transcript-bridge to process transcripts
+                aiAgentId: voiceAiAgent.agentId,
+                aiSessionId,
+                transactionId: callId,
+                transcriptionEnabled,
+                pipelineMode,
+                pipelineStatus,
+                useDtmfFallback,
+                ...(pstnLegCallId ? { pstnCallId: pstnLegCallId } : {}),
+                ...(meetingInfo ? {
+                    meetingId: meetingInfo.MeetingId,
+                    meetingInfo,
+                    customerAttendeeInfo: attendeeInfo,
+                } : {}),
+            }
+        }));
+    } catch (err) {
+        console.warn('[routeInboundCallToVoiceAi] Failed to create AI call record:', err);
+    }
+
+    // ========== ADD APPROPRIATE AUDIO CAPTURE ACTION ==========
+    if (pipelineMode === 'meeting-kvs' && pstnLegCallId && meetingInfo && attendeeInfo) {
+        // MEETING-KVS MODE: Join caller to Chime Meeting for real-time KVS streaming
+        // After JoinChimeMeeting succeeds (ACTION_SUCCESSFUL), we start the Media Pipeline
+        actions.push(buildJoinChimeMeetingAction(pstnLegCallId, meetingInfo, attendeeInfo));
+    } else if (pipelineMode === 'record-transcribe' && pstnLegCallId) {
+        // RECORD-TRANSCRIBE MODE: RecordAudio captures caller speech → S3 → Transcribe
+        actions.push(buildRecordAudioAction(callId, clinicId, {
+            durationSeconds: 30, // Allow caller time to speak
+            silenceDurationSeconds: 3, // End recording after 3s silence
+            silenceThreshold: 100, // More sensitive to quiet speech (0-1000 range)
+        }));
+    } else {
+        // DTMF FALLBACK: Prompt for key press when no audio capture available
+        actions.push(buildSpeakAndGetDigitsAction(
+            'I am listening. You can speak or press a key on your phone.',
+            1,
+            30
+        ));
+    }
+
+    console.log('[routeInboundCallToVoiceAi] AI call setup complete', {
+        callId,
+        clinicId,
+        aiAgentId: voiceAiAgent.agentId,
+        aiSessionId,
+        actionsCount: actions.length,
+        pipelineMode,
+        transcriptionEnabled,
+        useDtmfFallback,
+        pipelineStatus,
+        hasMeeting: !!meetingInfo,
+        source,
+    });
+
+    return buildActions(actions);
 }
 
 // --- Phone Number Parser ---
@@ -1038,6 +1327,33 @@ export const handler = async (event: any): Promise<any> => {
                         return buildActions([buildHangupAction('There was an error connecting your call.')]);
                     }
 
+                    // ========== AI PHONE NUMBER CHECK (FIRST) ==========
+                    // If this is an AI-dedicated phone number, route directly to Voice AI
+                    // without checking business hours or looking up the clinic via GSI.
+                    if (isAiPhoneNumber(toPhoneNumber)) {
+                        const aiClinicId = getClinicIdForAiNumber(toPhoneNumber);
+                        console.log(`[NEW_INBOUND_CALL] AI PHONE NUMBER detected - routing directly to Voice AI`, {
+                            callId,
+                            toPhoneNumber,
+                            clinicId: aiClinicId,
+                            callerNumber: fromPhoneNumber,
+                        });
+
+                        if (!aiClinicId) {
+                            console.error('[NEW_INBOUND_CALL] AI phone number has no clinic mapping');
+                            return buildActions([buildHangupAction('There was an error connecting your call.')]);
+                        }
+                        return await routeInboundCallToVoiceAi({
+                            clinicId: aiClinicId,
+                            callId,
+                            fromPhoneNumber,
+                            pstnLegCallId,
+                            isAiPhoneNumber: true, // Direct AI routing (no hours check needed)
+                            source: 'ai_phone_number',
+                        });
+                    }
+
+                    // ========== REGULAR CALL ROUTING ==========
                     // 1. Find which clinic was called
                     // (Assuming you have a GSI named 'phoneNumber-index' on your ClinicsTable)
                     const { Items: clinics } = await ddb.send(new QueryCommand({
@@ -1051,7 +1367,9 @@ export const handler = async (event: any): Promise<any> => {
                         console.warn(`No clinic found for number ${toPhoneNumber}`);
                         return buildActions([buildHangupAction('The number you dialed is not in service.')]);
                     }
-                    const clinicId = clinics[0].clinicId;
+                    const clinic = clinics[0];
+                    const clinicId = clinic.clinicId;
+                    const aiPhoneNumber = typeof clinic.aiPhoneNumber === 'string' ? clinic.aiPhoneNumber.trim() : '';
                     console.log(`[NEW_INBOUND_CALL] Call is for clinic ${clinicId}`);
 
                     // ========== AFTER-HOURS AI CHECK ==========
@@ -1060,169 +1378,14 @@ export const handler = async (event: any): Promise<any> => {
                         const clinicOpen = await isClinicOpen(clinicId);
                         
                         if (!clinicOpen) {
-                            console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED - checking for Voice AI agent`);
-                            
-                            const voiceAiAgent = await getVoiceAiAgentForClinic(clinicId);
-                            
-                            if (voiceAiAgent) {
-                                const realTimeEnabled = isRealTimeTranscriptionEnabled();
-
-                                console.log(`[NEW_INBOUND_CALL] Routing after-hours call to Voice AI`, {
+                            // Requirement: after-hours AI routing requires a configured aiPhoneNumber.
+                            // If not present (or invalid), fall back to standard closed message.
+                            if (!aiPhoneNumber || !isValidE164(aiPhoneNumber)) {
+                                console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED but no valid aiPhoneNumber configured - using standard after-hours message`, {
                                     callId,
                                     clinicId,
-                                    aiAgentId: voiceAiAgent.agentId,
-                                    callerNumber: fromPhoneNumber
+                                    aiPhoneNumber: aiPhoneNumber || '',
                                 });
-
-                                // Invoke Voice AI handler for after-hours greeting
-                                const voiceAiResponse = await invokeVoiceAiHandler({
-                                    eventType: 'NEW_CALL',
-                                    callId,
-                                    clinicId,
-                                    callerNumber: fromPhoneNumber,
-                                    aiAgentId: voiceAiAgent.agentId,
-                                });
-
-                                // Build actions from Voice AI response
-                                const actions: any[] = [];
-                                
-                                for (const response of voiceAiResponse) {
-                                    switch (response.action) {
-                                        case 'SPEAK':
-                                            if (response.text) {
-                                                actions.push(buildSpeakAction(response.text));
-                                            }
-                                            break;
-                                        case 'HANG_UP':
-                                            actions.push({ Type: 'Hangup', Parameters: { SipResponseCode: '0' } });
-                                            break;
-                                        case 'TRANSFER':
-                                            // Transfer to voicemail or emergency line
-                                            actions.push(buildSpeakAction('Please hold while I transfer your call.'));
-                                            break;
-                                        case 'CONTINUE':
-                                            // Continue listening for user input
-                                            // When real-time transcription is enabled, Media Insights Pipeline
-                                            // captures speech automatically via Kinesis stream - just pause to keep call open
-                                            // DTMF fallback uses SpeakAndGetDigits when transcription is not available
-                                            if (realTimeEnabled) {
-                                                // With real-time transcription, pause to keep the call open.
-                                                // The ai-transcript-bridge Lambda will interrupt via CALL_UPDATE_REQUESTED when it has a response.
-                                                // Keep this short enough that DynamoDB fallback can still deliver quickly if the update path fails.
-                                                actions.push(buildPauseAction(2000)); // 2s listen window
-                                            } else {
-                                                // DTMF fallback mode - prompt for key press
-                                                actions.push(buildPauseAction(500));
-                                                actions.push(buildSpeakAndGetDigitsAction('I am listening. Please speak or press a key.', 1, 30));
-                                            }
-                                            break;
-                                    }
-                                }
-
-                                // If no actions, default to AI greeting and listening
-                                if (actions.length === 0) {
-                                    actions.push(buildSpeakAction(
-                                        "Thank you for calling. Our office is currently closed, but I'm ToothFairy, your AI dental assistant. " +
-                                        "I can help you schedule appointments, answer questions, or take a message. How can I help you today?"
-                                    ));
-                                    actions.push(buildPauseAction(500));
-                                }
-
-                                // Store AI call session in queue for tracking
-                                const aiSessionId = voiceAiResponse[0]?.sessionId || randomUUID();
-                                const { queuePosition, uniquePositionId } = generateUniqueCallPosition();
-                                const now = Math.floor(Date.now() / 1000);
-                                
-                                // ========== AI CALL WITH REAL-TIME VOICE TRANSCRIPTION ==========
-                                // Two modes available:
-                                // 
-                                // MODE 1: MEETING-BASED (Real-time, ~1s latency)
-                                //   - Create Chime Meeting → caller joins via JoinChimeMeeting
-                                //   - Meeting audio streams to KVS → Media Insights Pipeline
-                                //   - Real-time Transcribe → Kinesis → AI Transcript Bridge
-                                //   - AI responses via UpdateSipMediaApplicationCall
-                                //
-                                // MODE 2: RECORD-TRANSCRIBE (Fallback, ~3-5s latency)
-                                //   - RecordAudio captures speech → S3
-                                //   - S3 notification → Transcribe Streaming → Voice AI
-                                //   - AI responses via UpdateSipMediaApplicationCall
-                                //
-                                // Try meeting-based first for best latency
-                                
-                                // Determine transcription mode for AI call
-                                // record-transcribe: RecordAudio → S3 → Transcribe Streaming → Voice AI
-                                // dtmf-dialogue: DTMF fallback when RecordAudio not available
-                                let pipelineMode: 'record-transcribe' | 'dtmf-dialogue' = 'dtmf-dialogue';
-                                
-                                if (AI_RECORDINGS_BUCKET) {
-                                    pipelineMode = 'record-transcribe';
-                                    console.log('[NEW_INBOUND_CALL] Using record-transcribe mode for AI call');
-                                }
-                                
-                                const transcriptionEnabled = pipelineMode !== 'dtmf-dialogue';
-                                
-                                // Store call record
-                                try {
-                                    await ddb.send(new PutCommand({
-                                        TableName: CALL_QUEUE_TABLE_NAME,
-                                        Item: {
-                                            clinicId,
-                                            callId,
-                                            phoneNumber: fromPhoneNumber,
-                                            queuePosition,
-                                            queueEntryTime: now,
-                                            queueEntryTimeIso: new Date().toISOString(),
-                                            uniquePositionId,
-                                            status: 'connected',
-                                            ttl: now + QUEUE_TIMEOUT,
-                                            direction: 'inbound',
-                                            isAiCall: true,
-                                            aiAgentId: voiceAiAgent.agentId,
-                                            aiSessionId,
-                                            transactionId: callId,
-                                            // Transcription mode
-                                            transcriptionEnabled,
-                                            useDtmfFallback: pipelineMode === 'dtmf-dialogue',
-                                            pipelineStatus: transcriptionEnabled ? 'active' : 'disabled',
-                                            pipelineMode,
-                                            ...(pstnLegCallId ? { pstnCallId: pstnLegCallId } : {}),
-                                        }
-                                    }));
-                                } catch (err) {
-                                    console.warn('[NEW_INBOUND_CALL] Failed to create AI call record:', err);
-                                }
-                                
-                                console.log('[NEW_INBOUND_CALL] AI call setup', {
-                                    callId,
-                                    clinicId,
-                                    aiAgentId: voiceAiAgent.agentId,
-                                    pipelineMode,
-                                    transcriptionEnabled,
-                                });
-                                
-                                // Add capture action based on mode
-                                if (pipelineMode === 'record-transcribe' && pstnLegCallId) {
-                                    // RecordAudio captures caller speech → S3 → Transcribe Streaming → Voice AI
-                                    // The transcribe-audio-segment Lambda processes recordings and sends AI responses
-                                    actions.push(buildRecordAudioAction(callId, clinicId, {
-                                        durationSeconds: 15,
-                                        silenceDurationSeconds: 2, // Seconds of silence to end recording
-                                        silenceThreshold: 200, // 0-1000 range (lower = more sensitive)
-                                    }));
-                                    
-                                } else {
-                                    // DTMF fallback mode - prompt for key press when RecordAudio not available
-                                    actions.push(buildSpeakAndGetDigitsAction(
-                                        'I am listening. You can speak or press a key on your phone.',
-                                        1,
-                                        30
-                                    ));
-                                }
-
-                                return buildActions(actions);
-                            } else {
-                                console.log(`[NEW_INBOUND_CALL] No Voice AI agent configured - using standard after-hours message`);
-                                // No AI agent configured - play standard closed message
                                 return buildActions([
                                     buildSpeakAction(
                                         "Thank you for calling. Our office is currently closed. " +
@@ -1233,6 +1396,23 @@ export const handler = async (event: any): Promise<any> => {
                                     { Type: 'Hangup', Parameters: { SipResponseCode: '0' } }
                                 ]);
                             }
+
+                            console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED - routing to Voice AI via aiPhoneNumber path`, {
+                                callId,
+                                clinicId,
+                                aiPhoneNumber,
+                                callerNumber: fromPhoneNumber
+                            });
+
+                            // Route using the AI phone number path logic (no PSTN dial-out).
+                            return await routeInboundCallToVoiceAi({
+                                clinicId,
+                                callId,
+                                fromPhoneNumber,
+                                pstnLegCallId,
+                                isAiPhoneNumber: true, // Treat as AI-number call (skip hours checks in voice-ai-handler)
+                                source: 'after_hours_forward',
+                            });
                         }
                         
                         console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is OPEN - proceeding with human agent routing`);
@@ -1293,6 +1473,22 @@ export const handler = async (event: any): Promise<any> => {
                                 durationMs: assignmentResult.duration,
                                 attemptedAgents: assignmentResult.attemptedAgents.length
                             });
+
+                            // Send push notification to assigned agents
+                            if (isPushNotificationsEnabled()) {
+                                try {
+                                    // attemptedAgents is already an array of agent IDs (strings)
+                                    await sendIncomingCallToAgents(assignmentResult.attemptedAgents, {
+                                        callId,
+                                        clinicId,
+                                        clinicName: clinicId, // Use clinicId as clinicName fallback
+                                        callerPhoneNumber: fromPhoneNumber,
+                                        timestamp: new Date().toISOString(),
+                                    });
+                                } catch (pushErr) {
+                                    console.warn('[NEW_INBOUND_CALL] Failed to send push notification:', pushErr);
+                                }
+                            }
                         } else {
                             console.log('[NEW_INBOUND_CALL] Assignment failed, will queue call', {
                                 callId,
@@ -2215,11 +2411,16 @@ export const handler = async (event: any): Promise<any> => {
                         callEndReason 
                     });
                     
-                    // Clean up Media Pipeline if it was started for this call
+                    // FIX: Await Media Pipeline cleanup to prevent orphaned pipelines
+                    // Previously this was fire-and-forget, leaving pipelines running after Lambda terminates
                     if (callRecord.mediaPipelineId) {
-                        stopMediaPipeline(callRecord.mediaPipelineId, callId).catch(pipelineErr => {
+                        try {
+                            await stopMediaPipeline(callRecord.mediaPipelineId, callId);
+                            console.log(`[${eventType}] Successfully stopped Media Pipeline: ${callRecord.mediaPipelineId}`);
+                        } catch (pipelineErr) {
                             console.warn(`[${eventType}] Failed to stop Media Pipeline:`, pipelineErr);
-                        });
+                            // Non-fatal - pipeline will eventually timeout, but log for monitoring
+                        }
                     }
                     
                     // *** CRITICAL FIX ***
@@ -2227,18 +2428,23 @@ export const handler = async (event: any): Promise<any> => {
                     // For OUTBOUND calls, meetingInfo contains the AGENT'S SESSION meeting - DO NOT delete it!
                     const isOutboundCall = direction === 'outbound' || status === 'dialing';
                     
+                    // Check if this is an AI call with meeting-kvs mode - these meetings SHOULD be cleaned up
+                    const isAiMeetingKvs = callRecord.isAiCall && callRecord.pipelineMode === 'meeting-kvs';
+                    
                     // FIX #6: Also cleanup meetings for 'ringing' calls that were abandoned
+                    // FIX: Also cleanup meetings for AI calls with meeting-kvs mode (these are temporary AI-only meetings)
                     // Previously only 'queued' status triggered cleanup, leaving orphaned meetings
-                    const shouldCleanupMeeting = (status === 'queued' || status === 'ringing') && 
-                                                  meetingInfo?.MeetingId && 
-                                                  !isOutboundCall;
+                    const shouldCleanupMeeting = (
+                        ((status === 'queued' || status === 'ringing') && !isOutboundCall) ||
+                        isAiMeetingKvs // Always cleanup AI meeting-kvs meetings
+                    ) && meetingInfo?.MeetingId;
                     
                     if (shouldCleanupMeeting) {
                         try {
                             await cleanupMeeting(meetingInfo.MeetingId);
-                            console.log(`[${eventType}] Cleaned up ${status.toUpperCase()} meeting ${meetingInfo.MeetingId}`);
+                            console.log(`[${eventType}] Cleaned up ${isAiMeetingKvs ? 'AI meeting-kvs' : status.toUpperCase()} meeting ${meetingInfo.MeetingId}`);
                         } catch (meetingErr) {
-                            console.warn(`[${eventType}] Failed to cleanup ${status} meeting:`, meetingErr);
+                            console.warn(`[${eventType}] Failed to cleanup meeting:`, meetingErr);
                         }
                     } else if (isOutboundCall && meetingInfo?.MeetingId) {
                         // *** FIX: Do NOT delete the agent's session meeting for outbound calls ***
@@ -2463,6 +2669,106 @@ export const handler = async (event: any): Promise<any> => {
                     }
                 }
 
+                // ========== HANDLE AI MEETING JOIN SUCCESS ==========
+                // When an AI phone number caller joins the Chime Meeting (via JoinChimeMeeting),
+                // start the Media Insights Pipeline for real-time KVS streaming transcription
+                if (eventType === 'ACTION_SUCCESSFUL' && actionType === 'JoinChimeMeeting') {
+                    console.log(`[ACTION_SUCCESSFUL] JoinChimeMeeting completed for call ${callId}`);
+                    
+                    // Check if this is an AI call that needs Media Pipeline started
+                    try {
+                        const { Items: callRecords } = await ddb.send(new QueryCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            IndexName: 'callId-index',
+                            KeyConditionExpression: 'callId = :callId',
+                            ExpressionAttributeValues: { ':callId': callId }
+                        }));
+                        
+                        if (callRecords && callRecords[0]) {
+                            const callRecord = callRecords[0];
+                            
+                            // Check if this is an AI call with meeting-kvs mode that needs pipeline started
+                            if (callRecord.isAiCall && callRecord.pipelineMode === 'meeting-kvs' && 
+                                callRecord.pipelineStatus === 'starting' && callRecord.meetingId) {
+                                
+                                console.log('[ACTION_SUCCESSFUL] AI call JoinChimeMeeting success - starting Media Pipeline', {
+                                    callId,
+                                    meetingId: callRecord.meetingId,
+                                    clinicId: callRecord.clinicId,
+                                    aiAgentId: callRecord.aiAgentId,
+                                });
+                                
+                                // Start Media Insights Pipeline asynchronously (don't block the response)
+                                // The pipeline streams to Kinesis → AI Transcript Bridge → Voice AI
+                                startMediaPipeline({
+                                    callId,
+                                    meetingId: callRecord.meetingId,
+                                    clinicId: callRecord.clinicId,
+                                    agentId: callRecord.aiAgentId,
+                                    customerPhone: callRecord.phoneNumber,
+                                    direction: 'inbound',
+                                    isAiCall: true,
+                                    aiSessionId: callRecord.aiSessionId,
+                                }).then(async (pipelineId) => {
+                                    if (pipelineId) {
+                                        console.log('[ACTION_SUCCESSFUL] Media Pipeline started for AI call:', {
+                                            callId,
+                                            pipelineId,
+                                        });
+                                        
+                                        // Update call record with pipeline info
+                                        try {
+                                            await ddb.send(new UpdateCommand({
+                                                TableName: CALL_QUEUE_TABLE_NAME,
+                                                Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
+                                                UpdateExpression: 'SET mediaPipelineId = :pipelineId, pipelineStatus = :status, pipelineStartedAt = :now',
+                                                ExpressionAttributeValues: {
+                                                    ':pipelineId': pipelineId,
+                                                    ':status': 'active',
+                                                    ':now': new Date().toISOString(),
+                                                }
+                                            }));
+                                        } catch (updateErr) {
+                                            console.warn('[ACTION_SUCCESSFUL] Failed to update call record with pipeline ID:', updateErr);
+                                        }
+                                    } else {
+                                        console.warn('[ACTION_SUCCESSFUL] Media Pipeline failed to start, AI call will use fallback');
+                                        // Mark pipeline as failed so subsequent handlers can fallback
+                                        try {
+                                            await ddb.send(new UpdateCommand({
+                                                TableName: CALL_QUEUE_TABLE_NAME,
+                                                Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
+                                                UpdateExpression: 'SET pipelineStatus = :status',
+                                                ExpressionAttributeValues: {
+                                                    ':status': 'failed',
+                                                }
+                                            }));
+                                        } catch (updateErr) {
+                                            console.warn('[ACTION_SUCCESSFUL] Failed to update pipeline status:', updateErr);
+                                        }
+                                    }
+                                }).catch((err) => {
+                                    console.error('[ACTION_SUCCESSFUL] Error starting Media Pipeline:', err);
+                                });
+                                
+                                // Return pause actions to wait for transcripts from Media Pipeline
+                                // These can be interrupted by UpdateSipMediaApplicationCall from ai-transcript-bridge
+                                const waitActions = [];
+                                for (let i = 0; i < 15; i++) {
+                                    waitActions.push(buildPauseAction(2000)); // 2 second pauses, total 30 seconds
+                                }
+                                
+                                console.log('[ACTION_SUCCESSFUL] AI call meeting joined - waiting for real-time transcripts');
+                                return buildActions(waitActions);
+                            }
+                        }
+                    } catch (err) {
+                        console.error('[ACTION_SUCCESSFUL] Error handling AI meeting join:', err);
+                    }
+                    
+                    // For non-AI meeting joins, fall through to default handling
+                }
+
                 // Handle RecordAudio completion - audio has been saved to S3 for transcription
                 if (eventType === 'ACTION_SUCCESSFUL' && actionType === 'RecordAudio') {
                     console.log(`[ACTION_SUCCESSFUL] RecordAudio completed for call ${callId}`, {
@@ -2521,16 +2827,23 @@ export const handler = async (event: any): Promise<any> => {
                                             actions.push({ Type: 'Hangup', Parameters: { SipResponseCode: '0' } });
                                             break;
                                         case 'CONTINUE':
-                                            // Continue listening - use RecordAudio for voice transcription
-                                            if (callRecord.pipelineMode === 'record-transcribe' && AI_RECORDINGS_BUCKET) {
+                                            // Continue listening based on pipeline mode
+                                            if (callRecord.pipelineMode === 'meeting-kvs' && callRecord.mediaPipelineId) {
+                                                // MEETING-KVS MODE: Keep caller in meeting, real-time transcripts flowing
+                                                // Just pause and wait for ai-transcript-bridge to send next response
+                                                actions.push(buildPauseAction(2000));
+                                            } else if (callRecord.pipelineMode === 'record-transcribe' && AI_RECORDINGS_BUCKET) {
+                                                // RECORD-TRANSCRIBE MODE: Use RecordAudio for voice transcription
                                                 actions.push(buildRecordAudioAction(callId, callRecord.clinicId, {
                                                     durationSeconds: 30,
                                                     silenceDurationSeconds: 3,
                                                     silenceThreshold: 100,
                                                 }));
                                             } else if (callRecord.useDtmfFallback) {
+                                                // DTMF FALLBACK: Prompt for key press
                                                 actions.push(buildSpeakAndGetDigitsAction('I am listening. Please speak or press a key.', 1, 30));
                                             } else {
+                                                // Default: short pause
                                                 actions.push(buildPauseAction(500));
                                             }
                                             break;
@@ -2826,6 +3139,7 @@ export const handler = async (event: any): Promise<any> => {
             // --- Informational events ---
             // Note: RINGING is now handled above with outbound call tracking
             case 'ACTION_SUCCESSFUL':
+            case 'ACTION_INTERRUPTED':
             case 'INVALID_LAMBDA_RESPONSE': {
                 console.log(`Received informational event type: ${eventType}, returning empty actions.`);
                 return buildActions([]);
@@ -2867,6 +3181,21 @@ export const handler = async (event: any): Promise<any> => {
         console.error('Error in SMA handler:', err);
         return buildActions([buildHangupAction('An internal error occurred. Please try again.')]);
     }
+};
+
+// ------------------------------------------------------------------------
+// Test harness helpers (not used by runtime code paths)
+// ------------------------------------------------------------------------
+// These exports enable lightweight local testing by allowing scripts to
+// monkeypatch AWS client .send() methods and invoke internal helpers.
+export const __test = {
+    ddb,
+    lambdaClient,
+    chime,
+    isClinicOpen,
+    isAiPhoneNumber,
+    getClinicIdForAiNumber,
+    routeInboundCallToVoiceAi,
 };
 
 

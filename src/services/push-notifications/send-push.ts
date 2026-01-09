@@ -3,9 +3,18 @@
  * 
  * Sends push notifications to registered devices via SNS.
  * Supports sending to individual users, all users in a clinic, or specific device endpoints.
+ * 
+ * This Lambda supports two invocation modes:
+ * 1. API Gateway - External HTTP requests with authorization
+ * 2. Direct Lambda Invocation - Internal service calls (Comm Stack, Chime Stack)
+ * 
+ * For internal invocations, the caller should include:
+ * - _internalCall: true (bypasses permission checks)
+ * - notification: { title, body, type, data }
+ * - One of: userId, userIds, clinicId
  */
 
-import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+import { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
@@ -352,7 +361,6 @@ async function handleSendPush(
       // Assume iOS for direct endpoint (could be enhanced with metadata lookup)
       const result = await sendToEndpoint(body.endpointArn, body.notification, 'ios');
       return http(200, {
-        success: result.success,
         targetType: 'endpoint',
         ...result,
       }, event);
@@ -395,25 +403,134 @@ async function handleSendPush(
 }
 
 /**
- * Main handler
+ * Internal invocation payload structure
+ * Used when other Lambda functions (Comm, Chime) invoke this function directly
  */
-export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  console.log('[SendPush] Request:', event.httpMethod, event.path);
+interface InternalInvocationPayload {
+  _internalCall: true;
+  userId?: string;
+  userIds?: string[];
+  clinicId?: string;
+  notification: PushNotificationPayload;
+}
 
-  if (event.httpMethod === 'OPTIONS') {
-    return http(204, '', event);
+/**
+ * Handle internal Lambda invocation (from Comm Stack, Chime Stack)
+ * Bypasses API Gateway auth checks since the caller is a trusted internal service
+ */
+async function handleInternalInvocation(
+  payload: InternalInvocationPayload
+): Promise<{ statusCode: number; body: string }> {
+  const { userId, userIds, clinicId, notification } = payload;
+  
+  // Validate notification payload
+  if (!notification || !notification.title || !notification.body) {
+    return {
+      statusCode: 400,
+      body: JSON.stringify({ error: 'notification.title and notification.body are required' }),
+    };
+  }
+  
+  try {
+    // Send to multiple users (batch)
+    if (userIds && userIds.length > 0) {
+      let totalSent = 0;
+      let totalFailed = 0;
+      const allResults: any[] = [];
+      
+      for (const uid of userIds) {
+        const result = await handleSendToUser(uid, notification, false);
+        totalSent += result.sent;
+        totalFailed += result.failed;
+        allResults.push(...result.results);
+      }
+      
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          success: true,
+          targetType: 'users',
+          userCount: userIds.length,
+          sent: totalSent,
+          failed: totalFailed,
+          results: allResults,
+        }),
+      };
+    }
+    
+    // Send to specific user
+    if (userId) {
+      const result = await handleSendToUser(userId, notification, false);
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          success: true,
+          targetType: 'user',
+          userId,
+          ...result,
+        }),
+      };
+    }
+    
+    // Send to clinic
+    if (clinicId) {
+      const result = await handleSendToClinic(clinicId, notification, false);
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          success: true,
+          targetType: 'clinic',
+          clinicId,
+          ...result,
+        }),
+      };
+    }
+    
+    return {
+      statusCode: 400,
+      body: JSON.stringify({ error: 'One of userId, userIds, or clinicId is required' }),
+    };
+  } catch (error: any) {
+    console.error('[SendPush] Internal invocation error:', error);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: `Failed to send push notification: ${error.message}` }),
+    };
+  }
+}
+
+/**
+ * Main handler
+ * Supports both API Gateway events and direct Lambda invocation
+ */
+export const handler = async (
+  event: APIGatewayProxyEvent | InternalInvocationPayload,
+  context?: Context
+): Promise<APIGatewayProxyResult | { statusCode: number; body: string }> => {
+  // Check if this is an internal Lambda invocation
+  if ('_internalCall' in event && event._internalCall === true) {
+    console.log('[SendPush] Internal invocation');
+    return handleInternalInvocation(event as InternalInvocationPayload);
+  }
+  
+  // Handle as API Gateway event
+  const apiEvent = event as APIGatewayProxyEvent;
+  console.log('[SendPush] Request:', apiEvent.httpMethod, apiEvent.path);
+
+  if (apiEvent.httpMethod === 'OPTIONS') {
+    return http(204, '', apiEvent);
   }
 
   // Get user permissions
-  const userPerms = getUserPermissions(event);
+  const userPerms = getUserPermissions(apiEvent);
   if (!userPerms) {
-    return http(401, { error: 'Unauthorized - Invalid token' }, event);
+    return http(401, { error: 'Unauthorized - Invalid token' }, apiEvent);
   }
 
-  if (event.httpMethod !== 'POST') {
-    return http(405, { error: 'Method Not Allowed' }, event);
+  if (apiEvent.httpMethod !== 'POST') {
+    return http(405, { error: 'Method Not Allowed' }, apiEvent);
   }
 
-  return handleSendPush(event, userPerms);
+  return handleSendPush(apiEvent, userPerms);
 };
 

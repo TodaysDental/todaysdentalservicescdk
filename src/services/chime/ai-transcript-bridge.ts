@@ -18,7 +18,7 @@
 
 import { KinesisStreamEvent, KinesisStreamRecord } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 // CRITICAL FIX: Use ChimeSDKVoiceClient, not ChimeClient
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
@@ -39,23 +39,164 @@ const chimeClient = new ChimeSDKVoiceClient({ region: CHIME_MEDIA_REGION });
 const VOICE_AI_LAMBDA_ARN = process.env.VOICE_AI_LAMBDA_ARN!;
 const CALL_QUEUE_TABLE = process.env.CALL_QUEUE_TABLE_NAME!;
 const VOICE_SESSIONS_TABLE = process.env.VOICE_SESSIONS_TABLE!;
+const VOICE_CONFIG_TABLE = process.env.VOICE_CONFIG_TABLE || '';
 
 // Minimum transcript length to process (avoid processing partial words)
 const MIN_TRANSCRIPT_LENGTH = 3;
+
+// ========================================================================
+// VOICE SETTINGS
+// ========================================================================
+
+/**
+ * Voice settings for clinic-specific TTS configuration
+ */
+interface VoiceSettings {
+  voiceId: string;
+  engine: 'neural' | 'standard';
+}
+
+// Default voice settings (used when clinic config not found)
+const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
+  voiceId: 'Joanna',
+  engine: 'neural',
+};
+
+// Cache voice settings to reduce DynamoDB reads
+const voiceSettingsCache: Map<string, { settings: VoiceSettings; expiresAt: number }> = new Map();
+const VOICE_SETTINGS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Get voice settings for a clinic (with caching)
+ * Falls back to defaults if not configured
+ */
+async function getVoiceSettingsForClinic(clinicId: string): Promise<VoiceSettings> {
+  if (!clinicId || !VOICE_CONFIG_TABLE) {
+    return DEFAULT_VOICE_SETTINGS;
+  }
+
+  // Check cache first
+  const cached = voiceSettingsCache.get(clinicId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.settings;
+  }
+
+  try {
+    const response = await ddb.send(new GetCommand({
+      TableName: VOICE_CONFIG_TABLE,
+      Key: { clinicId },
+      ProjectionExpression: 'voiceSettings',
+    }));
+
+    const config = response.Item;
+    const settings: VoiceSettings = {
+      voiceId: config?.voiceSettings?.voiceId || DEFAULT_VOICE_SETTINGS.voiceId,
+      engine: config?.voiceSettings?.engine || DEFAULT_VOICE_SETTINGS.engine,
+    };
+
+    // Cache the result
+    voiceSettingsCache.set(clinicId, {
+      settings,
+      expiresAt: Date.now() + VOICE_SETTINGS_CACHE_TTL_MS,
+    });
+
+    return settings;
+  } catch (error) {
+    console.warn('[AITranscriptBridge] Failed to get voice settings for clinic:', clinicId, error);
+    return DEFAULT_VOICE_SETTINGS;
+  }
+}
 
 // Cache call records to reduce DynamoDB queries for high-frequency transcript streams
 const CALL_RECORD_CACHE_TTL_MS = 15_000;
 const callRecordCache: Map<string, { record: any | null; expiresAt: number }> = new Map();
 
+// FIX: Add max cache sizes to prevent memory leaks
+const MAX_CALL_RECORD_CACHE_SIZE = 500;
+const MAX_PENDING_UTTERANCES_SIZE = 200;
+
 // Debounce time in ms to wait for complete utterances
 const UTTERANCE_COMPLETE_TIMEOUT_MS = 1500;
+
+// FIX: Max age for pending utterances before forced cleanup (5 minutes)
+const PENDING_UTTERANCE_MAX_AGE_MS = 5 * 60 * 1000;
 
 // Track pending utterances per call (for debouncing)
 const pendingUtterances: Map<string, {
   text: string;
   lastUpdate: number;
   timeoutId?: NodeJS.Timeout;
+  createdAt: number; // FIX: Track creation time for staleness detection
 }> = new Map();
+
+/**
+ * FIX: Cleanup stale pending utterances and caches to prevent memory leaks
+ * Called periodically during processing
+ */
+function cleanupStaleEntries(): void {
+  const now = Date.now();
+  
+  // Cleanup stale pending utterances
+  for (const [callId, entry] of pendingUtterances.entries()) {
+    if (now - entry.createdAt > PENDING_UTTERANCE_MAX_AGE_MS) {
+      console.warn(`[AITranscriptBridge] Cleaning up stale pending utterance for callId ${callId} (age: ${Math.floor((now - entry.createdAt) / 1000)}s)`);
+      if (entry.timeoutId) {
+        clearTimeout(entry.timeoutId);
+      }
+      pendingUtterances.delete(callId);
+    }
+  }
+  
+  // Cleanup expired call record cache entries
+  for (const [callId, entry] of callRecordCache.entries()) {
+    if (now > entry.expiresAt) {
+      callRecordCache.delete(callId);
+    }
+  }
+  
+  // FIX: Enforce max cache sizes with LRU-like eviction
+  if (callRecordCache.size > MAX_CALL_RECORD_CACHE_SIZE) {
+    const entriesToRemove = callRecordCache.size - MAX_CALL_RECORD_CACHE_SIZE + 50;
+    const entries = Array.from(callRecordCache.entries())
+      .sort((a, b) => a[1].expiresAt - b[1].expiresAt)
+      .slice(0, entriesToRemove);
+    for (const [key] of entries) {
+      callRecordCache.delete(key);
+    }
+    console.log(`[AITranscriptBridge] Evicted ${entries.length} call record cache entries`);
+  }
+  
+  if (pendingUtterances.size > MAX_PENDING_UTTERANCES_SIZE) {
+    const entriesToRemove = pendingUtterances.size - MAX_PENDING_UTTERANCES_SIZE + 20;
+    const entries = Array.from(pendingUtterances.entries())
+      .sort((a, b) => a[1].createdAt - b[1].createdAt)
+      .slice(0, entriesToRemove);
+    for (const [key, entry] of entries) {
+      if (entry.timeoutId) {
+        clearTimeout(entry.timeoutId);
+      }
+      pendingUtterances.delete(key);
+    }
+    console.log(`[AITranscriptBridge] Evicted ${entries.length} stale pending utterances`);
+  }
+}
+
+/**
+ * FIX: Clean up pending utterance for a specific call (call on call end)
+ */
+function cleanupCallUtterance(callId: string): void {
+  const entry = pendingUtterances.get(callId);
+  if (entry) {
+    if (entry.timeoutId) {
+      clearTimeout(entry.timeoutId);
+    }
+    pendingUtterances.delete(callId);
+    console.log(`[AITranscriptBridge] Cleaned up pending utterance for ended call ${callId}`);
+  }
+  
+  // Also clean up call record cache
+  callRecordCache.delete(callId);
+}
 
 /**
  * Transcript event from Amazon Transcribe via Media Insights Pipeline
@@ -130,6 +271,9 @@ export const handler = async (event: KinesisStreamEvent): Promise<void> => {
     recordCount: event.Records.length,
     timestamp: new Date().toISOString()
   });
+
+  // FIX: Periodically cleanup stale entries to prevent memory leaks
+  cleanupStaleEntries();
 
   const results = {
     processed: 0,
@@ -276,24 +420,30 @@ function extractTranscript(event: TranscriptEvent): {
 
 /**
  * Accumulate partial utterances and debounce
+ * 
+ * FIX: Now tracks createdAt for staleness detection and cleanup
  */
 function accumulateUtterance(callId: string, clinicId: string, sessionId: string, transcript: string): void {
   const existing = pendingUtterances.get(callId);
+  const now = Date.now();
   
   if (existing?.timeoutId) {
     clearTimeout(existing.timeoutId);
   }
 
   // Store/update the accumulated transcript
+  // FIX: Preserve original createdAt or set new one
   pendingUtterances.set(callId, {
     text: transcript, // Partials typically include full text so far
-    lastUpdate: Date.now(),
+    lastUpdate: now,
+    createdAt: existing?.createdAt ?? now, // FIX: Preserve original creation time
     timeoutId: setTimeout(async () => {
       const pending = pendingUtterances.get(callId);
       if (pending && pending.text) {
         console.log('[AITranscriptBridge] Utterance timeout - processing accumulated:', {
           callId,
-          transcriptLength: pending.text.length
+          transcriptLength: pending.text.length,
+          ageMs: Date.now() - pending.createdAt
         });
         
         // Process the accumulated transcript
@@ -440,6 +590,7 @@ async function invokeVoiceAiHandler(event: {
  * Send AI response back to the call via SMA UpdateSipMediaApplicationCall
  * 
  * CRITICAL FIX: Uses proper SDK and dynamic SMA ID lookup
+ * FIX: Now uses clinic-specific voice settings instead of hardcoded values
  */
 async function sendResponseToCall(
   callRecord: any,
@@ -460,6 +611,9 @@ async function sendResponseToCall(
     return;
   }
 
+  // FIX: Get clinic-specific voice settings instead of using hardcoded values
+  const voiceSettings = await getVoiceSettingsForClinic(clinicId);
+
   // Build SMA actions from Voice AI responses
   const actions: any[] = [];
 
@@ -471,10 +625,10 @@ async function sendResponseToCall(
             Type: 'Speak',
             Parameters: {
               Text: response.text,
-              Engine: 'neural',
+              Engine: voiceSettings.engine,
               LanguageCode: 'en-US',
               TextType: 'text',
-              VoiceId: 'Joanna'
+              VoiceId: voiceSettings.voiceId,
             }
           });
         }
@@ -494,10 +648,10 @@ async function sendResponseToCall(
           Type: 'Speak',
           Parameters: {
             Text: 'I will transfer you to an available agent.',
-            Engine: 'neural',
+            Engine: voiceSettings.engine,
             LanguageCode: 'en-US',
             TextType: 'text',
-            VoiceId: 'Joanna'
+            VoiceId: voiceSettings.voiceId,
           }
         });
         break;

@@ -1,20 +1,72 @@
 /**
  * cPanel Email Account Creation Utility
  * 
- * Creates email accounts on todaysdentalservices.com using cPanel API
+ * Creates email accounts on todaysdentalpartners.com using cPanel API
  * Used during user registration to create a dedicated email for each user.
+ * 
+ * Authentication: Uses cPanel API Token (not Basic Auth)
+ * Header format: Authorization: cpanel username:API_TOKEN
+ * 
+ * Credentials are fetched from GlobalSecrets DynamoDB table at runtime.
  */
 
 import https from 'https';
+import { getCpanelCredentials } from './secrets-helper';
 
-// cPanel configuration from environment variables
-const CPANEL_CONFIG = {
+// Cached credentials (fetched from GlobalSecrets on first use)
+let cachedCredentials: {
+  host: string;
+  port: number;
+  username: string;
+  apiToken: string;
+  domain: string;
+} | null = null;
+
+// Fallback configuration (used only if GlobalSecrets lookup fails)
+const CPANEL_FALLBACK_CONFIG = {
   host: process.env.CPANEL_HOST || 'box2383.bluehost.com',
   port: parseInt(process.env.CPANEL_PORT || '2083', 10),
   username: process.env.CPANEL_USER || 'todayse4',
-  password: process.env.CPANEL_PASSWORD || '',
   domain: process.env.CPANEL_DOMAIN || 'todaysdentalpartners.com',
 };
+
+/**
+ * Get cPanel credentials from GlobalSecrets (with caching)
+ */
+async function getCredentials(): Promise<{
+  host: string;
+  port: number;
+  username: string;
+  apiToken: string;
+  domain: string;
+}> {
+  // Return cached credentials if available
+  if (cachedCredentials) {
+    return cachedCredentials;
+  }
+
+  // Fetch from GlobalSecrets
+  const creds = await getCpanelCredentials();
+  
+  if (creds) {
+    cachedCredentials = creds;
+    console.log('[cpanel-email] Loaded credentials from GlobalSecrets');
+    return creds;
+  }
+
+  // Fallback to environment variables (for backward compatibility)
+  const apiToken = process.env.CPANEL_API_TOKEN || process.env.CPANEL_PASSWORD;
+  if (!apiToken) {
+    throw new Error('cPanel API token not configured in GlobalSecrets or environment');
+  }
+
+  console.warn('[cpanel-email] Using fallback environment credentials');
+  cachedCredentials = {
+    ...CPANEL_FALLBACK_CONFIG,
+    apiToken,
+  };
+  return cachedCredentials;
+}
 
 // Default password for all created email accounts
 const DEFAULT_EMAIL_PASSWORD = 'Clinic@202020212022!';
@@ -44,37 +96,43 @@ function generateEmailUsername(primaryEmail: string): string {
 }
 
 /**
- * Make an authenticated request to cPanel API using POST
+ * Make an authenticated request to cPanel API using API Token
+ * 
+ * Uses the cPanel API Token authentication format:
+ * Authorization: cpanel username:API_TOKEN
+ * 
+ * This method is more reliable than Basic Auth as it bypasses
+ * some security restrictions that block password-based authentication.
  */
 async function cpanelRequest(
   endpoint: string,
   params: Record<string, string>
 ): Promise<{ success: boolean; data?: any; error?: string }> {
-  const { host, port, username, password } = CPANEL_CONFIG;
-  
-  if (!password) {
-    return { success: false, error: 'CPANEL_PASSWORD not configured' };
+  // Get credentials from GlobalSecrets (or fallback)
+  let credentials;
+  try {
+    credentials = await getCredentials();
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Failed to get cPanel credentials' };
   }
 
-  // Build form data for POST body
-  const formData = new URLSearchParams(params).toString();
-  const path = `/execute/${endpoint}`;
+  const { host, port, username, apiToken } = credentials;
+
+  // Build query string for GET request (cPanel API Token works best with GET)
+  const queryString = new URLSearchParams(params).toString();
+  const path = `/execute/${endpoint}?${queryString}`;
   
-  console.log(`[cpanelRequest] Calling POST ${endpoint} with params:`, JSON.stringify(params));
-  
-  // Base64 encode credentials for Basic Auth
-  const auth = Buffer.from(`${username}:${password}`).toString('base64');
+  console.log(`[cpanelRequest] Calling GET ${endpoint} with params:`, JSON.stringify(params));
   
   return new Promise((resolve) => {
     const options: https.RequestOptions = {
       hostname: host,
       port: port,
       path: path,
-      method: 'POST',
+      method: 'GET',
       headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(formData),
+        // cPanel API Token authentication format
+        'Authorization': `cpanel ${username}:${apiToken}`,
       },
       rejectUnauthorized: true,
     };
@@ -115,6 +173,7 @@ async function cpanelRequest(
     });
     
     req.on('error', (e) => {
+      console.error(`[cpanelRequest] Connection error:`, e.message);
       resolve({ success: false, error: `Connection error: ${e.message}` });
     });
     
@@ -123,8 +182,6 @@ async function cpanelRequest(
       resolve({ success: false, error: 'Request timeout' });
     });
     
-    // Write the form data to POST body
-    req.write(formData);
     req.end();
   });
 }
@@ -133,10 +190,21 @@ async function cpanelRequest(
  * Check if an email account already exists
  */
 export async function emailExists(email: string): Promise<boolean> {
-  const [username, domain] = email.split('@');
+  const [username, emailDomain] = email.split('@');
+  
+  // Get domain from credentials if not in email
+  let domain = emailDomain;
+  if (!domain) {
+    try {
+      const creds = await getCredentials();
+      domain = creds.domain;
+    } catch {
+      domain = CPANEL_FALLBACK_CONFIG.domain;
+    }
+  }
   
   const result = await cpanelRequest('Email/list_pops', {
-    domain: domain || CPANEL_CONFIG.domain,
+    domain: domain,
   });
   
   if (!result.success || !result.data) {
@@ -148,7 +216,7 @@ export async function emailExists(email: string): Promise<boolean> {
 }
 
 /**
- * Create a new email account on todaysdentalservices.com
+ * Create a new email account on todaysdentalpartners.com
  * 
  * @param primaryEmail - The user's primary email (used to generate username)
  * @param givenName - Optional given name for generating a friendly email
@@ -160,7 +228,20 @@ export async function createEmailAccount(
   givenName?: string,
   familyName?: string
 ): Promise<CreateEmailResult> {
-  const domain = CPANEL_CONFIG.domain;
+  // Get domain from credentials
+  let domain: string;
+  try {
+    const creds = await getCredentials();
+    domain = creds.domain;
+  } catch (err: any) {
+    console.error('[createEmailAccount] Failed to get credentials:', err.message);
+    return {
+      success: false,
+      email: '',
+      password: '',
+      error: err.message || 'Failed to get cPanel credentials',
+    };
+  }
   
   // Generate username from given/family name if available, otherwise from primary email
   let username: string;
@@ -252,11 +333,22 @@ export async function createEmailAccount(
  * Delete an email account (for cleanup/testing)
  */
 export async function deleteEmailAccount(email: string): Promise<{ success: boolean; error?: string }> {
-  const [username, domain] = email.split('@');
+  const [username, emailDomain] = email.split('@');
+  
+  // Get domain from credentials if not in email
+  let domain = emailDomain;
+  if (!domain) {
+    try {
+      const creds = await getCredentials();
+      domain = creds.domain;
+    } catch {
+      domain = CPANEL_FALLBACK_CONFIG.domain;
+    }
+  }
   
   const result = await cpanelRequest('Email/delete_pop', {
     email: username,
-    domain: domain || CPANEL_CONFIG.domain,
+    domain: domain,
   });
   
   return {
@@ -277,7 +369,7 @@ export function getEmailCredentials(email: string): {
   smtpPort: number;
 } {
   // Extract domain from email to use correct mail server
-  const domain = email.split('@')[1] || CPANEL_CONFIG.domain;
+  const domain = email.split('@')[1] || CPANEL_FALLBACK_CONFIG.domain;
   const mailHost = `mail.${domain}`;
   
   return {
@@ -288,5 +380,13 @@ export function getEmailCredentials(email: string): {
     smtpHost: mailHost,
     smtpPort: 465,
   };
+}
+
+/**
+ * Clear cached credentials (useful for testing or forcing refresh)
+ */
+export function clearCpanelCredentialsCache(): void {
+  cachedCredentials = null;
+  console.log('[cpanel-email] Credentials cache cleared');
 }
 

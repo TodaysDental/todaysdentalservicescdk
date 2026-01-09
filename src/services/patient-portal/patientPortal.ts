@@ -22,7 +22,7 @@ const {
     DEFAULT_SESSION_TABLE,
     DEFAULT_SMS_LOG_TABLE,
     TF_SFTP_HOST,
-    TF_SFTP_PASSWORD,
+    // SFTP password now fetched from GlobalSecrets table dynamically
     PATIENT_PORTAL_METRICS_TABLE
 } = process.env;
 
@@ -1311,14 +1311,15 @@ async function downloadDocumentFromSftp(docNum: number, clinicConfig: ClinicConf
         const fileName = document.FileName;
         
         // Use consolidated SFTP configuration for all clinics
-        if (!TF_SFTP_HOST || !TF_SFTP_PASSWORD) {
+        // Host from environment, password from GlobalSecrets table
+        const sftpPassword = await getGlobalSecret('consolidated_sftp', 'password');
+        if (!TF_SFTP_HOST || !sftpPassword) {
             throw new Error('SFTP configuration not available');
         }
         
         const sftpHost = TF_SFTP_HOST;
         const sftpPort = 22;
         const sftpUsername = 'sftpuser';
-        const sftpPassword = TF_SFTP_PASSWORD;
         
         // According to our Transfer Family config, place files at the root of the SFTP home
         // Use format: hostname/filename (no subdirectory)

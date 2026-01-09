@@ -20,8 +20,8 @@ const doc = DynamoDBDocumentClient.from(ddb);
 
 // Environment variables
 const FEE_SCHEDULES_TABLE = process.env.FEE_SCHEDULES_TABLE || 'FeeSchedules';
+// SFTP host from environment, password from GlobalSecrets table
 const CONSOLIDATED_SFTP_HOST = process.env.CONSOLIDATED_SFTP_HOST || '';
-const CONSOLIDATED_SFTP_PASSWORD = process.env.CONSOLIDATED_SFTP_PASSWORD || '';
 
 // Clinic credentials type
 interface ClinicCreds {
@@ -38,9 +38,10 @@ interface ClinicCreds {
 
 // Helper to build clinic credentials from DynamoDB
 async function buildClinicCreds(): Promise<ClinicCreds[]> {
-  const [configs, secrets] = await Promise.all([
+  const [configs, secrets, sftpPassword] = await Promise.all([
     getAllClinicConfigs(),
-    getAllClinicSecrets()
+    getAllClinicSecrets(),
+    getGlobalSecret('consolidated_sftp', 'password'),
   ]);
   
   const secretsMap = new Map(secrets.map(s => [s.clinicId, s]));
@@ -55,7 +56,7 @@ async function buildClinicCreds(): Promise<ClinicCreds[]> {
       sftpHost: CONSOLIDATED_SFTP_HOST,
       sftpPort: 22,
       sftpUsername: 'sftpuser',
-      sftpPassword: CONSOLIDATED_SFTP_PASSWORD,
+      sftpPassword: sftpPassword || '',
       sftpRemoteDir: 'QuerytemplateCSV',
     };
   });

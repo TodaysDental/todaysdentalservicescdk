@@ -4,17 +4,22 @@
  * Handles fallback requests from Twilio when the primary incoming message
  * webhook cannot be reached or encounters a runtime exception.
  * This ensures no messages are lost even during primary webhook failures.
+ * 
+ * Also publishes to SNS topic for async processing (SMS fallback, alerts, etc.)
  */
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import crypto from 'crypto';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const snsClient = new SNSClient({});
 
 const RCS_MESSAGES_TABLE = process.env.RCS_MESSAGES_TABLE!;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN!;
+const RCS_FALLBACK_TOPIC_ARN = process.env.RCS_FALLBACK_TOPIC_ARN;
 
 interface TwilioRcsFallbackMessage {
   MessageSid: string;
@@ -162,8 +167,41 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       console.error(`Primary webhook failed - Error Code: ${message.ErrorCode}, Message: ${message.ErrorMessage}`);
     }
 
-    // TODO: Send alert to operations team about fallback activation
-    // This indicates the primary webhook had issues
+    // Publish to SNS topic for async processing (SMS fallback, alerts, etc.)
+    if (RCS_FALLBACK_TOPIC_ARN) {
+      try {
+        await snsClient.send(new PublishCommand({
+          TopicArn: RCS_FALLBACK_TOPIC_ARN,
+          Message: JSON.stringify({
+            eventType: 'RCS_FALLBACK_RECEIVED',
+            clinicId,
+            messageSid: message.MessageSid,
+            from: message.From,
+            to: message.To,
+            body: message.Body,
+            errorCode: message.ErrorCode,
+            errorMessage: message.ErrorMessage,
+            timestamp: new Date().toISOString(),
+            // Include full message for downstream processing
+            rawMessage: message,
+          }),
+          MessageAttributes: {
+            eventType: {
+              DataType: 'String',
+              StringValue: 'RCS_FALLBACK_RECEIVED',
+            },
+            clinicId: {
+              DataType: 'String',
+              StringValue: clinicId,
+            },
+          },
+        }));
+        console.log(`Published fallback message to SNS for clinic ${clinicId}`);
+      } catch (snsError) {
+        // Don't fail the webhook if SNS publish fails - message is already stored in DynamoDB
+        console.error('Failed to publish to SNS fallback topic:', snsError);
+      }
+    }
 
     return {
       statusCode: 200,

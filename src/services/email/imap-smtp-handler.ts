@@ -677,12 +677,33 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         smtpHost = providerConfig.smtpHost;
         smtpPort = providerConfig.smtpPort;
         smtpUser = providerConfig.smtpUser;
-        // smtpPassword should come from secrets in production
-        smtpPassword = (providerConfig as any).smtpPassword || '';
         imapHost = providerConfig.imapHost;
         imapPort = providerConfig.imapPort;
         fromEmail = providerConfig.fromEmail;
         fromName = providerConfig.fromName;
+
+        // Get SMTP/IMAP password from clinic secrets (not from config)
+        const clinicSecrets = await getClinicSecrets(clinicId);
+        if (!clinicSecrets) {
+          return normalizeResponse({
+            statusCode: 500,
+            headers: corsHeaders,
+            body: { message: `Missing secrets for clinic ${clinicId}` },
+          });
+        }
+
+        // Use the appropriate password based on emailType
+        smtpPassword = emailType === 'gmail' 
+          ? clinicSecrets.gmailSmtpPassword 
+          : clinicSecrets.domainSmtpPassword;
+        
+        if (!smtpPassword) {
+          return normalizeResponse({
+            statusCode: 500,
+            headers: corsHeaders,
+            body: { message: `Missing ${emailType} SMTP password for clinic ${clinicId}. Please configure ${emailType === 'gmail' ? 'gmailSmtpPassword' : 'domainSmtpPassword'} in clinic secrets.` },
+          });
+        }
       } else {
         return normalizeResponse({
           statusCode: 400,

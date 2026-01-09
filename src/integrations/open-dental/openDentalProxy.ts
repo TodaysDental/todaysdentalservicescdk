@@ -12,6 +12,7 @@ import {
 import { 
   getClinicConfig, 
   getClinicSecrets, 
+  getGlobalSecret,
   ClinicConfig, 
   ClinicSecrets 
 } from '../../shared/utils/secrets-helper';
@@ -48,8 +49,8 @@ const API_HOST = 'api.opendental.com';
 const API_BASE = '/api/v1';
 
 // Build clinic credentials from DynamoDB via secrets-helper
+// SFTP host from environment, password from GlobalSecrets table
 const CONSOLIDATED_SFTP_HOST = process.env.CONSOLIDATED_SFTP_HOST || '';
-const CONSOLIDATED_SFTP_PASSWORD = process.env.CONSOLIDATED_SFTP_PASSWORD || '';
 
 // Cache for clinic credentials
 const clinicCredsCache = new Map<string, ClinicCreds>();
@@ -59,7 +60,12 @@ async function getClinicCreds(clinicId: string): Promise<ClinicCreds | null> {
     return clinicCredsCache.get(clinicId)!;
   }
   
-  const secrets = await getClinicSecrets(clinicId);
+  // Fetch clinic secrets and global SFTP password in parallel
+  const [secrets, sftpPassword] = await Promise.all([
+    getClinicSecrets(clinicId),
+    getGlobalSecret('consolidated_sftp', 'password'),
+  ]);
+  
   if (!secrets) return null;
   
   const creds: ClinicCreds = {
@@ -68,7 +74,7 @@ async function getClinicCreds(clinicId: string): Promise<ClinicCreds | null> {
     sftpHost: CONSOLIDATED_SFTP_HOST,
     sftpPort: 22,
     sftpUsername: 'sftpuser',
-    sftpPassword: CONSOLIDATED_SFTP_PASSWORD,
+    sftpPassword: sftpPassword || '',
     sftpRemoteDir: 'QuerytemplateCSV',
   };
   
@@ -169,7 +175,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     console.log('SFTP Address:', sftpAddress);
     console.log('Expected S3 Path: s3://bucket/sftp-home/sftpuser/' + fileName);
     console.log('CONSOLIDATED_SFTP_HOST env:', process.env.CONSOLIDATED_SFTP_HOST);
-    console.log('CONSOLIDATED_SFTP_PASSWORD available:', !!process.env.CONSOLIDATED_SFTP_PASSWORD);
+    console.log('CONSOLIDATED_SFTP_PASSWORD available (from GlobalSecrets):', !!creds.sftpPassword);
 
     const qp = buildQueryString(queryParams);
     const fullPath = `${API_BASE}/${proxy}${qp}`;
