@@ -33,6 +33,7 @@ export class NotificationsStack extends Stack {
   public readonly emailAnalyticsFn: lambdaNode.NodejsFunction;
   public readonly emailEventProcessorFn: lambdaNode.NodejsFunction;
   public readonly unsubscribeFn: lambdaNode.NodejsFunction;
+  public readonly emailAiFn: lambdaNode.NodejsFunction;
   public readonly sesConfigurationSet: ses.ConfigurationSet;
   public readonly sesEventsTopic: sns.Topic;
 
@@ -351,6 +352,36 @@ export class NotificationsStack extends Stack {
         resources: [props.secretsEncryptionKeyArn],
       }));
     }
+
+    // ========================================
+    // EMAIL AI HANDLER LAMBDA (Bedrock)
+    // ========================================
+
+    this.emailAiFn = new lambdaNode.NodejsFunction(this, 'EmailAiFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'email', 'email-ai-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 512,
+      timeout: Duration.seconds(60), // AI calls can take time
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        AWS_REGION: this.region,
+      },
+    });
+    applyTags(this.emailAiFn, { Function: 'email-ai-handler' });
+
+    // Grant Bedrock model invocation permissions
+    this.emailAiFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock:InvokeModel',
+        'bedrock:InvokeModelWithResponseStream',
+      ],
+      resources: [
+        `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0`,
+        `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0`,
+      ],
+    }));
 
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
@@ -791,6 +822,79 @@ export class NotificationsStack extends Stack {
     });
 
     // ========================================
+    // EMAIL AI API ROUTES (Bedrock)
+    // ========================================
+
+    const emailAiIntegration = new apigw.LambdaIntegration(this.emailAiFn);
+
+    // /email/ai resource
+    const emailResource = this.notificationsApi.root.addResource('email');
+    const emailAiResource = emailResource.addResource('ai');
+
+    // POST /email/ai/subject-lines - Generate AI subject lines
+    const subjectLinesResource = emailAiResource.addResource('subject-lines');
+    subjectLinesResource.addMethod('POST', emailAiIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Access-Control-Allow-Origin': true,
+            'method.response.header.Access-Control-Allow-Headers': true,
+            'method.response.header.Access-Control-Allow-Methods': true
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' },
+        { statusCode: '500' }
+      ],
+    });
+
+    // POST /email/ai/body-content - Generate AI email body content
+    const bodyContentResource = emailAiResource.addResource('body-content');
+    bodyContentResource.addMethod('POST', emailAiIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Access-Control-Allow-Origin': true,
+            'method.response.header.Access-Control-Allow-Headers': true,
+            'method.response.header.Access-Control-Allow-Methods': true
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' },
+        { statusCode: '500' }
+      ],
+    });
+
+    // POST /email/ai/full-template - Generate AI full template design
+    const fullTemplateResource = emailAiResource.addResource('full-template');
+    fullTemplateResource.addMethod('POST', emailAiIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Access-Control-Allow-Origin': true,
+            'method.response.header.Access-Control-Allow-Headers': true,
+            'method.response.header.Access-Control-Allow-Methods': true
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' },
+        { statusCode: '500' }
+      ],
+    });
+
+    // ========================================
     // DOMAIN MAPPING
     // ========================================
 
@@ -826,6 +930,7 @@ export class NotificationsStack extends Stack {
       { fn: this.emailAnalyticsFn, name: 'email-analytics-api', durationMs: Math.floor(Duration.seconds(20).toMilliseconds() * 0.8) },
       { fn: this.emailEventProcessorFn, name: 'email-event-processor', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
       { fn: this.unsubscribeFn, name: 'unsubscribe-handler', durationMs: Math.floor(Duration.seconds(20).toMilliseconds() * 0.8) },
+      { fn: this.emailAiFn, name: 'email-ai-handler', durationMs: Math.floor(Duration.seconds(60).toMilliseconds() * 0.8) },
     ].forEach(({ fn, name, durationMs }) => {
       createLambdaErrorAlarm(fn, name);
       createLambdaThrottleAlarm(fn, name);
@@ -881,6 +986,12 @@ export class NotificationsStack extends Stack {
       value: 'https://apig.todaysdentalinsights.com/notifications/preferences',
       description: 'Communication Preferences API Endpoint (authenticated)',
       exportName: `${Stack.of(this).stackName}-PreferencesApiEndpoint`,
+    });
+
+    new CfnOutput(this, 'EmailAiApiEndpoint', {
+      value: 'https://apig.todaysdentalinsights.com/notifications/email/ai/',
+      description: 'Email AI Content Generation API Endpoint (authenticated)',
+      exportName: `${Stack.of(this).stackName}-EmailAiApiEndpoint`,
     });
   }
 }
