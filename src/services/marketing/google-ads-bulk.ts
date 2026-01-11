@@ -15,11 +15,25 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import {
+  getUserPermissions,
+  hasModulePermission,
+  PermissionType,
+} from '../../shared/utils/permissions-helper';
+import {
   getAllClinicsWithGoogleAdsStatus,
   getGoogleAdsClient,
   dollarsToMicros,
   addKeywords as addKeywordsToGoogle,
 } from '../../shared/utils/google-ads-client';
+
+// Module permission configuration
+const MODULE_NAME = 'Marketing';
+const METHOD_PERMISSIONS: Record<string, PermissionType> = {
+  GET: 'read',
+  POST: 'write',
+  PUT: 'put',
+  DELETE: 'delete',
+};
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true }
@@ -96,6 +110,20 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const path = event.path;
 
   console.log(`[GoogleAdsBulk] ${method} ${path}`);
+
+  if (method === 'OPTIONS') {
+    return { statusCode: 204, headers: corsHeaders, body: '' };
+  }
+
+  // Permission check
+  const userPerms = getUserPermissions(event);
+  if (!userPerms) {
+    return { statusCode: 401, headers: corsHeaders, body: JSON.stringify({ success: false, error: 'Unauthorized' }) };
+  }
+  const requiredPermission: PermissionType = METHOD_PERMISSIONS[method] || 'read';
+  if (!hasModulePermission(userPerms.clinicRoles, MODULE_NAME, requiredPermission, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin)) {
+    return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ success: false, error: `Access denied: requires ${MODULE_NAME} module access` }) };
+  }
 
   try {
     // Route: GET /google-ads/bulk/clinics

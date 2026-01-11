@@ -18,6 +18,9 @@ import {
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { PinpointSMSVoiceV2Client, SendTextMessageCommand } = require('@aws-sdk/client-pinpoint-sms-voice-v2');
 
+// RCS API base URL (from environment or default)
+const RCS_API_BASE_URL = process.env.RCS_API_BASE_URL || 'https://apig.todaysdentalinsights.com/rcs';
+
 interface ScheduleTask {
   scheduleId: string;
   clinicId: string;
@@ -314,6 +317,79 @@ async function sendSms({ clinicId, to, body }: { clinicId: string; to: string; b
   await sms.send(cmd);
 }
 
+/**
+ * Send RCS message via the RCS API endpoint
+ * Supports plain text messages with patient data for placeholder replacement
+ */
+async function sendRcs({ 
+  clinicId, 
+  to, 
+  body, 
+  templateId,
+  templateName,
+  patientData,
+  scheduleId,
+}: { 
+  clinicId: string; 
+  to: string; 
+  body: string;
+  templateId?: string;
+  templateName?: string;
+  patientData?: Record<string, string>;
+  scheduleId?: string;
+}): Promise<{ success: boolean; messageSid?: string; error?: string }> {
+  return new Promise((resolve) => {
+    const payload = JSON.stringify({
+      clinicId,
+      to,
+      body,
+      templateId,
+      templateName,
+      patientData,
+      campaignId: scheduleId,
+      campaignName: `Schedule: ${scheduleId}`,
+    });
+
+    const options = {
+      hostname: 'apig.todaysdentalinsights.com',
+      port: 443,
+      path: `/rcs/${encodeURIComponent(clinicId)}/send`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+    };
+
+    const req = https.request(options, (res) => {
+      let responseBody = '';
+      res.on('data', (chunk) => { responseBody += chunk; });
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(responseBody);
+          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300 && response.success) {
+            resolve({ success: true, messageSid: response.messageSid });
+          } else {
+            console.error(`RCS API error for ${to}: ${responseBody}`);
+            resolve({ success: false, error: response.error || responseBody });
+          }
+        } catch (e) {
+          console.error(`Failed to parse RCS response for ${to}: ${responseBody}`);
+          resolve({ success: false, error: responseBody });
+        }
+      });
+    });
+
+    req.on('error', (e) => {
+      console.error(`RCS request error for ${to}:`, e);
+      resolve({ success: false, error: e.message });
+    });
+
+    req.write(payload);
+    req.end();
+  });
+}
+
 // Track email in analytics table with status
 async function trackEmailStatus(params: {
   clinicId: string;
@@ -429,6 +505,7 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   
   let emailsEnqueued = 0;
   let smsSent = 0;
+  let rcsSent = 0;
 
   // Collect email tasks to enqueue in batches
   const emailTasksToEnqueue: EmailQueueTask[] = [];
@@ -495,11 +572,71 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   
   console.log(`Enqueued ${emailsEnqueued} emails to email queue for ${clinicId}`);
 
-  // Process SMS directly (usually lower volume, keep simple)
+  // Process SMS and RCS directly (usually lower volume, keep simple)
+  const hasRcsType = notificationTypes.includes('RCS') || notificationTypes.includes('rcs');
+  const hasSmsType = notificationTypes.includes('SMS');
+  
+  console.log(`Notification types check: SMS=${hasSmsType}, RCS=${hasRcsType}, types=${JSON.stringify(notificationTypes)}`);
+  
   for (const row of rows) {
     const { phone } = extractEmailAndPhone(row);
+    if (!phone) continue;
     
-    if (notificationTypes.includes('SMS') && phone && template.text_message) {
+    // Build patient data for placeholder replacement
+    const patientData: Record<string, string> = {};
+    for (const [k, v] of Object.entries(row)) {
+      const val = String(v || '').trim();
+      // Map common field names
+      const lowerKey = String(k).toLowerCase();
+      if (lowerKey.includes('fname') || lowerKey === 'firstname') {
+        patientData.FName = val;
+        patientData.firstName = val;
+      } else if (lowerKey.includes('lname') || lowerKey === 'lastname') {
+        patientData.LName = val;
+        patientData.lastName = val;
+      } else {
+        patientData[k] = val;
+      }
+    }
+    
+    // Send RCS if enabled (prioritize RCS over SMS when both are enabled)
+    if (hasRcsType && (template.text_message || template.rcs_message)) {
+      try {
+        const templateContext = await buildTemplateContext(clinicId, row);
+        // Use rcs_message if available, otherwise fall back to text_message
+        const rcsBody = template.rcs_message || template.text_message;
+        const renderedRcs = renderTemplate(rcsBody, templateContext);
+        
+        const rcsResult = await sendRcs({ 
+          clinicId, 
+          to: phone, 
+          body: renderedRcs,
+          templateId: template.template_id || template.id,
+          templateName: templateMessage,
+          patientData,
+          scheduleId,
+        });
+        
+        if (rcsResult.success) {
+          rcsSent++;
+        } else {
+          console.warn(`RCS failed for ${phone}, falling back to SMS if enabled: ${rcsResult.error}`);
+          // Fallback to SMS if RCS fails and SMS is also enabled
+          if (hasSmsType && template.text_message) {
+            try {
+              const renderedSms = renderTemplate(template.text_message, templateContext);
+              await sendSms({ clinicId, to: phone, body: renderedSms });
+              smsSent++;
+            } catch (smsError) {
+              console.error(`SMS fallback also failed for ${phone}:`, smsError);
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`Failed to send RCS to ${phone}:`, error);
+      }
+    } else if (hasSmsType && template.text_message) {
+      // SMS only (no RCS)
       try {
         const templateContext = await buildTemplateContext(clinicId, row);
         const renderedSms = renderTemplate(template.text_message, templateContext);
@@ -514,7 +651,7 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   // Mark the schedule as run for this clinic
   await markRanForClinic(scheduleId, clinicId);
   
-  console.log(`Completed schedule ${scheduleId} for clinic ${clinicId}: ${emailsEnqueued} emails enqueued, ${smsSent} SMS sent from ${rows.length} rows`);
+  console.log(`Completed schedule ${scheduleId} for clinic ${clinicId}: ${emailsEnqueued} emails enqueued, ${smsSent} SMS sent, ${rcsSent} RCS sent from ${rows.length} rows`);
 }
 
 export const handler = async (event: SQSEvent) => {

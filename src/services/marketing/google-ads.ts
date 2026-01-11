@@ -19,6 +19,11 @@ import { DynamoDBDocumentClient, PutCommand, GetCommand, QueryCommand, UpdateCom
 import { v4 as uuidv4 } from 'uuid';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import {
+  getUserPermissions,
+  hasModulePermission,
+  PermissionType,
+} from '../../shared/utils/permissions-helper';
+import {
   getGoogleAdsClient,
   getCampaigns,
   getAdGroups,
@@ -26,6 +31,16 @@ import {
   dollarsToMicros,
   getAllClinicsWithGoogleAdsStatus,
 } from '../../shared/utils/google-ads-client';
+
+// Module permission configuration
+// Requires 'Marketing' module access OR SuperAdmin/GlobalSuperAdmin
+const MODULE_NAME = 'Marketing';
+const METHOD_PERMISSIONS: Record<string, PermissionType> = {
+  GET: 'read',
+  POST: 'write',
+  PUT: 'put',
+  DELETE: 'delete',
+};
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true }
@@ -98,6 +113,42 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
   console.log(`[GoogleAds] ${method} ${path}`);
 
+  // Handle preflight
+  if (method === 'OPTIONS') {
+    return { statusCode: 204, headers: corsHeaders, body: '' };
+  }
+
+  // ============================================
+  // PERMISSION CHECK
+  // Requires: SuperAdmin, GlobalSuperAdmin, OR Marketing module access
+  // ============================================
+  const userPerms = getUserPermissions(event);
+  if (!userPerms) {
+    return {
+      statusCode: 401,
+      headers: corsHeaders,
+      body: JSON.stringify({ success: false, error: 'Unauthorized - Invalid token' }),
+    };
+  }
+
+  const requiredPermission: PermissionType = METHOD_PERMISSIONS[method] || 'read';
+  if (!hasModulePermission(
+    userPerms.clinicRoles,
+    MODULE_NAME,
+    requiredPermission,
+    userPerms.isSuperAdmin,
+    userPerms.isGlobalSuperAdmin
+  )) {
+    return {
+      statusCode: 403,
+      headers: corsHeaders,
+      body: JSON.stringify({ 
+        success: false, 
+        error: `Access denied: requires ${MODULE_NAME} module ${requiredPermission} permission or SuperAdmin access` 
+      }),
+    };
+  }
+
   try {
     // Route: GET /google-ads/campaigns
     if (method === 'GET' && path.endsWith('/campaigns')) {
@@ -127,6 +178,26 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Route: GET /google-ads/ad-groups
     if (method === 'GET' && path.endsWith('/ad-groups')) {
       return await listAdGroups(event, corsHeaders);
+    }
+
+    // Route: POST /google-ads/ad-groups
+    if (method === 'POST' && path.endsWith('/ad-groups')) {
+      return await createAdGroup(event, corsHeaders);
+    }
+
+    // Route: GET /google-ads/ad-groups/{id}
+    if (method === 'GET' && pathParts.includes('ad-groups') && pathParts.length > pathParts.indexOf('ad-groups') + 1) {
+      return await getAdGroup(event, corsHeaders);
+    }
+
+    // Route: PUT /google-ads/ad-groups/{id}
+    if (method === 'PUT' && pathParts.includes('ad-groups')) {
+      return await updateAdGroup(event, corsHeaders);
+    }
+
+    // Route: DELETE /google-ads/ad-groups/{id}
+    if (method === 'DELETE' && pathParts.includes('ad-groups')) {
+      return await deleteAdGroup(event, corsHeaders);
     }
 
     // Route: GET /google-ads/clinics
@@ -712,6 +783,295 @@ async function listAdGroups(
     };
   } catch (error: any) {
     console.error('[GoogleAds] Error listing ad groups:', error);
+    return {
+      statusCode: 500,
+      headers: corsHeaders,
+      body: JSON.stringify({ error: error.message }),
+    };
+  }
+}
+
+interface CreateAdGroupRequest {
+  customerId: string;
+  campaignResourceName: string;
+  name: string;
+  cpcBidMicros?: number;
+  status?: 'ENABLED' | 'PAUSED';
+  type?: 'SEARCH_STANDARD' | 'DISPLAY_STANDARD';
+}
+
+interface UpdateAdGroupRequest {
+  customerId: string;
+  resourceName: string;
+  name?: string;
+  cpcBidMicros?: number;
+  status?: 'ENABLED' | 'PAUSED';
+}
+
+async function createAdGroup(
+  event: APIGatewayProxyEvent,
+  corsHeaders: Record<string, string>
+): Promise<APIGatewayProxyResult> {
+  const body: CreateAdGroupRequest = JSON.parse(event.body || '{}');
+  const { customerId, campaignResourceName, name, cpcBidMicros, status = 'ENABLED', type = 'SEARCH_STANDARD' } = body;
+
+  if (!customerId || !campaignResourceName || !name) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        error: 'Missing required fields: customerId, campaignResourceName, name',
+      }),
+    };
+  }
+
+  try {
+    const client = await getGoogleAdsClient(customerId);
+
+    const adGroupOperation = {
+      create: {
+        name,
+        campaign: campaignResourceName,
+        status,
+        type,
+        cpc_bid_micros: cpcBidMicros || dollarsToMicros(2), // Default $2 CPC
+      },
+    };
+
+    const response = await (client as any).adGroups.create([adGroupOperation]);
+    const resourceName = response.results[0].resource_name;
+    const adGroupId = resourceName.split('/').pop();
+
+    console.log(`[GoogleAds] Created ad group: ${resourceName}`);
+
+    return {
+      statusCode: 201,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        success: true,
+        adGroup: {
+          adGroupId,
+          resourceName,
+          name,
+          status,
+          type,
+          cpcBidMicros: cpcBidMicros || dollarsToMicros(2),
+        },
+        message: 'Ad group created successfully',
+      }),
+    };
+  } catch (error: any) {
+    console.error('[GoogleAds] Error creating ad group:', error);
+    return {
+      statusCode: 500,
+      headers: corsHeaders,
+      body: JSON.stringify({ error: error.message }),
+    };
+  }
+}
+
+async function getAdGroup(
+  event: APIGatewayProxyEvent,
+  corsHeaders: Record<string, string>
+): Promise<APIGatewayProxyResult> {
+  const adGroupId = event.pathParameters?.id;
+  const customerId = event.queryStringParameters?.customerId;
+
+  if (!adGroupId || !customerId) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({ error: 'adGroupId and customerId are required' }),
+    };
+  }
+
+  try {
+    const client = await getGoogleAdsClient(customerId);
+    const resourceName = `customers/${customerId}/adGroups/${adGroupId}`;
+
+    const query = `
+      SELECT
+        ad_group.id,
+        ad_group.name,
+        ad_group.status,
+        ad_group.type,
+        ad_group.cpc_bid_micros,
+        ad_group.resource_name,
+        campaign.name,
+        campaign.resource_name,
+        metrics.impressions,
+        metrics.clicks,
+        metrics.cost_micros,
+        metrics.conversions
+      FROM ad_group
+      WHERE ad_group.resource_name = '${resourceName}'
+    `;
+
+    const results = await client.query(query);
+
+    if (results.length === 0) {
+      return {
+        statusCode: 404,
+        headers: corsHeaders,
+        body: JSON.stringify({ error: 'Ad group not found' }),
+      };
+    }
+
+    const ag = results[0];
+    const adGroupData = ag.ad_group;
+    const adGroup = {
+      adGroupId: adGroupData?.id?.toString() || '',
+      resourceName: adGroupData?.resource_name || '',
+      name: adGroupData?.name || '',
+      status: adGroupData?.status || '',
+      type: adGroupData?.type || '',
+      cpcBidMicros: adGroupData?.cpc_bid_micros,
+      cpcBidDollars: microsToDollars(adGroupData?.cpc_bid_micros || 0),
+      campaign: {
+        name: ag.campaign?.name,
+        resourceName: ag.campaign?.resource_name,
+      },
+      metrics: {
+        impressions: ag.metrics?.impressions || 0,
+        clicks: ag.metrics?.clicks || 0,
+        cost: microsToDollars(ag.metrics?.cost_micros || 0),
+        conversions: ag.metrics?.conversions || 0,
+      },
+    };
+
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        success: true,
+        adGroup,
+      }),
+    };
+  } catch (error: any) {
+    console.error('[GoogleAds] Error getting ad group:', error);
+    return {
+      statusCode: 500,
+      headers: corsHeaders,
+      body: JSON.stringify({ error: error.message }),
+    };
+  }
+}
+
+async function updateAdGroup(
+  event: APIGatewayProxyEvent,
+  corsHeaders: Record<string, string>
+): Promise<APIGatewayProxyResult> {
+  const adGroupId = event.pathParameters?.id;
+  const body: UpdateAdGroupRequest = JSON.parse(event.body || '{}');
+  const { customerId, name, cpcBidMicros, status } = body;
+
+  if (!adGroupId || !customerId) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({ error: 'adGroupId and customerId are required' }),
+    };
+  }
+
+  try {
+    const client = await getGoogleAdsClient(customerId);
+    const resourceName = `customers/${customerId}/adGroups/${adGroupId}`;
+
+    const updateOperation: any = {
+      update: {
+        resource_name: resourceName,
+      },
+      update_mask: { paths: [] },
+    };
+
+    if (name) {
+      updateOperation.update.name = name;
+      updateOperation.update_mask.paths.push('name');
+    }
+
+    if (cpcBidMicros !== undefined) {
+      updateOperation.update.cpc_bid_micros = cpcBidMicros;
+      updateOperation.update_mask.paths.push('cpc_bid_micros');
+    }
+
+    if (status) {
+      updateOperation.update.status = status;
+      updateOperation.update_mask.paths.push('status');
+    }
+
+    if (updateOperation.update_mask.paths.length === 0) {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({ error: 'No fields to update' }),
+      };
+    }
+
+    await (client as any).adGroups.update([updateOperation]);
+
+    console.log(`[GoogleAds] Updated ad group: ${resourceName}`);
+
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        success: true,
+        message: 'Ad group updated successfully',
+        updatedFields: updateOperation.update_mask.paths,
+      }),
+    };
+  } catch (error: any) {
+    console.error('[GoogleAds] Error updating ad group:', error);
+    return {
+      statusCode: 500,
+      headers: corsHeaders,
+      body: JSON.stringify({ error: error.message }),
+    };
+  }
+}
+
+async function deleteAdGroup(
+  event: APIGatewayProxyEvent,
+  corsHeaders: Record<string, string>
+): Promise<APIGatewayProxyResult> {
+  const adGroupId = event.pathParameters?.id;
+  const customerId = event.queryStringParameters?.customerId;
+
+  if (!adGroupId || !customerId) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({ error: 'adGroupId and customerId are required' }),
+    };
+  }
+
+  try {
+    const client = await getGoogleAdsClient(customerId);
+    const resourceName = `customers/${customerId}/adGroups/${adGroupId}`;
+
+    // Remove = set status to REMOVED
+    const removeOperation = {
+      update: {
+        resource_name: resourceName,
+        status: 'REMOVED',
+      },
+      update_mask: { paths: ['status'] },
+    };
+
+    await (client as any).adGroups.update([removeOperation]);
+
+    console.log(`[GoogleAds] Deleted (removed) ad group: ${resourceName}`);
+
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        success: true,
+        message: 'Ad group deleted successfully',
+      }),
+    };
+  } catch (error: any) {
+    console.error('[GoogleAds] Error deleting ad group:', error);
     return {
       statusCode: 500,
       headers: corsHeaders,

@@ -29,6 +29,7 @@ import { HrStack } from './stacks/hr-stack';
 import { PatientPortalApptTypesStack } from './stacks/patient-portal-appttypes-stack';
 import { FluorideAutomationStack } from './stacks/fluoride-automation-stack';
 import { MarketingStack } from './stacks/marketing-stack';
+import { GoogleAdsStack } from './stacks/google-ads-stack';
 import { CommStack } from './stacks/comm-stack'; // <-- NEW IMPORT ADDED HERE
 import { AnalyticsStack } from './stacks/analytics-stack';
 import { ClinicImagesStack } from './stacks/clinic-images-stack';
@@ -261,6 +262,20 @@ const marketingStack = new MarketingStack(app, 'TodaysDentalInsightsMarketingN1'
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
 marketingStack.addDependency(secretsStack); // Explicit - uses secrets tables for Ayrshare credentials
+
+// Google Ads Stack - Separated from Marketing to stay under 500 resource limit
+const googleAdsStack = new GoogleAdsStack(app, 'TodaysDentalInsightsGoogleAdsN1', {
+  env,
+  authorizerFunctionArn: coreStack.authorizerFunction.functionArn,
+  // Pass secrets table names for dynamic secret retrieval
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+});
+googleAdsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+googleAdsStack.addDependency(secretsStack); // Explicit - uses secrets tables for Google Ads credentials
+
 // Amazon Chime Voice Integration - create Chime stack first and export
 // Lambda ARNs. We intentionally do NOT pass the Admin API object into the
 // Chime stack to avoid a two-way construct dependency which leads to

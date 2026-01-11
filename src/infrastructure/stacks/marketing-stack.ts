@@ -120,58 +120,31 @@ export class MarketingStack extends Stack {
     });
 
     // ============================================
-    // 1b. Google Ads DynamoDB Tables
+    // 1b. Meta Ads DynamoDB Tables
     // ============================================
+    // These tables already exist in AWS, so we import them rather than creating new ones.
+    // This allows CDK to grant IAM permissions without trying to recreate the tables.
 
-    // Table 6: GoogleAdsCampaigns - Google Ads campaign data
-    const googleAdsCampaignsTable = new dynamodb.Table(this, 'GoogleAdsCampaignsTable', {
-      tableName: 'GoogleAdsCampaigns',
-      partitionKey: { name: 'campaignId', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: RemovalPolicy.RETAIN,
-      timeToLiveAttribute: 'ttl', // Auto-expire stale cached data
-    });
+    // Table 9: MetaAdDrafts - Campaign draft wizard state
+    const metaAdDraftsTable = dynamodb.Table.fromTableName(this, 'MetaAdDraftsTable', 'MetaAdDrafts');
 
-    // GSI: ByCustomer - Query campaigns by customerId (Google Ads Customer ID)
-    googleAdsCampaignsTable.addGlobalSecondaryIndex({
-      indexName: 'ByCustomer',
-      partitionKey: { name: 'customerId', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
+    // Table 10: MetaLeadForms - Lead generation forms
+    const metaLeadFormsTable = dynamodb.Table.fromTableName(this, 'MetaLeadFormsTable', 'MetaLeadForms');
 
-    // Table 7: GoogleAdsKeywords - Cached keyword data
-    const googleAdsKeywordsTable = new dynamodb.Table(this, 'GoogleAdsKeywordsTable', {
-      tableName: 'GoogleAdsKeywords',
-      partitionKey: { name: 'keywordId', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: RemovalPolicy.RETAIN,
-    });
+    // Table 11: MetaLeads - Captured leads from forms
+    const metaLeadsTable = dynamodb.Table.fromTableName(this, 'MetaLeadsTable', 'MetaLeads');
 
-    // GSI: ByCustomer - Query keywords by customerId
-    googleAdsKeywordsTable.addGlobalSecondaryIndex({
-      indexName: 'ByCustomer',
-      partitionKey: { name: 'customerId', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
+    // Table 12: MetaBulkJobs - Bulk publish job tracking
+    const metaBulkJobsTable = dynamodb.Table.fromTableName(this, 'MetaBulkJobsTable', 'MetaBulkJobs');
 
-    // Table 8: GoogleAdsSearchQueries - Cached search query report data
-    const googleAdsSearchQueriesTable = new dynamodb.Table(this, 'GoogleAdsSearchQueriesTable', {
-      tableName: 'GoogleAdsSearchQueries',
-      partitionKey: { name: 'queryId', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: RemovalPolicy.RETAIN,
-      timeToLiveAttribute: 'ttl',
-    });
+    // Table 13: MetaBulkResults - Individual clinic results from bulk jobs
+    const metaBulkResultsTable = dynamodb.Table.fromTableName(this, 'MetaBulkResultsTable', 'MetaBulkResults');
 
-    // GSI: ByCustomer - Query search terms by customerId
-    googleAdsSearchQueriesTable.addGlobalSecondaryIndex({
-      indexName: 'ByCustomer',
-      partitionKey: { name: 'customerId', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'reportDate', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
+    // Table 14: MetaScheduledCampaigns - Scheduled campaign launches
+    const metaScheduledCampaignsTable = dynamodb.Table.fromTableName(this, 'MetaScheduledCampaignsTable', 'MetaScheduledCampaigns');
+
+    // Table 15: MetaAdCampaigns - Published campaign records
+    const metaAdCampaignsTable = dynamodb.Table.fromTableName(this, 'MetaAdCampaignsTable', 'MetaAdCampaigns');
 
     // ============================================
     // 2. S3 Bucket for Media Storage
@@ -435,61 +408,25 @@ export class MarketingStack extends Stack {
       environment: envVars,
     });
 
+    // Meta Ads environment variables
+    const metaAdsEnvVars = {
+      ...envVars,
+      META_AD_DRAFTS_TABLE: metaAdDraftsTable.tableName,
+      META_LEAD_FORMS_TABLE: metaLeadFormsTable.tableName,
+      META_LEADS_TABLE: metaLeadsTable.tableName,
+      META_BULK_JOBS_TABLE: metaBulkJobsTable.tableName,
+      META_BULK_RESULTS_TABLE: metaBulkResultsTable.tableName,
+      META_SCHEDULED_CAMPAIGNS_TABLE: metaScheduledCampaignsTable.tableName,
+      META_CAMPAIGNS_TABLE: metaAdCampaignsTable.tableName,
+    };
+
     // Ads Lambda (Meta Ads via Ayrshare)
     const adsFn = new lambdaNode.NodejsFunction(this, 'MarketingAdsFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'ads.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(60),
-      environment: envVars,
-    });
-
-    // ============================================
-    // 6b. Google Ads Lambda Functions
-    // ============================================
-
-    // Google Ads environment variables
-    const googleAdsEnvVars = {
-      ...envVars,
-      GOOGLE_ADS_CAMPAIGNS_TABLE: googleAdsCampaignsTable.tableName,
-      GOOGLE_ADS_KEYWORDS_TABLE: googleAdsKeywordsTable.tableName,
-      GOOGLE_ADS_SEARCH_QUERIES_TABLE: googleAdsSearchQueriesTable.tableName,
-    };
-
-    // Google Ads Campaigns Lambda
-    const googleAdsCampaignsFn = new lambdaNode.NodejsFunction(this, 'GoogleAdsCampaignsFn', {
-      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'google-ads.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(60),
-      environment: googleAdsEnvVars,
-    });
-
-    // Google Ads Keywords Lambda
-    const googleAdsKeywordsFn = new lambdaNode.NodejsFunction(this, 'GoogleAdsKeywordsFn', {
-      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'google-ads-keywords.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(60),
-      environment: googleAdsEnvVars,
-    });
-
-    // Google Ads Search Queries Lambda
-    const googleAdsSearchQueriesFn = new lambdaNode.NodejsFunction(this, 'GoogleAdsSearchQueriesFn', {
-      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'google-ads-search-queries.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(300), // Longer timeout for global reports
-      environment: googleAdsEnvVars,
-    });
-
-    // Google Ads Bulk Operations Lambda
-    const googleAdsBulkFn = new lambdaNode.NodejsFunction(this, 'GoogleAdsBulkFn', {
-      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'google-ads-bulk.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(300), // Longer timeout for bulk operations
-      environment: googleAdsEnvVars,
+      environment: metaAdsEnvVars,
     });
 
     // ============================================
@@ -563,31 +500,23 @@ export class MarketingStack extends Stack {
     this.marketingProfilesTable.grantReadData(adsFn);
     this.marketingPostsTable.grantReadData(adsFn);
 
-    // ============================================
-    // 7c. Google Ads Lambda Permissions
-    // ============================================
-
-    // Google Ads Campaigns Lambda permissions
-    googleAdsCampaignsTable.grantReadWriteData(googleAdsCampaignsFn);
-
-    // Google Ads Keywords Lambda permissions
-    googleAdsKeywordsTable.grantReadWriteData(googleAdsKeywordsFn);
-
-    // Google Ads Search Queries Lambda permissions
-    googleAdsSearchQueriesTable.grantReadWriteData(googleAdsSearchQueriesFn);
-
-    // Google Ads Bulk Lambda permissions
-    googleAdsCampaignsTable.grantReadWriteData(googleAdsBulkFn);
-    googleAdsKeywordsTable.grantReadWriteData(googleAdsBulkFn);
+    // Meta Ads Tables permissions for adsFn
+    metaAdDraftsTable.grantReadWriteData(adsFn);
+    metaLeadFormsTable.grantReadWriteData(adsFn);
+    metaLeadsTable.grantReadWriteData(adsFn);
+    metaBulkJobsTable.grantReadWriteData(adsFn);
+    metaBulkResultsTable.grantReadWriteData(adsFn);
+    metaScheduledCampaignsTable.grantReadWriteData(adsFn);
+    metaAdCampaignsTable.grantReadWriteData(adsFn);
 
     // ============================================
     // 7b. Secrets Tables Permissions
     // ============================================
     // Grant all Lambda functions read access to secrets tables for dynamic credential retrieval
+    // NOTE: Google Ads Lambdas have been moved to GoogleAdsStack
     const allLambdas = [
       profilesFn, postsFn, commentsFn, analyticsFn, mediaFn, webhooksFn,
       analyticsSyncFn, autoScheduleFn, hashtagsFn, historyFn, messagesFn, validateFn, adsFn,
-      googleAdsCampaignsFn, googleAdsKeywordsFn, googleAdsSearchQueriesFn, googleAdsBulkFn,
     ];
 
     // IAM policy for reading from secrets tables
@@ -885,89 +814,8 @@ export class MarketingStack extends Stack {
     const metaProxyRes = metaRes.addResource('{proxy+}');
     metaProxyRes.addMethod('ANY', new apigw.LambdaIntegration(adsFn), { authorizer });
 
-    // -----------------------------------------
-    // Google Ads Routes (/google-ads)
-    // -----------------------------------------
-    const googleAdsRes = root.addResource('google-ads');
-
-    // --- Campaign Routes ---
-    // GET /google-ads/campaigns - List campaigns
-    // POST /google-ads/campaigns - Create campaign
-    const gaCampaignsRes = googleAdsRes.addResource('campaigns');
-    gaCampaignsRes.addMethod('GET', new apigw.LambdaIntegration(googleAdsCampaignsFn), { authorizer });
-    gaCampaignsRes.addMethod('POST', new apigw.LambdaIntegration(googleAdsCampaignsFn), { authorizer });
-
-    // GET/PUT/DELETE /google-ads/campaigns/{id}
-    const gaCampaignByIdRes = gaCampaignsRes.addResource('{id}');
-    gaCampaignByIdRes.addMethod('GET', new apigw.LambdaIntegration(googleAdsCampaignsFn), { authorizer });
-    gaCampaignByIdRes.addMethod('PUT', new apigw.LambdaIntegration(googleAdsCampaignsFn), { authorizer });
-    gaCampaignByIdRes.addMethod('DELETE', new apigw.LambdaIntegration(googleAdsCampaignsFn), { authorizer });
-
-    // GET /google-ads/ad-groups - List ad groups
-    const gaAdGroupsRes = googleAdsRes.addResource('ad-groups');
-    gaAdGroupsRes.addMethod('GET', new apigw.LambdaIntegration(googleAdsCampaignsFn), { authorizer });
-
-    // GET /google-ads/clinics - List clinics for selection
-    const gaClinicsRes = googleAdsRes.addResource('clinics');
-    gaClinicsRes.addMethod('GET', new apigw.LambdaIntegration(googleAdsCampaignsFn), { authorizer });
-
-    // GET /google-ads/dashboard - Get dashboard metrics
-    const gaDashboardRes = googleAdsRes.addResource('dashboard');
-    gaDashboardRes.addMethod('GET', new apigw.LambdaIntegration(googleAdsCampaignsFn), { authorizer });
-
-    // --- Keyword Routes ---
-    const gaKeywordsRes = googleAdsRes.addResource('keywords');
-
-    // GET /google-ads/keywords/fetch - Fetch keywords
-    const gaKeywordsFetchRes = gaKeywordsRes.addResource('fetch');
-    gaKeywordsFetchRes.addMethod('GET', new apigw.LambdaIntegration(googleAdsKeywordsFn), { authorizer });
-
-    // POST /google-ads/keywords/add - Add keywords
-    const gaKeywordsAddRes = gaKeywordsRes.addResource('add');
-    gaKeywordsAddRes.addMethod('POST', new apigw.LambdaIntegration(googleAdsKeywordsFn), { authorizer });
-
-    // POST /google-ads/keywords/delete - Delete keywords
-    const gaKeywordsDeleteRes = gaKeywordsRes.addResource('delete');
-    gaKeywordsDeleteRes.addMethod('POST', new apigw.LambdaIntegration(googleAdsKeywordsFn), { authorizer });
-
-    // GET/POST/DELETE /google-ads/keywords/negatives - Negative keywords
-    const gaKeywordsNegativesRes = gaKeywordsRes.addResource('negatives');
-    gaKeywordsNegativesRes.addMethod('GET', new apigw.LambdaIntegration(googleAdsKeywordsFn), { authorizer });
-    gaKeywordsNegativesRes.addMethod('POST', new apigw.LambdaIntegration(googleAdsKeywordsFn), { authorizer });
-
-    // DELETE /google-ads/keywords/negatives/{id}
-    const gaKeywordsNegativeByIdRes = gaKeywordsNegativesRes.addResource('{id}');
-    gaKeywordsNegativeByIdRes.addMethod('DELETE', new apigw.LambdaIntegration(googleAdsKeywordsFn), { authorizer });
-
-    // GET /google-ads/keywords/templates - Get negative keyword templates
-    const gaKeywordsTemplatesRes = gaKeywordsRes.addResource('templates');
-    gaKeywordsTemplatesRes.addMethod('GET', new apigw.LambdaIntegration(googleAdsKeywordsFn), { authorizer });
-
-    // --- Search Query Routes ---
-    const gaSearchQueriesRes = googleAdsRes.addResource('search-queries');
-
-    // GET /google-ads/search-queries/report - Get search query report
-    const gaSearchQueriesReportRes = gaSearchQueriesRes.addResource('report');
-    gaSearchQueriesReportRes.addMethod('GET', new apigw.LambdaIntegration(googleAdsSearchQueriesFn), { authorizer });
-
-    // GET /google-ads/search-queries/global - Run global report
-    const gaSearchQueriesGlobalRes = gaSearchQueriesRes.addResource('global');
-    gaSearchQueriesGlobalRes.addMethod('GET', new apigw.LambdaIntegration(googleAdsSearchQueriesFn), { authorizer });
-
-    // --- Bulk Operation Routes ---
-    const gaBulkRes = googleAdsRes.addResource('bulk');
-
-    // GET /google-ads/bulk/clinics - Get clinics for bulk selection
-    const gaBulkClinicsRes = gaBulkRes.addResource('clinics');
-    gaBulkClinicsRes.addMethod('GET', new apigw.LambdaIntegration(googleAdsBulkFn), { authorizer });
-
-    // POST /google-ads/bulk/publish - Bulk publish campaigns
-    const gaBulkPublishRes = gaBulkRes.addResource('publish');
-    gaBulkPublishRes.addMethod('POST', new apigw.LambdaIntegration(googleAdsBulkFn), { authorizer });
-
-    // POST /google-ads/bulk/keywords - Bulk add keywords
-    const gaBulkKeywordsRes = gaBulkRes.addResource('keywords');
-    gaBulkKeywordsRes.addMethod('POST', new apigw.LambdaIntegration(googleAdsBulkFn), { authorizer });
+    // NOTE: Google Ads routes have been moved to GoogleAdsStack
+    // Access via: https://apig.todaysdentalinsights.com/google-ads/
 
     // ============================================
     // 9. Outputs

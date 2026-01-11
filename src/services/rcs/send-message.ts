@@ -88,6 +88,12 @@ interface SendRcsMessageRequest {
   
   // Placeholder data
   patientData?: PatientData;  // Patient data for placeholder replacement
+  
+  // Analytics tracking
+  templateId?: string;        // Internal template ID for analytics tracking
+  templateName?: string;      // Template name for analytics
+  campaignId?: string;        // Campaign ID for campaign analytics
+  campaignName?: string;      // Campaign name for analytics
 }
 
 interface TwilioMessageResponse {
@@ -416,7 +422,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       carousel,
       contentSid,
       contentVariables,
-      patientData
+      patientData,
+      templateId,
+      templateName,
+      campaignId,
+      campaignName,
     } = requestBody;
 
     // Validate required fields
@@ -537,7 +547,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     else if (renderedRichCard) messageType = 'richCard';
     else if (mediaUrl) messageType = 'media';
 
-    // Store the outbound message
+    // Store the outbound message with analytics tracking fields
     await ddb.send(new PutCommand({
       TableName: RCS_MESSAGES_TABLE,
       Item: {
@@ -560,6 +570,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         timestamp,
         createdAt: new Date().toISOString(),
         ttl: Math.floor(Date.now() / 1000) + 90 * 24 * 60 * 60, // 90 days TTL
+        // Analytics tracking fields
+        templateId: templateId || contentSid || undefined,
+        templateName: templateName || undefined,
+        campaignId: campaignId || undefined,
+        campaignName: campaignName || undefined,
+        // Date fields for efficient analytics queries
+        dateKey: new Date(timestamp).toISOString().split('T')[0], // YYYY-MM-DD for daily aggregation
+        hourKey: new Date(timestamp).getUTCHours(), // 0-23 for hourly distribution
       },
     }));
 

@@ -1,13 +1,25 @@
-import { APIGatewayRequestAuthorizerEvent, APIGatewayAuthorizerResult } from 'aws-lambda';
+import {
+  APIGatewayRequestAuthorizerEvent,
+  APIGatewayTokenAuthorizerEvent,
+  APIGatewayAuthorizerResult,
+} from 'aws-lambda';
 import { verifyToken, JWTPayload, hashToken } from '../../shared/utils/jwt';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { deflateSync } from 'zlib';
 
 const ddbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(ddbClient);
 
 const TOKEN_BLACKLIST_TABLE = process.env.TOKEN_BLACKLIST_TABLE || 'TokenBlacklist';
 const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE || 'StaffUser';
+
+// API Gateway authorizer "context" has a small size limit (commonly ~8KB).
+// Some users (e.g., Global Super Admins) can have large clinicRoles payloads.
+// If the JSON form exceeds this threshold, we keep `clinicRoles` as a small valid
+// JSON array for backwards compatibility and include the full payload in
+// `clinicRolesZ` (deflate+base64) for updated consumers.
+const MAX_CLINIC_ROLES_JSON_CHARS = 6000;
 
 /**
  * Cached user permissions to reduce DynamoDB calls within same Lambda instance
@@ -26,26 +38,32 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
  * Lambda authorizer for API Gateway
  * Validates JWT tokens and returns IAM policy with user permissions from DynamoDB
  */
-export const handler = async (event: APIGatewayRequestAuthorizerEvent): Promise<APIGatewayAuthorizerResult> => {
+type AuthorizerEvent = APIGatewayRequestAuthorizerEvent | APIGatewayTokenAuthorizerEvent;
+
+export const handler = async (event: AuthorizerEvent): Promise<APIGatewayAuthorizerResult> => {
   console.log('Authorizer event:', JSON.stringify(event, null, 2));
 
   try {
-    // Extract token from Authorization header
-    const authHeader = event.headers?.Authorization || event.headers?.authorization;
+    // Extract token from either:
+    // - REQUEST authorizer: event.headers.Authorization
+    // - TOKEN authorizer: event.authorizationToken
+    const authHeader =
+      (event as APIGatewayTokenAuthorizerEvent).authorizationToken ||
+      (event as APIGatewayRequestAuthorizerEvent).headers?.Authorization ||
+      (event as APIGatewayRequestAuthorizerEvent).headers?.authorization;
     
     if (!authHeader) {
-      console.error('No Authorization header found');
+      console.error('No authorization token found (missing Authorization header or authorizationToken)');
       throw new Error('Unauthorized');
     }
 
-    // Extract Bearer token
-    const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
-    if (!tokenMatch) {
-      console.error('Invalid Authorization header format');
+    // Extract Bearer token (preferred) or treat raw value as token (fallback)
+    const tokenMatch = authHeader.trim().match(/^Bearer\s+(.+)$/i);
+    const token = (tokenMatch ? tokenMatch[1] : authHeader).trim();
+    if (!token) {
+      console.error('Empty token provided');
       throw new Error('Unauthorized');
     }
-
-    const token = tokenMatch[1];
 
     // Check if token is blacklisted (logged out)
     const isBlacklisted = await isTokenBlacklisted(token);
@@ -157,6 +175,13 @@ function generatePolicy(
   const isSuperAdmin = userPermissions.isSuperAdmin || payload.isSuperAdmin;
   const isGlobalSuperAdmin = userPermissions.isGlobalSuperAdmin || payload.isGlobalSuperAdmin;
 
+  const clinicRolesJson = JSON.stringify(userPermissions.clinicRoles ?? []);
+  const shouldCompressClinicRoles = clinicRolesJson.length > MAX_CLINIC_ROLES_JSON_CHARS;
+  const clinicRolesForContext = shouldCompressClinicRoles ? '[]' : clinicRolesJson;
+  const clinicRolesZForContext = shouldCompressClinicRoles
+    ? encodeClinicRolesForContext(userPermissions.clinicRoles)
+    : undefined;
+
   return {
     principalId,
     policyDocument: {
@@ -173,12 +198,31 @@ function generatePolicy(
       email: payload.email,
       givenName: payload.givenName || '',
       familyName: payload.familyName || '',
-      // clinicRoles now fetched from DynamoDB StaffUser table
-      clinicRoles: JSON.stringify(userPermissions.clinicRoles),
+      // clinicRoles fetched from DynamoDB StaffUser table.
+      // For large payloads, clinicRoles is kept as a small valid JSON array to
+      // preserve backwards compatibility, while the full payload is in clinicRolesZ.
+      clinicRoles: clinicRolesForContext,
+      ...(clinicRolesZForContext ? { clinicRolesZ: clinicRolesZForContext } : {}),
       isSuperAdmin: String(isSuperAdmin),
       isGlobalSuperAdmin: String(isGlobalSuperAdmin),
     },
   };
+}
+
+/**
+ * Encode clinicRoles for API Gateway authorizer context.
+ * We deflate+base64 and prefix with "z:" so downstream lambdas can detect and decode.
+ */
+function encodeClinicRolesForContext(clinicRoles: any[]): string {
+  const json = JSON.stringify(clinicRoles ?? []);
+
+  try {
+    const compressed = deflateSync(Buffer.from(json, 'utf8'), { level: 9 });
+    return `z:${compressed.toString('base64')}`;
+  } catch (err) {
+    console.error('Failed to compress clinicRoles for authorizer context, falling back to JSON string:', err);
+    return json;
+  }
 }
 
 /**

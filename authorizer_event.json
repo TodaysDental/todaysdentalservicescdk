@@ -1,0 +1,7 @@
+{
+    "methodArn":  "arn:aws:execute-api:us-east-1:851620242036:ehwberqich/prod/GET/clinics",
+    "headers":  {
+                    "Authorization":  "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzd2FyYWpwYXJhbWF0YUBnbWFpbC5jb20iLCJlbWFpbCI6InN3YXJhanBhcmFtYXRhQGdtYWlsLmNvbSIsImdpdmVuTmFtZSI6InN3YXJhaiIsImZhbWlseU5hbWUiOiJwYXJhbWF0YSIsImlzU3VwZXJBZG1pbiI6dHJ1ZSwiaXNHbG9iYWxTdXBlckFkbWluIjp0cnVlLCJ0eXBlIjoiYWNjZXNzIiwiaWF0IjoxNzY4MDcwMzg5LCJpc3MiOiJUb2RheXNEZW50YWxJbnNpZ2h0cyIsImF1ZCI6ImFwaS50b2RheXNkZW50YWxpbnNpZ2h0cy5jb20iLCJleHAiOjE3NjgwNzM5ODl9.KUroVCC22Ao3RCIAOTOboymzIWnyVr8UhOBO8yAJvfQ"
+                },
+    "type":  "REQUEST"
+}

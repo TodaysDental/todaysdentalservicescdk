@@ -18,8 +18,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 // Google Ads API credentials
-const CLIENT_ID = '245974983060-2e0c5m8dr27rqu320epobtuq5qpttrke.apps.googleusercontent.com';
-const CLIENT_SECRET = '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';
+const CLIENT_ID = '584598112747-e6oc5dku2m7bk6m8eirn9lg4ipg0t59k.apps.googleusercontent.com';
+const CLIENT_SECRET = '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';
 const DEVELOPER_TOKEN = 'yf0wVh6n6pkts1inzKFP_w';
 const LOGIN_CUSTOMER_ID = '6325322362';
 

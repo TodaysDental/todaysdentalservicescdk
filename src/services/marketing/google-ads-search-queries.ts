@@ -12,9 +12,23 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import {
+  getUserPermissions,
+  hasModulePermission,
+  PermissionType,
+} from '../../shared/utils/permissions-helper';
+import {
   getSearchQueryReport,
   microsToDollars,
 } from '../../shared/utils/google-ads-client';
+
+// Module permission configuration
+const MODULE_NAME = 'Marketing';
+const METHOD_PERMISSIONS: Record<string, PermissionType> = {
+  GET: 'read',
+  POST: 'write',
+  PUT: 'put',
+  DELETE: 'delete',
+};
 
 // ============================================
 // TYPE DEFINITIONS
@@ -40,6 +54,20 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const path = event.path;
 
   console.log(`[GoogleAdsSearchQueries] ${method} ${path}`);
+
+  if (method === 'OPTIONS') {
+    return { statusCode: 204, headers: corsHeaders, body: '' };
+  }
+
+  // Permission check
+  const userPerms = getUserPermissions(event);
+  if (!userPerms) {
+    return { statusCode: 401, headers: corsHeaders, body: JSON.stringify({ success: false, error: 'Unauthorized' }) };
+  }
+  const requiredPermission: PermissionType = METHOD_PERMISSIONS[method] || 'read';
+  if (!hasModulePermission(userPerms.clinicRoles, MODULE_NAME, requiredPermission, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin)) {
+    return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ success: false, error: `Access denied: requires ${MODULE_NAME} module access` }) };
+  }
 
   try {
     // Route: GET /google-ads/search-queries/report

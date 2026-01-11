@@ -279,7 +279,7 @@ export class SchedulesStack extends Stack {
     applyTags(this.schedulerQueueProducerFn, { Function: 'scheduler-producer' });
 
     // Queue Consumer Lambda - queries patients and enqueues individual email tasks
-    // No longer sends emails directly - just enqueues them to the email queue
+    // Also supports RCS messaging via the RCS API endpoint
     this.schedulerQueueConsumerFn = new lambdaNode.NodejsFunction(this, 'SchedulerQueueConsumerFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'queueConsumer.ts'),
       handler: 'handler',
@@ -306,6 +306,8 @@ export class SchedulesStack extends Stack {
         EMAIL_QUEUE_URL: emailQueue.queueUrl,
         // Email analytics table for tracking scheduled emails
         EMAIL_ANALYTICS_TABLE: Fn.importValue('TodaysDentalInsightsNotificationsN1-EmailAnalyticsTableName'),
+        // RCS API base URL for sending RCS messages (via public API Gateway endpoint)
+        RCS_API_BASE_URL: 'https://apig.todaysdentalinsights.com/rcs',
       },
     });
     applyTags(this.schedulerQueueConsumerFn, { Function: 'scheduler-consumer' });

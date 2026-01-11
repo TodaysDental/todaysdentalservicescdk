@@ -9,6 +9,7 @@
 
 import { APIGatewayProxyEvent } from 'aws-lambda';
 import { JWTPayload } from './jwt';
+import { inflateSync } from 'zlib';
 
 /**
  * User permissions extracted from the authorizer context or JWT payload
@@ -65,6 +66,43 @@ export const SYSTEM_MODULES = [
 export type SystemModule = typeof SYSTEM_MODULES[number];
 
 /**
+ * Parse clinicRoles from authorizer context.
+ *
+ * Supports:
+ * - Plain JSON string (legacy): '[{...}]'
+ * - Compressed payload (preferred): 'z:<base64(deflate(JSON))>'
+ *
+ * The compressed form prevents API Gateway authorizer context size-limit failures
+ * for users with many clinic roles (e.g., Global Super Admins).
+ */
+export function parseClinicRoles(clinicRolesValue: unknown): ClinicRole[] {
+  // Direct invocation / tests might already provide an array
+  if (Array.isArray(clinicRolesValue)) {
+    return clinicRolesValue as ClinicRole[];
+  }
+
+  if (typeof clinicRolesValue !== 'string') {
+    return [];
+  }
+
+  const raw = clinicRolesValue.trim();
+  if (!raw) return [];
+
+  try {
+    if (raw.startsWith('z:')) {
+      const b64 = raw.slice(2);
+      const json = inflateSync(Buffer.from(b64, 'base64')).toString('utf-8');
+      return JSON.parse(json) as ClinicRole[];
+    }
+
+    return JSON.parse(raw) as ClinicRole[];
+  } catch (err) {
+    console.error('Failed to parse clinicRoles from authorizer context:', err);
+    return [];
+  }
+}
+
+/**
  * Get user's clinic roles and permissions from custom authorizer context
  * @param event - API Gateway event with authorizer context
  * @returns User permissions or null if not authenticated
@@ -74,7 +112,9 @@ export function getUserPermissions(event: APIGatewayProxyEvent): UserPermissions
   if (!authorizer) return null;
 
   try {
-    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]') as ClinicRole[];
+    // Prefer compressed clinicRoles (clinicRolesZ) when present.
+    // Fallback to legacy clinicRoles JSON string.
+    const clinicRoles = parseClinicRoles(authorizer.clinicRolesZ ?? authorizer.clinicRoles);
     const isSuperAdmin = authorizer.isSuperAdmin === 'true';
     const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
     const email = authorizer.email || '';

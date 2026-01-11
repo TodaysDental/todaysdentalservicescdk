@@ -10,6 +10,9 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as logs from 'aws-cdk-lib/aws-logs';
 // NOTE: clinicConfigData is used at CDK synthesis time for webhook URL generation
 // Lambda functions should use DynamoDB secrets tables at runtime for Twilio credentials
 import clinicConfigData from '../configs/clinic-config.json';
@@ -41,6 +44,7 @@ export interface RcsStackProps extends StackProps {
 export class RcsStack extends Stack {
   public readonly rcsMessagesTable: dynamodb.Table;
   public readonly rcsTemplatesTable: dynamodb.Table;
+  public readonly rcsAnalyticsTable: dynamodb.Table;
   public readonly rcsApi: apigw.RestApi;
   public readonly incomingMessageFn: lambdaNode.NodejsFunction;
   public readonly fallbackMessageFn: lambdaNode.NodejsFunction;
@@ -48,8 +52,11 @@ export class RcsStack extends Stack {
   public readonly sendMessageFn: lambdaNode.NodejsFunction;
   public readonly getMessagesFn: lambdaNode.NodejsFunction;
   public readonly templatesFn: lambdaNode.NodejsFunction;
+  public readonly analyticsFn: lambdaNode.NodejsFunction;
+  public readonly analyticsAggregatorFn: lambdaNode.NodejsFunction;
   public readonly authorizer: apigw.RequestAuthorizer;
   public readonly rcsFallbackTopic: sns.Topic;
+  public readonly rcsAnalyticsTopic: sns.Topic;
 
   constructor(scope: Construct, id: string, props: RcsStackProps = {}) {
     super(scope, id, props);
@@ -162,6 +169,45 @@ export class RcsStack extends Stack {
       sortKey: { name: 'category', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
+
+    // RCS Analytics Table - Pre-aggregated analytics metrics
+    this.rcsAnalyticsTable = new dynamodb.Table(this, 'RcsAnalyticsTable', {
+      tableName: `${this.stackName}-RcsAnalytics`,
+      partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING }, // CLINIC#<clinicId>
+      sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING }, // DAILY#<date> or HOURLY#<date>#<hour> or TEMPLATE_PERF#<templateId>#<date>
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      timeToLiveAttribute: 'ttl',
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+    });
+    applyTags(this.rcsAnalyticsTable, { Table: 'rcs-analytics' });
+
+    // GSI for querying analytics by date across all clinics
+    this.rcsAnalyticsTable.addGlobalSecondaryIndex({
+      indexName: 'DateIndex',
+      partitionKey: { name: 'date', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI for querying by granularity (daily/hourly aggregates)
+    this.rcsAnalyticsTable.addGlobalSecondaryIndex({
+      indexName: 'GranularityIndex',
+      partitionKey: { name: 'granularity', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'aggregatedAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // ========================================
+    // SNS TOPICS
+    // ========================================
+
+    // Topic for RCS analytics events (delivery confirmations, read receipts)
+    this.rcsAnalyticsTopic = new sns.Topic(this, 'RcsAnalyticsTopic', {
+      topicName: `${this.stackName}-RcsAnalytics`,
+      displayName: 'RCS Analytics Events - Delivery and engagement tracking',
+    });
+    applyTags(this.rcsAnalyticsTopic, { Resource: 'rcs-analytics-topic' });
 
     // ========================================
     // SNS TOPIC FOR RCS FALLBACK MESSAGES
@@ -304,6 +350,7 @@ export class RcsStack extends Stack {
     this.rcsFallbackTopic.grantPublish(this.fallbackMessageFn);
 
     // Status Callback Handler - Webhook for delivery status updates
+    // Includes analytics event publishing and CloudWatch metrics
     this.statusCallbackFn = new lambdaNode.NodejsFunction(this, 'RcsStatusCallbackFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'rcs', 'status-callback.ts'),
       handler: 'handler',
@@ -311,10 +358,27 @@ export class RcsStack extends Stack {
       memorySize: 256,
       timeout: Duration.seconds(30),
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
-      environment: defaultLambdaEnv,
+      environment: {
+        ...defaultLambdaEnv,
+        RCS_ANALYTICS_TOPIC_ARN: this.rcsAnalyticsTopic.topicArn,
+      },
     });
     applyTags(this.statusCallbackFn, { Function: 'rcs-status' });
     this.rcsMessagesTable.grantReadWriteData(this.statusCallbackFn);
+    
+    // Grant permissions for analytics publishing
+    this.rcsAnalyticsTopic.grantPublish(this.statusCallbackFn);
+    
+    // Grant CloudWatch metrics publishing for status callback
+    this.statusCallbackFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cloudwatch:PutMetricData'],
+      resources: ['*'],
+      conditions: {
+        StringEquals: {
+          'cloudwatch:namespace': 'TodaysDental/RCS',
+        },
+      },
+    }));
 
     // Send Message Handler - Internal API for sending RCS messages
     this.sendMessageFn = new lambdaNode.NodejsFunction(this, 'RcsSendMessageFn', {
@@ -424,6 +488,103 @@ export class RcsStack extends Stack {
     createLambdaErrorAlarm(smsFallbackProcessorFn, 'sms-fallback-processor');
     createLambdaThrottleAlarm(smsFallbackProcessorFn, 'sms-fallback-processor');
     createLambdaDurationAlarm(smsFallbackProcessorFn, 'sms-fallback-processor', Math.floor(Duration.seconds(30).toMilliseconds() * 0.8));
+
+    // ========================================
+    // RCS ANALYTICS FUNCTIONS
+    // ========================================
+
+    // Analytics API Handler - Provides real-time and historical analytics
+    this.analyticsFn = new lambdaNode.NodejsFunction(this, 'RcsAnalyticsFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'rcs', 'analytics.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 512,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        RCS_MESSAGES_TABLE: this.rcsMessagesTable.tableName,
+        RCS_TEMPLATES_TABLE: this.rcsTemplatesTable.tableName,
+        RCS_ANALYTICS_TABLE: this.rcsAnalyticsTable.tableName,
+      },
+      logRetention: logs.RetentionDays.ONE_WEEK,
+    });
+    applyTags(this.analyticsFn, { Function: 'rcs-analytics' });
+    
+    // Grant read access to all tables for analytics queries
+    this.rcsMessagesTable.grantReadData(this.analyticsFn);
+    this.rcsTemplatesTable.grantReadData(this.analyticsFn);
+    this.rcsAnalyticsTable.grantReadWriteData(this.analyticsFn);
+    
+    // Grant CloudWatch metrics publishing
+    this.analyticsFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cloudwatch:PutMetricData'],
+      resources: ['*'],
+      conditions: {
+        StringEquals: {
+          'cloudwatch:namespace': 'TodaysDental/RCS',
+        },
+      },
+    }));
+
+    // Analytics Aggregator - Scheduled job for pre-computing metrics
+    this.analyticsAggregatorFn = new lambdaNode.NodejsFunction(this, 'RcsAnalyticsAggregatorFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'rcs', 'analytics-aggregator.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 1024, // Higher memory for batch processing
+      timeout: Duration.minutes(5),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        RCS_MESSAGES_TABLE: this.rcsMessagesTable.tableName,
+        RCS_ANALYTICS_TABLE: this.rcsAnalyticsTable.tableName,
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
+      },
+      logRetention: logs.RetentionDays.ONE_WEEK,
+    });
+    applyTags(this.analyticsAggregatorFn, { Function: 'rcs-analytics-aggregator' });
+    
+    // Grant permissions to aggregator
+    this.rcsMessagesTable.grantReadData(this.analyticsAggregatorFn);
+    this.rcsAnalyticsTable.grantReadWriteData(this.analyticsAggregatorFn);
+    
+    // Grant read access to clinic config table
+    this.analyticsAggregatorFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}/index/*`,
+      ],
+    }));
+    
+    // Grant CloudWatch metrics publishing
+    this.analyticsAggregatorFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cloudwatch:PutMetricData'],
+      resources: ['*'],
+      conditions: {
+        StringEquals: {
+          'cloudwatch:namespace': 'TodaysDental/RCS',
+        },
+      },
+    }));
+
+    // Schedule aggregator to run every hour
+    const analyticsAggregatorRule = new events.Rule(this, 'RcsAnalyticsAggregatorRule', {
+      schedule: events.Schedule.rate(Duration.hours(1)),
+      description: 'Hourly RCS analytics aggregation job',
+    });
+    analyticsAggregatorRule.addTarget(new targets.LambdaFunction(this.analyticsAggregatorFn));
+
+    // Create alarms for analytics functions
+    createLambdaErrorAlarm(this.analyticsFn, 'rcs-analytics');
+    createLambdaThrottleAlarm(this.analyticsFn, 'rcs-analytics');
+    createLambdaDurationAlarm(this.analyticsFn, 'rcs-analytics', Math.floor(Duration.seconds(30).toMilliseconds() * 0.8));
+    
+    createLambdaErrorAlarm(this.analyticsAggregatorFn, 'rcs-analytics-aggregator');
+    createLambdaThrottleAlarm(this.analyticsAggregatorFn, 'rcs-analytics-aggregator');
+    createLambdaDurationAlarm(this.analyticsAggregatorFn, 'rcs-analytics-aggregator', Math.floor(Duration.minutes(5).toMilliseconds() * 0.8));
+
+    // Add DynamoDB throttle alarm for analytics table
+    createDynamoThrottleAlarm(this.rcsAnalyticsTable.tableName, 'RcsAnalyticsTable');
 
     // ========================================
     // SECRETS TABLES PERMISSIONS
@@ -542,7 +703,62 @@ export class RcsStack extends Stack {
     });
 
     // ========================================
-    // CloudWatch Alarms
+    // RCS Analytics API Routes (Protected)
+    // ========================================
+
+    // Base analytics resource
+    const analyticsResource = clinicResource.addResource('analytics');
+
+    // GET /{clinicId}/analytics/summary - Get analytics summary
+    const analyticsSummaryResource = analyticsResource.addResource('summary');
+    analyticsSummaryResource.addMethod('GET', new apigw.LambdaIntegration(this.analyticsFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }],
+    });
+
+    // GET /{clinicId}/analytics/timeseries - Get time series data
+    const analyticsTimeseriesResource = analyticsResource.addResource('timeseries');
+    analyticsTimeseriesResource.addMethod('GET', new apigw.LambdaIntegration(this.analyticsFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }],
+    });
+
+    // GET /{clinicId}/analytics/templates - Template performance metrics
+    const analyticsTemplatesResource = analyticsResource.addResource('templates');
+    analyticsTemplatesResource.addMethod('GET', new apigw.LambdaIntegration(this.analyticsFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }],
+    });
+
+    // GET /{clinicId}/analytics/delivery-rates - Delivery rate breakdown
+    const analyticsDeliveryResource = analyticsResource.addResource('delivery-rates');
+    analyticsDeliveryResource.addMethod('GET', new apigw.LambdaIntegration(this.analyticsFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }],
+    });
+
+    // GET /{clinicId}/analytics/engagement - Engagement metrics
+    const analyticsEngagementResource = analyticsResource.addResource('engagement');
+    analyticsEngagementResource.addMethod('GET', new apigw.LambdaIntegration(this.analyticsFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }],
+    });
+
+    // POST /{clinicId}/analytics/export - Export analytics data
+    const analyticsExportResource = analyticsResource.addResource('export');
+    analyticsExportResource.addMethod('POST', new apigw.LambdaIntegration(this.analyticsFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }],
+    });
+
+    // ========================================
+    // CloudWatch Alarms (Core Functions)
     // ========================================
     [
       { fn: this.incomingMessageFn, name: 'rcs-incoming', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
@@ -559,6 +775,136 @@ export class RcsStack extends Stack {
 
     createDynamoThrottleAlarm(this.rcsMessagesTable.tableName, 'RcsMessagesTable');
     createDynamoThrottleAlarm(this.rcsTemplatesTable.tableName, 'RcsTemplatesTable');
+
+    // ========================================
+    // Custom CloudWatch Metrics Dashboard
+    // ========================================
+
+    // Create CloudWatch Dashboard for RCS Messaging
+    const rcsDashboard = new cloudwatch.Dashboard(this, 'RcsDashboard', {
+      dashboardName: `${this.stackName}-RCS-Analytics`,
+    });
+
+    // Add delivery metrics widget
+    rcsDashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'RCS Message Delivery',
+        left: [
+          new cloudwatch.Metric({
+            namespace: 'TodaysDental/RCS',
+            metricName: 'MessagesSent',
+            statistic: 'Sum',
+            period: Duration.hours(1),
+          }),
+          new cloudwatch.Metric({
+            namespace: 'TodaysDental/RCS',
+            metricName: 'MessagesDelivered',
+            statistic: 'Sum',
+            period: Duration.hours(1),
+          }),
+          new cloudwatch.Metric({
+            namespace: 'TodaysDental/RCS',
+            metricName: 'MessagesFailed',
+            statistic: 'Sum',
+            period: Duration.hours(1),
+          }),
+        ],
+        width: 12,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'RCS Engagement Rates',
+        left: [
+          new cloudwatch.Metric({
+            namespace: 'TodaysDental/RCS',
+            metricName: 'DeliveryRate',
+            statistic: 'Average',
+            period: Duration.hours(1),
+          }),
+          new cloudwatch.Metric({
+            namespace: 'TodaysDental/RCS',
+            metricName: 'ReadRate',
+            statistic: 'Average',
+            period: Duration.hours(1),
+          }),
+          new cloudwatch.Metric({
+            namespace: 'TodaysDental/RCS',
+            metricName: 'EngagementRate',
+            statistic: 'Average',
+            period: Duration.hours(1),
+          }),
+        ],
+        width: 12,
+        height: 6,
+      }),
+    );
+
+    // Add read receipts and response time widgets
+    rcsDashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'Message Read Receipts',
+        left: [
+          new cloudwatch.Metric({
+            namespace: 'TodaysDental/RCS',
+            metricName: 'MessagesRead',
+            statistic: 'Sum',
+            period: Duration.hours(1),
+          }),
+        ],
+        width: 8,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Avg Response Time',
+        left: [
+          new cloudwatch.Metric({
+            namespace: 'TodaysDental/RCS',
+            metricName: 'AvgResponseTime',
+            statistic: 'Average',
+            period: Duration.hours(1),
+          }),
+        ],
+        width: 8,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'SMS Fallback Count',
+        left: [
+          new cloudwatch.Metric({
+            namespace: 'TodaysDental/RCS',
+            metricName: 'SmsFallbackCount',
+            statistic: 'Sum',
+            period: Duration.hours(1),
+          }),
+        ],
+        width: 8,
+        height: 6,
+      }),
+    );
+
+    // Add Lambda performance widgets
+    rcsDashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'Lambda Invocations',
+        left: [
+          this.sendMessageFn.metricInvocations({ period: Duration.minutes(5) }),
+          this.incomingMessageFn.metricInvocations({ period: Duration.minutes(5) }),
+          this.statusCallbackFn.metricInvocations({ period: Duration.minutes(5) }),
+        ],
+        width: 12,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Lambda Errors',
+        left: [
+          this.sendMessageFn.metricErrors({ period: Duration.minutes(5) }),
+          this.incomingMessageFn.metricErrors({ period: Duration.minutes(5) }),
+          this.statusCallbackFn.metricErrors({ period: Duration.minutes(5) }),
+        ],
+        width: 12,
+        height: 6,
+      }),
+    );
 
     // ========================================
     // DOMAIN MAPPING
@@ -598,6 +944,35 @@ export class RcsStack extends Stack {
       value: this.rcsTemplatesTable.tableName,
       description: 'RCS Templates DynamoDB Table Name',
       exportName: `${Stack.of(this).stackName}-RcsTemplatesTableName`,
+    });
+
+    new CfnOutput(this, 'RcsAnalyticsTableName', {
+      value: this.rcsAnalyticsTable.tableName,
+      description: 'RCS Analytics DynamoDB Table Name',
+      exportName: `${Stack.of(this).stackName}-RcsAnalyticsTableName`,
+    });
+
+    new CfnOutput(this, 'RcsAnalyticsTopicArn', {
+      value: this.rcsAnalyticsTopic.topicArn,
+      description: 'SNS Topic ARN for RCS Analytics events',
+      exportName: `${Stack.of(this).stackName}-RcsAnalyticsTopicArn`,
+    });
+
+    new CfnOutput(this, 'RcsDashboardName', {
+      value: `${this.stackName}-RCS-Analytics`,
+      description: 'CloudWatch Dashboard name for RCS metrics',
+    });
+
+    new CfnOutput(this, 'RcsAnalyticsApiEndpoints', {
+      value: JSON.stringify({
+        summary: 'https://apig.todaysdentalinsights.com/rcs/{clinicId}/analytics/summary',
+        timeseries: 'https://apig.todaysdentalinsights.com/rcs/{clinicId}/analytics/timeseries',
+        templates: 'https://apig.todaysdentalinsights.com/rcs/{clinicId}/analytics/templates',
+        deliveryRates: 'https://apig.todaysdentalinsights.com/rcs/{clinicId}/analytics/delivery-rates',
+        engagement: 'https://apig.todaysdentalinsights.com/rcs/{clinicId}/analytics/engagement',
+        export: 'https://apig.todaysdentalinsights.com/rcs/{clinicId}/analytics/export',
+      }),
+      description: 'RCS Analytics API endpoint URLs',
     });
 
     // Output webhook URLs for each clinic (for Twilio configuration)

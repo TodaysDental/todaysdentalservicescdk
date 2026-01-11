@@ -11,6 +11,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { parseClinicRoles } from '../../shared/utils/permissions-helper';
 import { StaffUser } from '../../shared/types/user';
 import { clinics as allClinics } from '../../infrastructure/configs/clinics';
 
@@ -47,7 +48,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const userEmail = event.requestContext.authorizer?.email || '';
     const givenName = event.requestContext.authorizer?.givenName || '';
     const familyName = event.requestContext.authorizer?.familyName || '';
-    const clinicRoles = JSON.parse(event.requestContext.authorizer?.clinicRoles || '[]');
+    const clinicRoles = parseClinicRoles(
+      event.requestContext.authorizer?.clinicRolesZ ?? event.requestContext.authorizer?.clinicRoles
+    );
     const isSuperAdmin = event.requestContext.authorizer?.isSuperAdmin === 'true';
     const isGlobalSuperAdmin = event.requestContext.authorizer?.isGlobalSuperAdmin === 'true';
     

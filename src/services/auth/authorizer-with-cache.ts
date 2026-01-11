@@ -10,16 +10,28 @@
  * This keeps JWT tokens small (~300 bytes) regardless of clinic count.
  */
 
-import { APIGatewayRequestAuthorizerEvent, APIGatewayAuthorizerResult } from 'aws-lambda';
+import {
+  APIGatewayRequestAuthorizerEvent,
+  APIGatewayTokenAuthorizerEvent,
+  APIGatewayAuthorizerResult,
+} from 'aws-lambda';
 import { verifyToken, hashToken } from '../../shared/utils/jwt';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { deflateSync } from 'zlib';
 
 const ddbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(ddbClient);
 
 const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE || 'StaffUser';
 const TOKEN_BLACKLIST_TABLE = process.env.TOKEN_BLACKLIST_TABLE || 'TokenBlacklist';
+
+// API Gateway authorizer "context" has a small size limit (commonly ~8KB).
+// Some users (e.g., Global Super Admins) can have large clinicRoles payloads.
+// If the JSON form exceeds this threshold, we keep `clinicRoles` as a small valid
+// JSON array for backwards compatibility and include the full payload in
+// `clinicRolesZ` (deflate+base64) for updated consumers.
+const MAX_CLINIC_ROLES_JSON_CHARS = 6000;
 
 // ============================================================================
 // IN-MEMORY CACHE (Layer 1 - Fastest)
@@ -147,7 +159,7 @@ async function getUserPermissions(email: string): Promise<{
 // ============================================================================
 
 export const handler = async (
-  event: APIGatewayRequestAuthorizerEvent
+  event: APIGatewayRequestAuthorizerEvent | APIGatewayTokenAuthorizerEvent
 ): Promise<APIGatewayAuthorizerResult> => {
   console.log('Authorization request received');
   
@@ -182,6 +194,13 @@ export const handler = async (
     console.log(`Loaded ${permissions.clinicRoles.length} clinic roles for ${payload.email}`);
 
     // Generate IAM policy allowing API access
+    const clinicRolesJson = JSON.stringify(permissions.clinicRoles ?? []);
+    const shouldCompressClinicRoles = clinicRolesJson.length > MAX_CLINIC_ROLES_JSON_CHARS;
+    const clinicRolesForContext = shouldCompressClinicRoles ? '[]' : clinicRolesJson;
+    const clinicRolesZForContext = shouldCompressClinicRoles
+      ? encodeClinicRolesForContext(permissions.clinicRoles)
+      : undefined;
+
     return generatePolicy(
       payload.email,
       'Allow',
@@ -190,8 +209,11 @@ export const handler = async (
         email: payload.email,
         givenName: payload.givenName || '',
         familyName: payload.familyName || '',
-        // Full permissions passed in context (from cache/DB, not JWT!)
-        clinicRoles: JSON.stringify(permissions.clinicRoles),
+        // clinicRoles fetched from cache/DB (not JWT).
+        // For large payloads, clinicRoles is kept as a small valid JSON array to
+        // preserve backwards compatibility, while the full payload is in clinicRolesZ.
+        clinicRoles: clinicRolesForContext,
+        ...(clinicRolesZForContext ? { clinicRolesZ: clinicRolesZForContext } : {}),
         isSuperAdmin: String(permissions.isSuperAdmin),
         isGlobalSuperAdmin: String(permissions.isGlobalSuperAdmin),
       }
@@ -205,14 +227,16 @@ export const handler = async (
 /**
  * Extract JWT token from Authorization header
  */
-function extractToken(event: APIGatewayRequestAuthorizerEvent): string | null {
-  const authHeader = event.headers?.Authorization || event.headers?.authorization;
-  if (!authHeader) return null;
-  
-  const parts = authHeader.split(' ');
-  if (parts.length !== 2 || parts[0] !== 'Bearer') return null;
-  
-  return parts[1];
+function extractToken(event: APIGatewayRequestAuthorizerEvent | APIGatewayTokenAuthorizerEvent): string | null {
+  const authHeader =
+    (event as any).authorizationToken ||
+    (event as any).headers?.Authorization ||
+    (event as any).headers?.authorization;
+
+  if (!authHeader || typeof authHeader !== 'string') return null;
+
+  const tokenMatch = authHeader.trim().match(/^Bearer\s+(.+)$/i);
+  return (tokenMatch ? tokenMatch[1] : authHeader).trim() || null;
 }
 
 /**
@@ -241,6 +265,22 @@ function generatePolicy(
     },
     context,
   };
+}
+
+/**
+ * Encode clinicRoles for API Gateway authorizer context.
+ * We deflate+base64 and prefix with "z:" so downstream lambdas can detect and decode.
+ */
+function encodeClinicRolesForContext(clinicRoles: any[]): string {
+  const json = JSON.stringify(clinicRoles ?? []);
+
+  try {
+    const compressed = deflateSync(Buffer.from(json, 'utf8'), { level: 9 });
+    return `z:${compressed.toString('base64')}`;
+  } catch (err) {
+    console.error('Failed to compress clinicRoles for authorizer context, falling back to JSON string:', err);
+    return json;
+  }
 }
 
 /**

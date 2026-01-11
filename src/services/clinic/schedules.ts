@@ -3,6 +3,7 @@ import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, DeleteCo
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { SYSTEM_MODULES } from '../../shared/types/user';
+import { parseClinicRoles } from '../../shared/utils/permissions-helper';
 import { randomUUID } from 'crypto';
 
 const ddbClient = new DynamoDBClient({});
@@ -21,7 +22,7 @@ const getUserPermissions = (event: APIGatewayProxyEvent) => {
   if (!authorizer) return null;
 
   try {
-    const clinicRoles = JSON.parse(authorizer.clinicRoles || '[]');
+    const clinicRoles = parseClinicRoles(authorizer.clinicRolesZ ?? authorizer.clinicRoles);
     const isSuperAdmin = authorizer.isSuperAdmin === 'true';
     const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === 'true';
     const email = authorizer.email || '';

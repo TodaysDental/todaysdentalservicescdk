@@ -3,17 +3,27 @@
  * 
  * Handles delivery status updates from Twilio for RCS messages sent via the API.
  * Twilio sends POST requests to this endpoint with message delivery status updates.
+ * 
+ * Analytics Integration:
+ * - Publishes delivery events to SNS for analytics processing
+ * - Emits CloudWatch custom metrics for real-time monitoring
+ * - Tracks read receipts for engagement analytics
  */
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
+import { CloudWatchClient, PutMetricDataCommand } from '@aws-sdk/client-cloudwatch';
 import crypto from 'crypto';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const snsClient = new SNSClient({});
+const cloudwatch = new CloudWatchClient({});
 
 const RCS_MESSAGES_TABLE = process.env.RCS_MESSAGES_TABLE!;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN!;
+const RCS_ANALYTICS_TOPIC_ARN = process.env.RCS_ANALYTICS_TOPIC_ARN || '';
 
 interface TwilioRcsStatusCallback {
   MessageSid: string;
@@ -206,12 +216,91 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         errorCode: statusUpdate.ErrorCode,
         errorMessage: statusUpdate.ErrorMessage,
       });
-
-      // TODO: Implement error handling logic:
-      // - Retry with SMS fallback
-      // - Alert staff
-      // - Log for analytics
     }
+
+    // ========================================
+    // ANALYTICS: Publish event and metrics
+    // ========================================
+    
+    // Publish to SNS for analytics processing
+    if (RCS_ANALYTICS_TOPIC_ARN) {
+      try {
+        await snsClient.send(new PublishCommand({
+          TopicArn: RCS_ANALYTICS_TOPIC_ARN,
+          Message: JSON.stringify({
+            eventType: 'RCS_STATUS_UPDATE',
+            clinicId,
+            messageSid: statusUpdate.MessageSid,
+            status: newStatus,
+            previousStatus: null, // Could be enhanced to track status progression
+            from: statusUpdate.From,
+            to: statusUpdate.To,
+            errorCode: statusUpdate.ErrorCode,
+            errorMessage: statusUpdate.ErrorMessage,
+            timestamp: new Date().toISOString(),
+          }),
+          MessageAttributes: {
+            eventType: {
+              DataType: 'String',
+              StringValue: 'RCS_STATUS_UPDATE',
+            },
+            clinicId: {
+              DataType: 'String',
+              StringValue: clinicId,
+            },
+            status: {
+              DataType: 'String',
+              StringValue: newStatus,
+            },
+          },
+        }));
+      } catch (snsError) {
+        console.error('Failed to publish analytics event to SNS:', snsError);
+      }
+    }
+
+    // Emit CloudWatch metrics for real-time monitoring
+    try {
+      const dimensions = [{ Name: 'ClinicId', Value: clinicId }];
+      const metricData: Array<{ MetricName: string; Value: number; Unit: string }> = [];
+
+      // Increment counter based on status
+      switch (newStatus) {
+        case 'sent':
+          metricData.push({ MetricName: 'MessagesSent', Value: 1, Unit: 'Count' });
+          break;
+        case 'delivered':
+          metricData.push({ MetricName: 'MessagesDelivered', Value: 1, Unit: 'Count' });
+          break;
+        case 'read':
+          metricData.push(
+            { MetricName: 'MessagesDelivered', Value: 1, Unit: 'Count' },
+            { MetricName: 'MessagesRead', Value: 1, Unit: 'Count' }
+          );
+          break;
+        case 'failed':
+        case 'undelivered':
+          metricData.push({ MetricName: 'MessagesFailed', Value: 1, Unit: 'Count' });
+          break;
+      }
+
+      if (metricData.length > 0) {
+        await cloudwatch.send(new PutMetricDataCommand({
+          Namespace: 'TodaysDental/RCS',
+          MetricData: metricData.map(m => ({
+            MetricName: m.MetricName,
+            Dimensions: dimensions,
+            Value: m.Value,
+            Unit: m.Unit as any,
+            Timestamp: new Date(),
+          })),
+        }));
+      }
+    } catch (cwError) {
+      console.error('Failed to push CloudWatch metrics:', cwError);
+    }
+
+    console.log(`RCS status update for clinic ${clinicId}: ${statusUpdate.MessageSid} -> ${newStatus}`);
 
     return {
       statusCode: 200,
