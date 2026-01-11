@@ -716,6 +716,8 @@ schedulesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctio
 schedulesStack.addDependency(templatesStack); // Explicit - uses table name
 schedulesStack.addDependency(queriesStack); // Explicit - uses table name
 schedulesStack.addDependency(openDentalStack); // Explicit - uses server ID
+// NEW: Schedules stack imports RCS stack exports (RCS templates table + send Lambda ARN)
+schedulesStack.addDependency(rcsStack); // Explicit - imports RCS stack outputs via Fn.importValue
 
 
 

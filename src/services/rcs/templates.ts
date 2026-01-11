@@ -9,8 +9,8 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, GetCommand, QueryCommand, DeleteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { buildCorsHeaders } from '../../shared/utils/cors';
-import { RCSRichCard, RCSCarousel, RCSButton } from './send-message';
-import { v4 as uuidv4 } from 'uuid';
+import type { RCSRichCard, RCSCarousel, RCSButton } from './send-message';
+import { randomUUID } from 'crypto';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true }
@@ -159,7 +159,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
 
       const now = new Date().toISOString();
-      const newTemplateId = uuidv4();
+      const newTemplateId = randomUUID();
       const createdBy = event.requestContext.authorizer?.email || 'system';
 
       const template: RCSTemplate = {

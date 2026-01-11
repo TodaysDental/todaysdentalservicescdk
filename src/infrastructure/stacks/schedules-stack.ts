@@ -312,6 +312,34 @@ export class SchedulesStack extends Stack {
     });
     applyTags(this.schedulerQueueConsumerFn, { Function: 'scheduler-consumer' });
 
+    // ========================================
+    // RCS STACK INTEGRATION (Templates + Send)
+    // ========================================
+    // For scheduled RCS campaigns we:
+    // - Read templates from the RCS stack DynamoDB table (per-clinic templates)
+    // - Invoke the RCS Send Message Lambda directly (no API Gateway/auth required)
+    const RCS_STACK_NAME = 'TodaysDentalInsightsRcsN1';
+    const rcsTemplatesTableName = Fn.importValue(`${RCS_STACK_NAME}-RcsTemplatesTableName`).toString();
+    const rcsSendMessageFnArn = Fn.importValue(`${RCS_STACK_NAME}-RcsSendMessageFnArn`).toString();
+
+    // Provide env vars for the queue consumer
+    this.schedulerQueueConsumerFn.addEnvironment('RCS_TEMPLATES_TABLE', rcsTemplatesTableName);
+    this.schedulerQueueConsumerFn.addEnvironment('RCS_SEND_MESSAGE_FUNCTION_ARN', rcsSendMessageFnArn);
+
+    // Grant DynamoDB read to RCS templates table
+    const rcsTemplatesTable = dynamodb.Table.fromTableAttributes(this, 'RcsTemplatesTable', {
+      tableName: rcsTemplatesTableName,
+    });
+    rcsTemplatesTable.grantReadData(this.schedulerQueueConsumerFn);
+
+    // Grant Lambda invoke to the RCS send message function
+    // Use fromFunctionAttributes with sameEnvironment so CDK can add invoke permissions
+    const rcsSendMessageFn = lambda.Function.fromFunctionAttributes(this, 'ImportedRcsSendMessageFn', {
+      functionArn: rcsSendMessageFnArn,
+      sameEnvironment: true,
+    });
+    rcsSendMessageFn.grantInvoke(this.schedulerQueueConsumerFn);
+
     // Email Sender Lambda - processes individual email tasks from the email queue
     // High concurrency to maximize throughput while staying under SES rate limits
     // 
@@ -618,8 +646,10 @@ export class SchedulesStack extends Stack {
     });
 
     new CfnOutput(this, 'SchedulesApiUrl', {
-      value: 'https://apig.todaysdentalinsights.com/schedules/',
-      description: 'Schedules API Gateway URL',
+      // NOTE: Custom domain basePath is /schedules and the API resource is also /schedules
+      // so the callable base URL is /schedules/schedules
+      value: 'https://apig.todaysdentalinsights.com/schedules/schedules',
+      description: 'Schedules API base URL (custom domain + resource path)',
       exportName: `${Stack.of(this).stackName}-SchedulesApiUrl`,
     });
 

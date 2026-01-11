@@ -229,8 +229,10 @@ export class TemplatesStack extends Stack {
     });
 
     new CfnOutput(this, 'TemplatesApiUrl', {
-      value: 'https://apig.todaysdentalinsights.com/templates/',
-      description: 'Templates API Gateway URL',
+      // NOTE: Custom domain basePath is /templates and the API resource is also /templates
+      // so the callable base URL is /templates/templates
+      value: 'https://apig.todaysdentalinsights.com/templates/templates',
+      description: 'Templates API base URL (custom domain + resource path)',
       exportName: `${Stack.of(this).stackName}-TemplatesApiUrl`,
     });
 

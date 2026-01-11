@@ -427,7 +427,6 @@ export class RcsStack extends Stack {
       bundling: { 
         format: lambdaNode.OutputFormat.CJS, 
         target: 'node22',
-        externalModules: ['uuid'],
       },
       environment: templatesEnv,
     });
@@ -932,6 +931,13 @@ export class RcsStack extends Stack {
       value: this.rcsApi.restApiId,
       description: 'RCS API Gateway ID',
       exportName: `${Stack.of(this).stackName}-RcsApiId`,
+    });
+
+    // Allow other stacks (e.g. Schedules) to invoke the RCS send message Lambda directly (no API Gateway/auth required)
+    new CfnOutput(this, 'RcsSendMessageFnArn', {
+      value: this.sendMessageFn.functionArn,
+      description: 'ARN of the RCS Send Message Lambda (internal invocation)',
+      exportName: `${Stack.of(this).stackName}-RcsSendMessageFnArn`,
     });
 
     new CfnOutput(this, 'RcsMessagesTableName', {

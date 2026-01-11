@@ -2,6 +2,7 @@ import https from 'https';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand, ScanCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { SQSClient, SendMessageBatchCommand } from '@aws-sdk/client-sqs';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { v4 as uuidv4 } from 'uuid';
 import { SQSEvent } from 'aws-lambda';
 import { parse as parseCsv } from 'csv-parse/sync';
@@ -20,6 +21,10 @@ const { PinpointSMSVoiceV2Client, SendTextMessageCommand } = require('@aws-sdk/c
 
 // RCS API base URL (from environment or default)
 const RCS_API_BASE_URL = process.env.RCS_API_BASE_URL || 'https://apig.todaysdentalinsights.com/rcs';
+// Preferred: invoke RCS send Lambda directly (configured in SchedulesStack)
+const RCS_SEND_MESSAGE_FUNCTION_ARN = process.env.RCS_SEND_MESSAGE_FUNCTION_ARN || '';
+// RCS templates DynamoDB table (from RcsStack)
+const RCS_TEMPLATES_TABLE = process.env.RCS_TEMPLATES_TABLE || '';
 
 interface ScheduleTask {
   scheduleId: string;
@@ -47,6 +52,7 @@ interface ClinicCreds {
 const ddb = new DynamoDBClient({});
 const doc = DynamoDBDocumentClient.from(ddb);
 const sqsClient = new SQSClient({});
+const lambdaClient = new LambdaClient({});
 const sms = new (PinpointSMSVoiceV2Client as any)({});
 
 const SCHEDULES_TABLE = process.env.SCHEDULES_TABLE || process.env.SCHEDULER || 'SCHEDULER';
@@ -105,6 +111,19 @@ async function fetchTemplateByName(templateName: string): Promise<any | null> {
   const res = await doc.send(new ScanCommand({ TableName: TEMPLATES_TABLE }));
   const items = (res.Items || []) as any[];
   return items.find((t) => String(t.template_name).toLowerCase() === String(templateName).toLowerCase()) || null;
+}
+
+async function fetchRcsTemplateById(clinicId: string, templateId: string): Promise<any | null> {
+  if (!RCS_TEMPLATES_TABLE) return null;
+  if (!clinicId || !templateId) return null;
+  const res = await doc.send(new GetCommand({
+    TableName: RCS_TEMPLATES_TABLE,
+    Key: {
+      pk: `CLINIC#${clinicId}`,
+      sk: `TEMPLATE#${templateId}`,
+    },
+  }));
+  return (res.Item as any) || null;
 }
 
 async function fetchQueryByName(queryName: string): Promise<string | null> {
@@ -318,42 +337,137 @@ async function sendSms({ clinicId, to, body }: { clinicId: string; to: string; b
 }
 
 /**
- * Send RCS message via the RCS API endpoint
- * Supports plain text messages with patient data for placeholder replacement
+ * Send RCS message.
+ *
+ * Preferred: invoke the RCS Send Message Lambda directly (no API Gateway / custom authorizer required).
+ * Fallback: call the public RCS API endpoint if the Lambda ARN isn't configured.
  */
-async function sendRcs({ 
-  clinicId, 
-  to, 
-  body, 
-  templateId,
-  templateName,
-  patientData,
-  scheduleId,
-}: { 
-  clinicId: string; 
-  to: string; 
-  body: string;
+type SendRcsArgs = {
+  clinicId: string;
+  to: string;
+  body?: string;
+  richCard?: any;
+  carousel?: any;
   templateId?: string;
   templateName?: string;
   patientData?: Record<string, string>;
   scheduleId?: string;
-}): Promise<{ success: boolean; messageSid?: string; error?: string }> {
+};
+
+async function sendRcs(args: SendRcsArgs): Promise<{ success: boolean; messageSid?: string; error?: string }> {
+  if (RCS_SEND_MESSAGE_FUNCTION_ARN) {
+    try {
+      return await sendRcsViaLambda(args);
+    } catch (err: any) {
+      console.error('sendRcsViaLambda failed, falling back to HTTP:', err);
+      // fall through
+    }
+  }
+  return await sendRcsViaHttp(args);
+}
+
+async function sendRcsViaLambda({
+  clinicId,
+  to,
+  body,
+  richCard,
+  carousel,
+  templateId,
+  templateName,
+  patientData,
+  scheduleId,
+}: SendRcsArgs): Promise<{ success: boolean; messageSid?: string; error?: string }> {
+  const requestBody: Record<string, any> = {
+    clinicId,
+    to,
+    ...(body !== undefined ? { body } : {}),
+    ...(richCard ? { richCard } : {}),
+    ...(carousel ? { carousel } : {}),
+    ...(templateId ? { templateId } : {}),
+    ...(templateName ? { templateName } : {}),
+    ...(patientData ? { patientData } : {}),
+    ...(scheduleId ? { campaignId: scheduleId, campaignName: `Schedule: ${scheduleId}` } : {}),
+  };
+
+  const invokeEvent = {
+    httpMethod: 'POST',
+    body: JSON.stringify(requestBody),
+  };
+
+  const resp = await lambdaClient.send(new InvokeCommand({
+    FunctionName: RCS_SEND_MESSAGE_FUNCTION_ARN,
+    InvocationType: 'RequestResponse',
+    Payload: Buffer.from(JSON.stringify(invokeEvent)),
+  }));
+
+  if (resp.FunctionError) {
+    const rawErr = resp.Payload ? Buffer.from(resp.Payload as Uint8Array).toString('utf-8') : '';
+    return { success: false, error: rawErr || resp.FunctionError };
+  }
+
+  const raw = resp.Payload ? Buffer.from(resp.Payload as Uint8Array).toString('utf-8') : '';
+  let apiResult: any = {};
+  try { apiResult = raw ? JSON.parse(raw) : {}; } catch { apiResult = { raw }; }
+
+  const statusCode = Number(apiResult?.statusCode || 0);
+  const bodyStr = apiResult?.body;
+  let bodyObj: any = {};
+  try { bodyObj = bodyStr ? JSON.parse(bodyStr) : {}; } catch { bodyObj = { raw: bodyStr }; }
+
+  if (statusCode >= 200 && statusCode < 300 && bodyObj?.success) {
+    return { success: true, messageSid: bodyObj.messageSid };
+  }
+
+  return {
+    success: false,
+    error: bodyObj?.error || bodyObj?.message || bodyObj?.reason || (typeof bodyStr === 'string' ? bodyStr : raw) || 'RCS send failed',
+  };
+}
+
+async function sendRcsViaHttp({
+  clinicId,
+  to,
+  body,
+  richCard,
+  carousel,
+  templateId,
+  templateName,
+  patientData,
+  scheduleId,
+}: SendRcsArgs): Promise<{ success: boolean; messageSid?: string; error?: string }> {
   return new Promise((resolve) => {
-    const payload = JSON.stringify({
+    const requestBody: Record<string, any> = {
       clinicId,
       to,
-      body,
-      templateId,
-      templateName,
-      patientData,
-      campaignId: scheduleId,
-      campaignName: `Schedule: ${scheduleId}`,
-    });
+      ...(body !== undefined ? { body } : {}),
+      ...(richCard ? { richCard } : {}),
+      ...(carousel ? { carousel } : {}),
+      ...(templateId ? { templateId } : {}),
+      ...(templateName ? { templateName } : {}),
+      ...(patientData ? { patientData } : {}),
+      ...(scheduleId ? { campaignId: scheduleId, campaignName: `Schedule: ${scheduleId}` } : {}),
+    };
+
+    const payload = JSON.stringify(requestBody);
+
+    // Default to prod domain; allow override via RCS_API_BASE_URL for non-prod environments.
+    let hostname = 'apig.todaysdentalinsights.com';
+    let port = 443;
+    let path = `/rcs/${encodeURIComponent(clinicId)}/send`;
+    try {
+      const base = new URL(RCS_API_BASE_URL);
+      hostname = base.hostname || hostname;
+      port = base.port ? Number(base.port) : port;
+      const basePath = (base.pathname || '/rcs').replace(/\/+$/g, '');
+      path = `${basePath}/${encodeURIComponent(clinicId)}/send`;
+    } catch {
+      // ignore URL parse errors, keep defaults
+    }
 
     const options = {
-      hostname: 'apig.todaysdentalinsights.com',
-      port: 443,
-      path: `/rcs/${encodeURIComponent(clinicId)}/send`,
+      hostname,
+      port,
+      path,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -491,13 +605,49 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   
   console.log(`Processing schedule ${scheduleId} for clinic ${clinicId} (${timeZone})`);
 
-  // Fetch the SQL query and template
+  // Determine types once (used for both fetching and sending)
+  const hasEmailType = notificationTypes.includes('EMAIL');
+  const hasSmsType = notificationTypes.includes('SMS');
+  const hasRcsType = notificationTypes.includes('RCS') || notificationTypes.includes('rcs');
+
+  // Fetch the SQL query
   const sql = await fetchQueryByName(queryTemplate);
-  const template = await fetchTemplateByName(templateMessage);
-  
-  if (!sql || !template) {
-    console.warn(`Missing query or template for schedule ${scheduleId}: sql=${!!sql}, template=${!!template}`);
+  if (!sql) {
+    console.warn(`Missing query for schedule ${scheduleId}: queryTemplate=${queryTemplate}`);
     return;
+  }
+
+  // Fetch templates:
+  // - Email/SMS schedules use TemplatesStack (templateMessage = template_name)
+  // - RCS schedules prefer RcsStack templates table (templateMessage = templateId)
+  let template: any | null = null;
+  if (hasEmailType || hasSmsType) {
+    template = await fetchTemplateByName(templateMessage);
+  }
+
+  let rcsTemplate: any | null = null;
+  if (hasRcsType) {
+    rcsTemplate = await fetchRcsTemplateById(clinicId, templateMessage);
+    // Back-compat: if schedule stored a TemplatesStack template name for RCS, fall back to TemplatesStack lookup
+    if (!rcsTemplate && !template) {
+      template = await fetchTemplateByName(templateMessage);
+    }
+  }
+
+  // Validate template availability per notification type
+  if ((hasEmailType || hasSmsType) && !template) {
+    console.warn(`Missing TemplatesStack template for schedule ${scheduleId}: templateMessage=${templateMessage}`);
+    return;
+  }
+
+  if (hasRcsType) {
+    const hasRcsContent =
+      !!rcsTemplate ||
+      !!(template && (template.rcs_message || template.rcs_rich_card || template.rcs_carousel || template.text_message));
+    if (!hasRcsContent) {
+      console.warn(`Missing RCS template content for schedule ${scheduleId}: templateMessage=${templateMessage}`);
+      return;
+    }
   }
 
   // Run the OpenDental query for this clinic
@@ -511,8 +661,7 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   const emailTasksToEnqueue: EmailQueueTask[] = [];
   
   // Debug: Log why emails might not be processed
-  const hasEmailType = notificationTypes.includes('EMAIL');
-  const hasEmailBody = !!template.email_body;
+  const hasEmailBody = !!template?.email_body;
   console.log(`Email processing check: notificationTypes=${JSON.stringify(notificationTypes)}, hasEmailType=${hasEmailType}, hasEmailBody=${hasEmailBody}`);
   
   if (hasEmailType && hasEmailBody) {
@@ -573,9 +722,30 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   console.log(`Enqueued ${emailsEnqueued} emails to email queue for ${clinicId}`);
 
   // Process SMS and RCS directly (usually lower volume, keep simple)
-  const hasRcsType = notificationTypes.includes('RCS') || notificationTypes.includes('rcs');
-  const hasSmsType = notificationTypes.includes('SMS');
-  
+  const resolvedRcs = hasRcsType
+    ? (rcsTemplate
+        ? {
+            body: rcsTemplate.body,
+            richCard: rcsTemplate.richCard,
+            carousel: rcsTemplate.carousel,
+            templateId: rcsTemplate.templateId,
+            templateName: rcsTemplate.name,
+          }
+        : template
+          ? {
+              body: template.rcs_message || template.text_message,
+              richCard: template.rcs_rich_card,
+              carousel: template.rcs_carousel,
+              templateId: template.template_id || template.id,
+              templateName: template.template_name || templateMessage,
+            }
+          : null)
+    : null;
+
+  const hasRcsPayload = !!(
+    resolvedRcs && (resolvedRcs.body || resolvedRcs.richCard || resolvedRcs.carousel)
+  );
+
   console.log(`Notification types check: SMS=${hasSmsType}, RCS=${hasRcsType}, types=${JSON.stringify(notificationTypes)}`);
   
   for (const row of rows) {
@@ -600,19 +770,16 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
     }
     
     // Send RCS if enabled (prioritize RCS over SMS when both are enabled)
-    if (hasRcsType && (template.text_message || template.rcs_message)) {
+    if (hasRcsType && resolvedRcs && hasRcsPayload) {
       try {
-        const templateContext = await buildTemplateContext(clinicId, row);
-        // Use rcs_message if available, otherwise fall back to text_message
-        const rcsBody = template.rcs_message || template.text_message;
-        const renderedRcs = renderTemplate(rcsBody, templateContext);
-        
         const rcsResult = await sendRcs({ 
           clinicId, 
           to: phone, 
-          body: renderedRcs,
-          templateId: template.template_id || template.id,
-          templateName: templateMessage,
+          body: resolvedRcs.body,
+          richCard: resolvedRcs.richCard,
+          carousel: resolvedRcs.carousel,
+          templateId: resolvedRcs.templateId,
+          templateName: resolvedRcs.templateName,
           patientData,
           scheduleId,
         });
@@ -622,8 +789,9 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
         } else {
           console.warn(`RCS failed for ${phone}, falling back to SMS if enabled: ${rcsResult.error}`);
           // Fallback to SMS if RCS fails and SMS is also enabled
-          if (hasSmsType && template.text_message) {
+          if (hasSmsType && template?.text_message) {
             try {
+              const templateContext = await buildTemplateContext(clinicId, row);
               const renderedSms = renderTemplate(template.text_message, templateContext);
               await sendSms({ clinicId, to: phone, body: renderedSms });
               smsSent++;
@@ -635,7 +803,7 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
       } catch (error) {
         console.error(`Failed to send RCS to ${phone}:`, error);
       }
-    } else if (hasSmsType && template.text_message) {
+    } else if (hasSmsType && template?.text_message) {
       // SMS only (no RCS)
       try {
         const templateContext = await buildTemplateContext(clinicId, row);

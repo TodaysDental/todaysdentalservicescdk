@@ -257,8 +257,10 @@ export class QueriesStack extends Stack {
     });
 
     new CfnOutput(this, 'QueriesApiUrl', {
-      value: 'https://apig.todaysdentalinsights.com/queries/',
-      description: 'Queries API Gateway URL',
+      // NOTE: Custom domain basePath is /queries and the API resource is also /queries
+      // so the callable base URL is /queries/queries
+      value: 'https://apig.todaysdentalinsights.com/queries/queries',
+      description: 'Queries API base URL (custom domain + resource path)',
       exportName: `${Stack.of(this).stackName}-QueriesApiUrl`,
     });
 
