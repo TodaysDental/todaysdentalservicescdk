@@ -396,14 +396,15 @@ export class NotificationsStack extends Stack {
     // API GATEWAY SETUP
     // ========================================
 
-    const corsConfig = getCdkCorsConfig();    this.notificationsApi = new apigw.RestApi(this, 'NotificationsApi', {
+    const corsConfig = getCdkCorsConfig();
+    this.notificationsApi = new apigw.RestApi(this, 'NotificationsApi', {
       restApiName: 'Notifications API',
       description: 'API for managing notifications',
+      // IMPORTANT: Do not set defaultMethodOptions with a custom authorizer here.
+      // CORS preflight (OPTIONS) requests do not send Authorization headers, and
+      // API Gateway's auto-generated OPTIONS methods must remain unauthenticated.
+      // All protected routes explicitly set the authorizer at the method level.
       defaultCorsPreflightOptions: corsConfig,
-      defaultMethodOptions: {
-        authorizationType: apigw.AuthorizationType.CUSTOM,
-        authorizer: this.authorizer
-      }
     });
 
     const corsErrorHeaders = getCorsErrorHeaders();
@@ -830,6 +831,7 @@ export class NotificationsStack extends Stack {
     const emailAiResource = emailResource.addResource('ai');
 
     // POST /email/ai/subject-lines - Generate AI subject lines
+    // Note: CORS preflight is handled by defaultCorsPreflightOptions on the API
     const subjectLinesResource = emailAiResource.addResource('subject-lines');
     subjectLinesResource.addMethod('POST', emailAiIntegration, {
       authorizer: this.authorizer,

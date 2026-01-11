@@ -21,6 +21,8 @@ export interface MarketingStackProps extends StackProps {
   clinicConfigTableName: string;
   /** KMS key ARN for decrypting secrets */
   secretsEncryptionKeyArn: string;
+  /** Images Stack S3 bucket name for clinic images */
+  imagesBucketName?: string;
 }
 
 export class MarketingStack extends Stack {
@@ -429,6 +431,45 @@ export class MarketingStack extends Stack {
       environment: metaAdsEnvVars,
     });
 
+    // Image Generator Lambda (for multi-clinic image generation with placeholders)
+    // Note: This Lambda resolves placeholders and returns canvas JSON for client-side rendering
+    // For server-side image generation with Sharp, deploy with Docker available or use a Lambda Layer
+    const imageGeneratorEnvVars = {
+      ...envVars,
+      CLINIC_TABLE: props.clinicConfigTableName,
+      IMAGES_BUCKET: props.imagesBucketName || 'todaysdentalinsights-clinic-images',
+      MARKETING_MEDIA_BUCKET: this.mediaBucket.bucketName,
+    };
+
+    const imageGeneratorFn = new lambdaNode.NodejsFunction(this, 'ImageGeneratorFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'image-generator.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(60),
+      memorySize: 512, // Higher memory for image processing
+      environment: imageGeneratorEnvVars,
+      bundling: {
+        // Use local bundling - Sharp functionality will be limited without Lambda layer
+        externalModules: ['sharp'], // Mark sharp as external to avoid bundling issues
+      },
+    });
+
+    // Publisher Lambda (Ayrshare posting with rate limiting)
+    const publisherEnvVars = {
+      ...envVars,
+      MARKETING_CONFIG_TABLE: this.marketingProfilesTable.tableName,
+      AYRSHARE_API_KEY: process.env.AYRSHARE_API_KEY || '',
+    };
+
+    const publisherFn = new lambdaNode.NodejsFunction(this, 'PublisherFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'publisher.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(120), // Longer timeout for multi-clinic publishing
+      memorySize: 256,
+      environment: publisherEnvVars,
+    });
+
     // ============================================
     // EventBridge Rule for Analytics Sync (runs every 6 hours)
     // ============================================
@@ -509,6 +550,19 @@ export class MarketingStack extends Stack {
     metaScheduledCampaignsTable.grantReadWriteData(adsFn);
     metaAdCampaignsTable.grantReadWriteData(adsFn);
 
+    // Image Generator Lambda permissions
+    this.mediaBucket.grantReadWrite(imageGeneratorFn);
+    
+    // Grant access to Images Stack bucket if specified
+    if (props.imagesBucketName) {
+      const imagesBucket = s3.Bucket.fromBucketName(this, 'ImagesBucket', props.imagesBucketName);
+      imagesBucket.grantRead(imageGeneratorFn);
+    }
+
+    // Publisher Lambda permissions
+    this.marketingProfilesTable.grantReadData(publisherFn);
+    this.marketingPostsTable.grantReadWriteData(publisherFn);
+
     // ============================================
     // 7b. Secrets Tables Permissions
     // ============================================
@@ -517,6 +571,7 @@ export class MarketingStack extends Stack {
     const allLambdas = [
       profilesFn, postsFn, commentsFn, analyticsFn, mediaFn, webhooksFn,
       analyticsSyncFn, autoScheduleFn, hashtagsFn, historyFn, messagesFn, validateFn, adsFn,
+      imageGeneratorFn, publisherFn,
     ];
 
     // IAM policy for reading from secrets tables
@@ -767,6 +822,55 @@ export class MarketingStack extends Stack {
     // POST /webhooks/ayrshare - Ayrshare webhook handler (no auth - but HMAC signature verified)
     const ayrshareWebhookRes = webhooksRes.addResource('ayrshare');
     ayrshareWebhookRes.addMethod('POST', new apigw.LambdaIntegration(webhooksFn));
+
+    // -----------------------------------------
+    // Image Generator Routes (/images/generate)
+    // -----------------------------------------
+    const imagesGenRes = root.addResource('images');
+    const generateRes = imagesGenRes.addResource('generate');
+    
+    // POST /images/generate - Generate personalized images for multiple clinics
+    generateRes.addMethod('POST', new apigw.LambdaIntegration(imageGeneratorFn), { authorizer });
+
+    // -----------------------------------------
+    // Publisher Routes (/publisher)
+    // -----------------------------------------
+    const publisherRes = root.addResource('publisher');
+
+    // POST /publisher/post - Publish to multiple clinics with rate limiting
+    const publisherPostRes = publisherRes.addResource('post');
+    publisherPostRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/post/bulk - Bulk publish with placeholder resolution
+    const publisherBulkRes = publisherPostRes.addResource('bulk');
+    publisherBulkRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // DELETE /publisher/post - Delete a published post
+    publisherPostRes.addMethod('DELETE', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // GET /publisher/history - Get post history from Ayrshare
+    const publisherHistoryRes = publisherRes.addResource('history');
+    publisherHistoryRes.addMethod('GET', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // GET /publisher/analytics - Get post analytics
+    const publisherAnalyticsRes = publisherRes.addResource('analytics');
+    publisherAnalyticsRes.addMethod('GET', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // GET /publisher/comments - Get post comments
+    const publisherCommentsRes = publisherRes.addResource('comments');
+    publisherCommentsRes.addMethod('GET', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/comments/reply - Reply to a comment
+    const publisherCommentsReplyRes = publisherCommentsRes.addResource('reply');
+    publisherCommentsReplyRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // GET /publisher/stats - Get social stats
+    const publisherStatsRes = publisherRes.addResource('stats');
+    publisherStatsRes.addMethod('GET', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // GET /publisher/rate-limit - Get rate limit info
+    const publisherRateLimitRes = publisherRes.addResource('rate-limit');
+    publisherRateLimitRes.addMethod('GET', new apigw.LambdaIntegration(publisherFn), { authorizer });
 
     // -----------------------------------------
     // Ads Routes (/ads) - Meta Ads via Ayrshare
