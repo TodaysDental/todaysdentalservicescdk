@@ -33,14 +33,14 @@ const METHOD_PERMISSIONS: Record<string, PermissionType> = {
 // ============================================
 
 const CONFIG = {
-  AWS_REGION: process.env.AWS_REGION || 'us-east-1',
+  // AWS_REGION is automatically provided by Lambda runtime
   MODEL_ID: 'anthropic.claude-3-sonnet-20240229-v1:0',
   MAX_TOKENS: 8192,
   TEMPERATURE: 0.7,
 };
 
 const bedrockClient = new BedrockRuntimeClient({ 
-  region: CONFIG.AWS_REGION,
+  // Uses AWS_REGION from Lambda environment automatically
   maxAttempts: 3,
 });
 

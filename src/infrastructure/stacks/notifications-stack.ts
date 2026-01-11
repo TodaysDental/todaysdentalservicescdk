@@ -364,9 +364,7 @@ export class NotificationsStack extends Stack {
       memorySize: 512,
       timeout: Duration.seconds(60), // AI calls can take time
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
-      environment: {
-        AWS_REGION: this.region,
-      },
+      // Note: AWS_REGION is automatically set by Lambda runtime
     });
     applyTags(this.emailAiFn, { Function: 'email-ai-handler' });
 
