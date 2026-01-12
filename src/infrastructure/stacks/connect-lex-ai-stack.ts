@@ -632,6 +632,8 @@ export class ConnectLexAiStack extends Stack {
         'connect:ListPhoneNumbersV2',
         'connect:UpdatePhoneNumber',
         'connect:DescribePhoneNumber',
+        'connect:AssociatePhoneNumberContactFlow',
+        'connect:DisassociatePhoneNumberContactFlow',
       ],
       resources: ['*'],
     }));
