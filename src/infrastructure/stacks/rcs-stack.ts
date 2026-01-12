@@ -23,14 +23,6 @@ type Clinic = typeof clinicsData[number];
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface RcsStackProps extends StackProps {
-  /**
-   * Twilio Account SID
-   */
-  twilioAccountSid?: string;
-  /**
-   * Twilio Auth Token (for webhook signature validation)
-   */
-  twilioAuthToken?: string;
   /** GlobalSecrets DynamoDB table name for retrieving Twilio credentials */
   globalSecretsTableName?: string;
   /** ClinicSecrets DynamoDB table name for per-clinic credentials */
@@ -54,6 +46,7 @@ export class RcsStack extends Stack {
   public readonly templatesFn: lambdaNode.NodejsFunction;
   public readonly analyticsFn: lambdaNode.NodejsFunction;
   public readonly analyticsAggregatorFn: lambdaNode.NodejsFunction;
+  public readonly rcsAiFn: lambdaNode.NodejsFunction;
   public readonly authorizer: apigw.RequestAuthorizer;
   public readonly rcsFallbackTopic: sns.Topic;
   public readonly rcsAnalyticsTopic: sns.Topic;
@@ -115,10 +108,8 @@ export class RcsStack extends Stack {
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       });
 
-    // Twilio credentials - hardcoded for deployment
-    // TODO: Move to AWS Secrets Manager for production security
-    const twilioAccountSid = props.twilioAccountSid || 'ACbc899dd5f06f5a5bf2bba9c556a67ea1';
-    const twilioAuthToken = props.twilioAuthToken || 'bef3aee1ffb1cbdd11b654fc33dfdd56';
+    // Twilio credentials are now fetched from DynamoDB GlobalSecrets table at runtime
+    // No more hardcoded credentials - Lambda functions use secrets-helper.ts
 
     // ========================================
     // DYNAMODB TABLE
@@ -293,10 +284,8 @@ export class RcsStack extends Stack {
     const defaultLambdaEnv = {
       RCS_MESSAGES_TABLE: this.rcsMessagesTable.tableName,
       RCS_TEMPLATES_TABLE: this.rcsTemplatesTable.tableName,
-      TWILIO_ACCOUNT_SID: twilioAccountSid,
-      TWILIO_AUTH_TOKEN: twilioAuthToken,
       SKIP_TWILIO_VALIDATION: process.env.SKIP_TWILIO_VALIDATION || 'false',
-      // Secrets tables for dynamic credential retrieval (Twilio credentials can be fetched from GlobalSecrets)
+      // Secrets tables for dynamic credential retrieval (Twilio credentials fetched from GlobalSecrets at runtime)
       GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
       CLINIC_SECRETS_TABLE: props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets',
       CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
@@ -586,26 +575,69 @@ export class RcsStack extends Stack {
     createDynamoThrottleAlarm(this.rcsAnalyticsTable.tableName, 'RcsAnalyticsTable');
 
     // ========================================
+    // RCS AI HANDLER
+    // ========================================
+    // AI-powered RCS template generation using AWS Bedrock (Claude)
+    this.rcsAiFn = new lambdaNode.NodejsFunction(this, 'RcsAiFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'rcs', 'rcs-ai-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 512,
+      timeout: Duration.seconds(60), // AI generation can take longer
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        RCS_TEMPLATES_TABLE: this.rcsTemplatesTable.tableName,
+        CLINIC_SECRETS_TABLE: props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets',
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
+      },
+      logRetention: logs.RetentionDays.ONE_WEEK,
+    });
+    applyTags(this.rcsAiFn, { Function: 'rcs-ai' });
+
+    // Grant Bedrock invoke permissions for Claude model
+    this.rcsAiFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['bedrock:InvokeModel'],
+      resources: [
+        `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0`,
+      ],
+    }));
+
+    // Grant read access to secrets and config tables for RCS sender lookup
+    this.rcsAiFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets'}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
+      ],
+    }));
+
+    // Grant read/write to templates table for saving AI-generated templates
+    this.rcsTemplatesTable.grantReadWriteData(this.rcsAiFn);
+
+    // ========================================
     // SECRETS TABLES PERMISSIONS
     // ========================================
     // Grant read access to secrets tables for dynamic Twilio credential retrieval
-    if (props.globalSecretsTableName) {
-      const secretsReadPolicy = new iam.PolicyStatement({
-        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
-        resources: [
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets'}`,
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
-        ],
-      });
+    const globalSecretsTable = props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets';
+    const clinicSecretsTable = props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets';
+    const clinicConfigTable = props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig';
 
-      this.incomingMessageFn.addToRolePolicy(secretsReadPolicy);
-      this.fallbackMessageFn.addToRolePolicy(secretsReadPolicy);
-      this.statusCallbackFn.addToRolePolicy(secretsReadPolicy);
-      this.sendMessageFn.addToRolePolicy(secretsReadPolicy);
-      this.getMessagesFn.addToRolePolicy(secretsReadPolicy);
-      this.templatesFn.addToRolePolicy(secretsReadPolicy);
-    }
+    const secretsReadPolicy = new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${globalSecretsTable}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicSecretsTable}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicConfigTable}`,
+      ],
+    });
+
+    this.incomingMessageFn.addToRolePolicy(secretsReadPolicy);
+    this.fallbackMessageFn.addToRolePolicy(secretsReadPolicy);
+    this.statusCallbackFn.addToRolePolicy(secretsReadPolicy);
+    this.sendMessageFn.addToRolePolicy(secretsReadPolicy);
+    this.getMessagesFn.addToRolePolicy(secretsReadPolicy);
+    this.templatesFn.addToRolePolicy(secretsReadPolicy);
+    this.rcsAiFn.addToRolePolicy(secretsReadPolicy);
 
     // Grant KMS decryption for secrets encryption key
     if (props.secretsEncryptionKeyArn) {
@@ -620,6 +652,7 @@ export class RcsStack extends Stack {
       this.sendMessageFn.addToRolePolicy(kmsDecryptPolicy);
       this.getMessagesFn.addToRolePolicy(kmsDecryptPolicy);
       this.templatesFn.addToRolePolicy(kmsDecryptPolicy);
+      this.rcsAiFn.addToRolePolicy(kmsDecryptPolicy);
     }
 
     // ========================================
@@ -702,6 +735,37 @@ export class RcsStack extends Stack {
     });
 
     // ========================================
+    // RCS AI API Routes (Protected)
+    // ========================================
+    
+    // AI template generation endpoints
+    const aiResource = clinicResource.addResource('ai');
+    
+    // POST /{clinicId}/ai/template - Generate AI-powered RCS template
+    const aiTemplateResource = aiResource.addResource('template');
+    aiTemplateResource.addMethod('POST', new apigw.LambdaIntegration(this.rcsAiFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }],
+    });
+
+    // POST /{clinicId}/ai/message-body - Generate AI-powered message body
+    const aiMessageBodyResource = aiResource.addResource('message-body');
+    aiMessageBodyResource.addMethod('POST', new apigw.LambdaIntegration(this.rcsAiFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }],
+    });
+
+    // GET /{clinicId}/config - Check RCS sender configuration status
+    const configResource = clinicResource.addResource('config');
+    configResource.addMethod('GET', new apigw.LambdaIntegration(this.rcsAiFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }],
+    });
+
+    // ========================================
     // RCS Analytics API Routes (Protected)
     // ========================================
 
@@ -766,6 +830,7 @@ export class RcsStack extends Stack {
       { fn: this.sendMessageFn, name: 'rcs-send', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
       { fn: this.getMessagesFn, name: 'rcs-get', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
       { fn: this.templatesFn, name: 'rcs-templates', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
+      { fn: this.rcsAiFn, name: 'rcs-ai', durationMs: Math.floor(Duration.seconds(60).toMilliseconds() * 0.8) },
     ].forEach(({ fn, name, durationMs }) => {
       createLambdaErrorAlarm(fn, name);
       createLambdaThrottleAlarm(fn, name);

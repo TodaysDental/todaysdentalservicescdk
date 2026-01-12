@@ -49,6 +49,11 @@ import {
   DEFAULT_OUTBOUND_GREETINGS,
   DEFAULT_AFTER_HOURS_GREETING,
 } from './voice-agent-config';
+import {
+  createStreamingTTSManager,
+  generateFullTTS,
+  TTSChunk,
+} from '../chime/utils/streaming-tts-manager';
 
 // ========================================================================
 // CONFIGURATION
@@ -1004,18 +1009,43 @@ function splitIntoSentences(text: string): string[] {
 /**
  * Invoke AI agent with streaming response
  * Sends partial responses via UpdateSipMediaApplicationCall as they arrive
+ * 
+ * Enhanced with sentence-level TTS for lower latency:
+ * - Uses StreamingTTSManager to detect sentence boundaries
+ * - Generates TTS for each sentence immediately
+ * - Sends audio via PlayAudio action for better quality
  */
 async function invokeAiAgentWithStreaming(
   agent: AiAgent,
   session: VoiceSession,
   userMessage: string,
   callId: string,
-  clinicId: string
+  clinicId: string,
+  // FIX: Add cancellation signal to stop streaming when timeout fires
+  cancellationSignal?: { cancelled: boolean }
 ): Promise<{ response: string; thinking: string[]; chunksSent: number }> {
   const thinking: string[] = [];
   let fullResponse = '';
-  let pendingText = '';
   let chunksSent = 0;
+
+  // Initialize streaming TTS manager for sentence-level TTS
+  const ttsManager = createStreamingTTSManager(callId);
+
+  // Get voice settings for clinic
+  let voiceSettings = DEFAULT_VOICE_SETTINGS;
+  try {
+    const voiceConfig = await getFullVoiceConfig(clinicId);
+    if (voiceConfig?.voiceSettings) {
+      voiceSettings = voiceConfig.voiceSettings;
+    }
+  } catch (err) {
+    console.warn('[invokeAiAgentWithStreaming] Failed to get voice config, using defaults');
+  }
+
+  const ttsOptions = {
+    voiceId: voiceSettings.voiceId || 'Joanna',
+    engine: voiceSettings.engine || 'neural',
+  };
 
   const sessionAttributes: Record<string, string> = {
     clinicId: session.clinicId,
@@ -1038,6 +1068,14 @@ async function invokeAiAgentWithStreaming(
 
   if (bedrockResponse.completion) {
     for await (const event of bedrockResponse.completion) {
+      // FIX: Check cancellation signal and stop processing if cancelled
+      // This prevents continued streaming after timeout fires
+      if (cancellationSignal?.cancelled) {
+        console.log('[invokeAiAgentWithStreaming] Cancellation requested, stopping stream processing');
+        ttsManager.reset(); // Clean up TTS manager state
+        break;
+      }
+      
       // Capture thinking/trace
       if (event.trace?.trace) {
         const trace = event.trace.trace;
@@ -1052,51 +1090,164 @@ async function invokeAiAgentWithStreaming(
         }
       }
 
-      // Capture response chunks
+      // Capture response chunks and process with streaming TTS
       if (event.chunk?.bytes) {
         const chunkText = new TextDecoder().decode(event.chunk.bytes);
         fullResponse += chunkText;
-        pendingText += chunkText;
 
-        // Check if we have complete sentences to send
-        const sentences = splitIntoSentences(pendingText);
-        
-        // Send all complete sentences except the last (which might be incomplete)
-        if (sentences.length > 1) {
-          for (let i = 0; i < sentences.length - 1; i++) {
-            const sent = await sendStreamingChunk(
+        // Skip TTS processing if cancelled
+        if (cancellationSignal?.cancelled) {
+          console.log('[invokeAiAgentWithStreaming] Skipping TTS processing due to cancellation');
+          continue;
+        }
+
+        // Process text through TTS manager - emits chunks for complete sentences
+        await ttsManager.processText(
+          chunkText,
+          async (ttsChunk: TTSChunk) => {
+            // Double-check cancellation before sending
+            if (cancellationSignal?.cancelled) return;
+            
+            const sent = await sendStreamingChunkWithTTS(
               callId,
               clinicId,
-              sentences[i],
-              false, // Not final
+              ttsChunk,
               session.sessionId
             );
             if (sent) chunksSent++;
-          }
-          // Keep the last (potentially incomplete) sentence
-          pendingText = sentences[sentences.length - 1];
-        }
+          },
+          ttsOptions
+        );
       }
     }
   }
 
-  // Send any remaining text as final chunk
-  if (pendingText.trim()) {
-    const sent = await sendStreamingChunk(
-      callId,
-      clinicId,
-      pendingText.trim(),
-      true, // Final chunk
-      session.sessionId
-    );
-    if (sent) chunksSent++;
+  // FIX: Don't flush if cancelled - prevents sending more audio after timeout
+  if (cancellationSignal?.cancelled) {
+    console.log('[invokeAiAgentWithStreaming] Skipping flush due to cancellation');
+    return { response: fullResponse, thinking, chunksSent };
   }
+
+  // Flush any remaining text as final chunk
+  await ttsManager.flush(
+    async (ttsChunk: TTSChunk) => {
+      const sent = await sendStreamingChunkWithTTS(
+        callId,
+        clinicId,
+        { ...ttsChunk, isFinal: true },
+        session.sessionId
+      );
+      if (sent) chunksSent++;
+    },
+    ttsOptions
+  );
 
   return { 
     response: fullResponse || "I'm sorry, I couldn't process that request.", 
     thinking,
     chunksSent
   };
+}
+
+/**
+ * Send streaming chunk with pre-generated TTS audio
+ * Uses PlayAudio action instead of Speak for lower latency
+ */
+async function sendStreamingChunkWithTTS(
+  callId: string,
+  clinicId: string,
+  ttsChunk: TTSChunk,
+  sessionId?: string
+): Promise<boolean> {
+  const smaId = await getSmaIdForClinic(clinicId);
+  if (!smaId) {
+    console.warn('[sendStreamingChunkWithTTS] No SMA ID found for clinic:', clinicId);
+    return false;
+  }
+
+  const actions = [
+    {
+      Type: 'PlayAudio',
+      Parameters: {
+        AudioSource: {
+          Type: 'S3',
+          BucketName: process.env.TTS_AUDIO_BUCKET || process.env.HOLD_MUSIC_BUCKET,
+          Key: ttsChunk.audioS3Key,
+        },
+      },
+    },
+  ];
+
+  // If this is the final chunk, add CONTINUE to keep listening
+  if (ttsChunk.isFinal) {
+    actions.push({
+      Type: 'Pause',
+      Parameters: {
+        DurationInMilliseconds: '500',
+      },
+    } as any);
+  }
+
+  // Retry logic for transient Chime errors
+  let lastError: Error | null = null;
+  
+  for (let attempt = 1; attempt <= CONFIG.CHUNK_MAX_RETRIES + 1; attempt++) {
+    try {
+      await chimeVoiceClient.send(new UpdateSipMediaApplicationCallCommand({
+        SipMediaApplicationId: smaId,
+        TransactionId: callId,
+        Arguments: {
+          pendingAiActions: JSON.stringify(actions),
+          aiResponseTime: new Date().toISOString(),
+          isStreamingChunk: 'true',
+          isFinalChunk: ttsChunk.isFinal ? 'true' : 'false',
+          sessionId: sessionId || '',
+          ttsSequence: String(ttsChunk.sequenceNumber),
+        },
+      }));
+
+      console.log('[sendStreamingChunkWithTTS] Sent TTS chunk:', { 
+        callId, 
+        textLength: ttsChunk.text.length, 
+        isFinal: ttsChunk.isFinal, 
+        sequence: ttsChunk.sequenceNumber,
+        attempt 
+      });
+      return true;
+      
+    } catch (error: any) {
+      lastError = error;
+      
+      const isRetryable = error.name === 'ThrottlingException' ||
+                          error.name === 'ServiceUnavailableException' ||
+                          error.message?.includes('ECONNRESET') ||
+                          error.message?.includes('socket hang up');
+      
+      const isCallEnded = error.name === 'NotFoundException' ||
+                          error.message?.includes('Call not found') ||
+                          error.message?.includes('Transaction');
+      
+      if (isCallEnded) {
+        console.warn('[sendStreamingChunkWithTTS] Call is no longer active, skipping chunk');
+        return false;
+      }
+      
+      if (isRetryable && attempt <= CONFIG.CHUNK_MAX_RETRIES) {
+        console.warn(`[sendStreamingChunkWithTTS] Transient error, retrying (attempt ${attempt}):`, error.message);
+        await new Promise(resolve => setTimeout(resolve, CONFIG.CHUNK_RETRY_DELAY_MS * attempt));
+        continue;
+      }
+
+      console.error('[sendStreamingChunkWithTTS] Failed to send chunk:', {
+        error: lastError?.message,
+        callId,
+        attempt
+      });
+      return false;
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -1487,15 +1638,26 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
             },
           }));
           
-          // FIX: Use Promise.race with timeout to ensure we always get a response
-          // If streaming takes too long, fall back to non-streaming response
-          // FIX: Reduced timeout from 25s to 18s to leave more time for fallback + cleanup
+          // FIX: Use Promise.race with timeout AND cancellation signal
+          // When timeout fires, set cancellation flag to stop streaming immediately
+          // This prevents: some chunks sent + fallback spoken + remaining streaming still sending
           
           try {
-            const streamingPromise = invokeAiAgentWithStreaming(agent, session, transcript, callId, clinicId);
-            const timeoutPromise = new Promise<never>((_, reject) => 
-              setTimeout(() => reject(new Error('Streaming timeout')), CONFIG.STREAMING_TIMEOUT_MS)
+            // FIX: Create cancellation signal to stop streaming when timeout fires
+            const cancellationSignal = { cancelled: false };
+            
+            const streamingPromise = invokeAiAgentWithStreaming(
+              agent, session, transcript, callId, clinicId, cancellationSignal
             );
+            
+            const timeoutPromise = new Promise<never>((_, reject) => {
+              setTimeout(() => {
+                // FIX: Set cancellation flag BEFORE rejecting to stop streaming loop
+                cancellationSignal.cancelled = true;
+                console.log('[TRANSCRIPT] Streaming timeout - cancellation signal set');
+                reject(new Error('Streaming timeout'));
+              }, CONFIG.STREAMING_TIMEOUT_MS);
+            });
             
             const { response: aiResponse, thinking, chunksSent } = await Promise.race([
               streamingPromise,

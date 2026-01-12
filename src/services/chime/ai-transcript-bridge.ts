@@ -24,6 +24,10 @@ import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 // Use shared SMA map utility to avoid code duplication
 import { getSmaIdForClinicSSM } from './utils/sma-map-ssm';
+// Barge-in detection for natural conversation interruption
+import { bargeInDetector, emitBargeInMetrics } from './utils/barge-in-detector';
+// FIX: Import call state machine for coordinated state management
+import { callStateMachine, CallState, CallEvent } from './utils/call-state-machine';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const lambdaClient = new LambdaClient({});
@@ -40,9 +44,15 @@ const VOICE_AI_LAMBDA_ARN = process.env.VOICE_AI_LAMBDA_ARN!;
 const CALL_QUEUE_TABLE = process.env.CALL_QUEUE_TABLE_NAME!;
 const VOICE_SESSIONS_TABLE = process.env.VOICE_SESSIONS_TABLE!;
 const VOICE_CONFIG_TABLE = process.env.VOICE_CONFIG_TABLE || '';
+// FIX: Add hold music bucket for thinking audio in meeting-kvs mode
+const HOLD_MUSIC_BUCKET = process.env.HOLD_MUSIC_BUCKET || '';
 
 // Minimum transcript length to process (avoid processing partial words)
 const MIN_TRANSCRIPT_LENGTH = 3;
+
+// FIX: Thinking audio configuration for meeting-kvs mode
+// Plays keyboard typing sound during AI processing to eliminate awkward silence
+const THINKING_AUDIO_KEY = 'Computer-keyboard sound.wav';
 
 // ========================================================================
 // VOICE SETTINGS
@@ -116,7 +126,8 @@ const MAX_CALL_RECORD_CACHE_SIZE = 500;
 const MAX_PENDING_UTTERANCES_SIZE = 200;
 
 // Debounce time in ms to wait for complete utterances
-const UTTERANCE_COMPLETE_TIMEOUT_MS = 1500;
+// Reduced from 1500ms to 800ms for faster turn-taking (~700ms latency improvement)
+const UTTERANCE_COMPLETE_TIMEOUT_MS = 800;
 
 // FIX: Max age for pending utterances before forced cleanup (5 minutes)
 const PENDING_UTTERANCE_MAX_AGE_MS = 5 * 60 * 1000;
@@ -128,6 +139,13 @@ const pendingUtterances: Map<string, {
   timeoutId?: NodeJS.Timeout;
   createdAt: number; // FIX: Track creation time for staleness detection
 }> = new Map();
+
+// ========================================================================
+// NOTE: Action queue for sequential TTS delivery was REMOVED
+// The ordering is now handled by ttsSequence in voice-ai-handler.ts which
+// sends chunks via UpdateSipMediaApplicationCall with sequence numbers.
+// The inbound-router.ts processes these in order as they arrive.
+// ========================================================================
 
 /**
  * FIX: Cleanup stale pending utterances and caches to prevent memory leaks
@@ -179,16 +197,40 @@ function cleanupStaleEntries(): void {
     }
     console.log(`[AITranscriptBridge] Evicted ${entries.length} stale pending utterances`);
   }
+  
+  // Note: Action queue cleanup removed since action queue was removed
 }
 
 /**
  * FIX: Clean up pending utterance for a specific call (call on call end)
  */
 function cleanupCallUtterance(callId: string): void {
+  // Clean up pending utterance
   const entry = pendingUtterances.get(callId);
   if (entry) {
     if (entry.timeoutId) {
       clearTimeout(entry.timeoutId);
+    }
+    pendingUtterances.delete(callId);
+  }
+  
+  // Note: Action queue cleanup removed since action queue was removed
+  
+  // Clean up barge-in state
+  bargeInDetector.cleanup(callId);
+  
+  // FIX: Clean up call state machine
+  callStateMachine.cleanup(callId);
+}
+
+/**
+ * Original cleanup for pending utterance only (kept for compatibility)
+ */
+function cleanupPendingUtteranceOnly(callId: string): void {
+  const pendingEntry = pendingUtterances.get(callId);
+  if (pendingEntry) {
+    if (pendingEntry.timeoutId) {
+      clearTimeout(pendingEntry.timeoutId);
     }
     pendingUtterances.delete(callId);
     console.log(`[AITranscriptBridge] Cleaned up pending utterance for ended call ${callId}`);
@@ -422,10 +464,34 @@ function extractTranscript(event: TranscriptEvent): {
  * Accumulate partial utterances and debounce
  * 
  * FIX: Now tracks createdAt for staleness detection and cleanup
+ * ENHANCEMENT: Checks for barge-in if AI is currently speaking
  */
-function accumulateUtterance(callId: string, clinicId: string, sessionId: string, transcript: string): void {
+async function accumulateUtterance(callId: string, clinicId: string, sessionId: string, transcript: string): Promise<void> {
   const existing = pendingUtterances.get(callId);
   const now = Date.now();
+  
+  // Check for barge-in if AI is speaking
+  if (bargeInDetector.isAiSpeaking(callId)) {
+    const bargeInResult = await bargeInDetector.onCallerSpeech(callId, clinicId, transcript);
+    emitBargeInMetrics(callId, bargeInResult);
+    
+    if (bargeInResult.shouldInterrupt) {
+      console.log('[AITranscriptBridge] Barge-in triggered - interrupting AI speech:', {
+        callId,
+        transcript: transcript.substring(0, 50)
+      });
+      
+      // Clear any existing timeout
+      if (existing?.timeoutId) {
+        clearTimeout(existing.timeoutId);
+      }
+      
+      // Don't process through normal flow - the barge-in detector
+      // already sent the interrupt and the new transcript
+      pendingUtterances.delete(callId);
+      return;
+    }
+  }
   
   if (existing?.timeoutId) {
     clearTimeout(existing.timeoutId);
@@ -461,6 +527,8 @@ function accumulateUtterance(callId: string, clinicId: string, sessionId: string
 
 /**
  * Process a complete utterance - invoke Voice AI and update call
+ * 
+ * FIX: Integrates call state machine for coordinated state management
  */
 async function processCompleteUtterance(
   callId: string,
@@ -493,12 +561,36 @@ async function processCompleteUtterance(
   const aiAgentId = callRecord.aiAgentId;
   const transactionId = callRecord.transactionId || callId;
 
+  // FIX: Check if we can transition to PROCESSING state
+  // This prevents race conditions where multiple transcripts trigger concurrent AI invocations
+  const currentState = callStateMachine.getState(callId);
+  if (currentState === CallState.PROCESSING) {
+    console.log('[AITranscriptBridge] Already processing, queuing transcript for later:', {
+      callId,
+      currentState,
+      transcript: transcript.substring(0, 30),
+    });
+    // Store for later processing (will be picked up when returning to LISTENING)
+    callStateMachine.setMetadata(callId, { lastSpeakText: transcript });
+    return false;
+  }
+  
+  // FIX: Transition to PROCESSING state
+  callStateMachine.transition(callId, CallEvent.TRANSCRIPT_RECEIVED);
+
   console.log('[AITranscriptBridge] Processing complete utterance:', {
     callId,
     clinicId: finalClinicId,
     sessionId: finalSessionId,
-    transcript: transcript.substring(0, 50) + '...'
+    transcript: transcript.substring(0, 50) + '...',
+    state: callStateMachine.getState(callId),
   });
+
+  // FIX: Play thinking audio in meeting-kvs mode to eliminate awkward silence
+  // This is equivalent to what RecordAudio mode does after recording completes
+  if (callRecord.pipelineMode === 'meeting-kvs' && HOLD_MUSIC_BUCKET) {
+    await playThinkingAudio(transactionId, finalClinicId);
+  }
 
   // Invoke Voice AI handler with TRANSCRIPT event
   const voiceAiResponse = await invokeVoiceAiHandler({
@@ -512,11 +604,23 @@ async function processCompleteUtterance(
 
   if (!voiceAiResponse || voiceAiResponse.length === 0) {
     console.warn('[AITranscriptBridge] No response from Voice AI handler');
+    // FIX: Return to LISTENING state on failure
+    callStateMachine.transition(callId, CallEvent.TTS_COMPLETED);
     return false;
   }
 
+  // FIX: Transition to SPEAKING state before sending response
+  callStateMachine.transition(callId, CallEvent.AI_RESPONSE_READY);
+
   // Send AI response back to caller via SMA
   await sendResponseToCall(callRecord, transactionId, voiceAiResponse);
+
+  // FIX: Persist state to DynamoDB for cross-Lambda coordination
+  try {
+    await callStateMachine.persistState(callId, finalClinicId, callRecord.queuePosition);
+  } catch (err) {
+    console.warn('[AITranscriptBridge] Failed to persist state:', err);
+  }
 
   return true;
 }
@@ -583,6 +687,52 @@ async function invokeVoiceAiHandler(event: {
   } catch (error) {
     console.error('[AITranscriptBridge] Error invoking Voice AI:', error);
     return [];
+  }
+}
+
+/**
+ * FIX: Play thinking audio during AI processing to eliminate awkward silence
+ * This provides feedback to the caller that the system is processing their request
+ */
+async function playThinkingAudio(transactionId: string, clinicId: string): Promise<void> {
+  if (!HOLD_MUSIC_BUCKET) {
+    console.warn('[AITranscriptBridge] HOLD_MUSIC_BUCKET not configured for thinking audio');
+    return;
+  }
+
+  const smaId = await getSmaIdForClinicSSM(clinicId);
+  if (!smaId) {
+    console.warn('[AITranscriptBridge] No SMA ID found for thinking audio, clinicId:', clinicId);
+    return;
+  }
+
+  const thinkingAction = {
+    Type: 'PlayAudio',
+    Parameters: {
+      AudioSource: {
+        Type: 'S3',
+        BucketName: HOLD_MUSIC_BUCKET,
+        Key: THINKING_AUDIO_KEY,
+      },
+      Repeat: 5, // Will be interrupted by AI response
+    },
+  };
+
+  try {
+    await chimeClient.send(new UpdateSipMediaApplicationCallCommand({
+      SipMediaApplicationId: smaId,
+      TransactionId: transactionId,
+      Arguments: {
+        pendingAiActions: JSON.stringify([thinkingAction]),
+        aiProcessingStarted: new Date().toISOString(),
+        isThinkingAudio: 'true',
+      },
+    }));
+    
+    console.log('[AITranscriptBridge] Playing thinking audio for call:', transactionId);
+  } catch (error: any) {
+    // Non-fatal - don't block AI processing if thinking audio fails
+    console.warn('[AITranscriptBridge] Failed to play thinking audio:', error.message);
   }
 }
 
@@ -694,6 +844,12 @@ async function sendResponseToCall(
     }));
 
     console.log('[AITranscriptBridge] Successfully sent update to SMA');
+    
+    // Mark AI as speaking if we're sending a SPEAK action
+    const hasSpeakAction = actions.some((a: any) => a.Type === 'Speak' || a.Type === 'PlayAudio');
+    if (hasSpeakAction) {
+      bargeInDetector.setAiSpeaking(transactionId, true);
+    }
   } catch (error: any) {
     console.error('[AITranscriptBridge] Error sending response to call:', {
       transactionId,

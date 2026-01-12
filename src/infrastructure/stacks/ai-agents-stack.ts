@@ -135,6 +135,22 @@ export interface AiAgentsStackProps extends StackProps {
   sharedRecordingsBucketArn?: string;
   
   // ========================================
+  // HOLD MUSIC / TTS AUDIO BUCKET (from ChimeStack)
+  // ========================================
+  /**
+   * Hold music bucket name from ChimeStack.
+   * Used for streaming TTS audio files that are played via PlayAudio actions.
+   * REQUIRED for streaming TTS to work properly.
+   */
+  holdMusicBucketName?: string;
+  
+  /**
+   * Hold music bucket ARN for IAM permissions.
+   * MUST be provided together with holdMusicBucketName for S3 write access.
+   */
+  holdMusicBucketArn?: string;
+  
+  // ========================================
   // WEBSOCKET DOMAIN (from ChatbotStack)
   // ========================================
   /**
@@ -1026,6 +1042,10 @@ export class AiAgentsStack extends Stack {
         ENABLE_STREAMING_RESPONSES: 'true',
         CHIME_MEDIA_REGION: 'us-east-1',
         SMA_ID_MAP_PARAMETER: props.smaIdMapParameterName,
+        // FIX: Add TTS_AUDIO_BUCKET for streaming TTS to work properly
+        // Uses the hold music bucket from ChimeStack for PlayAudio actions
+        TTS_AUDIO_BUCKET: props.holdMusicBucketName || '',
+        HOLD_MUSIC_BUCKET: props.holdMusicBucketName || '',
       },
     });
     applyTags(this.voiceAiFn, { Function: 'voice-ai' });
@@ -1035,6 +1055,25 @@ export class AiAgentsStack extends Stack {
     this.clinicHoursTable.grantReadData(this.voiceAiFn);
     this.voiceConfigTable.grantReadData(this.voiceAiFn);
     this.callRecordingsBucket.grantWrite(this.voiceAiFn);
+    
+    // FIX: Grant S3 write access to hold music bucket for streaming TTS audio
+    // VoiceAiFn generates TTS audio via Polly and uploads to S3 for PlayAudio actions
+    if (props.holdMusicBucketArn) {
+      this.voiceAiFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          's3:PutObject',
+          's3:GetObject',
+          's3:DeleteObject',
+        ],
+        resources: [
+          `${props.holdMusicBucketArn}/*`,
+        ],
+      }));
+      console.log(`[AiAgentsStack] VoiceAiFn granted S3 access to hold music bucket for streaming TTS`);
+    } else {
+      console.warn('[AiAgentsStack] holdMusicBucketArn not provided - streaming TTS will be disabled');
+    }
 
     // Grant write access to shared CallAnalytics table (cross-stack permission)
     // The table schema is: PK=callId, SK=timestamp (Number)

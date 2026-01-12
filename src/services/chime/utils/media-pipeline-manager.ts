@@ -28,22 +28,80 @@ const MEDIA_INSIGHTS_PIPELINE_PARAMETER = process.env.MEDIA_INSIGHTS_PIPELINE_PA
 
 // Cache for Media Insights Pipeline ARN
 let cachedPipelineArn: string | null = null;
+let pipelineArnCacheTime = 0;
+const PIPELINE_ARN_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 // Cache Kinesis Video Stream ARNs by stream name (avoids repeated DescribeStream calls)
-const kvsStreamArnCache: Map<string, string> = new Map();
+const kvsStreamArnCache: Map<string, { arn: string; timestamp: number }> = new Map();
+const KVS_CACHE_TTL_MS = 60 * 1000; // 1 minute cache for KVS ARNs
+
+// Pipeline health metrics
+interface PipelineHealthMetrics {
+    pipelinesStarted: number;
+    pipelinesFailed: number;
+    kvsResolutionSuccesses: number;
+    kvsResolutionFailures: number;
+    avgStartupTimeMs: number;
+    startupTimeSamples: number[];
+}
+
+const pipelineHealth: PipelineHealthMetrics = {
+    pipelinesStarted: 0,
+    pipelinesFailed: 0,
+    kvsResolutionSuccesses: 0,
+    kvsResolutionFailures: 0,
+    avgStartupTimeMs: 0,
+    startupTimeSamples: [],
+};
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
+ * Log pipeline health metrics for CloudWatch monitoring
+ */
+function emitPipelineHealthMetric(): void {
+    console.log('[METRIC] MediaPipeline.Health', {
+        ...pipelineHealth,
+        startupTimeSamples: undefined, // Don't log the array
+        timestamp: new Date().toISOString()
+    });
+}
+
+/**
+ * Update pipeline health with a startup time sample
+ */
+function recordStartupTime(durationMs: number): void {
+    pipelineHealth.startupTimeSamples.push(durationMs);
+    // Keep only last 100 samples
+    if (pipelineHealth.startupTimeSamples.length > 100) {
+        pipelineHealth.startupTimeSamples.shift();
+    }
+    // Recalculate average
+    const sum = pipelineHealth.startupTimeSamples.reduce((a, b) => a + b, 0);
+    pipelineHealth.avgStartupTimeMs = Math.round(sum / pipelineHealth.startupTimeSamples.length);
+}
+
+/**
  * Resolve the *full* Kinesis Video Stream ARN (includes the required /creationTime suffix)
  * using DescribeStream, because constructing ARNs manually will fail validation.
+ * 
+ * Optimized for low latency:
+ * - Uses cache with TTL
+ * - Reduced retry delay (200ms instead of 500ms)
+ * - Exponential backoff on retries
  */
 async function resolveKinesisVideoStreamArn(streamName: string): Promise<string | null> {
+    const now = Date.now();
     const cached = kvsStreamArnCache.get(streamName);
-    if (cached) return cached;
+    if (cached && (now - cached.timestamp) < KVS_CACHE_TTL_MS) {
+        return cached.arn;
+    }
 
-    const maxAttempts = parseInt(process.env.KVS_DESCRIBE_RETRY_ATTEMPTS || '10', 10);
-    const delayMs = parseInt(process.env.KVS_DESCRIBE_RETRY_DELAY_MS || '500', 10);
+    // Reduced defaults for faster startup: 8 attempts, 200ms initial delay
+    const maxAttempts = parseInt(process.env.KVS_DESCRIBE_RETRY_ATTEMPTS || '8', 10);
+    const baseDelayMs = parseInt(process.env.KVS_DESCRIBE_RETRY_DELAY_MS || '200', 10);
+
+    const startTime = Date.now();
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
@@ -53,7 +111,13 @@ async function resolveKinesisVideoStreamArn(streamName: string): Promise<string 
 
             const arn = out.StreamInfo?.StreamARN || null;
             if (arn) {
-                kvsStreamArnCache.set(streamName, arn);
+                kvsStreamArnCache.set(streamName, { arn, timestamp: Date.now() });
+                pipelineHealth.kvsResolutionSuccesses++;
+                console.log('[MediaPipeline] KVS stream resolved', {
+                    streamName,
+                    attempt,
+                    durationMs: Date.now() - startTime
+                });
                 return arn;
             }
         } catch (error: any) {
@@ -61,6 +125,8 @@ async function resolveKinesisVideoStreamArn(streamName: string): Promise<string 
             // Stream not created yet (Chime/VC streaming is asynchronous) – retry briefly.
             if (name === 'ResourceNotFoundException' || name === 'NotFoundException') {
                 if (attempt < maxAttempts) {
+                    // Exponential backoff: 200ms, 400ms, 600ms, etc. (capped at 1s)
+                    const delayMs = Math.min(baseDelayMs * attempt, 1000);
                     console.log('[MediaPipeline] KVS stream not found yet, retrying...', {
                         streamName,
                         attempt,
@@ -70,7 +136,12 @@ async function resolveKinesisVideoStreamArn(streamName: string): Promise<string 
                     await sleep(delayMs);
                     continue;
                 }
-                console.warn('[MediaPipeline] KVS stream not found after retries', { streamName, maxAttempts });
+                console.warn('[MediaPipeline] KVS stream not found after retries', { 
+                    streamName, 
+                    maxAttempts,
+                    durationMs: Date.now() - startTime
+                });
+                pipelineHealth.kvsResolutionFailures++;
                 return null;
             }
 
@@ -80,15 +151,18 @@ async function resolveKinesisVideoStreamArn(streamName: string): Promise<string 
                 code: error?.code,
                 name,
             });
+            pipelineHealth.kvsResolutionFailures++;
             return null;
         }
     }
 
+    pipelineHealth.kvsResolutionFailures++;
     return null;
 }
 
 /**
  * Get Media Insights Pipeline Configuration ARN from SSM Parameter Store
+ * Cached with TTL to avoid repeated SSM calls
  */
 async function getMediaInsightsPipelineArn(): Promise<string | null> {
     if (!MEDIA_INSIGHTS_PIPELINE_PARAMETER) {
@@ -96,8 +170,10 @@ async function getMediaInsightsPipelineArn(): Promise<string | null> {
         return null;
     }
 
-    // Return cached value if available
-    if (cachedPipelineArn) {
+    const now = Date.now();
+    
+    // Return cached value if available and not expired
+    if (cachedPipelineArn && (now - pipelineArnCacheTime) < PIPELINE_ARN_CACHE_TTL_MS) {
         return cachedPipelineArn;
     }
 
@@ -107,6 +183,7 @@ async function getMediaInsightsPipelineArn(): Promise<string | null> {
         }));
 
         cachedPipelineArn = response.Parameter?.Value || null;
+        pipelineArnCacheTime = now;
         console.log('[MediaPipeline] Retrieved pipeline ARN from SSM');
         return cachedPipelineArn;
     } catch (error: any) {
@@ -150,6 +227,8 @@ export interface StartMediaPipelineFromKvsStreamParams extends StartMediaPipelin
  * to the Kinesis stream for processing
  */
 export async function startMediaPipeline(params: StartMediaPipelineParams): Promise<string | null> {
+    const startTime = Date.now();
+    
     if (!ENABLE_REAL_TIME_TRANSCRIPTION) {
         console.log('[MediaPipeline] Real-time transcription is disabled');
         return null;
@@ -263,24 +342,39 @@ export async function startMediaPipeline(params: StartMediaPipelineParams): Prom
         const response = await mediaPipelinesClient.send(command);
         const pipelineId = response.MediaInsightsPipeline?.MediaPipelineId;
 
+        const startupDuration = Date.now() - startTime;
+        
         if (pipelineId) {
+            pipelineHealth.pipelinesStarted++;
+            recordStartupTime(startupDuration);
+            
             console.log('[MediaPipeline] Media Insights Pipeline started successfully:', {
                 callId,
                 pipelineId,
                 meetingId,
                 kvsStreamName,
+                startupDurationMs: startupDuration,
             });
+            
+            // Emit health metrics periodically (every 10 pipelines)
+            if (pipelineHealth.pipelinesStarted % 10 === 0) {
+                emitPipelineHealthMetric();
+            }
         } else {
+            pipelineHealth.pipelinesFailed++;
             console.warn('[MediaPipeline] Pipeline created but no ID returned');
         }
 
         return pipelineId || null;
     } catch (error: any) {
+        pipelineHealth.pipelinesFailed++;
+        
         console.error('[MediaPipeline] Failed to start Media Insights Pipeline:', {
             callId,
             meetingId,
             error: error.message,
             code: error.code,
+            startupDurationMs: Date.now() - startTime,
         });
         
         // Don't fail the call if Media Pipeline fails - it's a non-critical feature
@@ -431,5 +525,18 @@ export async function stopMediaPipeline(pipelineId: string, callId: string): Pro
  */
 export function isRealTimeTranscriptionEnabled(): boolean {
     return ENABLE_REAL_TIME_TRANSCRIPTION;
+}
+
+/**
+ * Get pipeline health metrics for monitoring
+ */
+export function getPipelineHealthMetrics(): Omit<PipelineHealthMetrics, 'startupTimeSamples'> {
+    return {
+        pipelinesStarted: pipelineHealth.pipelinesStarted,
+        pipelinesFailed: pipelineHealth.pipelinesFailed,
+        kvsResolutionSuccesses: pipelineHealth.kvsResolutionSuccesses,
+        kvsResolutionFailures: pipelineHealth.kvsResolutionFailures,
+        avgStartupTimeMs: pipelineHealth.avgStartupTimeMs,
+    };
 }
 

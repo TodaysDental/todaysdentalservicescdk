@@ -17,13 +17,80 @@ import { DynamoDBDocumentClient, PutCommand, GetCommand } from '@aws-sdk/lib-dyn
 import https from 'https';
 import { isUnsubscribed } from '../shared/unsubscribe';
 import { renderTemplate, buildTemplateContext } from '../../shared/utils/clinic-placeholders';
+import { getTwilioCredentials } from '../../shared/utils/secrets-helper';
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  marshallOptions: { removeUndefinedValues: true }
+});
 
 const RCS_MESSAGES_TABLE = process.env.RCS_MESSAGES_TABLE!;
-const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID!;
-const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN!;
 const UNSUBSCRIBE_TABLE = process.env.UNSUBSCRIBE_TABLE || '';
+const CLINIC_SECRETS_TABLE = process.env.CLINIC_SECRETS_TABLE || 'TodaysDentalInsights-ClinicSecrets';
+
+// Twilio credentials cache (fetched from DynamoDB GlobalSecrets table)
+let twilioCredentialsCache: { accountSid: string; authToken: string } | null = null;
+let twilioCredentialsCacheExpiry = 0;
+const TWILIO_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+async function getCachedTwilioCredentials(): Promise<{ accountSid: string; authToken: string }> {
+  if (twilioCredentialsCache && Date.now() < twilioCredentialsCacheExpiry) {
+    return twilioCredentialsCache;
+  }
+  
+  const creds = await getTwilioCredentials();
+  if (!creds) {
+    throw new Error('Twilio credentials not found in GlobalSecrets table');
+  }
+  
+  twilioCredentialsCache = creds;
+  twilioCredentialsCacheExpiry = Date.now() + TWILIO_CACHE_TTL_MS;
+  return creds;
+}
+
+// ============================================
+// RCS CONFIG CACHE
+// ============================================
+
+interface CachedRcsConfig {
+  rcsSenderId?: string;
+  messagingServiceSid?: string;
+  timestamp: number;
+}
+
+const rcsConfigCache: Map<string, CachedRcsConfig> = new Map();
+const RCS_CONFIG_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Get RCS sender configuration from ClinicSecrets DynamoDB table
+ */
+async function getClinicRcsConfig(clinicId: string): Promise<{ rcsSenderId?: string; messagingServiceSid?: string }> {
+  // Check cache first
+  const cached = rcsConfigCache.get(clinicId);
+  if (cached && Date.now() - cached.timestamp < RCS_CONFIG_CACHE_TTL_MS) {
+    return { rcsSenderId: cached.rcsSenderId, messagingServiceSid: cached.messagingServiceSid };
+  }
+
+  try {
+    const result = await ddb.send(new GetCommand({
+      TableName: CLINIC_SECRETS_TABLE,
+      Key: { clinicId },
+      ProjectionExpression: 'rcsSenderId, messagingServiceSid',
+    }));
+
+    const config = {
+      rcsSenderId: result.Item?.rcsSenderId,
+      messagingServiceSid: result.Item?.messagingServiceSid,
+    };
+
+    // Cache the result
+    rcsConfigCache.set(clinicId, { ...config, timestamp: Date.now() });
+
+    return config;
+  } catch (error) {
+    console.error(`Failed to get RCS config for clinic ${clinicId}:`, error);
+    return {};
+  }
+}
 
 // ============================================
 // RCS RICH MEDIA TYPES
@@ -304,6 +371,9 @@ async function sendTwilioRcsMessage(
   contentSid?: string,
   contentVariables?: Record<string, string>
 ): Promise<TwilioMessageResponse> {
+  // Get Twilio credentials from DynamoDB
+  const twilioCreds = await getCachedTwilioCredentials();
+  
   return new Promise((resolve, reject) => {
     const data = new URLSearchParams();
     data.append('To', to);
@@ -354,12 +424,12 @@ async function sendTwilioRcsMessage(
     const options = {
       hostname: 'api.twilio.com',
       port: 443,
-      path: `/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`,
+      path: `/2010-04-01/Accounts/${twilioCreds.accountSid}/Messages.json`,
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         'Content-Length': Buffer.byteLength(postData),
-        'Authorization': 'Basic ' + Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64'),
+        'Authorization': 'Basic ' + Buffer.from(`${twilioCreds.accountSid}:${twilioCreds.authToken}`).toString('base64'),
       },
     };
 
@@ -490,10 +560,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Build status callback URL for this clinic
     const statusCallbackUrl = `https://apig.todaysdentalinsights.com/rcs/${clinicId}/status`;
 
-    // Get clinic RCS configuration
-    const effectiveRcsSenderId = rcsSenderId || process.env[`RCS_SENDER_${clinicId.toUpperCase()}`] || '';
+    // Get clinic RCS configuration from request, env var, or DynamoDB
+    let effectiveRcsSenderId = rcsSenderId || process.env[`RCS_SENDER_${clinicId.toUpperCase()}`] || '';
+    let effectiveMessagingServiceSid = messagingServiceSid || '';
 
-    if (!effectiveRcsSenderId && !messagingServiceSid) {
+    // If not provided in request or env, fetch from ClinicSecrets table
+    if (!effectiveRcsSenderId && !effectiveMessagingServiceSid) {
+      const clinicRcsConfig = await getClinicRcsConfig(clinicId);
+      effectiveRcsSenderId = clinicRcsConfig.rcsSenderId || '';
+      effectiveMessagingServiceSid = clinicRcsConfig.messagingServiceSid || '';
+    }
+
+    if (!effectiveRcsSenderId && !effectiveMessagingServiceSid) {
       return {
         statusCode: 400,
         headers: corsHeaders,
@@ -530,7 +608,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       renderedBody,
       effectiveRcsSenderId,
       statusCallbackUrl,
-      messagingServiceSid,
+      effectiveMessagingServiceSid || undefined,
       mediaUrl,
       renderedRichCard,
       renderedCarousel,

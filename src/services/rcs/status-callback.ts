@@ -16,14 +16,35 @@ import { DynamoDBDocumentClient, PutCommand, UpdateCommand, QueryCommand } from 
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import { CloudWatchClient, PutMetricDataCommand } from '@aws-sdk/client-cloudwatch';
 import crypto from 'crypto';
+import { getTwilioCredentials } from '../../shared/utils/secrets-helper';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const snsClient = new SNSClient({});
 const cloudwatch = new CloudWatchClient({});
 
 const RCS_MESSAGES_TABLE = process.env.RCS_MESSAGES_TABLE!;
-const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN!;
 const RCS_ANALYTICS_TOPIC_ARN = process.env.RCS_ANALYTICS_TOPIC_ARN || '';
+
+// Twilio auth token cache (fetched from DynamoDB GlobalSecrets table)
+let twilioAuthTokenCache: string | null = null;
+let twilioAuthTokenCacheExpiry = 0;
+const TWILIO_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+async function getCachedTwilioAuthToken(): Promise<string | null> {
+  if (twilioAuthTokenCache && Date.now() < twilioAuthTokenCacheExpiry) {
+    return twilioAuthTokenCache;
+  }
+  
+  const creds = await getTwilioCredentials();
+  if (!creds) {
+    console.warn('Twilio credentials not found in GlobalSecrets table');
+    return null;
+  }
+  
+  twilioAuthTokenCache = creds.authToken;
+  twilioAuthTokenCacheExpiry = Date.now() + TWILIO_CACHE_TTL_MS;
+  return creds.authToken;
+}
 
 interface TwilioRcsStatusCallback {
   MessageSid: string;
@@ -115,14 +136,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const twilioSignature = event.headers['X-Twilio-Signature'] || event.headers['x-twilio-signature'];
     const webhookUrl = `https://${event.headers.Host || event.headers.host}${event.path}`;
     
-    if (TWILIO_AUTH_TOKEN && twilioSignature) {
-      const isValid = validateTwilioSignature(TWILIO_AUTH_TOKEN, twilioSignature, webhookUrl, params);
-      if (!isValid) {
-        console.error('Invalid Twilio signature on status callback');
-        return {
-          statusCode: 403,
-          body: JSON.stringify({ error: 'Invalid signature' }),
-        };
+    if (twilioSignature) {
+      const twilioAuthToken = await getCachedTwilioAuthToken();
+      if (twilioAuthToken) {
+        const isValid = validateTwilioSignature(twilioAuthToken, twilioSignature, webhookUrl, params);
+        if (!isValid) {
+          console.error('Invalid Twilio signature on status callback');
+          return {
+            statusCode: 403,
+            body: JSON.stringify({ error: 'Invalid signature' }),
+          };
+        }
       }
     }
 

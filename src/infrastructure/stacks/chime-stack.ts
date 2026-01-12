@@ -194,6 +194,31 @@ export interface ChimeStackProps extends StackProps {
    * Send push Lambda function ARN for invoking push notifications
    */
   sendPushFunctionArn?: string;
+  
+  // ========================================
+  // PERFORMANCE OPTIMIZATION
+  // ========================================
+  
+  /**
+   * Enable provisioned concurrency for critical real-time voice AI Lambdas.
+   * This reduces cold start latency but incurs additional cost.
+   * @default false
+   */
+  enableProvisionedConcurrency?: boolean;
+  
+  /**
+   * Number of provisioned concurrent instances for AI Transcript Bridge Lambda.
+   * Only used when enableProvisionedConcurrency is true.
+   * @default 5
+   */
+  aiTranscriptBridgeProvisionedConcurrency?: number;
+  
+  /**
+   * Number of provisioned concurrent instances for Inbound Router (SMA Handler) Lambda.
+   * Only used when enableProvisionedConcurrency is true.
+   * @default 5
+   */
+  inboundRouterProvisionedConcurrency?: number;
 }
 
 export type VoiceConnectorOriginationProtocol = 'UDP' | 'TCP' | 'TLS';
@@ -660,7 +685,7 @@ export class ChimeStack extends Stack {
 
     // Grant Kinesis permissions for analytics (if stream is provided)
 
-    // Create S3 bucket for hold music
+    // Create S3 bucket for hold music and streaming TTS audio
     const holdMusicBucket = new s3.Bucket(this, 'HoldMusicBucket', {
       bucketName: `${this.stackName.toLowerCase()}-hold-music-${this.account}-${this.region}`,
       removalPolicy: RemovalPolicy.DESTROY,
@@ -668,6 +693,18 @@ export class ChimeStack extends Stack {
       publicReadAccess: false,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
+      // FIX: Add lifecycle rules to auto-delete streaming TTS audio files
+      // S3 "Expires" header is metadata only - it does NOT delete objects.
+      // Lifecycle rules are required for actual deletion.
+      // NOTE: S3 lifecycle rules require expiration in whole days (minimum 1 day)
+      lifecycleRules: [
+        {
+          id: 'DeleteStreamingTTSAudio',
+          prefix: 'tts/', // Streaming TTS files are stored under tts/{callId}/
+          expiration: Duration.days(1), // Delete after 1 day (minimum for S3 lifecycle)
+          enabled: true,
+        },
+      ],
     });
 
     // Grant read access to the SMA handler
@@ -697,6 +734,29 @@ export class ChimeStack extends Stack {
       // Chime SMA requires 'audio/wav' not 'audio/x-wav'
       contentType: 'audio/wav',
     });
+
+    // ========================================
+    // PROVISIONED CONCURRENCY FOR SMA HANDLER
+    // ========================================
+    // Add provisioned concurrency for the inbound router (SMA handler)
+    // to reduce cold start latency for incoming calls
+    if (props.enableProvisionedConcurrency) {
+      console.log('[ChimeStack] Configuring provisioned concurrency for SMA Handler (inbound-router)');
+      
+      const smaHandlerAlias = new lambda.Alias(this, 'SmaHandlerAlias', {
+        aliasName: 'live',
+        version: smaHandler.currentVersion,
+        provisionedConcurrentExecutions: props.inboundRouterProvisionedConcurrency ?? 5,
+      });
+      
+      console.log(`[ChimeStack] SMA Handler: ${props.inboundRouterProvisionedConcurrency ?? 5} provisioned instances`);
+      
+      new CfnOutput(this, 'SmaHandlerAliasArn', {
+        value: smaHandlerAlias.functionArn,
+        description: 'SMA Handler Lambda alias with provisioned concurrency',
+        exportName: `${this.stackName}-SmaHandlerAliasArn`,
+      });
+    }
 
     const chimeCustomResourceRole = new iam.Role(this, 'ChimeVoiceCustomResourceRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
@@ -1423,6 +1483,15 @@ export class ChimeStack extends Stack {
 
         associateAiPhones.node.addDependency(voiceConnector);
         associateAiPhones.node.addDependency(vcIngressSipRule);
+        
+        // NOTE: SIP rules with TriggerType=ToPhoneNumber do NOT support Voice Connector product type numbers.
+        // Direct inbound calls to AI phone numbers (Voice Connector) are routed via the Voice Connector
+        // RequestUriHostname SIP rule created above. The inbound-router.ts Lambda detects AI numbers
+        // via AI_PHONE_NUMBERS_JSON and routes them directly to Voice AI.
+        //
+        // For a fully serverless direct-dial AI number, use Amazon Connect with Lex instead.
+        // See: connect-lex-ai-stack.ts for that implementation.
+        
       } else {
         console.log('[AI Phone Numbers] No clinics with aiPhoneNumber configured');
       }
@@ -2169,7 +2238,15 @@ export class ChimeStack extends Stack {
     // NOTE: AgentPresenceTableName export is already defined above (see AgentPresenceTableName CfnOutput)
     new CfnOutput(this, 'HoldMusicBucketName', {
       value: holdMusicBucket.bucketName,
-      description: 'S3 bucket for hold music. Upload a file named "hold-music.wav" to this bucket.',
+      description: 'S3 bucket for hold music and streaming TTS audio.',
+      exportName: `${this.stackName}-HoldMusicBucketName`,
+    });
+    
+    // FIX: Export bucket ARN for cross-stack permissions (used by AiAgentsStack for streaming TTS)
+    new CfnOutput(this, 'HoldMusicBucketArn', {
+      value: holdMusicBucket.bucketArn,
+      description: 'S3 bucket ARN for hold music and streaming TTS audio.',
+      exportName: `${this.stackName}-HoldMusicBucketArn`,
     });
     
 
@@ -3029,6 +3106,30 @@ export class ChimeStack extends Stack {
         description: 'Lambda that bridges transcripts to Voice AI handler',
         exportName: `${this.stackName}-AiTranscriptBridgeFnArn`,
       });
+
+      // ========================================
+      // PROVISIONED CONCURRENCY FOR CRITICAL LAMBDAS
+      // ========================================
+      // Add provisioned concurrency to reduce cold start latency for real-time voice AI
+      // This is enabled via stack props to allow for cost management
+      if (props.enableProvisionedConcurrency) {
+        console.log('[ChimeStack] Configuring provisioned concurrency for real-time voice AI Lambdas');
+        
+        // Create alias for AI Transcript Bridge Lambda with provisioned concurrency
+        const aiTranscriptBridgeAlias = new lambda.Alias(this, 'AiTranscriptBridgeAlias', {
+          aliasName: 'live',
+          version: aiTranscriptBridgeFn.currentVersion,
+          provisionedConcurrentExecutions: props.aiTranscriptBridgeProvisionedConcurrency ?? 5,
+        });
+        
+        console.log(`[ChimeStack] AI Transcript Bridge: ${props.aiTranscriptBridgeProvisionedConcurrency ?? 5} provisioned instances`);
+        
+        new CfnOutput(this, 'AiTranscriptBridgeAliasArn', {
+          value: aiTranscriptBridgeAlias.functionArn,
+          description: 'AI Transcript Bridge Lambda alias with provisioned concurrency',
+          exportName: `${this.stackName}-AiTranscriptBridgeAliasArn`,
+        });
+      }
 
       // ========================================
       // TRANSCRIBE AUDIO SEGMENT LAMBDA

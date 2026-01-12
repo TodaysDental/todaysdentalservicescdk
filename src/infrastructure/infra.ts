@@ -44,7 +44,11 @@ import { EmailStack } from './stacks/email-stack';
 import { AccountingStack } from './stacks/accounting-stack';
 import { SecretsStack } from './stacks/secrets-stack';
 import { PushNotificationsStack } from './stacks/push-notifications-stack';
+import { ConnectLexAiStack } from './stacks/connect-lex-ai-stack';
 // import { DentalSoftwareStack } from './stacks/dental-software-stack';
+
+// Import clinic config for AI phone number mapping (used by Connect/Lex stack)
+import clinicConfigData from './configs/clinic-config.json';
 
 const app = new cdk.App();
 
@@ -656,6 +660,58 @@ aiAgentsStack.addDependency(chatbotStack);
 aiAgentsStack.addDependency(clinicHoursStack);
 aiAgentsStack.addDependency(secretsStack);
 
+// ========================================
+// CONNECT + LEX AI STACK
+// ========================================
+// Provides a fully serverless AI phone number via Amazon Connect + Lex V2.
+// Alternative to Chime Voice Connector (which requires an SBC for direct inbound calls).
+// Writes to the same AnalyticsStack tables (CallAnalyticsN1 + TranscriptBuffersV2) for unified dashboards.
+
+// Build AI phone numbers mapping from clinic-config.json (same pattern as ChimeStack)
+const clinicsWithAiPhones = (clinicConfigData as any[])
+  .filter((c: any) => c.aiPhoneNumber && c.aiPhoneNumber.trim() !== '')
+  .map((c: any) => ({
+    clinicId: c.clinicId,
+    aiPhoneNumber: c.aiPhoneNumber.trim(),
+  }));
+
+// Map aiPhoneNumber -> clinicId for Lex hook to detect which clinic the call is for
+const aiPhoneNumbersMap = clinicsWithAiPhones.reduce(
+  (acc, c) => ({ ...acc, [c.aiPhoneNumber]: c.clinicId }),
+  {} as Record<string, string>
+);
+
+// Use the first AI phone number as the primary Connect AI phone (or fallback)
+const primaryAiPhoneNumber = clinicsWithAiPhones[0]?.aiPhoneNumber || '+14439272295';
+const defaultClinicForAi = clinicsWithAiPhones[0]?.clinicId || 'dentistingreenville';
+
+console.log(`[ConnectLexAiStack] Found ${clinicsWithAiPhones.length} clinics with AI phone numbers`);
+
+const connectLexAiStack = new ConnectLexAiStack(app, 'TodaysDentalInsightsConnectLexAiN1', {
+  env,
+  // Existing Amazon Connect instance
+  connectInstanceId: '0626aa86-d377-44c8-9311-84e4f230cc72',
+  connectInstanceArn: 'arn:aws:connect:us-east-1:851620242036:instance/0626aa86-d377-44c8-9311-84e4f230cc72',
+  // Phone number to attach to AI contact flow (uses first AI phone from config)
+  connectAiPhoneNumber: primaryAiPhoneNumber,
+  // AI Agents table for Bedrock agent lookup (from AiAgentsStack)
+  agentsTableName: aiAgentsStack.agentsTable.tableName,
+  agentsTableArn: aiAgentsStack.agentsTable.tableArn,
+  // Sessions table for session management (from AiAgentsStack)
+  sessionsTableName: aiAgentsStack.sessionsTable.tableName,
+  sessionsTableArn: aiAgentsStack.sessionsTable.tableArn,
+  // Shared analytics tables from AnalyticsStack
+  callAnalyticsTableName: ANALYTICS_TABLE_NAME,
+  callAnalyticsTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/${ANALYTICS_TABLE_NAME}`,
+  transcriptBufferTableName: analyticsStack.transcriptBufferTable.tableName,
+  transcriptBufferTableArn: analyticsStack.transcriptBufferTable.tableArn,
+  // AI phone numbers mapping for clinic detection (built from clinic-config.json)
+  aiPhoneNumbersJson: JSON.stringify(aiPhoneNumbersMap),
+  defaultClinicId: defaultClinicForAi,
+});
+connectLexAiStack.addDependency(aiAgentsStack);
+connectLexAiStack.addDependency(analyticsStack);
+
 // Query Generator Stack - AI-powered SQL query generation using Bedrock
 const queryGeneratorStack = new QueryGeneratorStack(app, 'TodaysDentalInsightsQueryGeneratorN1', {
   env,
@@ -665,10 +721,7 @@ const queryGeneratorStack = new QueryGeneratorStack(app, 'TodaysDentalInsightsQu
 // Provides incoming message, fallback, and status callback webhooks
 const rcsStack = new RcsStack(app, 'TodaysDentalInsightsRcsN1', {
   env,
-  // Twilio credentials from environment variables
-  twilioAccountSid: process.env.TWILIO_ACCOUNT_SID,
-  twilioAuthToken: process.env.TWILIO_AUTH_TOKEN,
-  // Pass secrets table names for dynamic Twilio credential retrieval
+  // Twilio credentials are now fetched from GlobalSecrets DynamoDB table at runtime
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
   clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,

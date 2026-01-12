@@ -1,0 +1,7 @@
+{
+    "Type":  "CONTACT_FLOW",
+    "Description":  "test basic schema",
+    "Name":  "zz-basic-test-735233037",
+    "Content":  "{\"StartAction\":\"a8b320e1-c8ee-4065-ab98-5a512982230c\",\"Actions\":[{\"Transitions\":{\"NextAction\":\"21f2249a-1425-439c-b972-1d1ba0bec144\",\"Errors\":[],\"Conditions\":[]},\"Type\":\"MessageParticipant\",\"Identifier\":\"a8b320e1-c8ee-4065-ab98-5a512982230c\",\"Parameters\":{\"Text\":\"Hello from test flow.\"}},{\"Transitions\":{\"NextAction\":\"2e5e92e0-5bee-459e-9834-800b0b577937\",\"Errors\":[],\"Conditions\":[]},\"Type\":\"GetParticipantInput\",\"Identifier\":\"21f2249a-1425-439c-b972-1d1ba0bec144\",\"Parameters\":{\"InputTimeLimitSeconds\":\"5\",\"StoreInput\":\"False\",\"Text\":\"Press 1.\"}},{\"Transitions\":{},\"Type\":\"DisconnectParticipant\",\"Identifier\":\"2e5e92e0-5bee-459e-9834-800b0b577937\",\"Parameters\":{}}],\"Version\":\"2019-10-30\"}",
+    "InstanceId":  "0626aa86-d377-44c8-9311-84e4f230cc72"
+}

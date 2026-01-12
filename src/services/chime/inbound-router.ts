@@ -18,6 +18,10 @@ import {
     sendMissedCallNotification,
     type IncomingCallNotification 
 } from './utils/push-notifications';
+// FIX: Import barge-in detector to clear speaking state when TTS completes
+import { bargeInDetector } from './utils/barge-in-detector';
+// FIX: Import call state machine for coordinated state management
+import { callStateMachine, CallEvent } from './utils/call-state-machine';
 
 // This Lambda is the "brain" for call routing.
 // It is NOT triggered by API Gateway. It is triggered by the Chime SDK SIP Media Application.
@@ -399,6 +403,9 @@ async function removeFromQueue(clinicId: string, callId: string, status: QueueEn
 }
 
 
+// --- Utility Functions ---
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
 // --- Chime Action Builders ---
 const buildActions = (actions: any[]) => ({
     SchemaVersion: '1.0',
@@ -510,6 +517,21 @@ const buildPlayAudioAction = (audioSource: string, repeat: number = 1) => ({
             Key: audioSource
         },
         PlaybackTerminators: ['#', '*'],
+        Repeat: repeat,
+    },
+});
+
+// Thinking audio - plays during AI processing to eliminate awkward silence
+const THINKING_AUDIO_KEY = 'Computer-keyboard sound.wav';
+
+const buildPlayThinkingAudioAction = (repeat: number = 3) => ({
+    Type: 'PlayAudio',
+    Parameters: {
+        AudioSource: {
+            Type: 'S3',
+            BucketName: HOLD_MUSIC_BUCKET,
+            Key: THINKING_AUDIO_KEY,
+        },
         Repeat: repeat,
     },
 });
@@ -633,6 +655,10 @@ async function cleanupMeeting(meetingId: string) {
  * 3. Start Media Insights Pipeline on KVS stream
  * 4. Return meeting + attendee info for JoinChimeMeeting action
  */
+// Retry configuration for meeting creation
+const MEETING_CREATION_MAX_RETRIES = 3;
+const MEETING_CREATION_RETRY_DELAY_MS = 500;
+
 async function createAiMeetingWithPipeline(params: {
     callId: string;
     clinicId: string;
@@ -645,77 +671,124 @@ async function createAiMeetingWithPipeline(params: {
     pipelineId: string | null;
 } | null> {
     const { callId, clinicId, aiAgentId, aiSessionId, callerNumber } = params;
+    const startTime = Date.now();
     
-    try {
-        console.log('[createAiMeetingWithPipeline] Creating AI meeting for real-time transcription', {
-            callId, clinicId, aiAgentId
-        });
-        
-        // 1. Create the meeting
-        // ExternalMeetingId max length is 64 chars, so use shortened format
-        const shortClinicId = clinicId.substring(0, 20); // Truncate clinic ID
-        const meetingResponse = await chime.send(new CreateMeetingCommand({
-            ClientRequestToken: `ai-${callId}`,
-            ExternalMeetingId: `ai-${shortClinicId}-${callId.substring(0, 8)}`, // ~35 chars max
-            MediaRegion: CHIME_MEDIA_REGION,
-            // Meeting features for transcription
-            MeetingFeatures: {
-                Audio: {
-                    EchoReduction: 'AVAILABLE', // Enable echo reduction for better transcription
+    for (let attempt = 1; attempt <= MEETING_CREATION_MAX_RETRIES; attempt++) {
+        try {
+            console.log('[createAiMeetingWithPipeline] Creating AI meeting for real-time transcription', {
+                callId, clinicId, aiAgentId, attempt, maxRetries: MEETING_CREATION_MAX_RETRIES
+            });
+            
+            // 1. Create the meeting
+            // ExternalMeetingId max length is 64 chars, so use shortened format
+            const shortClinicId = clinicId.substring(0, 20); // Truncate clinic ID
+            const meetingResponse = await chime.send(new CreateMeetingCommand({
+                ClientRequestToken: `ai-${callId}-${attempt}`, // Include attempt in token for retries
+                ExternalMeetingId: `ai-${shortClinicId}-${callId.substring(0, 8)}`, // ~35 chars max
+                MediaRegion: CHIME_MEDIA_REGION,
+                // Meeting features for transcription
+                MeetingFeatures: {
+                    Audio: {
+                        EchoReduction: 'AVAILABLE', // Enable echo reduction for better transcription
+                    },
                 },
-            },
-        }));
-        
-        if (!meetingResponse.Meeting?.MeetingId) {
-            console.error('[createAiMeetingWithPipeline] Failed to create meeting');
+            }));
+            
+            if (!meetingResponse.Meeting?.MeetingId) {
+                console.error('[createAiMeetingWithPipeline] Failed to create meeting - no MeetingId returned', { attempt });
+                if (attempt < MEETING_CREATION_MAX_RETRIES) {
+                    await sleep(MEETING_CREATION_RETRY_DELAY_MS * attempt); // Exponential backoff
+                    continue;
+                }
+                console.error('[createAiMeetingWithPipeline] All meeting creation attempts failed');
+                emitModeSelectionMetric('meeting-kvs', false, Date.now() - startTime);
+                return null;
+            }
+            
+            const meetingId = meetingResponse.Meeting.MeetingId;
+            console.log('[createAiMeetingWithPipeline] Meeting created:', { meetingId, attempt });
+            
+            // 2. Create attendee for the caller (PSTN participant)
+            const attendeeResponse = await chime.send(new CreateAttendeeCommand({
+                MeetingId: meetingId,
+                ExternalUserId: `caller-${callerNumber.replace(/[^0-9]/g, '')}`,
+                Capabilities: {
+                    Audio: 'SendReceive',
+                    Video: 'None',
+                    Content: 'None',
+                },
+            }));
+            
+            if (!attendeeResponse.Attendee) {
+                console.error('[createAiMeetingWithPipeline] Failed to create attendee', { meetingId, attempt });
+                await cleanupMeeting(meetingId);
+                if (attempt < MEETING_CREATION_MAX_RETRIES) {
+                    await sleep(MEETING_CREATION_RETRY_DELAY_MS * attempt);
+                    continue;
+                }
+                emitModeSelectionMetric('meeting-kvs', false, Date.now() - startTime);
+                return null;
+            }
+            
+            console.log('[createAiMeetingWithPipeline] Attendee created:', attendeeResponse.Attendee.AttendeeId);
+            
+            // NOTE: We do NOT start Media Insights Pipeline here because:
+            // 1. KVS streams only exist AFTER attendees join and start publishing media
+            // 2. The caller hasn't joined the meeting yet (JoinChimeMeeting executes later)
+            // 3. Waiting for KVS would block the Lambda for 10+ seconds and cause timeout
+            //
+            // The pipeline is started in ACTION_SUCCESSFUL handler after JoinChimeMeeting succeeds.
+            
+            console.log('[createAiMeetingWithPipeline] Meeting ready for caller to join', {
+                meetingId,
+                duration: Date.now() - startTime,
+                attempt
+            });
+            
+            emitModeSelectionMetric('meeting-kvs', true, Date.now() - startTime);
+            
+            return {
+                meetingInfo: meetingResponse.Meeting,
+                attendeeInfo: attendeeResponse.Attendee,
+                pipelineId: null, // Pipeline started after JoinChimeMeeting succeeds
+            };
+            
+        } catch (error: any) {
+            const isRetryable = error?.name === 'ServiceUnavailableException' || 
+                               error?.name === 'ThrottlingException' ||
+                               error?.$retryable?.throttling === true;
+            
+            console.error('[createAiMeetingWithPipeline] Error:', {
+                error: error?.message || error,
+                errorName: error?.name,
+                attempt,
+                isRetryable
+            });
+            
+            if (isRetryable && attempt < MEETING_CREATION_MAX_RETRIES) {
+                await sleep(MEETING_CREATION_RETRY_DELAY_MS * attempt);
+                continue;
+            }
+            
+            emitModeSelectionMetric('meeting-kvs', false, Date.now() - startTime);
             return null;
         }
-        
-        const meetingId = meetingResponse.Meeting.MeetingId;
-        console.log('[createAiMeetingWithPipeline] Meeting created:', meetingId);
-        
-        // 2. Create attendee for the caller (PSTN participant)
-        const attendeeResponse = await chime.send(new CreateAttendeeCommand({
-            MeetingId: meetingId,
-            ExternalUserId: `caller-${callerNumber.replace(/[^0-9]/g, '')}`,
-            Capabilities: {
-                Audio: 'SendReceive',
-                Video: 'None',
-                Content: 'None',
-            },
-        }));
-        
-        if (!attendeeResponse.Attendee) {
-            console.error('[createAiMeetingWithPipeline] Failed to create attendee');
-            await cleanupMeeting(meetingId);
-            return null;
-        }
-        
-        console.log('[createAiMeetingWithPipeline] Attendee created:', attendeeResponse.Attendee.AttendeeId);
-        
-        // NOTE: We do NOT start Media Insights Pipeline here because:
-        // 1. KVS streams only exist AFTER attendees join and start publishing media
-        // 2. The caller hasn't joined the meeting yet (JoinChimeMeeting executes later)
-        // 3. Waiting for KVS would block the Lambda for 10+ seconds and cause timeout
-        //
-        // For real-time transcription, we use the fallback record-transcribe mode
-        // which captures audio via RecordAudio action after JoinChimeMeeting.
-        // 
-        // TODO: To enable true real-time transcription via Media Insights Pipeline,
-        // start the pipeline in ACTION_SUCCESSFUL handler after JoinChimeMeeting succeeds.
-        
-        console.log('[createAiMeetingWithPipeline] Meeting ready for caller to join');
-        
-        return {
-            meetingInfo: meetingResponse.Meeting,
-            attendeeInfo: attendeeResponse.Attendee,
-            pipelineId: null, // Pipeline not started - will use fallback transcription
-        };
-        
-    } catch (error: any) {
-        console.error('[createAiMeetingWithPipeline] Error:', error);
-        return null;
     }
+    
+    console.error('[createAiMeetingWithPipeline] Exhausted all retries');
+    emitModeSelectionMetric('meeting-kvs', false, Date.now() - startTime);
+    return null;
+}
+
+// Emit CloudWatch metric for mode selection (for monitoring fallback rates)
+function emitModeSelectionMetric(mode: 'meeting-kvs' | 'record-transcribe', success: boolean, durationMs: number): void {
+    // Log metric data in a structured format that can be parsed by CloudWatch Logs Insights
+    console.log('[METRIC] VoiceAI.ModeSelection', {
+        mode,
+        success,
+        durationMs,
+        timestamp: new Date().toISOString()
+    });
 }
 
 // NOTE: For "AI thinking" audio feedback, you can use PlayAudio action with hold-music.wav
@@ -1397,22 +1470,49 @@ export const handler = async (event: any): Promise<any> => {
                                 ]);
                             }
 
-                            console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED - routing to Voice AI via aiPhoneNumber path`, {
+                            // FIX: Use clinic's main phone number as CallerIdNumber instead of caller's number.
+                            // Reasons:
+                            // 1. fromPhoneNumber can be 'Unknown' or invalid E.164 format
+                            // 2. Carriers may reject calls with spoofed/unverified caller IDs
+                            // 3. toPhoneNumber is our verified clinic number
+                            const callerIdForBridge = toPhoneNumber && isValidE164(toPhoneNumber) 
+                                ? toPhoneNumber 
+                                : aiPhoneNumber; // Fallback to AI number if main number is invalid
+
+                            console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED - forwarding to AI number via PSTN`, {
                                 callId,
                                 clinicId,
                                 aiPhoneNumber,
-                                callerNumber: fromPhoneNumber
+                                callerNumber: fromPhoneNumber,
+                                callerIdForBridge,
                             });
 
-                            // Route using the AI phone number path logic (no PSTN dial-out).
-                            return await routeInboundCallToVoiceAi({
-                                clinicId,
-                                callId,
-                                fromPhoneNumber,
-                                pstnLegCallId,
-                                isAiPhoneNumber: true, // Treat as AI-number call (skip hours checks in voice-ai-handler)
-                                source: 'after_hours_forward',
-                            });
+                            // Forward via PSTN to aiPhoneNumber (Voice Connector number).
+                            // This enables KVS streaming for real-time transcription.
+                            // The aiPhoneNumber has a SIP Rule that routes to the same SMA handler.
+                            // We pass the original caller number in SIP headers for context preservation.
+                            return buildActions([
+                                buildSpeakAction("Please hold while I connect you to our after-hours assistant."),
+                                {
+                                    Type: 'CallAndBridge',
+                                    Parameters: {
+                                        CallTimeoutSeconds: 30,
+                                        CallerIdNumber: callerIdForBridge, // Use verified clinic number
+                                        Endpoints: [
+                                            {
+                                                Uri: aiPhoneNumber,
+                                                BridgeEndpointType: 'PSTN',
+                                            }
+                                        ],
+                                        SipHeaders: {
+                                            // Preserve original caller info in SIP header for logging/analytics
+                                            'X-Original-Caller': fromPhoneNumber,
+                                            'X-Forward-Reason': 'after-hours',
+                                            'X-Clinic-Id': clinicId,
+                                        },
+                                    }
+                                }
+                            ]);
                         }
                         
                         console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is OPEN - proceeding with human agent routing`);
@@ -2193,6 +2293,29 @@ export const handler = async (event: any): Promise<any> => {
             case 'CALL_UPDATE_REQUESTED': {
                 console.log(`[CALL_UPDATE_REQUESTED] Received for call ${callId}`, args);
 
+                // Handle barge-in interrupt action
+                // This is triggered by the barge-in detector when caller speaks during AI output
+                if (args?.interruptAction === 'true') {
+                    console.log('[CALL_UPDATE_REQUESTED] Barge-in interrupt received:', {
+                        callId,
+                        bargeInTime: args.bargeInTime,
+                        transcriptLength: args.bargeInTranscript?.length || 0,
+                    });
+
+                    // The barge-in detector sends a short pause action to stop current playback
+                    // Then the transcript bridge will process the new utterance normally
+                    const interruptActions = args.pendingAiActions
+                        ? JSON.parse(args.pendingAiActions)
+                        : [buildPauseAction(200)];
+
+                    console.log('[CALL_UPDATE_REQUESTED] Executing interrupt actions:', {
+                        count: interruptActions.length,
+                        firstAction: interruptActions[0]?.Type,
+                    });
+
+                    return buildActions(interruptActions);
+                }
+
                 // AI transcript bridge updates: play pending AI actions immediately.
                 // This is how real-time Voice AI responds while the call is in a long Pause.
                 if (args?.pendingAiActions) {
@@ -2202,6 +2325,15 @@ export const handler = async (event: any): Promise<any> => {
                             : args.pendingAiActions;
 
                         const pendingActions: any[] = Array.isArray(pending) ? pending : [];
+
+                        // Log streaming chunk metadata if present
+                        if (args.isStreamingChunk === 'true') {
+                            console.log('[CALL_UPDATE_REQUESTED] Streaming TTS chunk:', {
+                                callId,
+                                sequence: args.ttsSequence,
+                                isFinal: args.isFinalChunk,
+                            });
+                        }
 
                         // Clear DynamoDB fallback response (if present) to avoid duplicate playback.
                         try {
@@ -2778,22 +2910,28 @@ export const handler = async (event: any): Promise<any> => {
                     // The recording has been saved to S3. The transcribe-audio-segment Lambda
                     // will be triggered by S3 notification to process the audio and send
                     // the AI response via UpdateSipMediaApplicationCall.
-                    // We use short Pause actions that can be interrupted by UpdateSipMediaApplicationCall.
-                    // No "thinking" indicator to minimize latency.
-                    const waitActions = [];
+                    // Play thinking audio (keyboard typing sound) while waiting for AI response.
+                    // This will be interrupted by UpdateSipMediaApplicationCall when AI response is ready.
+                    console.log(`[ACTION_SUCCESSFUL] Playing thinking audio while waiting for AI response`);
                     
-                    // Wait for transcription + AI processing (SMA has action limit of ~10-25)
-                    // Use fewer, longer pauses that can be interrupted by UpdateSipMediaApplicationCall
-                    for (let i = 0; i < 5; i++) {
-                        waitActions.push(buildPauseAction(3000)); // 3 second pauses, total 15 seconds
-                    }
-                    
-                    return buildActions(waitActions);
+                    return buildActions([
+                        buildPlayThinkingAudioAction(5), // Repeat up to 5 times, will be interrupted by AI response
+                    ]);
                 }
                 
                 // For other ACTION_SUCCESSFUL events, check for pending AI responses
                 if (eventType === 'ACTION_SUCCESSFUL') {
                     console.log(`[ACTION_SUCCESSFUL] Action completed for call ${callId}`, { actionType });
+                    
+                    // FIX: Clear AI speaking state when TTS (Speak/PlayAudio) completes
+                    // This prevents false positives in barge-in detection where we think
+                    // AI is still speaking but it has actually finished.
+                    if (actionType === 'Speak' || actionType === 'PlayAudio') {
+                        bargeInDetector.clearSpeakingState(callId);
+                        // FIX: Transition state machine back to LISTENING
+                        callStateMachine.transition(callId, CallEvent.TTS_COMPLETED);
+                        console.log(`[ACTION_SUCCESSFUL] Cleared AI speaking state for call ${callId}, transitioned to LISTENING`);
+                    }
                     
                     // CRITICAL FIX: Check for pending AI responses from transcript bridge
                     // This handles the case where the AI Transcript Bridge has queued a response
@@ -3165,6 +3303,58 @@ export const handler = async (event: any): Promise<any> => {
                     console.warn(`[ACTION_FAILED] StartCallRecording failed - continuing call without recording`, { errorType, errorMessage });
                     // Return a minimal pause action to keep call flow going
                     return buildActions([buildPauseAction(100)]);
+                }
+
+                // FIX: Handle CallAndBridge failures for after-hours AI forwarding
+                // When the AI phone number doesn't answer (misconfigured or no SIP rule),
+                // fall back to handling the AI call directly in this SMA.
+                if (failedActionType === 'CallAndBridge') {
+                    const sipHeaders = event?.ActionData?.Parameters?.SipHeaders || {};
+                    const clinicIdFromHeader = sipHeaders['X-Clinic-Id'];
+                    const forwardReason = sipHeaders['X-Forward-Reason'];
+                    // X-Original-Caller was set during CallAndBridge to preserve caller ID
+                    const originalCaller = sipHeaders['X-Original-Caller'] || 'unknown';
+                    
+                    console.warn(`[ACTION_FAILED] CallAndBridge failed`, {
+                        errorType,
+                        errorMessage,
+                        clinicId: clinicIdFromHeader,
+                        forwardReason,
+                        originalCaller,
+                    });
+                    
+                    // If this was an after-hours forward that failed, handle AI call directly
+                    if (forwardReason === 'after-hours' && clinicIdFromHeader) {
+                        console.log(`[ACTION_FAILED] Falling back to direct AI handling for clinic ${clinicIdFromHeader}`);
+                        
+                        try {
+                            // Route directly to Voice AI without PSTN forward
+                            return await routeInboundCallToVoiceAi({
+                                callId,
+                                clinicId: clinicIdFromHeader,
+                                fromPhoneNumber: originalCaller,
+                                pstnLegCallId,
+                                isAiPhoneNumber: false, // Not an AI phone number, this is fallback
+                                source: 'after_hours_forward', // Use existing source type
+                            });
+                        } catch (fallbackErr: any) {
+                            console.error(`[ACTION_FAILED] Direct AI fallback failed:`, fallbackErr.message);
+                            // If direct AI also fails, apologize and hang up
+                            return buildActions([
+                                buildSpeakAction(
+                                    "I'm sorry, we're experiencing technical difficulties with our after-hours assistant. " +
+                                    "Please try calling back in a few minutes, or call during regular business hours. Goodbye."
+                                ),
+                                { Type: 'Hangup', Parameters: { SipResponseCode: '0' } }
+                            ]);
+                        }
+                    }
+                    
+                    // For non-after-hours CallAndBridge failures, inform caller
+                    return buildActions([
+                        buildSpeakAction("I'm sorry, we couldn't complete your call transfer. Please try again later."),
+                        { Type: 'Hangup', Parameters: { SipResponseCode: '0' } }
+                    ]);
                 }
 
                 // For other failures, return a pause action to keep the call alive

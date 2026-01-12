@@ -36,6 +36,9 @@ interface ClinicSecret {
   domainSmtpPassword: string;
   ayrshareProfileKey: string;
   ayrshareRefId: string;
+  // RCS messaging configuration
+  rcsSenderId?: string;
+  messagingServiceSid?: string;
 }
 
 interface GlobalSecret {
@@ -98,6 +101,9 @@ async function seedClinicSecrets(): Promise<number> {
     domainSmtpPassword: secret.domainSmtpPassword,
     ayrshareProfileKey: secret.ayrshareProfileKey,
     ayrshareRefId: secret.ayrshareRefId,
+    // RCS messaging configuration
+    rcsSenderId: secret.rcsSenderId,
+    messagingServiceSid: secret.messagingServiceSid,
     updatedAt: new Date().toISOString(),
   }));
 

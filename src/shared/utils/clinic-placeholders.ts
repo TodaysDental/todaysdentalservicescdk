@@ -76,6 +76,7 @@ export async function buildClinicPlaceholders(clinicId: string): Promise<Record<
     // Primary placeholders (as requested)
     clinic_name: String(clinic.clinicName || ''),
     phone_number: String(clinic.clinicPhone || clinic.phoneNumber || ''),
+    clinic_phone: String(clinic.clinicPhone || clinic.phoneNumber || ''), // Alias for phone_number
     clinic_address: fullAddress,
     clinic_url: String(clinic.websiteLink || ''),
     clinic_email: String(clinic.clinicEmail || ''),

@@ -1,0 +1,1791 @@
+﻿[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[AnalyticsStack] Voice AI integration: DISABLED
+[AnalyticsStack] Table configuration: {
+  callQueueTable: 'TodaysDentalInsightsChimeN1-CallQueueV2',
+  agentPresenceTable: 'TodaysDentalInsightsChimeN1-AgentPresence',
+  agentPerformanceTable: 'TodaysDentalInsightsChimeN1-AgentPerformance',
+  source: 'EXPLICIT',
+  isProduction: false
+}
+[AnalyticsStack] Table name validation hints: {
+  expectedCallQueuePattern: 'TodaysDentalInsightsChimeN1-CallQueue*',
+  expectedAgentPresencePattern: 'TodaysDentalInsightsChimeN1-AgentPresence*',
+  expectedAgentPerformancePattern: 'TodaysDentalInsightsChimeN1-AgentPerformance*',
+  chimeStackName: 'TodaysDentalInsightsChimeN1'
+}
+[AnalyticsStack] ChimeStack table names: {
+  callQueueTable: 'TodaysDentalInsightsChimeN1-CallQueueV2',
+  agentPresenceTable: 'TodaysDentalInsightsChimeN1-AgentPresence',
+  agentPerformanceTable: 'TodaysDentalInsightsChimeN1-AgentPerformance',
+  source: 'explicit props'
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[ChimeStack] Voice AI integration enabled with all required values resolved.
+[ChimeStack] Using Chime Media Region: us-east-1
+Found 27 clinics with phone numbers
+Associating 27 phone numbers with Voice Connector
+Processing 27 phone numbers in 6 batches
+[AI Phone Numbers] Configured 1 AI phone numbers - enabling Voice Connector ingress routing
+[ChimeStack] Setting up call recording infrastructure
+[ChimeStack] Creating dedicated recordings bucket
+[ChimeStack] Creating Transcribe Audio Segment Lambda for AI voice transcription
+[ChimeStack] Added S3 notification for AI recordings
+[ChimeStack] Creating Media Insights Pipeline Configuration for real-time transcription
+[ChimeStack] Media Insights Pipeline and Voice Connector Streaming configured
+[ChimeStack] AI Transcript Bridge configured for Voice AI integration
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[AiAgentsStack] Using shared ClinicHours table: ${Token[TOKEN.626]}
+[AiAgentsStack] CallAnalytics table configured: TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1
+[AiAgentsStack] Using shared recordings bucket from ChimeStack: ${Token[TOKEN.9303]}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[AiAgentsStack] Chime integration configured: {
+  clinicsTable: '${Token[TOKEN.7946]}',
+  smaIdMapParameterName: '/TodaysDentalInsightsChimeN1/SmaIdMap'
+}
+[ConnectLexAiStack] Found 1 clinics with AI phone numbers
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+[CORS] Building error headers for API Gateway
+[CORS] Determining allowed origin {
+  requestOrigin: 'https://todaysdentalinsights.com',
+  allowedOrigins: [
+    'https://todaysdentalinsights.com',
+    'https://todaysdentalinsights.com/',
+    'https://dentistinnewbritain.com',
+    'https://dentistingreenville.com',
+    'https://todaysdentalcayce.com'
+  ]
+}
+[CORS] Generated headers: {
+  'Access-Control-Allow-Origin': 'https://todaysdentalinsights.com',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '86400'
+}
+[CORS] Generated error headers: {
+  'Access-Control-Allow-Origin': "'https://todaysdentalinsights.com'",
+  'Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'",
+  'Access-Control-Allow-Headers': "'Content-Type, Authorization, X-Requested-With, Referer'",
+  'Access-Control-Allow-Credentials': "'true'",
+  'Access-Control-Max-Age': "'86400'"
+}
+Resources:
+  LexBedrockHookFnServiceRoleB3D26C11:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: Function
+          Value: lex-bedrock-hook
+        - Key: ManagedBy
+          Value: cdk
+        - Key: Service
+          Value: ConnectLexAI
+        - Key: Stack
+          Value: TodaysDentalInsightsConnectLexAiN1
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/LexBedrockHookFn/ServiceRole/Resource
+  LexBedrockHookFnServiceRoleDefaultPolicyE72D5287:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - dynamodb:GetItem
+              - dynamodb:Query
+            Effect: Allow
+            Resource:
+              - Fn::ImportValue: TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttAiAgentTable08A482D1Arn213493BF
+              - Fn::Join:
+                  - ""
+                  - - Fn::ImportValue: TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttAiAgentTable08A482D1Arn213493BF
+                    - /index/*
+          - Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Effect: Allow
+            Resource:
+              Fn::ImportValue: TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttAiAgentSessionsTableFD40A5D8Arn3D9C5E3C
+          - Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:Query
+            Effect: Allow
+            Resource:
+              - arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1
+              - arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1/index/*
+          - Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Effect: Allow
+            Resource:
+              Fn::ImportValue: TodaysDentalInsightsAnalyticsN1:ExportsOutputFnGetAttTranscriptBufferTable6B540524Arn0067ECB2
+          - Action:
+              - bedrock:InvokeAgent
+              - bedrock:InvokeModel
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: LexBedrockHookFnServiceRoleDefaultPolicyE72D5287
+      Roles:
+        - Ref: LexBedrockHookFnServiceRoleB3D26C11
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/LexBedrockHookFn/ServiceRole/DefaultPolicy/Resource
+  LexBedrockHookFn6C573C2E:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: cdk-tdi3-assets-851620242036-us-east-1
+        S3Key: 6b2fcf637dd0e8e51a54fda151bce074e6c62ad161f6b06081b3fbd612e30571.zip
+      Environment:
+        Variables:
+          AGENTS_TABLE:
+            Fn::ImportValue: TodaysDentalInsightsAiAgentsN1:ExportsOutputRefAiAgentTable08A482D1F1FC100B
+          SESSIONS_TABLE:
+            Fn::ImportValue: TodaysDentalInsightsAiAgentsN1:ExportsOutputRefAiAgentSessionsTableFD40A5D862A0DEC9
+          CALL_ANALYTICS_TABLE: TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1
+          TRANSCRIPT_BUFFER_TABLE_NAME:
+            Fn::ImportValue: TodaysDentalInsightsAnalyticsN1:ExportsOutputRefTranscriptBufferTable6B54052467630EA1
+          AI_PHONE_NUMBERS_JSON: '{"+14439272295":"dentistingreenville"}'
+          DEFAULT_CLINIC_ID: dentistingreenville
+      FunctionName: TodaysDentalInsightsConnectLexAiN1-LexBedrockHook
+      Handler: index.handler
+      MemorySize: 512
+      Role:
+        Fn::GetAtt:
+          - LexBedrockHookFnServiceRoleB3D26C11
+          - Arn
+      Runtime: nodejs20.x
+      Tags:
+        - Key: Function
+          Value: lex-bedrock-hook
+        - Key: ManagedBy
+          Value: cdk
+        - Key: Service
+          Value: ConnectLexAI
+        - Key: Stack
+          Value: TodaysDentalInsightsConnectLexAiN1
+      Timeout: 30
+    DependsOn:
+      - LexBedrockHookFnServiceRoleDefaultPolicyE72D5287
+      - LexBedrockHookFnServiceRoleB3D26C11
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/LexBedrockHookFn/Resource
+      aws:asset:path: asset.6b2fcf637dd0e8e51a54fda151bce074e6c62ad161f6b06081b3fbd612e30571
+      aws:asset:is-bundled: true
+      aws:asset:property: Code
+  LexBedrockHookFnLogRetention82723F6A:
+    Type: Custom::LogRetention
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+          - LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A
+          - Arn
+      LogGroupName:
+        Fn::Join:
+          - ""
+          - - /aws/lambda/
+            - Ref: LexBedrockHookFn6C573C2E
+      RetentionInDays: 7
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/LexBedrockHookFn/LogRetention/Resource
+  LexBedrockHookFnConnectInvoke2C837588:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName:
+        Fn::GetAtt:
+          - LexBedrockHookFn6C573C2E
+          - Arn
+      Principal: connect.amazonaws.com
+      SourceArn: arn:aws:connect:us-east-1:851620242036:instance/0626aa86-d377-44c8-9311-84e4f230cc72
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/LexBedrockHookFn/ConnectInvoke
+  LexBedrockHookFnLexInvoke32408B88:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName:
+        Fn::GetAtt:
+          - LexBedrockHookFn6C573C2E
+          - Arn
+      Principal: lexv2.amazonaws.com
+      SourceArn:
+        Fn::Join:
+          - ""
+          - - arn:aws:lex:us-east-1:851620242036:bot-alias/
+            - Fn::GetAtt:
+                - DentalAiBot
+                - Id
+            - /*
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/LexBedrockHookFn/LexInvoke
+  LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: ManagedBy
+          Value: cdk
+        - Key: Service
+          Value: ConnectLexAI
+        - Key: Stack
+          Value: TodaysDentalInsightsConnectLexAiN1
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/ServiceRole/Resource
+  LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRoleDefaultPolicyADDA7DEB:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - logs:PutRetentionPolicy
+              - logs:DeleteRetentionPolicy
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRoleDefaultPolicyADDA7DEB
+      Roles:
+        - Ref: LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/ServiceRole/DefaultPolicy/Resource
+  LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Runtime: nodejs22.x
+      Timeout: 900
+      Code:
+        S3Bucket: cdk-tdi3-assets-851620242036-us-east-1
+        S3Key: 2819175352ad1ce0dae768e83fc328fb70fb5f10b4a8ff0ccbcb791f02b0716d.zip
+      Role:
+        Fn::GetAtt:
+          - LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB
+          - Arn
+      Tags:
+        - Key: ManagedBy
+          Value: cdk
+        - Key: Service
+          Value: ConnectLexAI
+        - Key: Stack
+          Value: TodaysDentalInsightsConnectLexAiN1
+    DependsOn:
+      - LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRoleDefaultPolicyADDA7DEB
+      - LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/Resource
+      aws:asset:path: asset.2819175352ad1ce0dae768e83fc328fb70fb5f10b4a8ff0ccbcb791f02b0716d
+      aws:asset:is-bundled: false
+      aws:asset:property: Code
+  ConnectFinalizerFnServiceRole516EFD9D:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: Function
+          Value: connect-finalizer
+        - Key: ManagedBy
+          Value: cdk
+        - Key: Service
+          Value: ConnectLexAI
+        - Key: Stack
+          Value: TodaysDentalInsightsConnectLexAiN1
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/ConnectFinalizerFn/ServiceRole/Resource
+  ConnectFinalizerFnServiceRoleDefaultPolicyD40BFD32:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action: dynamodb:GetItem
+            Effect: Allow
+            Resource:
+              Fn::ImportValue: TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttAiAgentSessionsTableFD40A5D8Arn3D9C5E3C
+          - Action:
+              - dynamodb:Query
+              - dynamodb:UpdateItem
+            Effect: Allow
+            Resource:
+              - arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1
+              - arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1/index/*
+          - Action: dynamodb:UpdateItem
+            Effect: Allow
+            Resource:
+              Fn::ImportValue: TodaysDentalInsightsAnalyticsN1:ExportsOutputFnGetAttTranscriptBufferTable6B540524Arn0067ECB2
+        Version: "2012-10-17"
+      PolicyName: ConnectFinalizerFnServiceRoleDefaultPolicyD40BFD32
+      Roles:
+        - Ref: ConnectFinalizerFnServiceRole516EFD9D
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/ConnectFinalizerFn/ServiceRole/DefaultPolicy/Resource
+  ConnectFinalizerFn6AA80A36:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: cdk-tdi3-assets-851620242036-us-east-1
+        S3Key: a64bbf61f31c42d7d17eed0725ef19762e9cfbdd5ca0d6ea505916e625628c84.zip
+      Environment:
+        Variables:
+          SESSIONS_TABLE:
+            Fn::ImportValue: TodaysDentalInsightsAiAgentsN1:ExportsOutputRefAiAgentSessionsTableFD40A5D862A0DEC9
+          CALL_ANALYTICS_TABLE: TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1
+          TRANSCRIPT_BUFFER_TABLE_NAME:
+            Fn::ImportValue: TodaysDentalInsightsAnalyticsN1:ExportsOutputRefTranscriptBufferTable6B54052467630EA1
+      FunctionName: TodaysDentalInsightsConnectLexAiN1-ConnectFinalizer
+      Handler: index.handler
+      MemorySize: 256
+      Role:
+        Fn::GetAtt:
+          - ConnectFinalizerFnServiceRole516EFD9D
+          - Arn
+      Runtime: nodejs20.x
+      Tags:
+        - Key: Function
+          Value: connect-finalizer
+        - Key: ManagedBy
+          Value: cdk
+        - Key: Service
+          Value: ConnectLexAI
+        - Key: Stack
+          Value: TodaysDentalInsightsConnectLexAiN1
+      Timeout: 10
+    DependsOn:
+      - ConnectFinalizerFnServiceRoleDefaultPolicyD40BFD32
+      - ConnectFinalizerFnServiceRole516EFD9D
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/ConnectFinalizerFn/Resource
+      aws:asset:path: asset.a64bbf61f31c42d7d17eed0725ef19762e9cfbdd5ca0d6ea505916e625628c84
+      aws:asset:is-bundled: true
+      aws:asset:property: Code
+  ConnectFinalizerFnLogRetentionFD8E9847:
+    Type: Custom::LogRetention
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+          - LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A
+          - Arn
+      LogGroupName:
+        Fn::Join:
+          - ""
+          - - /aws/lambda/
+            - Ref: ConnectFinalizerFn6AA80A36
+      RetentionInDays: 7
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/ConnectFinalizerFn/LogRetention/Resource
+  ConnectFinalizerFnConnectInvoke37202628:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName:
+        Fn::GetAtt:
+          - ConnectFinalizerFn6AA80A36
+          - Arn
+      Principal: connect.amazonaws.com
+      SourceArn: arn:aws:connect:us-east-1:851620242036:instance/0626aa86-d377-44c8-9311-84e4f230cc72
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/ConnectFinalizerFn/ConnectInvoke
+  LexBotRole0FBFF464:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lexv2.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/AmazonLexFullAccess
+      Tags:
+        - Key: ManagedBy
+          Value: cdk
+        - Key: Service
+          Value: ConnectLexAI
+        - Key: Stack
+          Value: TodaysDentalInsightsConnectLexAiN1
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/LexBotRole/Resource
+  DentalAiBot:
+    Type: AWS::Lex::Bot
+    Properties:
+      AutoBuildBotLocales: true
+      BotLocales:
+        - Intents:
+            - Description: General intent that routes all caller input to Bedrock
+              FulfillmentCodeHook:
+                Enabled: true
+              Name: GeneralIntent
+              SampleUtterances:
+                - Utterance: hello
+                - Utterance: hi
+                - Utterance: i need help
+                - Utterance: appointment
+                - Utterance: schedule an appointment
+                - Utterance: i have a question
+            - Description: Catch-all intent that routes to Bedrock
+              FulfillmentCodeHook:
+                Enabled: true
+              Name: FallbackIntent
+              ParentIntentSignature: AMAZON.FallbackIntent
+          LocaleId: en_US
+          NluConfidenceThreshold: 0.4
+          VoiceSettings:
+            Engine: neural
+            VoiceId: Joanna
+      DataPrivacy:
+        ChildDirected: false
+      Description: AI voice assistant for dental clinic after-hours calls
+      IdleSessionTTLInSeconds: 300
+      Name: TodaysDentalInsightsConnectLexAiN1-DentalAI
+      RoleArn:
+        Fn::GetAtt:
+          - LexBotRole0FBFF464
+          - Arn
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/DentalAiBot
+  DentalAiBotVersion:
+    Type: AWS::Lex::BotVersion
+    Properties:
+      BotId:
+        Fn::GetAtt:
+          - DentalAiBot
+          - Id
+      BotVersionLocaleSpecification:
+        - BotVersionLocaleDetails:
+            SourceBotVersion: DRAFT
+          LocaleId: en_US
+    DependsOn:
+      - DentalAiBot
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/DentalAiBotVersion
+  DentalAiBotAlias:
+    Type: AWS::Lex::BotAlias
+    Properties:
+      BotAliasLocaleSettings:
+        - BotAliasLocaleSetting:
+            CodeHookSpecification:
+              LambdaCodeHook:
+                CodeHookInterfaceVersion: "1.0"
+                LambdaArn:
+                  Fn::GetAtt:
+                    - LexBedrockHookFn6C573C2E
+                    - Arn
+            Enabled: true
+          LocaleId: en_US
+      BotAliasName: prod
+      BotId:
+        Fn::GetAtt:
+          - DentalAiBot
+          - Id
+      BotVersion:
+        Fn::GetAtt:
+          - DentalAiBotVersion
+          - BotVersion
+    DependsOn:
+      - DentalAiBotVersion
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/DentalAiBotAlias
+  ConnectLexIntegration8F6C281F:
+    Type: Custom::AWS
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+          - AWS679f53fac002430cb0da5b7982bd22872D164C4C
+          - Arn
+      Create:
+        Fn::Join:
+          - ""
+          - - '{"service":"Connect","action":"associateBot","parameters":{"InstanceId":"0626aa86-d377-44c8-9311-84e4f230cc72","LexV2Bot":{"AliasArn":"arn:aws:lex:us-east-1:851620242036:bot-alias/'
+            - Fn::GetAtt:
+                - DentalAiBot
+                - Id
+            - /
+            - Fn::GetAtt:
+                - DentalAiBotAlias
+                - BotAliasId
+            - '"}},"physicalResourceId":{"id":"TodaysDentalInsightsConnectLexAiN1-lex-v2-integration"}}'
+      Delete:
+        Fn::Join:
+          - ""
+          - - '{"service":"Connect","action":"disassociateBot","parameters":{"InstanceId":"0626aa86-d377-44c8-9311-84e4f230cc72","LexV2Bot":{"AliasArn":"arn:aws:lex:us-east-1:851620242036:bot-alias/'
+            - Fn::GetAtt:
+                - DentalAiBot
+                - Id
+            - /
+            - Fn::GetAtt:
+                - DentalAiBotAlias
+                - BotAliasId
+            - '"}},"ignoreErrorCodesMatching":".*NotFound.*|.*ResourceNotFound.*"}'
+      InstallLatestAwsSdk: true
+    DependsOn:
+      - ConnectLexIntegrationCustomResourcePolicy90990747
+      - DentalAiBotAlias
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/ConnectLexIntegration/Resource/Default
+  ConnectLexIntegrationCustomResourcePolicy90990747:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - connect:AssociateBot
+              - connect:DisassociateBot
+              - connect:ListBots
+            Effect: Allow
+            Resource: "*"
+          - Action:
+              - lex:DescribeBot
+              - lex:DescribeBotAlias
+              - lex:CreateResourcePolicy
+              - lex:DeleteResourcePolicy
+              - lex:UpdateResourcePolicy
+              - lex:DescribeResourcePolicy
+            Effect: Allow
+            Resource:
+              - Fn::Join:
+                  - ""
+                  - - arn:aws:lex:us-east-1:851620242036:bot/
+                    - Fn::GetAtt:
+                        - DentalAiBot
+                        - Id
+              - Fn::Join:
+                  - ""
+                  - - arn:aws:lex:us-east-1:851620242036:bot-alias/
+                    - Fn::GetAtt:
+                        - DentalAiBot
+                        - Id
+                    - /*
+        Version: "2012-10-17"
+      PolicyName: ConnectLexIntegrationCustomResourcePolicy90990747
+      Roles:
+        - Ref: AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2
+    DependsOn:
+      - DentalAiBotAlias
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/ConnectLexIntegration/CustomResourcePolicy/Resource
+  AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: ManagedBy
+          Value: cdk
+        - Key: Service
+          Value: ConnectLexAI
+        - Key: Stack
+          Value: TodaysDentalInsightsConnectLexAiN1
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/AWS679f53fac002430cb0da5b7982bd2287/ServiceRole/Resource
+  AWS679f53fac002430cb0da5b7982bd22872D164C4C:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: cdk-tdi3-assets-851620242036-us-east-1
+        S3Key: 8d5e97812d0036272ba1fd5bb8772ff51f4712e58c75507e4a0db242bf680f1d.zip
+      Handler: index.handler
+      Role:
+        Fn::GetAtt:
+          - AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2
+          - Arn
+      Runtime: nodejs22.x
+      Tags:
+        - Key: ManagedBy
+          Value: cdk
+        - Key: Service
+          Value: ConnectLexAI
+        - Key: Stack
+          Value: TodaysDentalInsightsConnectLexAiN1
+      Timeout: 120
+    DependsOn:
+      - AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/AWS679f53fac002430cb0da5b7982bd2287/Resource
+      aws:asset:path: asset.8d5e97812d0036272ba1fd5bb8772ff51f4712e58c75507e4a0db242bf680f1d
+      aws:asset:is-bundled: false
+      aws:asset:property: Code
+  ConnectFinalizerIntegration01D6F55E:
+    Type: Custom::AWS
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+          - AWS679f53fac002430cb0da5b7982bd22872D164C4C
+          - Arn
+      Create:
+        Fn::Join:
+          - ""
+          - - '{"service":"Connect","action":"associateLambdaFunction","parameters":{"InstanceId":"0626aa86-d377-44c8-9311-84e4f230cc72","FunctionArn":"'
+            - Fn::GetAtt:
+                - ConnectFinalizerFn6AA80A36
+                - Arn
+            - '"},"physicalResourceId":{"id":"TodaysDentalInsightsConnectLexAiN1-finalizer-integration"}}'
+      Delete:
+        Fn::Join:
+          - ""
+          - - '{"service":"Connect","action":"disassociateLambdaFunction","parameters":{"InstanceId":"0626aa86-d377-44c8-9311-84e4f230cc72","FunctionArn":"'
+            - Fn::GetAtt:
+                - ConnectFinalizerFn6AA80A36
+                - Arn
+            - '"},"ignoreErrorCodesMatching":".*NotFound.*|.*ResourceNotFound.*"}'
+      InstallLatestAwsSdk: true
+    DependsOn:
+      - ConnectFinalizerFnConnectInvoke37202628
+      - ConnectFinalizerFnLogRetentionFD8E9847
+      - ConnectFinalizerFn6AA80A36
+      - ConnectFinalizerFnServiceRoleDefaultPolicyD40BFD32
+      - ConnectFinalizerFnServiceRole516EFD9D
+      - ConnectFinalizerIntegrationCustomResourcePolicy7BB3F2CD
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/ConnectFinalizerIntegration/Resource/Default
+  ConnectFinalizerIntegrationCustomResourcePolicy7BB3F2CD:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - connect:AssociateLambdaFunction
+              - connect:DisassociateLambdaFunction
+              - connect:ListLambdaFunctions
+            Effect: Allow
+            Resource: "*"
+          - Action:
+              - lambda:GetFunction
+              - lambda:GetPolicy
+              - lambda:AddPermission
+              - lambda:RemovePermission
+            Effect: Allow
+            Resource:
+              - Fn::GetAtt:
+                  - ConnectFinalizerFn6AA80A36
+                  - Arn
+              - Fn::GetAtt:
+                  - LexBedrockHookFn6C573C2E
+                  - Arn
+        Version: "2012-10-17"
+      PolicyName: ConnectFinalizerIntegrationCustomResourcePolicy7BB3F2CD
+      Roles:
+        - Ref: AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2
+    DependsOn:
+      - ConnectFinalizerFnConnectInvoke37202628
+      - ConnectFinalizerFnLogRetentionFD8E9847
+      - ConnectFinalizerFn6AA80A36
+      - ConnectFinalizerFnServiceRoleDefaultPolicyD40BFD32
+      - ConnectFinalizerFnServiceRole516EFD9D
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/ConnectFinalizerIntegration/CustomResourcePolicy/Resource
+  ConnectLexHookIntegration82325C3F:
+    Type: Custom::AWS
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+          - AWS679f53fac002430cb0da5b7982bd22872D164C4C
+          - Arn
+      Create:
+        Fn::Join:
+          - ""
+          - - '{"service":"Connect","action":"associateLambdaFunction","parameters":{"InstanceId":"0626aa86-d377-44c8-9311-84e4f230cc72","FunctionArn":"'
+            - Fn::GetAtt:
+                - LexBedrockHookFn6C573C2E
+                - Arn
+            - '"},"physicalResourceId":{"id":"TodaysDentalInsightsConnectLexAiN1-lexhook-integration"}}'
+      Delete:
+        Fn::Join:
+          - ""
+          - - '{"service":"Connect","action":"disassociateLambdaFunction","parameters":{"InstanceId":"0626aa86-d377-44c8-9311-84e4f230cc72","FunctionArn":"'
+            - Fn::GetAtt:
+                - LexBedrockHookFn6C573C2E
+                - Arn
+            - '"},"ignoreErrorCodesMatching":".*NotFound.*|.*ResourceNotFound.*"}'
+      InstallLatestAwsSdk: true
+    DependsOn:
+      - ConnectFinalizerIntegrationCustomResourcePolicy7BB3F2CD
+      - ConnectFinalizerIntegration01D6F55E
+      - ConnectLexHookIntegrationCustomResourcePolicyD466AED8
+      - LexBedrockHookFnConnectInvoke2C837588
+      - LexBedrockHookFnLexInvoke32408B88
+      - LexBedrockHookFnLogRetention82723F6A
+      - LexBedrockHookFn6C573C2E
+      - LexBedrockHookFnServiceRoleDefaultPolicyE72D5287
+      - LexBedrockHookFnServiceRoleB3D26C11
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/ConnectLexHookIntegration/Resource/Default
+  ConnectLexHookIntegrationCustomResourcePolicyD466AED8:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - connect:AssociateLambdaFunction
+              - connect:DisassociateLambdaFunction
+              - connect:ListLambdaFunctions
+            Effect: Allow
+            Resource: "*"
+          - Action:
+              - lambda:GetFunction
+              - lambda:GetPolicy
+              - lambda:AddPermission
+              - lambda:RemovePermission
+            Effect: Allow
+            Resource:
+              - Fn::GetAtt:
+                  - ConnectFinalizerFn6AA80A36
+                  - Arn
+              - Fn::GetAtt:
+                  - LexBedrockHookFn6C573C2E
+                  - Arn
+        Version: "2012-10-17"
+      PolicyName: ConnectLexHookIntegrationCustomResourcePolicyD466AED8
+      Roles:
+        - Ref: AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2
+    DependsOn:
+      - ConnectFinalizerIntegrationCustomResourcePolicy7BB3F2CD
+      - ConnectFinalizerIntegration01D6F55E
+      - LexBedrockHookFnConnectInvoke2C837588
+      - LexBedrockHookFnLexInvoke32408B88
+      - LexBedrockHookFnLogRetention82723F6A
+      - LexBedrockHookFn6C573C2E
+      - LexBedrockHookFnServiceRoleDefaultPolicyE72D5287
+      - LexBedrockHookFnServiceRoleB3D26C11
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/ConnectLexHookIntegration/CustomResourcePolicy/Resource
+  DisconnectFlow:
+    Type: AWS::Connect::ContactFlow
+    Properties:
+      Content:
+        Fn::Join:
+          - ""
+          - - '{"Version":"2019-10-30","StartAction":"invoke-lambda-action","Metadata":{"entryPointPosition":{"x":40,"y":40},"ActionMetadata":{"invoke-lambda-action":{"position":{"x":160,"y":40}},"disconnect-action":{"position":{"x":400,"y":40}}}},"Actions":[{"Identifier":"invoke-lambda-action","Type":"InvokeLambdaFunction","Parameters":{"LambdaFunctionARN":"'
+            - Fn::GetAtt:
+                - ConnectFinalizerFn6AA80A36
+                - Arn
+            - '","InvocationTimeLimitSeconds":"8"},"Transitions":{"NextAction":"disconnect-action","Errors":[{"NextAction":"disconnect-action","ErrorType":"NoMatchingError"}]}},{"Identifier":"disconnect-action","Type":"DisconnectParticipant","Parameters":{},"Transitions":{}}]}'
+      Description: Finalizes AI call analytics on disconnect
+      InstanceArn: arn:aws:connect:us-east-1:851620242036:instance/0626aa86-d377-44c8-9311-84e4f230cc72
+      Name: TodaysDentalInsightsConnectLexAiN1-DisconnectFlow
+      Tags:
+        - Key: ManagedBy
+          Value: cdk
+        - Key: Service
+          Value: ConnectLexAI
+        - Key: Stack
+          Value: TodaysDentalInsightsConnectLexAiN1
+      Type: CONTACT_FLOW
+    DependsOn:
+      - ConnectFinalizerIntegrationCustomResourcePolicy7BB3F2CD
+      - ConnectFinalizerIntegration01D6F55E
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/DisconnectFlow
+  InboundAiFlow:
+    Type: AWS::Connect::ContactFlow
+    Properties:
+      Content:
+        Fn::Join:
+          - ""
+          - - '{"Version":"2019-10-30","StartAction":"connect-lex-action","Metadata":{"entryPointPosition":{"x":40,"y":40},"ActionMetadata":{"connect-lex-action":{"position":{"x":160,"y":40}},"disconnect-action":{"position":{"x":400,"y":40}}}},"Actions":[{"Identifier":"connect-lex-action","Type":"ConnectParticipantWithLexBot","Parameters":{"Text":"Hello! Thank you for calling. How can I help you today?","LexV2Bot":{"AliasArn":"arn:aws:lex:us-east-1:851620242036:bot-alias/'
+            - Fn::GetAtt:
+                - DentalAiBot
+                - Id
+            - /
+            - Fn::GetAtt:
+                - DentalAiBotAlias
+                - BotAliasId
+            - '"}},"Transitions":{"NextAction":"disconnect-action","Errors":[{"NextAction":"disconnect-action","ErrorType":"InputTimeLimitExceeded"},{"NextAction":"disconnect-action","ErrorType":"NoMatchingError"},{"NextAction":"disconnect-action","ErrorType":"NoMatchingCondition"}],"Conditions":[]}},{"Identifier":"disconnect-action","Type":"DisconnectParticipant","Parameters":{},"Transitions":{}}]}'
+      Description: AI voice assistant using Lex and Bedrock
+      InstanceArn: arn:aws:connect:us-east-1:851620242036:instance/0626aa86-d377-44c8-9311-84e4f230cc72
+      Name: TodaysDentalInsightsConnectLexAiN1-InboundAiFlow
+      Tags:
+        - Key: ManagedBy
+          Value: cdk
+        - Key: Service
+          Value: ConnectLexAI
+        - Key: Stack
+          Value: TodaysDentalInsightsConnectLexAiN1
+      Type: CONTACT_FLOW
+    DependsOn:
+      - ConnectLexIntegrationCustomResourcePolicy90990747
+      - ConnectLexIntegration8F6C281F
+      - DisconnectFlow
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/InboundAiFlow
+  PhoneNumberLookup2B704413:
+    Type: Custom::AWS
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+          - AWS679f53fac002430cb0da5b7982bd22872D164C4C
+          - Arn
+      Create: '{"service":"Connect","action":"listPhoneNumbersV2","parameters":{"TargetArn":"arn:aws:connect:us-east-1:851620242036:instance/0626aa86-d377-44c8-9311-84e4f230cc72","PhoneNumberTypes":["DID","TOLL_FREE"]},"physicalResourceId":{"id":"TodaysDentalInsightsConnectLexAiN1-phone-lookup"}}'
+      InstallLatestAwsSdk: true
+    DependsOn:
+      - PhoneNumberLookupCustomResourcePolicy4001B75A
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/PhoneNumberLookup/Resource/Default
+  PhoneNumberLookupCustomResourcePolicy4001B75A:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action: connect:ListPhoneNumbersV2
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: PhoneNumberLookupCustomResourcePolicy4001B75A
+      Roles:
+        - Ref: AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/PhoneNumberLookup/CustomResourcePolicy/Resource
+  PhoneAssociationFnServiceRole1EFE1F59:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: ManagedBy
+          Value: cdk
+        - Key: Service
+          Value: ConnectLexAI
+        - Key: Stack
+          Value: TodaysDentalInsightsConnectLexAiN1
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/PhoneAssociationFn/ServiceRole/Resource
+  PhoneAssociationFnServiceRoleDefaultPolicyDF73930E:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - connect:ListPhoneNumbersV2
+              - connect:UpdatePhoneNumber
+              - connect:DescribePhoneNumber
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: PhoneAssociationFnServiceRoleDefaultPolicyDF73930E
+      Roles:
+        - Ref: PhoneAssociationFnServiceRole1EFE1F59
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/PhoneAssociationFn/ServiceRole/DefaultPolicy/Resource
+  PhoneAssociationFn271E05BA:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: cdk-tdi3-assets-851620242036-us-east-1
+        S3Key: 24a70983b591d03ba21ad00f2d42ab79a5f70fc6dc032732f47b78fa27cf2c41.zip
+      Environment:
+        Variables:
+          CONNECT_INSTANCE_ARN: arn:aws:connect:us-east-1:851620242036:instance/0626aa86-d377-44c8-9311-84e4f230cc72
+          PHONE_NUMBER: "+14439272295"
+          CONTACT_FLOW_ARN:
+            Fn::GetAtt:
+              - InboundAiFlow
+              - ContactFlowArn
+      FunctionName: TodaysDentalInsightsConnectLexAiN1-PhoneAssociation
+      Handler: index.handler
+      MemorySize: 256
+      Role:
+        Fn::GetAtt:
+          - PhoneAssociationFnServiceRole1EFE1F59
+          - Arn
+      Runtime: nodejs20.x
+      Tags:
+        - Key: ManagedBy
+          Value: cdk
+        - Key: Service
+          Value: ConnectLexAI
+        - Key: Stack
+          Value: TodaysDentalInsightsConnectLexAiN1
+      Timeout: 30
+    DependsOn:
+      - PhoneAssociationFnServiceRoleDefaultPolicyDF73930E
+      - PhoneAssociationFnServiceRole1EFE1F59
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/PhoneAssociationFn/Resource
+      aws:asset:path: asset.24a70983b591d03ba21ad00f2d42ab79a5f70fc6dc032732f47b78fa27cf2c41
+      aws:asset:is-bundled: true
+      aws:asset:property: Code
+  PhoneAssociationFnLogRetentionC5E3AEC2:
+    Type: Custom::LogRetention
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+          - LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A
+          - Arn
+      LogGroupName:
+        Fn::Join:
+          - ""
+          - - /aws/lambda/
+            - Ref: PhoneAssociationFn271E05BA
+      RetentionInDays: 7
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/PhoneAssociationFn/LogRetention/Resource
+  PhoneAssociationProviderframeworkonEventServiceRole41F78BA4:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - Fn::Join:
+            - ""
+            - - "arn:"
+              - Ref: AWS::Partition
+              - :iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: ManagedBy
+          Value: cdk
+        - Key: Service
+          Value: ConnectLexAI
+        - Key: Stack
+          Value: TodaysDentalInsightsConnectLexAiN1
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/PhoneAssociationProvider/framework-onEvent/ServiceRole/Resource
+  PhoneAssociationProviderframeworkonEventServiceRoleDefaultPolicy9314EDBC:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action: lambda:InvokeFunction
+            Effect: Allow
+            Resource:
+              - Fn::GetAtt:
+                  - PhoneAssociationFn271E05BA
+                  - Arn
+              - Fn::Join:
+                  - ""
+                  - - Fn::GetAtt:
+                        - PhoneAssociationFn271E05BA
+                        - Arn
+                    - :*
+          - Action: lambda:GetFunction
+            Effect: Allow
+            Resource:
+              Fn::GetAtt:
+                - PhoneAssociationFn271E05BA
+                - Arn
+        Version: "2012-10-17"
+      PolicyName: PhoneAssociationProviderframeworkonEventServiceRoleDefaultPolicy9314EDBC
+      Roles:
+        - Ref: PhoneAssociationProviderframeworkonEventServiceRole41F78BA4
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/PhoneAssociationProvider/framework-onEvent/ServiceRole/DefaultPolicy/Resource
+  PhoneAssociationProviderframeworkonEvent30B50185:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: cdk-tdi3-assets-851620242036-us-east-1
+        S3Key: bdc104ed9cab1b5b6421713c8155f0b753380595356f710400609664d3635eca.zip
+      Description: AWS CDK resource provider framework - onEvent (TodaysDentalInsightsConnectLexAiN1/PhoneAssociationProvider)
+      Environment:
+        Variables:
+          USER_ON_EVENT_FUNCTION_ARN:
+            Fn::GetAtt:
+              - PhoneAssociationFn271E05BA
+              - Arn
+      Handler: framework.onEvent
+      LoggingConfig:
+        ApplicationLogLevel: FATAL
+        LogFormat: JSON
+      Role:
+        Fn::GetAtt:
+          - PhoneAssociationProviderframeworkonEventServiceRole41F78BA4
+          - Arn
+      Runtime: nodejs22.x
+      Tags:
+        - Key: ManagedBy
+          Value: cdk
+        - Key: Service
+          Value: ConnectLexAI
+        - Key: Stack
+          Value: TodaysDentalInsightsConnectLexAiN1
+      Timeout: 900
+    DependsOn:
+      - PhoneAssociationProviderframeworkonEventServiceRoleDefaultPolicy9314EDBC
+      - PhoneAssociationProviderframeworkonEventServiceRole41F78BA4
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/PhoneAssociationProvider/framework-onEvent/Resource
+      aws:asset:path: asset.bdc104ed9cab1b5b6421713c8155f0b753380595356f710400609664d3635eca
+      aws:asset:is-bundled: false
+      aws:asset:property: Code
+  PhoneAssociationProviderframeworkonEventLogRetentionB3928497:
+    Type: Custom::LogRetention
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+          - LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A
+          - Arn
+      LogGroupName:
+        Fn::Join:
+          - ""
+          - - /aws/lambda/
+            - Ref: PhoneAssociationProviderframeworkonEvent30B50185
+      RetentionInDays: 7
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/PhoneAssociationProvider/framework-onEvent/LogRetention/Resource
+  PhoneNumberAssociation:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+          - PhoneAssociationProviderframeworkonEvent30B50185
+          - Arn
+      InstanceArn: arn:aws:connect:us-east-1:851620242036:instance/0626aa86-d377-44c8-9311-84e4f230cc72
+      PhoneNumber: "+14439272295"
+      ContactFlowArn:
+        Fn::GetAtt:
+          - InboundAiFlow
+          - ContactFlowArn
+      FlowVersion: "1768193561861"
+    DependsOn:
+      - InboundAiFlow
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/PhoneNumberAssociation/Default
+  CDKMetadata:
+    Type: AWS::CDK::Metadata
+    Properties:
+      Analytics: v2:deflate64:H4sIAAAAAAAA/12QwW7CMBBEv4W72ULoD5BInKoWBanXyDibyODsVt41aRXl36skQKWe3syOPVo7gyzbwmZle1m7+roO/gzDSa27GttLNQTbnWtbEdd4EXifcUjk1DMZbzsYSg5oioZmHjl49zPZRY1GdpUVQRXYTzCygzy5K2puBc1SD0PR0LN1uoyx8yKTO3lqAyr/5Q8xmsCtwBu3JSrSnAX8nstyVrPgE6PcW3PWffBWRuOYCJ1C0VDBpNbpIXA/mhKFU3Ro5l1PaltP7fy4R+CSKHdVvHuBYd9LMQ+fZ46Rb77GOJp/QdHQR9KvpKOZPhQu8nLLXmGbwWZ1Ee/XMZH6DqFc+AugykQUnQEAAA==
+    Metadata:
+      aws:cdk:path: TodaysDentalInsightsConnectLexAiN1/CDKMetadata/Default
+Outputs:
+  LexBotId:
+    Description: Lex V2 Bot ID
+    Value:
+      Fn::GetAtt:
+        - DentalAiBot
+        - Id
+    Export:
+      Name: TodaysDentalInsightsConnectLexAiN1-LexBotId
+  LexBotAliasId:
+    Description: Lex V2 Bot Alias ID
+    Value:
+      Fn::GetAtt:
+        - DentalAiBotAlias
+        - BotAliasId
+    Export:
+      Name: TodaysDentalInsightsConnectLexAiN1-LexBotAliasId
+  LexBedrockHookFnArn:
+    Description: Lex Bedrock Hook Lambda ARN
+    Value:
+      Fn::GetAtt:
+        - LexBedrockHookFn6C573C2E
+        - Arn
+    Export:
+      Name: TodaysDentalInsightsConnectLexAiN1-LexBedrockHookFnArn
+  ConnectFinalizerFnArn:
+    Description: Connect Call Finalizer Lambda ARN
+    Value:
+      Fn::GetAtt:
+        - ConnectFinalizerFn6AA80A36
+        - Arn
+    Export:
+      Name: TodaysDentalInsightsConnectLexAiN1-ConnectFinalizerFnArn
+  InboundFlowArn:
+    Description: Inbound AI Contact Flow ARN
+    Value:
+      Fn::GetAtt:
+        - InboundAiFlow
+        - ContactFlowArn
+    Export:
+      Name: TodaysDentalInsightsConnectLexAiN1-InboundFlowArn
+  DisconnectFlowArn:
+    Description: Disconnect Contact Flow ARN
+    Value:
+      Fn::GetAtt:
+        - DisconnectFlow
+        - ContactFlowArn
+    Export:
+      Name: TodaysDentalInsightsConnectLexAiN1-DisconnectFlowArn
+  AssociatedPhoneNumber:
+    Description: Phone number associated with the AI contact flow
+    Value: "+14439272295"
+    Export:
+      Name: TodaysDentalInsightsConnectLexAiN1-AssociatedPhoneNumber
+  DeploymentInfo:
+    Description: Deployment information
+    Value: |-
+      DEPLOYMENT COMPLETE:
+      - Inbound AI Flow: TodaysDentalInsightsConnectLexAiN1-InboundAiFlow
+      - Disconnect Flow: TodaysDentalInsightsConnectLexAiN1-DisconnectFlow  
+      - Phone Number: +14439272295 (auto-associated)
+      - Lex Bot: TodaysDentalInsightsConnectLexAiN1-DentalAI (alias: prod)
+
+      Then call +14439272295 to test the AI assistant!
+Parameters:
+  BootstrapVersion:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /cdk-bootstrap/tdi3/version
+    Description: Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]
+
