@@ -11,13 +11,13 @@ import {
   ayrshareGetSocialStats
 } from './ayrshare-client';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { getAyrshareApiKey } from '../../shared/utils/secrets-helper';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true }
 });
 const TABLE_NAME = process.env.MARKETING_CONFIG_TABLE!;
 const POSTS_TABLE = process.env.MARKETING_POSTS_TABLE || 'MarketingPosts';
-const API_KEY = process.env.AYRSHARE_API_KEY!;
 
 // ============================================
 // Rate Limiting Constants for Ayrshare Business Plan
@@ -26,6 +26,26 @@ const BATCH_SIZE = 3; // Max clinics to post to in parallel
 const DELAY_BETWEEN_BATCHES_MS = 2000; // 2 second delay between batches
 const MAX_RETRIES = 2; // Retry failed posts up to 2 times
 const RETRY_DELAY_MS = 1000; // 1 second before retry
+
+// ============================================
+// Ayrshare API Key (cached from GlobalSecrets)
+// ============================================
+let cachedApiKey: string | null = null;
+
+/**
+ * Get Ayrshare API Key from GlobalSecrets (with caching)
+ */
+async function getApiKey(): Promise<string> {
+  if (cachedApiKey) {
+    return cachedApiKey;
+  }
+  const apiKey = await getAyrshareApiKey();
+  if (!apiKey) {
+    throw new Error('Ayrshare API key not found in GlobalSecrets. Please add secretId="ayrshare", secretType="api_key" to GlobalSecrets table.');
+  }
+  cachedApiKey = apiKey;
+  return apiKey;
+}
 
 /**
  * Helper to delay execution
@@ -47,6 +67,7 @@ function chunkArray<T>(array: T[], chunkSize: number): T[][] {
  * Post to a single clinic with retry logic
  */
 async function postToClinicWithRetry(
+  apiKey: string,
   config: any,
   postData: any,
   saveHistory: boolean,
@@ -57,7 +78,7 @@ async function postToClinicWithRetry(
       throw new Error('Missing Ayrshare profile key');
     }
 
-    const res = await ayrsharePost(API_KEY, config.ayrshareProfileKey, postData);
+    const res = await ayrsharePost(apiKey, config.ayrshareProfileKey, postData);
 
     // Save post history to DynamoDB
     if (saveHistory && res.id) {
@@ -90,7 +111,7 @@ async function postToClinicWithRetry(
     if (retries < MAX_RETRIES && isRetryableError(error)) {
       console.log(`Retrying clinic ${config.clinicId} (attempt ${retries + 1})`);
       await delay(RETRY_DELAY_MS);
-      return postToClinicWithRetry(config, postData, saveHistory, retries + 1);
+      return postToClinicWithRetry(apiKey, config, postData, saveHistory, retries + 1);
     }
 
     return { 
@@ -169,6 +190,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'No marketing profiles found for selected clinics' }) };
       }
 
+      // Get Ayrshare API key from GlobalSecrets
+      const apiKey = await getApiKey();
+
       // Batch clinics for rate limiting (Ayrshare Business Plan)
       const batches = chunkArray(configs, BATCH_SIZE);
       const allResults: Array<{ clinicId: string; status: 'success' | 'failed'; id?: string; refId?: string; error?: string }> = [];
@@ -187,7 +211,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
               ? resolvePostPlaceholders(postData, config)
               : postData;
             
-            return postToClinicWithRetry(config, resolvedPostData, saveHistory);
+            return postToClinicWithRetry(apiKey, config, resolvedPostData, saveHistory);
           })
         );
 
@@ -252,6 +276,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'No marketing profiles found for selected clinics' }) };
       }
 
+      // Get Ayrshare API key from GlobalSecrets
+      const apiKey = await getApiKey();
+
       // Batch processing for Business Plan rate limits
       const batches = chunkArray(configs, BATCH_SIZE);
       const allResults: Array<{ clinicId: string; status: 'success' | 'failed'; id?: string; error?: string }> = [];
@@ -273,7 +300,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 throw new Error('Missing Ayrshare profile key');
               }
 
-              const res = await ayrsharePost(API_KEY, config.ayrshareProfileKey, resolvedPostData);
+              const res = await ayrsharePost(apiKey, config.ayrshareProfileKey, resolvedPostData);
 
               if (saveHistory && res.id) {
                 await ddb.send(new PutCommand({
@@ -339,8 +366,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Clinic not found' }) };
       }
 
+      // Get Ayrshare API key from GlobalSecrets
+      const apiKey = await getApiKey();
+
       // Delete from Ayrshare
-      await ayrshareDeletePost(API_KEY, dbRes.Item.ayrshareProfileKey, postId);
+      await ayrshareDeletePost(apiKey, dbRes.Item.ayrshareProfileKey, postId);
 
       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true, message: 'Post deleted' }) };
     }
@@ -367,8 +397,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Clinic not found' }) };
       }
 
+      // Get Ayrshare API key from GlobalSecrets
+      const apiKey = await getApiKey();
+
       // Get history from Ayrshare
-      const history = await ayrshareGetHistory(API_KEY, dbRes.Item.ayrshareProfileKey, {
+      const history = await ayrshareGetHistory(apiKey, dbRes.Item.ayrshareProfileKey, {
         lastRecords: lastRecords ? parseInt(lastRecords) : undefined,
         lastDays: lastDays ? parseInt(lastDays) : undefined
       });
@@ -397,8 +430,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Clinic not found' }) };
       }
 
+      // Get Ayrshare API key from GlobalSecrets
+      const apiKey = await getApiKey();
+
       // Get analytics from Ayrshare
-      const analytics = await ayrshareGetAnalytics(API_KEY, dbRes.Item.ayrshareProfileKey, postId);
+      const analytics = await ayrshareGetAnalytics(apiKey, dbRes.Item.ayrshareProfileKey, postId);
 
       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(analytics) };
     }
@@ -424,8 +460,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Clinic not found' }) };
       }
 
+      // Get Ayrshare API key from GlobalSecrets
+      const apiKey = await getApiKey();
+
       // Get comments from Ayrshare
-      const comments = await ayrshareGetComments(API_KEY, dbRes.Item.ayrshareProfileKey, postId);
+      const comments = await ayrshareGetComments(apiKey, dbRes.Item.ayrshareProfileKey, postId);
 
       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(comments) };
     }
@@ -450,9 +489,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Clinic not found' }) };
       }
 
+      // Get Ayrshare API key from GlobalSecrets
+      const apiKey = await getApiKey();
+
       // Reply to comment
       const result = await ayrshareReplyToComment(
-        API_KEY, 
+        apiKey, 
         dbRes.Item.ayrshareProfileKey, 
         commentId,
         replyText,
@@ -483,8 +525,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Clinic not found' }) };
       }
 
+      // Get Ayrshare API key from GlobalSecrets
+      const apiKey = await getApiKey();
+
       // Get social stats
-      const stats = await ayrshareGetSocialStats(API_KEY, dbRes.Item.ayrshareProfileKey, platforms);
+      const stats = await ayrshareGetSocialStats(apiKey, dbRes.Item.ayrshareProfileKey, platforms);
 
       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(stats) };
     }

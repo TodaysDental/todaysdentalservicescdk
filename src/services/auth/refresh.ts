@@ -3,12 +3,22 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { verifyToken, generateAccessToken, generateRefreshToken } from '../../shared/utils/jwt';
 import { StaffUser } from '../../shared/types/user';
+import { buildCorsHeaders, ALLOWED_ORIGINS_LIST } from '../../shared/utils/cors';
 
 const ddbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(ddbClient);
 
 const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE || 'StaffUser';
-const CORS_ORIGIN = process.env.CORS_ORIGIN || 'https://todaysdentalinsights.com';
+
+// Helper to get dynamic CORS headers based on request origin
+function getCorsHeaders(event: APIGatewayProxyEvent) {
+  const origin = event.headers?.origin || event.headers?.Origin;
+  const isAllowed = origin && ALLOWED_ORIGINS_LIST.includes(origin);
+  return {
+    ...buildCorsHeaders({ allowOrigin: isAllowed ? origin : ALLOWED_ORIGINS_LIST[0] }),
+    'Content-Type': 'application/json',
+  };
+}
 
 interface RefreshRequest {
   refreshToken: string;
@@ -22,11 +32,7 @@ interface RefreshRequest {
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   console.log('Refresh token request:', event.httpMethod, event.path);
 
-  const headers = {
-    'Access-Control-Allow-Origin': CORS_ORIGIN,
-    'Access-Control-Allow-Credentials': 'true',
-    'Content-Type': 'application/json',
-  };
+  const headers = getCorsHeaders(event);
 
   try {
     // Parse request body

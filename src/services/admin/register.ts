@@ -27,7 +27,6 @@ const ddb = DynamoDBDocumentClient.from(ddbClient, {
 
 const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE || 'StaffUser';
 const STAFF_INFO_TABLE = process.env.STAFF_CLINIC_INFO_TABLE;
-const CORS_ORIGIN = process.env.CORS_ORIGIN || 'https://todaysdentalinsights.com';
 
 // Type definitions
 type RegisterModuleAccess = {
@@ -93,7 +92,7 @@ type RegisterBody = {
  * Main handler for user registration
  */
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] });
+  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] }, event.headers?.origin);
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: true }) };

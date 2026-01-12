@@ -1033,9 +1033,10 @@ async function getDashboard(userPerms: any, isAdmin: boolean) {
 async function getShifts(userPerms: UserPermissions, isAdmin: boolean, queryParams: any, allowedClinics: Set<string>) {
   const { clinicId, startDate, endDate, status } = queryParams || {};
 
-  if (isAdmin) {
-    if (!clinicId || !startDate || !endDate) {
-      return httpErr(400, "clinicId, startDate, and endDate are required for admin");
+  // Admin querying shifts for a specific clinic (requires all params)
+  if (isAdmin && clinicId) {
+    if (!startDate || !endDate) {
+      return httpErr(400, "startDate and endDate are required when querying by clinicId");
     }
     if (!hasClinicAccess(allowedClinics, clinicId)) {
       return httpErr(403, "Forbidden: no access to this clinic");
@@ -1051,33 +1052,33 @@ async function getShifts(userPerms: UserPermissions, isAdmin: boolean, queryPara
         }
     }));
     return httpOk({ shifts: Items || [] });
-
-  } else {
-    let KeyConditionExpression = 'staffId = :staffId';
-    const ExpressionAttributeValues: Record<string, any> = { ':staffId': userPerms.email }; // Use email instead of staffId
-
-    if (startDate && endDate) {
-        KeyConditionExpression += ' AND startTime BETWEEN :startDate AND :endDate';
-        ExpressionAttributeValues[':startDate'] = startDate;
-        ExpressionAttributeValues[':endDate'] = endDate;
-    }
-
-    let FilterExpression;
-    if (status) {
-        FilterExpression = '#status = :status';
-        ExpressionAttributeValues[':status'] = status;
-    }
-
-    const { Items } = await ddb.send(new QueryCommand({
-        TableName: SHIFTS_TABLE,
-        IndexName: 'byStaff',
-        KeyConditionExpression,
-        FilterExpression,
-        ExpressionAttributeNames: status ? { '#status': 'status' } : undefined,
-        ExpressionAttributeValues
-    }));
-    return httpOk({ shifts: Items || [] });
   }
+
+  // Query own shifts (for both staff and admins when no clinicId specified)
+  let KeyConditionExpression = 'staffId = :staffId';
+  const ExpressionAttributeValues: Record<string, any> = { ':staffId': userPerms.email };
+
+  if (startDate && endDate) {
+      KeyConditionExpression += ' AND startTime BETWEEN :startDate AND :endDate';
+      ExpressionAttributeValues[':startDate'] = startDate;
+      ExpressionAttributeValues[':endDate'] = endDate;
+  }
+
+  let FilterExpression;
+  if (status) {
+      FilterExpression = '#status = :status';
+      ExpressionAttributeValues[':status'] = status;
+  }
+
+  const { Items } = await ddb.send(new QueryCommand({
+      TableName: SHIFTS_TABLE,
+      IndexName: 'byStaff',
+      KeyConditionExpression,
+      FilterExpression,
+      ExpressionAttributeNames: status ? { '#status': 'status' } : undefined,
+      ExpressionAttributeValues
+  }));
+  return httpOk({ shifts: Items || [] });
 }
 
 async function createShift(body: any, allowedClinics: Set<string>) {

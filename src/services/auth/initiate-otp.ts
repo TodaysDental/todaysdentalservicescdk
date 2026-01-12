@@ -11,14 +11,24 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import * as crypto from 'crypto';
+import { buildCorsHeaders, ALLOWED_ORIGINS_LIST } from '../../shared/utils/cors';
 
 const ddbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(ddbClient);
 const ses = new SESv2Client({ region: process.env.SES_REGION || 'us-east-1' });
 
 const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE || 'StaffUser';
-const CORS_ORIGIN = process.env.CORS_ORIGIN || 'https://todaysdentalinsights.com';
 const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalinsights.com';
+
+// Helper to get dynamic CORS headers based on request origin
+function getCorsHeaders(event: APIGatewayProxyEvent) {
+  const origin = event.headers?.origin || event.headers?.Origin;
+  const isAllowed = origin && ALLOWED_ORIGINS_LIST.includes(origin);
+  return {
+    ...buildCorsHeaders({ allowOrigin: isAllowed ? origin : ALLOWED_ORIGINS_LIST[0] }),
+    'Content-Type': 'application/json',
+  };
+}
 const APP_NAME = process.env.APP_NAME || 'TodaysDentalInsights';
 
 const OTP_LENGTH = 6;
@@ -35,11 +45,7 @@ interface InitiateRequest {
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   console.log('OTP Initiate request:', event.httpMethod, event.path);
 
-  const headers = {
-    'Access-Control-Allow-Origin': CORS_ORIGIN,
-    'Access-Control-Allow-Credentials': 'true',
-    'Content-Type': 'application/json',
-  };
+  const headers = getCorsHeaders(event);
 
   try {
     // Parse request body

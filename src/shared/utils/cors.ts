@@ -26,9 +26,14 @@ export type CorsOptions = {
 // This is required because CDK synthesis cannot use async operations
 export const ALLOWED_ORIGINS_LIST = [
   'https://todaysdentalinsights.com',
+  'https://www.todaysdentalinsights.com',
   'https://todaysdentalinsights.com/',
+  'https://www.todaysdentalinsights.com/',
   ...(clinicsData as any[])
     .map(c => String(c.websiteLink))
+    .filter(Boolean),
+  ...(clinicsData as any[])
+    .map(c => String(c.wwwUrl))
     .filter(Boolean)
 ];
 
@@ -48,8 +53,11 @@ export async function getAllowedOriginsAsync(): Promise<string[]> {
     const configs = await getAllClinicConfigs();
     runtimeOriginsCache = [
       'https://todaysdentalinsights.com',
+      'https://www.todaysdentalinsights.com',
       'https://todaysdentalinsights.com/',
-      ...configs.map((c: ClinicConfig) => c.websiteLink).filter(Boolean)
+      'https://www.todaysdentalinsights.com/',
+      ...configs.map((c: ClinicConfig) => c.websiteLink).filter(Boolean),
+      ...configs.map((c: ClinicConfig) => (c as any).wwwUrl).filter(Boolean),
     ];
     return runtimeOriginsCache;
   } catch (error) {

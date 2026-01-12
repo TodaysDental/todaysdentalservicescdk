@@ -165,16 +165,19 @@ interface AgentInfo {
 
 async function getAgentForClinic(clinicId: string): Promise<AgentInfo | null> {
   try {
-    // Query for voice-type agent for this clinic
+    // Query using ClinicIndex GSI (clinicId HASH, createdAt RANGE)
+    // Filter for voice-type agent
     const result = await docClient.send(new QueryCommand({
       TableName: AGENTS_TABLE,
-      IndexName: 'clinicId-agentType-index',
-      KeyConditionExpression: 'clinicId = :clinicId AND agentType = :agentType',
+      IndexName: 'ClinicIndex',
+      KeyConditionExpression: 'clinicId = :clinicId',
+      FilterExpression: 'agentType = :agentType',
       ExpressionAttributeValues: {
         ':clinicId': clinicId,
         ':agentType': 'voice',
       },
-      Limit: 1,
+      Limit: 10, // Get a few to find voice type
+      ScanIndexForward: false, // Most recent first
     }));
 
     if (result.Items && result.Items.length > 0) {
@@ -189,17 +192,41 @@ async function getAgentForClinic(clinicId: string): Promise<AgentInfo | null> {
     // Fallback: query for any chatbot agent
     const fallback = await docClient.send(new QueryCommand({
       TableName: AGENTS_TABLE,
-      IndexName: 'clinicId-agentType-index',
-      KeyConditionExpression: 'clinicId = :clinicId AND agentType = :agentType',
+      IndexName: 'ClinicIndex',
+      KeyConditionExpression: 'clinicId = :clinicId',
+      FilterExpression: 'agentType = :agentType',
       ExpressionAttributeValues: {
         ':clinicId': clinicId,
         ':agentType': 'chatbot',
       },
-      Limit: 1,
+      Limit: 10,
+      ScanIndexForward: false,
     }));
 
     if (fallback.Items && fallback.Items.length > 0) {
       const agent = fallback.Items[0];
+      return {
+        agentId: agent.bedrockAgentId,
+        aliasId: agent.bedrockAliasId || 'TSTALIASID',
+        agentName: agent.agentName || agent.name,
+      };
+    }
+
+    // Final fallback: get any agent for this clinic
+    const anyAgent = await docClient.send(new QueryCommand({
+      TableName: AGENTS_TABLE,
+      IndexName: 'ClinicIndex',
+      KeyConditionExpression: 'clinicId = :clinicId',
+      ExpressionAttributeValues: {
+        ':clinicId': clinicId,
+      },
+      Limit: 1,
+      ScanIndexForward: false,
+    }));
+
+    if (anyAgent.Items && anyAgent.Items.length > 0) {
+      const agent = anyAgent.Items[0];
+      console.log('[LexBedrockHook] Using fallback agent (any type):', agent.agentId || agent.agentName);
       return {
         agentId: agent.bedrockAgentId,
         aliasId: agent.bedrockAliasId || 'TSTALIASID',
@@ -639,6 +666,11 @@ export const handler = async (event: LexV2Event): Promise<LexV2Response> => {
   // Get the agent info
   const agent = await getAgentForClinic(clinicId);
   if (!agent) {
+    console.error('[LexBedrockHook] No agent found for clinic:', clinicId, {
+      dialedNumber,
+      defaultClinicId: DEFAULT_CLINIC_ID,
+      hasPhoneMap: Object.keys(aiPhoneNumberMap || {}).length > 0,
+    });
     return buildErrorResponse(event, "I'm sorry, the AI assistant is not available right now. Please call back during office hours.");
   }
 
@@ -703,13 +735,10 @@ function buildErrorResponse(event: LexV2Event, message: string): LexV2Response {
     sessionState: {
       sessionAttributes: event.sessionState?.sessionAttributes || {},
       dialogAction: {
-        type: 'Close',
-        fulfillmentState: 'Failed',
+        // Keep the Lex session open so Connect doesn't immediately hang up.
+        // This makes transient infra/config issues non-fatal to the phone call.
+        type: 'ElicitIntent',
       },
-      intent: event.sessionState?.intent ? {
-        ...event.sessionState.intent,
-        state: 'Failed',
-      } : undefined,
     },
     messages: [
       {

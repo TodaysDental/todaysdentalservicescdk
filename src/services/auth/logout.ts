@@ -10,13 +10,23 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { verifyToken } from '../../shared/utils/jwt';
+import { buildCorsHeaders, ALLOWED_ORIGINS_LIST } from '../../shared/utils/cors';
 
 const ddbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(ddbClient);
 
 const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE || 'StaffUser';
 const TOKEN_BLACKLIST_TABLE = process.env.TOKEN_BLACKLIST_TABLE || 'TokenBlacklist';
-const CORS_ORIGIN = process.env.CORS_ORIGIN || 'https://todaysdentalinsights.com';
+
+// Helper to get dynamic CORS headers based on request origin
+function getCorsHeaders(event: APIGatewayProxyEvent) {
+  const origin = event.headers?.origin || event.headers?.Origin;
+  const isAllowed = origin && ALLOWED_ORIGINS_LIST.includes(origin);
+  return {
+    ...buildCorsHeaders({ allowOrigin: isAllowed ? origin : ALLOWED_ORIGINS_LIST[0] }),
+    'Content-Type': 'application/json',
+  };
+}
 
 interface LogoutRequest {
   refreshToken?: string;
@@ -29,21 +39,13 @@ interface LogoutRequest {
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   console.log('Logout request:', event.httpMethod, event.path);
 
-  const headers = {
-    'Access-Control-Allow-Origin': CORS_ORIGIN,
-    'Access-Control-Allow-Credentials': 'true',
-    'Content-Type': 'application/json',
-  };
+  const headers = getCorsHeaders(event);
 
   // Handle OPTIONS request
   if (event.httpMethod === 'OPTIONS') {
     return {
       statusCode: 200,
-      headers: {
-        ...headers,
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      },
+      headers,
       body: '',
     };
   }

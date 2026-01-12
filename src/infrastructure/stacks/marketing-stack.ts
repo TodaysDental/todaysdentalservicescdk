@@ -575,8 +575,9 @@ export class MarketingStack extends Stack {
     ];
 
     // IAM policy for reading from secrets tables
+    // Note: Scan is required for /profiles/sync which calls getAllClinicConfigs() and getAllClinicSecrets()
     const secretsReadPolicy = new iam.PolicyStatement({
-      actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+      actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
       resources: [
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName}`,

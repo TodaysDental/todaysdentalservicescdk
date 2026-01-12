@@ -8,6 +8,9 @@ import {
   getClinicSecrets,
   getAllClinicConfigs,
   getAllClinicSecrets,
+  getAyrshareApiKey,
+  getAyrsharePrivateKey,
+  getAyrshareDomain,
   ClinicConfig,
   ClinicSecrets
 } from '../../shared/utils/secrets-helper';
@@ -16,9 +19,36 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true }
 });
 const PROFILES_TABLE = process.env.MARKETING_PROFILES_TABLE!;
-const API_KEY = process.env.AYRSHARE_API_KEY!;
-const AYRSHARE_DOMAIN = process.env.AYRSHARE_DOMAIN || 'id-lJiXe';
-const AYRSHARE_PRIVATE_KEY = process.env.AYRSHARE_PRIVATE_KEY!;
+
+// ============================================
+// Ayrshare credentials (cached from GlobalSecrets)
+// ============================================
+let cachedApiKey: string | null = null;
+let cachedPrivateKey: string | null = null;
+let cachedDomain: string | null = null;
+
+async function getApiKey(): Promise<string> {
+  if (cachedApiKey) return cachedApiKey;
+  const apiKey = await getAyrshareApiKey();
+  if (!apiKey) throw new Error('Ayrshare API key not found in GlobalSecrets');
+  cachedApiKey = apiKey;
+  return apiKey;
+}
+
+async function getPrivateKey(): Promise<string> {
+  if (cachedPrivateKey) return cachedPrivateKey;
+  const privateKey = await getAyrsharePrivateKey();
+  if (!privateKey) throw new Error('Ayrshare private key not found in GlobalSecrets');
+  cachedPrivateKey = privateKey;
+  return privateKey;
+}
+
+async function getDomain(): Promise<string> {
+  if (cachedDomain) return cachedDomain;
+  const domain = await getAyrshareDomain();
+  cachedDomain = domain || 'id-lJiXe';
+  return cachedDomain;
+}
 
 // Helper to get clinic config from DynamoDB
 async function getClinicConfigWithSecrets(clinicId: string): Promise<{ config: ClinicConfig | null, secrets: ClinicSecrets | null }> {
@@ -393,7 +423,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       // Get profile info from Ayrshare
       let platformDetails = {};
       try {
-        const profileInfo = await ayrshareGetProfile(API_KEY, profileData.ayrshareProfileKey);
+        const apiKey = await getApiKey();
+        const profileInfo = await ayrshareGetProfile(apiKey, profileData.ayrshareProfileKey);
         platformDetails = profileInfo.activeSocialAccounts || [];
       } catch (err) {
         console.warn('Could not fetch Ayrshare profile details:', err);
@@ -487,8 +518,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
 
       try {
-        console.log('Generating JWT for profile:', profileKey, 'domain:', AYRSHARE_DOMAIN);
-        const jwtRes = await ayrshareGenerateJWT(API_KEY, profileKey, AYRSHARE_DOMAIN, AYRSHARE_PRIVATE_KEY, expiresIn);
+        // Get Ayrshare credentials from GlobalSecrets
+        const [apiKey, domain, privateKey] = await Promise.all([
+          getApiKey(),
+          getDomain(),
+          getPrivateKey()
+        ]);
+        
+        console.log('Generating JWT for profile:', profileKey, 'domain:', domain);
+        const jwtRes = await ayrshareGenerateJWT(apiKey, profileKey, domain, privateKey, expiresIn);
         console.log('JWT generated successfully, URL:', jwtRes.url ? 'Present' : 'Missing');
 
         if (!jwtRes.url) {

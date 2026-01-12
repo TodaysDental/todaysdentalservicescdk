@@ -236,10 +236,10 @@ export class ConnectLexAiStack extends Stack {
     });
 
     // Create the Lex V2 bot
-    // NOTE: Using 'DentalAiBotV2' to force CloudFormation to create a new bot
+    // NOTE: Using 'DentalAiBotV3' to force CloudFormation to create a new bot
     // because intent updates don't propagate correctly on existing bots.
-    const lexBot = new lex.CfnBot(this, 'DentalAiBotV2', {
-      name: `${this.stackName}-DentalAIv2`,
+    const lexBot = new lex.CfnBot(this, 'DentalAiBotV3', {
+      name: `${this.stackName}-DentalAIv3`,
       description: 'AI voice assistant for dental clinic after-hours calls',
       roleArn: lexBotRole.roleArn,
       dataPrivacy: { ChildDirected: false },
@@ -270,6 +270,16 @@ export class ConnectLexAiStack extends Stack {
               ],
               fulfillmentCodeHook: {
                 enabled: true,
+                // Keep conversation going after Lambda fulfillment
+                postFulfillmentStatusSpecification: {
+                  successNextStep: { dialogAction: { type: 'ElicitIntent' } },
+                  failureNextStep: { dialogAction: { type: 'ElicitIntent' } },
+                  timeoutNextStep: { dialogAction: { type: 'ElicitIntent' } },
+                },
+              },
+              // Also ensure closing setting keeps session alive
+              intentClosingSetting: {
+                isActive: false, // Don't auto-close
               },
             },
             {
@@ -278,6 +288,15 @@ export class ConnectLexAiStack extends Stack {
               parentIntentSignature: 'AMAZON.FallbackIntent',
               fulfillmentCodeHook: {
                 enabled: true,
+                // Keep conversation going after Lambda fulfillment
+                postFulfillmentStatusSpecification: {
+                  successNextStep: { dialogAction: { type: 'ElicitIntent' } },
+                  failureNextStep: { dialogAction: { type: 'ElicitIntent' } },
+                  timeoutNextStep: { dialogAction: { type: 'ElicitIntent' } },
+                },
+              },
+              intentClosingSetting: {
+                isActive: false, // Don't auto-close
               },
             },
           ],
@@ -337,6 +356,9 @@ export class ConnectLexAiStack extends Stack {
     // ========================================
     // Associate the Lex V2 bot with the Connect instance
     // IMPORTANT: Using 'associateBot' for Lex V2 (not 'associateLexBot' which is for Lex V1)
+    // Include bot ID in physical resource ID so updates trigger re-association
+    const botAliasArnForConnect = `arn:aws:lex:${this.region}:${this.account}:bot-alias/${lexBot.attrId}/${botAlias.attrBotAliasId}`;
+    
     const lexIntegration = new customResources.AwsCustomResource(this, 'ConnectLexIntegration', {
       onCreate: {
         service: 'Connect',
@@ -344,21 +366,22 @@ export class ConnectLexAiStack extends Stack {
         parameters: {
           InstanceId: props.connectInstanceId,
           LexV2Bot: {
-            AliasArn: `arn:aws:lex:${this.region}:${this.account}:bot-alias/${lexBot.attrId}/${botAlias.attrBotAliasId}`,
+            AliasArn: botAliasArnForConnect,
           },
         },
-        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-lex-v2-integration`),
+        // Use bot alias ARN in physical ID so bot changes trigger replacement
+        physicalResourceId: customResources.PhysicalResourceId.of(`lex-integration-${lexBot.attrId}`),
       },
-      onDelete: {
+      onUpdate: {
         service: 'Connect',
-        action: 'disassociateBot',
+        action: 'associateBot',
         parameters: {
           InstanceId: props.connectInstanceId,
           LexV2Bot: {
-            AliasArn: `arn:aws:lex:${this.region}:${this.account}:bot-alias/${lexBot.attrId}/${botAlias.attrBotAliasId}`,
+            AliasArn: botAliasArnForConnect,
           },
         },
-        ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
+        physicalResourceId: customResources.PhysicalResourceId.of(`lex-integration-${lexBot.attrId}`),
       },
       policy: customResources.AwsCustomResourcePolicy.fromStatements([
         new iam.PolicyStatement({

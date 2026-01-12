@@ -107,6 +107,13 @@ export async function ayrshareGenerateJWT(
 
 export async function ayrsharePost(apiKey: string, profileKey: string, postData: any) {
   try {
+    console.log('[ayrsharePost] Posting to Ayrshare:', {
+      profileKey: profileKey.substring(0, 10) + '...',
+      platforms: postData.platforms,
+      hasPost: !!postData.post,
+      hasMediaUrls: !!(postData.mediaUrls?.length)
+    });
+    
     const res = await axios.post(`${AYRSHARE_URL}/post`,
       postData,
       {
@@ -116,9 +123,16 @@ export async function ayrsharePost(apiKey: string, profileKey: string, postData:
         }
       }
     );
+    console.log('[ayrsharePost] Success:', res.data?.id || res.data?.status);
     return res.data;
   } catch (err: any) {
-    throw new Error(err.response?.data?.message || 'Failed to post');
+    const errorData = err.response?.data;
+    console.error('[ayrsharePost] Error response:', JSON.stringify(errorData || err.message));
+    console.error('[ayrsharePost] Status:', err.response?.status);
+    
+    // Extract more specific error message from Ayrshare response
+    const errorMessage = errorData?.message || errorData?.error || errorData?.errors?.[0]?.message || 'Failed to post';
+    throw new Error(errorMessage);
   }
 }
 
