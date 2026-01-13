@@ -61,6 +61,18 @@ const CALL_ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE || '';
 const TRANSCRIPT_BUFFER_TABLE = process.env.TRANSCRIPT_BUFFER_TABLE_NAME || '';
 const SESSIONS_TABLE = process.env.SESSIONS_TABLE || 'AiAgentSessions';
 
+// Thinking audio configuration - plays keyboard typing sounds during AI processing
+// This eliminates awkward silence while the AI is generating a response
+const HOLD_MUSIC_BUCKET = process.env.HOLD_MUSIC_BUCKET || '';
+const THINKING_AUDIO_KEY = 'Computer-keyboard-sound-short.mp3'; // Short MP3 clip for SSML playback (if supported)
+const ENABLE_THINKING_AUDIO = process.env.ENABLE_THINKING_AUDIO !== 'false'; // Enabled by default
+// Public HTTPS URL for the thinking audio MP3 (from ChimeStack's public audio bucket)
+const THINKING_AUDIO_URL = process.env.THINKING_AUDIO_URL || '';
+
+// If Lex speech recognition is low-confidence, ask the caller to repeat instead of sending
+// potentially incorrect text to Bedrock.
+const TRANSCRIPTION_CONFIDENCE_THRESHOLD = Number(process.env.TRANSCRIPTION_CONFIDENCE_THRESHOLD || '0.6');
+
 // AI phone numbers mapping: aiPhoneNumber -> clinicId
 const AI_PHONE_NUMBERS_JSON = process.env.AI_PHONE_NUMBERS_JSON || '{}';
 let aiPhoneNumberMap: Record<string, string> = {};
@@ -369,11 +381,11 @@ async function updateAnalyticsTurn(params: {
   const now = new Date().toISOString();
 
   try {
-    const updateExpr = [
-      'SET lastActivityTime = :now',
+    // Build SET clause items
+    const setItems = [
+      'lastActivityTime = :now',
       'lastCallerUtterance = :caller',
       'lastAiResponse = :ai',
-      'ADD turnCount :one, transcriptCount :two',
     ];
     const exprValues: Record<string, any> = {
       ':now': now,
@@ -384,15 +396,18 @@ async function updateAnalyticsTurn(params: {
     };
 
     if (toolsUsed && toolsUsed.length > 0) {
-      updateExpr.push('toolsUsed = list_append(if_not_exists(toolsUsed, :emptyList), :tools)');
+      setItems.push('toolsUsed = list_append(if_not_exists(toolsUsed, :emptyList), :tools)');
       exprValues[':emptyList'] = [];
       exprValues[':tools'] = toolsUsed.slice(0, 10); // Limit tools per turn
     }
 
+    // Combine SET and ADD clauses properly (no comma between them)
+    const updateExpr = `SET ${setItems.join(', ')} ADD turnCount :one, transcriptCount :two`;
+
     await docClient.send(new UpdateCommand({
       TableName: CALL_ANALYTICS_TABLE,
       Key: { callId, timestamp },
-      UpdateExpression: updateExpr.join(', '),
+      UpdateExpression: updateExpr,
       ExpressionAttributeValues: exprValues,
     }));
   } catch (error) {
@@ -550,24 +565,49 @@ async function getOrCreateSession(
 // BEDROCK AGENT INVOCATION
 // ========================================================================
 
+// Voice call instruction prefix - injected into every voice call turn
+const VOICE_INSTRUCTION_PREFIX = `[VOICE CALL RULES - CRITICAL]:
+- Ask only ONE question at a time. Never combine questions.
+- Keep responses SHORT (1-2 sentences max).
+- For patient identification, ask in this order:
+  1. First: "What is your first name?"
+  2. After they answer: "And your last name?"
+  3. After they answer: "What is your date of birth?"
+- Accept any date format they speak (like "January 15th 1990").
+- After collecting all info, confirm: "I have [name], born [date]. Is that correct?"
+
+Caller said: `;
+
 async function invokeBedrock(params: {
   agentId: string;
   aliasId: string;
   sessionId: string;
   inputText: string;
   clinicId: string;
+  inputMode?: 'Text' | 'Speech' | 'DTMF';
+  channel?: 'voice' | 'chat';
 }): Promise<{ response: string; toolsUsed: string[] }> {
-  const { agentId, aliasId, sessionId, inputText, clinicId } = params;
+  const { agentId, aliasId, sessionId, inputText, clinicId, inputMode, channel } = params;
+
+  // For voice calls, prefix the input with voice-specific instructions
+  // This ensures the agent asks questions one at a time
+  const isVoiceCall = inputMode === 'Speech';
+  const effectiveInputText = isVoiceCall 
+    ? VOICE_INSTRUCTION_PREFIX + inputText
+    : inputText;
 
   try {
     const command = new InvokeAgentCommand({
       agentId,
       agentAliasId: aliasId,
       sessionId,
-      inputText,
+      inputText: effectiveInputText,
       sessionState: {
         sessionAttributes: {
           clinicId,
+          // Pass input mode so agent knows to use voice-optimized responses
+          inputMode: inputMode || 'Text',
+          channel: channel || (inputMode === 'Speech' ? 'voice' : 'chat'),
         },
       },
     });
@@ -619,6 +659,7 @@ export const handler = async (event: LexV2Event): Promise<LexV2Response> => {
 
   // Get transcription confidence from Lex
   const transcriptionConfidence = event.transcriptions?.[0]?.transcriptionConfidence || 0.9;
+  const isVoiceCall = event.inputMode === 'Speech';
 
   // Determine clinic from dialed number or session attributes
   let clinicId = sessionAttributes['clinicId'] || '';
@@ -674,20 +715,78 @@ export const handler = async (event: LexV2Event): Promise<LexV2Response> => {
     return buildErrorResponse(event, "I'm sorry, the AI assistant is not available right now. Please call back during office hours.");
   }
 
-  // Invoke Bedrock
+  // Handle empty input (silence or no transcription)
+  // Bedrock requires non-empty inputText, so we prompt the user to repeat
+  const trimmedInput = inputTranscript.trim();
+  if (!trimmedInput) {
+    console.log('[LexBedrockHook] Empty input transcript, prompting user to repeat');
+    return {
+      sessionState: {
+        sessionAttributes: {
+          ...sessionAttributes,
+          clinicId,
+          callerNumber,
+          callId: session.callId,
+          turnCount: String(session.turnCount),
+        },
+        dialogAction: {
+          type: 'ElicitIntent',
+        },
+      },
+      messages: [
+        {
+          contentType: 'PlainText',
+          content: "I'm sorry, I didn't catch that. Could you please repeat what you said?",
+        },
+      ],
+    };
+  }
+
+  // If Lex ASR is low-confidence, ask for a repeat instead of risking a wrong Bedrock response.
+  if (isVoiceCall && transcriptionConfidence < TRANSCRIPTION_CONFIDENCE_THRESHOLD) {
+    console.warn('[LexBedrockHook] Low transcription confidence; prompting caller to repeat', {
+      transcriptionConfidence,
+      threshold: TRANSCRIPTION_CONFIDENCE_THRESHOLD,
+      inputTranscript,
+    });
+    return {
+      sessionState: {
+        sessionAttributes: {
+          ...sessionAttributes,
+          clinicId,
+          callerNumber,
+          callId: session.callId,
+          turnCount: String(session.turnCount),
+        },
+        dialogAction: {
+          type: 'ElicitIntent',
+        },
+      },
+      messages: [
+        {
+          contentType: 'PlainText',
+          content: "I'm sorry, I didn't catch that clearly. Could you please repeat what you said?",
+        },
+      ],
+    };
+  }
+
+  // Invoke Bedrock - pass inputMode so agent uses voice-optimized responses
   const { response: aiResponse, toolsUsed } = await invokeBedrock({
     agentId: agent.agentId,
     aliasId: agent.aliasId,
     sessionId: session.bedrockSessionId,
-    inputText: inputTranscript,
+    inputText: trimmedInput,
     clinicId,
+    inputMode: event.inputMode, // 'Speech' for voice calls, 'Text' for chat
+    channel: event.inputMode === 'Speech' ? 'voice' : 'chat',
   });
 
   // Update analytics with this turn
   await updateAnalyticsTurn({
     callId: session.callId,
     timestamp: analyticsInfo.timestamp,
-    callerUtterance: inputTranscript,
+    callerUtterance: trimmedInput,
     aiResponse,
     toolsUsed,
   });
@@ -695,13 +794,19 @@ export const handler = async (event: LexV2Event): Promise<LexV2Response> => {
   // Add to transcript buffer
   await addTranscriptTurn({
     callId: session.callId,
-    callerUtterance: inputTranscript,
+    callerUtterance: trimmedInput,
     aiResponse,
     callStartMs: session.callStartMs,
     confidence: transcriptionConfidence,
   });
 
   // Build Lex response
+  // For voice calls (Speech input), use SSML for proper speech rendering.
+  // NOTE: Progress/thinking messages ("One moment...") are now handled by Lex V2's
+  // fulfillmentUpdatesSpecification (see CDK stack). Lex speaks those DURING Lambda execution.
+  // This response is just the final AI answer.
+  const useThinkingSsml = isVoiceCall && ENABLE_THINKING_AUDIO;
+
   const response: LexV2Response = {
     sessionState: {
       sessionAttributes: {
@@ -716,16 +821,71 @@ export const handler = async (event: LexV2Event): Promise<LexV2Response> => {
       },
     },
     messages: [
-      {
-        contentType: 'PlainText',
-        content: aiResponse,
-      },
+      useThinkingSsml
+        ? {
+            contentType: 'SSML',
+            content: buildThinkingAudioSSML(aiResponse),
+          }
+        : {
+            contentType: 'PlainText',
+            content: aiResponse,
+          },
     ],
   };
 
-  console.log('[LexBedrockHook] Returning response:', { clinicId, turnCount: session.turnCount, responseLength: aiResponse.length });
+  console.log('[LexBedrockHook] Returning response:', { 
+    clinicId, 
+    turnCount: session.turnCount, 
+    responseLength: aiResponse.length,
+    useThinkingSsml,
+    contentType: useThinkingSsml ? 'SSML' : 'PlainText',
+  });
   return response;
 };
+
+// ========================================================================
+// THINKING AUDIO - SSML with keyboard sounds during AI processing
+// ========================================================================
+
+// ========================================================================
+// SSML RESPONSE BUILDER
+// ========================================================================
+// NOTE: "Thinking" / progress messages are now handled by Lex V2's
+// fulfillmentUpdatesSpecification (configured in CDK connect-lex-ai-stack.ts).
+// Lex speaks phrases like "One moment please..." WHILE the Lambda is running.
+// The Lambda response below just contains the final AI answer.
+
+/**
+ * Build SSML response for the AI response text.
+ * 
+ * NOTE: Progress/thinking messages are now handled by Lex V2's fulfillmentUpdatesSpecification
+ * (configured in CDK). The Lambda response should NOT include verbal fillers because:
+ * 1. Lex already spoke "One moment..." during Lambda execution
+ * 2. Adding a filler here would say "One moment..." right before the answer (awkward)
+ * 
+ * This function just wraps the response in SSML with proper escaping and optional
+ * prosody/pacing adjustments for natural speech.
+ * 
+ * @param responseText - The AI response text to speak
+ * @returns SSML string with the response text
+ */
+function buildThinkingAudioSSML(responseText: string): string {
+  // Just return clean SSML with the AI response
+  // Lex handles progress updates separately via fulfillmentUpdatesSpecification
+  return `<speak>${escapeSSML(responseText)}</speak>`;
+}
+
+/**
+ * Escape special characters for safe inclusion in SSML
+ */
+function escapeSSML(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
 
 /**
  * Build an error response for Lex

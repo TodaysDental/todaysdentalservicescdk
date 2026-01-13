@@ -708,9 +708,12 @@ const connectLexAiStack = new ConnectLexAiStack(app, 'TodaysDentalInsightsConnec
   // AI phone numbers mapping for clinic detection (built from clinic-config.json)
   aiPhoneNumbersJson: JSON.stringify(aiPhoneNumbersMap),
   defaultClinicId: defaultClinicForAi,
+  // Thinking audio URL from ChimeStack - plays keyboard sounds during AI processing
+  thinkingAudioUrl: chimeStack.thinkingAudioUrl,
 });
 connectLexAiStack.addDependency(aiAgentsStack);
 connectLexAiStack.addDependency(analyticsStack);
+connectLexAiStack.addDependency(chimeStack); // Needs public audio bucket from ChimeStack
 
 // Query Generator Stack - AI-powered SQL query generation using Bedrock
 const queryGeneratorStack = new QueryGeneratorStack(app, 'TodaysDentalInsightsQueryGeneratorN1', {

@@ -91,16 +91,21 @@ export class TranscriptBufferManager {
           // Add segment and sort the entire array
           const updatedSegments = [...existingBuffer.segments, segment].sort((a, b) => a.startTime - b.startTime);
           
+          // Note: 'segments' is a DynamoDB reserved keyword, so we alias it with #seg
           await this.ddb.send(new UpdateCommand({
             TableName: this.tableName,
             Key: { callId },
             UpdateExpression: `
-              SET segments = :sortedSegments,
+              SET #seg = :sortedSegments,
                   segmentCount = :count,
                   lastUpdate = :now,
-                  ttl = :ttl,
+                  #ttl = :ttl,
                   hasOutOfOrderSegments = :true
             `,
+            ExpressionAttributeNames: {
+              '#seg': 'segments',
+              '#ttl': 'ttl'
+            },
             ExpressionAttributeValues: {
               ':sortedSegments': updatedSegments,
               ':count': updatedSegments.length,
@@ -116,15 +121,20 @@ export class TranscriptBufferManager {
       }
       
       // Normal case: append to end (in-order segment)
+      // Note: 'segments' is a DynamoDB reserved keyword, so we alias it with #seg
       await this.ddb.send(new UpdateCommand({
         TableName: this.tableName,
         Key: { callId },
         UpdateExpression: `
-          SET segments = list_append(if_not_exists(segments, :empty), :segment),
+          SET #seg = list_append(if_not_exists(#seg, :empty), :segment),
               segmentCount = if_not_exists(segmentCount, :zero) + :one,
               lastUpdate = :now,
-              ttl = :ttl
+              #ttl = :ttl
         `,
+        ExpressionAttributeNames: {
+          '#seg': 'segments',
+          '#ttl': 'ttl'
+        },
         ExpressionAttributeValues: {
           ':segment': [segment],
           ':empty': [],
@@ -258,10 +268,14 @@ export class TranscriptBufferManager {
     const prunedSegments = buffer.segments.slice(-keepLast);
 
     try {
+      // Note: 'segments' is a DynamoDB reserved keyword, so we alias it with #seg
       await this.ddb.send(new UpdateCommand({
         TableName: this.tableName,
         Key: { callId },
-        UpdateExpression: 'SET segments = :segments, segmentCount = :count',
+        UpdateExpression: 'SET #seg = :segments, segmentCount = :count',
+        ExpressionAttributeNames: {
+          '#seg': 'segments'
+        },
         ExpressionAttributeValues: {
           ':segments': prunedSegments,
           ':count': prunedSegments.length

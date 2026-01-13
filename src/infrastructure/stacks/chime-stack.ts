@@ -239,6 +239,7 @@ export class ChimeStack extends Stack {
   public readonly agentPerformanceTable: dynamodb.Table;
   public readonly recordingMetadataTable?: dynamodb.Table;
   public readonly recordingsBucket?: s3.IBucket;
+  public readonly thinkingAudioUrl: string;
 
   constructor(scope: Construct, id: string, props: ChimeStackProps) {
     super(scope, id, props);
@@ -726,13 +727,68 @@ export class ChimeStack extends Stack {
     // Upload audio files from local assets directory
     new s3deploy.BucketDeployment(this, 'DeployHoldMusic', {
       sources: [
-        s3deploy.Source.asset(path.join(__dirname, '..', '..', '..', 'assets', 'audio'))
+        // Hold music bucket is used for Chime SMA PlayAudio (WAV prompts)
+        // Keep MP3 files out of this bucket to avoid incorrect content-type metadata.
+        s3deploy.Source.asset(path.join(__dirname, '..', '..', '..', 'assets', 'audio'), {
+          exclude: ['*.mp3'],
+        })
       ],
       destinationBucket: holdMusicBucket,
       prune: false,
       // CRITICAL: Set correct content type for Chime SMA compatibility
       // Chime SMA requires 'audio/wav' not 'audio/x-wav'
       contentType: 'audio/wav',
+    });
+
+    // ========================================
+    // PUBLIC AUDIO BUCKET FOR POLLY SSML
+    // ========================================
+    // Separate public bucket for audio files used in Polly SSML <audio> tags
+    // Required for Amazon Connect Lex integration - must be publicly accessible via HTTPS
+    // The thinking audio (keyboard sounds) is played before AI response
+    const publicAudioBucket = new s3.Bucket(this, 'PublicAudioBucket', {
+      bucketName: `${this.stackName.toLowerCase()}-public-audio-${this.account}-${this.region}`,
+      removalPolicy: RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      // Allow public read access for Polly SSML
+      publicReadAccess: true,
+      blockPublicAccess: new s3.BlockPublicAccess({
+        blockPublicAcls: false,
+        ignorePublicAcls: false,
+        blockPublicPolicy: false,
+        restrictPublicBuckets: false,
+      }),
+      encryption: s3.BucketEncryption.S3_MANAGED,
+    });
+
+    // Deploy the MP3 audio file to the public bucket
+    new s3deploy.BucketDeployment(this, 'DeployPublicAudio', {
+      sources: [
+        // Public bucket is used for SSML-accessible audio files (MP3)
+        s3deploy.Source.asset(path.join(__dirname, '..', '..', '..', 'assets', 'audio'), {
+          exclude: ['*.wav'],
+        })
+      ],
+      destinationBucket: publicAudioBucket,
+      prune: false,
+      // Set correct content type for MP3
+      contentType: 'audio/mpeg',
+    });
+
+    // Build the public S3 HTTPS URL for the thinking audio
+    // IMPORTANT: keep this file short (<= ~5s) for best UX in voice bots
+    this.thinkingAudioUrl = `https://${publicAudioBucket.bucketName}.s3.${this.region}.amazonaws.com/Computer-keyboard-sound-short.mp3`;
+    
+    new CfnOutput(this, 'ThinkingAudioUrl', {
+      value: this.thinkingAudioUrl,
+      description: 'Public S3 URL for thinking audio (keyboard sounds) - use in ConnectLexAiStack',
+      exportName: `${this.stackName}-ThinkingAudioUrl`,
+    });
+
+    new CfnOutput(this, 'PublicAudioBucketName', {
+      value: publicAudioBucket.bucketName,
+      description: 'Public S3 bucket for Polly SSML audio files',
+      exportName: `${this.stackName}-PublicAudioBucketName`,
     });
 
     // ========================================

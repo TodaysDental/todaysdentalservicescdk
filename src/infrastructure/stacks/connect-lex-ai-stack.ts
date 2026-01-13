@@ -11,7 +11,7 @@
  * Chime Voice Connector (which requires an SBC for direct inbound calls).
  */
 
-import { Duration, Stack, StackProps, CfnOutput, Fn, RemovalPolicy, Tags, CustomResource } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, Tags, CustomResource } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
@@ -78,6 +78,44 @@ export interface ConnectLexAiStackProps extends StackProps {
    * Default clinic ID for unmapped phone numbers.
    */
   defaultClinicId?: string;
+
+  /**
+   * Hold music bucket name from ChimeStack (optional).
+   * Used for playing thinking audio (keyboard sounds) during AI processing.
+   */
+  holdMusicBucketName?: string;
+
+  /**
+   * Hold music bucket ARN for IAM permissions (optional).
+   * Must be provided with holdMusicBucketName for thinking audio to work.
+   */
+  holdMusicBucketArn?: string;
+
+  /**
+   * CloudFront URL for thinking audio file (optional).
+   * Must be an HTTPS URL pointing to an MP3 file (not WAV).
+   * Example: https://d1234567890.cloudfront.net/keyboard-typing.mp3
+   * 
+   * If not provided, a subtle verbal cue is used instead.
+   */
+  thinkingAudioUrl?: string;
+
+  /**
+   * Thinking audio mode:
+   * - 'verbal': spoken filler only (recommended / reliable)
+   * - 'audio': reserved (Amazon Polly SSML does not support <audio>; keep 'verbal' unless you have a non-Polly playback path)
+   *
+   * Defaults to 'verbal'.
+   */
+  thinkingAudioMode?: 'audio' | 'verbal';
+
+  /**
+   * For voice calls, if Lex returns a transcription confidence lower than this threshold,
+   * the bot will ask the caller to repeat instead of sending the text to Bedrock.
+   *
+   * Range: 0.0 - 1.0. Default: 0.6
+   */
+  transcriptionConfidenceThreshold?: number;
 }
 
 // ========================================================================
@@ -126,6 +164,16 @@ export class ConnectLexAiStack extends Stack {
         TRANSCRIPT_BUFFER_TABLE_NAME: props.transcriptBufferTableName,
         AI_PHONE_NUMBERS_JSON: props.aiPhoneNumbersJson || '{}',
         DEFAULT_CLINIC_ID: props.defaultClinicId || 'dentistingreenville',
+        // Thinking audio configuration - plays keyboard sounds during AI processing
+        HOLD_MUSIC_BUCKET: props.holdMusicBucketName || '',
+        ENABLE_THINKING_AUDIO: 'true',
+        // CloudFront URL for MP3 thinking audio (optional - if not set, uses verbal cue)
+        THINKING_AUDIO_URL: props.thinkingAudioUrl || '',
+        // Thinking audio mode: 'audio' = MP3 file, 'verbal' = spoken acknowledgment
+        // NOTE: Amazon Polly SSML does NOT support <audio>, so 'verbal' is the safe default.
+        THINKING_AUDIO_MODE: props.thinkingAudioMode || 'verbal',
+        // If Lex ASR is low-confidence, ask the caller to repeat rather than risking an incorrect AI answer
+        TRANSCRIPTION_CONFIDENCE_THRESHOLD: String(props.transcriptionConfidenceThreshold ?? 0.6),
       },
       logRetention: logs.RetentionDays.ONE_WEEK,
     });
@@ -171,6 +219,17 @@ export class ConnectLexAiStack extends Stack {
       ],
       resources: ['*'], // Bedrock agents require wildcard
     }));
+
+    // Grant S3 read access to hold music bucket for thinking audio
+    // The keyboard typing sounds are played via SSML during AI processing
+    if (props.holdMusicBucketArn) {
+      this.lexBedrockHookFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['s3:GetObject'],
+        resources: [`${props.holdMusicBucketArn}/*`],
+      }));
+      console.log(`[ConnectLexAiStack] LexBedrockHookFn granted S3 read access for thinking audio`);
+    }
 
     // ========================================
     // 2. Connect Call Finalizer Lambda
@@ -270,6 +329,67 @@ export class ConnectLexAiStack extends Stack {
               ],
               fulfillmentCodeHook: {
                 enabled: true,
+                // ============================================================
+                // FULFILLMENT PROGRESS UPDATES - plays audio while Lambda runs
+                // ============================================================
+                // This makes Lex speak "thinking" messages while Bedrock is processing.
+                // startResponse plays after initial delay, updateResponse repeats periodically.
+                fulfillmentUpdatesSpecification: {
+                  active: true,
+                  // Initial "thinking" message after 2 seconds of silence
+                  startResponse: {
+                    delayInSeconds: 2,
+                    messageGroups: [
+                      {
+                        message: {
+                          ssmlMessage: {
+                            value: '<speak><prosody rate="medium">One moment while I look that up.</prosody></speak>',
+                          },
+                        },
+                        variations: [
+                          {
+                            ssmlMessage: {
+                              value: '<speak><prosody rate="medium">Let me check that for you.</prosody></speak>',
+                            },
+                          },
+                          {
+                            ssmlMessage: {
+                              value: '<speak><prosody rate="medium">Sure, give me just a second.</prosody></speak>',
+                            },
+                          },
+                        ],
+                      },
+                    ],
+                    allowInterrupt: true,
+                  },
+                  // Periodic updates every 5 seconds if Lambda is still running
+                  updateResponse: {
+                    frequencyInSeconds: 5,
+                    messageGroups: [
+                      {
+                        message: {
+                          ssmlMessage: {
+                            value: '<speak><prosody rate="medium">Still working on that.</prosody></speak>',
+                          },
+                        },
+                        variations: [
+                          {
+                            ssmlMessage: {
+                              value: '<speak><prosody rate="medium">Almost there.</prosody></speak>',
+                            },
+                          },
+                          {
+                            ssmlMessage: {
+                              value: '<speak><prosody rate="medium">Just a moment longer.</prosody></speak>',
+                            },
+                          },
+                        ],
+                      },
+                    ],
+                    allowInterrupt: true,
+                  },
+                  timeoutInSeconds: 25, // Match Lambda timeout (30s) minus buffer
+                },
                 // Keep conversation going after Lambda fulfillment
                 postFulfillmentStatusSpecification: {
                   successNextStep: { dialogAction: { type: 'ElicitIntent' } },
@@ -288,6 +408,64 @@ export class ConnectLexAiStack extends Stack {
               parentIntentSignature: 'AMAZON.FallbackIntent',
               fulfillmentCodeHook: {
                 enabled: true,
+                // ============================================================
+                // FULFILLMENT PROGRESS UPDATES - plays audio while Lambda runs
+                // ============================================================
+                // Same as GeneralIntent - speaks "thinking" messages during Bedrock processing
+                fulfillmentUpdatesSpecification: {
+                  active: true,
+                  startResponse: {
+                    delayInSeconds: 2,
+                    messageGroups: [
+                      {
+                        message: {
+                          ssmlMessage: {
+                            value: '<speak><prosody rate="medium">One moment while I look that up.</prosody></speak>',
+                          },
+                        },
+                        variations: [
+                          {
+                            ssmlMessage: {
+                              value: '<speak><prosody rate="medium">Let me check that for you.</prosody></speak>',
+                            },
+                          },
+                          {
+                            ssmlMessage: {
+                              value: '<speak><prosody rate="medium">Sure, give me just a second.</prosody></speak>',
+                            },
+                          },
+                        ],
+                      },
+                    ],
+                    allowInterrupt: true,
+                  },
+                  updateResponse: {
+                    frequencyInSeconds: 5,
+                    messageGroups: [
+                      {
+                        message: {
+                          ssmlMessage: {
+                            value: '<speak><prosody rate="medium">Still working on that.</prosody></speak>',
+                          },
+                        },
+                        variations: [
+                          {
+                            ssmlMessage: {
+                              value: '<speak><prosody rate="medium">Almost there.</prosody></speak>',
+                            },
+                          },
+                          {
+                            ssmlMessage: {
+                              value: '<speak><prosody rate="medium">Just a moment longer.</prosody></speak>',
+                            },
+                          },
+                        ],
+                      },
+                    ],
+                    allowInterrupt: true,
+                  },
+                  timeoutInSeconds: 25,
+                },
                 // Keep conversation going after Lambda fulfillment
                 postFulfillmentStatusSpecification: {
                   successNextStep: { dialogAction: { type: 'ElicitIntent' } },
