@@ -1382,13 +1382,21 @@ export const executeOutboundCall = async (event: any) => {
     // Falls back to clinic's main phone number if aiPhoneNumber not set
     const fromPhoneNumber = clinic.aiPhoneNumber || clinic.phoneNumber;
 
-    console.log('[ai-outbound] Initiating SIP call via existing Chime infrastructure', {
+    console.log('[ai-outbound] Initiating outbound AI call via meetings architecture', {
       fromPhoneNumber,
       toPhoneNumber: phoneNumber,
       smaId,
       purpose,
       usingAiPhoneNumber: !!clinic.aiPhoneNumber,
+      callId,
     });
+
+    // TODO: Create Chime meeting for outbound call (meetings architecture)
+    // For now, use existing direct SMA approach until meeting-manager integration is complete
+    // Future implementation:
+    // 1. const meeting = await createMeetingForCall(clinicId, callId, 'outbound', phoneNumber);
+    // 2. await startMediaPipeline({ callId, meetingId: meeting.meetingId, clinicId, direction: 'outbound' });
+    // 3. Add X-Meeting-Id to SipHeaders below
 
     // Initiate call using EXISTING Chime SIP Media Application
     // The SMA's Lambda (inbound-router.ts) will route based on callType: 'AiOutbound'

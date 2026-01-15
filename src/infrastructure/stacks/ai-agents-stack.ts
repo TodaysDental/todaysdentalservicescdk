@@ -79,6 +79,24 @@ export interface AiAgentsStackProps extends StackProps {
    */
   chimeStackName?: string;
 
+  /**
+   * Call queue table name from ChimeStack.
+   * REQUIRED for meeting join handler to manage call queue.
+   */
+  callQueueTableName?: string;
+
+  /**
+   * Agent presence table name from ChimeStack.
+   * REQUIRED for meeting join handler to check agent status.
+   */
+  agentPresenceTableName?: string;
+
+  /**
+   * Agent performance table name from ChimeStack.
+   * Optional - for tracking agent metrics.
+   */
+  agentPerformanceTableName?: string;
+
   // ========================================
   // SECRETS STACK INTEGRATION (from SecretsStack)
   // ========================================
@@ -487,6 +505,31 @@ export class AiAgentsStack extends Stack {
       pointInTimeRecovery: true,
     });
     applyTags(this.scheduledCallsTable, { Table: 'scheduled-calls' });
+
+    // Active Meetings Table - stores Chime meetings for AI calling
+    // Tracks meeting lifecycle for inbound/outbound AI calls with meeting-based architecture
+    const activeMeetingsTable = new dynamodb.Table(this, 'ActiveMeetingsTable', {
+      partitionKey: { name: 'meetingId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      tableName: `${this.stackName}-ActiveMeetings`,
+      timeToLiveAttribute: 'ttl',
+      pointInTimeRecovery: true,
+    });
+    applyTags(activeMeetingsTable, { Table: 'active-meetings' });
+
+    // Add GSI for call-based queries
+    activeMeetingsTable.addGlobalSecondaryIndex({
+      indexName: 'CallIdIndex',
+      partitionKey: { name: 'callId', type: dynamodb.AttributeType.STRING },
+    });
+
+    // Add GSI for clinic-based queries (to see all active meetings per clinic)
+    activeMeetingsTable.addGlobalSecondaryIndex({
+      indexName: 'ClinicIndex',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'startTime', type: dynamodb.AttributeType.NUMBER },
+    });
 
     // Add GSI for clinic-based queries
     this.scheduledCallsTable.addGlobalSecondaryIndex({
@@ -1211,6 +1254,86 @@ export class AiAgentsStack extends Stack {
       smaIdMapParameterName,
     });
 
+    // ========================================
+    // MEETING MANAGER LAMBDA - Chime SDK Meetings for AI Calling
+    // ========================================
+    // Manages Chime meetings for AI calling (inbound and outbound)
+    // Replaces direct SMA actions with meeting-based architecture
+    const meetingManagerFn = new lambdaNode.NodejsFunction(this, 'MeetingManagerFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'meeting-manager.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 512,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        ACTIVE_MEETINGS_TABLE: activeMeetingsTable.tableName,
+        CHIME_MEDIA_REGION: 'us-east-1',
+      },
+    });
+    applyTags(meetingManagerFn, { Function: 'meeting-manager' });
+
+    // Grant permissions
+    activeMeetingsTable.grantReadWriteData(meetingManagerFn);
+
+    // Chime SDK Meetings permissions
+    meetingManagerFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'chime:CreateMeeting',
+        'chime:CreateAttendee',
+        'chime:DeleteMeeting',
+        'chime:GetMeeting',
+        'chime:ListAttendees',
+      ],
+      resources: ['*'],
+    }));
+
+    // ========================================
+    // MEETING JOIN HANDLER - API for Human Agent Transfers
+    // ========================================
+    // Enables agents to join meetings for seamless call handoff
+    const meetingJoinFn = new lambdaNode.NodejsFunction(this, 'MeetingJoinFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'meeting-join-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 512,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        ACTIVE_MEETINGS_TABLE: activeMeetingsTable.tableName,
+        CALL_QUEUE_TABLE_NAME: props.callQueueTableName || '',
+        AGENT_PRESENCE_TABLE_NAME: props.agentPresenceTableName || '',
+        CHIME_MEDIA_REGION: 'us-east-1',
+      },
+    });
+    applyTags(meetingJoinFn, { Function: 'meeting-join' });
+
+    // Grant permissions
+    activeMeetingsTable.grantReadWriteData(meetingJoinFn);
+
+    // Grant read/write to call queue and agent presence
+    // Use explicit ARN construction since these tables are from ChimeStack
+    const callQueueTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.callQueueTableName || ''}`;
+    const agentPresenceTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.agentPresenceTableName || ''}`;
+
+    meetingJoinFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['dynamodb:UpdateItem', 'dynamodb:GetItem'],
+      resources: [callQueueTableArn, agentPresenceTableArn],
+    }));
+
+    // Chime SDK Meetings permissions
+    meetingJoinFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'chime:CreateAttendee',
+        'chime:GetMeeting',
+        'chime:ListAttendees',
+      ],
+      resources: ['*'],
+    }));
+
     // Executes scheduled outbound calls - invoked by EventBridge Scheduler
     // Uses EXISTING Chime infrastructure from ChimeStack
     this.outboundExecutorFn = new lambdaNode.NodejsFunction(this, 'OutboundExecutorFn', {
@@ -1588,6 +1711,15 @@ export class AiAgentsStack extends Stack {
       authorizationType: apigw.AuthorizationType.CUSTOM,
     });
     scheduledCallsRes.addMethod('POST', new apigw.LambdaIntegration(this.outboundSchedulerFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /meetings/{meetingId}/join - Agent join meeting for call transfer
+    const meetingsRes = this.api.root.addResource('meetings');
+    const meetingIdRes = meetingsRes.addResource('{meetingId}');
+    const joinRes = meetingIdRes.addResource('join');
+    joinRes.addMethod('POST', new apigw.LambdaIntegration(meetingJoinFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
     });

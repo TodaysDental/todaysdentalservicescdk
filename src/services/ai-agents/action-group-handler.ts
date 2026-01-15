@@ -1652,6 +1652,96 @@ async function handleTool(
         };
       }
 
+      // ===== CALL TRANSFER TOOLS =====
+      case 'transferToHuman': {
+        // Get meeting and call information from session attributes
+        const callId = sessionAttributes.callId || params.callId;
+        const meetingId = sessionAttributes.meetingId || params.meetingId;
+        const clinicId = sessionAttributes.clinicId;
+        const transferReason = params.reason || 'Customer requested agent assistance';
+
+        if (!callId) {
+          return {
+            statusCode: 400,
+            body: {
+              status: 'FAILURE',
+              message: 'No active call to transfer. callId is required.',
+            },
+          };
+        }
+
+        console.log('[transferToHuman] Initiating transfer to human agent:', {
+          callId,
+          meetingId,
+          clinicId,
+          reason: transferReason,
+        });
+
+        try {
+          // Import the meeting manager at runtime to avoid circular dependencies
+          const { getMeetingByCallId } = await import('../chime/meeting-manager');
+
+          // Get meeting info if not provided
+          let meeting = null;
+          if (meetingId) {
+            const { getMeetingInfo } = await import('../chime/meeting-manager');
+            meeting = await getMeetingInfo(meetingId);
+          } else if (callId) {
+            meeting = await getMeetingByCallId(callId);
+          }
+
+          if (!meeting) {
+            console.warn('[transferToHuman] No meeting found for call, using fallback queue method');
+            // Fallback: Add to call queue without meeting join
+            // This works for non-meeting-based calls
+          }
+
+          // Add call to queue for human agents
+          const CALL_QUEUE_TABLE = process.env.CALL_QUEUE_TABLE_NAME || 'CallQueue';
+          await docClient.send(new UpdateCommand({
+            TableName: CALL_QUEUE_TABLE,
+            Key: { callId },
+            UpdateExpression: 'SET #status = :pending, transferReason = :reason, transferRequestedAt = :now',
+            ExpressionAttributeNames: {
+              '#status': 'status',
+            },
+            ExpressionAttributeValues: {
+              ':pending': 'pending',
+              ':reason': transferReason,
+              ':now': Date.now(),
+            },
+          }));
+
+          console.log('[transferToHuman] Call added to queue for agent pickup:', callId);
+
+          // TODO: Send push notification to available agents
+          // TODO: Play hold music while waiting for agent
+
+          return {
+            statusCode: 200,
+            body: {
+              status: 'SUCCESS',
+              message: 'Transfer initiated. Connecting you to an available agent.',
+              data: {
+                callId,
+                meetingId: meeting?.meetingId,
+                transferStatus: 'pending',
+              },
+            },
+          };
+        } catch (error) {
+          console.error('[transferToHuman] Error initiating transfer:', error);
+          return {
+            statusCode: 500,
+            body: {
+              status: 'FAILURE',
+              message: 'Failed to initiate transfer. Please try again.',
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+          };
+        }
+      }
+
       default:
         return {
           statusCode: 400,
