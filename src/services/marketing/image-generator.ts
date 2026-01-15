@@ -33,15 +33,40 @@ const IMAGES_BUCKET = process.env.IMAGES_BUCKET!;
 const MARKETING_MEDIA_BUCKET = process.env.MARKETING_MEDIA_BUCKET!;
 
 // Placeholder types and their clinic field mappings
-const PLACEHOLDER_MAPPING: Record<string, string> = {
-  'clinic_name': 'clinicName',
-  'phone_number': 'phone',
-  'address': 'address',
-  'email': 'email',
-  'website': 'website',
-  'working_hours': 'workingHours',
-  'clinic_logo': 'logoUrl',
+// Maps placeholder names to arrays of possible field names (in order of priority)
+const PLACEHOLDER_MAPPING: Record<string, string[]> = {
+  'clinic_name': ['clinicName', 'name'],
+  'phone_number': ['clinicPhone', 'phoneNumber', 'phone'],
+  'address': ['clinicAddress', 'address'],
+  'email': ['clinicEmail', 'email'],
+  'website': ['websiteLink', 'website'],
+  'working_hours': ['workingHours', 'hours'],
+  'clinic_logo': ['logoUrl', 'logo'],
+  'clinic_city': ['clinicCity', 'city'],
+  'clinic_state': ['clinicState', 'state'],
+  // Also support camelCase versions for compatibility
+  'clinicName': ['clinicName', 'name'],
+  'clinicPhone': ['clinicPhone', 'phoneNumber', 'phone'],
+  'clinicAddress': ['clinicAddress', 'address'],
+  'clinicEmail': ['clinicEmail', 'email'],
+  'clinicCity': ['clinicCity', 'city'],
+  'clinicState': ['clinicState', 'state'],
+  'websiteLink': ['websiteLink', 'website'],
+  'phoneNumber': ['phoneNumber', 'clinicPhone', 'phone'],
+  'logoUrl': ['logoUrl', 'logo'],
 };
+
+/**
+ * Get clinic value from multiple possible field names
+ */
+function getClinicValue(clinicData: any, fieldNames: string[]): string {
+  for (const field of fieldNames) {
+    if (clinicData[field]) {
+      return clinicData[field];
+    }
+  }
+  return '';
+}
 
 interface CanvasElement {
   type: string;
@@ -124,30 +149,35 @@ function resolveCanvasPlaceholders(
       const resolvedObj = { ...obj };
 
       if (obj.isPlaceholder && obj.placeholderType) {
-        const fieldName = PLACEHOLDER_MAPPING[obj.placeholderType];
-        const value = clinicData[fieldName] || '';
+        const fieldNames = PLACEHOLDER_MAPPING[obj.placeholderType] || [obj.placeholderType];
+        const value = getClinicValue(clinicData, fieldNames);
         placeholdersResolved.push(obj.placeholderType);
 
-        if (obj.placeholderType === 'clinic_logo') {
+        if (obj.placeholderType === 'clinic_logo' || obj.placeholderType === 'logoUrl') {
           // Logo placeholder - update src
           resolvedObj.logoUrl = value;
           resolvedObj.src = value;
           resolvedObj.isPlaceholder = false;
         } else if (obj.text) {
-          // Text placeholder - replace {{placeholder}} with value
-          resolvedObj.text = obj.text.replace(
-            new RegExp(`\\{\\{${obj.placeholderType}\\}\\}`, 'g'),
-            value
-          );
+          // Text placeholder - replace entire text with value OR replace {{placeholder}} pattern
+          if (obj.text.includes('{{')) {
+            resolvedObj.text = obj.text.replace(
+              new RegExp(`\\{\\{${obj.placeholderType}\\}\\}`, 'g'),
+              value
+            );
+          } else {
+            // The text IS the placeholder display, replace entirely
+            resolvedObj.text = value;
+          }
           resolvedObj.isPlaceholder = false;
         }
       } else if (obj.text && typeof obj.text === 'string') {
         // Check for inline placeholders in any text
         let text = obj.text;
-        for (const [placeholder, field] of Object.entries(PLACEHOLDER_MAPPING)) {
+        for (const [placeholder, fieldNames] of Object.entries(PLACEHOLDER_MAPPING)) {
           const regex = new RegExp(`\\{\\{${placeholder}\\}\\}`, 'g');
           if (regex.test(text)) {
-            const value = clinicData[field] || '';
+            const value = getClinicValue(clinicData, fieldNames);
             text = text.replace(regex, value);
             if (!placeholdersResolved.includes(placeholder)) {
               placeholdersResolved.push(placeholder);

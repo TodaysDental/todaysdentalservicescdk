@@ -1,6 +1,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, BatchGetCommand, GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, BatchGetCommand, GetCommand, PutCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { 
   ayrsharePost, 
   ayrshareDeletePost,
@@ -16,8 +17,10 @@ import { getAyrshareApiKey } from '../../shared/utils/secrets-helper';
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true }
 });
+const lambda = new LambdaClient({});
 const TABLE_NAME = process.env.MARKETING_CONFIG_TABLE!;
 const POSTS_TABLE = process.env.MARKETING_POSTS_TABLE || 'MarketingPosts';
+const IMAGE_GENERATOR_FUNCTION = process.env.IMAGE_GENERATOR_FUNCTION || 'ImageGeneratorFn';
 
 // ============================================
 // Rate Limiting Constants for Ayrshare Business Plan
@@ -138,18 +141,46 @@ function isRetryableError(error: any): boolean {
 
 /**
  * Replace placeholders in post content with clinic data
+ * Supports both snake_case placeholders ({{clinic_name}}) and camelCase ({{clinicName}})
+ * for compatibility with frontend and backend formats
  */
 function resolvePostPlaceholders(postData: any, clinicData: any): any {
   const resolvedPost = { ...postData };
   
   if (resolvedPost.post) {
-    resolvedPost.post = resolvedPost.post
-      .replace(/\{\{clinic_name\}\}/g, clinicData.clinicName || '')
-      .replace(/\{\{phone_number\}\}/g, clinicData.phone || '')
-      .replace(/\{\{address\}\}/g, clinicData.address || '')
-      .replace(/\{\{email\}\}/g, clinicData.email || '')
-      .replace(/\{\{website\}\}/g, clinicData.website || '')
-      .replace(/\{\{working_hours\}\}/g, clinicData.workingHours || '');
+    // Build replacement map from all possible clinic data fields
+    const replacements: Record<string, string> = {
+      // Snake_case placeholders (frontend format)
+      'clinic_name': clinicData.clinicName || clinicData.name || '',
+      'phone_number': clinicData.clinicPhone || clinicData.phoneNumber || clinicData.phone || '',
+      'address': clinicData.clinicAddress || clinicData.address || '',
+      'email': clinicData.clinicEmail || clinicData.email || '',
+      'website': clinicData.websiteLink || clinicData.website || '',
+      'working_hours': clinicData.workingHours || clinicData.hours || '',
+      'clinic_logo': clinicData.logoUrl || clinicData.logo || '',
+      'clinic_city': clinicData.clinicCity || clinicData.city || '',
+      'clinic_state': clinicData.clinicState || clinicData.state || '',
+      // CamelCase placeholders (bulk-processor format)
+      'clinicName': clinicData.clinicName || clinicData.name || '',
+      'clinicPhone': clinicData.clinicPhone || clinicData.phoneNumber || '',
+      'clinicAddress': clinicData.clinicAddress || clinicData.address || '',
+      'clinicEmail': clinicData.clinicEmail || clinicData.email || '',
+      'clinicCity': clinicData.clinicCity || clinicData.city || '',
+      'clinicState': clinicData.clinicState || clinicData.state || '',
+      'websiteLink': clinicData.websiteLink || clinicData.website || '',
+      'phoneNumber': clinicData.phoneNumber || clinicData.clinicPhone || '',
+      'logoUrl': clinicData.logoUrl || clinicData.logo || '',
+      'scheduleUrl': clinicData.scheduleUrl || '',
+      'mapsUrl': clinicData.mapsUrl || '',
+    };
+    
+    // Apply all replacements
+    let text = resolvedPost.post;
+    for (const [placeholder, value] of Object.entries(replacements)) {
+      const regex = new RegExp(`\\{\\{${placeholder}\\}\\}`, 'g');
+      text = text.replace(regex, value);
+    }
+    resolvedPost.post = text;
   }
   
   return resolvedPost;
@@ -279,6 +310,44 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       // Get Ayrshare API key from GlobalSecrets
       const apiKey = await getApiKey();
 
+      // If canvasJson is provided, generate images for each clinic using image-generator Lambda
+      let generatedImages: Record<string, string> = {};
+      if (canvasJson && canvasJson.objects && canvasJson.objects.length > 0) {
+        try {
+          console.log('Generating images for', targetClinicIds.length, 'clinics');
+          const invokeRes = await lambda.send(new InvokeCommand({
+            FunctionName: IMAGE_GENERATOR_FUNCTION,
+            InvocationType: 'RequestResponse',
+            Payload: JSON.stringify({
+              httpMethod: 'POST',
+              body: JSON.stringify({
+                canvasJson,
+                clinicIds: targetClinicIds,
+                format: 'png',
+                mode: 'generate',
+              }),
+            }),
+          }));
+
+          if (invokeRes.Payload) {
+            const payload = JSON.parse(Buffer.from(invokeRes.Payload).toString());
+            const imageGenResponse = JSON.parse(payload.body || '{}');
+            
+            if (imageGenResponse.images) {
+              for (const img of imageGenResponse.images) {
+                generatedImages[img.clinicId] = img.imageUrl;
+              }
+              console.log('Generated', Object.keys(generatedImages).length, 'images');
+            } else if (imageGenResponse.canvases) {
+              // Fallback: If only resolution mode available, log it
+              console.log('Image generator in resolve mode - canvasJson resolved for', imageGenResponse.canvases?.length, 'clinics');
+            }
+          }
+        } catch (imgError: any) {
+          console.error('Image generation failed, proceeding without images:', imgError.message);
+        }
+      }
+
       // Batch processing for Business Plan rate limits
       const batches = chunkArray(configs, BATCH_SIZE);
       const allResults: Array<{ clinicId: string; status: 'success' | 'failed'; id?: string; error?: string }> = [];
@@ -292,9 +361,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
               // For bulk posts, always resolve placeholders
               const resolvedPostData = resolvePostPlaceholders(postData, config);
               
-              // If canvasJson is provided, we would generate per-clinic images here
-              // For now, use the provided mediaUrls
-              // In a future enhancement, call image-generator Lambda
+              // If we have generated images for this clinic, add them to mediaUrls
+              if (generatedImages[config.clinicId]) {
+                resolvedPostData.mediaUrls = [generatedImages[config.clinicId], ...(resolvedPostData.mediaUrls || [])];
+              }
               
               if (!config.ayrshareProfileKey) {
                 throw new Error('Missing Ayrshare profile key');
@@ -313,7 +383,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     platforms: resolvedPostData.platforms,
                     mediaUrls: resolvedPostData.mediaUrls || [],
                     scheduledDate: resolvedPostData.scheduleDate || null,
-                    status: 'success',
+                    status: res.status || 'success',
                     bulkJobId: body.bulkJobId || null,
                     createdAt: new Date().toISOString()
                   }
@@ -554,6 +624,79 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           }
         })
       };
+    }
+
+    // ============================================
+    // 10. GET SCHEDULED POSTS - For calendar integration
+    // ============================================
+    if (event.path.endsWith('/scheduled') && event.httpMethod === 'GET') {
+      const clinicId = event.queryStringParameters?.clinicId;
+      const startDate = event.queryStringParameters?.startDate;
+      const endDate = event.queryStringParameters?.endDate;
+
+      try {
+        let posts: any[] = [];
+        
+        if (clinicId) {
+          // Query by clinic ID
+          const queryRes = await ddb.send(new QueryCommand({
+            TableName: POSTS_TABLE,
+            IndexName: 'ByClinic',
+            KeyConditionExpression: 'clinicId = :clinicId',
+            FilterExpression: 'attribute_exists(scheduledDate) AND scheduledDate <> :null',
+            ExpressionAttributeValues: {
+              ':clinicId': clinicId,
+              ':null': null,
+            },
+            Limit: 100,
+          }));
+          posts = queryRes.Items || [];
+        } else {
+          // Scan for all scheduled posts
+          const scanRes = await ddb.send(new ScanCommand({
+            TableName: POSTS_TABLE,
+            FilterExpression: 'attribute_exists(scheduledDate) AND scheduledDate <> :null',
+            ExpressionAttributeValues: {
+              ':null': null,
+            },
+            Limit: 200,
+          }));
+          posts = scanRes.Items || [];
+        }
+
+        // Filter by date range if provided
+        if (startDate || endDate) {
+          posts = posts.filter(post => {
+            const postDate = post.scheduledDate;
+            if (!postDate) return false;
+            if (startDate && postDate < startDate) return false;
+            if (endDate && postDate > endDate) return false;
+            return true;
+          });
+        }
+
+        // Sort by scheduled date
+        posts.sort((a, b) => 
+          new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime()
+        );
+
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            posts,
+            count: posts.length,
+            filters: { clinicId, startDate, endDate },
+          })
+        };
+      } catch (error: any) {
+        console.error('Failed to fetch scheduled posts:', error);
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: error.message })
+        };
+      }
     }
 
     return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Route not found' }) };

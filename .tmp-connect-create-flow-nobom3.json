@@ -1,7 +1,0 @@
-{
-    "Type":  "CONTACT_FLOW",
-    "Description":  "test basic schema with metadata",
-    "Name":  "zz-basic-test-meta-1949112709",
-    "Content":  "{\"StartAction\":\"ec190b08-5eaf-43aa-9206-bddee8c99bec\",\"Actions\":[{\"Transitions\":{\"NextAction\":\"610cf27c-adaa-42ed-a9dc-a7470f47e96b\",\"Errors\":[],\"Conditions\":[]},\"Type\":\"MessageParticipant\",\"Identifier\":\"ec190b08-5eaf-43aa-9206-bddee8c99bec\",\"Parameters\":{\"Text\":\"Hello from test flow.\"}},{\"Transitions\":{\"NextAction\":\"ffa6b295-038f-49f9-b157-1b961fd7c6c0\",\"Errors\":[],\"Conditions\":[]},\"Type\":\"GetParticipantInput\",\"Identifier\":\"610cf27c-adaa-42ed-a9dc-a7470f47e96b\",\"Parameters\":{\"InputTimeLimitSeconds\":\"5\",\"StoreInput\":\"False\",\"Text\":\"Press 1.\"}},{\"Transitions\":{},\"Type\":\"DisconnectParticipant\",\"Identifier\":\"ffa6b295-038f-49f9-b157-1b961fd7c6c0\",\"Parameters\":{}}],\"Version\":\"2019-10-30\",\"Metadata\":{\"entryPointPosition\":{\"y\":40,\"x\":40},\"ActionMetadata\":{\"ec190b08-5eaf-43aa-9206-bddee8c99bec\":{\"position\":{\"y\":40,\"x\":160}},\"ffa6b295-038f-49f9-b157-1b961fd7c6c0\":{\"position\":{\"y\":40,\"x\":640}},\"610cf27c-adaa-42ed-a9dc-a7470f47e96b\":{\"position\":{\"y\":40,\"x\":400}}}}}",
-    "InstanceId":  "0626aa86-d377-44c8-9311-84e4f230cc72"
-}

@@ -4,7 +4,8 @@ import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, QueryCom
 import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v4 as uuidv4 } from 'uuid';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import axios from 'axios';
+import { buildCorsHeaders, ALLOWED_ORIGINS_LIST } from '../../shared/utils/cors';
 import { ayrshareResizeImage, ayrshareVerifyMediaUrl } from './ayrshare-client';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
@@ -14,6 +15,33 @@ const s3 = new S3Client({});
 const MEDIA_TABLE = process.env.MARKETING_MEDIA_TABLE!;
 const MEDIA_BUCKET = process.env.MEDIA_BUCKET!;
 const API_KEY = process.env.AYRSHARE_API_KEY!;
+
+// Cache allowed hosts for SSRF protection in /media/import
+let allowedHostsCache: Set<string> | null = null;
+function getAllowedHosts(): Set<string> {
+  if (allowedHostsCache) return allowedHostsCache;
+  const hosts = new Set<string>();
+  for (const origin of ALLOWED_ORIGINS_LIST) {
+    try {
+      const u = new URL(origin);
+      if (u.hostname) hosts.add(u.hostname);
+    } catch {
+      // Ignore invalid origins
+    }
+  }
+  allowedHostsCache = hosts;
+  return hosts;
+}
+
+function inferExtensionFromContentType(contentType?: string): string {
+  const ct = (contentType || '').toLowerCase();
+  if (ct.includes('image/png')) return 'png';
+  if (ct.includes('image/jpeg') || ct.includes('image/jpg')) return 'jpg';
+  if (ct.includes('image/webp')) return 'webp';
+  if (ct.includes('image/gif')) return 'gif';
+  if (ct.includes('image/svg')) return 'svg';
+  return 'bin';
+}
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'] });
@@ -95,6 +123,138 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             clinicIds: clinicIds || []
           }
         })
+      };
+    }
+
+    // ---------------------------------------------------------
+    // POST /media/import - Import media from an external URL (server-side fetch)
+    // Used for CORS-safe clinic logos (e.g., Amplify-hosted /logo.png without CORS headers)
+    // ---------------------------------------------------------
+    if (path.includes('/import') && method === 'POST') {
+      const body = JSON.parse(event.body || '{}');
+      const { url, clinicId, purpose, fileName: requestedFileName, tags } = body as {
+        url?: string;
+        clinicId?: string;
+        purpose?: string; // e.g. 'logo'
+        fileName?: string;
+        tags?: string[];
+      };
+
+      if (!url) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ success: false, error: 'url is required' }),
+        };
+      }
+
+      // SSRF protection: only allow https URLs to known clinic hosts
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(url);
+      } catch {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ success: false, error: 'Invalid url' }),
+        };
+      }
+
+      if (parsedUrl.protocol !== 'https:') {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ success: false, error: 'Only https URLs are allowed' }),
+        };
+      }
+
+      const allowedHosts = getAllowedHosts();
+      if (!allowedHosts.has(parsedUrl.hostname)) {
+        return {
+          statusCode: 403,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: false,
+            error: `URL host not allowed: ${parsedUrl.hostname}`,
+          }),
+        };
+      }
+
+      // Fetch bytes server-side (no browser CORS limitations)
+      const resp = await axios.get<ArrayBuffer>(url, {
+        responseType: 'arraybuffer',
+        timeout: 15000,
+        maxContentLength: 10 * 1024 * 1024, // 10MB
+        maxBodyLength: 10 * 1024 * 1024,
+        validateStatus: (s) => s >= 200 && s < 300,
+      });
+
+      const contentType = String(resp.headers?.['content-type'] || 'application/octet-stream');
+      const extension = inferExtensionFromContentType(contentType);
+      const buffer = Buffer.from(resp.data as any);
+
+      const uploadedBy = event.requestContext.authorizer?.email || 'unknown';
+      const uploadedAt = new Date().toISOString();
+
+      // Deterministic key for clinic logos to avoid duplication
+      const isLogo = (purpose || '').toLowerCase() === 'logo' && !!clinicId;
+      const mediaId = isLogo ? `logo-${clinicId}` : uuidv4();
+      const finalFileName = requestedFileName || (isLogo ? `logo.${extension}` : parsedUrl.pathname.split('/').pop() || `import.${extension}`);
+      const safeClinicId = clinicId ? String(clinicId).replace(/[^a-zA-Z0-9_-]/g, '') : 'global';
+      const s3Key = isLogo
+        ? `clinic-logos/${safeClinicId}/${finalFileName}`
+        : `imports/${mediaId}/${finalFileName}`;
+
+      const publicUrl = `https://${MEDIA_BUCKET}.s3.amazonaws.com/${s3Key}`;
+
+      // Upload directly (no presigned URL required)
+      await s3.send(new PutObjectCommand({
+        Bucket: MEDIA_BUCKET,
+        Key: s3Key,
+        Body: buffer,
+        ContentType: contentType,
+      }));
+
+      // Save metadata to DynamoDB so it's visible in media library
+      await ddb.send(new PutCommand({
+        TableName: MEDIA_TABLE,
+        Item: {
+          mediaId,
+          fileName: finalFileName,
+          fileType: contentType.startsWith('video/') ? 'video' : 'image',
+          mimeType: contentType,
+          s3Bucket: MEDIA_BUCKET,
+          s3Key,
+          publicUrl,
+          fileSize: buffer.length,
+          dimensions: { width: 0, height: 0 },
+          uploadedBy,
+          uploadedAt,
+          tags: tags || (isLogo ? ['clinic-logo', 'imported'] : ['imported']),
+          usedInPosts: [],
+          clinicIds: clinicId ? [clinicId] : [],
+          sourceUrl: url,
+          purpose: purpose || null,
+        }
+      }));
+
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          success: true,
+          message: 'Media imported successfully',
+          media: {
+            mediaId,
+            fileName: finalFileName,
+            mimeType: contentType,
+            publicUrl,
+            s3Key,
+            clinicIds: clinicId ? [clinicId] : [],
+            sourceUrl: url,
+            purpose: purpose || null,
+          },
+        }),
       };
     }
 

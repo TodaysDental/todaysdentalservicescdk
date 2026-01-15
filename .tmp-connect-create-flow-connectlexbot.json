@@ -1,7 +1,0 @@
-{
-    "Type":  "CONTACT_FLOW",
-    "Description":  "test ConnectParticipantWithLexBot schema",
-    "Name":  "zz-connectlexbot-test-1126408370",
-    "Content":  "{\"StartAction\":\"27bfbc19-2552-4651-8711-ab072ac57957\",\"Actions\":[{\"Transitions\":{\"NextAction\":\"fb48174c-ff29-4a65-b1d1-91a64d21fd97\",\"Errors\":[{\"ErrorType\":\"InputTimeLimitExceeded\",\"NextAction\":\"fb48174c-ff29-4a65-b1d1-91a64d21fd97\"},{\"ErrorType\":\"NoMatchingError\",\"NextAction\":\"fb48174c-ff29-4a65-b1d1-91a64d21fd97\"},{\"ErrorType\":\"NoMatchingCondition\",\"NextAction\":\"fb48174c-ff29-4a65-b1d1-91a64d21fd97\"}],\"Conditions\":[]},\"Type\":\"ConnectParticipantWithLexBot\",\"Identifier\":\"27bfbc19-2552-4651-8711-ab072ac57957\",\"Parameters\":{\"Text\":\"Hello! How can I help you today?\",\"LexV2Bot\":{\"AliasArn\":\"arn:aws:lex:us-east-1:851620242036:bot-alias/QIXIRD1CX2/MPMEHYTSJY\"}}},{\"Transitions\":{},\"Type\":\"DisconnectParticipant\",\"Identifier\":\"fb48174c-ff29-4a65-b1d1-91a64d21fd97\",\"Parameters\":{}}],\"Version\":\"2019-10-30\",\"Metadata\":{\"entryPointPosition\":{\"y\":40,\"x\":40},\"ActionMetadata\":{\"fb48174c-ff29-4a65-b1d1-91a64d21fd97\":{\"position\":{\"y\":40,\"x\":400}},\"27bfbc19-2552-4651-8711-ab072ac57957\":{\"position\":{\"y\":40,\"x\":160}}}}}",
-    "InstanceId":  "0626aa86-d377-44c8-9311-84e4f230cc72"
-}

@@ -42,7 +42,7 @@ interface ImageMetadata {
   isPublic?: boolean; // Whether image is publicly accessible
 }
 
-// Allowed file content types (images + PDFs)
+// Allowed file content types (images + PDFs + videos)
 const ALLOWED_CONTENT_TYPES = [
   // Images
   'image/jpeg',
@@ -53,10 +53,28 @@ const ALLOWED_CONTENT_TYPES = [
   'image/svg+xml',
   // PDFs
   'application/pdf',
+  // Videos
+  'video/mp4',
+  'video/quicktime',
+  'video/webm',
+  'video/x-msvideo',
+  'video/mpeg',
+  'video/ogg',
 ];
 
-// Max file size (10MB)
+// Video content types for validation
+const VIDEO_CONTENT_TYPES = [
+  'video/mp4',
+  'video/quicktime',
+  'video/webm',
+  'video/x-msvideo',
+  'video/mpeg',
+  'video/ogg',
+];
+
+// Max file size - 10MB for images/PDFs, 100MB for videos
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_VIDEO_SIZE = 100 * 1024 * 1024;
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const httpMethod = event.httpMethod;
@@ -386,13 +404,16 @@ async function createUploadUrl(event: APIGatewayProxyEvent, userPerms: UserPermi
     };
   }
 
-  // Validate file size
-  if (fileSize && fileSize > MAX_FILE_SIZE) {
+  // Validate file size - different limits for videos vs images
+  const isVideo = VIDEO_CONTENT_TYPES.includes(contentType);
+  const maxSize = isVideo ? MAX_VIDEO_SIZE : MAX_FILE_SIZE;
+  
+  if (fileSize && fileSize > maxSize) {
     return {
       statusCode: 400,
       headers: getCorsHeaders(event),
       body: JSON.stringify({
-        error: `File too large. Maximum size: ${MAX_FILE_SIZE / (1024 * 1024)}MB`,
+        error: `File too large. Maximum size: ${maxSize / (1024 * 1024)}MB ${isVideo ? 'for videos' : 'for images/PDFs'}`,
       }),
     };
   }

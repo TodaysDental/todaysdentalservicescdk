@@ -459,6 +459,7 @@ export class MarketingStack extends Stack {
       ...envVars,
       MARKETING_CONFIG_TABLE: this.marketingProfilesTable.tableName,
       AYRSHARE_API_KEY: process.env.AYRSHARE_API_KEY || '',
+      IMAGE_GENERATOR_FUNCTION: '', // Will be set after image generator is created
     };
 
     const publisherFn = new lambdaNode.NodejsFunction(this, 'PublisherFn', {
@@ -469,6 +470,10 @@ export class MarketingStack extends Stack {
       memorySize: 256,
       environment: publisherEnvVars,
     });
+    
+    // Update publisher with image generator function name and grant invoke permission
+    publisherFn.addEnvironment('IMAGE_GENERATOR_FUNCTION', imageGeneratorFn.functionName);
+    imageGeneratorFn.grantInvoke(publisherFn);
 
     // ============================================
     // EventBridge Rule for Analytics Sync (runs every 6 hours)
@@ -732,6 +737,11 @@ export class MarketingStack extends Stack {
     const verifyUrlRes = mediaRes.addResource('verify-url');
     verifyUrlRes.addMethod('POST', new apigw.LambdaIntegration(mediaFn), { authorizer });
 
+    // POST /media/import - Import media from external URL (server-side fetch)
+    // Used to re-host clinic logos in the marketing media bucket for CORS-safe canvas rendering
+    const importRes = mediaRes.addResource('import');
+    importRes.addMethod('POST', new apigw.LambdaIntegration(mediaFn), { authorizer });
+
     // -----------------------------------------
     // Auto-Schedule Routes (/auto-schedule)
     // -----------------------------------------
@@ -872,6 +882,10 @@ export class MarketingStack extends Stack {
     // GET /publisher/rate-limit - Get rate limit info
     const publisherRateLimitRes = publisherRes.addResource('rate-limit');
     publisherRateLimitRes.addMethod('GET', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // GET /publisher/scheduled - Get scheduled posts for calendar
+    const publisherScheduledRes = publisherRes.addResource('scheduled');
+    publisherScheduledRes.addMethod('GET', new apigw.LambdaIntegration(publisherFn), { authorizer });
 
     // -----------------------------------------
     // Ads Routes (/ads) - Meta Ads via Ayrshare
