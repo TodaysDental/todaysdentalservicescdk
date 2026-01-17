@@ -77,12 +77,8 @@ export const handler = async (event: ContactFlowEvent): Promise<any> => {
       };
     }
 
-    // Build the contact flow content with the actual prompt ARN and Lex bot
-    const flowContent = buildContactFlowContent(
-      props.LambdaFunctionArn,
-      props.KeyboardPromptId,
-      props.LexBotAliasArn
-    );
+    // Build the contact flow content with the Lex bot alias
+    const flowContent = buildContactFlowContent(props.LexBotAliasArn);
 
     // For both Create and Update, first try to find existing flow
     const existingFlow = await findExistingFlow(props.InstanceId, props.FlowName);
@@ -162,11 +158,7 @@ export const handler = async (event: ContactFlowEvent): Promise<any> => {
  * Build the contact flow content JSON with actual ARNs/IDs
  * Uses ConnectParticipantWithLexBot for speech-to-text (ASR)
  */
-function buildContactFlowContent(
-  lambdaFunctionArn: string,
-  keyboardPromptId: string,
-  lexBotAliasArn: string
-): any {
+function buildContactFlowContent(lexBotAliasArn: string): any {
   return {
     Version: '2019-10-30',
     StartAction: 'welcome-message',
@@ -199,7 +191,8 @@ function buildContactFlowContent(
         Identifier: 'lex-bot',
         Type: 'ConnectParticipantWithLexBot',
         Parameters: {
-          LexBot: {
+          Text: 'How can I help you today?',
+          LexV2Bot: {
             AliasArn: lexBotAliasArn,
           },
           LexSessionAttributes: {},
@@ -207,7 +200,9 @@ function buildContactFlowContent(
         Transitions: {
           NextAction: 'disconnect-action',
           Errors: [
+            { NextAction: 'disconnect-action', ErrorType: 'NoMatchingCondition' },
             { NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' },
+            { NextAction: 'disconnect-action', ErrorType: 'InputTimeLimitExceeded' },
           ],
         },
       },
