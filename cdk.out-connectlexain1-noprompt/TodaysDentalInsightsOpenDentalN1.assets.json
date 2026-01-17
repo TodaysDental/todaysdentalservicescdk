@@ -1,0 +1,66 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "8d5e97812d0036272ba1fd5bb8772ff51f4712e58c75507e4a0db242bf680f1d": {
+      "displayName": "AWS679f53fac002430cb0da5b7982bd2287/Code",
+      "source": {
+        "path": "asset.8d5e97812d0036272ba1fd5bb8772ff51f4712e58c75507e4a0db242bf680f1d",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-26ca749d": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "8d5e97812d0036272ba1fd5bb8772ff51f4712e58c75507e4a0db242bf680f1d.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "b6aac0b9a75d451d8855f63ef34b7eb490b0ead0de6139f7a9b1ef5bdbd54757": {
+      "displayName": "ConsolidatedTransferAuthFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-9bea7bdb": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "b6aac0b9a75d451d8855f63ef34b7eb490b0ead0de6139f7a9b1ef5bdbd54757.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "c0921d79780dd71792aea2e7ea13e57d3b82bb96251352c1c2a8bbb58645858d": {
+      "displayName": "OpenDentalProxyFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-88b63c9d": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "c0921d79780dd71792aea2e7ea13e57d3b82bb96251352c1c2a8bbb58645858d.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "7c6c75a8a3a088a58a3a7f87451c9ee2197c260ea69862d1bf41181df343241d": {
+      "displayName": "TodaysDentalInsightsOpenDentalN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsOpenDentalN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-dc682c3c": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "7c6c75a8a3a088a58a3a7f87451c9ee2197c260ea69862d1bf41181df343241d.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

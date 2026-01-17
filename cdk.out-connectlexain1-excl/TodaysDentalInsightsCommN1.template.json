@@ -1,0 +1,7059 @@
+{
+ "Resources": {
+  "ConnectionsTableV4E4727E9E": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "connectionId",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "userID",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "GlobalSecondaryIndexes": [
+     {
+      "IndexName": "UserIDIndex",
+      "KeySchema": [
+       {
+        "AttributeName": "userID",
+        "KeyType": "HASH"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "KEYS_ONLY"
+      }
+     }
+    ],
+    "KeySchema": [
+     {
+      "AttributeName": "connectionId",
+      "KeyType": "HASH"
+     }
+    ],
+    "TableName": "TodaysDentalInsightsCommN1-WsConnectionsV4",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "ws-connections"
+     }
+    ],
+    "TimeToLiveSpecification": {
+     "AttributeName": "ttl",
+     "Enabled": true
+    }
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/ConnectionsTableV4/Resource"
+   }
+  },
+  "FavorRequestsTableV4D5150F07": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "favorRequestID",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "userID",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "updatedAt",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "senderID",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "receiverID",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "teamID",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "status",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "GlobalSecondaryIndexes": [
+     {
+      "IndexName": "UserIndex",
+      "KeySchema": [
+       {
+        "AttributeName": "userID",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "updatedAt",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "SenderIndex",
+      "KeySchema": [
+       {
+        "AttributeName": "senderID",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "updatedAt",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "ReceiverIndex",
+      "KeySchema": [
+       {
+        "AttributeName": "receiverID",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "updatedAt",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "TeamIndex",
+      "KeySchema": [
+       {
+        "AttributeName": "teamID",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "updatedAt",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "StatusIndex",
+      "KeySchema": [
+       {
+        "AttributeName": "status",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "updatedAt",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     }
+    ],
+    "KeySchema": [
+     {
+      "AttributeName": "favorRequestID",
+      "KeyType": "HASH"
+     }
+    ],
+    "TableName": "TodaysDentalInsightsCommN1-FavorRequestsV4",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "favor-requests"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/FavorRequestsTableV4/Resource"
+   }
+  },
+  "MessagesTableV4B29BCA2D": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "favorRequestID",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "timestamp",
+      "AttributeType": "N"
+     },
+     {
+      "AttributeName": "senderID",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "GlobalSecondaryIndexes": [
+     {
+      "IndexName": "SenderIndex",
+      "KeySchema": [
+       {
+        "AttributeName": "senderID",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "timestamp",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     }
+    ],
+    "KeySchema": [
+     {
+      "AttributeName": "favorRequestID",
+      "KeyType": "HASH"
+     },
+     {
+      "AttributeName": "timestamp",
+      "KeyType": "RANGE"
+     }
+    ],
+    "TableName": "TodaysDentalInsightsCommN1-MessagesV4",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "messages"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/MessagesTableV4/Resource"
+   }
+  },
+  "TeamsTableV45DCFDA04": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "teamID",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "ownerID",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "KeySchema": [
+     {
+      "AttributeName": "teamID",
+      "KeyType": "HASH"
+     },
+     {
+      "AttributeName": "ownerID",
+      "KeyType": "RANGE"
+     }
+    ],
+    "TableName": "TodaysDentalInsightsCommN1-TeamsV4",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "teams"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/TeamsTableV4/Resource"
+   }
+  },
+  "MeetingsTableV4872A607B": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "meetingID",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "conversationID",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "startTime",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "organizerID",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "status",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "GlobalSecondaryIndexes": [
+     {
+      "IndexName": "ConversationIndex",
+      "KeySchema": [
+       {
+        "AttributeName": "conversationID",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "startTime",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "OrganizerIndex",
+      "KeySchema": [
+       {
+        "AttributeName": "organizerID",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "startTime",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "StatusIndex",
+      "KeySchema": [
+       {
+        "AttributeName": "status",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "startTime",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     }
+    ],
+    "KeySchema": [
+     {
+      "AttributeName": "meetingID",
+      "KeyType": "HASH"
+     }
+    ],
+    "TableName": "TodaysDentalInsightsCommN1-MeetingsV4",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "meetings"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/MeetingsTableV4/Resource"
+   }
+  },
+  "CommunicationFilesBucket78D254B8": {
+   "Type": "AWS::S3::Bucket",
+   "Properties": {
+    "BucketName": "todaysdentalinsightscommn1-comm-files-851620242036-us-east-1",
+    "CorsConfiguration": {
+     "CorsRules": [
+      {
+       "AllowedHeaders": [
+        "*"
+       ],
+       "AllowedMethods": [
+        "PUT",
+        "POST",
+        "GET",
+        "HEAD"
+       ],
+       "AllowedOrigins": [
+        "*"
+       ],
+       "ExposedHeaders": [
+        "ETag",
+        "Content-Length",
+        "Content-Type"
+       ]
+      }
+     ]
+    },
+    "PublicAccessBlockConfiguration": {
+     "BlockPublicAcls": false,
+     "BlockPublicPolicy": false,
+     "IgnorePublicAcls": false,
+     "RestrictPublicBuckets": false
+    },
+    "Tags": [
+     {
+      "Key": "aws-cdk:auto-delete-objects",
+      "Value": "true"
+     },
+     {
+      "Key": "Bucket",
+      "Value": "comm-files"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommunicationFilesBucket/Resource"
+   }
+  },
+  "CommunicationFilesBucketPolicyEF33402C": {
+   "Type": "AWS::S3::BucketPolicy",
+   "Properties": {
+    "Bucket": {
+     "Ref": "CommunicationFilesBucket78D254B8"
+    },
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:GetObject",
+       "Effect": "Allow",
+       "Principal": {
+        "AWS": "*"
+       },
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "CommunicationFilesBucket78D254B8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      },
+      {
+       "Action": [
+        "s3:PutBucketPolicy",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:DeleteObject*"
+       ],
+       "Effect": "Allow",
+       "Principal": {
+        "AWS": {
+         "Fn::GetAtt": [
+          "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+          "Arn"
+         ]
+        }
+       },
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "CommunicationFilesBucket78D254B8",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "CommunicationFilesBucket78D254B8",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommunicationFilesBucket/Policy/Resource"
+   }
+  },
+  "CommunicationFilesBucketAutoDeleteObjectsCustomResource97680E7D": {
+   "Type": "Custom::S3AutoDeleteObjects",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F",
+      "Arn"
+     ]
+    },
+    "BucketName": {
+     "Ref": "CommunicationFilesBucket78D254B8"
+    }
+   },
+   "DependsOn": [
+    "CommunicationFilesBucketPolicyEF33402C"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommunicationFilesBucket/AutoDeleteObjectsCustomResource/Default"
+   }
+  },
+  "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ]
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/Custom::S3AutoDeleteObjectsCustomResourceProvider/Role"
+   }
+  },
+  "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6.zip"
+    },
+    "Timeout": 900,
+    "MemorySize": 128,
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Description": {
+     "Fn::Join": [
+      "",
+      [
+       "Lambda function for auto-deleting objects in ",
+       {
+        "Ref": "CommunicationFilesBucket78D254B8"
+       },
+       " S3 bucket."
+      ]
+     ]
+    }
+   },
+   "DependsOn": [
+    "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/Custom::S3AutoDeleteObjectsCustomResourceProvider/Handler",
+    "aws:asset:path": "asset.faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6",
+    "aws:asset:property": "Code"
+   }
+  },
+  "NewMessageNotificationsTopic5B831E87": {
+   "Type": "AWS::SNS::Topic",
+   "Properties": {
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     },
+     {
+      "Key": "Topic",
+      "Value": "comm-notifications"
+     }
+    ],
+    "TopicName": "TodaysDentalInsightsCommN1-NewMessageNotifications"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/NewMessageNotificationsTopic/Resource"
+   }
+  },
+  "GetFileFnServiceRole14B42AED": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "get-file"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/GetFileFn/ServiceRole/Resource"
+   }
+  },
+  "GetFileFnServiceRoleDefaultPolicyB7E746AC": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "CommunicationFilesBucket78D254B8",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "CommunicationFilesBucket78D254B8",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "GetFileFnServiceRoleDefaultPolicyB7E746AC",
+    "Roles": [
+     {
+      "Ref": "GetFileFnServiceRole14B42AED"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/GetFileFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "GetFileFn728F6295": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "e8f23b9ca9d91423162e1fc68bf6a35254991eebb3e6fc5780944a5daadaeec5.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "FILE_BUCKET_NAME": {
+       "Ref": "CommunicationFilesBucket78D254B8"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 128,
+    "Role": {
+     "Fn::GetAtt": [
+      "GetFileFnServiceRole14B42AED",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "get-file"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Timeout": 10
+   },
+   "DependsOn": [
+    "GetFileFnServiceRoleDefaultPolicyB7E746AC",
+    "GetFileFnServiceRole14B42AED"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/GetFileFn/Resource",
+    "aws:asset:path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "WsConnectFnServiceRole749353A4": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "ws-connect"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsConnectFn/ServiceRole/Resource"
+   }
+  },
+  "WsConnectFnServiceRoleDefaultPolicyE8538EDC": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ConnectionsTableV4E4727E9E",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ConnectionsTableV4E4727E9E",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "WsConnectFnServiceRoleDefaultPolicyE8538EDC",
+    "Roles": [
+     {
+      "Ref": "WsConnectFnServiceRole749353A4"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsConnectFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "WsConnectFnB17D99F3": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "6fd8b7612975456c416b49711164e1f7cc182dfaff24d5b9a9084dd219b7bb74.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "JWT_SECRET": "8f3a2b9c7d1e5f6a4b3c8d9e2f1a7b5c9d4e3f2a1b6c7d8e9f3a2b1c4d5e6f7a8b9c1d2e3f4a5b6c7d8e9f",
+      "CONNECTIONS_TABLE": {
+       "Ref": "ConnectionsTableV4E4727E9E"
+      },
+      "MESSAGES_TABLE": {
+       "Ref": "MessagesTableV4B29BCA2D"
+      },
+      "FAVORS_TABLE": {
+       "Ref": "FavorRequestsTableV4D5150F07"
+      },
+      "TEAMS_TABLE": {
+       "Ref": "TeamsTableV45DCFDA04"
+      },
+      "MEETINGS_TABLE": {
+       "Ref": "MeetingsTableV4872A607B"
+      },
+      "FILE_BUCKET_NAME": {
+       "Ref": "CommunicationFilesBucket78D254B8"
+      },
+      "NOTIFICATIONS_TOPIC_ARN": {
+       "Ref": "NewMessageNotificationsTopic5B831E87"
+      },
+      "DEVICE_TOKENS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputRefDeviceTokensTableC4110EBF3068AC31"
+      },
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "WsConnectFnServiceRole749353A4",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "ws-connect"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Timeout": 5
+   },
+   "DependsOn": [
+    "WsConnectFnServiceRoleDefaultPolicyE8538EDC",
+    "WsConnectFnServiceRole749353A4"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsConnectFn/Resource",
+    "aws:asset:path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "WsConnectFnApiGwInvokeConnect18D6FDFE": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "WsConnectFnB17D99F3",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommunicationApi3FE9488D"
+       },
+       "/*/*/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsConnectFn/ApiGwInvokeConnect"
+   }
+  },
+  "WsDisconnectFnServiceRoleF36033AD": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "ws-disconnect"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsDisconnectFn/ServiceRole/Resource"
+   }
+  },
+  "WsDisconnectFnServiceRoleDefaultPolicy76179A14": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ConnectionsTableV4E4727E9E",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ConnectionsTableV4E4727E9E",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "WsDisconnectFnServiceRoleDefaultPolicy76179A14",
+    "Roles": [
+     {
+      "Ref": "WsDisconnectFnServiceRoleF36033AD"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsDisconnectFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "WsDisconnectFn9523C1B1": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "0b5444b5bf855647a57aefe3080e9671fe83f7840b75c2c7faad3de4ed068505.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CONNECTIONS_TABLE": {
+       "Ref": "ConnectionsTableV4E4727E9E"
+      },
+      "MESSAGES_TABLE": {
+       "Ref": "MessagesTableV4B29BCA2D"
+      },
+      "FAVORS_TABLE": {
+       "Ref": "FavorRequestsTableV4D5150F07"
+      },
+      "TEAMS_TABLE": {
+       "Ref": "TeamsTableV45DCFDA04"
+      },
+      "MEETINGS_TABLE": {
+       "Ref": "MeetingsTableV4872A607B"
+      },
+      "FILE_BUCKET_NAME": {
+       "Ref": "CommunicationFilesBucket78D254B8"
+      },
+      "NOTIFICATIONS_TOPIC_ARN": {
+       "Ref": "NewMessageNotificationsTopic5B831E87"
+      },
+      "DEVICE_TOKENS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputRefDeviceTokensTableC4110EBF3068AC31"
+      },
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 128,
+    "Role": {
+     "Fn::GetAtt": [
+      "WsDisconnectFnServiceRoleF36033AD",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "ws-disconnect"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Timeout": 5
+   },
+   "DependsOn": [
+    "WsDisconnectFnServiceRoleDefaultPolicy76179A14",
+    "WsDisconnectFnServiceRoleF36033AD"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsDisconnectFn/Resource",
+    "aws:asset:path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "WsDisconnectFnApiGwInvokeDisconnectFAE9EF91": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "WsDisconnectFn9523C1B1",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommunicationApi3FE9488D"
+       },
+       "/*/*/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsDisconnectFn/ApiGwInvokeDisconnect"
+   }
+  },
+  "WsDefaultFnServiceRole423383DA": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "ws-default"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsDefaultFn/ServiceRole/Resource"
+   }
+  },
+  "WsDefaultFnServiceRoleDefaultPolicyA56957EF": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ConnectionsTableV4E4727E9E",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ConnectionsTableV4E4727E9E",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "MessagesTableV4B29BCA2D",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "MessagesTableV4B29BCA2D",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "FavorRequestsTableV4D5150F07",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "FavorRequestsTableV4D5150F07",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "TeamsTableV45DCFDA04",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "MeetingsTableV4872A607B",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "MeetingsTableV4872A607B",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:DeleteObject*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging",
+        "s3:Abort*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "CommunicationFilesBucket78D254B8",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "CommunicationFilesBucket78D254B8",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "sns:Publish",
+       "Effect": "Allow",
+       "Resource": {
+        "Ref": "NewMessageNotificationsTopic5B831E87"
+       }
+      },
+      {
+       "Action": [
+        "ses:SendEmail",
+        "ses:SendRawEmail"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": "arn:aws:dynamodb:*:*:table/StaffUser"
+      },
+      {
+       "Action": [
+        "dynamodb:Query",
+        "dynamodb:GetItem"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttDeviceTokensTableC4110EBFArn85135A93"
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttDeviceTokensTableC4110EBFArn85135A93"
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+       }
+      },
+      {
+       "Action": "execute-api:ManageConnections",
+       "Effect": "Allow",
+       "Resource": "arn:aws:execute-api:us-east-1:851620242036:*/@connections/*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "WsDefaultFnServiceRoleDefaultPolicyA56957EF",
+    "Roles": [
+     {
+      "Ref": "WsDefaultFnServiceRole423383DA"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsDefaultFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "WsDefaultFn14DA6159": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "6ac263aaf7c7323dac08e93d95867f4aa38ecca3e442618fe07dfd53fa8a1180.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CONNECTIONS_TABLE": {
+       "Ref": "ConnectionsTableV4E4727E9E"
+      },
+      "MESSAGES_TABLE": {
+       "Ref": "MessagesTableV4B29BCA2D"
+      },
+      "FAVORS_TABLE": {
+       "Ref": "FavorRequestsTableV4D5150F07"
+      },
+      "TEAMS_TABLE": {
+       "Ref": "TeamsTableV45DCFDA04"
+      },
+      "MEETINGS_TABLE": {
+       "Ref": "MeetingsTableV4872A607B"
+      },
+      "FILE_BUCKET_NAME": {
+       "Ref": "CommunicationFilesBucket78D254B8"
+      },
+      "NOTIFICATIONS_TOPIC_ARN": {
+       "Ref": "NewMessageNotificationsTopic5B831E87"
+      },
+      "DEVICE_TOKENS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputRefDeviceTokensTableC4110EBF3068AC31"
+      },
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      },
+      "SES_SOURCE_EMAIL": "no-reply@todaysdentalinsights.com",
+      "STAFF_USER_TABLE": "StaffUser"
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 512,
+    "Role": {
+     "Fn::GetAtt": [
+      "WsDefaultFnServiceRole423383DA",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "ws-default"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "WsDefaultFnServiceRoleDefaultPolicyA56957EF",
+    "WsDefaultFnServiceRole423383DA"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsDefaultFn/Resource",
+    "aws:asset:path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "WsDefaultFnApiGwInvokeDefault7F89543A": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "WsDefaultFn14DA6159",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommunicationApi3FE9488D"
+       },
+       "/*/*/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsDefaultFn/ApiGwInvokeDefault"
+   }
+  },
+  "RestApiHandlerServiceRole04AE0DEA": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "rest-api-handler"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/RestApiHandler/ServiceRole/Resource"
+   }
+  },
+  "RestApiHandlerServiceRoleDefaultPolicyCFDCBEE8": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ConnectionsTableV4E4727E9E",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ConnectionsTableV4E4727E9E",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "MessagesTableV4B29BCA2D",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "MessagesTableV4B29BCA2D",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "FavorRequestsTableV4D5150F07",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "FavorRequestsTableV4D5150F07",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "TeamsTableV45DCFDA04",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "MeetingsTableV4872A607B",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "MeetingsTableV4872A607B",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:Query",
+        "dynamodb:GetItem"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttDeviceTokensTableC4110EBFArn85135A93"
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttDeviceTokensTableC4110EBFArn85135A93"
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "RestApiHandlerServiceRoleDefaultPolicyCFDCBEE8",
+    "Roles": [
+     {
+      "Ref": "RestApiHandlerServiceRole04AE0DEA"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/RestApiHandler/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "RestApiHandler034BA627": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "06707cc0e20ad559dd120e660f82517b8b145d7777de153daefc026cf615cb48.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CONNECTIONS_TABLE": {
+       "Ref": "ConnectionsTableV4E4727E9E"
+      },
+      "MESSAGES_TABLE": {
+       "Ref": "MessagesTableV4B29BCA2D"
+      },
+      "FAVORS_TABLE": {
+       "Ref": "FavorRequestsTableV4D5150F07"
+      },
+      "TEAMS_TABLE": {
+       "Ref": "TeamsTableV45DCFDA04"
+      },
+      "MEETINGS_TABLE": {
+       "Ref": "MeetingsTableV4872A607B"
+      },
+      "FILE_BUCKET_NAME": {
+       "Ref": "CommunicationFilesBucket78D254B8"
+      },
+      "NOTIFICATIONS_TOPIC_ARN": {
+       "Ref": "NewMessageNotificationsTopic5B831E87"
+      },
+      "DEVICE_TOKENS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputRefDeviceTokensTableC4110EBF3068AC31"
+      },
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 512,
+    "Role": {
+     "Fn::GetAtt": [
+      "RestApiHandlerServiceRole04AE0DEA",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "rest-api-handler"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "RestApiHandlerServiceRoleDefaultPolicyCFDCBEE8",
+    "RestApiHandlerServiceRole04AE0DEA"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/RestApiHandler/Resource",
+    "aws:asset:path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "RestApiHandlerApiGatewayInvokePermission3D028B63": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/*/*/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/RestApiHandler/ApiGatewayInvokePermission"
+   }
+  },
+  "CommRestApi351790C1": {
+   "Type": "AWS::ApiGateway::RestApi",
+   "Properties": {
+    "Description": "REST API for Communication module - Tasks, Meetings, Groups",
+    "Name": "TodaysDentalInsightsCommN1-CommRestApi",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Resource"
+   }
+  },
+  "CommRestApiCloudWatchRole8F58513D": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "apigateway.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/CloudWatchRole/Resource"
+   }
+  },
+  "CommRestApiAccount9E5996F6": {
+   "Type": "AWS::ApiGateway::Account",
+   "Properties": {
+    "CloudWatchRoleArn": {
+     "Fn::GetAtt": [
+      "CommRestApiCloudWatchRole8F58513D",
+      "Arn"
+     ]
+    }
+   },
+   "DependsOn": [
+    "CommRestApi351790C1"
+   ],
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Account"
+   }
+  },
+  "CommRestApiDeployment2911A20F7445158bdceae8f38f3abe91daaf68ce": {
+   "Type": "AWS::ApiGateway::Deployment",
+   "Properties": {
+    "Description": "REST API for Communication module - Tasks, Meetings, Groups",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "DependsOn": [
+    "CommRestApiapiconversationsfavorRequestIDcompleteGET17FA269F",
+    "CommRestApiapiconversationsfavorRequestIDcompleteOPTIONSA6DD318E",
+    "CommRestApiapiconversationsfavorRequestIDcompleteC32043FA",
+    "CommRestApiapiconversationsfavorRequestIDdeadlineOPTIONS1FAE49F0",
+    "CommRestApiapiconversationsfavorRequestIDdeadlinePUTE68A752C",
+    "CommRestApiapiconversationsfavorRequestIDdeadlineC52B198F",
+    "CommRestApiapiconversationsfavorRequestIDDELETE20DA1A7B",
+    "CommRestApiapiconversationsfavorRequestIDOPTIONS3545B69C",
+    "CommRestApiapiconversationsfavorRequestIDC0FF5576",
+    "CommRestApiapiconversationsfavorRequestIDuserdetailsGET2E4AA3D0",
+    "CommRestApiapiconversationsfavorRequestIDuserdetailsOPTIONSB6CE5CCB",
+    "CommRestApiapiconversationsfavorRequestIDuserdetailsFE2E588E",
+    "CommRestApiapiconversationsGETD54F89FD",
+    "CommRestApiapiconversationsOPTIONS72B89E55",
+    "CommRestApiapiconversationsprofilesGET93622DD4",
+    "CommRestApiapiconversationsprofilesOPTIONS74CD8836",
+    "CommRestApiapiconversationsprofiles0EB10081",
+    "CommRestApiapiconversationsF6639B28",
+    "CommRestApiapiconversationssearchGET9F2577B6",
+    "CommRestApiapiconversationssearchOPTIONS7B5F4786",
+    "CommRestApiapiconversationssearch78678EEA",
+    "CommRestApiapigroupsteamIDGET9470668E",
+    "CommRestApiapigroupsteamIDmembersmemberUserIDDELETE758EB83D",
+    "CommRestApiapigroupsteamIDmembersmemberUserIDOPTIONS8BCA7069",
+    "CommRestApiapigroupsteamIDmembersmemberUserID7E2A9AD3",
+    "CommRestApiapigroupsteamIDmembersOPTIONS3497425A",
+    "CommRestApiapigroupsteamIDmembersPOST886A54D3",
+    "CommRestApiapigroupsteamIDmembersB86AD8D6",
+    "CommRestApiapigroupsteamIDOPTIONS70F04D08",
+    "CommRestApiapigroupsteamIDPUT6E59CA17",
+    "CommRestApiapigroupsteamID6CCB9F52",
+    "CommRestApiapigroupsGET8714CD31",
+    "CommRestApiapigroupsOPTIONS0301E63A",
+    "CommRestApiapigroupsPOSTC02F43EC",
+    "CommRestApiapigroupsDF64A804",
+    "CommRestApiapimeetingsmeetingIDDELETE2EF44D55",
+    "CommRestApiapimeetingsmeetingIDOPTIONS2DC19567",
+    "CommRestApiapimeetingsmeetingIDPUT7FE4C33F",
+    "CommRestApiapimeetingsmeetingID98154BA1",
+    "CommRestApiapimeetingsGET7DD403F5",
+    "CommRestApiapimeetingsOPTIONS922B5750",
+    "CommRestApiapimeetingsPOST06378923",
+    "CommRestApiapimeetings1A14D1B3",
+    "CommRestApiapiOPTIONSCDEDC438",
+    "CommRestApiapi63AC7EA7",
+    "CommRestApiapitaskstaskIDdeadlineOPTIONS98191FD5",
+    "CommRestApiapitaskstaskIDdeadlinePUT1159D37C",
+    "CommRestApiapitaskstaskIDdeadline5162C709",
+    "CommRestApiapitaskstaskIDforwardforwardIDOPTIONSADE6CD3C",
+    "CommRestApiapitaskstaskIDforwardforwardIDC62B72BD",
+    "CommRestApiapitaskstaskIDforwardforwardIDrespondOPTIONS6F2D40C2",
+    "CommRestApiapitaskstaskIDforwardforwardIDrespondPOST0AD349AC",
+    "CommRestApiapitaskstaskIDforwardforwardIDrespond70599CF9",
+    "CommRestApiapitaskstaskIDforwardOPTIONSDCBF95E3",
+    "CommRestApiapitaskstaskIDforwardPOSTC02441F3",
+    "CommRestApiapitaskstaskIDforward17B719DD",
+    "CommRestApiapitaskstaskIDOPTIONSC9CC95EB",
+    "CommRestApiapitaskstaskID315A77CB",
+    "CommRestApiapitasksbystatusGET616C8A50",
+    "CommRestApiapitasksbystatusOPTIONS91FF4492",
+    "CommRestApiapitasksbystatusA4E2FE9D",
+    "CommRestApiapitasksforwardhistoryGET43113A02",
+    "CommRestApiapitasksforwardhistoryOPTIONSEFB26C1D",
+    "CommRestApiapitasksforwardhistory51B00634",
+    "CommRestApiapitasksforwardedtomeGETDD000BF7",
+    "CommRestApiapitasksforwardedtomeOPTIONSB38205D1",
+    "CommRestApiapitasksforwardedtome97BA8D56",
+    "CommRestApiapitasksgroupOPTIONSF82B07D3",
+    "CommRestApiapitasksgroupPOST088E3677",
+    "CommRestApiapitasksgroup419CEB2C",
+    "CommRestApiapitasksOPTIONSE943E4CB",
+    "CommRestApiapitasksPOSTFB9F55AB",
+    "CommRestApiapitasksF058BE43",
+    "CommRestApiOPTIONSD65419F7"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Deployment/Resource",
+    "aws:cdk:do-not-refactor": true
+   }
+  },
+  "CommRestApiDeploymentStageprod0A06A9BE": {
+   "Type": "AWS::ApiGateway::Stage",
+   "Properties": {
+    "DeploymentId": {
+     "Ref": "CommRestApiDeployment2911A20F7445158bdceae8f38f3abe91daaf68ce"
+    },
+    "MethodSettings": [
+     {
+      "DataTraceEnabled": false,
+      "HttpMethod": "*",
+      "ResourcePath": "/*",
+      "ThrottlingBurstLimit": 200,
+      "ThrottlingRateLimit": 100
+     }
+    ],
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    },
+    "StageName": "prod",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "CommRestApiAccount9E5996F6"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/DeploymentStage.prod/Resource"
+   }
+  },
+  "CommRestApiOPTIONSD65419F7": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Fn::GetAtt": [
+      "CommRestApi351790C1",
+      "RootResourceId"
+     ]
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapi63AC7EA7": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "CommRestApi351790C1",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "api",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/Resource"
+   }
+  },
+  "CommRestApiapiOPTIONSCDEDC438": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapi63AC7EA7"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapiconversationsF6639B28": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapi63AC7EA7"
+    },
+    "PathPart": "conversations",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/Resource"
+   }
+  },
+  "CommRestApiapiconversationsOPTIONS72B89E55": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapiconversationsF6639B28"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapiconversationsGETApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276GETapiconversations6A597744": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/GET/api/conversations"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/GET/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.GET..api.conversations"
+   }
+  },
+  "CommRestApiapiconversationsGETD54F89FD": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapiconversationsF6639B28"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/GET/Resource"
+   }
+  },
+  "CommRestApiapiconversationssearch78678EEA": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapiconversationsF6639B28"
+    },
+    "PathPart": "search",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/search/Resource"
+   }
+  },
+  "CommRestApiapiconversationssearchOPTIONS7B5F4786": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapiconversationssearch78678EEA"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/search/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapiconversationssearchGETApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276GETapiconversationssearchF21FA599": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/GET/api/conversations/search"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/search/GET/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.GET..api.conversations.search"
+   }
+  },
+  "CommRestApiapiconversationssearchGET9F2577B6": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapiconversationssearch78678EEA"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/search/GET/Resource"
+   }
+  },
+  "CommRestApiapiconversationsprofiles0EB10081": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapiconversationsF6639B28"
+    },
+    "PathPart": "profiles",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/profiles/Resource"
+   }
+  },
+  "CommRestApiapiconversationsprofilesOPTIONS74CD8836": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapiconversationsprofiles0EB10081"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/profiles/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapiconversationsprofilesGETApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276GETapiconversationsprofilesD422AB5B": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/GET/api/conversations/profiles"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/profiles/GET/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.GET..api.conversations.profiles"
+   }
+  },
+  "CommRestApiapiconversationsprofilesGET93622DD4": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapiconversationsprofiles0EB10081"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/profiles/GET/Resource"
+   }
+  },
+  "CommRestApiapiconversationsfavorRequestIDC0FF5576": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapiconversationsF6639B28"
+    },
+    "PathPart": "{favorRequestID}",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/{favorRequestID}/Resource"
+   }
+  },
+  "CommRestApiapiconversationsfavorRequestIDOPTIONS3545B69C": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapiconversationsfavorRequestIDC0FF5576"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/{favorRequestID}/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapiconversationsfavorRequestIDDELETEApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276DELETEapiconversationsfavorRequestID05E10013": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/DELETE/api/conversations/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/{favorRequestID}/DELETE/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.DELETE..api.conversations.{favorRequestID}"
+   }
+  },
+  "CommRestApiapiconversationsfavorRequestIDDELETE20DA1A7B": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "DELETE",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapiconversationsfavorRequestIDC0FF5576"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/{favorRequestID}/DELETE/Resource"
+   }
+  },
+  "CommRestApiapiconversationsfavorRequestIDcompleteC32043FA": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapiconversationsfavorRequestIDC0FF5576"
+    },
+    "PathPart": "complete",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/{favorRequestID}/complete/Resource"
+   }
+  },
+  "CommRestApiapiconversationsfavorRequestIDcompleteOPTIONSA6DD318E": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapiconversationsfavorRequestIDcompleteC32043FA"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/{favorRequestID}/complete/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapiconversationsfavorRequestIDcompleteGETApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276GETapiconversationsfavorRequestIDcomplete501E7F11": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/GET/api/conversations/*/complete"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/{favorRequestID}/complete/GET/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.GET..api.conversations.{favorRequestID}.complete"
+   }
+  },
+  "CommRestApiapiconversationsfavorRequestIDcompleteGET17FA269F": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapiconversationsfavorRequestIDcompleteC32043FA"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/{favorRequestID}/complete/GET/Resource"
+   }
+  },
+  "CommRestApiapiconversationsfavorRequestIDuserdetailsFE2E588E": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapiconversationsfavorRequestIDC0FF5576"
+    },
+    "PathPart": "user-details",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/{favorRequestID}/user-details/Resource"
+   }
+  },
+  "CommRestApiapiconversationsfavorRequestIDuserdetailsOPTIONSB6CE5CCB": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapiconversationsfavorRequestIDuserdetailsFE2E588E"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/{favorRequestID}/user-details/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapiconversationsfavorRequestIDuserdetailsGETApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276GETapiconversationsfavorRequestIDuserdetails51CEA7D6": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/GET/api/conversations/*/user-details"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/{favorRequestID}/user-details/GET/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.GET..api.conversations.{favorRequestID}.user-details"
+   }
+  },
+  "CommRestApiapiconversationsfavorRequestIDuserdetailsGET2E4AA3D0": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapiconversationsfavorRequestIDuserdetailsFE2E588E"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/{favorRequestID}/user-details/GET/Resource"
+   }
+  },
+  "CommRestApiapiconversationsfavorRequestIDdeadlineC52B198F": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapiconversationsfavorRequestIDC0FF5576"
+    },
+    "PathPart": "deadline",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/{favorRequestID}/deadline/Resource"
+   }
+  },
+  "CommRestApiapiconversationsfavorRequestIDdeadlineOPTIONS1FAE49F0": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapiconversationsfavorRequestIDdeadlineC52B198F"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/{favorRequestID}/deadline/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapiconversationsfavorRequestIDdeadlinePUTApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276PUTapiconversationsfavorRequestIDdeadlineA8D698D2": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/PUT/api/conversations/*/deadline"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/{favorRequestID}/deadline/PUT/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.PUT..api.conversations.{favorRequestID}.deadline"
+   }
+  },
+  "CommRestApiapiconversationsfavorRequestIDdeadlinePUTE68A752C": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "PUT",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapiconversationsfavorRequestIDdeadlineC52B198F"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/conversations/{favorRequestID}/deadline/PUT/Resource"
+   }
+  },
+  "CommRestApiapitasksF058BE43": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapi63AC7EA7"
+    },
+    "PathPart": "tasks",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/Resource"
+   }
+  },
+  "CommRestApiapitasksOPTIONSE943E4CB": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapitasksF058BE43"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapitasksPOSTApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276POSTapitasks5518042E": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/POST/api/tasks"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/POST/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.POST..api.tasks"
+   }
+  },
+  "CommRestApiapitasksPOSTFB9F55AB": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapitasksF058BE43"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/POST/Resource"
+   }
+  },
+  "CommRestApiapitasksbystatusA4E2FE9D": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapitasksF058BE43"
+    },
+    "PathPart": "by-status",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/by-status/Resource"
+   }
+  },
+  "CommRestApiapitasksbystatusOPTIONS91FF4492": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapitasksbystatusA4E2FE9D"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/by-status/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapitasksbystatusGETApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276GETapitasksbystatusB18AF432": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/GET/api/tasks/by-status"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/by-status/GET/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.GET..api.tasks.by-status"
+   }
+  },
+  "CommRestApiapitasksbystatusGET616C8A50": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapitasksbystatusA4E2FE9D"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/by-status/GET/Resource"
+   }
+  },
+  "CommRestApiapitasksforwardhistory51B00634": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapitasksF058BE43"
+    },
+    "PathPart": "forward-history",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/forward-history/Resource"
+   }
+  },
+  "CommRestApiapitasksforwardhistoryOPTIONSEFB26C1D": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapitasksforwardhistory51B00634"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/forward-history/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapitasksforwardhistoryGETApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276GETapitasksforwardhistory8DDE8CE1": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/GET/api/tasks/forward-history"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/forward-history/GET/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.GET..api.tasks.forward-history"
+   }
+  },
+  "CommRestApiapitasksforwardhistoryGET43113A02": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapitasksforwardhistory51B00634"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/forward-history/GET/Resource"
+   }
+  },
+  "CommRestApiapitasksforwardedtome97BA8D56": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapitasksF058BE43"
+    },
+    "PathPart": "forwarded-to-me",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/forwarded-to-me/Resource"
+   }
+  },
+  "CommRestApiapitasksforwardedtomeOPTIONSB38205D1": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapitasksforwardedtome97BA8D56"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/forwarded-to-me/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapitasksforwardedtomeGETApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276GETapitasksforwardedtome34A7153A": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/GET/api/tasks/forwarded-to-me"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/forwarded-to-me/GET/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.GET..api.tasks.forwarded-to-me"
+   }
+  },
+  "CommRestApiapitasksforwardedtomeGETDD000BF7": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapitasksforwardedtome97BA8D56"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/forwarded-to-me/GET/Resource"
+   }
+  },
+  "CommRestApiapitasksgroup419CEB2C": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapitasksF058BE43"
+    },
+    "PathPart": "group",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/group/Resource"
+   }
+  },
+  "CommRestApiapitasksgroupOPTIONSF82B07D3": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapitasksgroup419CEB2C"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/group/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapitasksgroupPOSTApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276POSTapitasksgroup48F9304A": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/POST/api/tasks/group"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/group/POST/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.POST..api.tasks.group"
+   }
+  },
+  "CommRestApiapitasksgroupPOST088E3677": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapitasksgroup419CEB2C"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/group/POST/Resource"
+   }
+  },
+  "CommRestApiapitaskstaskID315A77CB": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapitasksF058BE43"
+    },
+    "PathPart": "{taskID}",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/{taskID}/Resource"
+   }
+  },
+  "CommRestApiapitaskstaskIDOPTIONSC9CC95EB": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapitaskstaskID315A77CB"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/{taskID}/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapitaskstaskIDforward17B719DD": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapitaskstaskID315A77CB"
+    },
+    "PathPart": "forward",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/{taskID}/forward/Resource"
+   }
+  },
+  "CommRestApiapitaskstaskIDforwardOPTIONSDCBF95E3": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapitaskstaskIDforward17B719DD"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/{taskID}/forward/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapitaskstaskIDforwardPOSTApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276POSTapitaskstaskIDforwardE0352684": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/POST/api/tasks/*/forward"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/{taskID}/forward/POST/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.POST..api.tasks.{taskID}.forward"
+   }
+  },
+  "CommRestApiapitaskstaskIDforwardPOSTC02441F3": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapitaskstaskIDforward17B719DD"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/{taskID}/forward/POST/Resource"
+   }
+  },
+  "CommRestApiapitaskstaskIDforwardforwardIDC62B72BD": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapitaskstaskIDforward17B719DD"
+    },
+    "PathPart": "{forwardID}",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/{taskID}/forward/{forwardID}/Resource"
+   }
+  },
+  "CommRestApiapitaskstaskIDforwardforwardIDOPTIONSADE6CD3C": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapitaskstaskIDforwardforwardIDC62B72BD"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/{taskID}/forward/{forwardID}/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapitaskstaskIDforwardforwardIDrespond70599CF9": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapitaskstaskIDforwardforwardIDC62B72BD"
+    },
+    "PathPart": "respond",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/{taskID}/forward/{forwardID}/respond/Resource"
+   }
+  },
+  "CommRestApiapitaskstaskIDforwardforwardIDrespondOPTIONS6F2D40C2": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapitaskstaskIDforwardforwardIDrespond70599CF9"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/{taskID}/forward/{forwardID}/respond/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapitaskstaskIDforwardforwardIDrespondPOSTApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276POSTapitaskstaskIDforwardforwardIDrespondC195CAEC": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/POST/api/tasks/*/forward/*/respond"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/{taskID}/forward/{forwardID}/respond/POST/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.POST..api.tasks.{taskID}.forward.{forwardID}.respond"
+   }
+  },
+  "CommRestApiapitaskstaskIDforwardforwardIDrespondPOST0AD349AC": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapitaskstaskIDforwardforwardIDrespond70599CF9"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/{taskID}/forward/{forwardID}/respond/POST/Resource"
+   }
+  },
+  "CommRestApiapitaskstaskIDdeadline5162C709": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapitaskstaskID315A77CB"
+    },
+    "PathPart": "deadline",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/{taskID}/deadline/Resource"
+   }
+  },
+  "CommRestApiapitaskstaskIDdeadlineOPTIONS98191FD5": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapitaskstaskIDdeadline5162C709"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/{taskID}/deadline/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapitaskstaskIDdeadlinePUTApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276PUTapitaskstaskIDdeadline84F21EA1": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/PUT/api/tasks/*/deadline"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/{taskID}/deadline/PUT/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.PUT..api.tasks.{taskID}.deadline"
+   }
+  },
+  "CommRestApiapitaskstaskIDdeadlinePUT1159D37C": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "PUT",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapitaskstaskIDdeadline5162C709"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/tasks/{taskID}/deadline/PUT/Resource"
+   }
+  },
+  "CommRestApiapimeetings1A14D1B3": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapi63AC7EA7"
+    },
+    "PathPart": "meetings",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/meetings/Resource"
+   }
+  },
+  "CommRestApiapimeetingsOPTIONS922B5750": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapimeetings1A14D1B3"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/meetings/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapimeetingsGETApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276GETapimeetingsCC74EE93": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/GET/api/meetings"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/meetings/GET/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.GET..api.meetings"
+   }
+  },
+  "CommRestApiapimeetingsGET7DD403F5": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapimeetings1A14D1B3"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/meetings/GET/Resource"
+   }
+  },
+  "CommRestApiapimeetingsPOSTApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276POSTapimeetings0D98540D": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/POST/api/meetings"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/meetings/POST/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.POST..api.meetings"
+   }
+  },
+  "CommRestApiapimeetingsPOST06378923": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapimeetings1A14D1B3"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/meetings/POST/Resource"
+   }
+  },
+  "CommRestApiapimeetingsmeetingID98154BA1": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapimeetings1A14D1B3"
+    },
+    "PathPart": "{meetingID}",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/meetings/{meetingID}/Resource"
+   }
+  },
+  "CommRestApiapimeetingsmeetingIDOPTIONS2DC19567": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapimeetingsmeetingID98154BA1"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/meetings/{meetingID}/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapimeetingsmeetingIDPUTApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276PUTapimeetingsmeetingIDABA2E90B": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/PUT/api/meetings/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/meetings/{meetingID}/PUT/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.PUT..api.meetings.{meetingID}"
+   }
+  },
+  "CommRestApiapimeetingsmeetingIDPUT7FE4C33F": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "PUT",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapimeetingsmeetingID98154BA1"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/meetings/{meetingID}/PUT/Resource"
+   }
+  },
+  "CommRestApiapimeetingsmeetingIDDELETEApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276DELETEapimeetingsmeetingID6C98EB9F": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/DELETE/api/meetings/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/meetings/{meetingID}/DELETE/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.DELETE..api.meetings.{meetingID}"
+   }
+  },
+  "CommRestApiapimeetingsmeetingIDDELETE2EF44D55": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "DELETE",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapimeetingsmeetingID98154BA1"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/meetings/{meetingID}/DELETE/Resource"
+   }
+  },
+  "CommRestApiapigroupsDF64A804": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapi63AC7EA7"
+    },
+    "PathPart": "groups",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/Resource"
+   }
+  },
+  "CommRestApiapigroupsOPTIONS0301E63A": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapigroupsDF64A804"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapigroupsGETApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276GETapigroupsCAE3D795": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/GET/api/groups"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/GET/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.GET..api.groups"
+   }
+  },
+  "CommRestApiapigroupsGET8714CD31": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapigroupsDF64A804"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/GET/Resource"
+   }
+  },
+  "CommRestApiapigroupsPOSTApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276POSTapigroups568B69DB": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/POST/api/groups"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/POST/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.POST..api.groups"
+   }
+  },
+  "CommRestApiapigroupsPOSTC02F43EC": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapigroupsDF64A804"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/POST/Resource"
+   }
+  },
+  "CommRestApiapigroupsteamID6CCB9F52": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapigroupsDF64A804"
+    },
+    "PathPart": "{teamID}",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/{teamID}/Resource"
+   }
+  },
+  "CommRestApiapigroupsteamIDOPTIONS70F04D08": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapigroupsteamID6CCB9F52"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/{teamID}/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapigroupsteamIDGETApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276GETapigroupsteamID1FF01AEB": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/GET/api/groups/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/{teamID}/GET/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.GET..api.groups.{teamID}"
+   }
+  },
+  "CommRestApiapigroupsteamIDGET9470668E": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapigroupsteamID6CCB9F52"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/{teamID}/GET/Resource"
+   }
+  },
+  "CommRestApiapigroupsteamIDPUTApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276PUTapigroupsteamID02FE6586": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/PUT/api/groups/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/{teamID}/PUT/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.PUT..api.groups.{teamID}"
+   }
+  },
+  "CommRestApiapigroupsteamIDPUT6E59CA17": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "PUT",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapigroupsteamID6CCB9F52"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/{teamID}/PUT/Resource"
+   }
+  },
+  "CommRestApiapigroupsteamIDmembersB86AD8D6": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapigroupsteamID6CCB9F52"
+    },
+    "PathPart": "members",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/{teamID}/members/Resource"
+   }
+  },
+  "CommRestApiapigroupsteamIDmembersOPTIONS3497425A": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapigroupsteamIDmembersB86AD8D6"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/{teamID}/members/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapigroupsteamIDmembersPOSTApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276POSTapigroupsteamIDmembers616678FF": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/POST/api/groups/*/members"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/{teamID}/members/POST/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.POST..api.groups.{teamID}.members"
+   }
+  },
+  "CommRestApiapigroupsteamIDmembersPOST886A54D3": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapigroupsteamIDmembersB86AD8D6"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/{teamID}/members/POST/Resource"
+   }
+  },
+  "CommRestApiapigroupsteamIDmembersmemberUserID7E2A9AD3": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "CommRestApiapigroupsteamIDmembersB86AD8D6"
+    },
+    "PathPart": "{memberUserID}",
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/{teamID}/members/{memberUserID}/Resource"
+   }
+  },
+  "CommRestApiapigroupsteamIDmembersmemberUserIDOPTIONS8BCA7069": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "CommRestApiapigroupsteamIDmembersmemberUserID7E2A9AD3"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/{teamID}/members/{memberUserID}/OPTIONS/Resource"
+   }
+  },
+  "CommRestApiapigroupsteamIDmembersmemberUserIDDELETEApiPermissionTodaysDentalInsightsCommN1CommRestApi0CB9C276DELETEapigroupsteamIDmembersmemberUserID00C9F6BB": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RestApiHandler034BA627",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommRestApi351790C1"
+       },
+       "/",
+       {
+        "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+       },
+       "/DELETE/api/groups/*/members/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/{teamID}/members/{memberUserID}/DELETE/ApiPermission.TodaysDentalInsightsCommN1CommRestApi0CB9C276.DELETE..api.groups.{teamID}.members.{memberUserID}"
+   }
+  },
+  "CommRestApiapigroupsteamIDmembersmemberUserIDDELETE758EB83D": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "NONE",
+    "HttpMethod": "DELETE",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "RequestTemplates": {
+      "application/json": "{ \"statusCode\": \"200\" }"
+     },
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RestApiHandler034BA627",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "CommRestApiapigroupsteamIDmembersmemberUserID7E2A9AD3"
+    },
+    "RestApiId": {
+     "Ref": "CommRestApi351790C1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommRestApi/Default/api/groups/{teamID}/members/{memberUserID}/DELETE/Resource"
+   }
+  },
+  "RestApiHandlerErrorAlarm719AD9AF": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when rest-api-handler Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "RestApiHandler034BA627"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/RestApiHandlerErrorAlarm/Resource"
+   }
+  },
+  "RestApiHandlerThrottleAlarm74CA6672": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when rest-api-handler Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "RestApiHandler034BA627"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/RestApiHandlerThrottleAlarm/Resource"
+   }
+  },
+  "RestApiHandlerDurationAlarm372CAE1B": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when rest-api-handler Lambda p99 duration exceeds 24000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "RestApiHandler034BA627"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 24000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/RestApiHandlerDurationAlarm/Resource"
+   }
+  },
+  "CommunicationApi3FE9488D": {
+   "Type": "AWS::ApiGatewayV2::Api",
+   "Properties": {
+    "Name": "TodaysDentalInsightsCommN1-CommApi",
+    "ProtocolType": "WEBSOCKET",
+    "RouteSelectionExpression": "$request.body.action",
+    "Tags": {
+     "ManagedBy": "cdk",
+     "Service": "Comm",
+     "Stack": "TodaysDentalInsightsCommN1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommunicationApi/Resource"
+   }
+  },
+  "CommunicationApiconnectRouteConnectIntegrationPermissionD1613131": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "WsConnectFnB17D99F3",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommunicationApi3FE9488D"
+       },
+       "/*$connect"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommunicationApi/$connect-Route/ConnectIntegration-Permission"
+   }
+  },
+  "CommunicationApiconnectRouteConnectIntegrationC6DDC0C6": {
+   "Type": "AWS::ApiGatewayV2::Integration",
+   "Properties": {
+    "ApiId": {
+     "Ref": "CommunicationApi3FE9488D"
+    },
+    "IntegrationType": "AWS_PROXY",
+    "IntegrationUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+       {
+        "Fn::GetAtt": [
+         "WsConnectFnB17D99F3",
+         "Arn"
+        ]
+       },
+       "/invocations"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommunicationApi/$connect-Route/ConnectIntegration/Resource"
+   }
+  },
+  "CommunicationApiconnectRouteDFE2E422": {
+   "Type": "AWS::ApiGatewayV2::Route",
+   "Properties": {
+    "ApiId": {
+     "Ref": "CommunicationApi3FE9488D"
+    },
+    "AuthorizationType": "NONE",
+    "RouteKey": "$connect",
+    "Target": {
+     "Fn::Join": [
+      "",
+      [
+       "integrations/",
+       {
+        "Ref": "CommunicationApiconnectRouteConnectIntegrationC6DDC0C6"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommunicationApi/$connect-Route/Resource"
+   }
+  },
+  "CommunicationApidisconnectRouteDisconnectIntegrationPermission3325E086": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "WsDisconnectFn9523C1B1",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommunicationApi3FE9488D"
+       },
+       "/*$disconnect"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommunicationApi/$disconnect-Route/DisconnectIntegration-Permission"
+   }
+  },
+  "CommunicationApidisconnectRouteDisconnectIntegration26149509": {
+   "Type": "AWS::ApiGatewayV2::Integration",
+   "Properties": {
+    "ApiId": {
+     "Ref": "CommunicationApi3FE9488D"
+    },
+    "IntegrationType": "AWS_PROXY",
+    "IntegrationUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+       {
+        "Fn::GetAtt": [
+         "WsDisconnectFn9523C1B1",
+         "Arn"
+        ]
+       },
+       "/invocations"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommunicationApi/$disconnect-Route/DisconnectIntegration/Resource"
+   }
+  },
+  "CommunicationApidisconnectRouteE795B6F5": {
+   "Type": "AWS::ApiGatewayV2::Route",
+   "Properties": {
+    "ApiId": {
+     "Ref": "CommunicationApi3FE9488D"
+    },
+    "AuthorizationType": "NONE",
+    "RouteKey": "$disconnect",
+    "Target": {
+     "Fn::Join": [
+      "",
+      [
+       "integrations/",
+       {
+        "Ref": "CommunicationApidisconnectRouteDisconnectIntegration26149509"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommunicationApi/$disconnect-Route/Resource"
+   }
+  },
+  "CommunicationApidefaultRouteDefaultIntegrationPermission466F55EE": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "WsDefaultFn14DA6159",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "CommunicationApi3FE9488D"
+       },
+       "/*$default"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommunicationApi/$default-Route/DefaultIntegration-Permission"
+   }
+  },
+  "CommunicationApidefaultRouteDefaultIntegrationB7985F2A": {
+   "Type": "AWS::ApiGatewayV2::Integration",
+   "Properties": {
+    "ApiId": {
+     "Ref": "CommunicationApi3FE9488D"
+    },
+    "IntegrationType": "AWS_PROXY",
+    "IntegrationUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+       {
+        "Fn::GetAtt": [
+         "WsDefaultFn14DA6159",
+         "Arn"
+        ]
+       },
+       "/invocations"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommunicationApi/$default-Route/DefaultIntegration/Resource"
+   }
+  },
+  "CommunicationApidefaultRouteC11E6FA7": {
+   "Type": "AWS::ApiGatewayV2::Route",
+   "Properties": {
+    "ApiId": {
+     "Ref": "CommunicationApi3FE9488D"
+    },
+    "AuthorizationType": "NONE",
+    "RouteKey": "$default",
+    "Target": {
+     "Fn::Join": [
+      "",
+      [
+       "integrations/",
+       {
+        "Ref": "CommunicationApidefaultRouteDefaultIntegrationB7985F2A"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CommunicationApi/$default-Route/Resource"
+   }
+  },
+  "TodaysDentalInsightsCommN1ProdStageBE1836EB": {
+   "Type": "AWS::ApiGatewayV2::Stage",
+   "Properties": {
+    "ApiId": {
+     "Ref": "CommunicationApi3FE9488D"
+    },
+    "AutoDeploy": true,
+    "StageName": "prod",
+    "Tags": {
+     "ManagedBy": "cdk",
+     "Service": "Comm",
+     "Stack": "TodaysDentalInsightsCommN1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/TodaysDentalInsightsCommN1ProdStage/Resource"
+   }
+  },
+  "GetFileFnErrorAlarm37A1C466": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when get-file Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "GetFileFn728F6295"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/GetFileFnErrorAlarm/Resource"
+   }
+  },
+  "GetFileFnThrottleAlarm54E556B8": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when get-file Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "GetFileFn728F6295"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/GetFileFnThrottleAlarm/Resource"
+   }
+  },
+  "GetFileFnDurationAlarm16E3EF96": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when get-file Lambda p99 duration exceeds 8000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "GetFileFn728F6295"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 8000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/GetFileFnDurationAlarm/Resource"
+   }
+  },
+  "WsConnectFnErrorAlarm64498421": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when ws-connect Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WsConnectFnB17D99F3"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsConnectFnErrorAlarm/Resource"
+   }
+  },
+  "WsConnectFnThrottleAlarm7F512CAE": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when ws-connect Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WsConnectFnB17D99F3"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsConnectFnThrottleAlarm/Resource"
+   }
+  },
+  "WsConnectFnDurationAlarmCD8B791F": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when ws-connect Lambda p99 duration exceeds 4000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WsConnectFnB17D99F3"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 4000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsConnectFnDurationAlarm/Resource"
+   }
+  },
+  "WsDisconnectFnErrorAlarm89160D89": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when ws-disconnect Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WsDisconnectFn9523C1B1"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsDisconnectFnErrorAlarm/Resource"
+   }
+  },
+  "WsDisconnectFnThrottleAlarm8A9F9C13": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when ws-disconnect Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WsDisconnectFn9523C1B1"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsDisconnectFnThrottleAlarm/Resource"
+   }
+  },
+  "WsDisconnectFnDurationAlarm589CBC81": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when ws-disconnect Lambda p99 duration exceeds 4000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WsDisconnectFn9523C1B1"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 4000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsDisconnectFnDurationAlarm/Resource"
+   }
+  },
+  "WsDefaultFnErrorAlarmAA7398C3": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when ws-default Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WsDefaultFn14DA6159"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsDefaultFnErrorAlarm/Resource"
+   }
+  },
+  "WsDefaultFnThrottleAlarmD8E9634E": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when ws-default Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WsDefaultFn14DA6159"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsDefaultFnThrottleAlarm/Resource"
+   }
+  },
+  "WsDefaultFnDurationAlarmFA8EFFE0": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when ws-default Lambda p99 duration exceeds 24000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WsDefaultFn14DA6159"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 24000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/WsDefaultFnDurationAlarm/Resource"
+   }
+  },
+  "ConnectionsTableThrottleAlarm0DA78860": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "ConnectionsTableV4E4727E9E"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "ConnectionsTableV4E4727E9E"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/ConnectionsTableThrottleAlarm/Resource"
+   }
+  },
+  "FavorsTableThrottleAlarm553F26BD": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "FavorRequestsTableV4D5150F07"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "FavorRequestsTableV4D5150F07"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/FavorsTableThrottleAlarm/Resource"
+   }
+  },
+  "MessagesTableThrottleAlarmC112B94E": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "MessagesTableV4B29BCA2D"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "MessagesTableV4B29BCA2D"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/MessagesTableThrottleAlarm/Resource"
+   }
+  },
+  "TeamsTableThrottleAlarmB8900078": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "TeamsTableV45DCFDA04"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "TeamsTableV45DCFDA04"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/TeamsTableThrottleAlarm/Resource"
+   }
+  },
+  "MeetingsTableThrottleAlarm0995DD8E": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "MeetingsTableV4872A607B"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "MeetingsTableV4872A607B"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Comm"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsCommN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/MeetingsTableThrottleAlarm/Resource"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/21RQW7CMBB8S+9mC2k/EKgq9dAWBaQe0cZegiG2o9gmQlb+XtkJhKKeZmbX3p2xM8iyBcyfsLMzLk6zWpYQNg75iWFnd0FcNCojSghbLGtiq71OpGf2BcLS8xO5WBzZAGtTS36ZyqMexBJtvK0thK1pJE8jI+lZjaoUuNNG0NHCV4J3r7mTRjOJCkJhBg8JpzUDi552aC05C3mEcSCE1V7f5sTj1CpprTS6Z9jICh11eIFQkHV5I9OCieacG68de6OmNhdFOgW+UxuHVXI1kIKs8S2nGJR9kjsYEZsju3bHJYn3jNfGiw4dP0DIa2xVWhzJvcNzBuGHyo2J73h110h2qxXGO5rkh3ZUtXiN/SAfDv9N0fd3Tr11Rv1n/KG1bs1ZCmpT8vQDcZbUVbzz7V3jXc/i78LRPp+zV1hkMH86WilnrddOKoJiwF8lNPPglwIAAA=="
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsCommN1/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "CommRestApiEndpointC909E370": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "CommRestApi351790C1"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+      },
+      "/"
+     ]
+    ]
+   }
+  },
+  "TeamsTableName": {
+   "Value": {
+    "Ref": "TeamsTableV45DCFDA04"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsCommN1-TeamsTableName"
+   }
+  },
+  "MeetingsTableName": {
+   "Value": {
+    "Ref": "MeetingsTableV4872A607B"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsCommN1-MeetingsTableName"
+   }
+  },
+  "WebSocketApiUrl": {
+   "Description": "The WebSocket API Endpoint",
+   "Value": {
+    "Fn::GetAtt": [
+     "CommunicationApi3FE9488D",
+     "ApiEndpoint"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsCommN1-WebSocketApiUrl"
+   }
+  },
+  "RestApiUrl": {
+   "Description": "The REST API Endpoint for Tasks, Meetings, Groups",
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "CommRestApi351790C1"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "CommRestApiDeploymentStageprod0A06A9BE"
+      },
+      "/"
+     ]
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsCommN1-RestApiUrl"
+   }
+  },
+  "MessagesTableName": {
+   "Value": {
+    "Ref": "MessagesTableV4B29BCA2D"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsCommN1-MessagesTableName"
+   }
+  },
+  "FavorsTableName": {
+   "Value": {
+    "Ref": "FavorRequestsTableV4D5150F07"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsCommN1-FavorsTableName"
+   }
+  },
+  "FileBucketName": {
+   "Value": {
+    "Ref": "CommunicationFilesBucket78D254B8"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsCommN1-FileBucketName"
+   }
+  },
+  "FileBucketPublicUrl": {
+   "Description": "Public URL for the S3 bucket (files can be accessed directly)",
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "CommunicationFilesBucket78D254B8"
+      },
+      ".s3.us-east-1.amazonaws.com"
+     ]
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsCommN1-FileBucketPublicUrl"
+   }
+  },
+  "NotificationsTopicArn": {
+   "Value": {
+    "Ref": "NewMessageNotificationsTopic5B831E87"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsCommN1-NotificationsTopicArn"
+   }
+  },
+  "FileDownloadFnArn": {
+   "Description": "ARN of the S3 Get File Download Lambda",
+   "Value": {
+    "Fn::GetAtt": [
+     "GetFileFn728F6295",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsCommN1-FileDownloadFnArn"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/tdi3/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

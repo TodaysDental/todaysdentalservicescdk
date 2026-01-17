@@ -719,6 +719,7 @@ const connectLexAiStack = new ConnectLexAiStack(app, 'TodaysDentalInsightsConnec
   defaultClinicId: defaultClinicForAi,
   // Thinking audio URL from ChimeStack - plays keyboard sounds during AI processing
   thinkingAudioUrl: chimeStack.thinkingAudioUrl,
+  thinkingAudioMode: 'verbal',
 });
 connectLexAiStack.addDependency(aiAgentsStack);
 connectLexAiStack.addDependency(analyticsStack);

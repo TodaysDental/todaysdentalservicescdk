@@ -1,0 +1,2304 @@
+"use strict";
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+// src/services/clinic/callBack.ts
+var callBack_exports = {};
+__export(callBack_exports, {
+  handler: () => handler
+});
+module.exports = __toCommonJS(callBack_exports);
+var import_client_dynamodb2 = require("@aws-sdk/client-dynamodb");
+var import_util_dynamodb2 = require("@aws-sdk/util-dynamodb");
+
+// node_modules/uuid/dist/esm-node/rng.js
+var import_crypto = __toESM(require("crypto"));
+var rnds8Pool = new Uint8Array(256);
+var poolPtr = rnds8Pool.length;
+function rng() {
+  if (poolPtr > rnds8Pool.length - 16) {
+    import_crypto.default.randomFillSync(rnds8Pool);
+    poolPtr = 0;
+  }
+  return rnds8Pool.slice(poolPtr, poolPtr += 16);
+}
+
+// node_modules/uuid/dist/esm-node/stringify.js
+var byteToHex = [];
+for (let i = 0; i < 256; ++i) {
+  byteToHex.push((i + 256).toString(16).slice(1));
+}
+function unsafeStringify(arr, offset = 0) {
+  return byteToHex[arr[offset + 0]] + byteToHex[arr[offset + 1]] + byteToHex[arr[offset + 2]] + byteToHex[arr[offset + 3]] + "-" + byteToHex[arr[offset + 4]] + byteToHex[arr[offset + 5]] + "-" + byteToHex[arr[offset + 6]] + byteToHex[arr[offset + 7]] + "-" + byteToHex[arr[offset + 8]] + byteToHex[arr[offset + 9]] + "-" + byteToHex[arr[offset + 10]] + byteToHex[arr[offset + 11]] + byteToHex[arr[offset + 12]] + byteToHex[arr[offset + 13]] + byteToHex[arr[offset + 14]] + byteToHex[arr[offset + 15]];
+}
+
+// node_modules/uuid/dist/esm-node/native.js
+var import_crypto2 = __toESM(require("crypto"));
+var native_default = {
+  randomUUID: import_crypto2.default.randomUUID
+};
+
+// node_modules/uuid/dist/esm-node/v4.js
+function v4(options, buf, offset) {
+  if (native_default.randomUUID && !buf && !options) {
+    return native_default.randomUUID();
+  }
+  options = options || {};
+  const rnds = options.random || (options.rng || rng)();
+  rnds[6] = rnds[6] & 15 | 64;
+  rnds[8] = rnds[8] & 63 | 128;
+  if (buf) {
+    offset = offset || 0;
+    for (let i = 0; i < 16; ++i) {
+      buf[offset + i] = rnds[i];
+    }
+    return buf;
+  }
+  return unsafeStringify(rnds);
+}
+var v4_default = v4;
+
+// src/infrastructure/configs/clinic-config.json
+var clinic_config_default = [
+  {
+    clinicId: "dentistinnewbritain",
+    odooCompanyId: 22,
+    clinicAddress: "446 S Main St, New Britain CT 06051-3516, USA",
+    clinicCity: "New Britain",
+    clinicEmail: "dentalcare@dentistinnewbritain.com",
+    clinicFax: "(860) 770-6774",
+    clinicName: "Dentist in New Britain",
+    clinicZipCode: "29607",
+    clinicPhone: "860-259-4141",
+    clinicState: "Connecticut",
+    timezone: "America/New_York",
+    logoUrl: "https://dentistinnewbritain.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/1wKzE8B2jbxQJaHB8",
+    scheduleUrl: "https://dentistinnewbritain.com/patient-portal",
+    websiteLink: "https://dentistinnewbritain.com",
+    wwwUrl: "https://www.dentistinnewbritain.com",
+    phoneNumber: "+18602612866",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/dentistinnewbritain.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-e6d6091484b5474281291379879901b8",
+    sftpFolderPath: "dentistinnewbritain",
+    hostedZoneId: "Z01685649197DPKW71B2",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistinnewbritain@gmail.com",
+        fromEmail: "dentistinnewbritain@gmail.com",
+        fromName: "Dentist in New Britain"
+      },
+      domain: {
+        imapHost: "mail.dentistinnewbritain.com",
+        imapPort: 993,
+        smtpHost: "mail.dentistinnewbritain.com",
+        smtpPort: 465,
+        smtpUser: "dentalcare@dentistinnewbritain.com",
+        fromEmail: "dentalcare@dentistinnewbritain.com",
+        fromName: "Dentist in New Britain"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "749712698232047",
+        pageName: "Dentist in New Britain"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "6882337378"
+    }
+  },
+  {
+    clinicId: "dentistingreenville",
+    odooCompanyId: 14,
+    clinicAddress: "4 Market Point Drive Suite E, Greenville SC 29607",
+    clinicCity: "Greenville",
+    clinicEmail: "dentalcare@dentistingreenville.com",
+    clinicFax: "864-284-0066",
+    clinicName: "Dentist in Greenville",
+    clinicPhone: "864-284-0066",
+    clinicState: "South Carolina",
+    timezone: "America/New_York",
+    clinicZipCode: "06051-3516",
+    logoUrl: "https://dentistingreenville.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/TP79MgS1EcycndPy8",
+    scheduleUrl: "https://dentistingreenville.com/patient-portal",
+    websiteLink: "https://dentistingreenville.com",
+    wwwUrl: "https://www.dentistingreenville.com",
+    phoneNumber: "+18643192704",
+    aiPhoneNumber: "+14439272295",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/dentistingreenville.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-b7576e8cf26a4fd49b8a221fea062922",
+    sftpFolderPath: "dentistingreenville",
+    hostedZoneId: "Z02737791R5YBM2QQE4CP",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistingreenville@gmail.com",
+        fromEmail: "dentistingreenville@gmail.com",
+        fromName: "Dentist in Greenville"
+      },
+      domain: {
+        imapHost: "mail.dentistingreenville.com",
+        imapPort: 993,
+        smtpHost: "mail.dentistingreenville.com",
+        smtpPort: 465,
+        smtpUser: "dentalcare@dentistingreenville.com",
+        fromEmail: "dentalcare@dentistingreenville.com",
+        fromName: "Dentist in Greenville"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "749186571616901",
+        pageName: "Dentist in Greenville"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "2978902821"
+    }
+  },
+  {
+    clinicId: "todaysdentalcayce",
+    odooCompanyId: 4,
+    clinicAddress: "1305 Knox Abbott Dr suite 101, Cayce, SC 29033, United States",
+    clinicCity: "Cayce",
+    clinicEmail: "Dentist@TodaysDentalCayce.com",
+    clinicFax: "(803) 753-1442",
+    clinicName: "Todays Dental Cayce",
+    clinicPhone: "803-233-6141",
+    clinicState: "South Carolina",
+    timezone: "America/New_York",
+    clinicZipCode: "29033",
+    logoUrl: "https://todaysdentalcayce.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/eU4TuxoySfuqfwib7",
+    scheduleUrl: "https://todaysdentalcayce.com/patient-portal",
+    websiteLink: "https://todaysdentalcayce.com",
+    wwwUrl: "https://www.todaysdentalcayce.com",
+    phoneNumber: "+18033027525",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/todaysdentalcayce.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-add5c4f5f7cd489499c8910e3caf8aef",
+    sftpFolderPath: "todaysdentalcayce",
+    hostedZoneId: "Z0652651QLHSQU2T54IO",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "todaysdentalcayce@gmail.com",
+        fromEmail: "todaysdentalcayce@gmail.com",
+        fromName: "Todays Dental Cayce"
+      },
+      domain: {
+        imapHost: "mail.todaysdentalcayce.com",
+        imapPort: 993,
+        smtpHost: "mail.todaysdentalcayce.com",
+        smtpPort: 465,
+        smtpUser: "Dentist@TodaysDentalCayce.com",
+        fromEmail: "Dentist@TodaysDentalCayce.com",
+        fromName: "Todays Dental Cayce"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "860746843779381",
+        pageName: "Todays Dental Cayce"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "1505658809"
+    }
+  },
+  {
+    clinicId: "creekcrossingdentalcare",
+    odooCompanyId: 33,
+    clinicAddress: "1927 FAITHON P LUCAS SR BLVD Ste 120 MESQUITE TX 75181-1698",
+    clinicCity: "Mesquite",
+    clinicEmail: "dentist@creekcrossingdentalcare.com",
+    clinicFax: "469-333-6159",
+    clinicName: "Creek Crossing Dental Care",
+    clinicPhone: "469-333-6158",
+    clinicState: "Texas",
+    timezone: "America/Chicago",
+    clinicZipCode: "75181",
+    logoUrl: "https://creekcrossingdentalcare.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/k9Be93nCmmcaE3CG7",
+    scheduleUrl: "https://creekcrossingdentalcare.com/patient-portal",
+    websiteLink: "https://creekcrossingdentalcare.com",
+    wwwUrl: "https://www.creekcrossingdentalcare.com",
+    phoneNumber: "+14692250064",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/creekcrossingdentalcare.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-b10bbd82fce94f11968b03a4eec09322",
+    sftpFolderPath: "creekcrossingdentalcare",
+    hostedZoneId: "Z04673793CNYTEEDV0F48",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "creekcrossingdentalcare@gmail.com",
+        fromEmail: "creekcrossingdentalcare@gmail.com",
+        fromName: "Creek Crossing Dental Care"
+      },
+      domain: {
+        imapHost: "mail.creekcrossingdentalcare.com",
+        imapPort: 993,
+        smtpHost: "mail.creekcrossingdentalcare.com",
+        smtpPort: 465,
+        smtpUser: "dentist@creekcrossingdentalcare.com",
+        fromEmail: "dentist@creekcrossingdentalcare.com",
+        fromName: "Creek Crossing Dental Care"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "802545442940105",
+        pageName: "Creek Crossing Dental Care"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "6327290560"
+    }
+  },
+  {
+    clinicId: "dentistinwinston-salem",
+    odooCompanyId: 35,
+    clinicAddress: "3210 Silas Creek Pkwy, Suite-4 Winston salem, NC, 27103",
+    clinicCity: "Winston-Salem",
+    clinicEmail: "dentalcare@dentistinwinston-salem.com",
+    clinicFax: "336-802-1898",
+    clinicName: "Dentist in Winston-Salem",
+    clinicPhone: "336-802-1894",
+    clinicState: "North Carolina",
+    timezone: "America/New_York",
+    clinicZipCode: "27103",
+    logoUrl: "https://dentistinwinston-salem.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/fAV5H59kFt1dfuMW9",
+    scheduleUrl: "https://dentistinwinston-salem.com/patient-portal",
+    websiteLink: "https://dentistinwinston-salem.com",
+    wwwUrl: "https://www.dentistinwinston-salem.com",
+    phoneNumber: "+13362836627",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/dentistinwinston-salem.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-3e55e6a9e1a14964b8876b8e35411049",
+    sftpFolderPath: "dentistinwinston-salem",
+    hostedZoneId: "Z0684688QGCIEZOQLTOQ",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistinwinstonsalem@gmail.com",
+        fromEmail: "dentistinwinstonsalem@gmail.com",
+        fromName: "Dentist in Winston-Salem"
+      },
+      domain: {
+        imapHost: "mail.dentistinwinston-salem.com",
+        imapPort: 993,
+        smtpHost: "mail.dentistinwinston-salem.com",
+        smtpPort: 465,
+        smtpUser: "dentalcare@dentistinwinston-salem.com",
+        fromEmail: "dentalcare@dentistinwinston-salem.com",
+        fromName: "Dentist in Winston-Salem"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "798270746700728",
+        pageName: "Dentist in Winston-Salem"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "8916450096"
+    }
+  },
+  {
+    clinicId: "dentistincentennial",
+    odooCompanyId: 37,
+    clinicAddress: "20269 E Smoky Hill Rd, Centennial, CO 80015, USA",
+    clinicCity: "Centennial",
+    clinicEmail: "dentalcare@dentistincentennial.com",
+    clinicFax: "",
+    clinicName: "Dentist in centennial",
+    clinicPhone: "303-923-9068",
+    clinicState: "Colorado",
+    timezone: "America/Denver",
+    clinicZipCode: "80015",
+    logoUrl: "https://dentistincentennial.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/HjGoQovp8s1QbsC66",
+    scheduleUrl: "https://dentistincentennial.com/patient-portal",
+    websiteLink: "https://dentistincentennial.com",
+    wwwUrl: "https://www.dentistincentennial.com",
+    phoneNumber: "+17207020009",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/dentistincentennial.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-e7812a96ba4049e288f04b702cd988b9",
+    sftpFolderPath: "dentistincentennial",
+    hostedZoneId: "Z01521441Y3EX4DY9YZAZ",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistincentennial@gmail.com",
+        fromEmail: "dentistincentennial@gmail.com",
+        fromName: "Dentist in centennial"
+      },
+      domain: {
+        imapHost: "mail.dentistincentennial.com",
+        imapPort: 993,
+        smtpHost: "mail.dentistincentennial.com",
+        smtpPort: 465,
+        smtpUser: "dentalcare@dentistincentennial.com",
+        fromEmail: "dentalcare@dentistincentennial.com",
+        fromName: "Dentist in centennial"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "804637432728253",
+        pageName: "Dentist in centennial"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "8705012352"
+    }
+  },
+  {
+    clinicId: "renodentalcareandorthodontics",
+    odooCompanyId: 38,
+    clinicAddress: "8040 S VIRGINIA ST STE 4 RENO NV 89511-8939",
+    clinicCity: "Reno",
+    clinicEmail: "dentalcare@renodentalcareandorthodontics.com",
+    clinicFax: "775-339-9894",
+    clinicName: "Reno Dental Care and Orthodontics",
+    clinicPhone: "775-339-9893",
+    clinicState: "Nevada",
+    timezone: "America/Los_Angeles",
+    clinicZipCode: "89511",
+    logoUrl: "https://renodentalcareandorthodontics.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/yqVa3N8mNwCgwBGv6",
+    scheduleUrl: "https://renodentalcareandorthodontics.com/patient-portal",
+    websiteLink: "https://renodentalcareandorthodontics.com",
+    wwwUrl: "https://www.renodentalcareandorthodontics.com",
+    phoneNumber: "+17752538664",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/renodentalcareandorthodontics.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-f097049ff6b947b59e73406acd056faf",
+    sftpFolderPath: "renodentalcareandorthodontics",
+    hostedZoneId: "Z06718466K032QAKNVB6",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistinrenonv@gmail.com",
+        fromEmail: "dentistinrenonv@gmail.com",
+        fromName: "Reno Dental Care and Orthodontics"
+      },
+      domain: {
+        imapHost: "mail.renodentalcareandorthodontics.com",
+        imapPort: 993,
+        smtpHost: "mail.renodentalcareandorthodontics.com",
+        smtpPort: 465,
+        smtpUser: "dentalcare@renodentalcareandorthodontics.com",
+        fromEmail: "dentalcare@renodentalcareandorthodontics.com",
+        fromName: "Reno Dental Care and Orthodontics"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "780646868466800",
+        pageName: "Reno Dental Care and orthodontics"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "8844529656"
+    }
+  },
+  {
+    clinicId: "todaysdentalalexandria",
+    odooCompanyId: 8,
+    clinicAddress: "4601 Pinecrest Office Park Dr D, Alexandria, VA 22312, United States",
+    clinicCity: "Alexandria",
+    clinicEmail: "Dentist@TodaysDentalAlexandria.com",
+    clinicFax: "(703) 256-5076",
+    clinicName: "Todays Dental Alexandria",
+    clinicPhone: "(703) 256-2085",
+    clinicState: "Virginia",
+    timezone: "America/New_York",
+    clinicZipCode: "22312",
+    logoUrl: "https://todaysdentalalexandria.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/vqABURPKCfMrFuuX9",
+    scheduleUrl: "https://todaysdentalalexandria.com/patient-portal",
+    websiteLink: "https://todaysdentalalexandria.com",
+    wwwUrl: "https://www.todaysdentalalexandria.com",
+    phoneNumber: "+17036728308",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/todaysdentalalexandria.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-5206f38a54434048b08f43bfff0cf933",
+    sftpFolderPath: "todaysdentalalexandria",
+    hostedZoneId: "Z03912831F1RMPO1B73A1",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "todaysdentalalexandria@gmail.com",
+        fromEmail: "todaysdentalalexandria@gmail.com",
+        fromName: "Todays Dental Alexandria"
+      },
+      domain: {
+        imapHost: "mail.todaysdentalalexandria.com",
+        imapPort: 993,
+        smtpHost: "mail.todaysdentalalexandria.com",
+        smtpPort: 465,
+        smtpUser: "Dentist@TodaysDentalAlexandria.com",
+        fromEmail: "Dentist@TodaysDentalAlexandria.com",
+        fromName: "Todays Dental Alexandria"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "854025807784463",
+        pageName: "Todays Dental Alexandria"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "5285406194"
+    }
+  },
+  {
+    clinicId: "todaysdentalgreenville",
+    odooCompanyId: 5,
+    clinicAddress: "1530 Poinsett Hwy Greenville, SC 29609, USA",
+    clinicCity: "Greenville",
+    clinicEmail: "Dentist@TodaysDentalGreenville.com",
+    clinicFax: "(864) 274-0708",
+    clinicName: "Todays Dental Greenville",
+    clinicPhone: "(864) 999-9899",
+    clinicState: "South Carolina",
+    timezone: "America/New_York",
+    clinicZipCode: "29609",
+    logoUrl: "https://todaysdentalgreenville.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/ksQRNsjQsjH7VNUa9",
+    scheduleUrl: "https://todaysdentalgreenville.com/patient-portal",
+    websiteLink: "https://todaysdentalgreenville.com",
+    wwwUrl: "https://www.todaysdentalgreenville.com",
+    phoneNumber: "+18643192662",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/todaysdentalgreenville.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-fbad55ead7554aaaaaffa3400fe73a84",
+    sftpFolderPath: "todaysdentalgreenville",
+    hostedZoneId: "Z04077501PVREEA4QQROH",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "todaysdentalgreenville@gmail.com",
+        fromEmail: "todaysdentalgreenville@gmail.com",
+        fromName: "Todays Dental Greenville"
+      },
+      domain: {
+        imapHost: "mail.todaysdentalgreenville.com",
+        imapPort: 993,
+        smtpHost: "mail.todaysdentalgreenville.com",
+        smtpPort: 465,
+        smtpUser: "Dentist@TodaysDentalGreenville.com",
+        fromEmail: "Dentist@TodaysDentalGreenville.com",
+        fromName: "Todays Dental Greenville"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "785393261324026",
+        pageName: "Todays Dental Greenville"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "3865885156"
+    }
+  },
+  {
+    clinicId: "todaysdentalwestcolumbia",
+    odooCompanyId: 6,
+    clinicAddress: "115 Medical Cir West Columbia, SC 29169, USA",
+    clinicCity: "West Columbia",
+    clinicEmail: "Dentist@TodaysDentalWestColumbia.com",
+    clinicFax: "(803) 233-8178",
+    clinicName: "Todays Dental West Columbia",
+    clinicPhone: "(803) 233-8177",
+    clinicState: "South Carolina",
+    timezone: "America/New_York",
+    clinicZipCode: "29169",
+    logoUrl: "https://todaysdentalwestcolumbia.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/NfpA3W9nsMdxC2gy5",
+    scheduleUrl: "https://todaysdentalwestcolumbia.com/patient-portal",
+    websiteLink: "https://todaysdentalwestcolumbia.com",
+    wwwUrl: "https://www.todaysdentalwestcolumbia.com",
+    phoneNumber: "+18032988480",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/todaysdentalwestcolumbia.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-c6693db736964c09b670e9ba84735f2b",
+    sftpFolderPath: "todaysdentalwestcolumbia",
+    hostedZoneId: "Z04061862KUE9GXTYR3B8",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "todaysdentalwestcolumbia@gmail.com",
+        fromEmail: "todaysdentalwestcolumbia@gmail.com",
+        fromName: "Todays Dental West Columbia"
+      },
+      domain: {
+        imapHost: "mail.todaysdentalwestcolumbia.com",
+        imapPort: 993,
+        smtpHost: "mail.todaysdentalwestcolumbia.com",
+        smtpPort: 465,
+        smtpUser: "Dentist@TodaysDentalWestColumbia.com",
+        fromEmail: "Dentist@TodaysDentalWestColumbia.com",
+        fromName: "Todays Dental West Columbia"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "780972621763947",
+        pageName: "Todays Dental West Columbia"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "6830227762"
+    }
+  },
+  {
+    clinicId: "dentistinconcord",
+    odooCompanyId: 20,
+    clinicAddress: "2460 Wonder DR STE C, Kannapolis, NC 28083",
+    clinicCity: "Concord",
+    clinicEmail: "DentalCare@DentistinConcord.com",
+    clinicFax: "(704) 707-3621",
+    clinicName: "Dentist in Concord",
+    clinicPhone: "(704) 707-3620",
+    clinicState: "North Carolina",
+    timezone: "America/New_York",
+    clinicZipCode: "28083",
+    logoUrl: "https://dentistinconcord.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/PRVNRH5U7tnv4erA8",
+    scheduleUrl: "https://dentistinconcord.com/patient-portal",
+    websiteLink: "https://dentistinconcord.com",
+    wwwUrl: "https://www.dentistinconcord.com",
+    phoneNumber: "+17043682506",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/dentistinconcord.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-d20c3c06affa4114a99d71b60eea87e4",
+    sftpFolderPath: "dentistinconcord",
+    hostedZoneId: "Z0424286J6ADTB4LRPD5",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistinconcord@gmail.com",
+        fromEmail: "dentistinconcord@gmail.com",
+        fromName: "Dentist in Concord"
+      },
+      domain: {
+        imapHost: "mail.dentistinconcord.com",
+        imapPort: 993,
+        smtpHost: "mail.dentistinconcord.com",
+        smtpPort: 465,
+        smtpUser: "DentalCare@DentistinConcord.com",
+        fromEmail: "DentalCare@DentistinConcord.com",
+        fromName: "Dentist in Concord"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "818707804648788",
+        pageName: "Dentist in Concord"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "1771094795"
+    }
+  },
+  {
+    clinicId: "dentistinedgewater",
+    odooCompanyId: 15,
+    clinicAddress: "15 Lee Airpark Dr, Suite 100, Edgewater MD 21037",
+    clinicCity: "Edgewater",
+    clinicEmail: "DentalCare@DentistinEdgewater.com",
+    clinicFax: "(443) 334-6689",
+    clinicName: "Dentist in EdgeWater",
+    clinicPhone: "(443) 334-6689",
+    clinicState: "Maryland",
+    timezone: "America/New_York",
+    clinicZipCode: "21037",
+    logoUrl: "https://dentistinedgewatermd.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/x97PmcG9KJH5Rdu16",
+    scheduleUrl: "https://dentistinedgewatermd.com/patient-portal",
+    websiteLink: "https://dentistinedgewatermd.com",
+    wwwUrl: "https://www.dentistinedgewatermd.com",
+    phoneNumber: "+14432038433",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/dentistinedgewatermd.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-476b26df530e42bcb55c157f20d5141e",
+    sftpFolderPath: "dentistinedgewater",
+    hostedZoneId: "Z0681492267AQBV6TNPKG",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistinedgewatermd@gmail.com",
+        fromEmail: "dentistinedgewatermd@gmail.com",
+        fromName: "Dentist in EdgeWater"
+      },
+      domain: {
+        imapHost: "mail.dentistinedgewater.com",
+        imapPort: 993,
+        smtpHost: "mail.dentistinedgewater.com",
+        smtpPort: 465,
+        smtpUser: "DentalCare@DentistinEdgewater.com",
+        fromEmail: "DentalCare@DentistinEdgewater.com",
+        fromName: "Dentist in EdgeWater"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "815231321665315",
+        pageName: "Dentist in EdgeWater"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "6571919715"
+    }
+  },
+  {
+    clinicId: "lawrencevilledentistry",
+    odooCompanyId: 11,
+    clinicAddress: "1455 Pleasant Hill Road, Lawrenceville, Suite 807A, georgia 30044, USA",
+    clinicCity: "Lawrenceville",
+    clinicEmail: "Dentist@LawrencevilleDentistry.com",
+    clinicFax: "(770) 415-4995",
+    clinicName: "Lawrenceville Dentistry",
+    clinicZipCode: "30044",
+    clinicPhone: "(770)-415-0077",
+    clinicState: "Georgia",
+    timezone: "America/New_York",
+    logoUrl: "https://lawrencevilledentistry.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/MFnMPmHSsdyHaGZe9",
+    scheduleUrl: "https://lawrencevilledentistry.com/book-appointment",
+    websiteLink: "https://lawrencevilledentistry.com",
+    wwwUrl: "https://www.lawrencevilledentistry.com",
+    phoneNumber: "+17702840555",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/lawrencevilledentistry.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-391fd647103a49c5ad36c38422ea8009",
+    sftpFolderPath: "lawrencevilledentistry",
+    hostedZoneId: "Z065164017R8THSISNPT8",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "lawrencevilledentistry@gmail.com",
+        fromEmail: "lawrencevilledentistry@gmail.com",
+        fromName: "Lawrenceville Dentistry"
+      },
+      domain: {
+        imapHost: "mail.lawrencevilledentistry.com",
+        imapPort: 993,
+        smtpHost: "mail.lawrencevilledentistry.com",
+        smtpPort: 465,
+        smtpUser: "Dentist@LawrencevilleDentistry.com",
+        fromEmail: "Dentist@LawrencevilleDentistry.com",
+        fromName: "Lawrenceville Dentistry"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "764215823445811",
+        pageName: "Lawrenceville Dentistry"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "9954954552"
+    }
+  },
+  {
+    clinicId: "dentistinlouisville",
+    odooCompanyId: 21,
+    clinicAddress: "6826 Bardstown Road, Louisville Kentucky 40291, USA",
+    clinicCity: "Louisville",
+    clinicEmail: "dentalcare@dentistinlouisville.com",
+    clinicFax: "(502) 212-9629",
+    clinicName: "Dentist In Louisville",
+    clinicZipCode: "40291",
+    clinicPhone: "(502)-239-9751",
+    clinicState: "Kentucky",
+    timezone: "America/New_York",
+    logoUrl: "https://dentistinlouisville.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/m76QtysK96poeUWy7",
+    scheduleUrl: "https://dentistinlouisville.com/book-appointment",
+    websiteLink: "https://dentistinlouisville.com",
+    wwwUrl: "https://www.dentistinlouisville.com",
+    phoneNumber: "+15022158254",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/dentistinlouisville.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-a2fe2c95e0254b12a39e7fe1d4359223",
+    sftpFolderPath: "dentistinlouisville",
+    hostedZoneId: "Z01681663I51Z0MKKI4RU",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistinlouisvillekentucky@gmail.com",
+        fromEmail: "dentistinlouisvillekentucky@gmail.com",
+        fromName: "Dentist In Louisville"
+      },
+      domain: {
+        imapHost: "mail.dentistinlouisville.com",
+        imapPort: 993,
+        smtpHost: "mail.dentistinlouisville.com",
+        smtpPort: 465,
+        smtpUser: "dentalcare@dentistinlouisville.com",
+        fromEmail: "dentalcare@dentistinlouisville.com",
+        fromName: "Dentist In Louisville"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "830585603464796",
+        pageName: "Dentist In Louisville"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "9277361743"
+    }
+  },
+  {
+    clinicId: "dentistatsaludapointe",
+    odooCompanyId: 7,
+    clinicAddress: "105 Saluda Pointe Ct Suite C, Lexington, SC 29072, USA",
+    clinicCity: "SaludaPointe",
+    clinicEmail: "DentalCare@DentistatSaludaPointe.com",
+    clinicFax: "",
+    clinicName: "Todays Dental Saluda Pointe",
+    clinicZipCode: "29072",
+    clinicPhone: "(803) 399-8236",
+    clinicState: "South Carolina",
+    timezone: "America/New_York",
+    logoUrl: "https://dentistatsaludapointe.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/ybcArAkBw4JLHqmY7",
+    scheduleUrl: "https://dentistatsaludapointe.com/book-appointment",
+    websiteLink: "https://dentistatsaludapointe.com",
+    wwwUrl: "https://www.dentistatsaludapointe.com",
+    phoneNumber: "+18032919970",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/dentistatsaludapointe.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-a7079480e46c41308fdcf855a79a6555",
+    sftpFolderPath: "dentistatsaludapointe",
+    hostedZoneId: "Z065149151EMKCBPQEVL",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistatsaludapointe@gmail.com",
+        fromEmail: "dentistatsaludapointe@gmail.com",
+        fromName: "Todays Dental Saluda Pointe"
+      },
+      domain: {
+        imapHost: "mail.dentistatsaludapointe.com",
+        imapPort: 993,
+        smtpHost: "mail.dentistatsaludapointe.com",
+        smtpPort: 465,
+        smtpUser: "DentalCare@DentistatSaludaPointe.com",
+        fromEmail: "DentalCare@DentistatSaludaPointe.com",
+        fromName: "Todays Dental Saluda Pointe"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "830923773419024",
+        pageName: "Dentist At Saluda Pointe"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "9490955129"
+    }
+  },
+  {
+    clinicId: "dentistinoregonoh",
+    odooCompanyId: 25,
+    clinicAddress: "3555 Navarre Ave Stre 12, Oregon OH 43616",
+    clinicCity: "Oregon",
+    clinicEmail: "dentalcare@dentistinoregonoh.com",
+    clinicFax: "(419) 391-9906",
+    clinicName: "Dentist in Oregon",
+    clinicPhone: "(419) 690-0320",
+    clinicState: "Ohio",
+    timezone: "America/New_York",
+    clinicZipCode: "43616",
+    logoUrl: "https://dentistinoregonoh.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/dHUuSUYSeot1YxBw5",
+    scheduleUrl: "https://dentistinOregonoh.com/patient-portal",
+    websiteLink: "https://dentistinoregonoh.com",
+    wwwUrl: "https://www.dentistinoregonoh.com",
+    phoneNumber: "+14193183371",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/dentistinoregonoh.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-9039b266b7024aed8a45f3747c511a34",
+    sftpFolderPath: "dentistinoregonoh",
+    hostedZoneId: "Z0424621RYEA9FEBS0JY",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistinoregonoh@gmail.com",
+        fromEmail: "dentistinoregonoh@gmail.com",
+        fromName: "Dentist in Oregon"
+      },
+      domain: {
+        imapHost: "mail.dentistinoregonoh.com",
+        imapPort: 993,
+        smtpHost: "mail.dentistinoregonoh.com",
+        smtpPort: 465,
+        smtpUser: "dentalcare@dentistinoregonoh.com",
+        fromEmail: "dentalcare@dentistinoregonoh.com",
+        fromName: "Dentist in Oregon"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "761336133733464",
+        pageName: "Dentist in Oregon"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "2121863652"
+    }
+  },
+  {
+    clinicId: "todaysdentallexington",
+    odooCompanyId: 2,
+    clinicAddress: "458 Old Cherokee Rd Suite 100, Lexington, SC 29072, USA",
+    clinicCity: "Lexington",
+    clinicEmail: "Dentist@TodaysDentalLexington.com",
+    clinicFax: "",
+    clinicName: "Todays Dental Lexington",
+    clinicPhone: "(803) 756-4353",
+    clinicState: "South Carolina",
+    timezone: "America/New_York",
+    clinicZipCode: "43616",
+    logoUrl: "https://todaysdentallexington.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/nBnxjeHrWU8mxDgV7",
+    scheduleUrl: "https://todaysdentallexington.com/patient-portal",
+    websiteLink: "https://todaysdentallexington.com",
+    wwwUrl: "https://www.todaysdentallexington.com",
+    phoneNumber: "+18032210987",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/todaysdentallexington.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-5d5c8099c6624552a7d779037d702f4b",
+    sftpFolderPath: "daysdentallexington",
+    hostedZoneId: "Z040331235NMZIX4ZLLGE",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "todaysdentallexington@gmail.com",
+        fromEmail: "todaysdentallexington@gmail.com",
+        fromName: "Todays Dental Lexington"
+      },
+      domain: {
+        imapHost: "mail.todaysdentallexington.com",
+        imapPort: 993,
+        smtpHost: "mail.todaysdentallexington.com",
+        smtpPort: 465,
+        smtpUser: "Dentist@TodaysDentalLexington.com",
+        fromEmail: "Dentist@TodaysDentalLexington.com",
+        fromName: "Todays Dental Lexington"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "739288799274944",
+        pageName: "Todays Dental Lexington"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "9085359447"
+    }
+  },
+  {
+    clinicId: "dentistinbowie",
+    odooCompanyId: 9,
+    clinicAddress: "14999 Health Center Dr #110 Bowie, MD 20716, USA",
+    clinicCity: "Bowie",
+    clinicEmail: "DentalCare@DentistinBowie.com",
+    clinicFax: "(301) 880-0940",
+    clinicName: "Dentist in Bowie",
+    clinicZipCode: "20716",
+    clinicPhone: "(301) 880-0504",
+    clinicState: "Maryland",
+    timezone: "America/New_York",
+    logoUrl: "https://dentistinbowie.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/Tb2ZSscmYFCkdEsLA",
+    scheduleUrl: "https://dentistinbowie.com/patient-portal",
+    websiteLink: "https://dentistinbowie.com",
+    wwwUrl: "https://www.dentistinbowie.com",
+    phoneNumber: "+13012416572",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/dentistinbowie.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-23cbc8f035e94d7c85a8177361999c75",
+    sftpFolderPath: "dentistinbowie",
+    hostedZoneId: "Z06428572342W1A3EK5HA",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistinbowie@gmail.com",
+        fromEmail: "dentistinbowie@gmail.com",
+        fromName: "Dentist in Bowie"
+      },
+      domain: {
+        imapHost: "mail.dentistinbowie.com",
+        imapPort: 993,
+        smtpHost: "mail.dentistinbowie.com",
+        smtpPort: 465,
+        smtpUser: "DentalCare@DentistinBowie.com",
+        fromEmail: "DentalCare@DentistinBowie.com",
+        fromName: "Dentist in Bowie"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "786812141180019",
+        pageName: "Dentist in Bowie"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "4551655949"
+    }
+  },
+  {
+    clinicId: "dentistinpowellohio",
+    odooCompanyId: 16,
+    clinicAddress: "4091 W Powell Rd#1, Powell, OH 43065",
+    clinicCity: "Powell",
+    clinicEmail: "DentalCare@DentistinPowellOhio.com",
+    clinicFax: "(614) 664-9667",
+    clinicName: "Dentist in Powell",
+    clinicZipCode: "43065",
+    clinicPhone: "(614) 659-0018",
+    clinicState: "Ohio",
+    timezone: "America/New_York",
+    logoUrl: "https://dentistinpowellohio.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/eR4MznoQ3gj897NX8",
+    scheduleUrl: "https://dentistinpowellohio.com/patient-portal",
+    websiteLink: "https://dentistinpowellohio.com",
+    wwwUrl: "https://www.dentistinpowellohio.com",
+    phoneNumber: "+16144898815",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/dentistinpowellohio.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-0a580af9da914a03bb68a715a212848f",
+    sftpFolderPath: "dentistinpowellohio",
+    hostedZoneId: "Z06449472H2KB1S9FS2K5",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistinpowellohio@gmail.com",
+        fromEmail: "dentistinpowellohio@gmail.com",
+        fromName: "Dentist in Powell"
+      },
+      domain: {
+        imapHost: "mail.dentistinpowellohio.com",
+        imapPort: 993,
+        smtpHost: "mail.dentistinpowellohio.com",
+        smtpPort: 465,
+        smtpUser: "DentalCare@DentistinPowellOhio.com",
+        fromEmail: "DentalCare@DentistinPowellOhio.com",
+        fromName: "Dentist in Powell"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "779484698582071",
+        pageName: "Dentist in Powell"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "4638071933"
+    }
+  },
+  {
+    clinicId: "dentistinperrysburg",
+    odooCompanyId: 10,
+    clinicAddress: "110 E South Boundary St, Perrysburg, OH 43551, USA",
+    clinicCity: "Perrysburg",
+    clinicEmail: "Dentalcare@dentistinperrysburg.com",
+    clinicFax: "(419) 792-1263",
+    clinicName: "Dentist in PerrysBurg",
+    clinicZipCode: "43551",
+    clinicPhone: "(419) 792-1264",
+    clinicState: "Ohio",
+    timezone: "America/New_York",
+    logoUrl: "https://dentistinperrysburg.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/aVCiTAY9UvGYXQaR8",
+    scheduleUrl: "https://dentistinperrysburg.com/patient-portal",
+    websiteLink: "https://dentistinperrysburg.com",
+    wwwUrl: "https://www.dentistinperrysburg.com",
+    phoneNumber: "+14193183386",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/dentistinperrysburg.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-819f553d8d72424a85292eab0e0030ce",
+    sftpFolderPath: "dentistinperrysburg",
+    hostedZoneId: "Z0190676238ABL9C3TV32",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistinperrysburg@gmail.com",
+        fromEmail: "dentistinperrysburg@gmail.com",
+        fromName: "Dentist in PerrysBurg"
+      },
+      domain: {
+        imapHost: "mail.dentistinperrysburg.com",
+        imapPort: 993,
+        smtpHost: "mail.dentistinperrysburg.com",
+        smtpPort: 465,
+        smtpUser: "Dentalcare@dentistinperrysburg.com",
+        fromEmail: "Dentalcare@dentistinperrysburg.com",
+        fromName: "Dentist in PerrysBurg"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "743300888873794",
+        pageName: "Dentist in PerrysBurg"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "7421865491"
+    }
+  },
+  {
+    clinicId: "dentistinaustin",
+    odooCompanyId: 34,
+    clinicAddress: "2110 W Slaughter Ln Ste 190 Austin, TX 78748",
+    clinicCity: "Austin",
+    clinicEmail: "Dentalcare@dentistinaustintx.com",
+    clinicFax: "(512) 430-4563",
+    clinicName: "Dentist in Austin",
+    clinicZipCode: "78748",
+    clinicPhone: "512-430-4472",
+    clinicState: "Texas",
+    timezone: "America/Chicago",
+    logoUrl: "https://dentistinaustintx.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/BbvkUzQb14p6YhH77",
+    scheduleUrl: "https://dentistinaustintx.com/patient-portal",
+    websiteLink: "https://dentistinaustintx.com",
+    wwwUrl: "https://www.dentistinaustintx.com",
+    phoneNumber: "+15123095624",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/dentistinaustintx.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd34e09bf3c648848318c031cfeb13b6",
+    sftpFolderPath: "dentistinaustin",
+    hostedZoneId: "Z039585419DY53TZXW8SA",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistinaustin@gmail.com",
+        fromEmail: "dentistinaustin@gmail.com",
+        fromName: "Dentist in Austin"
+      },
+      domain: {
+        imapHost: "mail.dentistinaustintx.com",
+        imapPort: 993,
+        smtpHost: "mail.dentistinaustintx.com",
+        smtpPort: 465,
+        smtpUser: "Dentalcare@dentistinaustintx.com",
+        fromEmail: "Dentalcare@dentistinaustintx.com",
+        fromName: "Dentist in Austin"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "787337507798286",
+        pageName: "Dentist in Austin"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "5770542490"
+    }
+  },
+  {
+    clinicId: "therimdentalcare",
+    odooCompanyId: 29,
+    clinicAddress: "6028 WORTH PKWY STE 101, SAN ANTONIO, TX 78257-5071",
+    clinicCity: "SAN ANTONIO",
+    clinicEmail: "Dentist@therimdentalcare.com",
+    clinicFax: "(726) 215-9920",
+    clinicName: "The Rim Dental Care",
+    clinicPhone: "(726) 215-9920",
+    clinicState: "Texas",
+    timezone: "America/Chicago",
+    clinicZipCode: "78257-5071",
+    logoUrl: "https://therimdentalcare.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/cabosKW6nqkmPCQs8",
+    scheduleUrl: "https://therimdentalcare.com/patient-portal",
+    websiteLink: "https://therimdentalcare.com",
+    wwwUrl: "https://www.therimdentalcare.com",
+    phoneNumber: "+17262023123",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/therimdentalcare.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-698ca15acec542ba849576b9440ca958",
+    sftpFolderPath: "therimdentalcare",
+    hostedZoneId: "Z062554333J0IQ9RHN2OP",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "therimdentalcare@gmail.com",
+        fromEmail: "therimdentalcare@gmail.com",
+        fromName: "The Rim Dental Care"
+      },
+      domain: {
+        imapHost: "mail.therimdentalcare.com",
+        imapPort: 993,
+        smtpHost: "mail.therimdentalcare.com",
+        smtpPort: 465,
+        smtpUser: "Dentist@therimdentalcare.com",
+        fromEmail: "Dentist@therimdentalcare.com",
+        fromName: "The Rim Dental Care"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "737273779478519",
+        pageName: "The Rim Dental Care"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "5001733364"
+    }
+  },
+  {
+    clinicId: "dentistinbloomingdale",
+    odooCompanyId: 27,
+    clinicAddress: "366 W Army Trail Rd #310a, Bloomingdale, IL 60108, USA",
+    clinicCity: "Bloomingdale",
+    clinicEmail: "Dentalcare@dentistinbloomingdaleil.com",
+    clinicFax: "(630) 686-1327",
+    clinicName: "Dentist in Bloomingdale",
+    clinicZipCode: "60108",
+    clinicPhone: "(630) 686-1328",
+    clinicState: "Illinois",
+    timezone: "America/Chicago",
+    logoUrl: "https://dentistinbloomingdaleil.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/e7WeCV2FKXuTbyMA6",
+    scheduleUrl: "https://dentistinbloomingdaleil.com/patient-portal",
+    websiteLink: "https://dentistinbloomingdaleil.com",
+    wwwUrl: "https://www.dentistinbloomingdaleil.com",
+    phoneNumber: "+16302969003",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/dentistinbloomingdaleil.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-b818b4b13ed846529fc08e5a27935ef7",
+    sftpFolderPath: "dentistinbloomingdale",
+    hostedZoneId: "Z0168184178UA6OJU34E4",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistinbloomingdale@gmail.com",
+        fromEmail: "dentistinbloomingdale@gmail.com",
+        fromName: "Dentist in Bloomingdale"
+      },
+      domain: {
+        imapHost: "mail.dentistinbloomingdaleil.com",
+        imapPort: 993,
+        smtpHost: "mail.dentistinbloomingdaleil.com",
+        smtpPort: 465,
+        smtpUser: "Dentalcare@dentistinbloomingdaleil.com",
+        fromEmail: "Dentalcare@dentistinbloomingdaleil.com",
+        fromName: "Dentist in Bloomingdale"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "795753343619807",
+        pageName: "Dentist in Bloomingdale"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "5553837131"
+    }
+  },
+  {
+    clinicId: "dentistinvernonhills",
+    odooCompanyId: 32,
+    clinicAddress: "6826 Bardstown Road, VernonHills, Illinois, 40291, USA",
+    clinicCity: "VernonHills",
+    clinicEmail: "DentalCare@DentistinVernonHills.com",
+    clinicFax: "",
+    clinicName: "Dentist in Vernon Hills",
+    clinicZipCode: "40291",
+    clinicPhone: "(847) 978-4077",
+    clinicState: "Illinois",
+    timezone: "America/Chicago",
+    logoUrl: "https://dentistinvernonhills.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/3EJBccxEGW41P8Rh7",
+    scheduleUrl: "https://dentistinvernonhills.com/patient-portal",
+    websiteLink: "https://dentistinvernonhills.com",
+    wwwUrl: "https://www.dentistinvernonhills.com",
+    phoneNumber: "+18472608875",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/dentistinvernonhills.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-3e30fb6357124b5cb03bfadfc72859ba",
+    sftpFolderPath: "dentistinvernonhills",
+    hostedZoneId: "Z01676602Q7T5NJOJ0NZU",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistinvernonhills@gmail.com",
+        fromEmail: "dentistinvernonhills@gmail.com",
+        fromName: "Dentist in Vernon Hills"
+      },
+      domain: {
+        imapHost: "mail.dentistinvernonhills.com",
+        imapPort: 993,
+        smtpHost: "mail.dentistinvernonhills.com",
+        smtpPort: 465,
+        smtpUser: "DentalCare@DentistinVernonHills.com",
+        fromEmail: "DentalCare@DentistinVernonHills.com",
+        fromName: "Dentist in Vernon Hills"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "817804011415991",
+        pageName: "Dentist in Vernon Hills"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "4656582027"
+    }
+  },
+  {
+    clinicId: "meadowsdentalcare",
+    odooCompanyId: 36,
+    clinicAddress: "9600 S I-35 Frontage Rd Bldg S #275, Austin, TX 78748, United States",
+    clinicCity: "Austin",
+    clinicEmail: "dentist@themeadowsdentalcare.com",
+    clinicFax: "(737) 263-1592",
+    clinicName: "Meadows Dental Care",
+    clinicZipCode: "78748",
+    clinicPhone: "(737) 263-1581",
+    clinicState: "Texas",
+    timezone: "America/Chicago",
+    logoUrl: "https://themeadowsdentalcare.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/Hz4S86nieDoEJyZi6",
+    scheduleUrl: "https://themeadowsdentalcare.com/patient-portal",
+    websiteLink: "https://themeadowsdentalcare.com",
+    wwwUrl: "https://www.themeadowsdentalcare.com",
+    phoneNumber: "+17372273831",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/themeadowsdentalcare.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-d6087aec7474416a81b800eec92bf33a",
+    sftpFolderPath: "meadowsdentalcare",
+    hostedZoneId: "Z0228748YTYJQTBTCWH1",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "meadowsdentalcare@gmail.com",
+        fromEmail: "meadowsdentalcare@gmail.com",
+        fromName: "Meadows Dental Care"
+      },
+      domain: {
+        imapHost: "mail.themeadowsdentalcare.com",
+        imapPort: 993,
+        smtpHost: "mail.themeadowsdentalcare.com",
+        smtpPort: 465,
+        smtpUser: "dentist@themeadowsdentalcare.com",
+        fromEmail: "dentist@themeadowsdentalcare.com",
+        fromName: "Meadows Dental Care"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "761234307081671",
+        pageName: "Meadows Dental Care"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "7115897921"
+    }
+  },
+  {
+    clinicId: "dentistinstillwater",
+    odooCompanyId: 39,
+    clinicAddress: "5619 W. Loop, 1604 N Ste 112, San Antonio, TX 78253-5795",
+    clinicCity: "San Antonio",
+    clinicEmail: "dentalcare@stillwaterdentalcareandortho.com",
+    clinicFax: "",
+    clinicName: "Dentist in Still Water",
+    clinicZipCode: "78253-5795",
+    clinicPhone: "254-492-3224",
+    clinicState: "Texas",
+    timezone: "America/Chicago",
+    logoUrl: "https://stillwaterdentalcareandortho.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/Gc14g4dakEXrwbTi7",
+    scheduleUrl: "https://stillwaterdentalcareandortho.com/patient-portal",
+    websiteLink: "https://stillwaterdentalcareandortho.com",
+    wwwUrl: "https://www.stillwaterdentalcareandortho.com",
+    phoneNumber: "+12542250133",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/stillwaterdentalcareandortho.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-b34686d575d34041a7dcd5fac6db3369",
+    sftpFolderPath: "dentistinstillwater",
+    hostedZoneId: "Z029178313VFV0GYWY3NS",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "dentistinstillwater@gmail.com",
+        fromEmail: "dentistinstillwater@gmail.com",
+        fromName: "Dentist in Still Water"
+      },
+      domain: {
+        imapHost: "mail.stillwaterdentalcareandortho.com",
+        imapPort: 993,
+        smtpHost: "mail.stillwaterdentalcareandortho.com",
+        smtpPort: 465,
+        smtpUser: "dentalcare@stillwaterdentalcareandortho.com",
+        fromEmail: "dentalcare@stillwaterdentalcareandortho.com",
+        fromName: "Dentist in Still Water"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "717972378076257",
+        pageName: "Dentist in Still Water"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "9116392960"
+    }
+  },
+  {
+    clinicId: "pearlanddentalcare",
+    odooCompanyId: 40,
+    clinicAddress: "1921 N Main St Ste 115, Pearland TX 77581",
+    clinicCity: "Pearland",
+    clinicEmail: "dentalcare@pearlanddentalcare.com",
+    clinicFax: "",
+    clinicName: "Pearland Dental Care",
+    clinicZipCode: "77581",
+    clinicPhone: "832-955-1682",
+    clinicState: "Texas",
+    timezone: "America/Chicago",
+    logoUrl: "https://pearlanddentalcare.com/logo.png",
+    mapsUrl: "https://maps.app.goo.gl/9ZFsgFAnRKyJmj5s6",
+    scheduleUrl: "https://pearlanddentalcare.com/patient-portal",
+    websiteLink: "https://pearlanddentalcare.com",
+    wwwUrl: "https://www.pearlanddentalcare.com",
+    phoneNumber: "+18322806867",
+    aiPhoneNumber: "",
+    sesIdentityArn: "arn:aws:ses:us-east-1:851620242036:identity/pearlanddentalcare.com",
+    smsOriginationArn: "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-e6bc4666724a4e20bdff15017b2c165e",
+    sftpFolderPath: "pearlanddentalcare",
+    hostedZoneId: "Z02753391M42GQCRXDDCE",
+    email: {
+      gmail: {
+        imapHost: "imap.gmail.com",
+        imapPort: 993,
+        smtpHost: "smtp.gmail.com",
+        smtpPort: 587,
+        smtpUser: "pearlanddentalcare@gmail.com",
+        fromEmail: "pearlanddentalcare@gmail.com",
+        fromName: "Pearland Dental Care"
+      },
+      domain: {
+        imapHost: "mail.pearlanddentalcare.com",
+        imapPort: 993,
+        smtpHost: "mail.pearlanddentalcare.com",
+        smtpPort: 465,
+        smtpUser: "dentalcare@pearlanddentalcare.com",
+        fromEmail: "dentalcare@pearlanddentalcare.com",
+        fromName: "Pearland Dental Care"
+      }
+    },
+    ayrshare: {
+      enabled: true,
+      connectedPlatforms: ["facebook"],
+      facebook: {
+        connected: true,
+        pageId: "764480776752152",
+        pageName: "Pearland Dental Care"
+      }
+    },
+    googleAds: {
+      enabled: true,
+      customerId: "8278105993"
+    }
+  }
+];
+
+// src/shared/utils/secrets-helper.ts
+var import_client_dynamodb = require("@aws-sdk/client-dynamodb");
+var import_util_dynamodb = require("@aws-sdk/util-dynamodb");
+var CLINIC_SECRETS_TABLE = process.env.CLINIC_SECRETS_TABLE || "TodaysDentalInsights-ClinicSecrets";
+var GLOBAL_SECRETS_TABLE = process.env.GLOBAL_SECRETS_TABLE || "TodaysDentalInsights-GlobalSecrets";
+var CLINIC_CONFIG_TABLE = process.env.CLINIC_CONFIG_TABLE || "TodaysDentalInsights-ClinicConfig";
+var CACHE_TTL_MS = parseInt(process.env.SECRETS_CACHE_TTL_MS || "300000", 10);
+
+// src/shared/utils/cors.ts
+var clinicsData = clinic_config_default;
+var ALLOWED_ORIGINS_LIST = [
+  "https://todaysdentalinsights.com",
+  "https://www.todaysdentalinsights.com",
+  "https://todaysdentalinsights.com/",
+  "https://www.todaysdentalinsights.com/",
+  ...clinicsData.map((c) => String(c.websiteLink)).filter(Boolean),
+  ...clinicsData.map((c) => String(c.wwwUrl)).filter(Boolean)
+];
+var DEFAULT_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"];
+var DEFAULT_HEADERS = ["Content-Type", "Authorization", "X-Requested-With", "Referer"];
+function getAllowedOrigin(requestOrigin, allowedOrigins = ALLOWED_ORIGINS_LIST) {
+  console.log("[CORS] Determining allowed origin", { requestOrigin, allowedOrigins: allowedOrigins.slice(0, 5) });
+  if (!requestOrigin) {
+    return allowedOrigins[0];
+  }
+  if (allowedOrigins.includes(requestOrigin)) {
+    return requestOrigin;
+  }
+  console.warn("[CORS] Request origin not allowed, using default:", { requestOrigin, defaultOrigin: allowedOrigins[0] });
+  return allowedOrigins[0];
+}
+function buildCorsHeaders(options = {}, requestOrigin) {
+  const allowOrigin = options.allowOrigin || getAllowedOrigin(requestOrigin);
+  const allowMethods = (options.allowMethods || DEFAULT_METHODS).join(", ");
+  const uniqueHeaders = Array.from(/* @__PURE__ */ new Set([...options.allowHeaders || [], ...DEFAULT_HEADERS]));
+  const allowHeaders = uniqueHeaders.join(", ");
+  const headers = {
+    "Access-Control-Allow-Origin": allowOrigin,
+    "Access-Control-Allow-Methods": allowMethods,
+    "Access-Control-Allow-Headers": allowHeaders,
+    "Access-Control-Allow-Credentials": "true"
+  };
+  const maxAgeSeconds = options.maxAgeSeconds ?? 86400;
+  if (maxAgeSeconds > 0)
+    headers["Access-Control-Max-Age"] = String(maxAgeSeconds);
+  console.log("[CORS] Generated headers:", headers);
+  return headers;
+}
+
+// src/shared/types/user.ts
+var SYSTEM_MODULES = [
+  "HR",
+  "Accounting",
+  "Operations",
+  "Finance",
+  "Marketing",
+  "Legal",
+  "IT"
+];
+
+// src/shared/utils/permissions-helper.ts
+var import_zlib = require("zlib");
+var SYSTEM_MODULES2 = [
+  "HR",
+  "Accounting",
+  "Operations",
+  "Finance",
+  "Marketing",
+  "Legal",
+  "IT"
+];
+function parseClinicRoles(clinicRolesValue) {
+  if (Array.isArray(clinicRolesValue)) {
+    return clinicRolesValue;
+  }
+  if (typeof clinicRolesValue !== "string") {
+    return [];
+  }
+  const raw = clinicRolesValue.trim();
+  if (!raw)
+    return [];
+  try {
+    if (raw.startsWith("z:")) {
+      const b64 = raw.slice(2);
+      const json = (0, import_zlib.inflateSync)(Buffer.from(b64, "base64")).toString("utf-8");
+      return JSON.parse(json);
+    }
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error("Failed to parse clinicRoles from authorizer context:", err);
+    return [];
+  }
+}
+function getUserPermissions(event) {
+  const authorizer = event.requestContext?.authorizer;
+  if (!authorizer)
+    return null;
+  try {
+    const clinicRoles = parseClinicRoles(authorizer.clinicRolesZ ?? authorizer.clinicRoles);
+    const isSuperAdmin = authorizer.isSuperAdmin === "true";
+    const isGlobalSuperAdmin = authorizer.isGlobalSuperAdmin === "true";
+    const email = authorizer.email || "";
+    const givenName = authorizer.givenName || "";
+    const familyName = authorizer.familyName || "";
+    return {
+      email,
+      givenName,
+      familyName,
+      clinicRoles,
+      isSuperAdmin,
+      isGlobalSuperAdmin
+    };
+  } catch (err) {
+    console.error("Failed to parse user permissions:", err);
+    return null;
+  }
+}
+function isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin) {
+  if (isGlobalSuperAdmin || isSuperAdmin) {
+    return true;
+  }
+  for (const cr of clinicRoles) {
+    if (cr.role === "Admin" || cr.role === "SuperAdmin" || cr.role === "Global super admin") {
+      return true;
+    }
+  }
+  return false;
+}
+function hasModulePermission(clinicRoles, module2, permission, isSuperAdmin, isGlobalSuperAdmin, clinicId) {
+  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
+    return true;
+  }
+  for (const cr of clinicRoles) {
+    if (clinicId && cr.clinicId !== clinicId) {
+      continue;
+    }
+    const moduleAccess = cr.moduleAccess?.find((ma) => ma.module === module2);
+    if (moduleAccess && moduleAccess.permissions.includes(permission)) {
+      return true;
+    }
+  }
+  return false;
+}
+function getAllowedClinicIds(clinicRoles, isSuperAdmin, isGlobalSuperAdmin) {
+  if (isGlobalSuperAdmin || isSuperAdmin) {
+    return /* @__PURE__ */ new Set(["*"]);
+  }
+  const clinicIds = clinicRoles.map((cr) => cr.clinicId);
+  return new Set(clinicIds);
+}
+function hasClinicAccess(allowedClinics, clinicId) {
+  return allowedClinics.has("*") || allowedClinics.has(clinicId);
+}
+function getAccessibleModules(clinicRoles, isSuperAdmin, isGlobalSuperAdmin, clinicId) {
+  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
+    return [...SYSTEM_MODULES2];
+  }
+  const accessibleModules = /* @__PURE__ */ new Set();
+  for (const cr of clinicRoles) {
+    if (clinicId && cr.clinicId !== clinicId) {
+      continue;
+    }
+    if (cr.moduleAccess) {
+      for (const ma of cr.moduleAccess) {
+        if (ma.permissions && ma.permissions.includes("read")) {
+          accessibleModules.add(ma.module);
+        }
+      }
+    }
+  }
+  return Array.from(accessibleModules);
+}
+function filterByModuleAccess(items, clinicRoles, clinicId, isSuperAdmin, isGlobalSuperAdmin, defaultModule = "Operations") {
+  if (isAdminUser(clinicRoles, isSuperAdmin, isGlobalSuperAdmin)) {
+    return items;
+  }
+  const accessibleModules = new Set(
+    getAccessibleModules(clinicRoles, isSuperAdmin, isGlobalSuperAdmin, clinicId)
+  );
+  return items.filter((item) => {
+    const itemModule = item.module || defaultModule;
+    return accessibleModules.has(itemModule);
+  });
+}
+function getUserDisplayName(permissions) {
+  return permissions.givenName || permissions.email || "system";
+}
+
+// src/services/clinic/callBack.ts
+var REGION = process.env.REGION || process.env.AWS_REGION || "us-east-1";
+var TABLE_PREFIX = process.env.TABLE_PREFIX || "RequestCallBacks_";
+var ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "https://todaysdentalinsights.com").split(",");
+var DEFAULT_TABLE = (process.env.DEFAULT_TABLE || "todaysdentalinsights-callback-DefaultRequests").trim();
+var dynamo = new import_client_dynamodb2.DynamoDBClient({ region: REGION });
+function getCorsHeaders(origin) {
+  const allowOrigin = origin && ALLOWED_ORIGINS.includes(origin) ? origin : "https://todaysdentalinsights.com";
+  return buildCorsHeaders({ allowOrigin, allowMethods: ["OPTIONS", "GET", "POST", "PUT"] });
+}
+function getTableName(clinicId) {
+  return `${TABLE_PREFIX}${clinicId}`;
+}
+var handler = async (event) => {
+  const method = event.httpMethod || "GET";
+  const origin = event.headers?.origin || event.headers?.Origin;
+  const corsHeaders = getCorsHeaders(origin);
+  if (method === "OPTIONS") {
+    return { statusCode: 204, headers: corsHeaders, body: "" };
+  }
+  const path = event.path || "";
+  if (path.includes("/admin/callbacks")) {
+    return await handleAdminEndpoints(event, corsHeaders);
+  }
+  const pathParams = event.pathParameters || {};
+  const clinicIdRaw = pathParams["clinicId"] || pathParams["clinicid"];
+  const clinicId = (clinicIdRaw ?? "").toString().trim();
+  if (!clinicId) {
+    return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "clinicId is required in path" }) };
+  }
+  const requiresAuth = method !== "POST";
+  let userPerms = null;
+  if (requiresAuth) {
+    userPerms = getUserPermissions(event);
+    if (!userPerms) {
+      return { statusCode: 401, headers: corsHeaders, body: JSON.stringify({ error: "Unauthorized" }) };
+    }
+    const allowedClinics = getAllowedClinicIds(
+      userPerms.clinicRoles,
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin
+    );
+    if (!hasClinicAccess(allowedClinics, clinicId)) {
+      return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({
+        error: "Forbidden: no access to this clinic"
+      }) };
+    }
+  }
+  const tableName = getTableName(clinicId);
+  try {
+    if (method === "GET") {
+      return await handleGet(tableName, corsHeaders, clinicId, userPerms);
+    }
+    if (method === "POST") {
+      return await handlePost(event, tableName, clinicId, corsHeaders);
+    }
+    if (method === "PUT") {
+      return await handlePut(event, tableName, corsHeaders, clinicId, userPerms);
+    }
+    return { statusCode: 405, headers: corsHeaders, body: JSON.stringify({ message: "Method Not Allowed. Supported methods: GET, POST, PUT." }) };
+  } catch (err) {
+    console.error("Handler error", err);
+    return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: "Internal server error" }) };
+  }
+};
+async function handleGet(tableName, headers, clinicId, userPerms) {
+  try {
+    const result = await dynamo.send(new import_client_dynamodb2.ScanCommand({ TableName: tableName }));
+    const allContacts = (result.Items || []).map((item) => (0, import_util_dynamodb2.unmarshall)(item));
+    const filteredContacts = filterByModuleAccess(
+      allContacts,
+      userPerms.clinicRoles,
+      clinicId,
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin,
+      "Operations"
+      // Default module for legacy callbacks
+    );
+    const callbacksByModule = groupCallbacksByModule(filteredContacts);
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        callbacks: filteredContacts,
+        callbacksByModule,
+        totalCount: filteredContacts.length
+      })
+    };
+  } catch (error) {
+    if (error?.name === "ResourceNotFoundException" && DEFAULT_TABLE) {
+      try {
+        const result = await dynamo.send(new import_client_dynamodb2.ScanCommand({
+          TableName: DEFAULT_TABLE,
+          FilterExpression: "clinicId = :clinicId",
+          ExpressionAttributeValues: { ":clinicId": { S: clinicId } }
+        }));
+        const allContacts = (result.Items || []).map((item) => (0, import_util_dynamodb2.unmarshall)(item));
+        const filteredContacts = filterByModuleAccess(
+          allContacts,
+          userPerms.clinicRoles,
+          clinicId,
+          userPerms.isSuperAdmin,
+          userPerms.isGlobalSuperAdmin,
+          "Operations"
+        );
+        const callbacksByModule = groupCallbacksByModule(filteredContacts);
+        return {
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({
+            callbacks: filteredContacts,
+            callbacksByModule,
+            totalCount: filteredContacts.length
+          })
+        };
+      } catch (innerErr) {
+        console.error("Error accessing default table:", innerErr);
+        return {
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({
+            callbacks: [],
+            callbacksByModule: {},
+            totalCount: 0
+          })
+        };
+      }
+    }
+    throw error;
+  }
+}
+async function handlePut(event, tableName, headers, clinicId, userPerms) {
+  const body = typeof event.body === "string" ? JSON.parse(event.body) : event.body || {};
+  const id = String(body?.RequestID || body?.id || "").trim();
+  if (!id) {
+    return { statusCode: 400, headers, body: JSON.stringify({ error: "RequestID is required for updates." }) };
+  }
+  const module2 = body?.module;
+  if (module2 && !SYSTEM_MODULES.includes(module2)) {
+    return { statusCode: 400, headers, body: JSON.stringify({
+      error: `Invalid module: ${module2}`,
+      availableModules: Array.from(SYSTEM_MODULES)
+    }) };
+  }
+  const name = body?.name;
+  const phone = body?.phone;
+  const email = typeof body?.email === "string" ? body.email : void 0;
+  const message = typeof body?.message === "string" ? body.message : void 0;
+  const notes = typeof body?.notes === "string" ? body.notes : void 0;
+  const calledBackRaw = body?.calledBack ?? body?.called_back ?? body?.callback ?? body?.called;
+  const updatedBy = getUserDisplayName(userPerms);
+  if (module2) {
+    if (!hasModulePermission(userPerms.clinicRoles, module2, "put", userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin, clinicId)) {
+      return { statusCode: 403, headers, body: JSON.stringify({
+        error: `You do not have permission to update callbacks in the ${module2} module`
+      }) };
+    }
+  }
+  function normalizeCalledBack(v) {
+    if (v === void 0 || v === null)
+      return void 0;
+    if (typeof v === "boolean")
+      return v ? "YES" : "NO";
+    const s = String(v).trim().toLowerCase();
+    if (["yes", "y", "true", "1"].includes(s))
+      return "YES";
+    if (["no", "n", "false", "0"].includes(s))
+      return "NO";
+    return void 0;
+  }
+  const calledBack = normalizeCalledBack(calledBackRaw);
+  const exprParts = [];
+  const exprValues = { ":updatedAt": { S: (/* @__PURE__ */ new Date()).toISOString() } };
+  const exprNames = { "#updatedAt": "updatedAt" };
+  if (typeof name === "string") {
+    exprParts.push("#name = :name");
+    exprValues[":name"] = { S: name };
+    exprNames["#name"] = "name";
+  }
+  if (typeof phone === "string") {
+    exprParts.push("#phone = :phone");
+    exprValues[":phone"] = { S: phone };
+    exprNames["#phone"] = "phone";
+  }
+  if (typeof email === "string") {
+    exprParts.push("#email = :email");
+    exprValues[":email"] = { S: email };
+    exprNames["#email"] = "email";
+  }
+  if (typeof message === "string") {
+    exprParts.push("#message = :message");
+    exprValues[":message"] = { S: message };
+    exprNames["#message"] = "message";
+  }
+  if (typeof notes === "string") {
+    exprParts.push("#notes = :notes");
+    exprValues[":notes"] = { S: notes };
+    exprNames["#notes"] = "notes";
+  }
+  if (typeof module2 === "string") {
+    exprParts.push("#module = :module");
+    exprValues[":module"] = { S: module2 };
+    exprNames["#module"] = "module";
+  }
+  if (calledBack) {
+    exprParts.push("#calledBack = :calledBack");
+    exprValues[":calledBack"] = { S: calledBack };
+    exprNames["#calledBack"] = "calledBack";
+  }
+  if (updatedBy) {
+    exprParts.push("#updatedBy = :updatedBy");
+    exprValues[":updatedBy"] = { S: updatedBy };
+    exprNames["#updatedBy"] = "updatedBy";
+  }
+  exprParts.push("#updatedAt = :updatedAt");
+  if (exprParts.length === 1) {
+    return { statusCode: 400, headers, body: JSON.stringify({ error: "Nothing to update. Provide calledBack, notes, name, phone, email, or message." }) };
+  }
+  try {
+    await dynamo.send(new import_client_dynamodb2.UpdateItemCommand({
+      TableName: tableName,
+      Key: (0, import_util_dynamodb2.marshall)({ RequestID: id }),
+      UpdateExpression: "SET " + exprParts.join(", "),
+      ExpressionAttributeValues: exprValues,
+      ExpressionAttributeNames: exprNames,
+      ReturnValues: "ALL_NEW"
+    }));
+  } catch (error) {
+    if (error?.name === "ResourceNotFoundException" && DEFAULT_TABLE) {
+      const updateExpressionWithClinicCheck = "SET " + exprParts.join(", ");
+      const valuesWithClinicCheck = { ...exprValues, ":clinicIdCheck": { S: clinicId } };
+      await dynamo.send(new import_client_dynamodb2.UpdateItemCommand({
+        TableName: DEFAULT_TABLE,
+        Key: (0, import_util_dynamodb2.marshall)({ RequestID: id }),
+        UpdateExpression: updateExpressionWithClinicCheck,
+        ExpressionAttributeValues: valuesWithClinicCheck,
+        ExpressionAttributeNames: exprNames,
+        ReturnValues: "ALL_NEW",
+        ConditionExpression: "clinicId = :clinicIdCheck"
+      }));
+    } else {
+      throw error;
+    }
+  }
+  return { statusCode: 200, headers, body: JSON.stringify({ message: "Updated" }) };
+}
+async function handlePost(event, tableName, clinicId, headers) {
+  const body = typeof event.body === "string" ? JSON.parse(event.body) : event.body || {};
+  const name = String(body?.name || "").trim();
+  const phone = String(body?.phone || "").trim();
+  const email = String(body?.email || "").trim();
+  const message = String(body?.message || "").trim();
+  const module2 = String(body?.module || "Operations").trim();
+  if (!name || !phone) {
+    return { statusCode: 400, headers, body: JSON.stringify({ error: "Both name and phone are required." }) };
+  }
+  if (module2 && !SYSTEM_MODULES.includes(module2)) {
+    return { statusCode: 400, headers, body: JSON.stringify({
+      error: `Invalid module: ${module2}`,
+      availableModules: Array.from(SYSTEM_MODULES)
+    }) };
+  }
+  const phoneRegex = /^[\+]?[1-9][\d]{3,14}$/;
+  if (!phoneRegex.test(phone.replace(/[\s\-\(\)]/g, ""))) {
+    return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid phone number format." }) };
+  }
+  if (email) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid email format." }) };
+    }
+  }
+  const requestId = v4_default();
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const newCallback = {
+    RequestID: requestId,
+    name,
+    phone,
+    clinicId,
+    module: module2,
+    // Module categorization
+    calledBack: "NO",
+    // Default status
+    createdAt: now,
+    updatedAt: now,
+    source: String(body?.source || "website").trim()
+    // Track where the request came from
+  };
+  if (email) {
+    newCallback.email = email;
+  }
+  if (message) {
+    newCallback.message = message;
+  }
+  try {
+    await dynamo.send(new import_client_dynamodb2.PutItemCommand({
+      TableName: tableName,
+      Item: (0, import_util_dynamodb2.marshall)(newCallback),
+      ConditionExpression: "attribute_not_exists(RequestID)"
+    }));
+  } catch (error) {
+    console.error("PutItem error:", error?.name, error?.message, error);
+    const notFound = error?.name === "ResourceNotFoundException" || error?.message && error.message.includes("Requested resource not found");
+    if (notFound && DEFAULT_TABLE) {
+      try {
+        await dynamo.send(new import_client_dynamodb2.PutItemCommand({
+          TableName: DEFAULT_TABLE,
+          Item: (0, import_util_dynamodb2.marshall)(newCallback)
+        }));
+      } catch (fallbackError) {
+        console.error("Fallback PutItem error:", fallbackError?.name, fallbackError?.message, fallbackError);
+        return { statusCode: 500, headers, body: JSON.stringify({ error: "Internal server error (fallback failed)" }) };
+      }
+    } else if (error?.name === "ConditionalCheckFailedException") {
+      return { statusCode: 409, headers, body: JSON.stringify({ error: "Callback request with this ID already exists." }) };
+    } else {
+      return { statusCode: 500, headers, body: JSON.stringify({ error: "Internal server error", details: error?.message || String(error) }) };
+    }
+  }
+  return {
+    statusCode: 201,
+    headers,
+    body: JSON.stringify({
+      message: "Callback request created successfully",
+      contact: newCallback
+    })
+  };
+}
+async function handleAdminEndpoints(event, headers) {
+  const method = event.httpMethod || "GET";
+  const path = event.path || "";
+  const userPerms = getUserPermissions(event);
+  if (!userPerms) {
+    return { statusCode: 401, headers, body: JSON.stringify({ error: "Unauthorized" }) };
+  }
+  const isAdmin = isAdminUser(
+    userPerms.clinicRoles,
+    userPerms.isSuperAdmin,
+    userPerms.isGlobalSuperAdmin
+  );
+  if (!isAdmin) {
+    return { statusCode: 403, headers, body: JSON.stringify({
+      error: "Admin access required"
+    }) };
+  }
+  try {
+    if (path.includes("/admin/callbacks/bulk") && method === "POST") {
+      return await handleBulkOperations(event, headers, userPerms);
+    }
+    if (path.includes("/admin/callbacks") && method === "GET") {
+      return await handleAdminList(event, headers, userPerms);
+    }
+    return { statusCode: 404, headers, body: JSON.stringify({ error: "Admin endpoint not found" }) };
+  } catch (error) {
+    console.error("Admin endpoint error:", error);
+    return { statusCode: 500, headers, body: JSON.stringify({ error: "Internal server error" }) };
+  }
+}
+async function handleAdminList(event, headers, userPerms) {
+  const queryParams = event.queryStringParameters || {};
+  const limit = parseInt(String(queryParams.limit || "50"), 10);
+  const clinicId = String(queryParams.clinicId || "").trim();
+  if (clinicId && !userPerms.isGlobalSuperAdmin && !userPerms.isSuperAdmin) {
+    const allowedClinics = getAllowedClinicIds(
+      userPerms.clinicRoles,
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin
+    );
+    if (!hasClinicAccess(allowedClinics, clinicId)) {
+      return { statusCode: 403, headers, body: JSON.stringify({ error: "No access to this clinic" }) };
+    }
+  }
+  if (clinicId) {
+    const tableName = getTableName(clinicId);
+    try {
+      const result = await dynamo.send(new import_client_dynamodb2.ScanCommand({
+        TableName: tableName,
+        Limit: Math.min(limit, 100)
+      }));
+      const contacts = (result.Items || []).map((item) => (0, import_util_dynamodb2.unmarshall)(item));
+      return { statusCode: 200, headers, body: JSON.stringify({ contacts, clinicId, count: contacts.length }) };
+    } catch (error) {
+      if (error.name === "ResourceNotFoundException") {
+        return { statusCode: 200, headers, body: JSON.stringify({ contacts: [], clinicId, count: 0 }) };
+      }
+      throw error;
+    }
+  }
+  return { statusCode: 200, headers, body: JSON.stringify({
+    message: "Use ?clinicId=<id> parameter to list callbacks for a specific clinic",
+    availableEndpoints: [
+      "GET /admin/callbacks?clinicId=<id>",
+      "POST /admin/callbacks/bulk"
+    ]
+  }) };
+}
+async function handleBulkOperations(event, headers, userPerms) {
+  const body = typeof event.body === "string" ? JSON.parse(event.body) : event.body || {};
+  const operation = String(body?.operation || "").trim();
+  const clinicId = String(body?.clinicId || "").trim();
+  const requestIds = Array.isArray(body?.requestIds) ? body.requestIds : [];
+  if (!operation || !clinicId) {
+    return { statusCode: 400, headers, body: JSON.stringify({ error: "operation and clinicId are required" }) };
+  }
+  if (!userPerms.isGlobalSuperAdmin && !userPerms.isSuperAdmin) {
+    const allowedClinics = getAllowedClinicIds(
+      userPerms.clinicRoles,
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin
+    );
+    if (!hasClinicAccess(allowedClinics, clinicId)) {
+      return { statusCode: 403, headers, body: JSON.stringify({ error: "No access to this clinic" }) };
+    }
+  }
+  const tableName = getTableName(clinicId);
+  try {
+    if (operation === "markCalled") {
+      return await bulkMarkCalled(tableName, requestIds, headers, userPerms);
+    }
+    if (operation === "delete") {
+      return await bulkDelete(tableName, requestIds, headers);
+    }
+    return { statusCode: 400, headers, body: JSON.stringify({ error: "Unsupported operation. Use: markCalled, delete" }) };
+  } catch (error) {
+    console.error("Bulk operation error:", error);
+    return { statusCode: 500, headers, body: JSON.stringify({ error: "Bulk operation failed" }) };
+  }
+}
+async function bulkMarkCalled(tableName, requestIds, headers, userPerms) {
+  let effectiveTableName = tableName;
+  try {
+    await dynamo.send(new import_client_dynamodb2.ScanCommand({ TableName: tableName, Limit: 1 }));
+  } catch (error) {
+    if (error?.name === "ResourceNotFoundException" && DEFAULT_TABLE) {
+      effectiveTableName = DEFAULT_TABLE;
+    } else if (error?.name === "ResourceNotFoundException") {
+      return { statusCode: 404, headers, body: JSON.stringify({ error: "Clinic callback table does not exist" }) };
+    } else {
+      throw error;
+    }
+  }
+  const updatedBy = getUserDisplayName(userPerms);
+  const updatePromises = requestIds.map(async (id) => {
+    try {
+      await dynamo.send(new import_client_dynamodb2.UpdateItemCommand({
+        TableName: effectiveTableName,
+        Key: (0, import_util_dynamodb2.marshall)({ RequestID: id }),
+        UpdateExpression: "SET calledBack = :status, updatedAt = :updatedAt, updatedBy = :updatedBy",
+        ExpressionAttributeValues: (0, import_util_dynamodb2.marshall)({
+          ":status": "YES",
+          ":updatedAt": (/* @__PURE__ */ new Date()).toISOString(),
+          ":updatedBy": updatedBy
+        })
+      }));
+      return { id, status: "success" };
+    } catch (error) {
+      return { id, status: "error", error: String(error) };
+    }
+  });
+  const results = await Promise.all(updatePromises);
+  const successful = results.filter((r) => r.status === "success").length;
+  return {
+    statusCode: 200,
+    headers,
+    body: JSON.stringify({
+      message: `Bulk update completed: ${successful}/${requestIds.length} successful`,
+      results
+    })
+  };
+}
+async function bulkDelete(tableName, requestIds, headers) {
+  return { statusCode: 501, headers, body: JSON.stringify({ error: "Bulk delete not implemented yet" }) };
+}
+function groupCallbacksByModule(callbacks) {
+  const grouped = {};
+  for (const callback of callbacks) {
+    const module2 = callback.module || "Operations";
+    if (!grouped[module2]) {
+      grouped[module2] = [];
+    }
+    grouped[module2].push(callback);
+  }
+  return grouped;
+}
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  handler
+});

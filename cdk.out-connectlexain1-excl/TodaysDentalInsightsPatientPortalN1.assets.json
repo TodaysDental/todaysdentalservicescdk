@@ -1,0 +1,51 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "584911fb04af4b8b3e9c73693268382385a43b59ee36ee7ccca542752adbaa37": {
+      "displayName": "PatientPortalLambda/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-aab55986": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "584911fb04af4b8b3e9c73693268382385a43b59ee36ee7ccca542752adbaa37.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "ad70a6cf51095ea8456dec9f82c5be9cce675140c50c5e49de1ca42ed2833451": {
+      "displayName": "PublicApptTypesLambda/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-12e447a9": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "ad70a6cf51095ea8456dec9f82c5be9cce675140c50c5e49de1ca42ed2833451.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "78d89f517c628400533399a51cb3ed8415db7ac253611bfe2f01a8467d6105f2": {
+      "displayName": "TodaysDentalInsightsPatientPortalN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsPatientPortalN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-785960e3": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "78d89f517c628400533399a51cb3ed8415db7ac253611bfe2f01a8467d6105f2.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

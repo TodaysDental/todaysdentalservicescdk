@@ -1,0 +1,96 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "200a060a636d498bf6d00b8fc6c57694ac946c140aef1a2405ebf77994adcfbd": {
+      "displayName": "EmailEventProcessorFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-6ac346ea": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "200a060a636d498bf6d00b8fc6c57694ac946c140aef1a2405ebf77994adcfbd.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "f75a58632b21a518450ccb14792794e419d292969320d7365a0f1c392a40d3d6": {
+      "displayName": "EmailAnalyticsFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-e3b3dd92": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "f75a58632b21a518450ccb14792794e419d292969320d7365a0f1c392a40d3d6.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "5774771a978987a4765611593db258ea06b68728d58e6a713c543b4486a1d843": {
+      "displayName": "UnsubscribeFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-93dbc504": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "5774771a978987a4765611593db258ea06b68728d58e6a713c543b4486a1d843.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "e4a0236068a61c56347be3e8de76f799d5a511dd6314d7ae4e0e3ba267060829": {
+      "displayName": "EmailAiFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-271fb3c8": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "e4a0236068a61c56347be3e8de76f799d5a511dd6314d7ae4e0e3ba267060829.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "88b40722b485bca30b2837d9db4ea2ce7b11af4c5b099f8e632ca1365e58cd7e": {
+      "displayName": "ClinicNotifyFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-ab946815": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "88b40722b485bca30b2837d9db4ea2ce7b11af4c5b099f8e632ca1365e58cd7e.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "eafe7d4deae724ed71ef9fc5fbc911fde095fd33bd7d4f60d9d3a29ea2bbf0fc": {
+      "displayName": "TodaysDentalInsightsNotificationsN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsNotificationsN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-9530e9e0": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "eafe7d4deae724ed71ef9fc5fbc911fde095fd33bd7d4f60d9d3a29ea2bbf0fc.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

@@ -1,0 +1,96 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "a0d09e3560d2e4c07e316e84d142034e9372e7f066612678ea018550d017c253": {
+      "displayName": "ChatbotCommonLayer/Code",
+      "source": {
+        "path": "asset.a0d09e3560d2e4c07e316e84d142034e9372e7f066612678ea018550d017c253",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-f5b1e0bc": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "a0d09e3560d2e4c07e316e84d142034e9372e7f066612678ea018550d017c253.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "ef7a74d8842e9ad7de3e71850428742fdcfa8c0c9cacff28ec24e9956db08c79": {
+      "displayName": "WebSocketConnectHandler/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-82660275": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "ef7a74d8842e9ad7de3e71850428742fdcfa8c0c9cacff28ec24e9956db08c79.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "2b8607e3ce0c5636636fd67b27118e16d709be33148a4f6e403e9c51b61ecb4d": {
+      "displayName": "WebSocketDisconnectHandler/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-64cc0ba3": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "2b8607e3ce0c5636636fd67b27118e16d709be33148a4f6e403e9c51b61ecb4d.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "39ba02ab6a278ed915f5ea4c0349d74f87d4ffa3cae079dec7957aa7d723f6ce": {
+      "displayName": "WebSocketMessageHandler/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-2c9c6c50": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "39ba02ab6a278ed915f5ea4c0349d74f87d4ffa3cae079dec7957aa7d723f6ce.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "936a33a80bb91f4a0d5d945d53e0679e5a237384be00972e65b5a785576f44a3": {
+      "displayName": "ChatHistoryHandler/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-8805c223": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "936a33a80bb91f4a0d5d945d53e0679e5a237384be00972e65b5a785576f44a3.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "89e308aa68fa4d6305bb99aca76207b4d38abba557f0e6f7158baf7eeb3334fa": {
+      "displayName": "TodaysDentalInsightsChatbotN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsChatbotN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-3019804f": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "89e308aa68fa4d6305bb99aca76207b4d38abba557f0e6f7158baf7eeb3334fa.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

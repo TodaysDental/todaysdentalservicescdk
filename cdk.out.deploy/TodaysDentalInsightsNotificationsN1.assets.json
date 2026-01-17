@@ -1,0 +1,96 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "0fe82701833361c791b963763e64480097e7df2d3d968410a52d5c1dfda4ca8f": {
+      "displayName": "EmailEventProcessorFn/Code",
+      "source": {
+        "path": "asset.0fe82701833361c791b963763e64480097e7df2d3d968410a52d5c1dfda4ca8f",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-8d49a951": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "0fe82701833361c791b963763e64480097e7df2d3d968410a52d5c1dfda4ca8f.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "4ae23d85b892c0b01a552b5f86175bf75d255ec72f8c61bc374b42f92630ded5": {
+      "displayName": "EmailAnalyticsFn/Code",
+      "source": {
+        "path": "asset.4ae23d85b892c0b01a552b5f86175bf75d255ec72f8c61bc374b42f92630ded5",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-f896e73d": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "4ae23d85b892c0b01a552b5f86175bf75d255ec72f8c61bc374b42f92630ded5.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "f3f42339420a6f8e8a4513f7e62496409a49d7c067fa0fb5df66644038e7df76": {
+      "displayName": "UnsubscribeFn/Code",
+      "source": {
+        "path": "asset.f3f42339420a6f8e8a4513f7e62496409a49d7c067fa0fb5df66644038e7df76",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-bd3f8b20": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "f3f42339420a6f8e8a4513f7e62496409a49d7c067fa0fb5df66644038e7df76.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "cc56b18c86d542d7773fa0cacab6d98b7c3e7d6fda00b7facf3f156dbb77c096": {
+      "displayName": "EmailAiFn/Code",
+      "source": {
+        "path": "asset.cc56b18c86d542d7773fa0cacab6d98b7c3e7d6fda00b7facf3f156dbb77c096",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-9066c41e": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "cc56b18c86d542d7773fa0cacab6d98b7c3e7d6fda00b7facf3f156dbb77c096.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "78effca8b3af55399fd2c4aae4d98dcdddce1031f31dcaa59d82868f300f3492": {
+      "displayName": "ClinicNotifyFn/Code",
+      "source": {
+        "path": "asset.78effca8b3af55399fd2c4aae4d98dcdddce1031f31dcaa59d82868f300f3492",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-f1612c21": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "78effca8b3af55399fd2c4aae4d98dcdddce1031f31dcaa59d82868f300f3492.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "a1944b87c7c69ffd9925b2edd383c7d1df51f8281b5f6e077d32d22121a24b76": {
+      "displayName": "TodaysDentalInsightsNotificationsN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsNotificationsN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-17869fe4": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "a1944b87c7c69ffd9925b2edd383c7d1df51f8281b5f6e077d32d22121a24b76.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

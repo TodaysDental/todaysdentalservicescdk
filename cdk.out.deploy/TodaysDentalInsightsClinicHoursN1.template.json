@@ -1,0 +1,2332 @@
+{
+ "Resources": {
+  "ClinicHoursTableFF29B4D3": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "clinicId",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "KeySchema": [
+     {
+      "AttributeName": "clinicId",
+      "KeyType": "HASH"
+     }
+    ],
+    "TableName": "TodaysDentalInsightsClinicHoursN1-ClinicHours",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicHours"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicHoursN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "clinic-hours"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursTable/Resource"
+   }
+  },
+  "ClinicHoursApi7654E65D": {
+   "Type": "AWS::ApiGateway::RestApi",
+   "Properties": {
+    "Description": "Clinic Hours service API",
+    "Name": "ClinicHoursApi",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicHours"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicHoursN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Resource"
+   }
+  },
+  "ClinicHoursApiCloudWatchRoleEB110122": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "apigateway.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicHours"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicHoursN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/CloudWatchRole/Resource"
+   }
+  },
+  "ClinicHoursApiAccount6752C4CA": {
+   "Type": "AWS::ApiGateway::Account",
+   "Properties": {
+    "CloudWatchRoleArn": {
+     "Fn::GetAtt": [
+      "ClinicHoursApiCloudWatchRoleEB110122",
+      "Arn"
+     ]
+    }
+   },
+   "DependsOn": [
+    "ClinicHoursApi7654E65D"
+   ],
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Account"
+   }
+  },
+  "ClinicHoursApiDeploymentED9EC18231734e90d13156c8e674391a5dfa0e98": {
+   "Type": "AWS::ApiGateway::Deployment",
+   "Properties": {
+    "Description": "Clinic Hours service API",
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "DependsOn": [
+    "ClinicHoursApiclinicsclinicIdhoursGET40C70500",
+    "ClinicHoursApiclinicsclinicIdhoursOPTIONS879CE1CB",
+    "ClinicHoursApiclinicsclinicIdhoursPUT150D8C8B",
+    "ClinicHoursApiclinicsclinicIdhours2DE67E3F",
+    "ClinicHoursApiclinicsclinicIdOPTIONS0254BD4E",
+    "ClinicHoursApiclinicsclinicIdB2F1279A",
+    "ClinicHoursApiclinicsOPTIONSC3C2E19E",
+    "ClinicHoursApiclinics8C831D6B",
+    "ClinicHoursApihoursclinicIdDELETE4DAFA538",
+    "ClinicHoursApihoursclinicIdGET24EA2144",
+    "ClinicHoursApihoursclinicIdOPTIONSDEEF253D",
+    "ClinicHoursApihoursclinicIdPUT4E1F9063",
+    "ClinicHoursApihoursclinicId81E61C83",
+    "ClinicHoursApihoursGETABED0720",
+    "ClinicHoursApihoursOPTIONS5D742D76",
+    "ClinicHoursApihoursPOSTE93B406B",
+    "ClinicHoursApihours77EE1B23",
+    "ClinicHoursApiOPTIONS0890A3AC",
+    "GatewayResponseDefault4XXC22BF2A7",
+    "GatewayResponseDefault5XX28177100",
+    "GatewayResponseUnauthorized78FCB15B"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Deployment/Resource",
+    "aws:cdk:do-not-refactor": true
+   }
+  },
+  "ClinicHoursApiDeploymentStageprod07EAEDD0": {
+   "Type": "AWS::ApiGateway::Stage",
+   "Properties": {
+    "DeploymentId": {
+     "Ref": "ClinicHoursApiDeploymentED9EC18231734e90d13156c8e674391a5dfa0e98"
+    },
+    "MethodSettings": [
+     {
+      "DataTraceEnabled": false,
+      "HttpMethod": "*",
+      "LoggingLevel": "INFO",
+      "MetricsEnabled": true,
+      "ResourcePath": "/*"
+     }
+    ],
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    },
+    "StageName": "prod",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicHours"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicHoursN1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "ClinicHoursApiAccount6752C4CA"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/DeploymentStage.prod/Resource"
+   }
+  },
+  "ClinicHoursApiOPTIONS0890A3AC": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Fn::GetAtt": [
+      "ClinicHoursApi7654E65D",
+      "RootResourceId"
+     ]
+    },
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/OPTIONS/Resource"
+   }
+  },
+  "ClinicHoursApihours77EE1B23": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "ClinicHoursApi7654E65D",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "hours",
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/Resource"
+   }
+  },
+  "ClinicHoursApihoursOPTIONS5D742D76": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicHoursApihours77EE1B23"
+    },
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/OPTIONS/Resource"
+   }
+  },
+  "ClinicHoursApihoursGETApiPermissionTodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CEGEThoursD9C5096D": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicHoursCrudFn708321CA",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicHoursApi7654E65D"
+       },
+       "/",
+       {
+        "Ref": "ClinicHoursApiDeploymentStageprod07EAEDD0"
+       },
+       "/GET/hours"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/GET/ApiPermission.TodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CE.GET..hours"
+   }
+  },
+  "ClinicHoursApihoursGETApiPermissionTestTodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CEGEThours7EB6A7D0": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicHoursCrudFn708321CA",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicHoursApi7654E65D"
+       },
+       "/test-invoke-stage/GET/hours"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/GET/ApiPermission.Test.TodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CE.GET..hours"
+   }
+  },
+  "ClinicHoursApihoursGETABED0720": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ClinicHoursAuthorizerDFE4AF5D"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ClinicHoursCrudFn708321CA",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicHoursApihours77EE1B23"
+    },
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/GET/Resource"
+   }
+  },
+  "ClinicHoursApihoursPOSTApiPermissionTodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CEPOSThoursEE3293A2": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicHoursCrudFn708321CA",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicHoursApi7654E65D"
+       },
+       "/",
+       {
+        "Ref": "ClinicHoursApiDeploymentStageprod07EAEDD0"
+       },
+       "/POST/hours"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/POST/ApiPermission.TodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CE.POST..hours"
+   }
+  },
+  "ClinicHoursApihoursPOSTApiPermissionTestTodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CEPOSThours50B40FAD": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicHoursCrudFn708321CA",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicHoursApi7654E65D"
+       },
+       "/test-invoke-stage/POST/hours"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/POST/ApiPermission.Test.TodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CE.POST..hours"
+   }
+  },
+  "ClinicHoursApihoursPOSTE93B406B": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ClinicHoursAuthorizerDFE4AF5D"
+    },
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ClinicHoursCrudFn708321CA",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicHoursApihours77EE1B23"
+    },
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/POST/Resource"
+   }
+  },
+  "ClinicHoursApihoursclinicId81E61C83": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "ClinicHoursApihours77EE1B23"
+    },
+    "PathPart": "{clinicId}",
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/{clinicId}/Resource"
+   }
+  },
+  "ClinicHoursApihoursclinicIdOPTIONSDEEF253D": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicHoursApihoursclinicId81E61C83"
+    },
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/{clinicId}/OPTIONS/Resource"
+   }
+  },
+  "ClinicHoursApihoursclinicIdGETApiPermissionTodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CEGEThoursclinicIdAF4912CE": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicHoursCrudFn708321CA",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicHoursApi7654E65D"
+       },
+       "/",
+       {
+        "Ref": "ClinicHoursApiDeploymentStageprod07EAEDD0"
+       },
+       "/GET/hours/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/{clinicId}/GET/ApiPermission.TodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CE.GET..hours.{clinicId}"
+   }
+  },
+  "ClinicHoursApihoursclinicIdGETApiPermissionTestTodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CEGEThoursclinicId6B5D6A48": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicHoursCrudFn708321CA",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicHoursApi7654E65D"
+       },
+       "/test-invoke-stage/GET/hours/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/{clinicId}/GET/ApiPermission.Test.TodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CE.GET..hours.{clinicId}"
+   }
+  },
+  "ClinicHoursApihoursclinicIdGET24EA2144": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ClinicHoursAuthorizerDFE4AF5D"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ClinicHoursCrudFn708321CA",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "404"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicHoursApihoursclinicId81E61C83"
+    },
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/{clinicId}/GET/Resource"
+   }
+  },
+  "ClinicHoursApihoursclinicIdPUTApiPermissionTodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CEPUThoursclinicId58D99688": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicHoursCrudFn708321CA",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicHoursApi7654E65D"
+       },
+       "/",
+       {
+        "Ref": "ClinicHoursApiDeploymentStageprod07EAEDD0"
+       },
+       "/PUT/hours/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/{clinicId}/PUT/ApiPermission.TodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CE.PUT..hours.{clinicId}"
+   }
+  },
+  "ClinicHoursApihoursclinicIdPUTApiPermissionTestTodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CEPUThoursclinicId41126685": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicHoursCrudFn708321CA",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicHoursApi7654E65D"
+       },
+       "/test-invoke-stage/PUT/hours/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/{clinicId}/PUT/ApiPermission.Test.TodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CE.PUT..hours.{clinicId}"
+   }
+  },
+  "ClinicHoursApihoursclinicIdPUT4E1F9063": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ClinicHoursAuthorizerDFE4AF5D"
+    },
+    "HttpMethod": "PUT",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ClinicHoursCrudFn708321CA",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicHoursApihoursclinicId81E61C83"
+    },
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/{clinicId}/PUT/Resource"
+   }
+  },
+  "ClinicHoursApihoursclinicIdDELETEApiPermissionTodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CEDELETEhoursclinicId7F52E823": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicHoursCrudFn708321CA",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicHoursApi7654E65D"
+       },
+       "/",
+       {
+        "Ref": "ClinicHoursApiDeploymentStageprod07EAEDD0"
+       },
+       "/DELETE/hours/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/{clinicId}/DELETE/ApiPermission.TodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CE.DELETE..hours.{clinicId}"
+   }
+  },
+  "ClinicHoursApihoursclinicIdDELETEApiPermissionTestTodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CEDELETEhoursclinicIdBECBA19A": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicHoursCrudFn708321CA",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicHoursApi7654E65D"
+       },
+       "/test-invoke-stage/DELETE/hours/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/{clinicId}/DELETE/ApiPermission.Test.TodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CE.DELETE..hours.{clinicId}"
+   }
+  },
+  "ClinicHoursApihoursclinicIdDELETE4DAFA538": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ClinicHoursAuthorizerDFE4AF5D"
+    },
+    "HttpMethod": "DELETE",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ClinicHoursCrudFn708321CA",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicHoursApihoursclinicId81E61C83"
+    },
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/hours/{clinicId}/DELETE/Resource"
+   }
+  },
+  "ClinicHoursApiclinics8C831D6B": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "ClinicHoursApi7654E65D",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "clinics",
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/clinics/Resource"
+   }
+  },
+  "ClinicHoursApiclinicsOPTIONSC3C2E19E": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicHoursApiclinics8C831D6B"
+    },
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/clinics/OPTIONS/Resource"
+   }
+  },
+  "ClinicHoursApiclinicsclinicIdB2F1279A": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "ClinicHoursApiclinics8C831D6B"
+    },
+    "PathPart": "{clinicId}",
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/clinics/{clinicId}/Resource"
+   }
+  },
+  "ClinicHoursApiclinicsclinicIdOPTIONS0254BD4E": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicHoursApiclinicsclinicIdB2F1279A"
+    },
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/clinics/{clinicId}/OPTIONS/Resource"
+   }
+  },
+  "ClinicHoursApiclinicsclinicIdhours2DE67E3F": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "ClinicHoursApiclinicsclinicIdB2F1279A"
+    },
+    "PathPart": "hours",
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/clinics/{clinicId}/hours/Resource"
+   }
+  },
+  "ClinicHoursApiclinicsclinicIdhoursOPTIONS879CE1CB": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicHoursApiclinicsclinicIdhours2DE67E3F"
+    },
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/clinics/{clinicId}/hours/OPTIONS/Resource"
+   }
+  },
+  "ClinicHoursApiclinicsclinicIdhoursGETApiPermissionTodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CEGETclinicsclinicIdhours8EF4D7F7": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicHoursCrudFn708321CA",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicHoursApi7654E65D"
+       },
+       "/",
+       {
+        "Ref": "ClinicHoursApiDeploymentStageprod07EAEDD0"
+       },
+       "/GET/clinics/*/hours"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/clinics/{clinicId}/hours/GET/ApiPermission.TodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CE.GET..clinics.{clinicId}.hours"
+   }
+  },
+  "ClinicHoursApiclinicsclinicIdhoursGETApiPermissionTestTodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CEGETclinicsclinicIdhoursF46803F3": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicHoursCrudFn708321CA",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicHoursApi7654E65D"
+       },
+       "/test-invoke-stage/GET/clinics/*/hours"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/clinics/{clinicId}/hours/GET/ApiPermission.Test.TodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CE.GET..clinics.{clinicId}.hours"
+   }
+  },
+  "ClinicHoursApiclinicsclinicIdhoursGET40C70500": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ClinicHoursAuthorizerDFE4AF5D"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ClinicHoursCrudFn708321CA",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "404"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicHoursApiclinicsclinicIdhours2DE67E3F"
+    },
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/clinics/{clinicId}/hours/GET/Resource"
+   }
+  },
+  "ClinicHoursApiclinicsclinicIdhoursPUTApiPermissionTodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CEPUTclinicsclinicIdhours98F20458": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicHoursCrudFn708321CA",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicHoursApi7654E65D"
+       },
+       "/",
+       {
+        "Ref": "ClinicHoursApiDeploymentStageprod07EAEDD0"
+       },
+       "/PUT/clinics/*/hours"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/clinics/{clinicId}/hours/PUT/ApiPermission.TodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CE.PUT..clinics.{clinicId}.hours"
+   }
+  },
+  "ClinicHoursApiclinicsclinicIdhoursPUTApiPermissionTestTodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CEPUTclinicsclinicIdhours8CA8BA35": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicHoursCrudFn708321CA",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicHoursApi7654E65D"
+       },
+       "/test-invoke-stage/PUT/clinics/*/hours"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/clinics/{clinicId}/hours/PUT/ApiPermission.Test.TodaysDentalInsightsClinicHoursN1ClinicHoursApi58AF76CE.PUT..clinics.{clinicId}.hours"
+   }
+  },
+  "ClinicHoursApiclinicsclinicIdhoursPUT150D8C8B": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ClinicHoursAuthorizerDFE4AF5D"
+    },
+    "HttpMethod": "PUT",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ClinicHoursCrudFn708321CA",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "400"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicHoursApiclinicsclinicIdhours2DE67E3F"
+    },
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApi/Default/clinics/{clinicId}/hours/PUT/Resource"
+   }
+  },
+  "GatewayResponseDefault4XXC22BF2A7": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_4XX",
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/GatewayResponseDefault4XX/Resource"
+   }
+  },
+  "GatewayResponseDefault5XX28177100": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_5XX",
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/GatewayResponseDefault5XX/Resource"
+   }
+  },
+  "GatewayResponseUnauthorized78FCB15B": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "UNAUTHORIZED",
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/GatewayResponseUnauthorized/Resource"
+   }
+  },
+  "ClinicHoursAuthorizerDFE4AF5D": {
+   "Type": "AWS::ApiGateway::Authorizer",
+   "Properties": {
+    "AuthorizerResultTtlInSeconds": 300,
+    "AuthorizerUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Fn::Select": [
+         1,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":apigateway:",
+       {
+        "Fn::Select": [
+         3,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":lambda:path/2015-03-31/functions/",
+       {
+        "Fn::ImportValue": "AuthorizerFunctionArnN1"
+       },
+       "/invocations"
+      ]
+     ]
+    },
+    "IdentitySource": "method.request.header.Authorization",
+    "Name": "TodaysDentalInsightsClinicHoursN1ClinicHoursAuthorizer3E2EF4E1",
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    },
+    "Type": "REQUEST"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursAuthorizer/Resource"
+   }
+  },
+  "AuthorizerInvokePermission": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::ImportValue": "AuthorizerFunctionArnN1"
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicHoursApi7654E65D"
+       },
+       "/authorizers/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/AuthorizerInvokePermission"
+   }
+  },
+  "ClinicHoursCrudFnServiceRoleF7E3F386": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "clinic-hours-crud"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicHours"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicHoursN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursCrudFn/ServiceRole/Resource"
+   }
+  },
+  "ClinicHoursCrudFnServiceRoleDefaultPolicy464724CA": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Scan",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ClinicHoursTableFF29B4D3",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ClinicHoursTableFF29B4D3",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+       ],
+       "Effect": "Allow",
+       "Resource": "arn:aws:logs:us-east-1:851620242036:*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ClinicHoursCrudFnServiceRoleDefaultPolicy464724CA",
+    "Roles": [
+     {
+      "Ref": "ClinicHoursCrudFnServiceRoleF7E3F386"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursCrudFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ClinicHoursCrudFn708321CA": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "11b92088f1a59c2d170227d47c59b0e361fa54f74b5b3bb4956cd4b04a111a59.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "NODE_OPTIONS": "--enable-source-maps",
+      "AWS_NODEJS_CONNECTION_REUSE_ENABLED": "1",
+      "CLINIC_HOURS_TABLE": {
+       "Ref": "ClinicHoursTableFF29B4D3"
+      }
+     }
+    },
+    "Handler": "index.apiHandler",
+    "MemorySize": 512,
+    "Role": {
+     "Fn::GetAtt": [
+      "ClinicHoursCrudFnServiceRoleF7E3F386",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "clinic-hours-crud"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicHours"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicHoursN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "ClinicHoursCrudFnServiceRoleDefaultPolicy464724CA",
+    "ClinicHoursCrudFnServiceRoleF7E3F386"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursCrudFn/Resource",
+    "aws:asset:path": "asset.11b92088f1a59c2d170227d47c59b0e361fa54f74b5b3bb4956cd4b04a111a59",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "HoursSchedulerFnServiceRoleBAAD8F20": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "hours-scheduler"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicHours"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicHoursN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/HoursSchedulerFn/ServiceRole/Resource"
+   }
+  },
+  "HoursSchedulerFnServiceRoleDefaultPolicy6A5AD75A": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ClinicHoursTableFF29B4D3",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "HoursSchedulerFnServiceRoleDefaultPolicy6A5AD75A",
+    "Roles": [
+     {
+      "Ref": "HoursSchedulerFnServiceRoleBAAD8F20"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/HoursSchedulerFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "HoursSchedulerFn9A4E6A2A": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "f6b603f5627ebae0f1118f436a012fcaa588ce588a21e9e7d4bbc5be852e99b7.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "NODE_OPTIONS": "--enable-source-maps",
+      "CLINIC_HOURS_TABLE": {
+       "Ref": "ClinicHoursTableFF29B4D3"
+      },
+      "ALL_CLINIC_IDS": "dentistinnewbritain,dentistingreenville,todaysdentalcayce,creekcrossingdentalcare,dentistinwinston-salem,dentistincentennial,renodentalcareandorthodontics,todaysdentalalexandria,todaysdentalgreenville,todaysdentalwestcolumbia,dentistinconcord,dentistinedgewater,lawrencevilledentistry,dentistinlouisville,dentistatsaludapointe,dentistinoregonoh,todaysdentallexington,dentistinbowie,dentistinpowellohio,dentistinperrysburg,dentistinaustin,therimdentalcare,dentistinbloomingdale,dentistinvernonhills,meadowsdentalcare,dentistinstillwater,pearlanddentalcare"
+     }
+    },
+    "Handler": "index.schedulerHandler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "HoursSchedulerFnServiceRoleBAAD8F20",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "hours-scheduler"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicHours"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicHoursN1"
+     }
+    ],
+    "Timeout": 60
+   },
+   "DependsOn": [
+    "HoursSchedulerFnServiceRoleDefaultPolicy6A5AD75A",
+    "HoursSchedulerFnServiceRoleBAAD8F20"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/HoursSchedulerFn/Resource",
+    "aws:asset:path": "asset.f6b603f5627ebae0f1118f436a012fcaa588ce588a21e9e7d4bbc5be852e99b7",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "HourlyClinicHoursUpdateRule30873E35": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Description": "Triggers the Lambda to fetch OpenDental schedules and update ClinicHoursTable hourly.",
+    "ScheduleExpression": "rate(1 hour)",
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicHours"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicHoursN1"
+     }
+    ],
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "HoursSchedulerFn9A4E6A2A",
+        "Arn"
+       ]
+      },
+      "Id": "Target0"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/HourlyClinicHoursUpdateRule/Resource"
+   }
+  },
+  "HourlyClinicHoursUpdateRuleAllowEventRuleTodaysDentalInsightsClinicHoursN1HoursSchedulerFnD2215E987EC24DD1": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "HoursSchedulerFn9A4E6A2A",
+      "Arn"
+     ]
+    },
+    "Principal": "events.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "HourlyClinicHoursUpdateRule30873E35",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/HourlyClinicHoursUpdateRule/AllowEventRuleTodaysDentalInsightsClinicHoursN1HoursSchedulerFnD2215E98"
+   }
+  },
+  "ClinicHoursCrudFnErrorAlarm2132CD69": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when clinic-hours-crud Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ClinicHoursCrudFn708321CA"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicHours"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicHoursN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursCrudFnErrorAlarm/Resource"
+   }
+  },
+  "ClinicHoursCrudFnThrottleAlarm8F273FB4": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when clinic-hours-crud Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ClinicHoursCrudFn708321CA"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicHours"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicHoursN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursCrudFnThrottleAlarm/Resource"
+   }
+  },
+  "ClinicHoursCrudFnDurationAlarmD3541028": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when clinic-hours-crud Lambda p99 duration exceeds 24000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ClinicHoursCrudFn708321CA"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicHours"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicHoursN1"
+     }
+    ],
+    "Threshold": 24000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursCrudFnDurationAlarm/Resource"
+   }
+  },
+  "HoursSchedulerFnErrorAlarm06C188D9": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when hours-scheduler Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "HoursSchedulerFn9A4E6A2A"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicHours"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicHoursN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/HoursSchedulerFnErrorAlarm/Resource"
+   }
+  },
+  "HoursSchedulerFnThrottleAlarm5AF9D4F8": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when hours-scheduler Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "HoursSchedulerFn9A4E6A2A"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicHours"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicHoursN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/HoursSchedulerFnThrottleAlarm/Resource"
+   }
+  },
+  "HoursSchedulerFnDurationAlarm625F888C": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when hours-scheduler Lambda p99 duration exceeds 48000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "HoursSchedulerFn9A4E6A2A"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicHours"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicHoursN1"
+     }
+    ],
+    "Threshold": 48000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/HoursSchedulerFnDurationAlarm/Resource"
+   }
+  },
+  "ClinicHoursTableThrottleAlarmCA9F7346": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "ClinicHoursTableFF29B4D3"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "ClinicHoursTableFF29B4D3"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicHours"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicHoursN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursTableThrottleAlarm/Resource"
+   }
+  },
+  "ClinicHoursApiBasePathMapping": {
+   "Type": "AWS::ApiGateway::BasePathMapping",
+   "Properties": {
+    "BasePath": "clinic-hours",
+    "DomainName": "apig.todaysdentalinsights.com",
+    "RestApiId": {
+     "Ref": "ClinicHoursApi7654E65D"
+    },
+    "Stage": {
+     "Ref": "ClinicHoursApiDeploymentStageprod07EAEDD0"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/ClinicHoursApiBasePathMapping"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/11R0W7CMAz8Ft6DB2U/UDZtT2yo7B25qUcDbdLVDlVX9d+npFSCPd3ZF53PTgJJsobVAjte6uKyrEwOw0FQXxR2fByK3mLtihyGL8wrUi/fNpJRYWNOKNRhD0NGLGljgnpHU62dt6JeqalcX5OV0L2rDoKnaDmRjNj5VtMWmdSOpHRFEG9sVm9DJv4+JciIG2c5av9bGf34kMlL6VrzS22M9lCFgXuUcodNY+xpVAZrGDI37Rtx7yqj+1BObFQV1nmBMIQWtbVhNs6qN2+1GBctw+u5nt8frSvozPARYVYVb47ITMKQBlC8ga3XF5LoQ1eywjBk/pbIhw/QlfNFh6JLGNIK2zouFsg4Plzr00vjRUXncOm4YsgBZ366Js+wTmC1OLMxy9ZbMTVBNuEf9BK6hB4CAAA="
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicHoursN1/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "ClinicHoursApiEndpointB4E7F1A4": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "ClinicHoursApi7654E65D"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "ClinicHoursApiDeploymentStageprod07EAEDD0"
+      },
+      "/"
+     ]
+    ]
+   }
+  },
+  "ClinicHoursTableName": {
+   "Description": "Name of the Clinic Hours DynamoDB table",
+   "Value": {
+    "Ref": "ClinicHoursTableFF29B4D3"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsClinicHoursN1-ClinicHoursTableName"
+   }
+  },
+  "ClinicHoursApiUrl": {
+   "Description": "Clinic Hours API Gateway URL",
+   "Value": "https://apig.todaysdentalinsights.com/clinic-hours/",
+   "Export": {
+    "Name": "TodaysDentalInsightsClinicHoursN1-ClinicHoursApiUrl"
+   }
+  },
+  "ClinicHoursApiId": {
+   "Description": "Clinic Hours API Gateway ID",
+   "Value": {
+    "Ref": "ClinicHoursApi7654E65D"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsClinicHoursN1-ClinicHoursApiId"
+   }
+  },
+  "ExportsOutputRefClinicHoursTableFF29B4D3E4840A64": {
+   "Value": {
+    "Ref": "ClinicHoursTableFF29B4D3"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+   }
+  },
+  "ExportsOutputFnGetAttClinicHoursTableFF29B4D3Arn11335D8E": {
+   "Value": {
+    "Fn::GetAtt": [
+     "ClinicHoursTableFF29B4D3",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsClinicHoursN1:ExportsOutputFnGetAttClinicHoursTableFF29B4D3Arn11335D8E"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/tdi3/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,186 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "dad4c961b5614c0246a7090883323f411e8654acb3c77f3c51ba7e56f1250790": {
+      "displayName": "CampaignsFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-81c4d056": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "dad4c961b5614c0246a7090883323f411e8654acb3c77f3c51ba7e56f1250790.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "d8e402dd5a15ff5c830651b91cc727c273c440056b7240961179fc17ba81f1ce": {
+      "displayName": "KeywordsFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-36b88d29": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "d8e402dd5a15ff5c830651b91cc727c273c440056b7240961179fc17ba81f1ce.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "c98a32ec8de26e9d54b08c6b5a5b75b7b76d7159e23f5abea0c066f3f2aa18e2": {
+      "displayName": "SearchQueriesFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-01f02387": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "c98a32ec8de26e9d54b08c6b5a5b75b7b76d7159e23f5abea0c066f3f2aa18e2.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "0a15768d8e18fdb24de3d2d389084cc48800a096144a40a969f76c5ead3724a7": {
+      "displayName": "BulkFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-bdb8bc1d": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "0a15768d8e18fdb24de3d2d389084cc48800a096144a40a969f76c5ead3724a7.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "c2401d9f968ccb89c674b6c142e84d8baa1602f58464c0e1051ba766275a65ba": {
+      "displayName": "AiFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-02f90404": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "c2401d9f968ccb89c674b6c142e84d8baa1602f58464c0e1051ba766275a65ba.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "ff74f42044c127ac7478bc1fcf5328ac3f1d09b4fecfcad9489d0f627ef68453": {
+      "displayName": "AdsFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-dfd8ecfc": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "ff74f42044c127ac7478bc1fcf5328ac3f1d09b4fecfcad9489d0f627ef68453.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "a703c7adac81741872903722575e044f33457642f9dd1f37d21708bbb3982056": {
+      "displayName": "TargetingFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-fadb8633": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "a703c7adac81741872903722575e044f33457642f9dd1f37d21708bbb3982056.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "b5e60a9c5e04928a6cac087c22fd08a3bdb6d50af42309e452f7197b2d189a20": {
+      "displayName": "ConversionsFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-6eab540e": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "b5e60a9c5e04928a6cac087c22fd08a3bdb6d50af42309e452f7197b2d189a20.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "0a57443d549ceedfd69d97332e0b4a443c79bce5207e41bf6e51352a088be941": {
+      "displayName": "ReportsFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-7ea22ec8": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "0a57443d549ceedfd69d97332e0b4a443c79bce5207e41bf6e51352a088be941.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "6889d7a502422b170c577b6010f796af2d8406b9d93ad2834e7a04d55ad588d3": {
+      "displayName": "PMaxFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-0a59592f": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "6889d7a502422b170c577b6010f796af2d8406b9d93ad2834e7a04d55ad588d3.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "36c97aa00cb6653d846dbb79ce805df64cd60ca7d328c46699a37ed46258931d": {
+      "displayName": "AccountFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-ed6c4159": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "36c97aa00cb6653d846dbb79ce805df64cd60ca7d328c46699a37ed46258931d.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "9b08dc95275872ca08a697d76d19f14cd443c78ddc9e3bc7de00d408fd909a69": {
+      "displayName": "TodaysDentalInsightsGoogleAdsN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsGoogleAdsN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-45634c64": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "9b08dc95275872ca08a697d76d19f14cd443c78ddc9e3bc7de00d408fd909a69.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

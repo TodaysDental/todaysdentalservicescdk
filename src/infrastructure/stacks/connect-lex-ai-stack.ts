@@ -126,6 +126,8 @@ export interface ConnectLexAiStackProps extends StackProps {
 
 export class ConnectLexAiStack extends Stack {
   public readonly lexBedrockHookFn: lambda.IFunction;
+  // Lex ASR-only capture hook (stores transcript into Lex session attrs for Connect to read)
+  public readonly lexTranscriptCaptureFn: lambda.IFunction;
   public readonly connectFinalizerFn: lambda.IFunction;
   public readonly lexBotId: string;
   public readonly lexBotAliasId: string;
@@ -233,6 +235,18 @@ export class ConnectLexAiStack extends Stack {
       console.log(`[ConnectLexAiStack] LexBedrockHookFn granted S3 read access for thinking audio`);
     }
 
+    // Lex ASR-only transcript capture hook (fast; no Bedrock)
+    this.lexTranscriptCaptureFn = new lambdaNode.NodejsFunction(this, 'LexTranscriptCaptureFn', {
+      functionName: `${this.stackName}-LexTranscriptCapture`,
+      entry: path.join(__dirname, '..', '..', 'services', 'connect', 'lex-transcript-capture-hook.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      memorySize: 256,
+      logRetention: logs.RetentionDays.ONE_WEEK,
+    });
+    applyTags(this.lexTranscriptCaptureFn, { Function: 'lex-transcript-capture' });
+
     // ========================================
     // 2. Connect Call Finalizer Lambda
     // ========================================
@@ -251,6 +265,33 @@ export class ConnectLexAiStack extends Stack {
       logRetention: logs.RetentionDays.ONE_WEEK,
     });
     applyTags(this.connectFinalizerFn, { Function: 'connect-finalizer' });
+
+    // ========================================
+    // 2b. Connect Direct AI Lambda (Bedrock Runtime)
+    // ========================================
+    // Invoked directly by the Connect contact flow (InvokeLambdaFunction) after Lex ASR,
+    // while Connect handles the typing WAV prompt + response playback.
+    const connectDirectLambda = new lambdaNode.NodejsFunction(this, 'ConnectDirectLambda', {
+      functionName: `${this.stackName}-ConnectDirectLambda`,
+      entry: path.join(__dirname, '..', '..', 'services', 'connect', 'connect-direct-lambda-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      memorySize: 512,
+      environment: {
+        MODEL_ID: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+        SYSTEM_PROMPT: 'You are a helpful AI assistant on a phone call. Keep responses concise and natural for voice conversation.',
+      },
+      logRetention: logs.RetentionDays.ONE_WEEK,
+    });
+    applyTags(connectDirectLambda, { Function: 'connect-direct-lambda' });
+
+    // Grant Bedrock model invocation permissions
+    connectDirectLambda.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock:InvokeModel'],
+      resources: ['arn:aws:bedrock:*::foundation-model/*'],
+    }));
 
     // Grant DynamoDB permissions
     this.connectFinalizerFn.addToRolePolicy(new iam.PolicyStatement({
@@ -286,6 +327,12 @@ export class ConnectLexAiStack extends Stack {
       sourceArn: props.connectInstanceArn,
     });
 
+    // Grant Connect permission to invoke the direct AI Lambda
+    connectDirectLambda.addPermission('ConnectInvoke', {
+      principal: new iam.ServicePrincipal('connect.amazonaws.com'),
+      sourceArn: props.connectInstanceArn,
+    });
+
     // ========================================
     // 3. Lex V2 Bot
     // ========================================
@@ -295,6 +342,12 @@ export class ConnectLexAiStack extends Stack {
         iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonLexFullAccess'),
       ],
     });
+
+    // NOTE: Lex fulfillment updates are now VERBAL-ONLY (plain text).
+    // The real keyboard typing WAV sound is played by the Connect contact flow
+    // (via the typingOnce MessageParticipant block) AFTER Lex completes and BEFORE
+    // the Connect InvokeLambdaFunction block. This provides a consistent single mechanism
+    // for thinking audio instead of trying to do it in both Lex and Connect.
 
     // Create the Lex V2 bot
     // NOTE: Using 'DentalAiBotV3' to force CloudFormation to create a new bot
@@ -331,67 +384,6 @@ export class ConnectLexAiStack extends Stack {
               ],
               fulfillmentCodeHook: {
                 enabled: true,
-                // ============================================================
-                // FULFILLMENT PROGRESS UPDATES - plays audio while Lambda runs
-                // ============================================================
-                // This makes Lex speak "thinking" messages while Bedrock is processing.
-                // startResponse plays after initial delay, updateResponse repeats periodically.
-                fulfillmentUpdatesSpecification: {
-                  active: true,
-                  // Initial "thinking" message after 2 seconds of silence
-                  startResponse: {
-                    delayInSeconds: 2,
-                    messageGroups: [
-                      {
-                        message: {
-                          ssmlMessage: {
-                            value: '<speak><prosody rate="medium">One moment while I look that up.</prosody></speak>',
-                          },
-                        },
-                        variations: [
-                          {
-                            ssmlMessage: {
-                              value: '<speak><prosody rate="medium">Let me check that for you.</prosody></speak>',
-                            },
-                          },
-                          {
-                            ssmlMessage: {
-                              value: '<speak><prosody rate="medium">Sure, give me just a second.</prosody></speak>',
-                            },
-                          },
-                        ],
-                      },
-                    ],
-                    allowInterrupt: true,
-                  },
-                  // Periodic updates every 5 seconds if Lambda is still running
-                  updateResponse: {
-                    frequencyInSeconds: 5,
-                    messageGroups: [
-                      {
-                        message: {
-                          ssmlMessage: {
-                            value: '<speak><prosody rate="medium">Still working on that.</prosody></speak>',
-                          },
-                        },
-                        variations: [
-                          {
-                            ssmlMessage: {
-                              value: '<speak><prosody rate="medium">Almost there.</prosody></speak>',
-                            },
-                          },
-                          {
-                            ssmlMessage: {
-                              value: '<speak><prosody rate="medium">Just a moment longer.</prosody></speak>',
-                            },
-                          },
-                        ],
-                      },
-                    ],
-                    allowInterrupt: true,
-                  },
-                  timeoutInSeconds: 25, // Match Lambda timeout (30s) minus buffer
-                },
                 // Keep conversation going after Lambda fulfillment
                 postFulfillmentStatusSpecification: {
                   successNextStep: { dialogAction: { type: 'ElicitIntent' } },
@@ -410,64 +402,6 @@ export class ConnectLexAiStack extends Stack {
               parentIntentSignature: 'AMAZON.FallbackIntent',
               fulfillmentCodeHook: {
                 enabled: true,
-                // ============================================================
-                // FULFILLMENT PROGRESS UPDATES - plays audio while Lambda runs
-                // ============================================================
-                // Same as GeneralIntent - speaks "thinking" messages during Bedrock processing
-                fulfillmentUpdatesSpecification: {
-                  active: true,
-                  startResponse: {
-                    delayInSeconds: 2,
-                    messageGroups: [
-                      {
-                        message: {
-                          ssmlMessage: {
-                            value: '<speak><prosody rate="medium">One moment while I look that up.</prosody></speak>',
-                          },
-                        },
-                        variations: [
-                          {
-                            ssmlMessage: {
-                              value: '<speak><prosody rate="medium">Let me check that for you.</prosody></speak>',
-                            },
-                          },
-                          {
-                            ssmlMessage: {
-                              value: '<speak><prosody rate="medium">Sure, give me just a second.</prosody></speak>',
-                            },
-                          },
-                        ],
-                      },
-                    ],
-                    allowInterrupt: true,
-                  },
-                  updateResponse: {
-                    frequencyInSeconds: 5,
-                    messageGroups: [
-                      {
-                        message: {
-                          ssmlMessage: {
-                            value: '<speak><prosody rate="medium">Still working on that.</prosody></speak>',
-                          },
-                        },
-                        variations: [
-                          {
-                            ssmlMessage: {
-                              value: '<speak><prosody rate="medium">Almost there.</prosody></speak>',
-                            },
-                          },
-                          {
-                            ssmlMessage: {
-                              value: '<speak><prosody rate="medium">Just a moment longer.</prosody></speak>',
-                            },
-                          },
-                        ],
-                      },
-                    ],
-                    allowInterrupt: true,
-                  },
-                  timeoutInSeconds: 25,
-                },
                 // Keep conversation going after Lambda fulfillment
                 postFulfillmentStatusSpecification: {
                   successNextStep: { dialogAction: { type: 'ElicitIntent' } },
@@ -489,6 +423,12 @@ export class ConnectLexAiStack extends Stack {
 
     // Grant Lex permission to invoke the hook Lambda
     this.lexBedrockHookFn.addPermission('LexInvoke', {
+      principal: new iam.ServicePrincipal('lexv2.amazonaws.com'),
+      sourceArn: `arn:aws:lex:${this.region}:${this.account}:bot-alias/${lexBot.attrId}/*`,
+    });
+
+    // Grant Lex permission to invoke the transcript capture Lambda
+    this.lexTranscriptCaptureFn.addPermission('LexInvoke', {
       principal: new iam.ServicePrincipal('lexv2.amazonaws.com'),
       sourceArn: `arn:aws:lex:${this.region}:${this.account}:bot-alias/${lexBot.attrId}/*`,
     });
@@ -519,7 +459,7 @@ export class ConnectLexAiStack extends Stack {
             enabled: true,
             codeHookSpecification: {
               lambdaCodeHook: {
-                lambdaArn: this.lexBedrockHookFn.functionArn,
+                lambdaArn: this.lexTranscriptCaptureFn.functionArn,
                 codeHookInterfaceVersion: '1.0',
               },
             },
@@ -618,6 +558,7 @@ export class ConnectLexAiStack extends Stack {
         resources: [
           this.connectFinalizerFn.functionArn,
           this.lexBedrockHookFn.functionArn,
+          connectDirectLambda.functionArn,
         ],
       }),
     ]);
@@ -676,6 +617,34 @@ export class ConnectLexAiStack extends Stack {
     // Avoid parallel API calls to Connect
     lexHookIntegration.node.addDependency(finalizerIntegration);
 
+    // Associate Connect direct AI Lambda with Connect (for InvokeLambdaFunction blocks)
+    const connectDirectIntegration = new customResources.AwsCustomResource(this, 'ConnectDirectIntegration', {
+      onCreate: {
+        service: 'Connect',
+        action: 'associateLambdaFunction',
+        parameters: {
+          InstanceId: props.connectInstanceId,
+          FunctionArn: connectDirectLambda.functionArn,
+        },
+        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-connectdirect-integration`),
+      },
+      onDelete: {
+        service: 'Connect',
+        action: 'disassociateLambdaFunction',
+        parameters: {
+          InstanceId: props.connectInstanceId,
+          FunctionArn: connectDirectLambda.functionArn,
+        },
+        ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
+      },
+      policy: lambdaIntegrationPolicy,
+    });
+
+    // CRITICAL: Ensure the Lambda permission is created before trying to associate
+    connectDirectIntegration.node.addDependency(connectDirectLambda);
+    // Avoid parallel API calls to Connect
+    connectDirectIntegration.node.addDependency(lexHookIntegration);
+
     // ========================================
     // 5b. Keyboard Sound Prompt for Thinking Audio
     // ========================================
@@ -700,49 +669,63 @@ export class ConnectLexAiStack extends Stack {
       prune: false,
     });
 
-    // Create Connect Prompt resource from the S3 audio file
-    // This allows us to use the keyboard sound in Loop Prompts during AI processing
-    const keyboardSoundPrompt = new customResources.AwsCustomResource(this, 'KeyboardSoundPrompt', {
-      onCreate: {
-        service: 'Connect',
-        action: 'createPrompt',
-        parameters: {
-          InstanceId: props.connectInstanceId,
-          Name: `${this.stackName}-KeyboardTyping`,
-          Description: 'Keyboard typing sound for AI thinking indicator',
-          S3Uri: `s3://${connectPromptsBucket.bucketName}/Computer-keyboard sound.wav`,
-        },
-        physicalResourceId: customResources.PhysicalResourceId.fromResponse('PromptId'),
-      },
-      onDelete: {
-        service: 'Connect',
-        action: 'deletePrompt',
-        parameters: {
-          InstanceId: props.connectInstanceId,
-          PromptId: new customResources.PhysicalResourceIdReference(),
-        },
-        ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
-      },
-      policy: customResources.AwsCustomResourcePolicy.fromStatements([
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'connect:CreatePrompt',
-            'connect:DeletePrompt',
-            'connect:DescribePrompt',
-          ],
-          resources: ['*'],
-        }),
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: ['s3:GetObject', 's3:GetBucketLocation'],
-          resources: [
-            connectPromptsBucket.bucketArn,
-            `${connectPromptsBucket.bucketArn}/*`,
-          ],
-        }),
-      ]),
+    // Create Lambda function for keyboard prompt custom resource
+    // This properly extracts PromptId from the PromptARN returned by Connect API
+    const createKeyboardPromptFn = new lambdaNode.NodejsFunction(this, 'CreateKeyboardPromptFn', {
+      functionName: `${this.stackName}-CreateKeyboardPrompt`,
+      entry: path.join(__dirname, '..', '..', 'services', 'connect', 'create-keyboard-prompt-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      memorySize: 256,
+      logRetention: logs.RetentionDays.ONE_WEEK,
     });
+    applyTags(createKeyboardPromptFn, { Function: 'create-keyboard-prompt' });
+
+    // Grant permissions for Connect and S3
+    createKeyboardPromptFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'connect:CreatePrompt',
+        'connect:DeletePrompt',
+        'connect:DescribePrompt',
+        'connect:ListPrompts',
+      ],
+      resources: ['*'],
+    }));
+
+    createKeyboardPromptFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['s3:PutObject', 's3:GetObject', 's3:GetBucketLocation'],
+      resources: [
+        connectPromptsBucket.bucketArn,
+        `${connectPromptsBucket.bucketArn}/*`,
+      ],
+    }));
+
+    // Create custom resource provider
+    const keyboardPromptProvider = new customResources.Provider(this, 'KeyboardPromptProvider', {
+      onEventHandler: createKeyboardPromptFn,
+      logRetention: logs.RetentionDays.ONE_WEEK,
+    });
+
+    // Create the keyboard prompt using the Lambda custom resource
+    // This properly returns PromptId extracted from PromptARN
+    const keyboardSoundPrompt = new CustomResource(this, 'KeyboardSoundPromptV2', {
+      serviceToken: keyboardPromptProvider.serviceToken,
+      properties: {
+        InstanceId: props.connectInstanceId,
+        PromptName: `${this.stackName}-KeyboardTyping`,
+        Description: 'Keyboard typing sound for AI thinking indicator',
+        S3Bucket: connectPromptsBucket.bucketName,
+        S3Key: 'Computer-keyboard-short.wav',
+        // Force update when bucket changes
+        UpdateTrigger: connectPromptsBucket.bucketName,
+      },
+    });
+
+    // Get the PromptId from the custom resource (properly extracted from ARN)
+    const keyboardPromptId = keyboardSoundPrompt.getAttString('PromptId');
 
     // ========================================
     // 6. Contact Flows (Dynamic Creation)
@@ -843,15 +826,18 @@ export class ConnectLexAiStack extends Stack {
         FlowType: 'CONTACT_FLOW',
         Description: 'AI voice assistant using Lex and Bedrock with keyboard sound thinking indicator',
         LexBotAliasArn: lexBotAliasArn,
+        // Use the existing LexBedrockHook (it supports Connect direct invocation and clinic mapping)
+        // This avoids Bedrock on-demand model invocation constraints and reuses ai-agent routing.
         LambdaFunctionArn: this.lexBedrockHookFn.functionArn,
         // Pass the prompt ID from the custom resource (PlayPrompt expects ID, not ARN)
-        KeyboardPromptId: keyboardSoundPrompt.getResponseField('PromptId'),
-        // Force update when dependencies change
-        UpdateTrigger: Date.now().toString(),
+        KeyboardPromptId: keyboardPromptId,
+        // Force update ONLY when dependencies actually change
+        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|v6`,
       },
     });
     inboundFlow.node.addDependency(disconnectFlow);
     inboundFlow.node.addDependency(lexIntegration);
+    inboundFlow.node.addDependency(connectDirectIntegration);
     inboundFlow.node.addDependency(keyboardSoundPrompt);
     
     // Disconnect flow is set automatically via UpdateContactEventHooks in the inbound flow.
@@ -978,7 +964,7 @@ export class ConnectLexAiStack extends Stack {
     });
 
     new CfnOutput(this, 'KeyboardSoundPromptId', {
-      value: keyboardSoundPrompt.getResponseField('PromptId'),
+      value: keyboardPromptId,
       description: 'Connect Prompt ID for keyboard typing sound (thinking indicator)',
       exportName: `${this.stackName}-KeyboardSoundPromptId`,
     });

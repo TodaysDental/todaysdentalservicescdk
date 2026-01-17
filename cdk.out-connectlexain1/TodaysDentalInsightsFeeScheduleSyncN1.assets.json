@@ -1,0 +1,36 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "07ba77f85b84f119e627b1335201cc332927553c8b995fff55bcff9b2e584b83": {
+      "displayName": "FeeScheduleSyncFn/Code",
+      "source": {
+        "path": "asset.07ba77f85b84f119e627b1335201cc332927553c8b995fff55bcff9b2e584b83",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-20983d40": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "07ba77f85b84f119e627b1335201cc332927553c8b995fff55bcff9b2e584b83.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "66785abc0a91a7dbb714e448644665510fe3c02abf8a77988750b5af02ba8d77": {
+      "displayName": "TodaysDentalInsightsFeeScheduleSyncN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsFeeScheduleSyncN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-76c639dd": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "66785abc0a91a7dbb714e448644665510fe3c02abf8a77988750b5af02ba8d77.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

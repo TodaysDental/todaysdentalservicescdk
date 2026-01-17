@@ -1,0 +1,96 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "a0d09e3560d2e4c07e316e84d142034e9372e7f066612678ea018550d017c253": {
+      "displayName": "ChatbotCommonLayer/Code",
+      "source": {
+        "path": "asset.a0d09e3560d2e4c07e316e84d142034e9372e7f066612678ea018550d017c253",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-f5b1e0bc": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "a0d09e3560d2e4c07e316e84d142034e9372e7f066612678ea018550d017c253.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "40a5d479aef16f2a2c7aca61ff35da06389ce4cbaa135a9543ac2a8f89985b97": {
+      "displayName": "WebSocketConnectHandler/Code",
+      "source": {
+        "path": "asset.40a5d479aef16f2a2c7aca61ff35da06389ce4cbaa135a9543ac2a8f89985b97",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-4b8ee441": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "40a5d479aef16f2a2c7aca61ff35da06389ce4cbaa135a9543ac2a8f89985b97.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "9e4467c1e8356ab50d5952b2eac57ce4cdd6f271fd83545de2b7c5fc15747539": {
+      "displayName": "WebSocketDisconnectHandler/Code",
+      "source": {
+        "path": "asset.9e4467c1e8356ab50d5952b2eac57ce4cdd6f271fd83545de2b7c5fc15747539",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-d3017729": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "9e4467c1e8356ab50d5952b2eac57ce4cdd6f271fd83545de2b7c5fc15747539.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "1dc54823147734e9410167f1aad46bab89925faad2154fc9a925f43ab1e33ef4": {
+      "displayName": "WebSocketMessageHandler/Code",
+      "source": {
+        "path": "asset.1dc54823147734e9410167f1aad46bab89925faad2154fc9a925f43ab1e33ef4",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-33e04ad9": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "1dc54823147734e9410167f1aad46bab89925faad2154fc9a925f43ab1e33ef4.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "5c50aace2e00e043e58105a7af856ef4e49b2daa1f7d7affc2210a78699cb11e": {
+      "displayName": "ChatHistoryHandler/Code",
+      "source": {
+        "path": "asset.5c50aace2e00e043e58105a7af856ef4e49b2daa1f7d7affc2210a78699cb11e",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-9fcfdc79": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "5c50aace2e00e043e58105a7af856ef4e49b2daa1f7d7affc2210a78699cb11e.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "7b5374bc08ecb61bc09ebaee13e0857c1d8ff8fc72a7b25bbbdb15438f5b6899": {
+      "displayName": "TodaysDentalInsightsChatbotN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsChatbotN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-585a22f0": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "7b5374bc08ecb61bc09ebaee13e0857c1d8ff8fc72a7b25bbbdb15438f5b6899.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

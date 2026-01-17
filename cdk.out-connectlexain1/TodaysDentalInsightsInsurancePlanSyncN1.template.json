@@ -1,0 +1,684 @@
+{
+ "Resources": {
+  "InsurancePlansTable5C0C636A": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "pk",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "sk",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "clinicId",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "insuranceName",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "GlobalSecondaryIndexes": [
+     {
+      "IndexName": "clinicId-index",
+      "KeySchema": [
+       {
+        "AttributeName": "clinicId",
+        "KeyType": "HASH"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "insuranceName-index",
+      "KeySchema": [
+       {
+        "AttributeName": "insuranceName",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "clinicId",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     }
+    ],
+    "KeySchema": [
+     {
+      "AttributeName": "pk",
+      "KeyType": "HASH"
+     },
+     {
+      "AttributeName": "sk",
+      "KeyType": "RANGE"
+     }
+    ],
+    "PointInTimeRecoverySpecification": {
+     "PointInTimeRecoveryEnabled": true
+    },
+    "TableName": "TodaysDentalInsightsInsurancePlanSyncN1-InsurancePlans",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "InsurancePlanSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsInsurancePlanSyncN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "insurance-plans"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsInsurancePlanSyncN1/InsurancePlansTable/Resource"
+   }
+  },
+  "InsurancePlanSyncFnServiceRole695D2C68": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "insurance-plan-sync"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "InsurancePlanSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsInsurancePlanSyncN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsInsurancePlanSyncN1/InsurancePlanSyncFn/ServiceRole/Resource"
+   }
+  },
+  "InsurancePlanSyncFnServiceRoleDefaultPolicy0F6A9D0B": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "InsurancePlansTable5C0C636A",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "InsurancePlansTable5C0C636A",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+           }
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputFnGetAttSecretsEncryptionKey25C5552EArnA97EA41C"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "InsurancePlanSyncFnServiceRoleDefaultPolicy0F6A9D0B",
+    "Roles": [
+     {
+      "Ref": "InsurancePlanSyncFnServiceRole695D2C68"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsInsurancePlanSyncN1/InsurancePlanSyncFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "InsurancePlanSyncFn6AEFEA6C": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "1eaa0bf1f7bb7a748f712d99b8842d60abf6ed19c93ffb185ca57e726a5f3419.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "INSURANCE_PLANS_TABLE": {
+       "Ref": "InsurancePlansTable5C0C636A"
+      },
+      "CONSOLIDATED_SFTP_HOST": {
+       "Fn::Join": [
+        "",
+        [
+         {
+          "Fn::ImportValue": "TodaysDentalInsightsOpenDentalN1:ExportsOutputFnGetAttConsolidatedTransferServerServerIdBBBFF6B9"
+         },
+         ".server.transfer.us-east-1.amazonaws.com"
+        ]
+       ]
+      },
+      "NODE_OPTIONS": "--enable-source-maps",
+      "AWS_NODEJS_CONNECTION_REUSE_ENABLED": "1",
+      "GLOBAL_SECRETS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+      },
+      "CLINIC_CONFIG_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 1024,
+    "Role": {
+     "Fn::GetAtt": [
+      "InsurancePlanSyncFnServiceRole695D2C68",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "insurance-plan-sync"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "InsurancePlanSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsInsurancePlanSyncN1"
+     }
+    ],
+    "Timeout": 600
+   },
+   "DependsOn": [
+    "InsurancePlanSyncFnServiceRoleDefaultPolicy0F6A9D0B",
+    "InsurancePlanSyncFnServiceRole695D2C68"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsInsurancePlanSyncN1/InsurancePlanSyncFn/Resource",
+    "aws:asset:path": "asset.1eaa0bf1f7bb7a748f712d99b8842d60abf6ed19c93ffb185ca57e726a5f3419",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "InsurancePlanSyncFnEventInvokeConfig789CC007": {
+   "Type": "AWS::Lambda::EventInvokeConfig",
+   "Properties": {
+    "FunctionName": {
+     "Ref": "InsurancePlanSyncFn6AEFEA6C"
+    },
+    "MaximumRetryAttempts": 0,
+    "Qualifier": "$LATEST"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsInsurancePlanSyncN1/InsurancePlanSyncFn/EventInvokeConfig/Resource"
+   }
+  },
+  "InsurancePlanSyncScheduleRule8D81BD50": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Description": "Runs insurance plan sync every 15 minutes to fetch latest data from OpenDental",
+    "ScheduleExpression": "rate(15 minutes)",
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "InsurancePlanSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsInsurancePlanSyncN1"
+     }
+    ],
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "InsurancePlanSyncFn6AEFEA6C",
+        "Arn"
+       ]
+      },
+      "Id": "Target0"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsInsurancePlanSyncN1/InsurancePlanSyncScheduleRule/Resource"
+   }
+  },
+  "InsurancePlanSyncScheduleRuleAllowEventRuleTodaysDentalInsightsInsurancePlanSyncN1InsurancePlanSyncFn85035A2705257086": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "InsurancePlanSyncFn6AEFEA6C",
+      "Arn"
+     ]
+    },
+    "Principal": "events.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "InsurancePlanSyncScheduleRule8D81BD50",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsInsurancePlanSyncN1/InsurancePlanSyncScheduleRule/AllowEventRuleTodaysDentalInsightsInsurancePlanSyncN1InsurancePlanSyncFn85035A27"
+   }
+  },
+  "InsurancePlanSyncFnErrorAlarmA2D9D189": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when insurance-plan-sync Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "InsurancePlanSyncFn6AEFEA6C"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "InsurancePlanSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsInsurancePlanSyncN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsInsurancePlanSyncN1/InsurancePlanSyncFnErrorAlarm/Resource"
+   }
+  },
+  "InsurancePlanSyncFnThrottleAlarm46B2D1B9": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when insurance-plan-sync Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "InsurancePlanSyncFn6AEFEA6C"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "InsurancePlanSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsInsurancePlanSyncN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsInsurancePlanSyncN1/InsurancePlanSyncFnThrottleAlarm/Resource"
+   }
+  },
+  "InsurancePlanSyncFnDurationAlarm22FBBB55": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when insurance-plan-sync Lambda p99 duration exceeds 480000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "InsurancePlanSyncFn6AEFEA6C"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "InsurancePlanSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsInsurancePlanSyncN1"
+     }
+    ],
+    "Threshold": 480000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsInsurancePlanSyncN1/InsurancePlanSyncFnDurationAlarm/Resource"
+   }
+  },
+  "InsurancePlansTableThrottleAlarmB1567407": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "InsurancePlansTable5C0C636A"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "InsurancePlansTable5C0C636A"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "InsurancePlanSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsInsurancePlanSyncN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsInsurancePlanSyncN1/InsurancePlansTableThrottleAlarm/Resource"
+   }
+  },
+  "InsurancePlanSyncSuccessAlarm7BA0A812": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when insurance plan sync has too many errors",
+    "AlarmName": "TodaysDentalInsightsInsurancePlanSyncN1-SyncSuccessRate",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "InsurancePlanSyncFn6AEFEA6C"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 3600,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "InsurancePlanSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsInsurancePlanSyncN1"
+     }
+    ],
+    "Threshold": 3,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsInsurancePlanSyncN1/InsurancePlanSyncSuccessAlarm/Resource"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/22Py26DMBBFvyV7M01IfyBBrZRNG5Hu0WCb1OBHxdigyPK/VzZRV13dO6+jOzXU9QH2O1yp4mKqtOoh3jzyieFKXRQPi8aJHuIX9lqyZrDFJKbR9AI764QcCT6KvAfLvXKWKTQQW7cdFL06rfgjl5tLjI4dEklPcMrC6AjnwCfpz0jyiYfYDPaP+rZI6y92cZNsnB3UPeP+bV7lbBSRcjYxmRcIYhuecUKOz7ULYkXPvyGeNM4mj4pJibWSXJi5ZCXZzeNd2cL9DP4n+MTy1zDSy1K/wqGG/W4kpao5WK+MhHbTXyiywK1cAQAA"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsInsurancePlanSyncN1/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "InsurancePlansTableName": {
+   "Description": "Name of the Insurance Plans DynamoDB table",
+   "Value": {
+    "Ref": "InsurancePlansTable5C0C636A"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsInsurancePlanSyncN1-InsurancePlansTableName"
+   }
+  },
+  "InsurancePlansTableArn": {
+   "Description": "ARN of the Insurance Plans DynamoDB table",
+   "Value": {
+    "Fn::GetAtt": [
+     "InsurancePlansTable5C0C636A",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsInsurancePlanSyncN1-InsurancePlansTableArn"
+   }
+  },
+  "SyncFunctionName": {
+   "Description": "Name of the sync Lambda function",
+   "Value": {
+    "Ref": "InsurancePlanSyncFn6AEFEA6C"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsInsurancePlanSyncN1-SyncFunctionName"
+   }
+  },
+  "SyncFunctionArn": {
+   "Description": "ARN of the sync Lambda function",
+   "Value": {
+    "Fn::GetAtt": [
+     "InsurancePlanSyncFn6AEFEA6C",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsInsurancePlanSyncN1-SyncFunctionArn"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/tdi3/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

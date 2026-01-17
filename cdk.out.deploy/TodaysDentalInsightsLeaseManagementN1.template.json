@@ -1,0 +1,3751 @@
+{
+ "Resources": {
+  "LeaseDocumentsBucket82178BEB": {
+   "Type": "AWS::S3::Bucket",
+   "Properties": {
+    "BucketEncryption": {
+     "ServerSideEncryptionConfiguration": [
+      {
+       "ServerSideEncryptionByDefault": {
+        "SSEAlgorithm": "AES256"
+       }
+      }
+     ]
+    },
+    "BucketName": "dental-lease-documents-851620242036-us-east-1",
+    "CorsConfiguration": {
+     "CorsRules": [
+      {
+       "AllowedHeaders": [
+        "*"
+       ],
+       "AllowedMethods": [
+        "GET",
+        "PUT",
+        "POST"
+       ],
+       "AllowedOrigins": [
+        "*"
+       ],
+       "MaxAge": 3000
+      }
+     ]
+    },
+    "PublicAccessBlockConfiguration": {
+     "BlockPublicAcls": true,
+     "BlockPublicPolicy": true,
+     "IgnorePublicAcls": true,
+     "RestrictPublicBuckets": true
+    },
+    "VersioningConfiguration": {
+     "Status": "Enabled"
+    }
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseDocumentsBucket/Resource"
+   }
+  },
+  "LeaseDocumentsBucketNotificationsBA7FDCD9": {
+   "Type": "Custom::S3BucketNotifications",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "BucketNotificationsHandler050a0587b7544547bf325f094a3db8347ECC3691",
+      "Arn"
+     ]
+    },
+    "BucketName": {
+     "Ref": "LeaseDocumentsBucket82178BEB"
+    },
+    "NotificationConfiguration": {
+     "LambdaFunctionConfigurations": [
+      {
+       "Events": [
+        "s3:ObjectCreated:*"
+       ],
+       "Filter": {
+        "Key": {
+         "FilterRules": [
+          {
+           "Name": "suffix",
+           "Value": ".pdf"
+          }
+         ]
+        }
+       },
+       "LambdaFunctionArn": {
+        "Fn::GetAtt": [
+         "ProcessDocumentLambda7AB010BB",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Events": [
+        "s3:ObjectCreated:*"
+       ],
+       "Filter": {
+        "Key": {
+         "FilterRules": [
+          {
+           "Name": "suffix",
+           "Value": ".png"
+          }
+         ]
+        }
+       },
+       "LambdaFunctionArn": {
+        "Fn::GetAtt": [
+         "ProcessDocumentLambda7AB010BB",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Events": [
+        "s3:ObjectCreated:*"
+       ],
+       "Filter": {
+        "Key": {
+         "FilterRules": [
+          {
+           "Name": "suffix",
+           "Value": ".jpg"
+          }
+         ]
+        }
+       },
+       "LambdaFunctionArn": {
+        "Fn::GetAtt": [
+         "ProcessDocumentLambda7AB010BB",
+         "Arn"
+        ]
+       }
+      }
+     ]
+    },
+    "Managed": true,
+    "SkipDestinationValidation": false
+   },
+   "DependsOn": [
+    "LeaseDocumentsBucketAllowBucketNotificationsToTodaysDentalInsightsLeaseManagementN1ProcessDocumentLambdaE6B09BE64AE9FBCB"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseDocumentsBucket/Notifications/Resource"
+   }
+  },
+  "LeaseDocumentsBucketAllowBucketNotificationsToTodaysDentalInsightsLeaseManagementN1ProcessDocumentLambdaE6B09BE64AE9FBCB": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ProcessDocumentLambda7AB010BB",
+      "Arn"
+     ]
+    },
+    "Principal": "s3.amazonaws.com",
+    "SourceAccount": "851620242036",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "LeaseDocumentsBucket82178BEB",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseDocumentsBucket/AllowBucketNotificationsToTodaysDentalInsightsLeaseManagementN1ProcessDocumentLambdaE6B09BE6"
+   }
+  },
+  "LeaseTable473C6DF2": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "PK",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "SK",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "status",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "endDate",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "GlobalSecondaryIndexes": [
+     {
+      "IndexName": "StatusIndex",
+      "KeySchema": [
+       {
+        "AttributeName": "status",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "endDate",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     }
+    ],
+    "KeySchema": [
+     {
+      "AttributeName": "PK",
+      "KeyType": "HASH"
+     },
+     {
+      "AttributeName": "SK",
+      "KeyType": "RANGE"
+     }
+    ],
+    "PointInTimeRecoverySpecification": {
+     "PointInTimeRecoveryEnabled": true
+    },
+    "TableName": "LeaseTable"
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseTable/Resource"
+   }
+  },
+  "CreateLeaseLambdaServiceRole07434827": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/CreateLeaseLambda/ServiceRole/Resource"
+   }
+  },
+  "CreateLeaseLambdaServiceRoleDefaultPolicy80BA6009": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseTable473C6DF2",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseTable473C6DF2",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:DeleteObject*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging",
+        "s3:Abort*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseDocumentsBucket82178BEB",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseDocumentsBucket82178BEB",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "CreateLeaseLambdaServiceRoleDefaultPolicy80BA6009",
+    "Roles": [
+     {
+      "Ref": "CreateLeaseLambdaServiceRole07434827"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/CreateLeaseLambda/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "CreateLeaseLambdaB0B5F963": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "3f9dbc73cceb9325dc288a541a18341eec53f077cd45620f75d231ac4f80d22b.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "LEASE_TABLE_NAME": {
+       "Ref": "LeaseTable473C6DF2"
+      },
+      "LEASE_DOCUMENTS_BUCKET": {
+       "Ref": "LeaseDocumentsBucket82178BEB"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "CreateLeaseLambdaServiceRole07434827",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs18.x",
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "CreateLeaseLambdaServiceRoleDefaultPolicy80BA6009",
+    "CreateLeaseLambdaServiceRole07434827"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/CreateLeaseLambda/Resource",
+    "aws:asset:path": "asset.3f9dbc73cceb9325dc288a541a18341eec53f077cd45620f75d231ac4f80d22b",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "GetLeaseLambdaServiceRoleF5D4D6CB": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/GetLeaseLambda/ServiceRole/Resource"
+   }
+  },
+  "GetLeaseLambdaServiceRoleDefaultPolicyF3F7DCAD": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseTable473C6DF2",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseTable473C6DF2",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseDocumentsBucket82178BEB",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseDocumentsBucket82178BEB",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "GetLeaseLambdaServiceRoleDefaultPolicyF3F7DCAD",
+    "Roles": [
+     {
+      "Ref": "GetLeaseLambdaServiceRoleF5D4D6CB"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/GetLeaseLambda/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "GetLeaseLambdaD9D38D15": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "96abf49956bc63658c19af51a7efdf441a9d97724966657e405d9902cad1ccde.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "LEASE_TABLE_NAME": {
+       "Ref": "LeaseTable473C6DF2"
+      },
+      "LEASE_DOCUMENTS_BUCKET": {
+       "Ref": "LeaseDocumentsBucket82178BEB"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "GetLeaseLambdaServiceRoleF5D4D6CB",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs18.x",
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "GetLeaseLambdaServiceRoleDefaultPolicyF3F7DCAD",
+    "GetLeaseLambdaServiceRoleF5D4D6CB"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/GetLeaseLambda/Resource",
+    "aws:asset:path": "asset.96abf49956bc63658c19af51a7efdf441a9d97724966657e405d9902cad1ccde",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "UpdateLeaseLambdaServiceRole1C47060E": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/UpdateLeaseLambda/ServiceRole/Resource"
+   }
+  },
+  "UpdateLeaseLambdaServiceRoleDefaultPolicy17CBAB41": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseTable473C6DF2",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseTable473C6DF2",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:DeleteObject*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging",
+        "s3:Abort*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseDocumentsBucket82178BEB",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseDocumentsBucket82178BEB",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "UpdateLeaseLambdaServiceRoleDefaultPolicy17CBAB41",
+    "Roles": [
+     {
+      "Ref": "UpdateLeaseLambdaServiceRole1C47060E"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/UpdateLeaseLambda/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "UpdateLeaseLambda3A7C38ED": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "e12dcb0067d4c6107639ac9a8826f357e0de0b10137960ac87cb50876d210a10.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "LEASE_TABLE_NAME": {
+       "Ref": "LeaseTable473C6DF2"
+      },
+      "LEASE_DOCUMENTS_BUCKET": {
+       "Ref": "LeaseDocumentsBucket82178BEB"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "UpdateLeaseLambdaServiceRole1C47060E",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs18.x",
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "UpdateLeaseLambdaServiceRoleDefaultPolicy17CBAB41",
+    "UpdateLeaseLambdaServiceRole1C47060E"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/UpdateLeaseLambda/Resource",
+    "aws:asset:path": "asset.e12dcb0067d4c6107639ac9a8826f357e0de0b10137960ac87cb50876d210a10",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "DeleteLeaseLambdaServiceRole5415750C": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/DeleteLeaseLambda/ServiceRole/Resource"
+   }
+  },
+  "DeleteLeaseLambdaServiceRoleDefaultPolicy57ADC7F5": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseTable473C6DF2",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseTable473C6DF2",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:DeleteObject*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging",
+        "s3:Abort*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseDocumentsBucket82178BEB",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseDocumentsBucket82178BEB",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "s3:ListBucket",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "LeaseDocumentsBucket82178BEB",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "DeleteLeaseLambdaServiceRoleDefaultPolicy57ADC7F5",
+    "Roles": [
+     {
+      "Ref": "DeleteLeaseLambdaServiceRole5415750C"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/DeleteLeaseLambda/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "DeleteLeaseLambdaC9A33C28": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "60de3e3fac9756a25d530fa55f511e811e6965bc0217f48d90662ae074fcbd27.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "LEASE_TABLE_NAME": {
+       "Ref": "LeaseTable473C6DF2"
+      },
+      "LEASE_DOCUMENTS_BUCKET": {
+       "Ref": "LeaseDocumentsBucket82178BEB"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "DeleteLeaseLambdaServiceRole5415750C",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs18.x",
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "DeleteLeaseLambdaServiceRoleDefaultPolicy57ADC7F5",
+    "DeleteLeaseLambdaServiceRole5415750C"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/DeleteLeaseLambda/Resource",
+    "aws:asset:path": "asset.60de3e3fac9756a25d530fa55f511e811e6965bc0217f48d90662ae074fcbd27",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ListLeasesLambdaServiceRoleFF8EB759": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/ListLeasesLambda/ServiceRole/Resource"
+   }
+  },
+  "ListLeasesLambdaServiceRoleDefaultPolicy633D14E6": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseTable473C6DF2",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseTable473C6DF2",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ListLeasesLambdaServiceRoleDefaultPolicy633D14E6",
+    "Roles": [
+     {
+      "Ref": "ListLeasesLambdaServiceRoleFF8EB759"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/ListLeasesLambda/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ListLeasesLambda31645071": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "d324b6f34009794868a904efbb84b8885c26d7c3b27e80d7a3b256a58042e3ca.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "LEASE_TABLE_NAME": {
+       "Ref": "LeaseTable473C6DF2"
+      },
+      "LEASE_DOCUMENTS_BUCKET": {
+       "Ref": "LeaseDocumentsBucket82178BEB"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "ListLeasesLambdaServiceRoleFF8EB759",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs18.x",
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "ListLeasesLambdaServiceRoleDefaultPolicy633D14E6",
+    "ListLeasesLambdaServiceRoleFF8EB759"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/ListLeasesLambda/Resource",
+    "aws:asset:path": "asset.d324b6f34009794868a904efbb84b8885c26d7c3b27e80d7a3b256a58042e3ca",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "UploadDocumentLambdaServiceRoleC3DF181C": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/UploadDocumentLambda/ServiceRole/Resource"
+   }
+  },
+  "UploadDocumentLambdaServiceRoleDefaultPolicyA13BE818": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:DeleteObject*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging",
+        "s3:Abort*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseDocumentsBucket82178BEB",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseDocumentsBucket82178BEB",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseTable473C6DF2",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseTable473C6DF2",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "UploadDocumentLambdaServiceRoleDefaultPolicyA13BE818",
+    "Roles": [
+     {
+      "Ref": "UploadDocumentLambdaServiceRoleC3DF181C"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/UploadDocumentLambda/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "UploadDocumentLambda26F26C4A": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "ac8fddfc22164aa3f6001eeb4ec9e4da0afd62d77d643e125834a4ef8395fc9c.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "LEASE_TABLE_NAME": {
+       "Ref": "LeaseTable473C6DF2"
+      },
+      "LEASE_DOCUMENTS_BUCKET": {
+       "Ref": "LeaseDocumentsBucket82178BEB"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "UploadDocumentLambdaServiceRoleC3DF181C",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs18.x",
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "UploadDocumentLambdaServiceRoleDefaultPolicyA13BE818",
+    "UploadDocumentLambdaServiceRoleC3DF181C"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/UploadDocumentLambda/Resource",
+    "aws:asset:path": "asset.ac8fddfc22164aa3f6001eeb4ec9e4da0afd62d77d643e125834a4ef8395fc9c",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "GetDocumentLambdaServiceRoleBDAF9281": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/GetDocumentLambda/ServiceRole/Resource"
+   }
+  },
+  "GetDocumentLambdaServiceRoleDefaultPolicy4A440C7E": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseDocumentsBucket82178BEB",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseDocumentsBucket82178BEB",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "s3:ListBucket",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "LeaseDocumentsBucket82178BEB",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "GetDocumentLambdaServiceRoleDefaultPolicy4A440C7E",
+    "Roles": [
+     {
+      "Ref": "GetDocumentLambdaServiceRoleBDAF9281"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/GetDocumentLambda/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "GetDocumentLambda841162DC": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "7d02ed862d5726e6d4b8ae8b1bff836a129d44a48899b675377deb231da9490f.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "LEASE_TABLE_NAME": {
+       "Ref": "LeaseTable473C6DF2"
+      },
+      "LEASE_DOCUMENTS_BUCKET": {
+       "Ref": "LeaseDocumentsBucket82178BEB"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "GetDocumentLambdaServiceRoleBDAF9281",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs18.x",
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "GetDocumentLambdaServiceRoleDefaultPolicy4A440C7E",
+    "GetDocumentLambdaServiceRoleBDAF9281"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/GetDocumentLambda/Resource",
+    "aws:asset:path": "asset.7d02ed862d5726e6d4b8ae8b1bff836a129d44a48899b675377deb231da9490f",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ProcessDocumentLambdaServiceRoleB45923C5": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/ProcessDocumentLambda/ServiceRole/Resource"
+   }
+  },
+  "ProcessDocumentLambdaServiceRoleDefaultPolicyDB3D5F63": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseTable473C6DF2",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseTable473C6DF2",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseDocumentsBucket82178BEB",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseDocumentsBucket82178BEB",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "textract:StartDocumentAnalysis",
+        "textract:GetDocumentAnalysis",
+        "textract:AnalyzeDocument"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ProcessDocumentLambdaServiceRoleDefaultPolicyDB3D5F63",
+    "Roles": [
+     {
+      "Ref": "ProcessDocumentLambdaServiceRoleB45923C5"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/ProcessDocumentLambda/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ProcessDocumentLambda7AB010BB": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "1827b81757c4d1b7c2b304d7e875daef1f73e9638be47cb54e3f4458449e1209.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "LEASE_TABLE_NAME": {
+       "Ref": "LeaseTable473C6DF2"
+      },
+      "LEASE_DOCUMENTS_BUCKET": {
+       "Ref": "LeaseDocumentsBucket82178BEB"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 1024,
+    "Role": {
+     "Fn::GetAtt": [
+      "ProcessDocumentLambdaServiceRoleB45923C5",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs18.x",
+    "Timeout": 300
+   },
+   "DependsOn": [
+    "ProcessDocumentLambdaServiceRoleDefaultPolicyDB3D5F63",
+    "ProcessDocumentLambdaServiceRoleB45923C5"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/ProcessDocumentLambda/Resource",
+    "aws:asset:path": "asset.1827b81757c4d1b7c2b304d7e875daef1f73e9638be47cb54e3f4458449e1209",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "GetExtractedDataLambdaServiceRole600AB3B8": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/GetExtractedDataLambda/ServiceRole/Resource"
+   }
+  },
+  "GetExtractedDataLambdaServiceRoleDefaultPolicy391140A8": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseTable473C6DF2",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseTable473C6DF2",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "GetExtractedDataLambdaServiceRoleDefaultPolicy391140A8",
+    "Roles": [
+     {
+      "Ref": "GetExtractedDataLambdaServiceRole600AB3B8"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/GetExtractedDataLambda/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "GetExtractedDataLambda37E12209": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "21cfbf7d6f14afe16c104a3b041e52084becad1f11f68cec26e254920ce2c5a7.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "LEASE_TABLE_NAME": {
+       "Ref": "LeaseTable473C6DF2"
+      },
+      "LEASE_DOCUMENTS_BUCKET": {
+       "Ref": "LeaseDocumentsBucket82178BEB"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "GetExtractedDataLambdaServiceRole600AB3B8",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs18.x",
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "GetExtractedDataLambdaServiceRoleDefaultPolicy391140A8",
+    "GetExtractedDataLambdaServiceRole600AB3B8"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/GetExtractedDataLambda/Resource",
+    "aws:asset:path": "asset.21cfbf7d6f14afe16c104a3b041e52084becad1f11f68cec26e254920ce2c5a7",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ParseDocumentLambdaServiceRole03F7AACA": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/ParseDocumentLambda/ServiceRole/Resource"
+   }
+  },
+  "ParseDocumentLambdaServiceRoleDefaultPolicyE58DB895": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseDocumentsBucket82178BEB",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseDocumentsBucket82178BEB",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "textract:AnalyzeDocument",
+        "textract:StartDocumentAnalysis",
+        "textract:GetDocumentAnalysis"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LeaseTable473C6DF2",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "LeaseTable473C6DF2",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ParseDocumentLambdaServiceRoleDefaultPolicyE58DB895",
+    "Roles": [
+     {
+      "Ref": "ParseDocumentLambdaServiceRole03F7AACA"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/ParseDocumentLambda/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ParseDocumentLambda9DA09513": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "b09bf308f6081925994df100f5b8a6a36011452e683a11be8202f3292d8fd371.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "LEASE_TABLE_NAME": {
+       "Ref": "LeaseTable473C6DF2"
+      },
+      "LEASE_DOCUMENTS_BUCKET": {
+       "Ref": "LeaseDocumentsBucket82178BEB"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 1024,
+    "Role": {
+     "Fn::GetAtt": [
+      "ParseDocumentLambdaServiceRole03F7AACA",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs18.x",
+    "Timeout": 120
+   },
+   "DependsOn": [
+    "ParseDocumentLambdaServiceRoleDefaultPolicyE58DB895",
+    "ParseDocumentLambdaServiceRole03F7AACA"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/ParseDocumentLambda/Resource",
+    "aws:asset:path": "asset.b09bf308f6081925994df100f5b8a6a36011452e683a11be8202f3292d8fd371",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleB6FB88EC": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/BucketNotificationsHandler050a0587b7544547bf325f094a3db834/Role/Resource"
+   }
+  },
+  "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleDefaultPolicy2CF63D36": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutBucketNotification",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "LeaseDocumentsBucket82178BEB",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleDefaultPolicy2CF63D36",
+    "Roles": [
+     {
+      "Ref": "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleB6FB88EC"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/BucketNotificationsHandler050a0587b7544547bf325f094a3db834/Role/DefaultPolicy/Resource"
+   }
+  },
+  "BucketNotificationsHandler050a0587b7544547bf325f094a3db8347ECC3691": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Description": "AWS CloudFormation handler for \"Custom::S3BucketNotifications\" resources (@aws-cdk/aws-s3)",
+    "Code": {
+     "ZipFile": "import boto3  # type: ignore\nimport json\nimport logging\nimport urllib.request\n\ns3 = boto3.client(\"s3\")\n\nEVENTBRIDGE_CONFIGURATION = 'EventBridgeConfiguration'\nCONFIGURATION_TYPES = [\"TopicConfigurations\", \"QueueConfigurations\", \"LambdaFunctionConfigurations\"]\n\ndef handler(event: dict, context):\n  response_status = \"SUCCESS\"\n  error_message = \"\"\n  try:\n    props = event[\"ResourceProperties\"]\n    notification_configuration = props[\"NotificationConfiguration\"]\n    managed = props.get('Managed', 'true').lower() == 'true'\n    skipDestinationValidation = props.get('SkipDestinationValidation', 'false').lower() == 'true'\n    stack_id = event['StackId']\n    old = event.get(\"OldResourceProperties\", {}).get(\"NotificationConfiguration\", {})\n    if managed:\n      config = handle_managed(event[\"RequestType\"], notification_configuration)\n    else:\n      config = handle_unmanaged(props[\"BucketName\"], stack_id, event[\"RequestType\"], notification_configuration, old)\n    s3.put_bucket_notification_configuration(Bucket=props[\"BucketName\"], NotificationConfiguration=config, SkipDestinationValidation=skipDestinationValidation)\n  except Exception as e:\n    logging.exception(\"Failed to put bucket notification configuration\")\n    response_status = \"FAILED\"\n    error_message = f\"Error: {str(e)}. \"\n  finally:\n    submit_response(event, context, response_status, error_message)\n\ndef handle_managed(request_type, notification_configuration):\n  if request_type == 'Delete':\n    return {}\n  return notification_configuration\n\ndef handle_unmanaged(bucket, stack_id, request_type, notification_configuration, old):\n  def get_id(n):\n    n['Id'] = ''\n    sorted_notifications = sort_filter_rules(n)\n    strToHash=json.dumps(sorted_notifications, sort_keys=True).replace('\"Name\": \"prefix\"', '\"Name\": \"Prefix\"').replace('\"Name\": \"suffix\"', '\"Name\": \"Suffix\"')\n    return f\"{stack_id}-{hash(strToHash)}\"\n  def with_id(n):\n    n['Id'] = get_id(n)\n    return n\n\n  external_notifications = {}\n  existing_notifications = s3.get_bucket_notification_configuration(Bucket=bucket)\n  for t in CONFIGURATION_TYPES:\n    if request_type == 'Update':\n        old_incoming_ids = [get_id(n) for n in old.get(t, [])]\n        external_notifications[t] = [n for n in existing_notifications.get(t, []) if not get_id(n) in old_incoming_ids]      \n    elif request_type == 'Delete':\n        external_notifications[t] = [n for n in existing_notifications.get(t, []) if not n['Id'].startswith(f\"{stack_id}-\")]\n    elif request_type == 'Create':\n        external_notifications[t] = [n for n in existing_notifications.get(t, [])]\n  if EVENTBRIDGE_CONFIGURATION in existing_notifications:\n    external_notifications[EVENTBRIDGE_CONFIGURATION] = existing_notifications[EVENTBRIDGE_CONFIGURATION]\n\n  if request_type == 'Delete':\n    return external_notifications\n\n  notifications = {}\n  for t in CONFIGURATION_TYPES:\n    external = external_notifications.get(t, [])\n    incoming = [with_id(n) for n in notification_configuration.get(t, [])]\n    notifications[t] = external + incoming\n\n  if EVENTBRIDGE_CONFIGURATION in notification_configuration:\n    notifications[EVENTBRIDGE_CONFIGURATION] = notification_configuration[EVENTBRIDGE_CONFIGURATION]\n  elif EVENTBRIDGE_CONFIGURATION in external_notifications:\n    notifications[EVENTBRIDGE_CONFIGURATION] = external_notifications[EVENTBRIDGE_CONFIGURATION]\n\n  return notifications\n\ndef submit_response(event: dict, context, response_status: str, error_message: str):\n  response_body = json.dumps(\n    {\n      \"Status\": response_status,\n      \"Reason\": f\"{error_message}See the details in CloudWatch Log Stream: {context.log_stream_name}\",\n      \"PhysicalResourceId\": event.get(\"PhysicalResourceId\") or event[\"LogicalResourceId\"],\n      \"StackId\": event[\"StackId\"],\n      \"RequestId\": event[\"RequestId\"],\n      \"LogicalResourceId\": event[\"LogicalResourceId\"],\n      \"NoEcho\": False,\n    }\n  ).encode(\"utf-8\")\n  headers = {\"content-type\": \"\", \"content-length\": str(len(response_body))}\n  try:\n    req = urllib.request.Request(url=event[\"ResponseURL\"], headers=headers, data=response_body, method=\"PUT\")\n    with urllib.request.urlopen(req) as response:\n      print(response.read().decode(\"utf-8\"))\n    print(\"Status code: \" + response.reason)\n  except Exception as e:\n      print(\"send(..) failed executing request.urlopen(..): \" + str(e))\n\ndef sort_filter_rules(json_obj):\n  if not isinstance(json_obj, dict):\n      return json_obj\n  for key, value in json_obj.items():\n      if isinstance(value, dict):\n          json_obj[key] = sort_filter_rules(value)\n      elif isinstance(value, list):\n          json_obj[key] = [sort_filter_rules(item) for item in value]\n  if \"Filter\" in json_obj and \"Key\" in json_obj[\"Filter\"] and \"FilterRules\" in json_obj[\"Filter\"][\"Key\"]:\n      filter_rules = json_obj[\"Filter\"][\"Key\"][\"FilterRules\"]\n      sorted_filter_rules = sorted(filter_rules, key=lambda x: x[\"Name\"])\n      json_obj[\"Filter\"][\"Key\"][\"FilterRules\"] = sorted_filter_rules\n  return json_obj"
+    },
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleB6FB88EC",
+      "Arn"
+     ]
+    },
+    "Runtime": "python3.13",
+    "Timeout": 300
+   },
+   "DependsOn": [
+    "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleDefaultPolicy2CF63D36",
+    "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleB6FB88EC"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/BucketNotificationsHandler050a0587b7544547bf325f094a3db834/Resource"
+   }
+  },
+  "LeaseManagementApi11F42864": {
+   "Type": "AWS::ApiGateway::RestApi",
+   "Properties": {
+    "Description": "API for managing dental clinic leases",
+    "Name": "Lease Management API"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Resource"
+   }
+  },
+  "LeaseManagementApiCloudWatchRoleA53282E5": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "apigateway.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+       ]
+      ]
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/CloudWatchRole/Resource"
+   }
+  },
+  "LeaseManagementApiAccount8C8A722F": {
+   "Type": "AWS::ApiGateway::Account",
+   "Properties": {
+    "CloudWatchRoleArn": {
+     "Fn::GetAtt": [
+      "LeaseManagementApiCloudWatchRoleA53282E5",
+      "Arn"
+     ]
+    }
+   },
+   "DependsOn": [
+    "LeaseManagementApi11F42864"
+   ],
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Account"
+   }
+  },
+  "LeaseManagementApiDeployment488589E7baa8b15ab4e5ac4b10c604489ad81184": {
+   "Type": "AWS::ApiGateway::Deployment",
+   "Properties": {
+    "Description": "API for managing dental clinic leases",
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "DependsOn": [
+    "GatewayResponseDefault4XXC22BF2A7",
+    "GatewayResponseDefault5XX28177100",
+    "GatewayResponseUnauthorized78FCB15B",
+    "LeaseManagementApileasesclinicIdleaseIdDELETE3F7EAE6D",
+    "LeaseManagementApileasesclinicIdleaseIdGETFD5598A1",
+    "LeaseManagementApileasesclinicIdleaseIdOPTIONSEA126605",
+    "LeaseManagementApileasesclinicIdleaseIdPUTCEB1EE75",
+    "LeaseManagementApileasesclinicIdleaseIdDDC39291",
+    "LeaseManagementApileasesclinicIdOPTIONS888CEF6A",
+    "LeaseManagementApileasesclinicId24C32843",
+    "LeaseManagementApileasesdocumentsdownloadGET9427FF64",
+    "LeaseManagementApileasesdocumentsdownloadOPTIONSCBE71C5B",
+    "LeaseManagementApileasesdocumentsdownloadEF0BE2DB",
+    "LeaseManagementApileasesdocumentsextractedGET37C353D8",
+    "LeaseManagementApileasesdocumentsextractedOPTIONS2284CDD2",
+    "LeaseManagementApileasesdocumentsextracted21EF41B1",
+    "LeaseManagementApileasesdocumentsOPTIONS7B8CA3F2",
+    "LeaseManagementApileasesdocumentsparseOPTIONS1E18AFAB",
+    "LeaseManagementApileasesdocumentsparsePOSTAD47B249",
+    "LeaseManagementApileasesdocumentsparse180854EB",
+    "LeaseManagementApileasesdocumentsB2B22C2A",
+    "LeaseManagementApileasesdocumentsuploadOPTIONS4D6C61C0",
+    "LeaseManagementApileasesdocumentsuploadPOSTBA139794",
+    "LeaseManagementApileasesdocumentsuploadD29379A9",
+    "LeaseManagementApileasesGETDE26A149",
+    "LeaseManagementApileasesOPTIONS948C29F3",
+    "LeaseManagementApileasesPOSTAD505801",
+    "LeaseManagementApileases7081E3FD",
+    "LeaseManagementApiOPTIONS71D2F023"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Deployment/Resource",
+    "aws:cdk:do-not-refactor": true
+   }
+  },
+  "LeaseManagementApiDeploymentStageprodA2190B3F": {
+   "Type": "AWS::ApiGateway::Stage",
+   "Properties": {
+    "DeploymentId": {
+     "Ref": "LeaseManagementApiDeployment488589E7baa8b15ab4e5ac4b10c604489ad81184"
+    },
+    "MethodSettings": [
+     {
+      "DataTraceEnabled": false,
+      "HttpMethod": "*",
+      "LoggingLevel": "INFO",
+      "MetricsEnabled": true,
+      "ResourcePath": "/*"
+     }
+    ],
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    },
+    "StageName": "prod"
+   },
+   "DependsOn": [
+    "LeaseManagementApiAccount8C8A722F"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/DeploymentStage.prod/Resource"
+   }
+  },
+  "LeaseManagementApiOPTIONS71D2F023": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,x-clinic-id'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Fn::GetAtt": [
+      "LeaseManagementApi11F42864",
+      "RootResourceId"
+     ]
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/OPTIONS/Resource"
+   }
+  },
+  "LeaseManagementApileases7081E3FD": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "LeaseManagementApi11F42864",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "leases",
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/Resource"
+   }
+  },
+  "LeaseManagementApileasesOPTIONS948C29F3": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,x-clinic-id'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "LeaseManagementApileases7081E3FD"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/OPTIONS/Resource"
+   }
+  },
+  "LeaseManagementApileasesPOSTApiPermissionTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDPOSTleasesBA7DC957": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "CreateLeaseLambdaB0B5F963",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/",
+       {
+        "Ref": "LeaseManagementApiDeploymentStageprodA2190B3F"
+       },
+       "/POST/leases"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/POST/ApiPermission.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.POST..leases"
+   }
+  },
+  "LeaseManagementApileasesPOSTApiPermissionTestTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDPOSTleasesB1605A28": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "CreateLeaseLambdaB0B5F963",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/test-invoke-stage/POST/leases"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/POST/ApiPermission.Test.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.POST..leases"
+   }
+  },
+  "LeaseManagementApileasesPOSTAD505801": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "LeaseManagementAuthorizerC227E3C5"
+    },
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "CreateLeaseLambdaB0B5F963",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "LeaseManagementApileases7081E3FD"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/POST/Resource"
+   }
+  },
+  "LeaseManagementApileasesGETApiPermissionTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDGETleases3F7D8985": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ListLeasesLambda31645071",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/",
+       {
+        "Ref": "LeaseManagementApiDeploymentStageprodA2190B3F"
+       },
+       "/GET/leases"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/GET/ApiPermission.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.GET..leases"
+   }
+  },
+  "LeaseManagementApileasesGETApiPermissionTestTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDGETleasesF1E7BBB8": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ListLeasesLambda31645071",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/test-invoke-stage/GET/leases"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/GET/ApiPermission.Test.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.GET..leases"
+   }
+  },
+  "LeaseManagementApileasesGETDE26A149": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "LeaseManagementAuthorizerC227E3C5"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ListLeasesLambda31645071",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "LeaseManagementApileases7081E3FD"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/GET/Resource"
+   }
+  },
+  "LeaseManagementApileasesclinicId24C32843": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "LeaseManagementApileases7081E3FD"
+    },
+    "PathPart": "{clinicId}",
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/{clinicId}/Resource"
+   }
+  },
+  "LeaseManagementApileasesclinicIdOPTIONS888CEF6A": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,x-clinic-id'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "LeaseManagementApileasesclinicId24C32843"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/{clinicId}/OPTIONS/Resource"
+   }
+  },
+  "LeaseManagementApileasesclinicIdleaseIdDDC39291": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "LeaseManagementApileasesclinicId24C32843"
+    },
+    "PathPart": "{leaseId}",
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/{clinicId}/{leaseId}/Resource"
+   }
+  },
+  "LeaseManagementApileasesclinicIdleaseIdOPTIONSEA126605": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,x-clinic-id'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "LeaseManagementApileasesclinicIdleaseIdDDC39291"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/{clinicId}/{leaseId}/OPTIONS/Resource"
+   }
+  },
+  "LeaseManagementApileasesclinicIdleaseIdGETApiPermissionTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDGETleasesclinicIdleaseId3C37D7D1": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "GetLeaseLambdaD9D38D15",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/",
+       {
+        "Ref": "LeaseManagementApiDeploymentStageprodA2190B3F"
+       },
+       "/GET/leases/*/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/{clinicId}/{leaseId}/GET/ApiPermission.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.GET..leases.{clinicId}.{leaseId}"
+   }
+  },
+  "LeaseManagementApileasesclinicIdleaseIdGETApiPermissionTestTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDGETleasesclinicIdleaseIdC81CB61B": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "GetLeaseLambdaD9D38D15",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/test-invoke-stage/GET/leases/*/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/{clinicId}/{leaseId}/GET/ApiPermission.Test.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.GET..leases.{clinicId}.{leaseId}"
+   }
+  },
+  "LeaseManagementApileasesclinicIdleaseIdGETFD5598A1": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "LeaseManagementAuthorizerC227E3C5"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "GetLeaseLambdaD9D38D15",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "LeaseManagementApileasesclinicIdleaseIdDDC39291"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/{clinicId}/{leaseId}/GET/Resource"
+   }
+  },
+  "LeaseManagementApileasesclinicIdleaseIdPUTApiPermissionTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDPUTleasesclinicIdleaseIdE17F2438": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "UpdateLeaseLambda3A7C38ED",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/",
+       {
+        "Ref": "LeaseManagementApiDeploymentStageprodA2190B3F"
+       },
+       "/PUT/leases/*/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/{clinicId}/{leaseId}/PUT/ApiPermission.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.PUT..leases.{clinicId}.{leaseId}"
+   }
+  },
+  "LeaseManagementApileasesclinicIdleaseIdPUTApiPermissionTestTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDPUTleasesclinicIdleaseId1A24C1B6": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "UpdateLeaseLambda3A7C38ED",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/test-invoke-stage/PUT/leases/*/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/{clinicId}/{leaseId}/PUT/ApiPermission.Test.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.PUT..leases.{clinicId}.{leaseId}"
+   }
+  },
+  "LeaseManagementApileasesclinicIdleaseIdPUTCEB1EE75": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "LeaseManagementAuthorizerC227E3C5"
+    },
+    "HttpMethod": "PUT",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "UpdateLeaseLambda3A7C38ED",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "LeaseManagementApileasesclinicIdleaseIdDDC39291"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/{clinicId}/{leaseId}/PUT/Resource"
+   }
+  },
+  "LeaseManagementApileasesclinicIdleaseIdDELETEApiPermissionTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDDELETEleasesclinicIdleaseId5C40764D": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "DeleteLeaseLambdaC9A33C28",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/",
+       {
+        "Ref": "LeaseManagementApiDeploymentStageprodA2190B3F"
+       },
+       "/DELETE/leases/*/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/{clinicId}/{leaseId}/DELETE/ApiPermission.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.DELETE..leases.{clinicId}.{leaseId}"
+   }
+  },
+  "LeaseManagementApileasesclinicIdleaseIdDELETEApiPermissionTestTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDDELETEleasesclinicIdleaseId5177BB86": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "DeleteLeaseLambdaC9A33C28",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/test-invoke-stage/DELETE/leases/*/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/{clinicId}/{leaseId}/DELETE/ApiPermission.Test.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.DELETE..leases.{clinicId}.{leaseId}"
+   }
+  },
+  "LeaseManagementApileasesclinicIdleaseIdDELETE3F7EAE6D": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "LeaseManagementAuthorizerC227E3C5"
+    },
+    "HttpMethod": "DELETE",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "DeleteLeaseLambdaC9A33C28",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "LeaseManagementApileasesclinicIdleaseIdDDC39291"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/{clinicId}/{leaseId}/DELETE/Resource"
+   }
+  },
+  "LeaseManagementApileasesdocumentsB2B22C2A": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "LeaseManagementApileases7081E3FD"
+    },
+    "PathPart": "documents",
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/Resource"
+   }
+  },
+  "LeaseManagementApileasesdocumentsOPTIONS7B8CA3F2": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,x-clinic-id'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "LeaseManagementApileasesdocumentsB2B22C2A"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/OPTIONS/Resource"
+   }
+  },
+  "LeaseManagementApileasesdocumentsuploadD29379A9": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "LeaseManagementApileasesdocumentsB2B22C2A"
+    },
+    "PathPart": "upload",
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/upload/Resource"
+   }
+  },
+  "LeaseManagementApileasesdocumentsuploadOPTIONS4D6C61C0": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,x-clinic-id'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "LeaseManagementApileasesdocumentsuploadD29379A9"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/upload/OPTIONS/Resource"
+   }
+  },
+  "LeaseManagementApileasesdocumentsuploadPOSTApiPermissionTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDPOSTleasesdocumentsupload82DAEF46": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "UploadDocumentLambda26F26C4A",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/",
+       {
+        "Ref": "LeaseManagementApiDeploymentStageprodA2190B3F"
+       },
+       "/POST/leases/documents/upload"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/upload/POST/ApiPermission.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.POST..leases.documents.upload"
+   }
+  },
+  "LeaseManagementApileasesdocumentsuploadPOSTApiPermissionTestTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDPOSTleasesdocumentsupload52853105": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "UploadDocumentLambda26F26C4A",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/test-invoke-stage/POST/leases/documents/upload"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/upload/POST/ApiPermission.Test.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.POST..leases.documents.upload"
+   }
+  },
+  "LeaseManagementApileasesdocumentsuploadPOSTBA139794": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "LeaseManagementAuthorizerC227E3C5"
+    },
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "UploadDocumentLambda26F26C4A",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "LeaseManagementApileasesdocumentsuploadD29379A9"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/upload/POST/Resource"
+   }
+  },
+  "LeaseManagementApileasesdocumentsdownloadEF0BE2DB": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "LeaseManagementApileasesdocumentsB2B22C2A"
+    },
+    "PathPart": "download",
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/download/Resource"
+   }
+  },
+  "LeaseManagementApileasesdocumentsdownloadOPTIONSCBE71C5B": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,x-clinic-id'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "LeaseManagementApileasesdocumentsdownloadEF0BE2DB"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/download/OPTIONS/Resource"
+   }
+  },
+  "LeaseManagementApileasesdocumentsdownloadGETApiPermissionTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDGETleasesdocumentsdownloadDB124D5C": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "GetDocumentLambda841162DC",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/",
+       {
+        "Ref": "LeaseManagementApiDeploymentStageprodA2190B3F"
+       },
+       "/GET/leases/documents/download"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/download/GET/ApiPermission.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.GET..leases.documents.download"
+   }
+  },
+  "LeaseManagementApileasesdocumentsdownloadGETApiPermissionTestTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDGETleasesdocumentsdownload5E566EA9": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "GetDocumentLambda841162DC",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/test-invoke-stage/GET/leases/documents/download"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/download/GET/ApiPermission.Test.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.GET..leases.documents.download"
+   }
+  },
+  "LeaseManagementApileasesdocumentsdownloadGET9427FF64": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "LeaseManagementAuthorizerC227E3C5"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "GetDocumentLambda841162DC",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "LeaseManagementApileasesdocumentsdownloadEF0BE2DB"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/download/GET/Resource"
+   }
+  },
+  "LeaseManagementApileasesdocumentsextracted21EF41B1": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "LeaseManagementApileasesdocumentsB2B22C2A"
+    },
+    "PathPart": "extracted",
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/extracted/Resource"
+   }
+  },
+  "LeaseManagementApileasesdocumentsextractedOPTIONS2284CDD2": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,x-clinic-id'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "LeaseManagementApileasesdocumentsextracted21EF41B1"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/extracted/OPTIONS/Resource"
+   }
+  },
+  "LeaseManagementApileasesdocumentsextractedGETApiPermissionTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDGETleasesdocumentsextracted1D7C97F2": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "GetExtractedDataLambda37E12209",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/",
+       {
+        "Ref": "LeaseManagementApiDeploymentStageprodA2190B3F"
+       },
+       "/GET/leases/documents/extracted"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/extracted/GET/ApiPermission.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.GET..leases.documents.extracted"
+   }
+  },
+  "LeaseManagementApileasesdocumentsextractedGETApiPermissionTestTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDGETleasesdocumentsextracted1FDD6D2F": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "GetExtractedDataLambda37E12209",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/test-invoke-stage/GET/leases/documents/extracted"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/extracted/GET/ApiPermission.Test.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.GET..leases.documents.extracted"
+   }
+  },
+  "LeaseManagementApileasesdocumentsextractedGET37C353D8": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "LeaseManagementAuthorizerC227E3C5"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "GetExtractedDataLambda37E12209",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "LeaseManagementApileasesdocumentsextracted21EF41B1"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/extracted/GET/Resource"
+   }
+  },
+  "LeaseManagementApileasesdocumentsparse180854EB": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "LeaseManagementApileasesdocumentsB2B22C2A"
+    },
+    "PathPart": "parse",
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/parse/Resource"
+   }
+  },
+  "LeaseManagementApileasesdocumentsparseOPTIONS1E18AFAB": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,x-clinic-id'",
+        "method.response.header.Access-Control-Allow-Origin": "'*'",
+        "method.response.header.Access-Control-Allow-Methods": "'OPTIONS,GET,PUT,POST,DELETE,PATCH,HEAD'"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "LeaseManagementApileasesdocumentsparse180854EB"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/parse/OPTIONS/Resource"
+   }
+  },
+  "LeaseManagementApileasesdocumentsparsePOSTApiPermissionTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDPOSTleasesdocumentsparse8FAB7FA0": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ParseDocumentLambda9DA09513",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/",
+       {
+        "Ref": "LeaseManagementApiDeploymentStageprodA2190B3F"
+       },
+       "/POST/leases/documents/parse"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/parse/POST/ApiPermission.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.POST..leases.documents.parse"
+   }
+  },
+  "LeaseManagementApileasesdocumentsparsePOSTApiPermissionTestTodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CDPOSTleasesdocumentsparseD8B64A86": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ParseDocumentLambda9DA09513",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/test-invoke-stage/POST/leases/documents/parse"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/parse/POST/ApiPermission.Test.TodaysDentalInsightsLeaseManagementN1LeaseManagementApiD2F566CD.POST..leases.documents.parse"
+   }
+  },
+  "LeaseManagementApileasesdocumentsparsePOSTAD47B249": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "LeaseManagementAuthorizerC227E3C5"
+    },
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ParseDocumentLambda9DA09513",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "LeaseManagementApileasesdocumentsparse180854EB"
+    },
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementApi/Default/leases/documents/parse/POST/Resource"
+   }
+  },
+  "GatewayResponseDefault4XXC22BF2A7": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'*'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,x-clinic-id'"
+    },
+    "ResponseType": "DEFAULT_4XX",
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/GatewayResponseDefault4XX/Resource"
+   }
+  },
+  "GatewayResponseDefault5XX28177100": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'*'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,x-clinic-id'"
+    },
+    "ResponseType": "DEFAULT_5XX",
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/GatewayResponseDefault5XX/Resource"
+   }
+  },
+  "GatewayResponseUnauthorized78FCB15B": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'*'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,x-clinic-id'"
+    },
+    "ResponseType": "UNAUTHORIZED",
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/GatewayResponseUnauthorized/Resource"
+   }
+  },
+  "LeaseManagementAuthorizerC227E3C5": {
+   "Type": "AWS::ApiGateway::Authorizer",
+   "Properties": {
+    "AuthorizerResultTtlInSeconds": 300,
+    "AuthorizerUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Fn::Select": [
+         1,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":apigateway:",
+       {
+        "Fn::Select": [
+         3,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":lambda:path/2015-03-31/functions/",
+       {
+        "Fn::ImportValue": "AuthorizerFunctionArnN1"
+       },
+       "/invocations"
+      ]
+     ]
+    },
+    "IdentitySource": "method.request.header.Authorization",
+    "Name": "TodaysDentalInsightsLeaseManagementN1LeaseManagementAuthorizer29BAB955",
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    },
+    "Type": "REQUEST"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseManagementAuthorizer/Resource"
+   }
+  },
+  "AuthorizerInvokePermission": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::ImportValue": "AuthorizerFunctionArnN1"
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "LeaseManagementApi11F42864"
+       },
+       "/authorizers/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/AuthorizerInvokePermission"
+   }
+  },
+  "LeaseBasePathMapping": {
+   "Type": "AWS::ApiGateway::BasePathMapping",
+   "Properties": {
+    "BasePath": "lease",
+    "DomainName": "apig.todaysdentalinsights.com",
+    "RestApiId": {
+     "Ref": "LeaseManagementApi11F42864"
+    },
+    "Stage": {
+     "Ref": "LeaseManagementApiDeploymentStageprodA2190B3F"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/LeaseBasePathMapping"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/12Q3VLCMBCFn8X7sELxBQBHr1CmeM9s06UE2iR2E5ma6bs7SQDFq/Nt9uxfCiiKGUwf8MwTWZ8mraogbB3Kk8Az7wLPISy9PJETq72+UJYlMo2ixa6qEcJqrzfUd4pZGR29L15LF/kK2V8PGjtTVxA+sGopOhNcO+20qenI8Jbk1kRhB6E0uSDpxrRKDjHMNAqe75CZHMMiikCrGnR0xgFCSewWVqXqX1xIabx24plsa4aOdLryT7R12KSRGUpi43tJ8RSxJncwdUxe6Jq9DMn8mjcoia3RnHL/n0r69HEn7w6mV9/Up9Xuojhwg+6wRmuVbsbxbsYN0t1xVaWb6Hj3zno3ivincOTHr+IJZgVMH46s1KT32qmOoMz6AyAmJ8ALAgAA"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsLeaseManagementN1/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "LeaseManagementApiEndpointAB615C11": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "LeaseManagementApi11F42864"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "LeaseManagementApiDeploymentStageprodA2190B3F"
+      },
+      "/"
+     ]
+    ]
+   }
+  },
+  "LeaseTableNameOutput": {
+   "Value": {
+    "Ref": "LeaseTable473C6DF2"
+   }
+  },
+  "LeaseDocumentsBucketOutput": {
+   "Value": {
+    "Ref": "LeaseDocumentsBucket82178BEB"
+   }
+  },
+  "LeaseApiUrlOutput": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "LeaseManagementApi11F42864"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "LeaseManagementApiDeploymentStageprodA2190B3F"
+      },
+      "/"
+     ]
+    ]
+   }
+  },
+  "LeaseCustomDomainUrl": {
+   "Description": "Lease Management API Custom Domain URL",
+   "Value": "https://apig.todaysdentalinsights.com/lease"
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/tdi3/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

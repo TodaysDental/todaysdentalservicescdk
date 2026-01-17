@@ -1,0 +1,51 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "309c43953f141e3cd63acd080593e8e77ba42a33d8616480db1a55b340107744": {
+      "displayName": "ClinicHoursCrudFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-4bffe2b4": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "309c43953f141e3cd63acd080593e8e77ba42a33d8616480db1a55b340107744.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "8643318c6ab07cdbe5014a0d1fd64dbdbecb1bf3f027bfcca5ed634d6a896aac": {
+      "displayName": "HoursSchedulerFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-ca40080c": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "8643318c6ab07cdbe5014a0d1fd64dbdbecb1bf3f027bfcca5ed634d6a896aac.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "74934d7b7b0c218687ea5b2901ed1f8f2458283b7fc9b4085d6f8a03680d8db1": {
+      "displayName": "TodaysDentalInsightsClinicHoursN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsClinicHoursN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-1512770d": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "74934d7b7b0c218687ea5b2901ed1f8f2458283b7fc9b4085d6f8a03680d8db1.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

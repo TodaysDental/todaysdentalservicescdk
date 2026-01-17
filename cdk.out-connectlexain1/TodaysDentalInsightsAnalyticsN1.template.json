@@ -1,0 +1,3194 @@
+{
+ "Resources": {
+  "CallAnalyticsTableD801EFC2": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "callId",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "timestamp",
+      "AttributeType": "N"
+     },
+     {
+      "AttributeName": "clinicId",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "agentId",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "overallSentiment",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "callStatus",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "callCategory",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "analyticsState",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "finalizationScheduledAt",
+      "AttributeType": "N"
+     },
+     {
+      "AttributeName": "aiCallType",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "aiAgentId",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "aiResolutionOutcome",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "GlobalSecondaryIndexes": [
+     {
+      "IndexName": "clinicId-timestamp-index",
+      "KeySchema": [
+       {
+        "AttributeName": "clinicId",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "timestamp",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "agentId-timestamp-index",
+      "KeySchema": [
+       {
+        "AttributeName": "agentId",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "timestamp",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "overallSentiment-timestamp-index",
+      "KeySchema": [
+       {
+        "AttributeName": "overallSentiment",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "timestamp",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "callStatus-timestamp-index",
+      "KeySchema": [
+       {
+        "AttributeName": "callStatus",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "timestamp",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "callCategory-timestamp-index",
+      "KeySchema": [
+       {
+        "AttributeName": "callCategory",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "timestamp",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "clinicId-callCategory-index",
+      "KeySchema": [
+       {
+        "AttributeName": "clinicId",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "callCategory",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "analyticsState-finalizationScheduledAt-index",
+      "KeySchema": [
+       {
+        "AttributeName": "analyticsState",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "finalizationScheduledAt",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "KEYS_ONLY"
+      }
+     },
+     {
+      "IndexName": "aiCallType-timestamp-index",
+      "KeySchema": [
+       {
+        "AttributeName": "aiCallType",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "timestamp",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "aiAgentId-timestamp-index",
+      "KeySchema": [
+       {
+        "AttributeName": "aiAgentId",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "timestamp",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "aiResolutionOutcome-timestamp-index",
+      "KeySchema": [
+       {
+        "AttributeName": "aiResolutionOutcome",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "timestamp",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "clinicId-aiCallType-index",
+      "KeySchema": [
+       {
+        "AttributeName": "clinicId",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "aiCallType",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     }
+    ],
+    "KeySchema": [
+     {
+      "AttributeName": "callId",
+      "KeyType": "HASH"
+     },
+     {
+      "AttributeName": "timestamp",
+      "KeyType": "RANGE"
+     }
+    ],
+    "PointInTimeRecoverySpecification": {
+     "PointInTimeRecoveryEnabled": true
+    },
+    "StreamSpecification": {
+     "StreamViewType": "NEW_AND_OLD_IMAGES"
+    },
+    "TableName": "TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "analytics"
+     }
+    ],
+    "TimeToLiveSpecification": {
+     "AttributeName": "ttl",
+     "Enabled": true
+    }
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/CallAnalyticsTable/Resource"
+   }
+  },
+  "AnalyticsFailuresTableF6D624C4": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "failureId",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "KeySchema": [
+     {
+      "AttributeName": "failureId",
+      "KeyType": "HASH"
+     }
+    ],
+    "PointInTimeRecoverySpecification": {
+     "PointInTimeRecoveryEnabled": true
+    },
+    "TableName": "TodaysDentalInsightsAnalyticsN1-AnalyticsFailuresV2",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "analytics-failures"
+     }
+    ],
+    "TimeToLiveSpecification": {
+     "AttributeName": "ttl",
+     "Enabled": true
+    }
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AnalyticsFailuresTable/Resource"
+   }
+  },
+  "AnalyticsDedupTable8FE59AA5": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "eventId",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "KeySchema": [
+     {
+      "AttributeName": "eventId",
+      "KeyType": "HASH"
+     }
+    ],
+    "TableName": "TodaysDentalInsightsAnalyticsN1-CallAnalytics-dedupV2",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "analytics-dedup"
+     }
+    ],
+    "TimeToLiveSpecification": {
+     "AttributeName": "ttl",
+     "Enabled": true
+    }
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AnalyticsDedupTable/Resource"
+   }
+  },
+  "TranscriptBufferTable6B540524": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "callId",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "KeySchema": [
+     {
+      "AttributeName": "callId",
+      "KeyType": "HASH"
+     }
+    ],
+    "TableName": "TodaysDentalInsightsAnalyticsN1-TranscriptBuffersV2",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "transcript-buffer"
+     }
+    ],
+    "TimeToLiveSpecification": {
+     "AttributeName": "ttl",
+     "Enabled": true
+    }
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/TranscriptBufferTable/Resource"
+   }
+  },
+  "AgentPerformanceFailuresTable976AAE0F": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "failureId",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "KeySchema": [
+     {
+      "AttributeName": "failureId",
+      "KeyType": "HASH"
+     }
+    ],
+    "PointInTimeRecoverySpecification": {
+     "PointInTimeRecoveryEnabled": true
+    },
+    "TableName": "TodaysDentalInsightsAnalyticsN1-AgentPerformanceFailuresV2",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "agent-performance-failures"
+     }
+    ],
+    "TimeToLiveSpecification": {
+     "AttributeName": "ttl",
+     "Enabled": true
+    }
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AgentPerformanceFailuresTable/Resource"
+   }
+  },
+  "CallAlertsTopic566F2008": {
+   "Type": "AWS::SNS::Topic",
+   "Properties": {
+    "DisplayName": "Call Analytics Real-Time Alerts",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "TopicName": "TodaysDentalInsightsAnalyticsN1-call-alerts"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/CallAlertsTopic/Resource"
+   }
+  },
+  "PerformanceInsightsTopicEB49AE36": {
+   "Type": "AWS::SNS::Topic",
+   "Properties": {
+    "DisplayName": "Agent Performance Insights",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "TopicName": "TodaysDentalInsightsAnalyticsN1-performance-insights"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/PerformanceInsightsTopic/Resource"
+   }
+  },
+  "AgentPerformanceAlertTopic10385814": {
+   "Type": "AWS::SNS::Topic",
+   "Properties": {
+    "DisplayName": "Agent Performance Tracking Failures",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "TopicName": "TodaysDentalInsightsAnalyticsN1-agent-performance-alerts"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AgentPerformanceAlertTopic/Resource"
+   }
+  },
+  "AgentPerformanceDLQ3CCA5A06": {
+   "Type": "AWS::SQS::Queue",
+   "Properties": {
+    "MessageRetentionPeriod": 1209600,
+    "QueueName": "TodaysDentalInsightsAnalyticsN1-agent-performance-dlq",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Queue",
+      "Value": "agent-performance-dlq"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "VisibilityTimeout": 300
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AgentPerformanceDLQ/Resource"
+   }
+  },
+  "AgentPerformanceDLQAlarm979EFC4C": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "AgentPerformanceAlertTopic10385814"
+     }
+    ],
+    "AlarmDescription": "Alert when agent performance DLQ has >10 messages",
+    "AlarmName": "TodaysDentalInsightsAnalyticsN1-agent-performance-dlq-depth",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "DatapointsToAlarm": 1,
+    "Dimensions": [
+     {
+      "Name": "QueueName",
+      "Value": {
+       "Fn::GetAtt": [
+        "AgentPerformanceDLQ3CCA5A06",
+        "QueueName"
+       ]
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ApproximateNumberOfMessagesVisible",
+    "Namespace": "AWS/SQS",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 10,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AgentPerformanceDLQAlarm/Resource"
+   }
+  },
+  "AgentPerformanceDLQProcessorServiceRole27C5EB42": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "agent-performance-dlq-processor"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AgentPerformanceDLQProcessor/ServiceRole/Resource"
+   }
+  },
+  "AgentPerformanceDLQProcessorServiceRoleDefaultPolicyC2C0DEE5": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "AgentPerformanceFailuresTable976AAE0F",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": "sns:Publish",
+       "Effect": "Allow",
+       "Resource": {
+        "Ref": "AgentPerformanceAlertTopic10385814"
+       }
+      },
+      {
+       "Action": [
+        "dynamodb:UpdateItem",
+        "dynamodb:GetItem"
+       ],
+       "Effect": "Allow",
+       "Resource": "arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsChimeN1-AgentPerformance"
+      },
+      {
+       "Action": [
+        "sqs:ReceiveMessage",
+        "sqs:ChangeMessageVisibility",
+        "sqs:GetQueueUrl",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "AgentPerformanceDLQ3CCA5A06",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "AgentPerformanceDLQProcessorServiceRoleDefaultPolicyC2C0DEE5",
+    "Roles": [
+     {
+      "Ref": "AgentPerformanceDLQProcessorServiceRole27C5EB42"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AgentPerformanceDLQProcessor/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "AgentPerformanceDLQProcessor8837ABEC": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "1fbddd1b3b3acdf23d497fedb271786f3621d05ef66b249d8e69260b2daf7925.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "AGENT_PERFORMANCE_TABLE_NAME": "TodaysDentalInsightsChimeN1-AgentPerformance",
+      "AGENT_PERFORMANCE_FAILURES_TABLE_NAME": {
+       "Ref": "AgentPerformanceFailuresTable976AAE0F"
+      },
+      "ALERT_TOPIC_ARN": {
+       "Ref": "AgentPerformanceAlertTopic10385814"
+      }
+     }
+    },
+    "FunctionName": "TodaysDentalInsightsAnalyticsN1-AgentPerformanceDLQProcessor",
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "AgentPerformanceDLQProcessorServiceRole27C5EB42",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "agent-performance-dlq-processor"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Timeout": 300
+   },
+   "DependsOn": [
+    "AgentPerformanceDLQProcessorServiceRoleDefaultPolicyC2C0DEE5",
+    "AgentPerformanceDLQProcessorServiceRole27C5EB42"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AgentPerformanceDLQProcessor/Resource",
+    "aws:asset:path": "asset.1fbddd1b3b3acdf23d497fedb271786f3621d05ef66b249d8e69260b2daf7925",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "AgentPerformanceDLQProcessorLogRetention26431602": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "AgentPerformanceDLQProcessor8837ABEC"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AgentPerformanceDLQProcessor/LogRetention/Resource"
+   }
+  },
+  "AgentPerformanceDLQProcessorSqsEventSourceTodaysDentalInsightsAnalyticsN1AgentPerformanceDLQ95756DC20C35B81A": {
+   "Type": "AWS::Lambda::EventSourceMapping",
+   "Properties": {
+    "BatchSize": 10,
+    "EventSourceArn": {
+     "Fn::GetAtt": [
+      "AgentPerformanceDLQ3CCA5A06",
+      "Arn"
+     ]
+    },
+    "FunctionName": {
+     "Ref": "AgentPerformanceDLQProcessor8837ABEC"
+    },
+    "MaximumBatchingWindowInSeconds": 30,
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "agent-performance-dlq-processor"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AgentPerformanceDLQProcessor/SqsEventSource:TodaysDentalInsightsAnalyticsN1AgentPerformanceDLQ95756DC2/Resource"
+   }
+  },
+  "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/ServiceRole/Resource"
+   }
+  },
+  "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRoleDefaultPolicyADDA7DEB": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "logs:PutRetentionPolicy",
+        "logs:DeleteRetentionPolicy"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRoleDefaultPolicyADDA7DEB",
+    "Roles": [
+     {
+      "Ref": "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Handler": "index.handler",
+    "Runtime": "nodejs22.x",
+    "Timeout": 900,
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "2819175352ad1ce0dae768e83fc328fb70fb5f10b4a8ff0ccbcb791f02b0716d.zip"
+    },
+    "Role": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB",
+      "Arn"
+     ]
+    },
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRoleDefaultPolicyADDA7DEB",
+    "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/Resource",
+    "aws:asset:path": "asset.2819175352ad1ce0dae768e83fc328fb70fb5f10b4a8ff0ccbcb791f02b0716d",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Code"
+   }
+  },
+  "MedicalVocabularyRoleD81E8ED1": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/MedicalVocabularyRole/Resource"
+   }
+  },
+  "MedicalVocabularyRoleDefaultPolicyF6F945C6": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "transcribe:CreateVocabulary",
+        "transcribe:DeleteVocabulary",
+        "transcribe:GetVocabulary"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "MedicalVocabularyRoleDefaultPolicyF6F945C6",
+    "Roles": [
+     {
+      "Ref": "MedicalVocabularyRoleD81E8ED1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/MedicalVocabularyRole/DefaultPolicy/Resource"
+   }
+  },
+  "MedicalVocabulary718C1D1F": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": "{\"service\":\"Transcribe\",\"action\":\"createVocabulary\",\"parameters\":{\"LanguageCode\":\"en-US\",\"VocabularyName\":\"TodaysDentalInsightsAnalyticsN1-dental-vocab\",\"Phrases\":[\"gingivectomy\",\"apicoectomy\",\"pulpotomy\",\"pulpectomy\",\"crown lengthening\",\"bone grafting\",\"sinus lift\",\"ridge augmentation\",\"socket preservation\",\"composite resin\",\"porcelain fused to metal\",\"zirconia\",\"lithium disilicate\",\"CEREC\",\"Invisalign\",\"periodontitis\",\"gingivitis\",\"malocclusion\",\"bruxism\",\"xerostomia\",\"halitosis\",\"TMJ disorder\",\"TMD\",\"temporomandibular joint\",\"occlusal disease\",\"maxillary\",\"mandibular\",\"bicuspid\",\"cuspid\",\"molar\",\"premolar\",\"incisor\",\"canine\",\"PPO\",\"HMO\",\"dental HMO\",\"DMO\",\"DHMO\",\"UCR\",\"usual customary and reasonable\",\"coordination of benefits\",\"COB\",\"EOB\",\"explanation of benefits\",\"pre-authorization\",\"pre-auth\",\"Novocaine\",\"Carbocaine\",\"Septocaine\",\"Lidocaine\",\"OralB\",\"Sonicare\",\"Waterpik\",\"RCT\",\"root canal therapy\",\"SRP\",\"scaling and root planing\",\"FMX\",\"full mouth x-ray\",\"BWX\",\"bitewing x-ray\",\"PA\",\"periapical\",\"pano\",\"panoramic x-ray\"]},\"physicalResourceId\":{\"id\":\"TodaysDentalInsightsAnalyticsN1-dental-vocab\"}}",
+    "Delete": "{\"service\":\"Transcribe\",\"action\":\"deleteVocabulary\",\"parameters\":{\"VocabularyName\":\"TodaysDentalInsightsAnalyticsN1-dental-vocab\"},\"ignoreErrorCodesMatching\":\"NotFoundException\"}",
+    "InstallLatestAwsSdk": true
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/MedicalVocabulary/Resource/Default"
+   }
+  },
+  "AWS679f53fac002430cb0da5b7982bd22872D164C4C": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "8d5e97812d0036272ba1fd5bb8772ff51f4712e58c75507e4a0db242bf680f1d.zip"
+    },
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "MedicalVocabularyRoleD81E8ED1",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Timeout": 300
+   },
+   "DependsOn": [
+    "MedicalVocabularyRoleDefaultPolicyF6F945C6",
+    "MedicalVocabularyRoleD81E8ED1"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AWS679f53fac002430cb0da5b7982bd2287/Resource",
+    "aws:asset:path": "asset.8d5e97812d0036272ba1fd5bb8772ff51f4712e58c75507e4a0db242bf680f1d",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Code"
+   }
+  },
+  "FinalizeAnalyticsFunctionServiceRole72DAEED6": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "finalize-analytics"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/FinalizeAnalyticsFunction/ServiceRole/Resource"
+   }
+  },
+  "FinalizeAnalyticsFunctionServiceRoleDefaultPolicyCF8C7DC7": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "CallAnalyticsTableD801EFC2",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "CallAnalyticsTableD801EFC2",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "TranscriptBufferTable6B540524",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:UpdateItem",
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsChimeN1-AgentPerformance",
+        "arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsChimeN1-AgentPerformance/index/*",
+        "arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsChimeN1-AgentPresence"
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "FinalizeAnalyticsFunctionServiceRoleDefaultPolicyCF8C7DC7",
+    "Roles": [
+     {
+      "Ref": "FinalizeAnalyticsFunctionServiceRole72DAEED6"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/FinalizeAnalyticsFunction/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "FinalizeAnalyticsFunctionB23C6D02": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "ae5b008571ab2356a90c8a34719c0e8e94450c909dbc8f164431ac26ecf63cf6.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CALL_ANALYTICS_TABLE_NAME": {
+       "Ref": "CallAnalyticsTableD801EFC2"
+      },
+      "AGENT_PERFORMANCE_TABLE_NAME": "TodaysDentalInsightsChimeN1-AgentPerformance",
+      "AGENT_PRESENCE_TABLE_NAME": "TodaysDentalInsightsChimeN1-AgentPresence",
+      "TRANSCRIPT_BUFFER_TABLE_NAME": {
+       "Ref": "TranscriptBufferTable6B540524"
+      },
+      "VOICE_SESSIONS_TABLE_NAME": "",
+      "AI_AGENTS_TABLE_NAME": "",
+      "VOICE_AI_ENABLED": "false"
+     }
+    },
+    "FunctionName": "TodaysDentalInsightsAnalyticsN1-FinalizeAnalytics",
+    "Handler": "index.handler",
+    "MemorySize": 512,
+    "Role": {
+     "Fn::GetAtt": [
+      "FinalizeAnalyticsFunctionServiceRole72DAEED6",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "finalize-analytics"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Timeout": 60
+   },
+   "DependsOn": [
+    "FinalizeAnalyticsFunctionServiceRoleDefaultPolicyCF8C7DC7",
+    "FinalizeAnalyticsFunctionServiceRole72DAEED6"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/FinalizeAnalyticsFunction/Resource",
+    "aws:asset:path": "asset.ae5b008571ab2356a90c8a34719c0e8e94450c909dbc8f164431ac26ecf63cf6",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "FinalizeAnalyticsFunctionLogRetention1F94EE3F": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "FinalizeAnalyticsFunctionB23C6D02"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/FinalizeAnalyticsFunction/LogRetention/Resource"
+   }
+  },
+  "AnalyticsFinalizationRule2C34F001": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Description": "Finalize analytics records after buffer window",
+    "ScheduleExpression": "rate(1 minute)",
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "FinalizeAnalyticsFunctionB23C6D02",
+        "Arn"
+       ]
+      },
+      "Id": "Target0"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AnalyticsFinalizationRule/Resource"
+   }
+  },
+  "AnalyticsFinalizationRuleAllowEventRuleTodaysDentalInsightsAnalyticsN1FinalizeAnalyticsFunctionF1DC3A165AFA9D82": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "FinalizeAnalyticsFunctionB23C6D02",
+      "Arn"
+     ]
+    },
+    "Principal": "events.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "AnalyticsFinalizationRule2C34F001",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AnalyticsFinalizationRule/AllowEventRuleTodaysDentalInsightsAnalyticsN1FinalizeAnalyticsFunctionF1DC3A16"
+   }
+  },
+  "ReconciliationTable0F9E5DFB": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "reportDate",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "reportType",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "KeySchema": [
+     {
+      "AttributeName": "reportDate",
+      "KeyType": "HASH"
+     },
+     {
+      "AttributeName": "reportType",
+      "KeyType": "RANGE"
+     }
+    ],
+    "PointInTimeRecoverySpecification": {
+     "PointInTimeRecoveryEnabled": true
+    },
+    "TableName": "TodaysDentalInsightsAnalyticsN1-ReconciliationV2",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "reconciliation"
+     }
+    ],
+    "TimeToLiveSpecification": {
+     "AttributeName": "ttl",
+     "Enabled": true
+    }
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconciliationTable/Resource"
+   }
+  },
+  "ReconciliationAlertTopic80849517": {
+   "Type": "AWS::SNS::Topic",
+   "Properties": {
+    "DisplayName": "Call Analytics Reconciliation Alerts",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "TopicName": "TodaysDentalInsightsAnalyticsN1-ReconciliationAlerts"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconciliationAlertTopic/Resource"
+   }
+  },
+  "ReconciliationJobFunctionServiceRoleA3E8A204": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "reconciliation-job"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconciliationJobFunction/ServiceRole/Resource"
+   }
+  },
+  "ReconciliationJobFunctionServiceRoleDefaultPolicyF18840E1": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "CallAnalyticsTableD801EFC2",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "CallAnalyticsTableD801EFC2",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ReconciliationTable0F9E5DFB",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": "sns:Publish",
+       "Effect": "Allow",
+       "Resource": {
+        "Ref": "ReconciliationAlertTopic80849517"
+       }
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:Scan"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsChimeN1-AgentPerformance",
+        "arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsChimeN1-AgentPerformance/index/*"
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ReconciliationJobFunctionServiceRoleDefaultPolicyF18840E1",
+    "Roles": [
+     {
+      "Ref": "ReconciliationJobFunctionServiceRoleA3E8A204"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconciliationJobFunction/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ReconciliationJobFunctionDC6C4F55": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "fb91f26efba3cab3db8bae7c2b552353b2697c90eff9247d05ca07332b18b1a0.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CALL_ANALYTICS_TABLE_NAME": {
+       "Ref": "CallAnalyticsTableD801EFC2"
+      },
+      "AGENT_PERFORMANCE_TABLE_NAME": "TodaysDentalInsightsChimeN1-AgentPerformance",
+      "RECONCILIATION_TABLE_NAME": {
+       "Ref": "ReconciliationTable0F9E5DFB"
+      },
+      "RECONCILIATION_ALERT_TOPIC_ARN": {
+       "Ref": "ReconciliationAlertTopic80849517"
+      }
+     }
+    },
+    "FunctionName": "TodaysDentalInsightsAnalyticsN1-ReconciliationJob",
+    "Handler": "index.handler",
+    "MemorySize": 1024,
+    "Role": {
+     "Fn::GetAtt": [
+      "ReconciliationJobFunctionServiceRoleA3E8A204",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "reconciliation-job"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Timeout": 900
+   },
+   "DependsOn": [
+    "ReconciliationJobFunctionServiceRoleDefaultPolicyF18840E1",
+    "ReconciliationJobFunctionServiceRoleA3E8A204"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconciliationJobFunction/Resource",
+    "aws:asset:path": "asset.fb91f26efba3cab3db8bae7c2b552353b2697c90eff9247d05ca07332b18b1a0",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ReconciliationJobFunctionLogRetentionAB5CB4A0": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "ReconciliationJobFunctionDC6C4F55"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 30
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconciliationJobFunction/LogRetention/Resource"
+   }
+  },
+  "ReconciliationScheduleRule6117544C": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Description": "Daily reconciliation job for call analytics and agent performance",
+    "ScheduleExpression": "cron(0 2 * * ? *)",
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "ReconciliationJobFunctionDC6C4F55",
+        "Arn"
+       ]
+      },
+      "Id": "Target0"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconciliationScheduleRule/Resource"
+   }
+  },
+  "ReconciliationScheduleRuleAllowEventRuleTodaysDentalInsightsAnalyticsN1ReconciliationJobFunction1A5D61A86D976915": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ReconciliationJobFunctionDC6C4F55",
+      "Arn"
+     ]
+    },
+    "Principal": "events.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "ReconciliationScheduleRule6117544C",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconciliationScheduleRule/AllowEventRuleTodaysDentalInsightsAnalyticsN1ReconciliationJobFunction1A5D61A8"
+   }
+  },
+  "QuickSightDataSourceRole4EC01059": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "quicksight.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "Description": "Allow QuickSight to read call analytics data",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/QuickSightDataSourceRole/Resource"
+   }
+  },
+  "QuickSightDataSourceRoleDefaultPolicy4D358C0B": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "CallAnalyticsTableD801EFC2",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "CallAnalyticsTableD801EFC2",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "QuickSightDataSourceRoleDefaultPolicy4D358C0B",
+    "Roles": [
+     {
+      "Ref": "QuickSightDataSourceRole4EC01059"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/QuickSightDataSourceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ReconcileAnalyticsFunctionServiceRole432AFFF8": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "reconcile-analytics"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconcileAnalyticsFunction/ServiceRole/Resource"
+   }
+  },
+  "ReconcileAnalyticsFunctionServiceRoleDefaultPolicy2B070633": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "CallAnalyticsTableD801EFC2",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "CallAnalyticsTableD801EFC2",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "AnalyticsDedupTable8FE59AA5",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "TranscriptBufferTable6B540524",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:Scan",
+        "dynamodb:GetItem",
+        "dynamodb:UpdateItem"
+       ],
+       "Effect": "Allow",
+       "Resource": "arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsChimeN1-CallQueueV2"
+      },
+      {
+       "Action": [
+        "dynamodb:UpdateItem",
+        "dynamodb:GetItem"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsChimeN1-AgentPerformance",
+        "arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsChimeN1-AgentPerformance/index/*"
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ReconcileAnalyticsFunctionServiceRoleDefaultPolicy2B070633",
+    "Roles": [
+     {
+      "Ref": "ReconcileAnalyticsFunctionServiceRole432AFFF8"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconcileAnalyticsFunction/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ReconcileAnalyticsFunctionF961286F": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "a39cbca140c3c857ca3a1e4dff3b7ebe61edff3ee20f532dfd78763c4b56750e.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CALL_QUEUE_TABLE_NAME": "TodaysDentalInsightsChimeN1-CallQueueV2",
+      "CALL_ANALYTICS_TABLE_NAME": {
+       "Ref": "CallAnalyticsTableD801EFC2"
+      },
+      "ANALYTICS_DEDUP_TABLE_NAME": {
+       "Ref": "AnalyticsDedupTable8FE59AA5"
+      },
+      "AGENT_PERFORMANCE_TABLE_NAME": "TodaysDentalInsightsChimeN1-AgentPerformance",
+      "TRANSCRIPT_BUFFER_TABLE_NAME": {
+       "Ref": "TranscriptBufferTable6B540524"
+      },
+      "AGENT_PRESENCE_TABLE_NAME": "TodaysDentalInsightsChimeN1-AgentPresence"
+     }
+    },
+    "FunctionName": "TodaysDentalInsightsAnalyticsN1-ReconcileAnalytics",
+    "Handler": "index.handler",
+    "MemorySize": 512,
+    "Role": {
+     "Fn::GetAtt": [
+      "ReconcileAnalyticsFunctionServiceRole432AFFF8",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "reconcile-analytics"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Timeout": 900
+   },
+   "DependsOn": [
+    "ReconcileAnalyticsFunctionServiceRoleDefaultPolicy2B070633",
+    "ReconcileAnalyticsFunctionServiceRole432AFFF8"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconcileAnalyticsFunction/Resource",
+    "aws:asset:path": "asset.a39cbca140c3c857ca3a1e4dff3b7ebe61edff3ee20f532dfd78763c4b56750e",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ReconcileAnalyticsFunctionLogRetentionBE86EFA8": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "ReconcileAnalyticsFunctionF961286F"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconcileAnalyticsFunction/LogRetention/Resource"
+   }
+  },
+  "AgentPerformanceDLQProcessorErrorAlarm152A956B": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when agent-performance-dlq-processor Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "AgentPerformanceDLQProcessor8837ABEC"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AgentPerformanceDLQProcessorErrorAlarm/Resource"
+   }
+  },
+  "AgentPerformanceDLQProcessorThrottleAlarmD676EBD8": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when agent-performance-dlq-processor Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "AgentPerformanceDLQProcessor8837ABEC"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AgentPerformanceDLQProcessorThrottleAlarm/Resource"
+   }
+  },
+  "AgentPerformanceDLQProcessorDurationAlarmD9E32A48": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when agent-performance-dlq-processor Lambda p99 duration exceeds 240000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "AgentPerformanceDLQProcessor8837ABEC"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 240000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AgentPerformanceDLQProcessorDurationAlarm/Resource"
+   }
+  },
+  "FinalizeAnalyticsFunctionErrorAlarm3D66BA16": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when finalize-analytics Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "FinalizeAnalyticsFunctionB23C6D02"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/FinalizeAnalyticsFunctionErrorAlarm/Resource"
+   }
+  },
+  "FinalizeAnalyticsFunctionThrottleAlarm565DC786": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when finalize-analytics Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "FinalizeAnalyticsFunctionB23C6D02"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/FinalizeAnalyticsFunctionThrottleAlarm/Resource"
+   }
+  },
+  "FinalizeAnalyticsFunctionDurationAlarm5CBA1194": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when finalize-analytics Lambda p99 duration exceeds 48000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "FinalizeAnalyticsFunctionB23C6D02"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 48000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/FinalizeAnalyticsFunctionDurationAlarm/Resource"
+   }
+  },
+  "ReconciliationJobFunctionErrorAlarmC06B8A5B": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when reconciliation-job Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ReconciliationJobFunctionDC6C4F55"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconciliationJobFunctionErrorAlarm/Resource"
+   }
+  },
+  "ReconciliationJobFunctionThrottleAlarmC86E1C17": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when reconciliation-job Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ReconciliationJobFunctionDC6C4F55"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconciliationJobFunctionThrottleAlarm/Resource"
+   }
+  },
+  "ReconciliationJobFunctionDurationAlarmB2D91C6B": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when reconciliation-job Lambda p99 duration exceeds 720000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ReconciliationJobFunctionDC6C4F55"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 720000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconciliationJobFunctionDurationAlarm/Resource"
+   }
+  },
+  "ReconcileAnalyticsFunctionErrorAlarmC322B754": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when reconcile-analytics Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ReconcileAnalyticsFunctionF961286F"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconcileAnalyticsFunctionErrorAlarm/Resource"
+   }
+  },
+  "ReconcileAnalyticsFunctionThrottleAlarm765411DB": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when reconcile-analytics Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ReconcileAnalyticsFunctionF961286F"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconcileAnalyticsFunctionThrottleAlarm/Resource"
+   }
+  },
+  "ReconcileAnalyticsFunctionDurationAlarm7A6CF1CF": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when reconcile-analytics Lambda p99 duration exceeds 720000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ReconcileAnalyticsFunctionF961286F"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 720000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconcileAnalyticsFunctionDurationAlarm/Resource"
+   }
+  },
+  "AnalyticsTableThrottleAlarmF2C3E0AD": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "CallAnalyticsTableD801EFC2"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "CallAnalyticsTableD801EFC2"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AnalyticsTableThrottleAlarm/Resource"
+   }
+  },
+  "AnalyticsDedupTableThrottleAlarm84040BB0": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "AnalyticsDedupTable8FE59AA5"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "AnalyticsDedupTable8FE59AA5"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AnalyticsDedupTableThrottleAlarm/Resource"
+   }
+  },
+  "TranscriptBufferTableThrottleAlarmD112F3C5": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "TranscriptBufferTable6B540524"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "TranscriptBufferTable6B540524"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/TranscriptBufferTableThrottleAlarm/Resource"
+   }
+  },
+  "AnalyticsFailuresTableThrottleAlarmE7C06940": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "AnalyticsFailuresTableF6D624C4"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "AnalyticsFailuresTableF6D624C4"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AnalyticsFailuresTableThrottleAlarm/Resource"
+   }
+  },
+  "AgentPerformanceFailuresTableThrottleAlarm409008F8": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "AgentPerformanceFailuresTable976AAE0F"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "AgentPerformanceFailuresTable976AAE0F"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AgentPerformanceFailuresTableThrottleAlarm/Resource"
+   }
+  },
+  "ReconciliationTableThrottleAlarmE55101C9": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "ReconciliationTable0F9E5DFB"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "ReconciliationTable0F9E5DFB"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/ReconciliationTableThrottleAlarm/Resource"
+   }
+  },
+  "AnalyticsReconciliationRuleE5D0CDA8": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Description": "Fix orphaned analytics records (dedup exists but analytics missing)",
+    "ScheduleExpression": "rate(1 hour)",
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Analytics"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAnalyticsN1"
+     }
+    ],
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "ReconcileAnalyticsFunctionF961286F",
+        "Arn"
+       ]
+      },
+      "Id": "Target0"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AnalyticsReconciliationRule/Resource"
+   }
+  },
+  "AnalyticsReconciliationRuleAllowEventRuleTodaysDentalInsightsAnalyticsN1ReconcileAnalyticsFunction80ABB8A24A18CCE7": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ReconcileAnalyticsFunctionF961286F",
+      "Arn"
+     ]
+    },
+    "Principal": "events.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "AnalyticsReconciliationRuleE5D0CDA8",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/AnalyticsReconciliationRule/AllowEventRuleTodaysDentalInsightsAnalyticsN1ReconcileAnalyticsFunction80ABB8A2"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/21Qy27CMBD8Fu5mC6E/AKg99ZlwjxxnSR38SLM2EbL875VNlEpVTzM7O54duYCi2MJmxSdai/ayVrKBUDkuLoxPVIf2Zri2bQPhxBuF7Hg2mURGhiCc7CBFFhOJjL4JwqdHn52ZRCaU9e3EnfiCsFd81GmXSWSK66bltbEt9gRvGZ69EU5awyTXEEp7P5vxwyopbmm8s8hoV3MidAT7BIx2cPDigu7ACed4CMezWVKfrmhcZf0o8JUPgzRdyvtHraTpFDr7+3QhqQCOWhJJayJTtiN4sV2JDk02YIojCKWf23uFMbISKZ9guWzleDefXxbCk7O6HueZYD/RMWuL5e94Nu/eDd5Flr4Renq4Fo+wLWCz6knK9eiNkxqhvOMPuHVZqPMBAAA="
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAnalyticsN1/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "AnalyticsTableName": {
+   "Description": "DynamoDB Analytics Table Name",
+   "Value": {
+    "Ref": "CallAnalyticsTableD801EFC2"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsAnalyticsN1-CallAnalyticsTableName"
+   }
+  },
+  "AnalyticsTableArn": {
+   "Description": "DynamoDB Analytics Table ARN for cross-stack IAM policies",
+   "Value": {
+    "Fn::GetAtt": [
+     "CallAnalyticsTableD801EFC2",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsAnalyticsN1-CallAnalyticsTableArn"
+   }
+  },
+  "AnalyticsDedupTableName": {
+   "Description": "Deduplication table for analytics events",
+   "Value": {
+    "Ref": "AnalyticsDedupTable8FE59AA5"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsAnalyticsN1-AnalyticsDedupTableName"
+   }
+  },
+  "FinalizeAnalyticsFunctionArn": {
+   "Description": "Analytics Finalization Lambda ARN",
+   "Value": {
+    "Fn::GetAtt": [
+     "FinalizeAnalyticsFunctionB23C6D02",
+     "Arn"
+    ]
+   }
+  },
+  "ReconciliationJobFunctionArn": {
+   "Description": "Reconciliation job Lambda ARN",
+   "Value": {
+    "Fn::GetAtt": [
+     "ReconciliationJobFunctionDC6C4F55",
+     "Arn"
+    ]
+   }
+  },
+  "ReconciliationAlertTopicArn": {
+   "Description": "SNS topic for reconciliation alerts",
+   "Value": {
+    "Ref": "ReconciliationAlertTopic80849517"
+   }
+  },
+  "CallAlertsTopicArn": {
+   "Description": "SNS Topic for real-time call alerts",
+   "Value": {
+    "Ref": "CallAlertsTopic566F2008"
+   }
+  },
+  "PerformanceInsightsTopicArn": {
+   "Description": "SNS Topic for agent performance insights",
+   "Value": {
+    "Ref": "PerformanceInsightsTopicEB49AE36"
+   }
+  },
+  "MedicalVocabularyName": {
+   "Description": "Custom vocabulary for medical/dental transcription",
+   "Value": "TodaysDentalInsightsAnalyticsN1-dental-vocab"
+  },
+  "TranscriptBufferTableName": {
+   "Description": "DynamoDB table for transcript buffers",
+   "Value": {
+    "Ref": "TranscriptBufferTable6B540524"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsAnalyticsN1-TranscriptBufferTableName"
+   }
+  },
+  "DerivedCallQueueTableName": {
+   "Description": "Derived CallQueue table name from ChimeStack",
+   "Value": "TodaysDentalInsightsChimeN1-CallQueueV2"
+  },
+  "DerivedAgentPresenceTableName": {
+   "Description": "Derived AgentPresence table name from ChimeStack",
+   "Value": "TodaysDentalInsightsChimeN1-AgentPresence"
+  },
+  "DerivedAgentPerformanceTableName": {
+   "Description": "Derived AgentPerformance table name from ChimeStack",
+   "Value": "TodaysDentalInsightsChimeN1-AgentPerformance"
+  },
+  "QuickSightSetupInstructions": {
+   "Description": "Steps to create QuickSight analytics dashboard",
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "To create QuickSight dashboard:\n1. Enable QuickSight in AWS Console\n2. Create Data Source: DynamoDB table ",
+      {
+       "Ref": "CallAnalyticsTableD801EFC2"
+      },
+      "\n3. Use IAM Role: ",
+      {
+       "Fn::GetAtt": [
+        "QuickSightDataSourceRole4EC01059",
+        "Arn"
+       ]
+      },
+      "\n4. Create Analysis with metrics: sentiment, callCategory, duration, audioQuality\n5. Publish Dashboard"
+     ]
+    ]
+   }
+  },
+  "QuickSightRoleArn": {
+   "Description": "IAM Role ARN for QuickSight data source",
+   "Value": {
+    "Fn::GetAtt": [
+     "QuickSightDataSourceRole4EC01059",
+     "Arn"
+    ]
+   }
+  },
+  "ReconcileAnalyticsFunctionArn": {
+   "Description": "Analytics Reconciliation Lambda ARN",
+   "Value": {
+    "Fn::GetAtt": [
+     "ReconcileAnalyticsFunctionF961286F",
+     "Arn"
+    ]
+   }
+  },
+  "ExportsOutputFnGetAttTranscriptBufferTable6B540524Arn0067ECB2": {
+   "Value": {
+    "Fn::GetAtt": [
+     "TranscriptBufferTable6B540524",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsAnalyticsN1:ExportsOutputFnGetAttTranscriptBufferTable6B540524Arn0067ECB2"
+   }
+  },
+  "ExportsOutputRefTranscriptBufferTable6B54052467630EA1": {
+   "Value": {
+    "Ref": "TranscriptBufferTable6B540524"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsAnalyticsN1:ExportsOutputRefTranscriptBufferTable6B54052467630EA1"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/tdi3/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

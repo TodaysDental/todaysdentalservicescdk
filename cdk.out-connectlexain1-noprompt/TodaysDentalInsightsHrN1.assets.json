@@ -1,0 +1,36 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "2de4158cc65910005ed5b64ef0b42db2ffc2bf6c008d1c78c920ea084e80da1d": {
+      "displayName": "HrFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-4d1367c4": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "2de4158cc65910005ed5b64ef0b42db2ffc2bf6c008d1c78c920ea084e80da1d.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "2cdeecb18b653a201e9b215779c82a7c76a8ba1076075175f44f2a827532a7bb": {
+      "displayName": "TodaysDentalInsightsHrN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsHrN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-90e738de": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "2cdeecb18b653a201e9b215779c82a7c76a8ba1076075175f44f2a827532a7bb.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

@@ -1,0 +1,5596 @@
+{
+ "Resources": {
+  "ConsolidatedTransferBucketCAF232D8": {
+   "Type": "AWS::S3::Bucket",
+   "Properties": {
+    "BucketName": "todaysdentalinsightsopendentaln1-sftp-851620242036-us-east-1",
+    "PublicAccessBlockConfiguration": {
+     "BlockPublicAcls": true,
+     "BlockPublicPolicy": true,
+     "IgnorePublicAcls": true,
+     "RestrictPublicBuckets": true
+    },
+    "Tags": [
+     {
+      "Key": "Bucket",
+      "Value": "opendental-sftp"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/ConsolidatedTransferBucket/Resource"
+   }
+  },
+  "SeedSftpHomedentistinnewbritain2D9E90AF": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinnewbritain/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-dentistinnewbritain-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedentistinnewbritainCustomResourcePolicyDCCE00A4"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinnewbritain/Resource/Default"
+   }
+  },
+  "SeedSftpHomedentistinnewbritainCustomResourcePolicyDCCE00A4": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedentistinnewbritainCustomResourcePolicyDCCE00A4",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinnewbritain/CustomResourcePolicy/Resource"
+   }
+  },
+  "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/AWS679f53fac002430cb0da5b7982bd2287/ServiceRole/Resource"
+   }
+  },
+  "AWS679f53fac002430cb0da5b7982bd22872D164C4C": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "8d5e97812d0036272ba1fd5bb8772ff51f4712e58c75507e4a0db242bf680f1d.zip"
+    },
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ],
+    "Timeout": 120
+   },
+   "DependsOn": [
+    "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/AWS679f53fac002430cb0da5b7982bd2287/Resource",
+    "aws:asset:path": "asset.8d5e97812d0036272ba1fd5bb8772ff51f4712e58c75507e4a0db242bf680f1d",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Code"
+   }
+  },
+  "SeedSftpQueriesdentistinnewbritain8AFB73C4": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinnewbritain/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-dentistinnewbritain-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdentistinnewbritainCustomResourcePolicyF42AA321"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinnewbritain/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdentistinnewbritainCustomResourcePolicyF42AA321": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdentistinnewbritainCustomResourcePolicyF42AA321",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinnewbritain/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomedentistingreenvilleAD0BD5C6": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistingreenville/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-dentistingreenville-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedentistingreenvilleCustomResourcePolicy0C60003F"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistingreenville/Resource/Default"
+   }
+  },
+  "SeedSftpHomedentistingreenvilleCustomResourcePolicy0C60003F": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedentistingreenvilleCustomResourcePolicy0C60003F",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistingreenville/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesdentistingreenvilleD6C28461": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistingreenville/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-dentistingreenville-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdentistingreenvilleCustomResourcePolicy401A454A"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistingreenville/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdentistingreenvilleCustomResourcePolicy401A454A": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdentistingreenvilleCustomResourcePolicy401A454A",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistingreenville/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHometodaysdentalcayce41E9C528": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/todaysdentalcayce/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-todaysdentalcayce-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHometodaysdentalcayceCustomResourcePolicy6D1F5CAA"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-todaysdentalcayce/Resource/Default"
+   }
+  },
+  "SeedSftpHometodaysdentalcayceCustomResourcePolicy6D1F5CAA": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHometodaysdentalcayceCustomResourcePolicy6D1F5CAA",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-todaysdentalcayce/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriestodaysdentalcayce6F09C695": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/todaysdentalcayce/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-todaysdentalcayce-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriestodaysdentalcayceCustomResourcePolicyBDC57D84"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-todaysdentalcayce/Resource/Default"
+   }
+  },
+  "SeedSftpQueriestodaysdentalcayceCustomResourcePolicyBDC57D84": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriestodaysdentalcayceCustomResourcePolicyBDC57D84",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-todaysdentalcayce/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomecreekcrossingdentalcare673BD2AC": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/creekcrossingdentalcare/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-creekcrossingdentalcare-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomecreekcrossingdentalcareCustomResourcePolicyFA110069"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-creekcrossingdentalcare/Resource/Default"
+   }
+  },
+  "SeedSftpHomecreekcrossingdentalcareCustomResourcePolicyFA110069": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomecreekcrossingdentalcareCustomResourcePolicyFA110069",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-creekcrossingdentalcare/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriescreekcrossingdentalcareA8575ACB": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/creekcrossingdentalcare/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-creekcrossingdentalcare-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriescreekcrossingdentalcareCustomResourcePolicyC3159F12"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-creekcrossingdentalcare/Resource/Default"
+   }
+  },
+  "SeedSftpQueriescreekcrossingdentalcareCustomResourcePolicyC3159F12": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriescreekcrossingdentalcareCustomResourcePolicyC3159F12",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-creekcrossingdentalcare/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomedentistinwinstonsalemC777AD03": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinwinston-salem/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-dentistinwinston-salem-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedentistinwinstonsalemCustomResourcePolicyEDCDB60D"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinwinston-salem/Resource/Default"
+   }
+  },
+  "SeedSftpHomedentistinwinstonsalemCustomResourcePolicyEDCDB60D": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedentistinwinstonsalemCustomResourcePolicyEDCDB60D",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinwinston-salem/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesdentistinwinstonsalemE897FC0B": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinwinston-salem/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-dentistinwinston-salem-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdentistinwinstonsalemCustomResourcePolicy9310D50A"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinwinston-salem/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdentistinwinstonsalemCustomResourcePolicy9310D50A": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdentistinwinstonsalemCustomResourcePolicy9310D50A",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinwinston-salem/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomedentistincentennialFB0C51A8": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistincentennial/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-dentistincentennial-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedentistincentennialCustomResourcePolicy3473B08E"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistincentennial/Resource/Default"
+   }
+  },
+  "SeedSftpHomedentistincentennialCustomResourcePolicy3473B08E": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedentistincentennialCustomResourcePolicy3473B08E",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistincentennial/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesdentistincentennialE5DC6B55": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistincentennial/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-dentistincentennial-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdentistincentennialCustomResourcePolicy2A61478F"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistincentennial/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdentistincentennialCustomResourcePolicy2A61478F": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdentistincentennialCustomResourcePolicy2A61478F",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistincentennial/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomerenodentalcareandorthodontics47B39042": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/renodentalcareandorthodontics/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-renodentalcareandorthodontics-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomerenodentalcareandorthodonticsCustomResourcePolicy64F727AD"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-renodentalcareandorthodontics/Resource/Default"
+   }
+  },
+  "SeedSftpHomerenodentalcareandorthodonticsCustomResourcePolicy64F727AD": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomerenodentalcareandorthodonticsCustomResourcePolicy64F727AD",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-renodentalcareandorthodontics/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesrenodentalcareandorthodonticsD38DB348": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/renodentalcareandorthodontics/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-renodentalcareandorthodontics-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesrenodentalcareandorthodonticsCustomResourcePolicy5D59CCA4"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-renodentalcareandorthodontics/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesrenodentalcareandorthodonticsCustomResourcePolicy5D59CCA4": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesrenodentalcareandorthodonticsCustomResourcePolicy5D59CCA4",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-renodentalcareandorthodontics/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHometodaysdentalalexandriaE4C46C1E": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/todaysdentalalexandria/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-todaysdentalalexandria-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHometodaysdentalalexandriaCustomResourcePolicyDAB11643"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-todaysdentalalexandria/Resource/Default"
+   }
+  },
+  "SeedSftpHometodaysdentalalexandriaCustomResourcePolicyDAB11643": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHometodaysdentalalexandriaCustomResourcePolicyDAB11643",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-todaysdentalalexandria/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriestodaysdentalalexandria7AE53126": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/todaysdentalalexandria/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-todaysdentalalexandria-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriestodaysdentalalexandriaCustomResourcePolicy24322527"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-todaysdentalalexandria/Resource/Default"
+   }
+  },
+  "SeedSftpQueriestodaysdentalalexandriaCustomResourcePolicy24322527": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriestodaysdentalalexandriaCustomResourcePolicy24322527",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-todaysdentalalexandria/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHometodaysdentalgreenville4D98F718": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/todaysdentalgreenville/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-todaysdentalgreenville-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHometodaysdentalgreenvilleCustomResourcePolicy061169D0"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-todaysdentalgreenville/Resource/Default"
+   }
+  },
+  "SeedSftpHometodaysdentalgreenvilleCustomResourcePolicy061169D0": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHometodaysdentalgreenvilleCustomResourcePolicy061169D0",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-todaysdentalgreenville/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriestodaysdentalgreenville6D41FE74": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/todaysdentalgreenville/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-todaysdentalgreenville-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriestodaysdentalgreenvilleCustomResourcePolicyAA84FD16"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-todaysdentalgreenville/Resource/Default"
+   }
+  },
+  "SeedSftpQueriestodaysdentalgreenvilleCustomResourcePolicyAA84FD16": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriestodaysdentalgreenvilleCustomResourcePolicyAA84FD16",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-todaysdentalgreenville/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHometodaysdentalwestcolumbiaD871A1E5": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/todaysdentalwestcolumbia/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-todaysdentalwestcolumbia-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHometodaysdentalwestcolumbiaCustomResourcePolicy8D1C670E"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-todaysdentalwestcolumbia/Resource/Default"
+   }
+  },
+  "SeedSftpHometodaysdentalwestcolumbiaCustomResourcePolicy8D1C670E": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHometodaysdentalwestcolumbiaCustomResourcePolicy8D1C670E",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-todaysdentalwestcolumbia/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriestodaysdentalwestcolumbiaEC7CEC81": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/todaysdentalwestcolumbia/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-todaysdentalwestcolumbia-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriestodaysdentalwestcolumbiaCustomResourcePolicyF3365794"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-todaysdentalwestcolumbia/Resource/Default"
+   }
+  },
+  "SeedSftpQueriestodaysdentalwestcolumbiaCustomResourcePolicyF3365794": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriestodaysdentalwestcolumbiaCustomResourcePolicyF3365794",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-todaysdentalwestcolumbia/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomedentistinconcordE0DEDEAB": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinconcord/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-dentistinconcord-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedentistinconcordCustomResourcePolicy15051874"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinconcord/Resource/Default"
+   }
+  },
+  "SeedSftpHomedentistinconcordCustomResourcePolicy15051874": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedentistinconcordCustomResourcePolicy15051874",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinconcord/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesdentistinconcordA6E54E5F": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinconcord/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-dentistinconcord-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdentistinconcordCustomResourcePolicy0AF432DA"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinconcord/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdentistinconcordCustomResourcePolicy0AF432DA": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdentistinconcordCustomResourcePolicy0AF432DA",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinconcord/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomedentistinedgewater1E8BCFFB": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinedgewater/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-dentistinedgewater-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedentistinedgewaterCustomResourcePolicy48BF6CC9"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinedgewater/Resource/Default"
+   }
+  },
+  "SeedSftpHomedentistinedgewaterCustomResourcePolicy48BF6CC9": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedentistinedgewaterCustomResourcePolicy48BF6CC9",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinedgewater/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesdentistinedgewater254A6D0C": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinedgewater/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-dentistinedgewater-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdentistinedgewaterCustomResourcePolicy2A3234C2"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinedgewater/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdentistinedgewaterCustomResourcePolicy2A3234C2": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdentistinedgewaterCustomResourcePolicy2A3234C2",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinedgewater/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomelawrencevilledentistryCB619A3A": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/lawrencevilledentistry/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-lawrencevilledentistry-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomelawrencevilledentistryCustomResourcePolicyDA65E6E4"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-lawrencevilledentistry/Resource/Default"
+   }
+  },
+  "SeedSftpHomelawrencevilledentistryCustomResourcePolicyDA65E6E4": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomelawrencevilledentistryCustomResourcePolicyDA65E6E4",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-lawrencevilledentistry/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQuerieslawrencevilledentistryE92A740A": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/lawrencevilledentistry/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-lawrencevilledentistry-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQuerieslawrencevilledentistryCustomResourcePolicy1122C51A"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-lawrencevilledentistry/Resource/Default"
+   }
+  },
+  "SeedSftpQuerieslawrencevilledentistryCustomResourcePolicy1122C51A": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQuerieslawrencevilledentistryCustomResourcePolicy1122C51A",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-lawrencevilledentistry/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomedentistinlouisville37C51596": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinlouisville/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-dentistinlouisville-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedentistinlouisvilleCustomResourcePolicy493014A7"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinlouisville/Resource/Default"
+   }
+  },
+  "SeedSftpHomedentistinlouisvilleCustomResourcePolicy493014A7": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedentistinlouisvilleCustomResourcePolicy493014A7",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinlouisville/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesdentistinlouisvilleB2FA50F4": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinlouisville/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-dentistinlouisville-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdentistinlouisvilleCustomResourcePolicy6AB231D8"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinlouisville/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdentistinlouisvilleCustomResourcePolicy6AB231D8": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdentistinlouisvilleCustomResourcePolicy6AB231D8",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinlouisville/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomedentistatsaludapointe699605D4": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistatsaludapointe/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-dentistatsaludapointe-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedentistatsaludapointeCustomResourcePolicy790BD952"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistatsaludapointe/Resource/Default"
+   }
+  },
+  "SeedSftpHomedentistatsaludapointeCustomResourcePolicy790BD952": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedentistatsaludapointeCustomResourcePolicy790BD952",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistatsaludapointe/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesdentistatsaludapointe0D82CE08": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistatsaludapointe/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-dentistatsaludapointe-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdentistatsaludapointeCustomResourcePolicy8707932E"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistatsaludapointe/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdentistatsaludapointeCustomResourcePolicy8707932E": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdentistatsaludapointeCustomResourcePolicy8707932E",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistatsaludapointe/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomedentistinoregonohE1810654": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinoregonoh/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-dentistinoregonoh-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedentistinoregonohCustomResourcePolicy5F4C57BC"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinoregonoh/Resource/Default"
+   }
+  },
+  "SeedSftpHomedentistinoregonohCustomResourcePolicy5F4C57BC": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedentistinoregonohCustomResourcePolicy5F4C57BC",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinoregonoh/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesdentistinoregonohAA319CAE": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinoregonoh/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-dentistinoregonoh-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdentistinoregonohCustomResourcePolicy73B2CB29"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinoregonoh/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdentistinoregonohCustomResourcePolicy73B2CB29": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdentistinoregonohCustomResourcePolicy73B2CB29",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinoregonoh/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomedaysdentallexingtonDE96B3AD": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/daysdentallexington/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-daysdentallexington-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedaysdentallexingtonCustomResourcePolicy626DE9F7"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-daysdentallexington/Resource/Default"
+   }
+  },
+  "SeedSftpHomedaysdentallexingtonCustomResourcePolicy626DE9F7": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedaysdentallexingtonCustomResourcePolicy626DE9F7",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-daysdentallexington/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesdaysdentallexington1C8DE4D9": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/daysdentallexington/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-daysdentallexington-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdaysdentallexingtonCustomResourcePolicyA85493ED"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-daysdentallexington/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdaysdentallexingtonCustomResourcePolicyA85493ED": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdaysdentallexingtonCustomResourcePolicyA85493ED",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-daysdentallexington/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomedentistinbowieF80AF392": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinbowie/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-dentistinbowie-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedentistinbowieCustomResourcePolicy0CAE3C75"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinbowie/Resource/Default"
+   }
+  },
+  "SeedSftpHomedentistinbowieCustomResourcePolicy0CAE3C75": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedentistinbowieCustomResourcePolicy0CAE3C75",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinbowie/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesdentistinbowie60254F32": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinbowie/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-dentistinbowie-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdentistinbowieCustomResourcePolicy1BB4AE6A"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinbowie/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdentistinbowieCustomResourcePolicy1BB4AE6A": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdentistinbowieCustomResourcePolicy1BB4AE6A",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinbowie/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomedentistinpowellohio68A37E34": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinpowellohio/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-dentistinpowellohio-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedentistinpowellohioCustomResourcePolicy2F573EB2"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinpowellohio/Resource/Default"
+   }
+  },
+  "SeedSftpHomedentistinpowellohioCustomResourcePolicy2F573EB2": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedentistinpowellohioCustomResourcePolicy2F573EB2",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinpowellohio/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesdentistinpowellohio2EBCAA5F": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinpowellohio/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-dentistinpowellohio-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdentistinpowellohioCustomResourcePolicy481C8303"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinpowellohio/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdentistinpowellohioCustomResourcePolicy481C8303": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdentistinpowellohioCustomResourcePolicy481C8303",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinpowellohio/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomedentistinperrysburgF65009F8": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinperrysburg/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-dentistinperrysburg-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedentistinperrysburgCustomResourcePolicy820A62D3"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinperrysburg/Resource/Default"
+   }
+  },
+  "SeedSftpHomedentistinperrysburgCustomResourcePolicy820A62D3": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedentistinperrysburgCustomResourcePolicy820A62D3",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinperrysburg/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesdentistinperrysburg58340EF1": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinperrysburg/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-dentistinperrysburg-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdentistinperrysburgCustomResourcePolicyB9C146EA"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinperrysburg/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdentistinperrysburgCustomResourcePolicyB9C146EA": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdentistinperrysburgCustomResourcePolicyB9C146EA",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinperrysburg/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomedentistinaustinF3F72422": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinaustin/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-dentistinaustin-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedentistinaustinCustomResourcePolicy57CD65D5"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinaustin/Resource/Default"
+   }
+  },
+  "SeedSftpHomedentistinaustinCustomResourcePolicy57CD65D5": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedentistinaustinCustomResourcePolicy57CD65D5",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinaustin/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesdentistinaustin0601328F": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinaustin/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-dentistinaustin-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdentistinaustinCustomResourcePolicyF96358B2"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinaustin/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdentistinaustinCustomResourcePolicyF96358B2": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdentistinaustinCustomResourcePolicyF96358B2",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinaustin/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHometherimdentalcare37C1AAB4": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/therimdentalcare/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-therimdentalcare-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHometherimdentalcareCustomResourcePolicy368E3A4F"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-therimdentalcare/Resource/Default"
+   }
+  },
+  "SeedSftpHometherimdentalcareCustomResourcePolicy368E3A4F": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHometherimdentalcareCustomResourcePolicy368E3A4F",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-therimdentalcare/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriestherimdentalcare7EF75533": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/therimdentalcare/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-therimdentalcare-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriestherimdentalcareCustomResourcePolicy602A187D"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-therimdentalcare/Resource/Default"
+   }
+  },
+  "SeedSftpQueriestherimdentalcareCustomResourcePolicy602A187D": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriestherimdentalcareCustomResourcePolicy602A187D",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-therimdentalcare/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomedentistinbloomingdale1DBC7458": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinbloomingdale/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-dentistinbloomingdale-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedentistinbloomingdaleCustomResourcePolicy6B326D44"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinbloomingdale/Resource/Default"
+   }
+  },
+  "SeedSftpHomedentistinbloomingdaleCustomResourcePolicy6B326D44": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedentistinbloomingdaleCustomResourcePolicy6B326D44",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinbloomingdale/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesdentistinbloomingdale1875CD5E": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinbloomingdale/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-dentistinbloomingdale-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdentistinbloomingdaleCustomResourcePolicyB3A2DE06"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinbloomingdale/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdentistinbloomingdaleCustomResourcePolicyB3A2DE06": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdentistinbloomingdaleCustomResourcePolicyB3A2DE06",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinbloomingdale/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomedentistinvernonhillsA3D40EFB": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinvernonhills/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-dentistinvernonhills-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedentistinvernonhillsCustomResourcePolicy02046A1F"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinvernonhills/Resource/Default"
+   }
+  },
+  "SeedSftpHomedentistinvernonhillsCustomResourcePolicy02046A1F": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedentistinvernonhillsCustomResourcePolicy02046A1F",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinvernonhills/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesdentistinvernonhillsAF5D4310": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinvernonhills/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-dentistinvernonhills-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdentistinvernonhillsCustomResourcePolicy9B43E6C3"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinvernonhills/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdentistinvernonhillsCustomResourcePolicy9B43E6C3": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdentistinvernonhillsCustomResourcePolicy9B43E6C3",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinvernonhills/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomemeadowsdentalcareD6A5DCE3": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/meadowsdentalcare/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-meadowsdentalcare-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomemeadowsdentalcareCustomResourcePolicy4A0C6B75"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-meadowsdentalcare/Resource/Default"
+   }
+  },
+  "SeedSftpHomemeadowsdentalcareCustomResourcePolicy4A0C6B75": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomemeadowsdentalcareCustomResourcePolicy4A0C6B75",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-meadowsdentalcare/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesmeadowsdentalcareF5FFE3B4": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/meadowsdentalcare/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-meadowsdentalcare-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesmeadowsdentalcareCustomResourcePolicy6024C783"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-meadowsdentalcare/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesmeadowsdentalcareCustomResourcePolicy6024C783": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesmeadowsdentalcareCustomResourcePolicy6024C783",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-meadowsdentalcare/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomedentistinstillwaterF5D506D7": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinstillwater/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-dentistinstillwater-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomedentistinstillwaterCustomResourcePolicyE7FADE32"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinstillwater/Resource/Default"
+   }
+  },
+  "SeedSftpHomedentistinstillwaterCustomResourcePolicyE7FADE32": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomedentistinstillwaterCustomResourcePolicyE7FADE32",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-dentistinstillwater/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriesdentistinstillwaterB6BF2BAB": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/dentistinstillwater/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-dentistinstillwater-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriesdentistinstillwaterCustomResourcePolicy48F34C7E"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinstillwater/Resource/Default"
+   }
+  },
+  "SeedSftpQueriesdentistinstillwaterCustomResourcePolicy48F34C7E": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriesdentistinstillwaterCustomResourcePolicy48F34C7E",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-dentistinstillwater/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpHomepearlanddentalcare5832723B": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/pearlanddentalcare/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpHome-pearlanddentalcare-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpHomepearlanddentalcareCustomResourcePolicy17D3D45E"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-pearlanddentalcare/Resource/Default"
+   }
+  },
+  "SeedSftpHomepearlanddentalcareCustomResourcePolicy17D3D45E": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpHomepearlanddentalcareCustomResourcePolicy17D3D45E",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpHome-pearlanddentalcare/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpQueriespearlanddentalcareEA2FFF46": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/pearlanddentalcare/QuerytemplateCSV/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpQueries-pearlanddentalcare-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpQueriespearlanddentalcareCustomResourcePolicyF3A52514"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-pearlanddentalcare/Resource/Default"
+   }
+  },
+  "SeedSftpQueriespearlanddentalcareCustomResourcePolicyF3A52514": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpQueriespearlanddentalcareCustomResourcePolicyF3A52514",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpQueries-pearlanddentalcare/CustomResourcePolicy/Resource"
+   }
+  },
+  "SeedSftpUser881D4F24": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"S3\",\"action\":\"putObject\",\"parameters\":{\"Bucket\":\"",
+       {
+        "Ref": "ConsolidatedTransferBucketCAF232D8"
+       },
+       "\",\"Key\":\"sftp-home/sftpuser/.keep\",\"Body\":\"\"},\"physicalResourceId\":{\"id\":\"SeedSftpUser-v1\"}}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "SeedSftpUserCustomResourcePolicy76A8F3C0"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpUser/Resource/Default"
+   }
+  },
+  "SeedSftpUserCustomResourcePolicy76A8F3C0": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutObject",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "ConsolidatedTransferBucketCAF232D8",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SeedSftpUserCustomResourcePolicy76A8F3C0",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/SeedSftpUser/CustomResourcePolicy/Resource"
+   }
+  },
+  "ConsolidatedTransferRole100E5BAA": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "transfer.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "Description": "Transfer Family role for consolidated SFTP server",
+    "Policies": [
+     {
+      "PolicyDocument": {
+       "Statement": [
+        {
+         "Action": "s3:ListBucket",
+         "Condition": {
+          "StringLike": {
+           "s3:prefix": [
+            "sftp-home/*"
+           ]
+          }
+         },
+         "Effect": "Allow",
+         "Resource": {
+          "Fn::GetAtt": [
+           "ConsolidatedTransferBucketCAF232D8",
+           "Arn"
+          ]
+         }
+        },
+        {
+         "Action": [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject"
+         ],
+         "Effect": "Allow",
+         "Resource": {
+          "Fn::Join": [
+           "",
+           [
+            {
+             "Fn::GetAtt": [
+              "ConsolidatedTransferBucketCAF232D8",
+              "Arn"
+             ]
+            },
+            "/sftp-home/*/*"
+           ]
+          ]
+         }
+        }
+       ],
+       "Version": "2012-10-17"
+      },
+      "PolicyName": "S3Access"
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Role",
+      "Value": "opendental-transfer"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/ConsolidatedTransferRole/Resource"
+   }
+  },
+  "ConsolidatedTransferAuthFnServiceRole1ACCBDF5": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "consolidated-transfer-auth"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/ConsolidatedTransferAuthFn/ServiceRole/Resource"
+   }
+  },
+  "ConsolidatedTransferAuthFn075B4066": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "f402c9f0da6b828d6c85f74f570813faf7afcd28b91e03d75c616c744f9b14f1.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "TF_BUCKET": {
+       "Ref": "ConsolidatedTransferBucketCAF232D8"
+      },
+      "TF_PASSWORD": "Clinic2020",
+      "TF_ROLE_ARN": {
+       "Fn::GetAtt": [
+        "ConsolidatedTransferRole100E5BAA",
+        "Arn"
+       ]
+      },
+      "CLINICS_CONFIG": "[{\"clinicId\":\"dentistinnewbritain\",\"sftpFolderPath\":\"dentistinnewbritain\",\"clinicName\":\"Dentist in New Britain\"},{\"clinicId\":\"dentistingreenville\",\"sftpFolderPath\":\"dentistingreenville\",\"clinicName\":\"Dentist in Greenville\"},{\"clinicId\":\"todaysdentalcayce\",\"sftpFolderPath\":\"todaysdentalcayce\",\"clinicName\":\"Todays Dental Cayce\"},{\"clinicId\":\"creekcrossingdentalcare\",\"sftpFolderPath\":\"creekcrossingdentalcare\",\"clinicName\":\"Creek Crossing Dental Care\"},{\"clinicId\":\"dentistinwinston-salem\",\"sftpFolderPath\":\"dentistinwinston-salem\",\"clinicName\":\"Dentist in Winston-Salem\"},{\"clinicId\":\"dentistincentennial\",\"sftpFolderPath\":\"dentistincentennial\",\"clinicName\":\"Dentist in centennial\"},{\"clinicId\":\"renodentalcareandorthodontics\",\"sftpFolderPath\":\"renodentalcareandorthodontics\",\"clinicName\":\"Reno Dental Care and Orthodontics\"},{\"clinicId\":\"todaysdentalalexandria\",\"sftpFolderPath\":\"todaysdentalalexandria\",\"clinicName\":\"Todays Dental Alexandria\"},{\"clinicId\":\"todaysdentalgreenville\",\"sftpFolderPath\":\"todaysdentalgreenville\",\"clinicName\":\"Todays Dental Greenville\"},{\"clinicId\":\"todaysdentalwestcolumbia\",\"sftpFolderPath\":\"todaysdentalwestcolumbia\",\"clinicName\":\"Todays Dental West Columbia\"},{\"clinicId\":\"dentistinconcord\",\"sftpFolderPath\":\"dentistinconcord\",\"clinicName\":\"Dentist in Concord\"},{\"clinicId\":\"dentistinedgewater\",\"sftpFolderPath\":\"dentistinedgewater\",\"clinicName\":\"Dentist in EdgeWater\"},{\"clinicId\":\"lawrencevilledentistry\",\"sftpFolderPath\":\"lawrencevilledentistry\",\"clinicName\":\"Lawrenceville Dentistry\"},{\"clinicId\":\"dentistinlouisville\",\"sftpFolderPath\":\"dentistinlouisville\",\"clinicName\":\"Dentist In Louisville\"},{\"clinicId\":\"dentistatsaludapointe\",\"sftpFolderPath\":\"dentistatsaludapointe\",\"clinicName\":\"Todays Dental Saluda Pointe\"},{\"clinicId\":\"dentistinoregonoh\",\"sftpFolderPath\":\"dentistinoregonoh\",\"clinicName\":\"Dentist in Oregon\"},{\"clinicId\":\"todaysdentallexington\",\"sftpFolderPath\":\"daysdentallexington\",\"clinicName\":\"Todays Dental Lexington\"},{\"clinicId\":\"dentistinbowie\",\"sftpFolderPath\":\"dentistinbowie\",\"clinicName\":\"Dentist in Bowie\"},{\"clinicId\":\"dentistinpowellohio\",\"sftpFolderPath\":\"dentistinpowellohio\",\"clinicName\":\"Dentist in Powell\"},{\"clinicId\":\"dentistinperrysburg\",\"sftpFolderPath\":\"dentistinperrysburg\",\"clinicName\":\"Dentist in PerrysBurg\"},{\"clinicId\":\"dentistinaustin\",\"sftpFolderPath\":\"dentistinaustin\",\"clinicName\":\"Dentist in Austin\"},{\"clinicId\":\"therimdentalcare\",\"sftpFolderPath\":\"therimdentalcare\",\"clinicName\":\"The Rim Dental Care\"},{\"clinicId\":\"dentistinbloomingdale\",\"sftpFolderPath\":\"dentistinbloomingdale\",\"clinicName\":\"Dentist in Bloomingdale\"},{\"clinicId\":\"dentistinvernonhills\",\"sftpFolderPath\":\"dentistinvernonhills\",\"clinicName\":\"Dentist in Vernon Hills\"},{\"clinicId\":\"meadowsdentalcare\",\"sftpFolderPath\":\"meadowsdentalcare\",\"clinicName\":\"Meadows Dental Care\"},{\"clinicId\":\"dentistinstillwater\",\"sftpFolderPath\":\"dentistinstillwater\",\"clinicName\":\"Dentist in Still Water\"},{\"clinicId\":\"pearlanddentalcare\",\"sftpFolderPath\":\"pearlanddentalcare\",\"clinicName\":\"Pearland Dental Care\"}]"
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 128,
+    "Role": {
+     "Fn::GetAtt": [
+      "ConsolidatedTransferAuthFnServiceRole1ACCBDF5",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "consolidated-transfer-auth"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ],
+    "Timeout": 10
+   },
+   "DependsOn": [
+    "ConsolidatedTransferAuthFnServiceRole1ACCBDF5"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/ConsolidatedTransferAuthFn/Resource",
+    "aws:asset:path": "asset.f402c9f0da6b828d6c85f74f570813faf7afcd28b91e03d75c616c744f9b14f1",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ConsolidatedTransferAuthFnAllowConsolidatedTransferInvokeDE094587": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ConsolidatedTransferAuthFn075B4066",
+      "Arn"
+     ]
+    },
+    "Principal": "transfer.amazonaws.com"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/ConsolidatedTransferAuthFn/AllowConsolidatedTransferInvoke"
+   }
+  },
+  "ConsolidatedTransferServer": {
+   "Type": "AWS::Transfer::Server",
+   "Properties": {
+    "EndpointType": "PUBLIC",
+    "IdentityProviderDetails": {
+     "Function": {
+      "Fn::GetAtt": [
+       "ConsolidatedTransferAuthFn075B4066",
+       "Arn"
+      ]
+     }
+    },
+    "IdentityProviderType": "AWS_LAMBDA",
+    "LoggingRole": {
+     "Fn::GetAtt": [
+      "ConsolidatedTransferRole100E5BAA",
+      "Arn"
+     ]
+    },
+    "Protocols": [
+     "SFTP"
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Server",
+      "Value": "opendental-transfer"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/ConsolidatedTransferServer"
+   }
+  },
+  "OpenDentalApi17E39178": {
+   "Type": "AWS::ApiGateway::RestApi",
+   "Properties": {
+    "Description": "OpenDental service API",
+    "Name": "OpenDentalApi",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/Resource"
+   }
+  },
+  "OpenDentalApiCloudWatchRoleD3333EEF": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "apigateway.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/CloudWatchRole/Resource"
+   }
+  },
+  "OpenDentalApiAccountC9089E0F": {
+   "Type": "AWS::ApiGateway::Account",
+   "Properties": {
+    "CloudWatchRoleArn": {
+     "Fn::GetAtt": [
+      "OpenDentalApiCloudWatchRoleD3333EEF",
+      "Arn"
+     ]
+    }
+   },
+   "DependsOn": [
+    "OpenDentalApi17E39178"
+   ],
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/Account"
+   }
+  },
+  "OpenDentalApiDeploymentD1BC95F6e9dace650c1e2e908c20358b4442afe0": {
+   "Type": "AWS::ApiGateway::Deployment",
+   "Properties": {
+    "Description": "OpenDental service API",
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    }
+   },
+   "DependsOn": [
+    "GatewayResponseAccessDenied94952EFC",
+    "GatewayResponseDefault4XXC22BF2A7",
+    "GatewayResponseDefault5XX28177100",
+    "GatewayResponseUnauthorized78FCB15B",
+    "OpenDentalApiapiclinicclinicIdproxyANYC457B362",
+    "OpenDentalApiapiclinicclinicIdproxyOPTIONS1CD60477",
+    "OpenDentalApiapiclinicclinicIdproxy97363F0B",
+    "OpenDentalApiapiclinicclinicIdOPTIONS66EF6842",
+    "OpenDentalApiapiclinicclinicIdC5A04D8E",
+    "OpenDentalApiapiclinicOPTIONSB6796B20",
+    "OpenDentalApiapiclinic645DE65F",
+    "OpenDentalApiapiOPTIONSFC2B27EB",
+    "OpenDentalApiapi8E82BED0",
+    "OpenDentalApiOPTIONS49CCF54A"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/Deployment/Resource",
+    "aws:cdk:do-not-refactor": true
+   }
+  },
+  "OpenDentalApiDeploymentStageprod8A8D04AB": {
+   "Type": "AWS::ApiGateway::Stage",
+   "Properties": {
+    "DeploymentId": {
+     "Ref": "OpenDentalApiDeploymentD1BC95F6e9dace650c1e2e908c20358b4442afe0"
+    },
+    "MethodSettings": [
+     {
+      "DataTraceEnabled": false,
+      "HttpMethod": "*",
+      "LoggingLevel": "INFO",
+      "MetricsEnabled": true,
+      "ResourcePath": "/*"
+     }
+    ],
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    },
+    "StageName": "prod",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "OpenDentalApiAccountC9089E0F"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/DeploymentStage.prod/Resource"
+   }
+  },
+  "OpenDentalApiOPTIONS49CCF54A": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Fn::GetAtt": [
+      "OpenDentalApi17E39178",
+      "RootResourceId"
+     ]
+    },
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/Default/OPTIONS/Resource"
+   }
+  },
+  "OpenDentalApiapi8E82BED0": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "OpenDentalApi17E39178",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "api",
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/Default/api/Resource"
+   }
+  },
+  "OpenDentalApiapiOPTIONSFC2B27EB": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "OpenDentalApiapi8E82BED0"
+    },
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/Default/api/OPTIONS/Resource"
+   }
+  },
+  "OpenDentalApiapiclinic645DE65F": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "OpenDentalApiapi8E82BED0"
+    },
+    "PathPart": "clinic",
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/Default/api/clinic/Resource"
+   }
+  },
+  "OpenDentalApiapiclinicOPTIONSB6796B20": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "OpenDentalApiapiclinic645DE65F"
+    },
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/Default/api/clinic/OPTIONS/Resource"
+   }
+  },
+  "OpenDentalApiapiclinicclinicIdC5A04D8E": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "OpenDentalApiapiclinic645DE65F"
+    },
+    "PathPart": "{clinicId}",
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/Default/api/clinic/{clinicId}/Resource"
+   }
+  },
+  "OpenDentalApiapiclinicclinicIdOPTIONS66EF6842": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "OpenDentalApiapiclinicclinicIdC5A04D8E"
+    },
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/Default/api/clinic/{clinicId}/OPTIONS/Resource"
+   }
+  },
+  "OpenDentalApiapiclinicclinicIdproxy97363F0B": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "OpenDentalApiapiclinicclinicIdC5A04D8E"
+    },
+    "PathPart": "{proxy+}",
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/Default/api/clinic/{clinicId}/{proxy+}/Resource"
+   }
+  },
+  "OpenDentalApiapiclinicclinicIdproxyOPTIONS1CD60477": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "OpenDentalApiapiclinicclinicIdproxy97363F0B"
+    },
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/Default/api/clinic/{clinicId}/{proxy+}/OPTIONS/Resource"
+   }
+  },
+  "OpenDentalApiapiclinicclinicIdproxyANYApiPermissionTodaysDentalInsightsOpenDentalN1OpenDentalApiA0F8CB47ANYapiclinicclinicIdproxyBE8D22D5": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "OpenDentalProxyFn188D5BBF",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "OpenDentalApi17E39178"
+       },
+       "/",
+       {
+        "Ref": "OpenDentalApiDeploymentStageprod8A8D04AB"
+       },
+       "/*/api/clinic/*/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/Default/api/clinic/{clinicId}/{proxy+}/ANY/ApiPermission.TodaysDentalInsightsOpenDentalN1OpenDentalApiA0F8CB47.ANY..api.clinic.{clinicId}.{proxy+}"
+   }
+  },
+  "OpenDentalApiapiclinicclinicIdproxyANYApiPermissionTestTodaysDentalInsightsOpenDentalN1OpenDentalApiA0F8CB47ANYapiclinicclinicIdproxyBA2EC93E": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "OpenDentalProxyFn188D5BBF",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "OpenDentalApi17E39178"
+       },
+       "/test-invoke-stage/*/api/clinic/*/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/Default/api/clinic/{clinicId}/{proxy+}/ANY/ApiPermission.Test.TodaysDentalInsightsOpenDentalN1OpenDentalApiA0F8CB47.ANY..api.clinic.{clinicId}.{proxy+}"
+   }
+  },
+  "OpenDentalApiapiclinicclinicIdproxyANYC457B362": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "OpenDentalAuthorizerC432E87C"
+    },
+    "HttpMethod": "ANY",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "IntegrationResponses": [
+      {
+       "StatusCode": "200"
+      },
+      {
+       "ResponseTemplates": {
+        "application/json": "{\"message\":\"$util.escapeJavaScript($input.path('$.errorMessage'))\"}"
+       },
+       "SelectionPattern": ".*\"status\":400.*",
+       "StatusCode": "400"
+      },
+      {
+       "ResponseTemplates": {
+        "application/json": "{\"message\":\"$util.escapeJavaScript($input.path('$.errorMessage'))\"}"
+       },
+       "SelectionPattern": ".*\"status\":403.*",
+       "StatusCode": "403"
+      },
+      {
+       "ResponseTemplates": {
+        "application/json": "{\"message\":\"Internal server error\"}"
+       },
+       "SelectionPattern": ".*",
+       "StatusCode": "500"
+      }
+     ],
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "OpenDentalProxyFn188D5BBF",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Origin": true
+      },
+      "StatusCode": "200"
+     },
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Origin": true
+      },
+      "StatusCode": "400"
+     },
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Origin": true
+      },
+      "StatusCode": "401"
+     },
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Origin": true
+      },
+      "StatusCode": "403"
+     },
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Origin": true
+      },
+      "StatusCode": "500"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "OpenDentalApiapiclinicclinicIdproxy97363F0B"
+    },
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApi/Default/api/clinic/{clinicId}/{proxy+}/ANY/Resource"
+   }
+  },
+  "GatewayResponseDefault4XXC22BF2A7": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_4XX",
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/GatewayResponseDefault4XX/Resource"
+   }
+  },
+  "GatewayResponseDefault5XX28177100": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_5XX",
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/GatewayResponseDefault5XX/Resource"
+   }
+  },
+  "GatewayResponseUnauthorized78FCB15B": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "UNAUTHORIZED",
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/GatewayResponseUnauthorized/Resource"
+   }
+  },
+  "GatewayResponseAccessDenied94952EFC": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "ACCESS_DENIED",
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/GatewayResponseAccessDenied/Resource"
+   }
+  },
+  "OpenDentalAuthorizerC432E87C": {
+   "Type": "AWS::ApiGateway::Authorizer",
+   "Properties": {
+    "AuthorizerResultTtlInSeconds": 300,
+    "AuthorizerUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Fn::Select": [
+         1,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":apigateway:",
+       {
+        "Fn::Select": [
+         3,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":lambda:path/2015-03-31/functions/",
+       {
+        "Fn::ImportValue": "AuthorizerFunctionArnN1"
+       },
+       "/invocations"
+      ]
+     ]
+    },
+    "IdentitySource": "method.request.header.Authorization",
+    "Name": "TodaysDentalInsightsOpenDentalN1OpenDentalAuthorizerCC6A02FD",
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    },
+    "Type": "REQUEST"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalAuthorizer/Resource"
+   }
+  },
+  "AuthorizerInvokePermission": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::ImportValue": "AuthorizerFunctionArnN1"
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "OpenDentalApi17E39178"
+       },
+       "/authorizers/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/AuthorizerInvokePermission"
+   }
+  },
+  "OpenDentalProxyFnServiceRole68493057": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "opendental-proxy"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "ConsolidatedTransferServer"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalProxyFn/ServiceRole/Resource"
+   }
+  },
+  "OpenDentalProxyFnServiceRoleDefaultPolicy1DF43B30": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicSecretsTableCB051D787FA92820"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+           }
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputFnGetAttSecretsEncryptionKey25C5552EArnA97EA41C"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "OpenDentalProxyFnServiceRoleDefaultPolicy1DF43B30",
+    "Roles": [
+     {
+      "Ref": "OpenDentalProxyFnServiceRole68493057"
+     }
+    ]
+   },
+   "DependsOn": [
+    "ConsolidatedTransferServer"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalProxyFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "OpenDentalProxyFn188D5BBF": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "d4f4feb6393d7d05cad5f4f337da7cef52686906aa33e47a3d1499e777b7f88a.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CONSOLIDATED_SFTP_HOST": {
+       "Fn::Join": [
+        "",
+        [
+         {
+          "Fn::GetAtt": [
+           "ConsolidatedTransferServer",
+           "ServerId"
+          ]
+         },
+         ".server.transfer.us-east-1.amazonaws.com"
+        ]
+       ]
+      },
+      "CONSOLIDATED_SFTP_USERNAME": "sftpuser",
+      "CONSOLIDATED_SFTP_PORT": "22",
+      "NODE_OPTIONS": "--enable-source-maps",
+      "AWS_NODEJS_CONNECTION_REUSE_ENABLED": "1",
+      "GLOBAL_SECRETS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+      },
+      "CLINIC_SECRETS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicSecretsTableCB051D787FA92820"
+      },
+      "CLINIC_CONFIG_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 1024,
+    "ReservedConcurrentExecutions": 30,
+    "Role": {
+     "Fn::GetAtt": [
+      "OpenDentalProxyFnServiceRole68493057",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "opendental-proxy"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ],
+    "Timeout": 120
+   },
+   "DependsOn": [
+    "ConsolidatedTransferServer",
+    "OpenDentalProxyFnServiceRoleDefaultPolicy1DF43B30",
+    "OpenDentalProxyFnServiceRole68493057"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalProxyFn/Resource",
+    "aws:asset:path": "asset.d4f4feb6393d7d05cad5f4f337da7cef52686906aa33e47a3d1499e777b7f88a",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "OpenDentalProxyFnEventInvokeConfigEF05FABB": {
+   "Type": "AWS::Lambda::EventInvokeConfig",
+   "Properties": {
+    "FunctionName": {
+     "Ref": "OpenDentalProxyFn188D5BBF"
+    },
+    "MaximumRetryAttempts": 2,
+    "Qualifier": "$LATEST"
+   },
+   "DependsOn": [
+    "ConsolidatedTransferServer"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalProxyFn/EventInvokeConfig/Resource"
+   }
+  },
+  "ConsolidatedTransferAuthFnErrorAlarmA284A84D": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when consolidated-transfer-auth Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ConsolidatedTransferAuthFn075B4066"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/ConsolidatedTransferAuthFnErrorAlarm/Resource"
+   }
+  },
+  "ConsolidatedTransferAuthFnThrottleAlarm7CD9111D": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when consolidated-transfer-auth Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ConsolidatedTransferAuthFn075B4066"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/ConsolidatedTransferAuthFnThrottleAlarm/Resource"
+   }
+  },
+  "ConsolidatedTransferAuthFnDurationAlarm44BCAA6D": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when consolidated-transfer-auth Lambda p99 duration exceeds 8000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ConsolidatedTransferAuthFn075B4066"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ],
+    "Threshold": 8000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/ConsolidatedTransferAuthFnDurationAlarm/Resource"
+   }
+  },
+  "OpenDentalProxyFnErrorAlarmD94D2C5F": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when opendental-proxy Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "OpenDentalProxyFn188D5BBF"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalProxyFnErrorAlarm/Resource"
+   }
+  },
+  "OpenDentalProxyFnThrottleAlarm2FA48DB2": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when opendental-proxy Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "OpenDentalProxyFn188D5BBF"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalProxyFnThrottleAlarm/Resource"
+   }
+  },
+  "OpenDentalProxyFnDurationAlarmEBC8AC3D": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when opendental-proxy Lambda p99 duration exceeds 96000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "OpenDentalProxyFn188D5BBF"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "OpenDental"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsOpenDentalN1"
+     }
+    ],
+    "Threshold": 96000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalProxyFnDurationAlarm/Resource"
+   }
+  },
+  "OpenDentalApiBasePathMapping": {
+   "Type": "AWS::ApiGateway::BasePathMapping",
+   "Properties": {
+    "BasePath": "opendental",
+    "DomainName": "apig.todaysdentalinsights.com",
+    "RestApiId": {
+     "Ref": "OpenDentalApi17E39178"
+    },
+    "Stage": {
+     "Ref": "OpenDentalApiDeploymentStageprod8A8D04AB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/OpenDentalApiBasePathMapping"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/2WRUXKjMAyGz9J3x9vSvQBht50+tM2QA2QUI4gTkKklh8ky3H3Hhk2z7dP/SbKlX3ams+xB39/BwCtTnVat3etxK2BOCgbejfyox3UwJxRV1LTQLGtgnFQL3b4CPW4tNS2Ko6dARqwjdYWiplveoO8s8+2R2Er9PiPJC53dCQtHtW3i4W/JSVno9LhxrTWX1G6m0rUYw6iT4scdMKOwzqMsLnfkKjyyfkty9SQeiGv0uqhpi/6MXkFvGxAc4KLHElny3qbmn5gb4wKJ+oV96y4dUnqgm2gr0CRHM5TILniDadVXlIOrYnGhf9VlyMzPs4MSuXfEqfY1VeJHiJ6CHJy3f9Ana/9FceAG5PAKfW+pmZRpXagGEHPQY96C79KdCNOkTGBx3c4vHljnAxcp92nxS3jj+Arp1ePiltI3vgfpg0wqfoA+8o9z9lM/ZPr+7sjWrnwgsR3qcta/ttXHQpQCAAA="
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsOpenDentalN1/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "OpenDentalApiEndpointFB06FF16": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "OpenDentalApi17E39178"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "OpenDentalApiDeploymentStageprod8A8D04AB"
+      },
+      "/"
+     ]
+    ]
+   }
+  },
+  "ConsolidatedTransferServerEndpoint": {
+   "Description": "Consolidated Transfer Family SFTP endpoint for all clinics",
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      {
+       "Fn::GetAtt": [
+        "ConsolidatedTransferServer",
+        "ServerId"
+       ]
+      },
+      ".server.transfer.us-east-1.amazonaws.com"
+     ]
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsOpenDentalN1-ConsolidatedTransferServerEndpoint"
+   }
+  },
+  "ConsolidatedTransferServerBucket": {
+   "Description": "S3 bucket for consolidated SFTP files",
+   "Value": {
+    "Ref": "ConsolidatedTransferBucketCAF232D8"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsOpenDentalN1-ConsolidatedTransferServerBucket"
+   }
+  },
+  "ConsolidatedTransferServerId": {
+   "Description": "Transfer Family server ID for use in other stacks",
+   "Value": {
+    "Fn::GetAtt": [
+     "ConsolidatedTransferServer",
+     "ServerId"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsOpenDentalN1-ConsolidatedTransferServerId"
+   }
+  },
+  "OpenDentalApiUrl": {
+   "Description": "OpenDental API Gateway URL",
+   "Value": "https://apig.todaysdentalinsights.com/opendental/",
+   "Export": {
+    "Name": "TodaysDentalInsightsOpenDentalN1-OpenDentalApiUrl"
+   }
+  },
+  "OpenDentalApiId": {
+   "Description": "OpenDental API Gateway ID",
+   "Value": {
+    "Ref": "OpenDentalApi17E39178"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsOpenDentalN1-OpenDentalApiId"
+   }
+  },
+  "ExportsOutputFnGetAttConsolidatedTransferServerServerIdBBBFF6B9": {
+   "Value": {
+    "Fn::GetAtt": [
+     "ConsolidatedTransferServer",
+     "ServerId"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsOpenDentalN1:ExportsOutputFnGetAttConsolidatedTransferServerServerIdBBBFF6B9"
+   }
+  },
+  "ExportsOutputRefConsolidatedTransferBucketCAF232D8DC23AA34": {
+   "Value": {
+    "Ref": "ConsolidatedTransferBucketCAF232D8"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsOpenDentalN1:ExportsOutputRefConsolidatedTransferBucketCAF232D8DC23AA34"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/tdi3/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

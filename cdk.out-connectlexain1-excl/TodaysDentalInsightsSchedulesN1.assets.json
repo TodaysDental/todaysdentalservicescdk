@@ -1,0 +1,96 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "7a3e5222b9b5c0e1e575af2b812fdcdb0cef81565a7603869ce670e6092f46d5": {
+      "displayName": "SchedulesFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-1e4c26b5": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "7a3e5222b9b5c0e1e575af2b812fdcdb0cef81565a7603869ce670e6092f46d5.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "4ed88dece4ddccd9fa2bf658c6762863467acea13775d0c5742daaf248112c8d": {
+      "displayName": "SchedulerWorkerFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-bfd5b0c4": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "4ed88dece4ddccd9fa2bf658c6762863467acea13775d0c5742daaf248112c8d.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "e676e0a55da5231cc4c359e94d79a156c0568a8ee23ffcdc1972609818dac2cd": {
+      "displayName": "SchedulerQueueProducerFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-6a8d2eae": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "e676e0a55da5231cc4c359e94d79a156c0568a8ee23ffcdc1972609818dac2cd.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "f69d1eb1c4c60a8f8ee2fbbf9eeedfb20944a683f711a2f8cd5d3ae00a0779fa": {
+      "displayName": "SchedulerQueueConsumerFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-c9ef53c3": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "f69d1eb1c4c60a8f8ee2fbbf9eeedfb20944a683f711a2f8cd5d3ae00a0779fa.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "eaf736aec0c89abfedd57dd7cc31b65515a99420017cfd909357e8939710dab0": {
+      "displayName": "EmailSenderFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-49c20acc": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "eaf736aec0c89abfedd57dd7cc31b65515a99420017cfd909357e8939710dab0.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "e032894a017fde7bb366ceffdad9b2988bd8c6db85c2a29e5d656c5112e34add": {
+      "displayName": "TodaysDentalInsightsSchedulesN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsSchedulesN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-eddbe425": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "e032894a017fde7bb366ceffdad9b2988bd8c6db85c2a29e5d656c5112e34add.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

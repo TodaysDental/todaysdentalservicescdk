@@ -1,0 +1,2664 @@
+{
+ "Resources": {
+  "GmailHandlerFnServiceRole4215A81A": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "gmail-handler"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Email"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsEmailN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/GmailHandlerFn/ServiceRole/Resource"
+   }
+  },
+  "GmailHandlerFnServiceRoleDefaultPolicyD92B543C": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicSecretsTableCB051D787FA92820"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+           }
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputFnGetAttSecretsEncryptionKey25C5552EArnA97EA41C"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "GmailHandlerFnServiceRoleDefaultPolicyD92B543C",
+    "Roles": [
+     {
+      "Ref": "GmailHandlerFnServiceRole4215A81A"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/GmailHandlerFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "GmailHandlerFn2BCB1C00": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "3406e6c108a7ca3324528543623f3e297e852bdf063ec1e667ffb18f8ae5e909.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "GLOBAL_SECRETS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+      },
+      "CLINIC_SECRETS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicSecretsTableCB051D787FA92820"
+      },
+      "CLINIC_CONFIG_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 512,
+    "Role": {
+     "Fn::GetAtt": [
+      "GmailHandlerFnServiceRole4215A81A",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "gmail-handler"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Email"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsEmailN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "GmailHandlerFnServiceRoleDefaultPolicyD92B543C",
+    "GmailHandlerFnServiceRole4215A81A"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/GmailHandlerFn/Resource",
+    "aws:asset:path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "GmailHandlerFnErrorAlarmA15AE926": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when gmail-handler Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "GmailHandlerFn2BCB1C00"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Email"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsEmailN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/GmailHandlerFnErrorAlarm/Resource"
+   }
+  },
+  "GmailHandlerFnThrottleAlarm0E86F974": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when gmail-handler Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "GmailHandlerFn2BCB1C00"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Email"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsEmailN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/GmailHandlerFnThrottleAlarm/Resource"
+   }
+  },
+  "ImapSmtpHandlerFnServiceRole573DDC99": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "imap-smtp-handler"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Email"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsEmailN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/ImapSmtpHandlerFn/ServiceRole/Resource"
+   }
+  },
+  "ImapSmtpHandlerFnServiceRoleDefaultPolicy7C898F01": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicSecretsTableCB051D787FA92820"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+           }
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputFnGetAttSecretsEncryptionKey25C5552EArnA97EA41C"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ImapSmtpHandlerFnServiceRoleDefaultPolicy7C898F01",
+    "Roles": [
+     {
+      "Ref": "ImapSmtpHandlerFnServiceRole573DDC99"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/ImapSmtpHandlerFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ImapSmtpHandlerFn1F6393E1": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "828856dd13c7236bf4ce5ff4a8720fef2f9fa0b98d52a57e1e5e3b40c037a9fb.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "GLOBAL_SECRETS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+      },
+      "CLINIC_SECRETS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicSecretsTableCB051D787FA92820"
+      },
+      "CLINIC_CONFIG_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 512,
+    "Role": {
+     "Fn::GetAtt": [
+      "ImapSmtpHandlerFnServiceRole573DDC99",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "imap-smtp-handler"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Email"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsEmailN1"
+     }
+    ],
+    "Timeout": 60
+   },
+   "DependsOn": [
+    "ImapSmtpHandlerFnServiceRoleDefaultPolicy7C898F01",
+    "ImapSmtpHandlerFnServiceRole573DDC99"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/ImapSmtpHandlerFn/Resource",
+    "aws:asset:path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ImapSmtpHandlerFnErrorAlarm05A7A659": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when imap-smtp-handler Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ImapSmtpHandlerFn1F6393E1"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Email"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsEmailN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/ImapSmtpHandlerFnErrorAlarm/Resource"
+   }
+  },
+  "ImapSmtpHandlerFnThrottleAlarmF7494877": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when imap-smtp-handler Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ImapSmtpHandlerFn1F6393E1"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Email"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsEmailN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/ImapSmtpHandlerFnThrottleAlarm/Resource"
+   }
+  },
+  "UserEmailHandlerFnServiceRole3FA3482D": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "user-email-handler"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Email"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsEmailN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/UserEmailHandlerFn/ServiceRole/Resource"
+   }
+  },
+  "UserEmailHandlerFnServiceRoleDefaultPolicy60A1F4AD": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "dynamodb:GetItem",
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:dynamodb:us-east-1:851620242036:table/*-StaffUser",
+        "arn:aws:dynamodb:us-east-1:851620242036:table/StaffUser"
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicSecretsTableCB051D787FA92820"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+           }
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputFnGetAttSecretsEncryptionKey25C5552EArnA97EA41C"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "UserEmailHandlerFnServiceRoleDefaultPolicy60A1F4AD",
+    "Roles": [
+     {
+      "Ref": "UserEmailHandlerFnServiceRole3FA3482D"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/UserEmailHandlerFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "UserEmailHandlerFn8AFEE1CD": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "3dcd14318fa28e21f91c4460c62d2443bd7b4c40af8f1f15d6f1320364994c35.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "STAFF_USER_TABLE": {
+       "Fn::ImportValue": "CoreStack-StaffUserTableName"
+      },
+      "GLOBAL_SECRETS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+      },
+      "CLINIC_SECRETS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicSecretsTableCB051D787FA92820"
+      },
+      "CLINIC_CONFIG_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 512,
+    "Role": {
+     "Fn::GetAtt": [
+      "UserEmailHandlerFnServiceRole3FA3482D",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "user-email-handler"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Email"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsEmailN1"
+     }
+    ],
+    "Timeout": 60
+   },
+   "DependsOn": [
+    "UserEmailHandlerFnServiceRoleDefaultPolicy60A1F4AD",
+    "UserEmailHandlerFnServiceRole3FA3482D"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/UserEmailHandlerFn/Resource",
+    "aws:asset:path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "UserEmailHandlerFnErrorAlarm343DBB68": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when user-email-handler Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "UserEmailHandlerFn8AFEE1CD"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Email"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsEmailN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/UserEmailHandlerFnErrorAlarm/Resource"
+   }
+  },
+  "UserEmailHandlerFnThrottleAlarm69C83ECD": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when user-email-handler Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "UserEmailHandlerFn8AFEE1CD"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Email"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsEmailN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/UserEmailHandlerFnThrottleAlarm/Resource"
+   }
+  },
+  "EmailApi51CACE34": {
+   "Type": "AWS::ApiGateway::RestApi",
+   "Properties": {
+    "Description": "Email API for clinic-specific email operations (authorized, clinic-level access)",
+    "Name": "TodaysDentalInsightsEmailN1-EmailApi",
+    "Tags": [
+     {
+      "Key": "Api",
+      "Value": "email"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Email"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsEmailN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Resource"
+   }
+  },
+  "EmailApiCloudWatchRole8BAA6008": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "apigateway.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Api",
+      "Value": "email"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Email"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsEmailN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/CloudWatchRole/Resource"
+   }
+  },
+  "EmailApiAccount285D20D5": {
+   "Type": "AWS::ApiGateway::Account",
+   "Properties": {
+    "CloudWatchRoleArn": {
+     "Fn::GetAtt": [
+      "EmailApiCloudWatchRole8BAA6008",
+      "Arn"
+     ]
+    }
+   },
+   "DependsOn": [
+    "EmailApi51CACE34"
+   ],
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Account"
+   }
+  },
+  "EmailApiDeployment1BC689E353dc2f51d447915aa2374984277e0f48": {
+   "Type": "AWS::ApiGateway::Deployment",
+   "Properties": {
+    "Description": "Email API for clinic-specific email operations (authorized, clinic-level access)",
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "DependsOn": [
+    "EmailApigmailclinicIdDELETE906AA5D9",
+    "EmailApigmailclinicIdGET0B5E0932",
+    "EmailApigmailclinicIdOPTIONS6B2538F9",
+    "EmailApigmailclinicIdPOSTC238CFFB",
+    "EmailApigmailclinicId6C1722CB",
+    "EmailApigmailOPTIONS105C1C3F",
+    "EmailApigmailD7AECE26",
+    "EmailApiimapclinicIdDELETE9056484F",
+    "EmailApiimapclinicIdGET68C0C9DC",
+    "EmailApiimapclinicIdOPTIONS6BE6C90F",
+    "EmailApiimapclinicIdPOST803C23C4",
+    "EmailApiimapclinicId43D1871A",
+    "EmailApiimapOPTIONSD85F7C0E",
+    "EmailApiimapE93AC4D3",
+    "EmailApiOPTIONS799001E1",
+    "EmailApiuserDELETE22831D64",
+    "EmailApiuserGETE080DDE3",
+    "EmailApiuserOPTIONS3C3DC4B1",
+    "EmailApiuserPOST94B2CE3F",
+    "EmailApiuserD8E7992E",
+    "EmailApiDefault4XXDD5AB625",
+    "EmailApiDefault5XX1066B301"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Deployment/Resource",
+    "aws:cdk:do-not-refactor": true
+   }
+  },
+  "EmailApiDeploymentStageprod5743DD53": {
+   "Type": "AWS::ApiGateway::Stage",
+   "Properties": {
+    "DeploymentId": {
+     "Ref": "EmailApiDeployment1BC689E353dc2f51d447915aa2374984277e0f48"
+    },
+    "MethodSettings": [
+     {
+      "DataTraceEnabled": false,
+      "HttpMethod": "*",
+      "ResourcePath": "/*",
+      "ThrottlingBurstLimit": 200,
+      "ThrottlingRateLimit": 100
+     }
+    ],
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    },
+    "StageName": "prod",
+    "Tags": [
+     {
+      "Key": "Api",
+      "Value": "email"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Email"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsEmailN1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "EmailApiAccount285D20D5"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/DeploymentStage.prod/Resource"
+   }
+  },
+  "EmailApiOPTIONS799001E1": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'",
+        "method.response.header.Access-Control-Allow-Credentials": "'true'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true,
+       "method.response.header.Access-Control-Allow-Credentials": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Fn::GetAtt": [
+      "EmailApi51CACE34",
+      "RootResourceId"
+     ]
+    },
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/OPTIONS/Resource"
+   }
+  },
+  "EmailApigmailD7AECE26": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "EmailApi51CACE34",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "gmail",
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/gmail/Resource"
+   }
+  },
+  "EmailApigmailOPTIONS105C1C3F": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'",
+        "method.response.header.Access-Control-Allow-Credentials": "'true'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true,
+       "method.response.header.Access-Control-Allow-Credentials": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "EmailApigmailD7AECE26"
+    },
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/gmail/OPTIONS/Resource"
+   }
+  },
+  "EmailApigmailclinicId6C1722CB": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "EmailApigmailD7AECE26"
+    },
+    "PathPart": "{clinicId}",
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/gmail/{clinicId}/Resource"
+   }
+  },
+  "EmailApigmailclinicIdOPTIONS6B2538F9": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'",
+        "method.response.header.Access-Control-Allow-Credentials": "'true'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true,
+       "method.response.header.Access-Control-Allow-Credentials": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "EmailApigmailclinicId6C1722CB"
+    },
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/gmail/{clinicId}/OPTIONS/Resource"
+   }
+  },
+  "EmailApigmailclinicIdGETApiPermissionTodaysDentalInsightsEmailN1EmailApi4340239CGETgmailclinicIdFCC0D79A": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "GmailHandlerFn2BCB1C00",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/",
+       {
+        "Ref": "EmailApiDeploymentStageprod5743DD53"
+       },
+       "/GET/gmail/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/gmail/{clinicId}/GET/ApiPermission.TodaysDentalInsightsEmailN1EmailApi4340239C.GET..gmail.{clinicId}"
+   }
+  },
+  "EmailApigmailclinicIdGETApiPermissionTestTodaysDentalInsightsEmailN1EmailApi4340239CGETgmailclinicIdF21FB839": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "GmailHandlerFn2BCB1C00",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/test-invoke-stage/GET/gmail/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/gmail/{clinicId}/GET/ApiPermission.Test.TodaysDentalInsightsEmailN1EmailApi4340239C.GET..gmail.{clinicId}"
+   }
+  },
+  "EmailApigmailclinicIdGET0B5E0932": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "EmailAuthorizer54238417"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "GmailHandlerFn2BCB1C00",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "RequestParameters": {
+     "method.request.path.clinicId": true,
+     "method.request.querystring.limit": false,
+     "method.request.querystring.days": false,
+     "method.request.querystring.folder": false
+    },
+    "ResourceId": {
+     "Ref": "EmailApigmailclinicId6C1722CB"
+    },
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/gmail/{clinicId}/GET/Resource"
+   }
+  },
+  "EmailApigmailclinicIdPOSTApiPermissionTodaysDentalInsightsEmailN1EmailApi4340239CPOSTgmailclinicId04224923": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "GmailHandlerFn2BCB1C00",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/",
+       {
+        "Ref": "EmailApiDeploymentStageprod5743DD53"
+       },
+       "/POST/gmail/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/gmail/{clinicId}/POST/ApiPermission.TodaysDentalInsightsEmailN1EmailApi4340239C.POST..gmail.{clinicId}"
+   }
+  },
+  "EmailApigmailclinicIdPOSTApiPermissionTestTodaysDentalInsightsEmailN1EmailApi4340239CPOSTgmailclinicIdB1BDE3EC": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "GmailHandlerFn2BCB1C00",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/test-invoke-stage/POST/gmail/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/gmail/{clinicId}/POST/ApiPermission.Test.TodaysDentalInsightsEmailN1EmailApi4340239C.POST..gmail.{clinicId}"
+   }
+  },
+  "EmailApigmailclinicIdPOSTC238CFFB": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "EmailAuthorizer54238417"
+    },
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "GmailHandlerFn2BCB1C00",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "RequestParameters": {
+     "method.request.path.clinicId": true
+    },
+    "ResourceId": {
+     "Ref": "EmailApigmailclinicId6C1722CB"
+    },
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/gmail/{clinicId}/POST/Resource"
+   }
+  },
+  "EmailApigmailclinicIdDELETEApiPermissionTodaysDentalInsightsEmailN1EmailApi4340239CDELETEgmailclinicId4A17F4B7": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "GmailHandlerFn2BCB1C00",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/",
+       {
+        "Ref": "EmailApiDeploymentStageprod5743DD53"
+       },
+       "/DELETE/gmail/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/gmail/{clinicId}/DELETE/ApiPermission.TodaysDentalInsightsEmailN1EmailApi4340239C.DELETE..gmail.{clinicId}"
+   }
+  },
+  "EmailApigmailclinicIdDELETEApiPermissionTestTodaysDentalInsightsEmailN1EmailApi4340239CDELETEgmailclinicId60FCCCA5": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "GmailHandlerFn2BCB1C00",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/test-invoke-stage/DELETE/gmail/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/gmail/{clinicId}/DELETE/ApiPermission.Test.TodaysDentalInsightsEmailN1EmailApi4340239C.DELETE..gmail.{clinicId}"
+   }
+  },
+  "EmailApigmailclinicIdDELETE906AA5D9": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "EmailAuthorizer54238417"
+    },
+    "HttpMethod": "DELETE",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "GmailHandlerFn2BCB1C00",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "RequestParameters": {
+     "method.request.path.clinicId": true
+    },
+    "ResourceId": {
+     "Ref": "EmailApigmailclinicId6C1722CB"
+    },
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/gmail/{clinicId}/DELETE/Resource"
+   }
+  },
+  "EmailApiimapE93AC4D3": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "EmailApi51CACE34",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "imap",
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/imap/Resource"
+   }
+  },
+  "EmailApiimapOPTIONSD85F7C0E": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'",
+        "method.response.header.Access-Control-Allow-Credentials": "'true'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true,
+       "method.response.header.Access-Control-Allow-Credentials": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "EmailApiimapE93AC4D3"
+    },
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/imap/OPTIONS/Resource"
+   }
+  },
+  "EmailApiimapclinicId43D1871A": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "EmailApiimapE93AC4D3"
+    },
+    "PathPart": "{clinicId}",
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/imap/{clinicId}/Resource"
+   }
+  },
+  "EmailApiimapclinicIdOPTIONS6BE6C90F": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'",
+        "method.response.header.Access-Control-Allow-Credentials": "'true'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true,
+       "method.response.header.Access-Control-Allow-Credentials": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "EmailApiimapclinicId43D1871A"
+    },
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/imap/{clinicId}/OPTIONS/Resource"
+   }
+  },
+  "EmailApiimapclinicIdGETApiPermissionTodaysDentalInsightsEmailN1EmailApi4340239CGETimapclinicId702E1D85": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ImapSmtpHandlerFn1F6393E1",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/",
+       {
+        "Ref": "EmailApiDeploymentStageprod5743DD53"
+       },
+       "/GET/imap/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/imap/{clinicId}/GET/ApiPermission.TodaysDentalInsightsEmailN1EmailApi4340239C.GET..imap.{clinicId}"
+   }
+  },
+  "EmailApiimapclinicIdGETApiPermissionTestTodaysDentalInsightsEmailN1EmailApi4340239CGETimapclinicIdFA456704": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ImapSmtpHandlerFn1F6393E1",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/test-invoke-stage/GET/imap/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/imap/{clinicId}/GET/ApiPermission.Test.TodaysDentalInsightsEmailN1EmailApi4340239C.GET..imap.{clinicId}"
+   }
+  },
+  "EmailApiimapclinicIdGET68C0C9DC": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "EmailAuthorizer54238417"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ImapSmtpHandlerFn1F6393E1",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "RequestParameters": {
+     "method.request.path.clinicId": true,
+     "method.request.querystring.limit": false,
+     "method.request.querystring.days": false,
+     "method.request.querystring.folder": false
+    },
+    "ResourceId": {
+     "Ref": "EmailApiimapclinicId43D1871A"
+    },
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/imap/{clinicId}/GET/Resource"
+   }
+  },
+  "EmailApiimapclinicIdPOSTApiPermissionTodaysDentalInsightsEmailN1EmailApi4340239CPOSTimapclinicId2C7FDCFE": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ImapSmtpHandlerFn1F6393E1",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/",
+       {
+        "Ref": "EmailApiDeploymentStageprod5743DD53"
+       },
+       "/POST/imap/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/imap/{clinicId}/POST/ApiPermission.TodaysDentalInsightsEmailN1EmailApi4340239C.POST..imap.{clinicId}"
+   }
+  },
+  "EmailApiimapclinicIdPOSTApiPermissionTestTodaysDentalInsightsEmailN1EmailApi4340239CPOSTimapclinicId19E523BE": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ImapSmtpHandlerFn1F6393E1",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/test-invoke-stage/POST/imap/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/imap/{clinicId}/POST/ApiPermission.Test.TodaysDentalInsightsEmailN1EmailApi4340239C.POST..imap.{clinicId}"
+   }
+  },
+  "EmailApiimapclinicIdPOST803C23C4": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "EmailAuthorizer54238417"
+    },
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ImapSmtpHandlerFn1F6393E1",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "RequestParameters": {
+     "method.request.path.clinicId": true
+    },
+    "ResourceId": {
+     "Ref": "EmailApiimapclinicId43D1871A"
+    },
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/imap/{clinicId}/POST/Resource"
+   }
+  },
+  "EmailApiimapclinicIdDELETEApiPermissionTodaysDentalInsightsEmailN1EmailApi4340239CDELETEimapclinicIdF186AFDD": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ImapSmtpHandlerFn1F6393E1",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/",
+       {
+        "Ref": "EmailApiDeploymentStageprod5743DD53"
+       },
+       "/DELETE/imap/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/imap/{clinicId}/DELETE/ApiPermission.TodaysDentalInsightsEmailN1EmailApi4340239C.DELETE..imap.{clinicId}"
+   }
+  },
+  "EmailApiimapclinicIdDELETEApiPermissionTestTodaysDentalInsightsEmailN1EmailApi4340239CDELETEimapclinicId949283B7": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ImapSmtpHandlerFn1F6393E1",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/test-invoke-stage/DELETE/imap/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/imap/{clinicId}/DELETE/ApiPermission.Test.TodaysDentalInsightsEmailN1EmailApi4340239C.DELETE..imap.{clinicId}"
+   }
+  },
+  "EmailApiimapclinicIdDELETE9056484F": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "EmailAuthorizer54238417"
+    },
+    "HttpMethod": "DELETE",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ImapSmtpHandlerFn1F6393E1",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "RequestParameters": {
+     "method.request.path.clinicId": true
+    },
+    "ResourceId": {
+     "Ref": "EmailApiimapclinicId43D1871A"
+    },
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/imap/{clinicId}/DELETE/Resource"
+   }
+  },
+  "EmailApiuserD8E7992E": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "EmailApi51CACE34",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "user",
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/user/Resource"
+   }
+  },
+  "EmailApiuserOPTIONS3C3DC4B1": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'",
+        "method.response.header.Access-Control-Allow-Credentials": "'true'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true,
+       "method.response.header.Access-Control-Allow-Credentials": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "EmailApiuserD8E7992E"
+    },
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/user/OPTIONS/Resource"
+   }
+  },
+  "EmailApiuserGETApiPermissionTodaysDentalInsightsEmailN1EmailApi4340239CGETuserE18F98EF": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "UserEmailHandlerFn8AFEE1CD",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/",
+       {
+        "Ref": "EmailApiDeploymentStageprod5743DD53"
+       },
+       "/GET/user"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/user/GET/ApiPermission.TodaysDentalInsightsEmailN1EmailApi4340239C.GET..user"
+   }
+  },
+  "EmailApiuserGETApiPermissionTestTodaysDentalInsightsEmailN1EmailApi4340239CGETuserB54E60CF": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "UserEmailHandlerFn8AFEE1CD",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/test-invoke-stage/GET/user"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/user/GET/ApiPermission.Test.TodaysDentalInsightsEmailN1EmailApi4340239C.GET..user"
+   }
+  },
+  "EmailApiuserGETE080DDE3": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "EmailAuthorizer54238417"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "UserEmailHandlerFn8AFEE1CD",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "RequestParameters": {
+     "method.request.querystring.limit": false,
+     "method.request.querystring.days": false,
+     "method.request.querystring.folder": false
+    },
+    "ResourceId": {
+     "Ref": "EmailApiuserD8E7992E"
+    },
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/user/GET/Resource"
+   }
+  },
+  "EmailApiuserPOSTApiPermissionTodaysDentalInsightsEmailN1EmailApi4340239CPOSTuser4070479C": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "UserEmailHandlerFn8AFEE1CD",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/",
+       {
+        "Ref": "EmailApiDeploymentStageprod5743DD53"
+       },
+       "/POST/user"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/user/POST/ApiPermission.TodaysDentalInsightsEmailN1EmailApi4340239C.POST..user"
+   }
+  },
+  "EmailApiuserPOSTApiPermissionTestTodaysDentalInsightsEmailN1EmailApi4340239CPOSTuser79BEE987": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "UserEmailHandlerFn8AFEE1CD",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/test-invoke-stage/POST/user"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/user/POST/ApiPermission.Test.TodaysDentalInsightsEmailN1EmailApi4340239C.POST..user"
+   }
+  },
+  "EmailApiuserPOST94B2CE3F": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "EmailAuthorizer54238417"
+    },
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "UserEmailHandlerFn8AFEE1CD",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "EmailApiuserD8E7992E"
+    },
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/user/POST/Resource"
+   }
+  },
+  "EmailApiuserDELETEApiPermissionTodaysDentalInsightsEmailN1EmailApi4340239CDELETEuser57EB0D4D": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "UserEmailHandlerFn8AFEE1CD",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/",
+       {
+        "Ref": "EmailApiDeploymentStageprod5743DD53"
+       },
+       "/DELETE/user"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/user/DELETE/ApiPermission.TodaysDentalInsightsEmailN1EmailApi4340239C.DELETE..user"
+   }
+  },
+  "EmailApiuserDELETEApiPermissionTestTodaysDentalInsightsEmailN1EmailApi4340239CDELETEuser6711E615": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "UserEmailHandlerFn8AFEE1CD",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/test-invoke-stage/DELETE/user"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/user/DELETE/ApiPermission.Test.TodaysDentalInsightsEmailN1EmailApi4340239C.DELETE..user"
+   }
+  },
+  "EmailApiuserDELETE22831D64": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "EmailAuthorizer54238417"
+    },
+    "HttpMethod": "DELETE",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "UserEmailHandlerFn8AFEE1CD",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "EmailApiuserD8E7992E"
+    },
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default/user/DELETE/Resource"
+   }
+  },
+  "EmailApiDefault4XXDD5AB625": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_4XX",
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default4XX/Resource"
+   }
+  },
+  "EmailApiDefault5XX1066B301": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_5XX",
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailApi/Default5XX/Resource"
+   }
+  },
+  "EmailAuthorizer54238417": {
+   "Type": "AWS::ApiGateway::Authorizer",
+   "Properties": {
+    "AuthorizerResultTtlInSeconds": 300,
+    "AuthorizerUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Fn::Select": [
+         1,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":apigateway:",
+       {
+        "Fn::Select": [
+         3,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":lambda:path/2015-03-31/functions/",
+       {
+        "Fn::ImportValue": "AuthorizerFunctionArnN1"
+       },
+       "/invocations"
+      ]
+     ]
+    },
+    "IdentitySource": "method.request.header.Authorization",
+    "Name": "TodaysDentalInsightsEmailN1EmailAuthorizer4718BF9D",
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    },
+    "Type": "REQUEST"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailAuthorizer/Resource"
+   }
+  },
+  "AuthorizerInvokePermission": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::ImportValue": "AuthorizerFunctionArnN1"
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "EmailApi51CACE34"
+       },
+       "/authorizers/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/AuthorizerInvokePermission"
+   }
+  },
+  "EmailBasePathMapping": {
+   "Type": "AWS::ApiGateway::BasePathMapping",
+   "Properties": {
+    "BasePath": "email",
+    "DomainName": "apig.todaysdentalinsights.com",
+    "RestApiId": {
+     "Ref": "EmailApi51CACE34"
+    },
+    "Stage": {
+     "Ref": "EmailApiDeploymentStageprod5743DD53"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/EmailBasePathMapping"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/12QQXLCMAxFz8LeqBB6gdBOWdEy4QCMcNTE4NhpJDdDM7l7xw6Utqv/JMv6f5RBli1hMcOe57o8z605wrAX1GeFPR8Gi82xRBhegtNivFsjk3p6d7c68o66xjAb70Y1zR+cL+nE8JrkZ9ZgA0PhbdqQdOet0Ze0JNGoeHVAZhKGPIriFayDPpMkZ219KHsUXcOQW+ya+DXBqLA1FQr1eIGhIJa8NcnnjrnWPjhRz9Raf2nISez+qvaCVQo3QUHsQ6cpWW9Jal/GxyvdXq8mE2+mBAVx6910qv+tgj5CzBSk9p35oi5F+1NFwx1KvcW2Na4ax7tZukqMZ1wVR9+CtEFGFS8OJ374zB5hmcFidmJj5l1wYhqCYtJvAWl2du4BAAA="
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsEmailN1/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "EmailApiEndpoint2C21ACE3": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "EmailApi51CACE34"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "EmailApiDeploymentStageprod5743DD53"
+      },
+      "/"
+     ]
+    ]
+   }
+  },
+  "EmailApiUrl": {
+   "Description": "Email API Endpoint URL",
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "EmailApi51CACE34"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "EmailApiDeploymentStageprod5743DD53"
+      },
+      "/"
+     ]
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsEmailN1-EmailApiUrl"
+   }
+  },
+  "GmailHandlerFnArn": {
+   "Description": "Gmail Handler Lambda ARN",
+   "Value": {
+    "Fn::GetAtt": [
+     "GmailHandlerFn2BCB1C00",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsEmailN1-GmailHandlerFnArn"
+   }
+  },
+  "ImapSmtpHandlerFnArn": {
+   "Description": "IMAP/SMTP Handler Lambda ARN",
+   "Value": {
+    "Fn::GetAtt": [
+     "ImapSmtpHandlerFn1F6393E1",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsEmailN1-ImapSmtpHandlerFnArn"
+   }
+  },
+  "UserEmailHandlerFnArn": {
+   "Description": "User Email Handler Lambda ARN",
+   "Value": {
+    "Fn::GetAtt": [
+     "UserEmailHandlerFn8AFEE1CD",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsEmailN1-UserEmailHandlerFnArn"
+   }
+  },
+  "UserEmailApiUrl": {
+   "Description": "User Email API URL (GET/POST for authenticated users)",
+   "Value": "https://apig.todaysdentalinsights.com/email/user",
+   "Export": {
+    "Name": "TodaysDentalInsightsEmailN1-UserEmailApiUrl"
+   }
+  },
+  "EmailCustomDomainUrl": {
+   "Description": "Email API Custom Domain URL",
+   "Value": "https://apig.todaysdentalinsights.com/email",
+   "Export": {
+    "Name": "TodaysDentalInsightsEmailN1-EmailCustomDomainUrl"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/tdi3/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

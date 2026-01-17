@@ -1,0 +1,3933 @@
+{
+ "Resources": {
+  "SchedulesTableFBEB0188": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "id",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "KeySchema": [
+     {
+      "AttributeName": "id",
+      "KeyType": "HASH"
+     }
+    ],
+    "TableName": "TodaysDentalInsightsSchedulesN1-Schedules",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "schedules"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesTable/Resource"
+   }
+  },
+  "SchedulerDLQDCA9B994": {
+   "Type": "AWS::SQS::Queue",
+   "Properties": {
+    "MessageRetentionPeriod": 1209600,
+    "QueueName": "todaysdentalinsights-scheduler-dlq-v3",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Queue",
+      "Value": "scheduler-dlq"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerDLQ/Resource"
+   }
+  },
+  "SchedulerQueue12326841": {
+   "Type": "AWS::SQS::Queue",
+   "Properties": {
+    "QueueName": "todaysdentalinsights-scheduler-queue-v3",
+    "ReceiveMessageWaitTimeSeconds": 20,
+    "RedrivePolicy": {
+     "deadLetterTargetArn": {
+      "Fn::GetAtt": [
+       "SchedulerDLQDCA9B994",
+       "Arn"
+      ]
+     },
+     "maxReceiveCount": 7
+    },
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Queue",
+      "Value": "scheduler-main"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "VisibilityTimeout": 600
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueue/Resource"
+   }
+  },
+  "EmailSenderDLQA8E85D2F": {
+   "Type": "AWS::SQS::Queue",
+   "Properties": {
+    "MessageRetentionPeriod": 1209600,
+    "QueueName": "todaysdentalinsights-email-sender-dlq",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Queue",
+      "Value": "email-sender-dlq"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/EmailSenderDLQ/Resource"
+   }
+  },
+  "EmailSenderQueue1DD5A5E3": {
+   "Type": "AWS::SQS::Queue",
+   "Properties": {
+    "QueueName": "todaysdentalinsights-email-sender-queue",
+    "ReceiveMessageWaitTimeSeconds": 10,
+    "RedrivePolicy": {
+     "deadLetterTargetArn": {
+      "Fn::GetAtt": [
+       "EmailSenderDLQA8E85D2F",
+       "Arn"
+      ]
+     },
+     "maxReceiveCount": 3
+    },
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Queue",
+      "Value": "email-sender-main"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "VisibilityTimeout": 60
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/EmailSenderQueue/Resource"
+   }
+  },
+  "SchedulesApiA8AFEACB": {
+   "Type": "AWS::ApiGateway::RestApi",
+   "Properties": {
+    "Description": "Schedules service API",
+    "Name": "SchedulesApi",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Resource"
+   }
+  },
+  "SchedulesApiCloudWatchRoleC659F5A7": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "apigateway.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/CloudWatchRole/Resource"
+   }
+  },
+  "SchedulesApiAccountBDC0B201": {
+   "Type": "AWS::ApiGateway::Account",
+   "Properties": {
+    "CloudWatchRoleArn": {
+     "Fn::GetAtt": [
+      "SchedulesApiCloudWatchRoleC659F5A7",
+      "Arn"
+     ]
+    }
+   },
+   "DependsOn": [
+    "SchedulesApiA8AFEACB"
+   ],
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Account"
+   }
+  },
+  "SchedulesApiDeployment22BE243895b13fa596c91110180c2d58c1f03890": {
+   "Type": "AWS::ApiGateway::Deployment",
+   "Properties": {
+    "Description": "Schedules service API",
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "DependsOn": [
+    "GatewayResponseDefault4XXC22BF2A7",
+    "GatewayResponseDefault5XX28177100",
+    "GatewayResponseUnauthorized78FCB15B",
+    "SchedulesApicreateschedulerOPTIONS2F972CDF",
+    "SchedulesApicreateschedulerPOST98A22ADE",
+    "SchedulesApicreatescheduler4E5F1EDC",
+    "SchedulesApideleteschedulesOPTIONS391C8A89",
+    "SchedulesApideleteschedulesPOSTACE6928D",
+    "SchedulesApideleteschedulesEBFCFD37",
+    "SchedulesApiOPTIONS1CEB7959",
+    "SchedulesApischedulesidDELETE7C217E14",
+    "SchedulesApischedulesidGET606E1456",
+    "SchedulesApischedulesidOPTIONS02556F8C",
+    "SchedulesApischedulesidPUTFCCB3851",
+    "SchedulesApischedulesid8651BDDB",
+    "SchedulesApischedulesGET8DEFEE84",
+    "SchedulesApischedulesOPTIONS884189A5",
+    "SchedulesApischedulesPOST43E39831",
+    "SchedulesApischedulesC96E9BB5"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Deployment/Resource",
+    "aws:cdk:do-not-refactor": true
+   }
+  },
+  "SchedulesApiDeploymentStageprodE88D6F60": {
+   "Type": "AWS::ApiGateway::Stage",
+   "Properties": {
+    "DeploymentId": {
+     "Ref": "SchedulesApiDeployment22BE243895b13fa596c91110180c2d58c1f03890"
+    },
+    "MethodSettings": [
+     {
+      "DataTraceEnabled": false,
+      "HttpMethod": "*",
+      "LoggingLevel": "INFO",
+      "MetricsEnabled": true,
+      "ResourcePath": "/*"
+     }
+    ],
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    },
+    "StageName": "prod",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "SchedulesApiAccountBDC0B201"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/DeploymentStage.prod/Resource"
+   }
+  },
+  "SchedulesApiOPTIONS1CEB7959": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Fn::GetAtt": [
+      "SchedulesApiA8AFEACB",
+      "RootResourceId"
+     ]
+    },
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/OPTIONS/Resource"
+   }
+  },
+  "SchedulesApischedulesC96E9BB5": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "SchedulesApiA8AFEACB",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "schedules",
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/Resource"
+   }
+  },
+  "SchedulesApischedulesOPTIONS884189A5": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "SchedulesApischedulesC96E9BB5"
+    },
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/OPTIONS/Resource"
+   }
+  },
+  "SchedulesApischedulesGETApiPermissionTodaysDentalInsightsSchedulesN1SchedulesApi7A38F85DGETschedules4B186BBF": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SchedulesFnEDFC5400",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "SchedulesApiA8AFEACB"
+       },
+       "/",
+       {
+        "Ref": "SchedulesApiDeploymentStageprodE88D6F60"
+       },
+       "/GET/schedules"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/GET/ApiPermission.TodaysDentalInsightsSchedulesN1SchedulesApi7A38F85D.GET..schedules"
+   }
+  },
+  "SchedulesApischedulesGETApiPermissionTestTodaysDentalInsightsSchedulesN1SchedulesApi7A38F85DGETschedulesD3BDD457": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SchedulesFnEDFC5400",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "SchedulesApiA8AFEACB"
+       },
+       "/test-invoke-stage/GET/schedules"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/GET/ApiPermission.Test.TodaysDentalInsightsSchedulesN1SchedulesApi7A38F85D.GET..schedules"
+   }
+  },
+  "SchedulesApischedulesGET8DEFEE84": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "SchedulesAuthorizer9743D0D0"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "SchedulesFnEDFC5400",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "SchedulesApischedulesC96E9BB5"
+    },
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/GET/Resource"
+   }
+  },
+  "SchedulesApischedulesPOSTApiPermissionTodaysDentalInsightsSchedulesN1SchedulesApi7A38F85DPOSTschedules181735C2": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SchedulesFnEDFC5400",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "SchedulesApiA8AFEACB"
+       },
+       "/",
+       {
+        "Ref": "SchedulesApiDeploymentStageprodE88D6F60"
+       },
+       "/POST/schedules"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/POST/ApiPermission.TodaysDentalInsightsSchedulesN1SchedulesApi7A38F85D.POST..schedules"
+   }
+  },
+  "SchedulesApischedulesPOSTApiPermissionTestTodaysDentalInsightsSchedulesN1SchedulesApi7A38F85DPOSTschedulesF3996F9E": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SchedulesFnEDFC5400",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "SchedulesApiA8AFEACB"
+       },
+       "/test-invoke-stage/POST/schedules"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/POST/ApiPermission.Test.TodaysDentalInsightsSchedulesN1SchedulesApi7A38F85D.POST..schedules"
+   }
+  },
+  "SchedulesApischedulesPOST43E39831": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "SchedulesAuthorizer9743D0D0"
+    },
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "SchedulesFnEDFC5400",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "201"
+     },
+     {
+      "StatusCode": "400"
+     },
+     {
+      "StatusCode": "403"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "SchedulesApischedulesC96E9BB5"
+    },
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/POST/Resource"
+   }
+  },
+  "SchedulesApischedulesid8651BDDB": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "SchedulesApischedulesC96E9BB5"
+    },
+    "PathPart": "{id}",
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/{id}/Resource"
+   }
+  },
+  "SchedulesApischedulesidOPTIONS02556F8C": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "SchedulesApischedulesid8651BDDB"
+    },
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/{id}/OPTIONS/Resource"
+   }
+  },
+  "SchedulesApischedulesidGETApiPermissionTodaysDentalInsightsSchedulesN1SchedulesApi7A38F85DGETschedulesidEA84CCCB": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SchedulesFnEDFC5400",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "SchedulesApiA8AFEACB"
+       },
+       "/",
+       {
+        "Ref": "SchedulesApiDeploymentStageprodE88D6F60"
+       },
+       "/GET/schedules/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/{id}/GET/ApiPermission.TodaysDentalInsightsSchedulesN1SchedulesApi7A38F85D.GET..schedules.{id}"
+   }
+  },
+  "SchedulesApischedulesidGETApiPermissionTestTodaysDentalInsightsSchedulesN1SchedulesApi7A38F85DGETschedulesidF5E9FF7A": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SchedulesFnEDFC5400",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "SchedulesApiA8AFEACB"
+       },
+       "/test-invoke-stage/GET/schedules/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/{id}/GET/ApiPermission.Test.TodaysDentalInsightsSchedulesN1SchedulesApi7A38F85D.GET..schedules.{id}"
+   }
+  },
+  "SchedulesApischedulesidGET606E1456": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "SchedulesAuthorizer9743D0D0"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "SchedulesFnEDFC5400",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "404"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "SchedulesApischedulesid8651BDDB"
+    },
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/{id}/GET/Resource"
+   }
+  },
+  "SchedulesApischedulesidPUTApiPermissionTodaysDentalInsightsSchedulesN1SchedulesApi7A38F85DPUTschedulesid012565FE": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SchedulesFnEDFC5400",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "SchedulesApiA8AFEACB"
+       },
+       "/",
+       {
+        "Ref": "SchedulesApiDeploymentStageprodE88D6F60"
+       },
+       "/PUT/schedules/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/{id}/PUT/ApiPermission.TodaysDentalInsightsSchedulesN1SchedulesApi7A38F85D.PUT..schedules.{id}"
+   }
+  },
+  "SchedulesApischedulesidPUTApiPermissionTestTodaysDentalInsightsSchedulesN1SchedulesApi7A38F85DPUTschedulesid8BE51551": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SchedulesFnEDFC5400",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "SchedulesApiA8AFEACB"
+       },
+       "/test-invoke-stage/PUT/schedules/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/{id}/PUT/ApiPermission.Test.TodaysDentalInsightsSchedulesN1SchedulesApi7A38F85D.PUT..schedules.{id}"
+   }
+  },
+  "SchedulesApischedulesidPUTFCCB3851": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "SchedulesAuthorizer9743D0D0"
+    },
+    "HttpMethod": "PUT",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "SchedulesFnEDFC5400",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "400"
+     },
+     {
+      "StatusCode": "403"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "SchedulesApischedulesid8651BDDB"
+    },
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/{id}/PUT/Resource"
+   }
+  },
+  "SchedulesApischedulesidDELETEApiPermissionTodaysDentalInsightsSchedulesN1SchedulesApi7A38F85DDELETEschedulesidF29AC45B": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SchedulesFnEDFC5400",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "SchedulesApiA8AFEACB"
+       },
+       "/",
+       {
+        "Ref": "SchedulesApiDeploymentStageprodE88D6F60"
+       },
+       "/DELETE/schedules/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/{id}/DELETE/ApiPermission.TodaysDentalInsightsSchedulesN1SchedulesApi7A38F85D.DELETE..schedules.{id}"
+   }
+  },
+  "SchedulesApischedulesidDELETEApiPermissionTestTodaysDentalInsightsSchedulesN1SchedulesApi7A38F85DDELETEschedulesid3BACBE98": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SchedulesFnEDFC5400",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "SchedulesApiA8AFEACB"
+       },
+       "/test-invoke-stage/DELETE/schedules/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/{id}/DELETE/ApiPermission.Test.TodaysDentalInsightsSchedulesN1SchedulesApi7A38F85D.DELETE..schedules.{id}"
+   }
+  },
+  "SchedulesApischedulesidDELETE7C217E14": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "SchedulesAuthorizer9743D0D0"
+    },
+    "HttpMethod": "DELETE",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "SchedulesFnEDFC5400",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "400"
+     },
+     {
+      "StatusCode": "403"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "SchedulesApischedulesid8651BDDB"
+    },
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/schedules/{id}/DELETE/Resource"
+   }
+  },
+  "SchedulesApicreatescheduler4E5F1EDC": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "SchedulesApiA8AFEACB",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "create-scheduler",
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/create-scheduler/Resource"
+   }
+  },
+  "SchedulesApicreateschedulerOPTIONS2F972CDF": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "SchedulesApicreatescheduler4E5F1EDC"
+    },
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/create-scheduler/OPTIONS/Resource"
+   }
+  },
+  "SchedulesApicreateschedulerPOSTApiPermissionTodaysDentalInsightsSchedulesN1SchedulesApi7A38F85DPOSTcreatescheduler623A91E6": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SchedulesFnEDFC5400",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "SchedulesApiA8AFEACB"
+       },
+       "/",
+       {
+        "Ref": "SchedulesApiDeploymentStageprodE88D6F60"
+       },
+       "/POST/create-scheduler"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/create-scheduler/POST/ApiPermission.TodaysDentalInsightsSchedulesN1SchedulesApi7A38F85D.POST..create-scheduler"
+   }
+  },
+  "SchedulesApicreateschedulerPOSTApiPermissionTestTodaysDentalInsightsSchedulesN1SchedulesApi7A38F85DPOSTcreatescheduler9B20CBF8": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SchedulesFnEDFC5400",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "SchedulesApiA8AFEACB"
+       },
+       "/test-invoke-stage/POST/create-scheduler"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/create-scheduler/POST/ApiPermission.Test.TodaysDentalInsightsSchedulesN1SchedulesApi7A38F85D.POST..create-scheduler"
+   }
+  },
+  "SchedulesApicreateschedulerPOST98A22ADE": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "SchedulesAuthorizer9743D0D0"
+    },
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "SchedulesFnEDFC5400",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "201"
+     },
+     {
+      "StatusCode": "400"
+     },
+     {
+      "StatusCode": "403"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "SchedulesApicreatescheduler4E5F1EDC"
+    },
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/create-scheduler/POST/Resource"
+   }
+  },
+  "SchedulesApideleteschedulesEBFCFD37": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "SchedulesApiA8AFEACB",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "delete-schedules",
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/delete-schedules/Resource"
+   }
+  },
+  "SchedulesApideleteschedulesOPTIONS391C8A89": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"https://todaysdentalinsights.com/\" || $origin == \"https://www.todaysdentalinsights.com/\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "SchedulesApideleteschedulesEBFCFD37"
+    },
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/delete-schedules/OPTIONS/Resource"
+   }
+  },
+  "SchedulesApideleteschedulesPOSTApiPermissionTodaysDentalInsightsSchedulesN1SchedulesApi7A38F85DPOSTdeleteschedules1F834D59": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SchedulesFnEDFC5400",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "SchedulesApiA8AFEACB"
+       },
+       "/",
+       {
+        "Ref": "SchedulesApiDeploymentStageprodE88D6F60"
+       },
+       "/POST/delete-schedules"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/delete-schedules/POST/ApiPermission.TodaysDentalInsightsSchedulesN1SchedulesApi7A38F85D.POST..delete-schedules"
+   }
+  },
+  "SchedulesApideleteschedulesPOSTApiPermissionTestTodaysDentalInsightsSchedulesN1SchedulesApi7A38F85DPOSTdeleteschedules4D891429": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SchedulesFnEDFC5400",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "SchedulesApiA8AFEACB"
+       },
+       "/test-invoke-stage/POST/delete-schedules"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/delete-schedules/POST/ApiPermission.Test.TodaysDentalInsightsSchedulesN1SchedulesApi7A38F85D.POST..delete-schedules"
+   }
+  },
+  "SchedulesApideleteschedulesPOSTACE6928D": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "SchedulesAuthorizer9743D0D0"
+    },
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "SchedulesFnEDFC5400",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "400"
+     },
+     {
+      "StatusCode": "403"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "SchedulesApideleteschedulesEBFCFD37"
+    },
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApi/Default/delete-schedules/POST/Resource"
+   }
+  },
+  "GatewayResponseDefault4XXC22BF2A7": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_4XX",
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/GatewayResponseDefault4XX/Resource"
+   }
+  },
+  "GatewayResponseDefault5XX28177100": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_5XX",
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/GatewayResponseDefault5XX/Resource"
+   }
+  },
+  "GatewayResponseUnauthorized78FCB15B": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "UNAUTHORIZED",
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/GatewayResponseUnauthorized/Resource"
+   }
+  },
+  "SchedulesAuthorizer9743D0D0": {
+   "Type": "AWS::ApiGateway::Authorizer",
+   "Properties": {
+    "AuthorizerResultTtlInSeconds": 300,
+    "AuthorizerUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Fn::Select": [
+         1,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":apigateway:",
+       {
+        "Fn::Select": [
+         3,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":lambda:path/2015-03-31/functions/",
+       {
+        "Fn::ImportValue": "AuthorizerFunctionArnN1"
+       },
+       "/invocations"
+      ]
+     ]
+    },
+    "IdentitySource": "method.request.header.Authorization",
+    "Name": "TodaysDentalInsightsSchedulesN1SchedulesAuthorizer7BCB9AD1",
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    },
+    "Type": "REQUEST"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesAuthorizer/Resource"
+   }
+  },
+  "AuthorizerInvokePermission": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::ImportValue": "AuthorizerFunctionArnN1"
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "SchedulesApiA8AFEACB"
+       },
+       "/authorizers/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/AuthorizerInvokePermission"
+   }
+  },
+  "SchedulesFnServiceRole14D0B259": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "schedules"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesFn/ServiceRole/Resource"
+   }
+  },
+  "SchedulesFnServiceRoleDefaultPolicy8EB70C80": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "SchedulesTableFBEB0188",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+           }
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputFnGetAttSecretsEncryptionKey25C5552EArnA97EA41C"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SchedulesFnServiceRoleDefaultPolicy8EB70C80",
+    "Roles": [
+     {
+      "Ref": "SchedulesFnServiceRole14D0B259"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "SchedulesFnEDFC5400": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "7a3e5222b9b5c0e1e575af2b812fdcdb0cef81565a7603869ce670e6092f46d5.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "SCHEDULER": {
+       "Ref": "SchedulesTableFBEB0188"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "SchedulesFnServiceRole14D0B259",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "schedules"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "SchedulesFnServiceRoleDefaultPolicy8EB70C80",
+    "SchedulesFnServiceRole14D0B259"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesFn/Resource",
+    "aws:asset:path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "SchedulerWorkerFnServiceRole2CD0558F": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "scheduler-worker"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerWorkerFn/ServiceRole/Resource"
+   }
+  },
+  "SchedulerWorkerFnServiceRoleDefaultPolicyABB17616": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "SchedulesTableFBEB0188",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsTemplatesN1:ExportsOutputRefTemplatesTable3F2530396272C7B9"
+           }
+          ]
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsQueriesN1:ExportsOutputRefSqlQueriesTableC3F92532A2158157"
+           }
+          ]
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+           }
+          ]
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+           }
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputFnGetAttSecretsEncryptionKey25C5552EArnA97EA41C"
+       }
+      },
+      {
+       "Action": [
+        "ses:SendEmail",
+        "ses:SendRawEmail"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": "sms-voice:SendTextMessage",
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SchedulerWorkerFnServiceRoleDefaultPolicyABB17616",
+    "Roles": [
+     {
+      "Ref": "SchedulerWorkerFnServiceRole2CD0558F"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerWorkerFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "SchedulerWorkerFn242BB41E": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "4ed88dece4ddccd9fa2bf658c6762863467acea13775d0c5742daaf248112c8d.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "SCHEDULES_TABLE": {
+       "Ref": "SchedulesTableFBEB0188"
+      },
+      "TEMPLATES_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsTemplatesN1:ExportsOutputRefTemplatesTable3F2530396272C7B9"
+      },
+      "QUERIES_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsQueriesN1:ExportsOutputRefSqlQueriesTableC3F92532A2158157"
+      },
+      "CLINIC_HOURS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+      },
+      "CONSOLIDATED_SFTP_HOST": {
+       "Fn::Join": [
+        "",
+        [
+         {
+          "Fn::ImportValue": "TodaysDentalInsightsOpenDentalN1:ExportsOutputFnGetAttConsolidatedTransferServerServerIdBBBFF6B9"
+         },
+         ".server.transfer.us-east-1.amazonaws.com"
+        ]
+       ]
+      },
+      "GLOBAL_SECRETS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+      },
+      "CLINIC_CONFIG_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+      },
+      "SES_CONFIGURATION_SET_NAME": {
+       "Fn::ImportValue": "TodaysDentalInsightsNotificationsN1-SESConfigurationSetName"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 512,
+    "Role": {
+     "Fn::GetAtt": [
+      "SchedulerWorkerFnServiceRole2CD0558F",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "scheduler-worker"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Timeout": 120
+   },
+   "DependsOn": [
+    "SchedulerWorkerFnServiceRoleDefaultPolicyABB17616",
+    "SchedulerWorkerFnServiceRole2CD0558F"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerWorkerFn/Resource",
+    "aws:asset:path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "SchedulerQueueProducerFnServiceRoleD933E58C": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "scheduler-producer"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueueProducerFn/ServiceRole/Resource"
+   }
+  },
+  "SchedulerQueueProducerFnServiceRoleDefaultPolicy1FB0405A": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "SchedulesTableFBEB0188",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "sqs:SendMessage",
+        "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "SchedulerQueue12326841",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+           }
+          ]
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+           }
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputFnGetAttSecretsEncryptionKey25C5552EArnA97EA41C"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SchedulerQueueProducerFnServiceRoleDefaultPolicy1FB0405A",
+    "Roles": [
+     {
+      "Ref": "SchedulerQueueProducerFnServiceRoleD933E58C"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueueProducerFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "SchedulerQueueProducerFnD7FDE6C6": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "e676e0a55da5231cc4c359e94d79a156c0568a8ee23ffcdc1972609818dac2cd.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "SCHEDULES_TABLE": {
+       "Ref": "SchedulesTableFBEB0188"
+      },
+      "CLINIC_HOURS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+      },
+      "SCHEDULER_QUEUE_URL": {
+       "Ref": "SchedulerQueue12326841"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "SchedulerQueueProducerFnServiceRoleD933E58C",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "scheduler-producer"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Timeout": 60
+   },
+   "DependsOn": [
+    "SchedulerQueueProducerFnServiceRoleDefaultPolicy1FB0405A",
+    "SchedulerQueueProducerFnServiceRoleD933E58C"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueueProducerFn/Resource",
+    "aws:asset:path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "SchedulerQueueConsumerFnServiceRoleAC176226": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "scheduler-consumer"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueueConsumerFn/ServiceRole/Resource"
+   }
+  },
+  "SchedulerQueueConsumerFnServiceRoleDefaultPolicy373148BE": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsRcsN1-RcsTemplatesTableName"
+           }
+          ]
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::ImportValue": "TodaysDentalInsightsRcsN1-RcsSendMessageFnArn"
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsRcsN1-RcsSendMessageFnArn"
+           },
+           ":*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "sqs:SendMessage",
+        "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "EmailSenderQueue1DD5A5E3",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "SchedulesTableFBEB0188",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsTemplatesN1:ExportsOutputRefTemplatesTable3F2530396272C7B9"
+           }
+          ]
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsQueriesN1:ExportsOutputRefSqlQueriesTableC3F92532A2158157"
+           }
+          ]
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+           }
+          ]
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:GetItem"
+       ],
+       "Effect": "Allow",
+       "Resource": "arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsNotificationsN1-EmailAnalytics"
+      },
+      {
+       "Action": [
+        "sqs:ReceiveMessage",
+        "sqs:ChangeMessageVisibility",
+        "sqs:GetQueueUrl",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "SchedulerQueue12326841",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+           }
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputFnGetAttSecretsEncryptionKey25C5552EArnA97EA41C"
+       }
+      },
+      {
+       "Action": [
+        "ses:SendEmail",
+        "ses:SendRawEmail"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": "sms-voice:SendTextMessage",
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SchedulerQueueConsumerFnServiceRoleDefaultPolicy373148BE",
+    "Roles": [
+     {
+      "Ref": "SchedulerQueueConsumerFnServiceRoleAC176226"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueueConsumerFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "SchedulerQueueConsumerFn8756FF4D": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "f69d1eb1c4c60a8f8ee2fbbf9eeedfb20944a683f711a2f8cd5d3ae00a0779fa.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "SCHEDULES_TABLE": {
+       "Ref": "SchedulesTableFBEB0188"
+      },
+      "TEMPLATES_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsTemplatesN1:ExportsOutputRefTemplatesTable3F2530396272C7B9"
+      },
+      "QUERIES_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsQueriesN1:ExportsOutputRefSqlQueriesTableC3F92532A2158157"
+      },
+      "CLINIC_HOURS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+      },
+      "CONSOLIDATED_SFTP_HOST": {
+       "Fn::Join": [
+        "",
+        [
+         {
+          "Fn::ImportValue": "TodaysDentalInsightsOpenDentalN1:ExportsOutputFnGetAttConsolidatedTransferServerServerIdBBBFF6B9"
+         },
+         ".server.transfer.us-east-1.amazonaws.com"
+        ]
+       ]
+      },
+      "GLOBAL_SECRETS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+      },
+      "CLINIC_CONFIG_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+      },
+      "EMAIL_QUEUE_URL": {
+       "Ref": "EmailSenderQueue1DD5A5E3"
+      },
+      "EMAIL_ANALYTICS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsNotificationsN1-EmailAnalyticsTableName"
+      },
+      "RCS_API_BASE_URL": "https://apig.todaysdentalinsights.com/rcs",
+      "RCS_TEMPLATES_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsRcsN1-RcsTemplatesTableName"
+      },
+      "RCS_SEND_MESSAGE_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsRcsN1-RcsSendMessageFnArn"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 512,
+    "ReservedConcurrentExecutions": 3,
+    "Role": {
+     "Fn::GetAtt": [
+      "SchedulerQueueConsumerFnServiceRoleAC176226",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "scheduler-consumer"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Timeout": 300
+   },
+   "DependsOn": [
+    "SchedulerQueueConsumerFnServiceRoleDefaultPolicy373148BE",
+    "SchedulerQueueConsumerFnServiceRoleAC176226"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueueConsumerFn/Resource",
+    "aws:asset:path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "SchedulerQueueConsumerFnSqsEventSourceTodaysDentalInsightsSchedulesN1SchedulerQueue5A76E18D574A83BE": {
+   "Type": "AWS::Lambda::EventSourceMapping",
+   "Properties": {
+    "BatchSize": 1,
+    "EventSourceArn": {
+     "Fn::GetAtt": [
+      "SchedulerQueue12326841",
+      "Arn"
+     ]
+    },
+    "FunctionName": {
+     "Ref": "SchedulerQueueConsumerFn8756FF4D"
+    },
+    "FunctionResponseTypes": [
+     "ReportBatchItemFailures"
+    ],
+    "MaximumBatchingWindowInSeconds": 5,
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "scheduler-consumer"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueueConsumerFn/SqsEventSource:TodaysDentalInsightsSchedulesN1SchedulerQueue5A76E18D/Resource"
+   }
+  },
+  "ImportedRcsSendMessageFnInvokev8vhLfM3iGuZOcRnzLWPBcWamXXSomJnrE5R9oN1k4UE2AE759F": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::ImportValue": "TodaysDentalInsightsRcsN1-RcsSendMessageFnArn"
+    },
+    "Principal": {
+     "Fn::GetAtt": [
+      "SchedulerQueueConsumerFnServiceRoleAC176226",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/ImportedRcsSendMessageFn/Invokev8vhLfM3iGuZOcRnzLWPBcWamXXSomJnrE5R9oN1k4U="
+   }
+  },
+  "EmailSenderFnServiceRoleD8C16443": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "email-sender"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/EmailSenderFn/ServiceRole/Resource"
+   }
+  },
+  "EmailSenderFnServiceRoleDefaultPolicy6D44C3A8": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "ses:SendEmail",
+        "ses:SendRawEmail"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "ses:GetContact",
+        "ses:CreateContact",
+        "ses:UpdateContact",
+        "ses:ListContacts"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:ses:us-east-1:851620242036:contact-list/PatientEmails",
+        "arn:aws:ses:us-east-1:851620242036:contact-list/PatientEmails/*"
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:GetItem"
+       ],
+       "Effect": "Allow",
+       "Resource": "arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsNotificationsN1-EmailAnalytics"
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:aws:dynamodb:us-east-1:851620242036:table/",
+          {
+           "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+          }
+         ]
+        ]
+       }
+      },
+      {
+       "Action": [
+        "sqs:ReceiveMessage",
+        "sqs:ChangeMessageVisibility",
+        "sqs:GetQueueUrl",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "EmailSenderQueue1DD5A5E3",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "EmailSenderFnServiceRoleDefaultPolicy6D44C3A8",
+    "Roles": [
+     {
+      "Ref": "EmailSenderFnServiceRoleD8C16443"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/EmailSenderFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "EmailSenderFnEBC562B4": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "eaf736aec0c89abfedd57dd7cc31b65515a99420017cfd909357e8939710dab0.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "SES_CONFIGURATION_SET_NAME": {
+       "Fn::ImportValue": "TodaysDentalInsightsNotificationsN1-SESConfigurationSetName"
+      },
+      "EMAIL_ANALYTICS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsNotificationsN1-EmailAnalyticsTableName"
+      },
+      "CLINIC_CONFIG_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "ReservedConcurrentExecutions": 10,
+    "Role": {
+     "Fn::GetAtt": [
+      "EmailSenderFnServiceRoleD8C16443",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "email-sender"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "EmailSenderFnServiceRoleDefaultPolicy6D44C3A8",
+    "EmailSenderFnServiceRoleD8C16443"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/EmailSenderFn/Resource",
+    "aws:asset:path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "EmailSenderFnSqsEventSourceTodaysDentalInsightsSchedulesN1EmailSenderQueue532E1CC5901AD957": {
+   "Type": "AWS::Lambda::EventSourceMapping",
+   "Properties": {
+    "BatchSize": 10,
+    "EventSourceArn": {
+     "Fn::GetAtt": [
+      "EmailSenderQueue1DD5A5E3",
+      "Arn"
+     ]
+    },
+    "FunctionName": {
+     "Ref": "EmailSenderFnEBC562B4"
+    },
+    "FunctionResponseTypes": [
+     "ReportBatchItemFailures"
+    ],
+    "MaximumBatchingWindowInSeconds": 5,
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "email-sender"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/EmailSenderFn/SqsEventSource:TodaysDentalInsightsSchedulesN1EmailSenderQueue532E1CC5/Resource"
+   }
+  },
+  "SchedulerQueueProducerRule321A5EAC": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Description": "Runs the schedule queue producer to enqueue due schedule tasks",
+    "ScheduleExpression": "rate(2 minutes)",
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "SchedulerQueueProducerFnD7FDE6C6",
+        "Arn"
+       ]
+      },
+      "Id": "Target0"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueueProducerRule/Resource"
+   }
+  },
+  "SchedulerQueueProducerRuleAllowEventRuleTodaysDentalInsightsSchedulesN1SchedulerQueueProducerFn8CA576B4ADF12C81": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SchedulerQueueProducerFnD7FDE6C6",
+      "Arn"
+     ]
+    },
+    "Principal": "events.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "SchedulerQueueProducerRule321A5EAC",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueueProducerRule/AllowEventRuleTodaysDentalInsightsSchedulesN1SchedulerQueueProducerFn8CA576B4"
+   }
+  },
+  "SchedulesApiBasePathMapping": {
+   "Type": "AWS::ApiGateway::BasePathMapping",
+   "Properties": {
+    "BasePath": "schedules",
+    "DomainName": "apig.todaysdentalinsights.com",
+    "RestApiId": {
+     "Ref": "SchedulesApiA8AFEACB"
+    },
+    "Stage": {
+     "Ref": "SchedulesApiDeploymentStageprodE88D6F60"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesApiBasePathMapping"
+   }
+  },
+  "SchedulerQueueDepthAlarm152C4CCE": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Scheduler queue has too many messages",
+    "AlarmName": "SchedulerQueue-HighDepth",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "QueueName",
+      "Value": {
+       "Fn::GetAtt": [
+        "SchedulerQueue12326841",
+        "QueueName"
+       ]
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "ApproximateNumberOfVisibleMessages",
+    "Namespace": "AWS/SQS",
+    "Period": 300,
+    "Statistic": "Average",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Threshold": 50,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueueDepthAlarm/Resource"
+   }
+  },
+  "SchedulerDLQAlarm76B4C26F": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Failed schedule processing messages in DLQ",
+    "AlarmName": "SchedulerDLQ-HasMessages",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "QueueName",
+      "Value": {
+       "Fn::GetAtt": [
+        "SchedulerDLQDCA9B994",
+        "QueueName"
+       ]
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ApproximateNumberOfVisibleMessages",
+    "Namespace": "AWS/SQS",
+    "Period": 300,
+    "Statistic": "Average",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerDLQAlarm/Resource"
+   }
+  },
+  "SchedulesFnErrorAlarmBC765F8A": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when schedules Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "SchedulesFnEDFC5400"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesFnErrorAlarm/Resource"
+   }
+  },
+  "SchedulesFnThrottleAlarmA9841708": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when schedules Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "SchedulesFnEDFC5400"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesFnThrottleAlarm/Resource"
+   }
+  },
+  "SchedulesFnDurationAlarmE74A9303": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when schedules Lambda p99 duration exceeds 24000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "SchedulesFnEDFC5400"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Threshold": 24000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesFnDurationAlarm/Resource"
+   }
+  },
+  "SchedulerWorkerFnErrorAlarm97779A0A": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when scheduler-worker Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "SchedulerWorkerFn242BB41E"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerWorkerFnErrorAlarm/Resource"
+   }
+  },
+  "SchedulerWorkerFnThrottleAlarm670D0282": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when scheduler-worker Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "SchedulerWorkerFn242BB41E"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerWorkerFnThrottleAlarm/Resource"
+   }
+  },
+  "SchedulerWorkerFnDurationAlarm47E4CFF0": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when scheduler-worker Lambda p99 duration exceeds 96000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "SchedulerWorkerFn242BB41E"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Threshold": 96000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerWorkerFnDurationAlarm/Resource"
+   }
+  },
+  "SchedulerQueueProducerFnErrorAlarm408588F1": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when scheduler-producer Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "SchedulerQueueProducerFnD7FDE6C6"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueueProducerFnErrorAlarm/Resource"
+   }
+  },
+  "SchedulerQueueProducerFnThrottleAlarm4868E79B": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when scheduler-producer Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "SchedulerQueueProducerFnD7FDE6C6"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueueProducerFnThrottleAlarm/Resource"
+   }
+  },
+  "SchedulerQueueProducerFnDurationAlarm5F55D0CE": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when scheduler-producer Lambda p99 duration exceeds 48000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "SchedulerQueueProducerFnD7FDE6C6"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Threshold": 48000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueueProducerFnDurationAlarm/Resource"
+   }
+  },
+  "SchedulerQueueConsumerFnErrorAlarm5290CD0E": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when scheduler-consumer Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "SchedulerQueueConsumerFn8756FF4D"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueueConsumerFnErrorAlarm/Resource"
+   }
+  },
+  "SchedulerQueueConsumerFnThrottleAlarm4178B4AD": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when scheduler-consumer Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "SchedulerQueueConsumerFn8756FF4D"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueueConsumerFnThrottleAlarm/Resource"
+   }
+  },
+  "SchedulerQueueConsumerFnDurationAlarm3C5F412A": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when scheduler-consumer Lambda p99 duration exceeds 48000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "SchedulerQueueConsumerFn8756FF4D"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Threshold": 48000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulerQueueConsumerFnDurationAlarm/Resource"
+   }
+  },
+  "SchedulesTableThrottleAlarm65894342": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "SchedulesTableFBEB0188"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "SchedulesTableFBEB0188"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Schedules"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsSchedulesN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/SchedulesTableThrottleAlarm/Resource"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/2VRy3LCMAz8lt6NCqE/EPo60dLQOyMcFQyJHSKZDPXk3zt2oAPtJdrVZnZ35AyybALjO+x4pMv9qDJrCEtBvVfY8SqUJ4u1K9cQPnFdkXr8sgNI3xky9YoPDOHDk09yAr3CxmxQqMMThIJY8sZE9QrmWjtvRT1RU7lTTVbi9ootBTfJcgAFsfOtTqFqTrJ1ZRTP6KKeQwb8OjQoiBtnOWl/VwUdfOzkZeta801tqnbDYuACZTvHpjF20yuDNYTCDedIc+Eqo0+RDqhXFdbrEiHEFbW1YTbOqhdvtRiXLOPfF66ej2RlmVqfY6L8f3sxXllX0o7hLY1fG56ukJmEIY9D8RRmXu9JUiBFO4ZQ+HN1X1GvdOV82aHoLYS8wrZOF4ig72/O+u6l8aKSc3ySVCf2gB3fH7MHmGQwvtuxMaPWWzE1QTHMH+rV1ZRmAgAA"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsSchedulesN1/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "SchedulesApiEndpoint363537DD": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "SchedulesApiA8AFEACB"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "SchedulesApiDeploymentStageprodE88D6F60"
+      },
+      "/"
+     ]
+    ]
+   }
+  },
+  "SchedulesTableName": {
+   "Description": "Name of the Schedules DynamoDB table",
+   "Value": {
+    "Ref": "SchedulesTableFBEB0188"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsSchedulesN1-SchedulesTableName"
+   }
+  },
+  "SchedulesApiUrl": {
+   "Description": "Schedules API base URL (custom domain + resource path)",
+   "Value": "https://apig.todaysdentalinsights.com/schedules/schedules",
+   "Export": {
+    "Name": "TodaysDentalInsightsSchedulesN1-SchedulesApiUrl"
+   }
+  },
+  "SchedulesApiId": {
+   "Description": "Schedules API Gateway ID",
+   "Value": {
+    "Ref": "SchedulesApiA8AFEACB"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsSchedulesN1-SchedulesApiId"
+   }
+  },
+  "SchedulerQueueUrl": {
+   "Description": "Scheduler SQS Queue URL",
+   "Value": {
+    "Ref": "SchedulerQueue12326841"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsSchedulesN1-SchedulerQueueUrl"
+   }
+  },
+  "SchedulerDLQUrl": {
+   "Description": "Scheduler Dead Letter Queue URL",
+   "Value": {
+    "Ref": "SchedulerDLQDCA9B994"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsSchedulesN1-SchedulerDLQUrl"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/tdi3/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

@@ -61,13 +61,10 @@ const CALL_ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE || '';
 const TRANSCRIPT_BUFFER_TABLE = process.env.TRANSCRIPT_BUFFER_TABLE_NAME || '';
 const SESSIONS_TABLE = process.env.SESSIONS_TABLE || 'AiAgentSessions';
 
-// Thinking audio configuration - plays keyboard typing sounds during AI processing
-// This eliminates awkward silence while the AI is generating a response
-const HOLD_MUSIC_BUCKET = process.env.HOLD_MUSIC_BUCKET || '';
-const THINKING_AUDIO_KEY = 'Computer-keyboard-sound-short.mp3'; // Short MP3 clip for SSML playback (if supported)
-const ENABLE_THINKING_AUDIO = process.env.ENABLE_THINKING_AUDIO !== 'false'; // Enabled by default
-// Public HTTPS URL for the thinking audio MP3 (from ChimeStack's public audio bucket)
-const THINKING_AUDIO_URL = process.env.THINKING_AUDIO_URL || '';
+// NOTE: Thinking audio is now handled by the Connect contact flow.
+// The flow plays a short keyboard typing WAV prompt after Lex completes
+// and before invoking Lambda. This provides a consistent single mechanism
+// instead of trying to do audio in both Lex and Connect.
 
 // If Lex speech recognition is low-confidence, ask the caller to repeat instead of sending
 // potentially incorrect text to Bedrock.
@@ -968,35 +965,36 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
   });
 
   // Build Lex response
-  // For voice calls (Speech input), use SSML for proper speech rendering.
-  // NOTE: Progress/thinking messages ("One moment...") are now handled by Lex V2's
-  // fulfillmentUpdatesSpecification (see CDK stack). Lex speaks those DURING Lambda execution.
-  // This response is just the final AI answer.
-  const useThinkingSsml = isVoiceCall && ENABLE_THINKING_AUDIO;
+  // IMPORTANT: Store lastUtterance in session attributes so Connect can read it
+  // via $.Lex.SessionAttributes.lastUtterance for the InvokeLambdaFunction block.
+  // This is required because Connect cannot access voice transcripts via $.StoredCustomerInput
+  // (that only works for DTMF input).
+  const nextSessionAttributes = {
+    ...sessionAttributes,
+    clinicId,
+    callerNumber,
+    callId: session.callId,
+    turnCount: String(session.turnCount),
+    // CRITICAL: Pass transcript to Connect via Lex session attributes
+    // Connect reads this as $.Lex.SessionAttributes.lastUtterance
+    lastUtterance: trimmedInput.substring(0, 1000),
+    lastUtteranceConfidence: String(transcriptionConfidence),
+  };
 
+  // For voice calls, use plain text since we're now using Connect for response playback.
+  // Lex fulfillment updates handle "thinking" messages during Lambda execution.
   const response: LexV2Response = {
     sessionState: {
-      sessionAttributes: {
-        ...sessionAttributes,
-        clinicId,
-        callerNumber,
-        callId: session.callId,
-        turnCount: String(session.turnCount),
-      },
+      sessionAttributes: nextSessionAttributes,
       dialogAction: {
         type: 'ElicitIntent', // Keep conversation going
       },
     },
     messages: [
-      useThinkingSsml
-        ? {
-            contentType: 'SSML',
-            content: buildThinkingAudioSSML(aiResponse),
-          }
-        : {
-            contentType: 'PlainText',
-            content: aiResponse,
-          },
+      {
+        contentType: 'PlainText',
+        content: aiResponse,
+      },
     ],
   };
 
@@ -1004,43 +1002,14 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
     clinicId, 
     turnCount: session.turnCount, 
     responseLength: aiResponse.length,
-    useThinkingSsml,
-    contentType: useThinkingSsml ? 'SSML' : 'PlainText',
+    lastUtteranceSet: !!nextSessionAttributes.lastUtterance,
   });
   return response;
 }
 
 // ========================================================================
-// THINKING AUDIO - SSML with keyboard sounds during AI processing
+// HELPER FUNCTIONS
 // ========================================================================
-
-// ========================================================================
-// SSML RESPONSE BUILDER
-// ========================================================================
-// NOTE: "Thinking" / progress messages are now handled by Lex V2's
-// fulfillmentUpdatesSpecification (configured in CDK connect-lex-ai-stack.ts).
-// Lex speaks phrases like "One moment please..." WHILE the Lambda is running.
-// The Lambda response below just contains the final AI answer.
-
-/**
- * Build SSML response for the AI response text.
- * 
- * NOTE: Progress/thinking messages are now handled by Lex V2's fulfillmentUpdatesSpecification
- * (configured in CDK). The Lambda response should NOT include verbal fillers because:
- * 1. Lex already spoke "One moment..." during Lambda execution
- * 2. Adding a filler here would say "One moment..." right before the answer (awkward)
- * 
- * This function just wraps the response in SSML with proper escaping and optional
- * prosody/pacing adjustments for natural speech.
- * 
- * @param responseText - The AI response text to speak
- * @returns SSML string with the response text
- */
-function buildThinkingAudioSSML(responseText: string): string {
-  // Just return clean SSML with the AI response
-  // Lex handles progress updates separately via fulfillmentUpdatesSpecification
-  return `<speak>${escapeSSML(responseText)}</speak>`;
-}
 
 /**
  * Escape special characters for safe inclusion in SSML

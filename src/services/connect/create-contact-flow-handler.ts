@@ -77,8 +77,12 @@ export const handler = async (event: ContactFlowEvent): Promise<any> => {
       };
     }
 
-    // Build the contact flow content with the Lex bot alias
-    const flowContent = buildContactFlowContent(props.LexBotAliasArn);
+    // Build the contact flow content with all dynamic ARNs/IDs
+    const flowContent = buildContactFlowContent({
+      lexBotAliasArn: props.LexBotAliasArn,
+      lambdaFunctionArn: props.LambdaFunctionArn,
+      keyboardPromptId: props.KeyboardPromptId,
+    });
 
     // For both Create and Update, first try to find existing flow
     const existingFlow = await findExistingFlow(props.InstanceId, props.FlowName);
@@ -148,17 +152,40 @@ export const handler = async (event: ContactFlowEvent): Promise<any> => {
       }
       throw createError;
     }
-  } catch (error) {
+  } catch (error: any) {
     console.error('[CreateContactFlow] Error:', error);
+    // Log the problems array for InvalidContactFlowException
+    if (error?.problems) {
+      console.error('[CreateContactFlow] Validation problems:', JSON.stringify(error.problems, null, 2));
+    }
     throw error;
   }
 };
 
 /**
- * Build the contact flow content JSON with actual ARNs/IDs
- * Uses ConnectParticipantWithLexBot for speech-to-text (ASR)
+ * Build the inbound contact flow content JSON with dynamic ARNs/IDs
+ * 
+ * Flow: welcome → setAttrs → lex-asr → typingOnce → invoke-ai → speak-ai → loop
+ *
+ * Architecture:
+ * - Lex is used for ASR only (code hook stores transcript in Lex session attributes).
+ * - Connect plays a short keyboard typing WAV prompt once (Connect PromptId).
+ * - Connect invokes a Bedrock Lambda directly with the transcript + caller/dialed numbers.
+ * - Connect speaks the AI response returned by Lambda.
+ * - The flow loops for multi-turn conversation.
+ *
+ * IMPORTANT:
+ * - GetParticipantInput does NOT support LexV2Bot - only ConnectParticipantWithLexBot does.
+ * - The Lex code hook must write `lastUtterance` / `lastUtteranceConfidence` into session attrs.
+ * - Connect reads those via `$.Lex.SessionAttributes.lastUtterance`.
  */
-function buildContactFlowContent(lexBotAliasArn: string): any {
+function buildContactFlowContent(params: {
+  lexBotAliasArn: string;
+  lambdaFunctionArn: string;
+  keyboardPromptId: string;
+}): any {
+  const { lexBotAliasArn, lambdaFunctionArn, keyboardPromptId } = params;
+
   return {
     Version: '2019-10-30',
     StartAction: 'welcome-message',
@@ -166,12 +193,16 @@ function buildContactFlowContent(lexBotAliasArn: string): any {
       entryPointPosition: { x: 20, y: 20 },
       ActionMetadata: {
         'welcome-message': { position: { x: 160, y: 20 } },
-        'lex-bot': { position: { x: 350, y: 20 } },
-        'disconnect-action': { position: { x: 540, y: 20 } },
+        'set-contact-attrs': { position: { x: 360, y: 20 } },
+        'lex-asr': { position: { x: 560, y: 20 } },
+        'typing-once': { position: { x: 760, y: 20 } },
+        'invoke-ai': { position: { x: 960, y: 20 } },
+        'speak-ai': { position: { x: 1160, y: 20 } },
+        'disconnect-action': { position: { x: 1360, y: 20 } },
       },
     },
     Actions: [
-      // Step 1: Play welcome message
+      // 1) Welcome message
       {
         Identifier: 'welcome-message',
         Type: 'MessageParticipant',
@@ -179,34 +210,102 @@ function buildContactFlowContent(lexBotAliasArn: string): any {
           Text: 'Hello! Thank you for calling. How can I help you today?',
         },
         Transitions: {
-          NextAction: 'lex-bot',
-          Errors: [
-            { NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' },
-          ],
+          NextAction: 'set-contact-attrs',
+          Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
         },
       },
-      // Step 2: Route to Lex bot for speech recognition and conversation
-      // Lex handles ASR, invokes Lambda for fulfillment, and speaks response
+
+      // 2) Set contact attributes (caller/dialed numbers for Lex session)
       {
-        Identifier: 'lex-bot',
+        Identifier: 'set-contact-attrs',
+        Type: 'UpdateContactAttributes',
+        Parameters: {
+          Attributes: {
+            callerNumber: '$.CustomerEndpoint.Address',
+            dialedNumber: '$.SystemEndpoint.Address',
+          },
+        },
+        Transitions: {
+          NextAction: 'lex-asr',
+          Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 3) Lex ASR (single turn): Lex code hook stores transcript in session attrs
+      {
+        Identifier: 'lex-asr',
         Type: 'ConnectParticipantWithLexBot',
         Parameters: {
-          Text: 'How can I help you today?',
+          // Keep Connect in control without repeating a spoken prompt on every loop.
+          // Connect requires one of PromptId/Text/SSML/LexInitializationData.
+          SSML: '<speak><break time="50ms"/></speak>',
           LexV2Bot: {
             AliasArn: lexBotAliasArn,
           },
-          LexSessionAttributes: {},
+          LexSessionAttributes: {
+            callerNumber: '$.Attributes.callerNumber',
+            dialedNumber: '$.Attributes.dialedNumber',
+          },
         },
         Transitions: {
-          NextAction: 'disconnect-action',
+          NextAction: 'typing-once',
+          // Connect requires NoMatchingCondition for this action type
           Errors: [
-            { NextAction: 'disconnect-action', ErrorType: 'NoMatchingCondition' },
+            // In practice Connect can emit NoMatchingCondition even when we always want to proceed,
+            // so route it to the same next step to avoid an infinite Lex loop.
+            { NextAction: 'typing-once', ErrorType: 'NoMatchingCondition' },
             { NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' },
-            { NextAction: 'disconnect-action', ErrorType: 'InputTimeLimitExceeded' },
           ],
         },
       },
-      // Disconnect
+
+      // 4) Play a SHORT typing sound once (WAV prompt, ~0.8-2.0s)
+      {
+        Identifier: 'typing-once',
+        Type: 'MessageParticipant',
+        Parameters: {
+          PromptId: keyboardPromptId,
+        },
+        Transitions: {
+          NextAction: 'invoke-ai',
+          Errors: [{ NextAction: 'invoke-ai', ErrorType: 'NoMatchingError' }], // fail open
+        },
+      },
+
+      // 5) Invoke Lambda directly from Connect with the transcript
+      {
+        Identifier: 'invoke-ai',
+        Type: 'InvokeLambdaFunction',
+        Parameters: {
+          LambdaFunctionARN: lambdaFunctionArn,
+          InvocationTimeLimitSeconds: '8',
+          LambdaInvocationAttributes: {
+            inputTranscript: '$.Lex.SessionAttributes.lastUtterance',
+            confidence: '$.Lex.SessionAttributes.lastUtteranceConfidence',
+            callerNumber: '$.Attributes.callerNumber',
+            dialedNumber: '$.Attributes.dialedNumber',
+          },
+        },
+        Transitions: {
+          NextAction: 'speak-ai',
+          Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 6) Speak the AI response returned by Lambda
+      {
+        Identifier: 'speak-ai',
+        Type: 'MessageParticipant',
+        Parameters: {
+          Text: '$.External.aiResponse',
+        },
+        Transitions: {
+          NextAction: 'lex-asr', // loop for next user turn
+          Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 7) Disconnect
       {
         Identifier: 'disconnect-action',
         Type: 'DisconnectParticipant',
