@@ -110,6 +110,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       documentsCount: lease.documents?.length || 0,
       assetsCount: lease.assets?.length || 0,
       eventsCount: lease.events?.length || 0,
+      contactsCount: lease.contacts?.length || 0,
       
       // Timestamps and audit info
       createdAt: lease.createdAt,

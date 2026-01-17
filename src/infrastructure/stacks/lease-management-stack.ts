@@ -162,6 +162,7 @@ export class LeaseManagementStack extends cdk.Stack {
     this.leaseDocumentsBucket.grantReadWrite(createLeaseLambda);
     this.leaseDocumentsBucket.grantRead(getLeaseLambda);
     this.leaseDocumentsBucket.grantReadWrite(updateLeaseLambda);
+    this.leaseDocumentsBucket.grantReadWrite(deleteLeaseLambda);  // For S3 cleanup on hard delete
     this.leaseDocumentsBucket.grantReadWrite(uploadDocumentLambda);
     this.leaseDocumentsBucket.grantRead(getDocumentLambda);
     this.leaseDocumentsBucket.grantRead(processDocumentLambda);
@@ -169,6 +170,12 @@ export class LeaseManagementStack extends cdk.Stack {
 
     // Grant additional S3 List permission for getDocumentLambda (needed for documentId lookup)
     getDocumentLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:ListBucket'],
+      resources: [this.leaseDocumentsBucket.bucketArn]
+    }));
+
+    // Grant S3 List permission for deleteLeaseLambda (needed for S3 cleanup)
+    deleteLeaseLambda.addToRolePolicy(new iam.PolicyStatement({
       actions: ['s3:ListBucket'],
       resources: [this.leaseDocumentsBucket.bucketArn]
     }));

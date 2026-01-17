@@ -161,6 +161,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 };
 
 // Merge arrays by ID, updating existing items and adding new ones
+// Supports: _isNew: true (force new), _delete: true (remove item)
+// With duplicate detection for items missing IDs
 function mergeArrayById(
   existingArray: any[],
   newItems: any[],
@@ -171,39 +173,162 @@ function mergeArrayById(
   const idField = getIdFieldForType(fieldType);
   const idPrefix = getIdPrefixForType(fieldType);
 
-  // Create a map of existing items by ID
-  const existingMap = new Map<string, any>();
+  // Create a map of existing items by ID - this is our base (all existing items are preserved)
+  const resultMap = new Map<string, any>();
   existingArray.forEach(item => {
     if (item[idField]) {
-      existingMap.set(item[idField], item);
+      resultMap.set(item[idField], item);
     }
   });
 
-  // Process new items
+  // Process incoming items
   newItems.forEach(item => {
-    const itemId = item[idField] || `${idPrefix}-${uuidv4().substring(0, 8)}`;
+    const existingId = item[idField];
     
-    if (existingMap.has(itemId)) {
-      // Update existing item (merge)
-      existingMap.set(itemId, {
-        ...existingMap.get(itemId),
-        ...item,
-        [idField]: itemId,
+    // Handle DELETE: If item has _delete: true flag, remove it from the result
+    if (item._delete === true && existingId && resultMap.has(existingId)) {
+      resultMap.delete(existingId);
+      return; // Skip further processing for this item
+    }
+    
+    if (existingId && resultMap.has(existingId)) {
+      // Item has ID and exists - UPDATE/MERGE it
+      // Remove control flags before storing
+      const { _isNew, _delete, ...cleanItem } = item;
+      resultMap.set(existingId, {
+        ...resultMap.get(existingId),
+        ...cleanItem,
+        [idField]: existingId,
         lastModifiedBy: modifiedBy,
         lastModifiedAt: now
       });
-    } else {
-      // Add new item
-      existingMap.set(itemId, {
-        ...item,
-        [idField]: itemId,
-        addedBy: modifiedBy,
-        addedAt: now
+    } else if (existingId && !resultMap.has(existingId)) {
+      // Item has ID but doesn't exist in our records - ADD it (unless it's a delete request)
+      if (item._delete === true) return; // Can't delete what doesn't exist
+      
+      const { _isNew, _delete, ...cleanItem } = item;
+      resultMap.set(existingId, {
+        ...cleanItem,
+        [idField]: existingId,
+        addedBy: item.addedBy || modifiedBy,
+        addedAt: item.addedAt || now
       });
+    } else if (!existingId) {
+      // Item has NO ID - check for duplicates before adding
+      // UNLESS the item has _isNew: true flag, which forces new item creation
+      const forceNew = item._isNew === true;
+      const duplicateId = forceNew ? null : findDuplicateItem(item, existingArray, fieldType, idField);
+      
+      // Remove control flags from the item before storing
+      const { _isNew, _delete, ...cleanItem } = item;
+      
+      // If trying to delete by content match
+      if (item._delete === true && duplicateId) {
+        resultMap.delete(duplicateId);
+        return;
+      }
+      
+      if (duplicateId) {
+        // Found a matching existing item - UPDATE it instead of creating duplicate
+        resultMap.set(duplicateId, {
+          ...resultMap.get(duplicateId),
+          ...cleanItem,
+          [idField]: duplicateId,
+          lastModifiedBy: modifiedBy,
+          lastModifiedAt: now
+        });
+      } else if (!item._delete) {
+        // Genuinely new item - generate ID and add (skip if it was a delete attempt)
+        const newId = `${idPrefix}-${uuidv4().substring(0, 8)}`;
+        resultMap.set(newId, {
+          ...cleanItem,
+          [idField]: newId,
+          addedBy: modifiedBy,
+          addedAt: now
+        });
+      }
     }
   });
 
-  return Array.from(existingMap.values());
+  return Array.from(resultMap.values());
+}
+
+// Find if an item without ID matches an existing item by content
+function findDuplicateItem(
+  newItem: any, 
+  existingArray: any[], 
+  fieldType: string, 
+  idField: string
+): string | null {
+  for (const existing of existingArray) {
+    if (!existing[idField]) continue;
+    
+    if (isContentMatch(newItem, existing, fieldType)) {
+      return existing[idField];
+    }
+  }
+  return null;
+}
+
+// Check if two items match based on content (field-type specific matching)
+function isContentMatch(newItem: any, existing: any, fieldType: string): boolean {
+  switch (fieldType) {
+    case 'documents':
+      // Match by fileKey (most reliable) or fileName
+      if (newItem.fileKey && existing.fileKey) {
+        return newItem.fileKey === existing.fileKey;
+      }
+      if (newItem.fileName && existing.fileName) {
+        return newItem.fileName === existing.fileName;
+      }
+      if (newItem.originalFileName && existing.originalFileName) {
+        return newItem.originalFileName === existing.originalFileName;
+      }
+      return false;
+      
+    case 'assets':
+      // Match by name + type (or just name if type is missing)
+      if (newItem.name && existing.name) {
+        const nameMatch = newItem.name.toLowerCase().trim() === existing.name.toLowerCase().trim();
+        if (newItem.type && existing.type) {
+          return nameMatch && newItem.type === existing.type;
+        }
+        return nameMatch;
+      }
+      return false;
+      
+    case 'events':
+      // Match by title + eventDate (or title + date)
+      if (newItem.title && existing.title) {
+        const titleMatch = newItem.title.toLowerCase().trim() === existing.title.toLowerCase().trim();
+        const newDate = newItem.eventDate || newItem.date;
+        const existDate = existing.eventDate || existing.date;
+        if (newDate && existDate) {
+          return titleMatch && newDate === existDate;
+        }
+        return titleMatch;
+      }
+      return false;
+      
+    case 'contacts':
+      // Match by email OR phone OR name
+      if (newItem.email && existing.email) {
+        return newItem.email.toLowerCase().trim() === existing.email.toLowerCase().trim();
+      }
+      if (newItem.phone && existing.phone) {
+        // Normalize phone numbers (remove non-digits)
+        const newPhone = newItem.phone.replace(/\D/g, '');
+        const existPhone = existing.phone.replace(/\D/g, '');
+        return newPhone === existPhone;
+      }
+      if (newItem.name && existing.name) {
+        return newItem.name.toLowerCase().trim() === existing.name.toLowerCase().trim();
+      }
+      return false;
+      
+    default:
+      return false;
+  }
 }
 
 function getIdFieldForType(fieldType: string): string {
