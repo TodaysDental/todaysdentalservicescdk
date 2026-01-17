@@ -12,6 +12,8 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 /**
@@ -96,6 +98,41 @@ export interface AiAgentsStackProps extends StackProps {
    * Optional - for tracking agent metrics.
    */
   agentPerformanceTableName?: string;
+
+  /**
+   * SSM Parameter name containing the Media Insights Pipeline Configuration ARN.
+   * REQUIRED for real-time transcription of calls using Chime SDK Meetings.
+   * Example: '/{StackName}/MediaInsightsPipelineConfigArn'
+   */
+  mediaInsightsPipelineParameter?: string;
+
+  /**
+   * Medical/dental vocabulary name for Transcribe.
+   * Improves transcription accuracy for dental terminology.
+   */
+  medicalVocabularyName?: string;
+
+  /**
+   * Bedrock Agent ID for AI conversation.
+   * Used by transcription handler to invoke the AI.
+   */
+  bedrockAgentId?: string;
+
+  /**
+   * Bedrock Agent Alias ID.
+   * Defaults to 'TSTALIASID' if not specified.
+   */
+  bedrockAgentAliasId?: string;
+
+  /**
+   * Kinesis stream name for AI transcript analytics.
+   */
+  aiTranscriptStreamName?: string;
+
+  /**
+   * Kinesis stream ARN for AI transcript analytics.
+   */
+  aiTranscriptStreamArn?: string;
 
   // ========================================
   // SECRETS STACK INTEGRATION (from SecretsStack)
@@ -1269,6 +1306,9 @@ export class AiAgentsStack extends Stack {
       environment: {
         ACTIVE_MEETINGS_TABLE: activeMeetingsTable.tableName,
         CHIME_MEDIA_REGION: 'us-east-1',
+        // Media Insights Pipeline parameter for real-time transcription
+        // This is passed from ChimeStack via props
+        MEDIA_INSIGHTS_PIPELINE_PARAMETER: props.mediaInsightsPipelineParameter || '',
       },
     });
     applyTags(meetingManagerFn, { Function: 'meeting-manager' });
@@ -1280,14 +1320,153 @@ export class AiAgentsStack extends Stack {
     meetingManagerFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
+        // Meeting management
         'chime:CreateMeeting',
         'chime:CreateAttendee',
         'chime:DeleteMeeting',
         'chime:GetMeeting',
         'chime:ListAttendees',
+        // Real-time transcription (StartMeetingTranscription API)
+        'chime:StartMeetingTranscription',
+        'chime:StopMeetingTranscription',
       ],
       resources: ['*'],
     }));
+
+    // Transcribe permissions for real-time meeting transcription
+    meetingManagerFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'transcribe:StartStreamTranscription',
+        'transcribe:StartStreamTranscriptionWebSocket',
+      ],
+      resources: ['*'],
+    }));
+
+    // Media Insights Pipeline permissions (kept for future use)
+    meetingManagerFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'chime:CreateMediaInsightsPipeline',
+        'chime:DeleteMediaPipeline',
+        'chime:GetMediaInsightsPipeline',
+        'chimesdkmediapipelines:CreateMediaInsightsPipeline',
+        'chimesdkmediapipelines:DeleteMediaPipeline',
+        'chimesdkmediapipelines:GetMediaInsightsPipeline',
+      ],
+      resources: ['*'],
+    }));
+
+    // SSM Parameter read for Media Insights Pipeline Config ARN
+    if (props.mediaInsightsPipelineParameter) {
+      meetingManagerFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['ssm:GetParameter'],
+        resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter${props.mediaInsightsPipelineParameter}`],
+      }));
+    }
+
+    // Add environment variables for transcription
+    meetingManagerFn.addEnvironment('ENABLE_MEETING_TRANSCRIPTION', 'true');
+    meetingManagerFn.addEnvironment('TRANSCRIPTION_LANGUAGE', 'en-US');
+    if (props.medicalVocabularyName) {
+      meetingManagerFn.addEnvironment('MEDICAL_VOCABULARY_NAME', props.medicalVocabularyName);
+    }
+
+    // ========================================
+    // MEETING TRANSCRIPTION HANDLER - Processes real-time transcription events
+    // ========================================
+    // This Lambda receives transcription events via EventBridge and sends them to the AI
+    const transcriptionHandlerFn = new lambdaNode.NodejsFunction(this, 'TranscriptionHandlerFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'meeting-transcription-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 512,
+      timeout: Duration.seconds(60), // Longer timeout for AI processing
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        ACTIVE_MEETINGS_TABLE: activeMeetingsTable.tableName,
+        CONVERSATIONS_TABLE: this.conversationsTable.tableName,
+        VOICE_SESSIONS_TABLE: this.voiceSessionsTable.tableName,
+        BEDROCK_AGENT_ID: props.bedrockAgentId || '',
+        BEDROCK_AGENT_ALIAS_ID: props.bedrockAgentAliasId || 'TSTALIASID',
+        TTS_BUCKET: props.holdMusicBucketName || '',
+        CHIME_MEDIA_REGION: 'us-east-1',
+        POLLY_VOICE_ID: 'Joanna',
+        AI_TRANSCRIPT_STREAM: props.aiTranscriptStreamName || '',
+      },
+    });
+    applyTags(transcriptionHandlerFn, { Function: 'transcription-handler' });
+
+    // Grant DynamoDB access
+    activeMeetingsTable.grantReadWriteData(transcriptionHandlerFn);
+    this.conversationsTable.grantReadWriteData(transcriptionHandlerFn);
+    this.voiceSessionsTable.grantReadWriteData(transcriptionHandlerFn);
+
+    // Bedrock Agent invocation permissions
+    transcriptionHandlerFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock:InvokeAgent',
+        'bedrock:GetAgent',
+      ],
+      resources: ['*'],
+    }));
+
+    // Polly TTS permissions
+    transcriptionHandlerFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['polly:SynthesizeSpeech'],
+      resources: ['*'],
+    }));
+
+    // S3 write for TTS audio files
+    if (props.holdMusicBucketArn) {
+      transcriptionHandlerFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['s3:PutObject', 's3:GetObject'],
+        resources: [`${props.holdMusicBucketArn}/*`],
+      }));
+    }
+
+    // Chime SDK Voice permissions for UpdateSipMediaApplicationCall
+    transcriptionHandlerFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'chime:UpdateSipMediaApplicationCall',
+        'chime-sdk-voice:UpdateSipMediaApplicationCall',
+      ],
+      resources: ['*'],
+    }));
+
+    // Kinesis write for transcript analytics
+    if (props.aiTranscriptStreamArn) {
+      transcriptionHandlerFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['kinesis:PutRecord', 'kinesis:PutRecords'],
+        resources: [props.aiTranscriptStreamArn],
+      }));
+    }
+
+    // EventBridge rule to invoke transcription handler on Chime meeting events
+    const transcriptionRule = new events.Rule(this, 'TranscriptionEventRule', {
+      ruleName: `${this.stackName}-TranscriptionEvents`,
+      description: 'Routes Chime SDK Meeting transcription events to the handler Lambda',
+      eventPattern: {
+        source: ['aws.chime'],
+        detailType: [
+          'Chime Meeting State Change',
+          'Chime Meeting Transcription',
+        ],
+      },
+    });
+    transcriptionRule.addTarget(new targets.LambdaFunction(transcriptionHandlerFn));
+
+    new CfnOutput(this, 'TranscriptionHandlerFnArn', {
+      value: transcriptionHandlerFn.functionArn,
+      description: 'ARN of the Transcription Handler Lambda',
+      exportName: `${this.stackName}-TranscriptionHandlerFnArn`,
+    });
 
     // ========================================
     // MEETING JOIN HANDLER - API for Human Agent Transfers

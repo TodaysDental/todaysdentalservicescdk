@@ -4,10 +4,15 @@ import {
     ChimeSDKMeetingsClient, 
     CreateMeetingCommand,
     CreateAttendeeCommand, 
-    DeleteMeetingCommand
+    DeleteMeetingCommand,
+    StartMeetingTranscriptionCommand,
+    StopMeetingTranscriptionCommand
 } from '@aws-sdk/client-chime-sdk-meetings';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { PollyClient, SynthesizeSpeechCommand, Engine, OutputFormat, VoiceId } from '@aws-sdk/client-polly';
 import { randomUUID } from 'crypto';
+import { Readable } from 'stream';
 import { enrichCallContext, selectAgentsForCall } from './utils/agent-selection';
 import { buildBaseQueueItem, smartAssignCall } from './utils/parallel-assignment';
 import { generateUniqueCallPosition } from '../shared/utils/unique-id';
@@ -28,6 +33,8 @@ import { callStateMachine, CallEvent } from './utils/call-state-machine';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const lambdaClient = new LambdaClient({});
+const ttsS3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+const polly = new PollyClient({ region: process.env.AWS_REGION || 'us-east-1' });
 
 // CHIME_MEDIA_REGION: Chime SDK Meetings must be created in a supported media region.
 // This is set by ChimeStack CDK and ensures all Chime operations use the same region.
@@ -39,6 +46,9 @@ const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME!;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME!;
 const LOCKS_TABLE_NAME = process.env.LOCKS_TABLE_NAME!;
 const HOLD_MUSIC_BUCKET = process.env.HOLD_MUSIC_BUCKET;
+const POLLY_VOICE_ID = (process.env.POLLY_VOICE_ID || 'Joanna') as VoiceId;
+const POLLY_ENGINE = (process.env.POLLY_ENGINE || 'standard') as Engine;
+const TTS_SAMPLE_RATE = 8000;
 const MAX_RING_AGENTS = Math.max(1, Number.parseInt(process.env.MAX_RING_AGENTS || '25', 10));
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ENABLE_PARALLEL_ASSIGNMENT = process.env.ENABLE_PARALLEL_ASSIGNMENT !== 'false';
@@ -50,6 +60,78 @@ const CLINIC_HOURS_TABLE = process.env.CLINIC_HOURS_TABLE;
 const AI_AGENTS_TABLE = process.env.AI_AGENTS_TABLE;
 const VOICE_CONFIG_TABLE = process.env.VOICE_CONFIG_TABLE;
 const ENABLE_AFTER_HOURS_AI = process.env.ENABLE_AFTER_HOURS_AI === 'true';
+
+// ========================================
+// REAL-TIME MEETING TRANSCRIPTION
+// ========================================
+// Uses Chime SDK StartMeetingTranscription API for natural language AI conversation.
+// This works with SipMediaApplicationDialIn calls joining meetings via JoinChimeMeeting.
+const ENABLE_MEETING_TRANSCRIPTION = process.env.ENABLE_MEETING_TRANSCRIPTION !== 'false';
+const TRANSCRIPTION_LANGUAGE = process.env.TRANSCRIPTION_LANGUAGE || 'en-US';
+const MEDICAL_VOCABULARY_NAME = process.env.MEDICAL_VOCABULARY_NAME;
+
+/**
+ * Start real-time transcription for a Chime SDK meeting.
+ * This enables natural language AI conversation via Amazon Transcribe.
+ * 
+ * @param meetingId - Chime meeting ID
+ * @param callId - Call ID for logging
+ * @returns Promise<boolean> - true if transcription started successfully
+ */
+async function startMeetingTranscription(meetingId: string, callId: string): Promise<boolean> {
+    if (!ENABLE_MEETING_TRANSCRIPTION) {
+        console.log(`[Transcription] Meeting transcription disabled via environment`);
+        return false;
+    }
+
+    console.log(`[Transcription] Starting real-time transcription for meeting ${meetingId} (call ${callId})`);
+
+    try {
+        await chime.send(new StartMeetingTranscriptionCommand({
+            MeetingId: meetingId,
+            TranscriptionConfiguration: {
+                EngineTranscribeSettings: {
+                    LanguageCode: TRANSCRIPTION_LANGUAGE as any,
+                    EnablePartialResultsStabilization: true,
+                    PartialResultsStability: 'high',
+                    VocabularyName: MEDICAL_VOCABULARY_NAME || undefined,
+                }
+            }
+        }));
+
+        console.log(`[Transcription] Successfully started for meeting ${meetingId}`, {
+            language: TRANSCRIPTION_LANGUAGE,
+            vocabulary: MEDICAL_VOCABULARY_NAME || 'default'
+        });
+
+        return true;
+    } catch (error: any) {
+        if (error.name === 'ConflictException') {
+            console.log(`[Transcription] Already active for meeting ${meetingId}`);
+            return true;
+        }
+        console.error(`[Transcription] Failed to start for meeting ${meetingId}:`, error.message || error);
+        return false;
+    }
+}
+
+/**
+ * Stop meeting transcription.
+ * 
+ * @param meetingId - Chime meeting ID
+ */
+async function stopMeetingTranscriptionForMeeting(meetingId: string): Promise<void> {
+    try {
+        await chime.send(new StopMeetingTranscriptionCommand({
+            MeetingId: meetingId
+        }));
+        console.log(`[Transcription] Stopped for meeting ${meetingId}`);
+    } catch (error: any) {
+        if (error.name !== 'NotFoundException') {
+            console.warn(`[Transcription] Error stopping for meeting ${meetingId}:`, error.message);
+        }
+    }
+}
 
 // ========================================
 // AI PHONE NUMBERS - Direct AI Routing (no business hours check)
@@ -406,6 +488,77 @@ async function removeFromQueue(clinicId: string, callId: string, status: QueueEn
 // --- Utility Functions ---
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
+const streamToBuffer = async (stream: Readable | any): Promise<Buffer> => {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of stream) {
+        chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+};
+
+const pcmToWav = (pcmData: Buffer, sampleRate: number, bitsPerSample: number, numChannels: number): Buffer => {
+    const dataSize = pcmData.length;
+    const headerSize = 44;
+    const totalSize = headerSize + dataSize;
+    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+    const blockAlign = numChannels * (bitsPerSample / 8);
+
+    const wavBuffer = Buffer.alloc(totalSize);
+
+    // RIFF header
+    wavBuffer.write('RIFF', 0);
+    wavBuffer.writeUInt32LE(totalSize - 8, 4);
+    wavBuffer.write('WAVE', 8);
+
+    // fmt sub-chunk
+    wavBuffer.write('fmt ', 12);
+    wavBuffer.writeUInt32LE(16, 16); // Sub-chunk size
+    wavBuffer.writeUInt16LE(1, 20); // Audio format (PCM)
+    wavBuffer.writeUInt16LE(numChannels, 22);
+    wavBuffer.writeUInt32LE(sampleRate, 24);
+    wavBuffer.writeUInt32LE(byteRate, 28);
+    wavBuffer.writeUInt16LE(blockAlign, 32);
+    wavBuffer.writeUInt16LE(bitsPerSample, 34);
+
+    // data sub-chunk
+    wavBuffer.write('data', 36);
+    wavBuffer.writeUInt32LE(dataSize, 40);
+    pcmData.copy(wavBuffer, 44);
+
+    return wavBuffer;
+};
+
+const synthesizeSpeechToS3 = async (text: string, callId: string): Promise<string> => {
+    if (!HOLD_MUSIC_BUCKET) {
+        throw new Error('HOLD_MUSIC_BUCKET is not configured');
+    }
+
+    const audioKey = `tts/${callId}/${Date.now()}.wav`;
+    const pollyResponse = await polly.send(new SynthesizeSpeechCommand({
+        Engine: POLLY_ENGINE as Engine,
+        OutputFormat: 'pcm' as OutputFormat,
+        Text: text,
+        VoiceId: POLLY_VOICE_ID as VoiceId,
+        SampleRate: `${TTS_SAMPLE_RATE}`,
+    }));
+
+    if (!pollyResponse.AudioStream) {
+        throw new Error('No audio stream returned from Polly');
+    }
+
+    const audioData = await streamToBuffer(pollyResponse.AudioStream as Readable);
+    const wavData = pcmToWav(audioData, TTS_SAMPLE_RATE, 16, 1);
+
+    await ttsS3.send(new PutObjectCommand({
+        Bucket: HOLD_MUSIC_BUCKET,
+        Key: audioKey,
+        Body: wavData,
+        ContentType: 'audio/wav',
+    }));
+
+    return audioKey;
+};
+
 // --- Chime Action Builders ---
 const buildActions = (actions: any[]) => ({
     SchemaVersion: '1.0',
@@ -435,16 +588,38 @@ const buildCallAndBridgeAction = (callerIdNumber: string, targetPhoneNumber: str
     }
 });
 
-const buildSpeakAction = (text: string, voiceId: string = 'Joanna', engine: string = 'neural') => ({
+const buildSpeakAction = (text: string, voiceId: string = 'Joanna', engine: string = 'neural', callId?: string) => ({
     Type: 'Speak',
     Parameters: {
         Text: text,
         Engine: engine,
         LanguageCode: 'en-US',
         TextType: 'text',
-        VoiceId: voiceId
+        VoiceId: voiceId,
+        ...(callId && { CallId: callId })
     }
 });
+
+const buildTtsPlayAudioAction = async (
+    text: string,
+    targetCallId: string | undefined,
+    callId: string
+): Promise<any> => {
+    if (!HOLD_MUSIC_BUCKET) {
+        console.warn('[TTS] HOLD_MUSIC_BUCKET not configured; falling back to Speak');
+        return buildSpeakAction(text, POLLY_VOICE_ID, POLLY_ENGINE, targetCallId);
+    }
+
+    try {
+        const audioKey = await synthesizeSpeechToS3(text, callId);
+        return buildPlayAudioAction(audioKey, 1, targetCallId);
+    } catch (err: any) {
+        console.error('[TTS] Failed to synthesize speech, falling back to Speak', {
+            error: err?.message || err,
+        });
+        return buildSpeakAction(text, POLLY_VOICE_ID, POLLY_ENGINE, targetCallId);
+    }
+};
 
 const buildModifyChimeMeetingAttendeesAction = (meetingId: string, operation: 'Add' | 'Remove', attendeeIds: string[]) => ({
     Type: 'ModifyChimeMeetingAttendees',
@@ -466,16 +641,18 @@ const buildSpeakAndBridgeAction = (text: string, voiceId: string = 'Joanna', eng
     }
 });
 
-const buildPauseAction = (durationInMilliseconds: number) => ({
+const buildPauseAction = (durationInMilliseconds: number, callId?: string) => ({
     Type: 'Pause',
     Parameters: {
-        DurationInMilliseconds: durationInMilliseconds
+        DurationInMilliseconds: durationInMilliseconds,
+        ...(callId && { CallId: callId })
     }
 });
 
 // RecordAudio action for AI voice calls - captures caller speech for transcription
 // The recording is saved to S3 and processed by transcribe-audio-segment Lambda
 const AI_RECORDINGS_BUCKET = process.env.AI_RECORDINGS_BUCKET || process.env.RECORDINGS_BUCKET;
+const ENABLE_RECORD_AUDIO_FALLBACK = process.env.ENABLE_RECORD_AUDIO_FALLBACK === 'true';
 
 const buildRecordAudioAction = (
     callId: string,
@@ -484,10 +661,17 @@ const buildRecordAudioAction = (
         durationSeconds?: number;
         silenceDurationSeconds?: number;
         silenceThreshold?: number;
+        pstnLegCallId?: string; // The specific leg CallId (LEG-A) for targeting the caller
     }
 ) => ({
     Type: 'RecordAudio',
     Parameters: {
+        // CallId is REQUIRED when in a meeting context to target the correct leg
+        // Use pstnLegCallId (LEG-A) to record the CALLER's audio, not the meeting/AI
+        ...(params?.pstnLegCallId && { CallId: params.pstnLegCallId }),
+        // Track INCOMING = caller's voice, OUTGOING = AI's voice, BOTH = mixed
+        // We want INCOMING to capture what the caller says for transcription
+        Track: 'INCOMING',
         // Max recording duration - shorter = faster transcription (default 15 seconds)
         DurationInSeconds: Math.floor(params?.durationSeconds || 15),
         // End recording after silence - must be integer (default 2 seconds)
@@ -508,7 +692,7 @@ const buildRecordAudioAction = (
 });
 
 // Updated to include Repeat parameter
-const buildPlayAudioAction = (audioSource: string, repeat: number = 1) => ({
+const buildPlayAudioAction = (audioSource: string, repeat: number = 1, callId?: string) => ({
     Type: 'PlayAudio',
     Parameters: {
         AudioSource: {
@@ -518,13 +702,14 @@ const buildPlayAudioAction = (audioSource: string, repeat: number = 1) => ({
         },
         PlaybackTerminators: ['#', '*'],
         Repeat: repeat,
+        ...(callId && { CallId: callId }),
     },
 });
 
 // Thinking audio - plays during AI processing to eliminate awkward silence
 const THINKING_AUDIO_KEY = 'Computer-keyboard sound.wav';
 
-const buildPlayThinkingAudioAction = (repeat: number = 3) => ({
+const buildPlayThinkingAudioAction = (repeat: number = 1, callId?: string) => ({
     Type: 'PlayAudio',
     Parameters: {
         AudioSource: {
@@ -533,6 +718,8 @@ const buildPlayThinkingAudioAction = (repeat: number = 3) => ({
             Key: THINKING_AUDIO_KEY,
         },
         Repeat: repeat,
+        PlaybackTerminators: ['#', '*'],
+        ...(callId && { CallId: callId }),
     },
 });
 
@@ -1110,6 +1297,7 @@ async function routeInboundCallToVoiceAi(params: {
                 durationSeconds: 120, // 2 minutes for voicemail
                 silenceDurationSeconds: 5,
                 silenceThreshold: 200,
+                pstnLegCallId, // Target the caller's leg
             }) : { Type: 'Hangup', Parameters: { SipResponseCode: '0' } },
         ]);
     }
@@ -1155,6 +1343,10 @@ async function routeInboundCallToVoiceAi(params: {
     let meetingInfo: any = null;
     let attendeeInfo: any = null;
     const aiSessionId = voiceAiResponse[0]?.sessionId || randomUUID();
+    
+    // Extract initial greeting from the AI response to play after meeting join
+    const initialGreeting = voiceAiResponse.find(r => r.action === 'SPEAK')?.text || 
+        "Hello! Thank you for calling. I'm your AI assistant. How may I help you today?";
 
     // Try meeting-based KVS first for best latency
     if (realTimeEnabled && pstnLegCallId) {
@@ -1197,6 +1389,24 @@ async function routeInboundCallToVoiceAi(params: {
             ? 'starting'
             : (transcriptionEnabled ? 'active' : 'disabled');
 
+    // Avoid double-playing the initial greeting for meeting-kvs mode.
+    // We store the greeting in DynamoDB and play it after JoinChimeMeeting succeeds.
+    if (pipelineMode === 'meeting-kvs') {
+        const beforeCount = actions.length;
+        for (let i = actions.length - 1; i >= 0; i--) {
+            if (actions[i]?.Type === 'Speak') {
+                actions.splice(i, 1);
+            }
+        }
+        const removed = beforeCount - actions.length;
+        if (removed > 0) {
+            console.log('[routeInboundCallToVoiceAi] Deferred initial greeting until after JoinChimeMeeting', {
+                callId,
+                removedSpeakActions: removed,
+            });
+        }
+    }
+
     // Store AI call record in queue table for tracking
     const { queuePosition, uniquePositionId } = generateUniqueCallPosition();
     const now = Math.floor(Date.now() / 1000);
@@ -1231,6 +1441,8 @@ async function routeInboundCallToVoiceAi(params: {
                     meetingInfo,
                     customerAttendeeInfo: attendeeInfo,
                 } : {}),
+                // Store initial greeting to play after meeting join
+                initialGreeting,
             }
         }));
     } catch (err) {
@@ -1248,6 +1460,7 @@ async function routeInboundCallToVoiceAi(params: {
             durationSeconds: 30, // Allow caller time to speak
             silenceDurationSeconds: 3, // End recording after 3s silence
             silenceThreshold: 100, // More sensitive to quiet speech (0-1000 range)
+            pstnLegCallId, // Target the caller's leg
         }));
     } else {
         // DTMF FALLBACK: Prompt for key press when no audio capture available
@@ -1451,68 +1664,22 @@ export const handler = async (event: any): Promise<any> => {
                         const clinicOpen = await isClinicOpen(clinicId);
                         
                         if (!clinicOpen) {
-                            // Requirement: after-hours AI routing requires a configured aiPhoneNumber.
-                            // If not present (or invalid), fall back to standard closed message.
-                            if (!aiPhoneNumber || !isValidE164(aiPhoneNumber)) {
-                                console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED but no valid aiPhoneNumber configured - using standard after-hours message`, {
-                                    callId,
-                                    clinicId,
-                                    aiPhoneNumber: aiPhoneNumber || '',
-                                });
-                                return buildActions([
-                                    buildSpeakAction(
-                                        "Thank you for calling. Our office is currently closed. " +
-                                        "Our regular hours are Monday through Friday, 9 AM to 5 PM. " +
-                                        "Please call back during business hours, or leave a message after the tone."
-                                    ),
-                                    buildPauseAction(500),
-                                    { Type: 'Hangup', Parameters: { SipResponseCode: '0' } }
-                                ]);
-                            }
-
-                            // FIX: Use clinic's main phone number as CallerIdNumber instead of caller's number.
-                            // Reasons:
-                            // 1. fromPhoneNumber can be 'Unknown' or invalid E.164 format
-                            // 2. Carriers may reject calls with spoofed/unverified caller IDs
-                            // 3. toPhoneNumber is our verified clinic number
-                            const callerIdForBridge = toPhoneNumber && isValidE164(toPhoneNumber) 
-                                ? toPhoneNumber 
-                                : aiPhoneNumber; // Fallback to AI number if main number is invalid
-
-                            console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED - forwarding to AI number via PSTN`, {
+                            console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED - routing to AI via Chime SDK Meetings`, {
                                 callId,
                                 clinicId,
-                                aiPhoneNumber,
                                 callerNumber: fromPhoneNumber,
-                                callerIdForBridge,
                             });
 
-                            // Forward via PSTN to aiPhoneNumber (Voice Connector number).
-                            // This enables KVS streaming for real-time transcription.
-                            // The aiPhoneNumber has a SIP Rule that routes to the same SMA handler.
-                            // We pass the original caller number in SIP headers for context preservation.
-                            return buildActions([
-                                buildSpeakAction("Please hold while I connect you to our after-hours assistant."),
-                                {
-                                    Type: 'CallAndBridge',
-                                    Parameters: {
-                                        CallTimeoutSeconds: 30,
-                                        CallerIdNumber: callerIdForBridge, // Use verified clinic number
-                                        Endpoints: [
-                                            {
-                                                Uri: aiPhoneNumber,
-                                                BridgeEndpointType: 'PSTN',
-                                            }
-                                        ],
-                                        SipHeaders: {
-                                            // Preserve original caller info in SIP header for logging/analytics
-                                            'X-Original-Caller': fromPhoneNumber,
-                                            'X-Forward-Reason': 'after-hours',
-                                            'X-Clinic-Id': clinicId,
-                                        },
-                                    }
-                                }
-                            ]);
+                            // Route to Voice AI using Chime SDK Meetings architecture
+                            // This creates a meeting, adds the caller as attendee, and enables real-time transcription
+                            return routeInboundCallToVoiceAi({
+                                callId,
+                                pstnLegCallId: pstnLegCallId || callId,
+                                fromPhoneNumber,
+                                clinicId,
+                                isAiPhoneNumber: false,
+                                source: 'after_hours_forward'
+                            });
                         }
                         
                         console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is OPEN - proceeding with human agent routing`);
@@ -2349,7 +2516,10 @@ export const handler = async (event: any): Promise<any> => {
                                 await ddb.send(new UpdateCommand({
                                     TableName: CALL_QUEUE_TABLE_NAME,
                                     Key: { clinicId: callRecords[0].clinicId, queuePosition: callRecords[0].queuePosition },
-                                    UpdateExpression: 'REMOVE pendingAiResponse, pendingAiResponseTime',
+                                    UpdateExpression: 'SET lastAiResponseAt = :now REMOVE pendingAiResponse, pendingAiResponseTime',
+                                    ExpressionAttributeValues: {
+                                        ':now': new Date().toISOString(),
+                                    }
                                 })).catch(() => undefined);
                             }
                         } catch (clearErr) {
@@ -2823,74 +2993,124 @@ export const handler = async (event: any): Promise<any> => {
                             if (callRecord.isAiCall && callRecord.pipelineMode === 'meeting-kvs' && 
                                 callRecord.pipelineStatus === 'starting' && callRecord.meetingId) {
                                 
-                                console.log('[ACTION_SUCCESSFUL] AI call JoinChimeMeeting success - starting Media Pipeline', {
+                                console.log('[ACTION_SUCCESSFUL] AI call JoinChimeMeeting success - starting transcription', {
                                     callId,
                                     meetingId: callRecord.meetingId,
                                     clinicId: callRecord.clinicId,
                                     aiAgentId: callRecord.aiAgentId,
                                 });
                                 
-                                // Start Media Insights Pipeline asynchronously (don't block the response)
-                                // The pipeline streams to Kinesis → AI Transcript Bridge → Voice AI
-                                startMediaPipeline({
+                                // PRIMARY: Start real-time meeting transcription (Chime SDK native API)
+                                // This works with SipMediaApplicationDialIn and doesn't require KVS streams
+                                startMeetingTranscription(callRecord.meetingId, callId)
+                                    .then(async (transcriptionStarted) => {
+                                        if (transcriptionStarted) {
+                                            console.log('[ACTION_SUCCESSFUL] Meeting transcription started for AI call:', {
+                                                callId,
+                                                meetingId: callRecord.meetingId,
+                                            });
+                                            
+                                            // Update call record with transcription status
+                                            try {
+                                                await ddb.send(new UpdateCommand({
+                                                    TableName: CALL_QUEUE_TABLE_NAME,
+                                                    Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
+                                                    UpdateExpression: 'SET transcriptionEnabled = :enabled, transcriptionStatus = :status, transcriptionStartedAt = :now, pipelineStatus = :pipelineStatus',
+                                                    ExpressionAttributeValues: {
+                                                        ':enabled': true,
+                                                        ':status': 'active',
+                                                        ':now': new Date().toISOString(),
+                                                        ':pipelineStatus': 'transcription-active',
+                                                    }
+                                                }));
+                                            } catch (updateErr) {
+                                                console.warn('[ACTION_SUCCESSFUL] Failed to update transcription status:', updateErr);
+                                            }
+                                        } else {
+                                            console.warn('[ACTION_SUCCESSFUL] Meeting transcription failed to start, trying Media Pipeline fallback');
+                                            
+                                            // FALLBACK: Try Media Insights Pipeline (may not work for SipMediaApplicationDialIn)
+                                            return startMediaPipeline({
+                                                callId,
+                                                meetingId: callRecord.meetingId,
+                                                clinicId: callRecord.clinicId,
+                                                agentId: callRecord.aiAgentId,
+                                                customerPhone: callRecord.phoneNumber,
+                                                direction: 'inbound',
+                                                isAiCall: true,
+                                                aiSessionId: callRecord.aiSessionId,
+                                            }).then(async (pipelineId) => {
+                                                if (pipelineId) {
+                                                    console.log('[ACTION_SUCCESSFUL] Media Pipeline started as fallback:', { callId, pipelineId });
+                                                    await ddb.send(new UpdateCommand({
+                                                        TableName: CALL_QUEUE_TABLE_NAME,
+                                                        Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
+                                                        UpdateExpression: 'SET mediaPipelineId = :pipelineId, pipelineStatus = :status',
+                                                        ExpressionAttributeValues: {
+                                                            ':pipelineId': pipelineId,
+                                                            ':status': 'active',
+                                                        }
+                                                    }));
+                                                } else {
+                                                    console.warn('[ACTION_SUCCESSFUL] Both transcription and Media Pipeline failed, using DTMF fallback');
+                                                    await ddb.send(new UpdateCommand({
+                                                        TableName: CALL_QUEUE_TABLE_NAME,
+                                                        Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
+                                                        UpdateExpression: 'SET pipelineStatus = :status',
+                                                        ExpressionAttributeValues: {
+                                                            ':status': 'dtmf-fallback',
+                                                        }
+                                                    }));
+                                                }
+                                            });
+                                        }
+                                    })
+                                    .catch((err) => {
+                                        console.error('[ACTION_SUCCESSFUL] Error in transcription/pipeline setup:', err);
+                                    });
+                                
+                                // Play the initial AI greeting now that the caller is in the meeting
+                                // The caller couldn't hear it earlier because JoinChimeMeeting was processing
+                                const initialGreeting = callRecord.initialGreeting || 
+                                    "Hello! Thank you for calling. I'm your AI assistant. How may I help you today?";
+                                
+                                // CRITICAL FIX: Get the caller's CallId (LEG-A) to target actions correctly
+                                // After JoinChimeMeeting, there are two participants and we must specify which leg to target
+                                const callerLeg = event?.CallDetails?.Participants?.find(
+                                    (p: any) => p.ParticipantTag === 'LEG-A'
+                                );
+                                const callerCallId = callerLeg?.CallId;
+                                
+                                console.log('[ACTION_SUCCESSFUL] Playing initial AI greeting to caller', {
                                     callId,
-                                    meetingId: callRecord.meetingId,
-                                    clinicId: callRecord.clinicId,
-                                    agentId: callRecord.aiAgentId,
-                                    customerPhone: callRecord.phoneNumber,
-                                    direction: 'inbound',
-                                    isAiCall: true,
-                                    aiSessionId: callRecord.aiSessionId,
-                                }).then(async (pipelineId) => {
-                                    if (pipelineId) {
-                                        console.log('[ACTION_SUCCESSFUL] Media Pipeline started for AI call:', {
-                                            callId,
-                                            pipelineId,
-                                        });
-                                        
-                                        // Update call record with pipeline info
-                                        try {
-                                            await ddb.send(new UpdateCommand({
-                                                TableName: CALL_QUEUE_TABLE_NAME,
-                                                Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
-                                                UpdateExpression: 'SET mediaPipelineId = :pipelineId, pipelineStatus = :status, pipelineStartedAt = :now',
-                                                ExpressionAttributeValues: {
-                                                    ':pipelineId': pipelineId,
-                                                    ':status': 'active',
-                                                    ':now': new Date().toISOString(),
-                                                }
-                                            }));
-                                        } catch (updateErr) {
-                                            console.warn('[ACTION_SUCCESSFUL] Failed to update call record with pipeline ID:', updateErr);
-                                        }
-                                    } else {
-                                        console.warn('[ACTION_SUCCESSFUL] Media Pipeline failed to start, AI call will use fallback');
-                                        // Mark pipeline as failed so subsequent handlers can fallback
-                                        try {
-                                            await ddb.send(new UpdateCommand({
-                                                TableName: CALL_QUEUE_TABLE_NAME,
-                                                Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
-                                                UpdateExpression: 'SET pipelineStatus = :status',
-                                                ExpressionAttributeValues: {
-                                                    ':status': 'failed',
-                                                }
-                                            }));
-                                        } catch (updateErr) {
-                                            console.warn('[ACTION_SUCCESSFUL] Failed to update pipeline status:', updateErr);
-                                        }
-                                    }
-                                }).catch((err) => {
-                                    console.error('[ACTION_SUCCESSFUL] Error starting Media Pipeline:', err);
+                                    callerCallId,
+                                    greeting: initialGreeting.substring(0, 50) + '...',
                                 });
                                 
-                                // Return pause actions to wait for transcripts from Media Pipeline
-                                // These can be interrupted by UpdateSipMediaApplicationCall from ai-transcript-bridge
-                                const waitActions = [];
-                                for (let i = 0; i < 15; i++) {
-                                    waitActions.push(buildPauseAction(2000)); // 2 second pauses, total 30 seconds
+                                // Build actions: Pause actions to wait for transcripts
+                                // IMPORTANT: Chime SMA has a limit of ~10 actions per response
+                                // CRITICAL FIX: Audio actions returned in the same response as JoinChimeMeeting
+                                // are being silently skipped. Defer the greeting to the next Pause event.
+                                
+                                // Mark greeting as deferred (best-effort)
+                                try {
+                                    await ddb.send(new UpdateCommand({
+                                        TableName: CALL_QUEUE_TABLE_NAME,
+                                        Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
+                                        UpdateExpression: 'SET initialGreetingDeferredAt = :now',
+                                        ExpressionAttributeValues: { ':now': new Date().toISOString() },
+                                    }));
+                                } catch (deferErr: any) {
+                                    console.warn('[ACTION_SUCCESSFUL] Failed to mark greeting deferred:', deferErr?.message || deferErr);
                                 }
                                 
-                                console.log('[ACTION_SUCCESSFUL] AI call meeting joined - waiting for real-time transcripts');
+                                const waitActions: any[] = [];
+                                for (let i = 0; i < 4; i++) {
+                                    waitActions.push(buildPauseAction(3000, callerCallId)); // 3 second pauses, total 12 seconds
+                                }
+                                
+                                console.log('[ACTION_SUCCESSFUL] AI call meeting joined - greeting deferred; waiting for real-time transcripts');
+                                console.log('[ACTION_SUCCESSFUL] DEBUG: Returning actions:', JSON.stringify(waitActions.map(a => ({ Type: a.Type, hasCallId: !!a.Parameters?.CallId }))));
                                 return buildActions(waitActions);
                             }
                         }
@@ -2910,12 +3130,13 @@ export const handler = async (event: any): Promise<any> => {
                     // The recording has been saved to S3. The transcribe-audio-segment Lambda
                     // will be triggered by S3 notification to process the audio and send
                     // the AI response via UpdateSipMediaApplicationCall.
-                    // Play thinking audio (keyboard typing sound) while waiting for AI response.
-                    // This will be interrupted by UpdateSipMediaApplicationCall when AI response is ready.
-                    console.log(`[ACTION_SUCCESSFUL] Playing thinking audio while waiting for AI response`);
+                    //
+                    // To avoid long/looping "thinking" audio during record-audio fallback,
+                    // play a single short thinking clip (or pause briefly).
+                    console.log(`[ACTION_SUCCESSFUL] Waiting for AI response after RecordAudio`);
                     
                     return buildActions([
-                        buildPlayThinkingAudioAction(5), // Repeat up to 5 times, will be interrupted by AI response
+                        buildPlayThinkingAudioAction(1, pstnLegCallId),
                     ]);
                 }
                 
@@ -2945,6 +3166,41 @@ export const handler = async (event: any): Promise<any> => {
                         
                         if (callRecords && callRecords[0]) {
                             const callRecord = callRecords[0];
+
+                            // Play initial greeting on the first Pause after JoinChimeMeeting
+                            // (Audio actions returned immediately after JoinChimeMeeting can be skipped)
+                            if (
+                                actionType === 'Pause' &&
+                                callRecord.isAiCall &&
+                                callRecord.initialGreeting &&
+                                !callRecord.initialGreetingPlayedAt
+                            ) {
+                                const targetCallId = callRecord.pstnCallId || pstnLegCallId || callId;
+                                console.log('[ACTION_SUCCESSFUL] Playing deferred initial greeting', {
+                                    callId,
+                                    targetCallId,
+                                });
+
+                                const greetingAction = await buildTtsPlayAudioAction(
+                                    callRecord.initialGreeting,
+                                    targetCallId,
+                                    callId
+                                );
+
+                                // Mark greeting as played (best-effort)
+                                try {
+                                    await ddb.send(new UpdateCommand({
+                                        TableName: CALL_QUEUE_TABLE_NAME,
+                                        Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
+                                        UpdateExpression: 'SET initialGreetingPlayedAt = :now REMOVE initialGreetingDeferredAt',
+                                        ExpressionAttributeValues: { ':now': new Date().toISOString() },
+                                    }));
+                                } catch (greetErr: any) {
+                                    console.warn('[ACTION_SUCCESSFUL] Failed to mark greeting played:', greetErr?.message || greetErr);
+                                }
+
+                                return buildActions([greetingAction]);
+                            }
                             
                             // Check if this is an AI call with pending response
                             if (callRecord.isAiCall && callRecord.pendingAiResponse) {
@@ -2958,7 +3214,8 @@ export const handler = async (event: any): Promise<any> => {
                                     switch (response.action) {
                                         case 'SPEAK':
                                             if (response.text) {
-                                                actions.push(buildSpeakAction(response.text));
+                                                const targetCallId = callRecord.pstnCallId || pstnLegCallId || callId;
+                                                actions.push(await buildTtsPlayAudioAction(response.text, targetCallId, callId));
                                             }
                                             break;
                                         case 'HANG_UP':
@@ -2970,12 +3227,21 @@ export const handler = async (event: any): Promise<any> => {
                                                 // MEETING-KVS MODE: Keep caller in meeting, real-time transcripts flowing
                                                 // Just pause and wait for ai-transcript-bridge to send next response
                                                 actions.push(buildPauseAction(2000));
+                                            } else if (callRecord.pipelineMode === 'meeting-kvs' && callRecord.useRecordAudioFallback && AI_RECORDINGS_BUCKET) {
+                                                // MEETING-KVS FALLBACK: Use RecordAudio when real-time transcripts aren't available
+                                                actions.push(buildRecordAudioAction(callId, callRecord.clinicId, {
+                                                    durationSeconds: 20,
+                                                    silenceDurationSeconds: 2,
+                                                    silenceThreshold: 120,
+                                                    pstnLegCallId: callRecord.pstnCallId, // Target the caller's leg
+                                                }));
                                             } else if (callRecord.pipelineMode === 'record-transcribe' && AI_RECORDINGS_BUCKET) {
                                                 // RECORD-TRANSCRIBE MODE: Use RecordAudio for voice transcription
                                                 actions.push(buildRecordAudioAction(callId, callRecord.clinicId, {
                                                     durationSeconds: 30,
                                                     silenceDurationSeconds: 3,
                                                     silenceThreshold: 100,
+                                                    pstnLegCallId: callRecord.pstnCallId, // Target the caller's leg
                                                 }));
                                             } else if (callRecord.useDtmfFallback) {
                                                 // DTMF FALLBACK: Prompt for key press
@@ -2992,7 +3258,10 @@ export const handler = async (event: any): Promise<any> => {
                                 await ddb.send(new UpdateCommand({
                                     TableName: CALL_QUEUE_TABLE_NAME,
                                     Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
-                                    UpdateExpression: 'REMOVE pendingAiResponse, pendingAiResponseTime',
+                                    UpdateExpression: 'SET lastAiResponseAt = :now REMOVE pendingAiResponse, pendingAiResponseTime',
+                                    ExpressionAttributeValues: {
+                                        ':now': new Date().toISOString(),
+                                    }
                                 }));
                                 
                                 if (actions.length > 0) {
@@ -3004,42 +3273,129 @@ export const handler = async (event: any): Promise<any> => {
                             // For AI calls with no pending response, continue listening
                             if (callRecord.isAiCall && !callRecord.pendingAiResponse) {
                                 // Safety net: if we are waiting for real-time transcription to come online
-                                // but it hasn't started after a short window, switch to DTMF fallback so the
+                                // but it hasn't started after a short window, switch to RecordAudio or DTMF fallback so the
                                 // caller doesn't experience total silence.
-                                if (!callRecord.mediaPipelineId && callRecord.pipelineStatus === 'starting') {
-                                    const nowSec = Math.floor(Date.now() / 1000);
+                                // Note: pipelineStatus transitions from 'starting' -> 'transcription-active' when StartMeetingTranscription succeeds
+                                // Also check transcriptionStatus which is set to 'active' when transcription is confirmed running
+                                const transcriptionIsActive = callRecord.pipelineStatus === 'transcription-active' || 
+                                                               callRecord.transcriptionStatus === 'active' ||
+                                                               callRecord.mediaPipelineId;
+                                const recordAudioFallbackAvailable = ENABLE_RECORD_AUDIO_FALLBACK && Boolean(AI_RECORDINGS_BUCKET);
+                                const nowSec = Math.floor(Date.now() / 1000);
+                                const transcriptionStartedAtSec = callRecord.transcriptionStartedAt
+                                    ? Math.floor(new Date(callRecord.transcriptionStartedAt).getTime() / 1000)
+                                    : undefined;
+                                const lastAiResponseAt = callRecord.lastAiResponseAt || callRecord.pendingAiResponseTime;
+                                const lastAiResponseSec = lastAiResponseAt
+                                    ? Math.floor(new Date(lastAiResponseAt).getTime() / 1000)
+                                    : undefined;
+                                const baseStartSec = transcriptionStartedAtSec ||
+                                    (typeof callRecord.queueEntryTime === 'number' ? callRecord.queueEntryTime : nowSec);
+                                const silenceSec = lastAiResponseSec ? (nowSec - lastAiResponseSec) : (nowSec - baseStartSec);
+                                
+                                if (!transcriptionIsActive && callRecord.pipelineStatus === 'starting') {
                                     const startedAt = typeof callRecord.queueEntryTime === 'number' ? callRecord.queueEntryTime : nowSec;
                                     const waitingSec = nowSec - startedAt;
                                     const alreadyPrompted = Boolean(callRecord.aiFallbackPromptedAt);
 
-                                    if (waitingSec >= 12 && !alreadyPrompted) {
-                                        console.warn('[ACTION_SUCCESSFUL] Media pipeline still not active; switching to DTMF fallback', {
+                                    // Increase timeout to 15 seconds to give transcription time to start
+                                    // If still inactive, fall back to RecordAudio (preferred) or DTMF.
+                                    if (waitingSec >= 15 && !alreadyPrompted) {
+                                        const fallbackMode = recordAudioFallbackAvailable ? 'record-audio' : 'dtmf';
+                                        console.warn('[ACTION_SUCCESSFUL] Transcription not active after timeout; switching to fallback', {
                                             callId,
                                             waitingSec,
                                             pipelineStatus: callRecord.pipelineStatus,
+                                            transcriptionStatus: callRecord.transcriptionStatus,
+                                            fallbackMode,
                                         });
 
                                         // Mark fallback in DynamoDB (best effort)
                                         try {
+                                            const pipelineStatus = recordAudioFallbackAvailable ? 'record-audio-fallback' : 'dtmf-fallback';
                                             await ddb.send(new UpdateCommand({
                                                 TableName: CALL_QUEUE_TABLE_NAME,
                                                 Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
-                                                UpdateExpression: 'SET useDtmfFallback = :t, transcriptionEnabled = :f, pipelineStatus = :s, aiFallbackPromptedAt = :now',
+                                                UpdateExpression: 'SET useRecordAudioFallback = :raf, useDtmfFallback = :dtmf, transcriptionEnabled = :t, pipelineStatus = :s, aiFallbackPromptedAt = :now',
                                                 ExpressionAttributeValues: {
-                                                    ':t': true,
-                                                    ':f': false,
-                                                    ':s': 'fallback',
+                                                    ':raf': recordAudioFallbackAvailable,
+                                                    ':dtmf': !recordAudioFallbackAvailable,
+                                                    ':t': recordAudioFallbackAvailable,
+                                                    ':s': pipelineStatus,
                                                     ':now': new Date().toISOString(),
                                                 }
                                             }));
                                         } catch (fallbackErr: any) {
-                                            console.warn('[ACTION_SUCCESSFUL] Failed to persist DTMF fallback flag:', fallbackErr?.message || fallbackErr);
+                                            console.warn('[ACTION_SUCCESSFUL] Failed to persist fallback flag:', fallbackErr?.message || fallbackErr);
+                                        }
+
+                                        if (recordAudioFallbackAvailable) {
+                                            return buildActions([
+                                                buildRecordAudioAction(callId, callRecord.clinicId, {
+                                                    durationSeconds: 20,
+                                                    silenceDurationSeconds: 2,
+                                                    silenceThreshold: 120,
+                                                    pstnLegCallId: callRecord.pstnCallId, // Target the caller's leg
+                                                })
+                                            ]);
                                         }
 
                                         return buildActions([
                                             buildSpeakAndGetDigitsAction('I am having trouble hearing you. Please press any number key (0 to 9) to continue.', 1, 30)
                                         ]);
                                     }
+                                }
+
+                                // NEW: If transcription is "active" but no AI responses have arrived for too long,
+                                // switch to RecordAudio fallback. Meeting transcription does NOT deliver to EventBridge,
+                                // so this prevents endless silence for PSTN-only calls.
+                                if (transcriptionIsActive && recordAudioFallbackAvailable && silenceSec >= 15 && !callRecord.useRecordAudioFallback) {
+                                    const alreadyPrompted = Boolean(callRecord.aiFallbackPromptedAt);
+                                    if (!alreadyPrompted) {
+                                        console.warn('[ACTION_SUCCESSFUL] No AI responses after transcription start; switching to RecordAudio fallback', {
+                                            callId,
+                                            silenceSec,
+                                            transcriptionStatus: callRecord.transcriptionStatus,
+                                            pipelineStatus: callRecord.pipelineStatus,
+                                        });
+
+                                        try {
+                                            await ddb.send(new UpdateCommand({
+                                                TableName: CALL_QUEUE_TABLE_NAME,
+                                                Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
+                                                UpdateExpression: 'SET useRecordAudioFallback = :raf, transcriptionEnabled = :t, pipelineStatus = :s, aiFallbackPromptedAt = :now',
+                                                ExpressionAttributeValues: {
+                                                    ':raf': true,
+                                                    ':t': true,
+                                                    ':s': 'record-audio-fallback',
+                                                    ':now': new Date().toISOString(),
+                                                }
+                                            }));
+                                        } catch (fallbackErr: any) {
+                                            console.warn('[ACTION_SUCCESSFUL] Failed to persist fallback flag:', fallbackErr?.message || fallbackErr);
+                                        }
+
+                                        return buildActions([
+                                            buildRecordAudioAction(callId, callRecord.clinicId, {
+                                                durationSeconds: 20,
+                                                silenceDurationSeconds: 2,
+                                                silenceThreshold: 120,
+                                                pstnLegCallId: callRecord.pstnCallId, // Target the caller's leg
+                                            })
+                                        ]);
+                                    }
+                                }
+
+                                // If using RecordAudio fallback, capture caller speech
+                                if (callRecord.useRecordAudioFallback && AI_RECORDINGS_BUCKET) {
+                                    return buildActions([
+                                        buildRecordAudioAction(callId, callRecord.clinicId, {
+                                            durationSeconds: 20,
+                                            silenceDurationSeconds: 2,
+                                            silenceThreshold: 120,
+                                            pstnLegCallId: callRecord.pstnCallId, // Target the caller's leg
+                                        })
+                                    ]);
                                 }
 
                                 // If using DTMF fallback, prompt for input

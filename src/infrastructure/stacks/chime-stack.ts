@@ -239,6 +239,7 @@ export class ChimeStack extends Stack {
   public readonly agentPerformanceTable: dynamodb.Table;
   public readonly recordingMetadataTable?: dynamodb.Table;
   public readonly recordingsBucket?: s3.IBucket;
+  public readonly holdMusicBucket?: s3.IBucket;
   public readonly thinkingAudioUrl: string;
 
   constructor(scope: Construct, id: string, props: ChimeStackProps) {
@@ -576,6 +577,10 @@ export class ChimeStack extends Stack {
             )
           : '{}',
         ENABLE_AI_PHONE_NUMBERS: props.enableAiPhoneNumbers ? 'true' : 'false',
+        // Real-time meeting transcription for natural language AI conversation
+        ENABLE_MEETING_TRANSCRIPTION: 'true',
+        TRANSCRIPTION_LANGUAGE: 'en-US',
+        MEDICAL_VOCABULARY_NAME: props.medicalVocabularyName || '',
       },
     });
 
@@ -667,10 +672,33 @@ export class ChimeStack extends Stack {
         'chime-sdk-meetings:CreateMeeting',
         'chime-sdk-meetings:CreateAttendee',
         'chime-sdk-meetings:DeleteMeeting',
-        // Media Insights Pipeline for real-time transcription
+        // CRITICAL: Real-time meeting transcription for natural language AI
+        // Required for StartMeetingTranscription API called after JoinChimeMeeting
+        'chime:StartMeetingTranscription',
+        'chime:StopMeetingTranscription',
+        'chime-sdk-meetings:StartMeetingTranscription',
+        'chime-sdk-meetings:StopMeetingTranscription',
+        // Media Insights Pipeline for real-time transcription (fallback)
         'chime:CreateMediaInsightsPipeline',
         'chimesdkmediapipelines:CreateMediaInsightsPipeline',
       ],
+      resources: ['*'],
+    }));
+    
+    // Grant Transcribe permissions for real-time transcription
+    smaHandler.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'transcribe:StartStreamTranscription',
+        'transcribe:StartStreamTranscriptionWebSocket',
+      ],
+      resources: ['*'],
+    }));
+
+    // Allow SMA handler to synthesize TTS for PlayAudio fallback
+    smaHandler.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['polly:SynthesizeSpeech'],
       resources: ['*'],
     }));
     
@@ -708,8 +736,11 @@ export class ChimeStack extends Stack {
       ],
     });
 
-    // Grant read access to the SMA handler
-    holdMusicBucket.grantRead(smaHandler);
+    // Assign to class property for access from other stacks
+    this.holdMusicBucket = holdMusicBucket;
+
+    // Grant read/write access to the SMA handler (read for PlayAudio, write for streaming TTS)
+    holdMusicBucket.grantReadWrite(smaHandler);
 
     // Allow the Amazon Chime Voice Connector service to stream audio prompts
     // directly from the bucket when executing PlayAudio actions.
@@ -3031,6 +3062,25 @@ export class ChimeStack extends Stack {
         ]
       }));
 
+      // Grant read access to ClinicConfig and ClinicSecrets for patient data enrichment
+      // This allows the analytics processor to fetch OpenDental credentials and clinic configuration
+      // to enrich call analytics with patient information (name, patient number, etc.)
+      callQueueStreamProcessor.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/TodaysDentalInsights-ClinicConfig`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/TodaysDentalInsights-ClinicSecrets`
+        ]
+      }));
+
+      // Grant KMS decrypt permissions for encrypted tables
+      // ClinicConfig and ClinicSecrets tables are encrypted with KMS for security
+      // The Lambda needs decrypt permissions to read the encrypted data
+      callQueueStreamProcessor.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['kms:Decrypt'],
+        resources: [`arn:aws:kms:${this.region}:${this.account}:key/96008830-3929-4799-bd86-86fe635f4d85`]
+      }));
+
       // Add DynamoDB Stream event source
       callQueueStreamProcessor.addEventSource(
         new lambdaEventSources.DynamoEventSource(this.callQueueTable, {
@@ -3208,6 +3258,8 @@ export class ChimeStack extends Stack {
             VOICE_AI_LAMBDA_ARN: resolvedVoiceAiLambdaArn?.toString() || '',
             TRANSCRIPTION_OUTPUT_BUCKET: recordingsBucket.bucketName,
             AI_RECORDINGS_BUCKET: recordingsBucket.bucketName,
+            HOLD_MUSIC_BUCKET: holdMusicBucket.bucketName,
+            VOICE_AI_TIMEOUT_MS: '8000', // Faster feedback (8 seconds)
             CHIME_MEDIA_REGION: chimeMediaRegion,
             SMA_ID_MAP_PARAMETER: smaIdMapParameter.parameterName,
           },
@@ -3221,6 +3273,9 @@ export class ChimeStack extends Stack {
         recordingsBucket.grantRead(transcribeAudioSegmentFn);
         recordingsBucket.grantPut(transcribeAudioSegmentFn);
 
+        // Grant S3 read/write for TTS audio playback (stored in hold music bucket)
+        holdMusicBucket.grantReadWrite(transcribeAudioSegmentFn);
+
         // Grant DynamoDB access
         this.callQueueTable.grantReadWriteData(transcribeAudioSegmentFn);
 
@@ -3232,6 +3287,13 @@ export class ChimeStack extends Stack {
             'transcribe:GetTranscriptionJob',
             'transcribe:StartStreamTranscription', // For Transcribe Streaming API
           ],
+          resources: ['*'],
+        }));
+
+        // Allow Polly TTS for PlayAudio fallback
+        transcribeAudioSegmentFn.addToRolePolicy(new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['polly:SynthesizeSpeech'],
           resources: ['*'],
         }));
 
@@ -3495,6 +3557,8 @@ export class ChimeStack extends Stack {
         }
         smaHandler.addEnvironment('ENABLE_REAL_TIME_TRANSCRIPTION', 'true');
         smaHandler.addEnvironment('ENABLE_KVS_STREAMING', 'true'); // Required for meeting-based real-time transcription
+        // Allow RecordAudio fallback if real-time transcripts are not flowing
+        smaHandler.addEnvironment('ENABLE_RECORD_AUDIO_FALLBACK', 'true');
         smaHandler.addEnvironment('KVS_STREAM_PREFIX', `${this.stackName.toLowerCase()}-call-`);
         smaHandler.addEnvironment('AWS_ACCOUNT_ID', this.account);
         mediaPipelineConfigParam.grantRead(smaHandler);
