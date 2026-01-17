@@ -97,9 +97,10 @@ async function resolveKinesisVideoStreamArn(streamName: string): Promise<string 
         return cached.arn;
     }
 
-    // Reduced defaults for faster startup: 8 attempts, 200ms initial delay
-    const maxAttempts = parseInt(process.env.KVS_DESCRIBE_RETRY_ATTEMPTS || '8', 10);
-    const baseDelayMs = parseInt(process.env.KVS_DESCRIBE_RETRY_DELAY_MS || '200', 10);
+    // Increased defaults for SipMediaApplicationDialIn calls joining meetings:
+    // Voice Connector takes longer to create KVS streams than regular SMA calls
+    const maxAttempts = parseInt(process.env.KVS_DESCRIBE_RETRY_ATTEMPTS || '12', 10); // Increased from 8
+    const baseDelayMs = parseInt(process.env.KVS_DESCRIBE_RETRY_DELAY_MS || '500', 10); // Increased from 200
 
     const startTime = Date.now();
 
@@ -260,28 +261,50 @@ export async function startMediaPipeline(params: StartMediaPipelineParams): Prom
         // Get AWS account info for KVS ARN construction
         const kvsPrefix = process.env.KVS_STREAM_PREFIX || 'call-';
         
-        // Stream names are deterministic, but the *ARN* contains a required /creationTime suffix.
-        // We must DescribeStream to get the full ARN.
+        // IMPORTANT: For SipMediaApplicationDialIn numbers joining Chime meetings via JoinChimeMeeting,
+        // the KVS stream is created by Voice Connector streaming, NOT by the meeting itself.
+        // The stream name pattern depends on how Voice Connector streaming is configured.
+        // 
+        // Possible stream name patterns (in order of likelihood):
+        // 1. {prefix}{meetingId} - Standard meeting-based pattern
+        // 2. {prefix}{callId} - Call-based pattern
+        // 3. ChimeVoiceConnector-{voiceConnectorId}-{timestamp} - Voice Connector pattern
+        // 4. {stackName}-{meetingId} - Stack-prefixed pattern
+        // 
+        // We try multiple patterns to maximize chance of finding the stream.
         const candidateStreamNames = Array.from(new Set([
             `${kvsPrefix}${meetingId}`,
             `${kvsPrefix}${callId}`,
+            // Also try without the full prefix (Voice Connector might use shorter names)
+            `call-${meetingId}`,
+            `chime-${meetingId}`,
+            // Try the meeting ID alone (some configurations use this)
+            meetingId,
         ]));
 
         let kvsStreamName: string | undefined;
         let kvsStreamArn: string | null = null;
 
+        // Try each candidate stream name
         for (const name of candidateStreamNames) {
             const arn = await resolveKinesisVideoStreamArn(name);
             if (arn) {
                 kvsStreamName = name;
                 kvsStreamArn = arn;
+                console.log('[MediaPipeline] Found KVS stream:', { 
+                    streamName: name, 
+                    triedPatterns: candidateStreamNames.length 
+                });
                 break;
             }
         }
 
         if (!kvsStreamArn || !kvsStreamName) {
-            console.warn('[MediaPipeline] KVS stream ARN not available (DescribeStream failed)', {
+            console.warn('[MediaPipeline] KVS stream ARN not available after trying all patterns', {
                 candidates: candidateStreamNames,
+                meetingId,
+                callId,
+                note: 'Voice Connector streaming may not be enabled or stream not created yet'
             });
             return null;
         }

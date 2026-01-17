@@ -11,7 +11,7 @@
  * Chime Voice Connector (which requires an SBC for direct inbound calls).
  */
 
-import { Duration, Stack, StackProps, CfnOutput, Tags, CustomResource } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, Tags, CustomResource, RemovalPolicy } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
@@ -19,6 +19,8 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as lex from 'aws-cdk-lib/aws-lex';
 import * as connect from 'aws-cdk-lib/aws-connect';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as path from 'path';
 import * as customResources from 'aws-cdk-lib/custom-resources';
 
@@ -675,6 +677,74 @@ export class ConnectLexAiStack extends Stack {
     lexHookIntegration.node.addDependency(finalizerIntegration);
 
     // ========================================
+    // 5b. Keyboard Sound Prompt for Thinking Audio
+    // ========================================
+    // Create S3 bucket for Connect prompts (audio files)
+    // Note: Connect requires 8kHz 8-bit mono μ-law WAV, but will also accept PCM WAV
+    const connectPromptsBucket = new s3.Bucket(this, 'ConnectPromptsBucket', {
+      bucketName: `${this.stackName.toLowerCase()}-connect-prompts-${this.account}`,
+      removalPolicy: RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+    });
+
+    // Upload the keyboard sound WAV file to S3
+    new s3deploy.BucketDeployment(this, 'DeployKeyboardSound', {
+      sources: [
+        s3deploy.Source.asset(path.join(__dirname, '..', '..', '..', 'assets', 'audio'), {
+          exclude: ['*.mp3'], // Only include WAV files (Connect requires WAV)
+        }),
+      ],
+      destinationBucket: connectPromptsBucket,
+      prune: false,
+    });
+
+    // Create Connect Prompt resource from the S3 audio file
+    // This allows us to use the keyboard sound in Loop Prompts during AI processing
+    const keyboardSoundPrompt = new customResources.AwsCustomResource(this, 'KeyboardSoundPrompt', {
+      onCreate: {
+        service: 'Connect',
+        action: 'createPrompt',
+        parameters: {
+          InstanceId: props.connectInstanceId,
+          Name: `${this.stackName}-KeyboardTyping`,
+          Description: 'Keyboard typing sound for AI thinking indicator',
+          S3Uri: `s3://${connectPromptsBucket.bucketName}/Computer-keyboard sound.wav`,
+        },
+        physicalResourceId: customResources.PhysicalResourceId.fromResponse('PromptId'),
+      },
+      onDelete: {
+        service: 'Connect',
+        action: 'deletePrompt',
+        parameters: {
+          InstanceId: props.connectInstanceId,
+          PromptId: new customResources.PhysicalResourceIdReference(),
+        },
+        ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
+      },
+      policy: customResources.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'connect:CreatePrompt',
+            'connect:DeletePrompt',
+            'connect:DescribePrompt',
+          ],
+          resources: ['*'],
+        }),
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['s3:GetObject', 's3:GetBucketLocation'],
+          resources: [
+            connectPromptsBucket.bucketArn,
+            `${connectPromptsBucket.bucketArn}/*`,
+          ],
+        }),
+      ]),
+    });
+
+    // ========================================
     // 6. Contact Flows (Dynamic Creation)
     // ========================================
 
@@ -729,60 +799,60 @@ export class ConnectLexAiStack extends Stack {
     });
     disconnectFlow.node.addDependency(finalizerIntegration);
 
-    // Inbound Contact Flow - Uses Lex V2 for AI conversation
-    // Flow: Connect to Lex -> (Lex handles the dialog) -> Disconnect when Lex returns
-    // NOTE: Disconnect flow hook must be configured manually in Connect console for now
-    // (adding UpdateContactEventHooks with a Fn::GetAtt reference causes circular dependency issues)
-    const inboundFlowContent = {
-      Version: '2019-10-30',
-      StartAction: 'connect-lex-action',
-      Metadata: {
-        entryPointPosition: { x: 40, y: 40 },
-        ActionMetadata: {
-          'connect-lex-action': { position: { x: 160, y: 40 } },
-          'disconnect-action': { position: { x: 400, y: 40 } },
-        },
-      },
-      Actions: [
-        {
-          Identifier: 'connect-lex-action',
-          // IMPORTANT: For Lex in Amazon Connect flow JSON, use ConnectParticipantWithLexBot
-          // (not GetParticipantInput + LexV2Bot).
-          Type: 'ConnectParticipantWithLexBot',
-          Parameters: {
-            Text: 'Hello! Thank you for calling. How can I help you today?',
-            LexV2Bot: {
-              AliasArn: lexBotAliasArn,
-            },
-          },
-          Transitions: {
-            NextAction: 'disconnect-action',
-            Errors: [
-              { NextAction: 'disconnect-action', ErrorType: 'InputTimeLimitExceeded' },
-              { NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' },
-              { NextAction: 'disconnect-action', ErrorType: 'NoMatchingCondition' },
-            ],
-            Conditions: [],
-          },
-        },
-        {
-          Identifier: 'disconnect-action',
-          Type: 'DisconnectParticipant',
-          Parameters: {},
-          Transitions: {},
-        },
-      ],
-    };
-
-    const inboundFlow = new connect.CfnContactFlow(this, 'InboundAiFlow', {
-      instanceArn: props.connectInstanceArn,
-      name: `${this.stackName}-InboundAiFlow`,
-      type: 'CONTACT_FLOW',
-      content: JSON.stringify(inboundFlowContent),
-      description: 'AI voice assistant using Lex and Bedrock',
+    // Inbound Contact Flow - Custom Resource Handler
+    // ========================================
+    // Use a Lambda-backed custom resource to create the contact flow with dynamic prompt ARN
+    // This is necessary because the prompt ARN isn't known until deployment time,
+    // and CloudFormation tokens don't resolve properly in contact flow JSON.
+    const createContactFlowFn = new lambdaNode.NodejsFunction(this, 'CreateContactFlowFn', {
+      functionName: `${this.stackName}-CreateContactFlow`,
+      entry: path.join(__dirname, '..', '..', 'services', 'connect', 'create-contact-flow-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      memorySize: 256,
+      logRetention: logs.RetentionDays.ONE_WEEK,
     });
-    inboundFlow.addDependency(disconnectFlow);
+    applyTags(createContactFlowFn, { Function: 'create-contact-flow' });
+
+    createContactFlowFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'connect:CreateContactFlow',
+        'connect:UpdateContactFlowContent',
+        'connect:DescribeContactFlow',
+        'connect:ListContactFlows',
+        'connect:DeleteContactFlow',
+      ],
+      resources: ['*'],
+    }));
+
+    // Use Provider framework for cleaner custom resource handling
+    const createContactFlowProvider = new customResources.Provider(this, 'CreateContactFlowProvider', {
+      onEventHandler: createContactFlowFn,
+      logRetention: logs.RetentionDays.ONE_WEEK,
+    });
+
+    // Create the inbound flow with the custom resource
+    // NOTE: Using 'InboundAiFlowV2' as logical ID to avoid conflict with old CFN-based contact flow
+    const inboundFlow = new CustomResource(this, 'InboundAiFlowV2', {
+      serviceToken: createContactFlowProvider.serviceToken,
+      properties: {
+        InstanceId: props.connectInstanceId,
+        FlowName: `${this.stackName}-InboundAiFlowV2`,
+        FlowType: 'CONTACT_FLOW',
+        Description: 'AI voice assistant using Lex and Bedrock with keyboard sound thinking indicator',
+        LexBotAliasArn: lexBotAliasArn,
+        LambdaFunctionArn: this.lexBedrockHookFn.functionArn,
+        // Pass the prompt ID from the custom resource (PlayPrompt expects ID, not ARN)
+        KeyboardPromptId: keyboardSoundPrompt.getResponseField('PromptId'),
+        // Force update when dependencies change
+        UpdateTrigger: Date.now().toString(),
+      },
+    });
+    inboundFlow.node.addDependency(disconnectFlow);
     inboundFlow.node.addDependency(lexIntegration);
+    inboundFlow.node.addDependency(keyboardSoundPrompt);
     
     // Disconnect flow is set automatically via UpdateContactEventHooks in the inbound flow.
 
@@ -822,7 +892,8 @@ export class ConnectLexAiStack extends Stack {
       environment: {
         CONNECT_INSTANCE_ARN: props.connectInstanceArn,
         PHONE_NUMBER: props.connectAiPhoneNumber,
-        CONTACT_FLOW_ARN: inboundFlow.attrContactFlowArn,
+        // Get the contact flow ARN from the custom resource
+        CONTACT_FLOW_ARN: inboundFlow.getAttString('ContactFlowArn'),
       },
       logRetention: logs.RetentionDays.ONE_WEEK,
     });
@@ -850,7 +921,7 @@ export class ConnectLexAiStack extends Stack {
       properties: {
         InstanceArn: props.connectInstanceArn,
         PhoneNumber: props.connectAiPhoneNumber,
-        ContactFlowArn: inboundFlow.attrContactFlowArn,
+        ContactFlowArn: inboundFlow.getAttString('ContactFlowArn'),
         // Force update when flow changes
         FlowVersion: Date.now().toString(),
       },
@@ -858,7 +929,7 @@ export class ConnectLexAiStack extends Stack {
     phoneNumberAssociation.node.addDependency(inboundFlow);
 
     // Store flow ARNs for reference
-    this.inboundFlowArn = inboundFlow.attrContactFlowArn;
+    this.inboundFlowArn = inboundFlow.getAttString('ContactFlowArn');
     this.disconnectFlowArn = disconnectFlow.attrContactFlowArn;
 
     // ========================================
@@ -889,7 +960,7 @@ export class ConnectLexAiStack extends Stack {
     });
 
     new CfnOutput(this, 'InboundFlowArn', {
-      value: inboundFlow.attrContactFlowArn,
+      value: inboundFlow.getAttString('ContactFlowArn'),
       description: 'Inbound AI Contact Flow ARN',
       exportName: `${this.stackName}-InboundFlowArn`,
     });
@@ -906,13 +977,26 @@ export class ConnectLexAiStack extends Stack {
       exportName: `${this.stackName}-AssociatedPhoneNumber`,
     });
 
+    new CfnOutput(this, 'KeyboardSoundPromptId', {
+      value: keyboardSoundPrompt.getResponseField('PromptId'),
+      description: 'Connect Prompt ID for keyboard typing sound (thinking indicator)',
+      exportName: `${this.stackName}-KeyboardSoundPromptId`,
+    });
+
+    new CfnOutput(this, 'ConnectPromptsBucketName', {
+      value: connectPromptsBucket.bucketName,
+      description: 'S3 bucket containing Connect prompts (audio files)',
+      exportName: `${this.stackName}-ConnectPromptsBucketName`,
+    });
+
     new CfnOutput(this, 'DeploymentInfo', {
       value: `
 DEPLOYMENT COMPLETE:
-- Inbound AI Flow: ${this.stackName}-InboundAiFlow
+- Inbound AI Flow: ${this.stackName}-InboundAiFlowV2
 - Disconnect Flow: ${this.stackName}-DisconnectFlow  
 - Phone Number: ${props.connectAiPhoneNumber} (auto-associated)
 - Lex Bot: ${lexBot.name} (alias: prod)
+- Keyboard Sound: Plays during AI thinking
 
 Then call ${props.connectAiPhoneNumber} to test the AI assistant!
       `.trim(),

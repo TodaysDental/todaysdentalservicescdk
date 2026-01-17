@@ -612,6 +612,15 @@ const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   // SMA ID Map SSM Parameter name (value stored in SSM due to CloudFormation 1024 char limit)
   smaIdMapParameterName: `/${CHIME_STACK_NAME}/SmaIdMap`,
   chimeStackName: CHIME_STACK_NAME,
+  // Call queue and agent tables for meeting join handler
+  callQueueTableName: chimeStack.callQueueTable.tableName,
+  agentPresenceTableName: chimeStack.agentPresenceTable.tableName,
+  agentPerformanceTableName: chimeStack.agentPerformanceTable.tableName,
+  // Media Insights Pipeline for real-time transcription in meetings
+  mediaInsightsPipelineParameter: `/${CHIME_STACK_NAME}/MediaInsightsPipelineConfigArn`,
+  // Hold music bucket for streaming TTS audio
+  holdMusicBucketName: chimeStack.holdMusicBucket?.bucketName,
+  holdMusicBucketArn: chimeStack.holdMusicBucket?.bucketArn,
 
   // ========================================
   // SECRETS STACK INTEGRATION (from SecretsStack)

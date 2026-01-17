@@ -338,32 +338,36 @@ export async function startTranscription(
     settings.VocabularyName = options.vocabularyName;
   }
 
-  try {
-    const command: any = {
-      TranscriptionJobName: jobName,
-      MediaFormat: 'wav',
-      Media: {
-        MediaFileUri: `s3://${metadata.s3Bucket}/${metadata.s3Key}`
-      },
-      OutputBucketName: outputBucket,
-      OutputKey: `transcriptions/${metadata.callId}/${jobName}/`,
-      Settings: settings,
-      // Add tags for tracking
-      Tags: [
-        { Key: 'callId', Value: metadata.callId },
-        { Key: 'recordingId', Value: metadata.recordingId },
-        { Key: 'clinicId', Value: metadata.clinicId },
-        { Key: 'languageCode', Value: languageCode }
-      ]
-    };
+  const baseCommand: any = {
+    TranscriptionJobName: jobName,
+    MediaFormat: 'wav',
+    Media: {
+      MediaFileUri: `s3://${metadata.s3Bucket}/${metadata.s3Key}`
+    },
+    OutputBucketName: outputBucket,
+    OutputKey: `transcriptions/${metadata.callId}/${jobName}/`,
+    // Add tags for tracking
+    Tags: [
+      { Key: 'callId', Value: metadata.callId },
+      { Key: 'recordingId', Value: metadata.recordingId },
+      { Key: 'clinicId', Value: metadata.clinicId },
+      { Key: 'languageCode', Value: languageCode }
+    ]
+  };
 
-    // Either identify language automatically or use specified language
-    if (identifyLanguage) {
-      command.IdentifyLanguage = true;
-      command.LanguageOptions = languageOptions;
-    } else {
-      command.LanguageCode = languageCode;
-    }
+  // Either identify language automatically or use specified language
+  if (identifyLanguage) {
+    baseCommand.IdentifyLanguage = true;
+    baseCommand.LanguageOptions = languageOptions;
+  } else {
+    baseCommand.LanguageCode = languageCode;
+  }
+
+  const startJob = async (settingsOverride: any): Promise<void> => {
+    const command = {
+      ...baseCommand,
+      Settings: settingsOverride,
+    };
 
     await transcribe.send(new StartTranscriptionJobCommand(command));
 
@@ -392,8 +396,34 @@ export async function startTranscription(
     console.log('[RecordingManager] Recording ID:', metadata.recordingId);
     console.log('[RecordingManager] Call ID:', metadata.callId);
     console.log('[RecordingManager] Saved transcriptionJobName to DynamoDB for EventBridge lookup');
+  };
 
+  try {
+    await startJob({ ...settings });
   } catch (err: any) {
+    const message = err?.message || '';
+    const isVocabularyNotReady = err?.name === 'BadRequestException' &&
+      settings?.VocabularyName &&
+      /vocabulary/i.test(message) &&
+      /ready/i.test(message);
+
+    if (isVocabularyNotReady) {
+      console.warn('[RecordingManager] Vocabulary not READY - retrying without custom vocabulary', {
+        vocabularyName: settings.VocabularyName,
+        jobName,
+      });
+
+      const fallbackSettings = { ...settings };
+      delete fallbackSettings.VocabularyName;
+
+      try {
+        await startJob(fallbackSettings);
+        return;
+      } catch (retryErr: any) {
+        console.error('[RecordingManager] Retry without vocabulary failed:', retryErr?.message || retryErr);
+        err = retryErr;
+      }
+    }
     // Handle specific transcription errors
     if (err.name === 'ConflictException') {
       console.warn('[RecordingManager] Transcription job already exists:', jobName);

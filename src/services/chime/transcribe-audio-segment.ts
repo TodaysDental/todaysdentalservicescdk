@@ -15,7 +15,8 @@
  */
 
 import { S3Event, S3EventRecord } from 'aws-lambda';
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { PollyClient, SynthesizeSpeechCommand, Engine, OutputFormat, VoiceId } from '@aws-sdk/client-polly';
 import { 
     TranscribeStreamingClient,
     StartStreamTranscriptionCommand,
@@ -24,13 +25,14 @@ import {
     MediaEncoding,
 } from '@aws-sdk/client-transcribe-streaming';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { getSmaIdForClinicSSM } from './utils/sma-map-ssm';
 import { Readable } from 'stream';
 
 const s3Client = new S3Client({});
+const polly = new PollyClient({ region: process.env.AWS_REGION || 'us-east-1' });
 const transcribeStreamingClient = new TranscribeStreamingClient({ 
     region: process.env.AWS_REGION || 'us-east-1' 
 });
@@ -43,10 +45,15 @@ const chimeClient = new ChimeSDKVoiceClient({
 // Environment variables
 const CALL_QUEUE_TABLE = process.env.CALL_QUEUE_TABLE_NAME!;
 const VOICE_AI_LAMBDA_ARN = process.env.VOICE_AI_LAMBDA_ARN;
+const HOLD_MUSIC_BUCKET = process.env.HOLD_MUSIC_BUCKET;
+const POLLY_VOICE_ID = (process.env.POLLY_VOICE_ID || 'Joanna') as VoiceId;
+const POLLY_ENGINE = (process.env.POLLY_ENGINE || 'standard') as Engine;
+const VOICE_AI_TIMEOUT_MS = Number.parseInt(process.env.VOICE_AI_TIMEOUT_MS || '12000', 10);
 
 // Audio configuration for SMA recordings
 // SMA records in 8kHz mono PCM (WAV format with 16-bit samples)
 const SAMPLE_RATE = 8000;
+const TTS_SAMPLE_RATE = 8000;
 const CHUNK_SIZE = 4096; // Bytes per chunk (256ms of audio at 8kHz 16-bit mono)
 
 /**
@@ -135,6 +142,91 @@ function extractPcmFromWav(wavBuffer: Buffer): Buffer {
 }
 
 /**
+ * Convert stream to buffer
+ */
+async function streamToBuffer(stream: any): Promise<Buffer> {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of stream) {
+        chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+}
+
+/**
+ * Convert raw PCM to WAV format
+ */
+function pcmToWav(
+    pcmData: Buffer,
+    sampleRate: number,
+    bitsPerSample: number,
+    numChannels: number
+): Buffer {
+    const dataSize = pcmData.length;
+    const headerSize = 44;
+    const totalSize = headerSize + dataSize;
+    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+    const blockAlign = numChannels * (bitsPerSample / 8);
+
+    const wavBuffer = Buffer.alloc(totalSize);
+
+    // RIFF header
+    wavBuffer.write('RIFF', 0);
+    wavBuffer.writeUInt32LE(totalSize - 8, 4);
+    wavBuffer.write('WAVE', 8);
+
+    // fmt sub-chunk
+    wavBuffer.write('fmt ', 12);
+    wavBuffer.writeUInt32LE(16, 16); // Sub-chunk size
+    wavBuffer.writeUInt16LE(1, 20); // Audio format (PCM)
+    wavBuffer.writeUInt16LE(numChannels, 22);
+    wavBuffer.writeUInt32LE(sampleRate, 24);
+    wavBuffer.writeUInt32LE(byteRate, 28);
+    wavBuffer.writeUInt16LE(blockAlign, 32);
+    wavBuffer.writeUInt16LE(bitsPerSample, 34);
+
+    // data sub-chunk
+    wavBuffer.write('data', 36);
+    wavBuffer.writeUInt32LE(dataSize, 40);
+    pcmData.copy(wavBuffer, 44);
+
+    return wavBuffer;
+}
+
+/**
+ * Synthesize speech to S3 and return the object key
+ */
+async function synthesizeSpeechToS3(text: string, callId: string): Promise<string> {
+    if (!HOLD_MUSIC_BUCKET) {
+        throw new Error('HOLD_MUSIC_BUCKET is not configured');
+    }
+
+    const audioKey = `tts/${callId}/${Date.now()}.wav`;
+    const pollyResponse = await polly.send(new SynthesizeSpeechCommand({
+        Engine: POLLY_ENGINE as Engine,
+        OutputFormat: 'pcm' as OutputFormat,
+        Text: text,
+        VoiceId: POLLY_VOICE_ID as VoiceId,
+        SampleRate: `${TTS_SAMPLE_RATE}`,
+    }));
+
+    if (!pollyResponse.AudioStream) {
+        throw new Error('No audio stream returned from Polly');
+    }
+
+    const audioData = await streamToBuffer(pollyResponse.AudioStream);
+    const wavData = pcmToWav(audioData, TTS_SAMPLE_RATE, 16, 1);
+
+    await s3Client.send(new PutObjectCommand({
+        Bucket: HOLD_MUSIC_BUCKET,
+        Key: audioKey,
+        Body: wavData,
+        ContentType: 'audio/wav',
+    }));
+
+    return audioKey;
+}
+
+/**
  * Create an async generator that yields audio chunks for Transcribe Streaming
  */
 async function* createAudioStream(pcmData: Buffer): AsyncGenerator<AudioStream> {
@@ -218,7 +310,7 @@ async function invokeVoiceAiHandler(params: {
     const startTime = Date.now();
     
     try {
-        const response = await lambdaClient.send(new InvokeCommand({
+        const invokePromise = lambdaClient.send(new InvokeCommand({
             FunctionName: VOICE_AI_LAMBDA_ARN,
             InvocationType: 'RequestResponse',
             Payload: Buffer.from(JSON.stringify({
@@ -230,6 +322,12 @@ async function invokeVoiceAiHandler(params: {
                 aiAgentId: params.aiAgentId,
             })),
         }));
+
+        const timeoutPromise = new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error('VoiceAiTimeout')), VOICE_AI_TIMEOUT_MS);
+        });
+
+        const response = await Promise.race([invokePromise, timeoutPromise]);
         
         if (response.Payload) {
             const result = JSON.parse(Buffer.from(response.Payload).toString());
@@ -238,7 +336,16 @@ async function invokeVoiceAiHandler(params: {
         }
         
         return [];
-    } catch (error) {
+    } catch (error: any) {
+        if (error?.message === 'VoiceAiTimeout') {
+            console.warn('[TranscribeStreaming] Voice AI timed out, returning fallback response', {
+                timeoutMs: VOICE_AI_TIMEOUT_MS,
+            });
+            return [
+                { action: 'SPEAK', text: "One moment please while I check that." },
+                { action: 'CONTINUE' }
+            ];
+        }
         console.error('[TranscribeStreaming] Error invoking Voice AI:', error);
         return [];
     }
@@ -260,6 +367,18 @@ async function sendResponseToCall(
         return;
     }
     
+    // Get the caller's CallId (pstnLegCallId) for targeting actions correctly
+    // In meeting context, we need to specify which participant to target for certain actions
+    // CRITICAL: Speak actions MUST NOT have CallId in meeting context - they get silently dropped!
+    // RecordAudio and other actions CAN have CallId to target the correct leg.
+    const callerCallId = callRecord?.pstnCallId || callRecord?.pstnLegCallId;
+    
+    console.log('[TranscribeStreaming] Building actions from Voice AI response', {
+        responseCount: responses.length,
+        actions: responses.map((r: any) => r.action),
+        callerCallId,
+    });
+    
     // Build SMA actions from Voice AI responses
     const actions: any[] = [];
     
@@ -267,23 +386,63 @@ async function sendResponseToCall(
         switch (response.action) {
             case 'SPEAK':
                 if (response.text) {
-                    actions.push({
-                        Type: 'Speak',
-                        Parameters: {
-                            Text: response.text,
-                            Engine: 'neural',
-                            LanguageCode: 'en-US',
-                            TextType: 'text',
-                            VoiceId: 'Joanna'
-                        }
+                    console.log('[TranscribeStreaming] Adding SPEAK action', {
+                        textLength: response.text.length,
+                        textPreview: response.text.substring(0, 50),
                     });
+
+                    // CRITICAL FIX: Speak actions are being silently skipped in meeting context.
+                    // Use Polly → S3 → PlayAudio instead. Fallback to Speak if TTS fails.
+                    let ttsAction: any | null = null;
+                    if (HOLD_MUSIC_BUCKET) {
+                        try {
+                            const ttsKeyCallId = callRecord?.callId || transactionId || 'unknown';
+                            const audioKey = await synthesizeSpeechToS3(response.text, ttsKeyCallId);
+                            ttsAction = {
+                                Type: 'PlayAudio',
+                                Parameters: {
+                                    AudioSource: {
+                                        Type: 'S3',
+                                        BucketName: HOLD_MUSIC_BUCKET,
+                                        Key: audioKey,
+                                    },
+                                    PlaybackTerminators: ['#', '*'],
+                                    Repeat: 1,
+                                    ...(callerCallId && { CallId: callerCallId }),
+                                }
+                            };
+                        } catch (err: any) {
+                            console.error('[TranscribeStreaming] TTS synthesis failed, falling back to Speak', {
+                                error: err?.message || err,
+                            });
+                        }
+                    }
+
+                    if (ttsAction) {
+                        actions.push(ttsAction);
+                    } else {
+                        // Fallback: Speak (may still be skipped in meeting context)
+                        actions.push({
+                            Type: 'Speak',
+                            Parameters: {
+                                Text: response.text,
+                                Engine: POLLY_ENGINE,
+                                LanguageCode: 'en-US',
+                                TextType: 'text',
+                                VoiceId: POLLY_VOICE_ID,
+                            }
+                        });
+                    }
                 }
                 break;
             
             case 'HANG_UP':
                 actions.push({
                     Type: 'Hangup',
-                    Parameters: { SipResponseCode: '0' }
+                    Parameters: { 
+                        SipResponseCode: '0',
+                        ...(callerCallId && { CallId: callerCallId })
+                    }
                 });
                 break;
             
@@ -302,7 +461,8 @@ async function sendResponseToCall(
                                 Type: 'S3',
                                 BucketName: AI_RECORDINGS_BUCKET,
                                 Prefix: `ai-recordings/${clinicId}/${callRecord.callId}/`
-                            }
+                            },
+                            ...(callerCallId && { CallId: callerCallId })
                         }
                     });
                 }
@@ -390,9 +550,66 @@ async function processRecord(record: S3EventRecord): Promise<void> {
         const transcript = await transcribeWithStreaming(pcmData);
         
         if (!transcript || transcript.length < 2) {
-            console.log('[TranscribeStreaming] Empty or too short transcript, continuing to listen');
+            // Track how many consecutive empty transcripts we've had
+            const emptyTranscriptCount = (callRecord.emptyTranscriptCount || 0) + 1;
+            console.log('[TranscribeStreaming] Empty or too short transcript', {
+                callId,
+                emptyTranscriptCount,
+                transcriptLength: transcript?.length || 0,
+            });
+            
+            // Update the empty transcript counter
+            try {
+                await ddb.send(new UpdateCommand({
+                    TableName: CALL_QUEUE_TABLE,
+                    Key: { clinicId, queuePosition: callRecord.queuePosition },
+                    UpdateExpression: 'SET emptyTranscriptCount = :count',
+                    ExpressionAttributeValues: { ':count': emptyTranscriptCount },
+                }));
+            } catch (err) {
+                console.warn('[TranscribeStreaming] Failed to update empty transcript count:', err);
+            }
+            
+            // After 3 consecutive empty transcripts, prompt the caller
+            // BUT: If we recently sent a timeout fallback ("One moment please"), don't nag about silence
+            // Give the AI 30 seconds to catch up before prompting about silence
+            const lastTimeoutFallback = callRecord.lastTimeoutFallbackTime || 0;
+            const timeSinceTimeout = Date.now() - lastTimeoutFallback;
+            const inTimeoutGracePeriod = lastTimeoutFallback > 0 && timeSinceTimeout < 30000; // 30 seconds
+            
+            if (emptyTranscriptCount >= 3 && emptyTranscriptCount % 3 === 0) {
+                if (inTimeoutGracePeriod) {
+                    console.log('[TranscribeStreaming] Skipping silence prompt - within timeout grace period', {
+                        callId,
+                        timeSinceTimeout,
+                        emptyTranscriptCount,
+                    });
+                    await sendResponseToCall(callRecord, [{ action: 'CONTINUE' }]);
+                    return;
+                }
+                
+                console.log('[TranscribeStreaming] Prompting caller after multiple silent recordings');
+                await sendResponseToCall(callRecord, [
+                    { action: 'SPEAK', text: "I'm sorry, I didn't hear anything. How may I help you today?" },
+                    { action: 'CONTINUE' }
+                ]);
+                return;
+            }
+            
             await sendResponseToCall(callRecord, [{ action: 'CONTINUE' }]);
             return;
+        }
+        
+        // Reset empty transcript counter since we got a valid transcript
+        try {
+            await ddb.send(new UpdateCommand({
+                TableName: CALL_QUEUE_TABLE,
+                Key: { clinicId, queuePosition: callRecord.queuePosition },
+                UpdateExpression: 'SET emptyTranscriptCount = :zero',
+                ExpressionAttributeValues: { ':zero': 0 },
+            }));
+        } catch (err) {
+            // Non-critical, don't fail the request
         }
         
         console.log('[TranscribeStreaming] Got transcript:', {
@@ -409,6 +626,26 @@ async function processRecord(record: S3EventRecord): Promise<void> {
             sessionId: callRecord.aiSessionId || '',
             aiAgentId: callRecord.aiAgentId || '',
         });
+        
+        // Check if this was a timeout fallback response
+        // If so, record the timestamp so we don't keep nagging the caller about silence
+        const isTimeoutFallback = aiResponses.length > 0 && 
+            aiResponses[0]?.action === 'SPEAK' && 
+            aiResponses[0]?.text?.includes('One moment please');
+        
+        if (isTimeoutFallback) {
+            console.log('[TranscribeStreaming] Voice AI timed out - setting fallback timestamp');
+            try {
+                await ddb.send(new UpdateCommand({
+                    TableName: CALL_QUEUE_TABLE,
+                    Key: { clinicId, queuePosition: callRecord.queuePosition },
+                    UpdateExpression: 'SET lastTimeoutFallbackTime = :time',
+                    ExpressionAttributeValues: { ':time': Date.now() },
+                }));
+            } catch (err) {
+                console.warn('[TranscribeStreaming] Failed to update timeout fallback time:', err);
+            }
+        }
         
         // Step 5: Send response back to call
         if (aiResponses.length > 0) {

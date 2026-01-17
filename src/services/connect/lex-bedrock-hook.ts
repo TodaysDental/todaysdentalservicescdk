@@ -646,12 +646,179 @@ async function invokeBedrock(params: {
 }
 
 // ========================================================================
+// CONNECT DIRECT LAMBDA EVENT TYPES
+// ========================================================================
+
+/**
+ * Amazon Connect InvokeLambdaFunction event format.
+ * This is different from Lex V2 fulfillment events.
+ */
+interface ConnectLambdaEvent {
+  Name?: string;
+  Details?: {
+    ContactData?: {
+      ContactId: string;
+      CustomerEndpoint?: { Address: string };
+      SystemEndpoint?: { Address: string };
+      Attributes?: Record<string, string>;
+    };
+    Parameters?: Record<string, string>;
+  };
+}
+
+/**
+ * Response format for Connect direct Lambda invocation.
+ * Connect reads these keys for playback in the contact flow.
+ */
+interface ConnectLambdaResponse {
+  aiResponse: string;
+  ssmlResponse?: string;
+  clinicId?: string;
+  turnCount?: string;
+}
+
+/**
+ * Detect if event is from Connect InvokeLambdaFunction (not Lex)
+ */
+function isConnectDirectEvent(event: any): event is ConnectLambdaEvent {
+  return event?.Details?.ContactData?.ContactId !== undefined;
+}
+
+// ========================================================================
 // MAIN HANDLER
 // ========================================================================
 
-export const handler = async (event: LexV2Event): Promise<LexV2Response> => {
+export const handler = async (event: LexV2Event | ConnectLambdaEvent): Promise<LexV2Response | ConnectLambdaResponse> => {
   console.log('[LexBedrockHook] Received event:', JSON.stringify(event, null, 2));
 
+  // Handle Connect direct Lambda invocation (from new contact flow with Loop Prompts)
+  if (isConnectDirectEvent(event)) {
+    return handleConnectDirectEvent(event);
+  }
+
+  // Handle Lex V2 fulfillment event (legacy flow)
+  return handleLexEvent(event as LexV2Event);
+};
+
+/**
+ * Handle direct Connect Lambda invocation (new flow with keyboard sounds)
+ */
+async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<ConnectLambdaResponse> {
+  const contactData = event.Details?.ContactData;
+  const params = event.Details?.Parameters || {};
+  
+  const contactId = contactData?.ContactId || '';
+  const inputTranscript = params['inputTranscript'] || '';
+  const callerNumber = contactData?.CustomerEndpoint?.Address || '';
+  const dialedNumber = contactData?.SystemEndpoint?.Address || '';
+  const contactAttributes = contactData?.Attributes || {};
+
+  // Determine clinic from dialed number
+  let clinicId = contactAttributes['clinicId'] || '';
+  if (!clinicId && dialedNumber) {
+    const normalizedDialed = dialedNumber.replace(/\D/g, '');
+    for (const [phone, clinic] of Object.entries(aiPhoneNumberMap)) {
+      if (phone.replace(/\D/g, '') === normalizedDialed) {
+        clinicId = clinic;
+        break;
+      }
+    }
+  }
+  if (!clinicId) {
+    clinicId = DEFAULT_CLINIC_ID;
+    console.warn('[LexBedrockHook] Connect direct: No clinicId found, using default:', clinicId);
+  }
+
+  // Get or create session
+  let session: ConnectLexSession;
+  try {
+    session = await getOrCreateSession(contactId, clinicId, callerNumber);
+  } catch (error) {
+    console.error('[LexBedrockHook] Connect direct: Session creation failed:', error);
+    return {
+      aiResponse: "I'm sorry, I'm having trouble setting up our conversation. Please try again.",
+    };
+  }
+
+  // Ensure analytics record exists
+  await ensureAnalyticsRecord({
+    callId: session.callId,
+    contactId,
+    clinicId: session.clinicId,
+    callerNumber: session.callerNumber,
+    aiAgentId: session.aiAgentId,
+    aiAgentName: session.aiAgentName,
+  });
+
+  // Get agent info
+  const agent = await getAgentForClinic(clinicId);
+  if (!agent) {
+    console.error('[LexBedrockHook] Connect direct: No agent found for clinic:', clinicId);
+    return {
+      aiResponse: "I'm sorry, the AI assistant is not available right now. Please call back during office hours.",
+    };
+  }
+
+  // Handle empty/timeout input from Connect
+  const trimmedInput = inputTranscript.trim();
+  const normalizedInput = trimmedInput.toLowerCase();
+  const isTimeoutInput = normalizedInput === 'timeout' ||
+    normalizedInput === 'noinput' ||
+    normalizedInput === 'no input' ||
+    normalizedInput === 'inputtimelimitexceeded';
+  if (!trimmedInput || isTimeoutInput) {
+    return {
+      aiResponse: "I'm sorry, I didn't catch that. Could you please repeat what you said?",
+    };
+  }
+
+  // Invoke Bedrock
+  const { response: aiResponse, toolsUsed } = await invokeBedrock({
+    agentId: agent.agentId,
+    aliasId: agent.aliasId,
+    sessionId: session.bedrockSessionId,
+    inputText: trimmedInput,
+    clinicId,
+    inputMode: 'Speech',
+    channel: 'voice',
+  });
+
+  // Update analytics
+  await updateAnalyticsTurn({
+    callId: session.callId,
+    timestamp: session.callStartMs,
+    callerUtterance: trimmedInput,
+    aiResponse,
+    toolsUsed,
+  });
+
+  // Add to transcript buffer
+  await addTranscriptTurn({
+    callId: session.callId,
+    callerUtterance: trimmedInput,
+    aiResponse,
+    callStartMs: session.callStartMs,
+    confidence: 0.9,
+  });
+
+  console.log('[LexBedrockHook] Connect direct: Returning response:', {
+    clinicId,
+    turnCount: session.turnCount,
+    responseLength: aiResponse.length,
+  });
+
+  return {
+    aiResponse,
+    ssmlResponse: `<speak>${escapeSSML(aiResponse)}</speak>`,
+    clinicId,
+    turnCount: String(session.turnCount),
+  };
+}
+
+/**
+ * Handle Lex V2 fulfillment event (legacy flow)
+ */
+async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
   const lexSessionId = event.sessionId; // This is the Connect ContactId
   const inputTranscript = event.inputTranscript || '';
   const sessionAttributes = event.sessionState?.sessionAttributes || {};
@@ -841,7 +1008,7 @@ export const handler = async (event: LexV2Event): Promise<LexV2Response> => {
     contentType: useThinkingSsml ? 'SSML' : 'PlainText',
   });
   return response;
-};
+}
 
 // ========================================================================
 // THINKING AUDIO - SSML with keyboard sounds during AI processing
