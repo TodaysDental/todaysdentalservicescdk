@@ -70,6 +70,10 @@ const SESSIONS_TABLE = process.env.SESSIONS_TABLE || 'AiAgentSessions';
 // potentially incorrect text to Bedrock.
 const TRANSCRIPTION_CONFIDENCE_THRESHOLD = Number(process.env.TRANSCRIPTION_CONFIDENCE_THRESHOLD || '0.6');
 
+// For Amazon Connect InvokeLambdaFunction, keep Bedrock time safely under the contact flow
+// InvocationTimeLimitSeconds (currently 8s) to avoid Connect timeouts.
+const CONNECT_BEDROCK_TIMEOUT_MS = Number(process.env.CONNECT_BEDROCK_TIMEOUT_MS || '7500');
+
 // AI phone numbers mapping: aiPhoneNumber -> clinicId
 const AI_PHONE_NUMBERS_JSON = process.env.AI_PHONE_NUMBERS_JSON || '{}';
 let aiPhoneNumberMap: Record<string, string> = {};
@@ -504,17 +508,20 @@ async function getOrCreateSession(
     }));
 
     if (existing.Item) {
-      // Update last activity
-      await docClient.send(new UpdateCommand({
+      // Update last activity and increment turn count.
+      // ReturnValues ensures the in-memory session reflects the incremented turnCount.
+      const updated = await docClient.send(new UpdateCommand({
         TableName: SESSIONS_TABLE,
         Key: { sessionId: sessionKey },
-        UpdateExpression: 'SET lastActivity = :now, turnCount = turnCount + :one',
+        UpdateExpression: 'SET lastActivity = :now, turnCount = if_not_exists(turnCount, :zero) + :one',
         ExpressionAttributeValues: {
           ':now': new Date().toISOString(),
+          ':zero': 0,
           ':one': 1,
         },
+        ReturnValues: 'ALL_NEW',
       }));
-      return existing.Item as ConnectLexSession;
+      return (updated.Attributes || existing.Item) as ConnectLexSession;
     }
   } catch (error) {
     console.warn('[LexBedrockHook] Error getting session:', error);
@@ -583,8 +590,9 @@ async function invokeBedrock(params: {
   clinicId: string;
   inputMode?: 'Text' | 'Speech' | 'DTMF';
   channel?: 'voice' | 'chat';
+  timeoutMs?: number;
 }): Promise<{ response: string; toolsUsed: string[] }> {
-  const { agentId, aliasId, sessionId, inputText, clinicId, inputMode, channel } = params;
+  const { agentId, aliasId, sessionId, inputText, clinicId, inputMode, channel, timeoutMs } = params;
 
   // For voice calls, prefix the input with voice-specific instructions
   // This ensures the agent asks questions one at a time
@@ -592,6 +600,10 @@ async function invokeBedrock(params: {
   const effectiveInputText = isVoiceCall 
     ? VOICE_INSTRUCTION_PREFIX + inputText
     : inputText;
+
+  const effectiveTimeoutMs = Number.isFinite(timeoutMs) ? Number(timeoutMs) : CONFIG.BEDROCK_TIMEOUT_MS;
+  const controller = new AbortController();
+  const bedrockTimeout = setTimeout(() => controller.abort(), effectiveTimeoutMs);
 
   try {
     const command = new InvokeAgentCommand({
@@ -609,7 +621,7 @@ async function invokeBedrock(params: {
       },
     });
 
-    const response = await bedrockAgentClient.send(command);
+    const response = await bedrockAgentClient.send(command, { abortSignal: controller.signal });
     
     let fullResponse = '';
     const toolsUsed: string[] = [];
@@ -634,11 +646,33 @@ async function invokeBedrock(params: {
       toolsUsed: [...new Set(toolsUsed)], // Dedupe
     };
   } catch (error) {
+    const isAbort =
+      controller.signal.aborted ||
+      (error as any)?.name === 'AbortError' ||
+      (error as any)?.code === 'ABORT_ERR';
+
+    if (isAbort) {
+      console.warn('[LexBedrockHook] Bedrock invocation timed out', {
+        clinicId,
+        timeoutMs: effectiveTimeoutMs,
+      });
+      return {
+        response: isVoiceCall
+          ? "I'm sorry — I'm having trouble right now. Could you please try again?"
+          : "I apologize, but I'm having trouble processing your request right now. Please try again.",
+        toolsUsed: [],
+      };
+    }
+
     console.error('[LexBedrockHook] Bedrock invocation error:', error);
     return {
-      response: "I apologize, but I'm having trouble processing your request right now. Please try again or call back during office hours.",
+      response: isVoiceCall
+        ? "I'm sorry — I'm having trouble right now. Could you please try again?"
+        : "I apologize, but I'm having trouble processing your request right now. Please try again or call back during office hours.",
       toolsUsed: [],
     };
+  } finally {
+    clearTimeout(bedrockTimeout);
   }
 }
 
@@ -706,6 +740,11 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
   
   const contactId = contactData?.ContactId || '';
   const inputTranscript = params['inputTranscript'] || '';
+  const confidenceRaw = params['confidence'];
+  const transcriptionConfidence = confidenceRaw !== undefined && confidenceRaw !== ''
+    ? Number(confidenceRaw)
+    : 0.9;
+  const safeConfidence = Number.isFinite(transcriptionConfidence) ? transcriptionConfidence : 0.9;
   const callerNumber = contactData?.CustomerEndpoint?.Address || '';
   const dialedNumber = contactData?.SystemEndpoint?.Address || '';
   const contactAttributes = contactData?.Attributes || {};
@@ -769,6 +808,18 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
     };
   }
 
+  // If Lex ASR is low-confidence, ask for a repeat instead of risking a wrong Bedrock response.
+  if (safeConfidence < TRANSCRIPTION_CONFIDENCE_THRESHOLD) {
+    console.warn('[LexBedrockHook] Connect direct: Low transcription confidence; prompting caller to repeat', {
+      transcriptionConfidence: safeConfidence,
+      threshold: TRANSCRIPTION_CONFIDENCE_THRESHOLD,
+      inputTranscript,
+    });
+    return {
+      aiResponse: "I'm sorry, I didn't catch that clearly. Could you please repeat what you said?",
+    };
+  }
+
   // Invoke Bedrock
   const { response: aiResponse, toolsUsed } = await invokeBedrock({
     agentId: agent.agentId,
@@ -778,6 +829,7 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
     clinicId,
     inputMode: 'Speech',
     channel: 'voice',
+    timeoutMs: CONNECT_BEDROCK_TIMEOUT_MS,
   });
 
   // Update analytics
@@ -795,7 +847,7 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
     callerUtterance: trimmedInput,
     aiResponse,
     callStartMs: session.callStartMs,
-    confidence: 0.9,
+    confidence: safeConfidence,
   });
 
   console.log('[LexBedrockHook] Connect direct: Returning response:', {

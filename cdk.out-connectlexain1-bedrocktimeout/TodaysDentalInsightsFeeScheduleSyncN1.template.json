@@ -1,0 +1,728 @@
+{
+ "Resources": {
+  "FeeSchedulesTableF4E9C5EA": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "pk",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "sk",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "clinicId",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "feeSchedNum",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "feeSchedule",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "procCode",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "GlobalSecondaryIndexes": [
+     {
+      "IndexName": "clinicId-index",
+      "KeySchema": [
+       {
+        "AttributeName": "clinicId",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "feeSchedNum",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "feeSchedule-index",
+      "KeySchema": [
+       {
+        "AttributeName": "feeSchedule",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "clinicId",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "procCode-index",
+      "KeySchema": [
+       {
+        "AttributeName": "procCode",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "pk",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "feeSchedNum-clinicId-index",
+      "KeySchema": [
+       {
+        "AttributeName": "feeSchedNum",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "clinicId",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     }
+    ],
+    "KeySchema": [
+     {
+      "AttributeName": "pk",
+      "KeyType": "HASH"
+     },
+     {
+      "AttributeName": "sk",
+      "KeyType": "RANGE"
+     }
+    ],
+    "PointInTimeRecoverySpecification": {
+     "PointInTimeRecoveryEnabled": true
+    },
+    "TableName": "TodaysDentalInsightsFeeScheduleSyncN1-FeeSchedules",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "FeeScheduleSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsFeeScheduleSyncN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "fee-schedules"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsFeeScheduleSyncN1/FeeSchedulesTable/Resource"
+   }
+  },
+  "FeeScheduleSyncFnServiceRole49370422": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "fee-schedule-sync"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "FeeScheduleSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsFeeScheduleSyncN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsFeeScheduleSyncN1/FeeScheduleSyncFn/ServiceRole/Resource"
+   }
+  },
+  "FeeScheduleSyncFnServiceRoleDefaultPolicy9F33B147": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "FeeSchedulesTableF4E9C5EA",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "FeeSchedulesTableF4E9C5EA",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+           }
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputFnGetAttSecretsEncryptionKey25C5552EArnA97EA41C"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "FeeScheduleSyncFnServiceRoleDefaultPolicy9F33B147",
+    "Roles": [
+     {
+      "Ref": "FeeScheduleSyncFnServiceRole49370422"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsFeeScheduleSyncN1/FeeScheduleSyncFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "FeeScheduleSyncFnB7735A22": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "93524a89bc851634b6c3205ad03b0132cfa5e9d02bdcdc4059f9f94c48079acb.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "FEE_SCHEDULES_TABLE": {
+       "Ref": "FeeSchedulesTableF4E9C5EA"
+      },
+      "CONSOLIDATED_SFTP_HOST": {
+       "Fn::Join": [
+        "",
+        [
+         {
+          "Fn::ImportValue": "TodaysDentalInsightsOpenDentalN1:ExportsOutputFnGetAttConsolidatedTransferServerServerIdBBBFF6B9"
+         },
+         ".server.transfer.us-east-1.amazonaws.com"
+        ]
+       ]
+      },
+      "NODE_OPTIONS": "--enable-source-maps",
+      "AWS_NODEJS_CONNECTION_REUSE_ENABLED": "1",
+      "GLOBAL_SECRETS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefGlobalSecretsTableAEB294B4E4546B3C"
+      },
+      "CLINIC_CONFIG_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 2048,
+    "Role": {
+     "Fn::GetAtt": [
+      "FeeScheduleSyncFnServiceRole49370422",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "fee-schedule-sync"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "FeeScheduleSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsFeeScheduleSyncN1"
+     }
+    ],
+    "Timeout": 840
+   },
+   "DependsOn": [
+    "FeeScheduleSyncFnServiceRoleDefaultPolicy9F33B147",
+    "FeeScheduleSyncFnServiceRole49370422"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsFeeScheduleSyncN1/FeeScheduleSyncFn/Resource",
+    "aws:asset:path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "FeeScheduleSyncFnEventInvokeConfigE22220BF": {
+   "Type": "AWS::Lambda::EventInvokeConfig",
+   "Properties": {
+    "FunctionName": {
+     "Ref": "FeeScheduleSyncFnB7735A22"
+    },
+    "MaximumRetryAttempts": 0,
+    "Qualifier": "$LATEST"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsFeeScheduleSyncN1/FeeScheduleSyncFn/EventInvokeConfig/Resource"
+   }
+  },
+  "FeeScheduleSyncScheduleRuleC3DB8ED6": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Description": "Runs fee schedule sync every 15 minutes to fetch latest data from OpenDental",
+    "ScheduleExpression": "rate(15 minutes)",
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "FeeScheduleSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsFeeScheduleSyncN1"
+     }
+    ],
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "FeeScheduleSyncFnB7735A22",
+        "Arn"
+       ]
+      },
+      "Id": "Target0"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsFeeScheduleSyncN1/FeeScheduleSyncScheduleRule/Resource"
+   }
+  },
+  "FeeScheduleSyncScheduleRuleAllowEventRuleTodaysDentalInsightsFeeScheduleSyncN1FeeScheduleSyncFnA18C6A358592D9DD": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "FeeScheduleSyncFnB7735A22",
+      "Arn"
+     ]
+    },
+    "Principal": "events.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "FeeScheduleSyncScheduleRuleC3DB8ED6",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsFeeScheduleSyncN1/FeeScheduleSyncScheduleRule/AllowEventRuleTodaysDentalInsightsFeeScheduleSyncN1FeeScheduleSyncFnA18C6A35"
+   }
+  },
+  "FeeScheduleSyncFnErrorAlarm52E9DB0F": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when fee-schedule-sync Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "FeeScheduleSyncFnB7735A22"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "FeeScheduleSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsFeeScheduleSyncN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsFeeScheduleSyncN1/FeeScheduleSyncFnErrorAlarm/Resource"
+   }
+  },
+  "FeeScheduleSyncFnThrottleAlarmBE349B74": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when fee-schedule-sync Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "FeeScheduleSyncFnB7735A22"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "FeeScheduleSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsFeeScheduleSyncN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsFeeScheduleSyncN1/FeeScheduleSyncFnThrottleAlarm/Resource"
+   }
+  },
+  "FeeScheduleSyncFnDurationAlarm55A500B4": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when fee-schedule-sync Lambda p99 duration exceeds 672000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "FeeScheduleSyncFnB7735A22"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "FeeScheduleSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsFeeScheduleSyncN1"
+     }
+    ],
+    "Threshold": 672000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsFeeScheduleSyncN1/FeeScheduleSyncFnDurationAlarm/Resource"
+   }
+  },
+  "FeeSchedulesTableThrottleAlarmAA60026C": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "FeeSchedulesTableF4E9C5EA"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "FeeSchedulesTableF4E9C5EA"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "FeeScheduleSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsFeeScheduleSyncN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsFeeScheduleSyncN1/FeeSchedulesTableThrottleAlarm/Resource"
+   }
+  },
+  "FeeScheduleSyncSuccessAlarm7483A52C": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when fee schedule sync has too many errors",
+    "AlarmName": "TodaysDentalInsightsFeeScheduleSyncN1-SyncSuccessRate",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "FeeScheduleSyncFnB7735A22"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 3600,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "FeeScheduleSync"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsFeeScheduleSyncN1"
+     }
+    ],
+    "Threshold": 3,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsFeeScheduleSyncN1/FeeScheduleSyncSuccessAlarm/Resource"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/22Py26DMBBFvyV7M01IfyBBrZRNG5Hu0WCb1OBHxdigyPK/VzZRV13dO6+jOzXU9QH2O1yp4mKqtOoh3jzyieFKXRQPi8aJHuIX9lqyZrDFJKbR9AI764QcCT6KvAfLvXKWKTQQW7cdFL06rfgjl5tLjI4dEklPcMrC6AjnwCfpz0jyiYfYDPaP+rZI6y92cZNsnB3UPeP+bV7lbBSRcjYxmRcIYhuecUKOz7ULYkXPvyGeNM4mj4pJibWSXJi5ZCXZzeNd2cL9DP4n+MTy1zDSy1K/wqGG/W4kpao5WK+MhHbTXyiywK1cAQAA"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsFeeScheduleSyncN1/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "FeeSchedulesTableName": {
+   "Description": "Name of the Fee Schedules DynamoDB table",
+   "Value": {
+    "Ref": "FeeSchedulesTableF4E9C5EA"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsFeeScheduleSyncN1-FeeSchedulesTableName"
+   }
+  },
+  "FeeSchedulesTableArn": {
+   "Description": "ARN of the Fee Schedules DynamoDB table",
+   "Value": {
+    "Fn::GetAtt": [
+     "FeeSchedulesTableF4E9C5EA",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsFeeScheduleSyncN1-FeeSchedulesTableArn"
+   }
+  },
+  "SyncFunctionName": {
+   "Description": "Name of the sync Lambda function",
+   "Value": {
+    "Ref": "FeeScheduleSyncFnB7735A22"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsFeeScheduleSyncN1-SyncFunctionName"
+   }
+  },
+  "SyncFunctionArn": {
+   "Description": "ARN of the sync Lambda function",
+   "Value": {
+    "Fn::GetAtt": [
+     "FeeScheduleSyncFnB7735A22",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsFeeScheduleSyncN1-SyncFunctionArn"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/tdi3/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

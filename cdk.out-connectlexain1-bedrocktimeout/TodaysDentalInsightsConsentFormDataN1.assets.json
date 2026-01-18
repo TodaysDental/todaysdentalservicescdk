@@ -1,0 +1,36 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "ab2580d551eb2c54dc081510e3b79cfeb7915e048f038f30cfc7597a1feaefd3": {
+      "displayName": "ConsentFormDataFn/Code",
+      "source": {
+        "path": "D:\\TodaysDental\\todaysdentalinsightscdk",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-d1ade4e3": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "ab2580d551eb2c54dc081510e3b79cfeb7915e048f038f30cfc7597a1feaefd3.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "75b98027a301e87263eecb35a715d68795b4728b2d223cdd8db5cf008bdc68a9": {
+      "displayName": "TodaysDentalInsightsConsentFormDataN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsConsentFormDataN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-8be337e0": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "75b98027a301e87263eecb35a715d68795b4728b2d223cdd8db5cf008bdc68a9.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}
