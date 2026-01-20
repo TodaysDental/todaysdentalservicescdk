@@ -10,9 +10,146 @@ const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
 const TEAMS_TABLE = process.env.TEAMS_TABLE || '';
 const MEETINGS_TABLE = process.env.MEETINGS_TABLE || '';
 const MESSAGES_TABLE = process.env.MESSAGES_TABLE || '';
+const LOG_LEVEL = process.env.LOG_LEVEL || 'INFO';
 
 // Authorization Constants
 const MAX_GROUP_MEMBERS = 100;
+
+// ========================================
+// STRUCTURED JSON LOGGING
+// ========================================
+
+type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+
+interface LogContext {
+    requestId?: string;
+    userID?: string;
+    function?: string;
+    operation?: string;
+    [key: string]: any;
+}
+
+const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
+    DEBUG: 0,
+    INFO: 1,
+    WARN: 2,
+    ERROR: 3,
+};
+
+/**
+ * Structured JSON logger for CloudWatch
+ */
+const log = {
+    _shouldLog(level: LogLevel): boolean {
+        const configuredLevel = (LOG_LEVEL.toUpperCase() as LogLevel) || 'INFO';
+        return LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[configuredLevel];
+    },
+
+    _formatLog(level: LogLevel, message: string, context?: LogContext, error?: Error): string {
+        const logEntry: Record<string, any> = {
+            timestamp: new Date().toISOString(),
+            level,
+            message,
+            service: 'comm-rest-api',
+            ...(context && { context }),
+        };
+
+        if (error) {
+            logEntry.error = {
+                name: error.name,
+                message: error.message,
+                stack: error.stack,
+            };
+        }
+
+        return JSON.stringify(logEntry);
+    },
+
+    debug(message: string, context?: LogContext): void {
+        if (this._shouldLog('DEBUG')) {
+            console.log(this._formatLog('DEBUG', message, context));
+        }
+    },
+
+    info(message: string, context?: LogContext): void {
+        if (this._shouldLog('INFO')) {
+            console.log(this._formatLog('INFO', message, context));
+        }
+    },
+
+    warn(message: string, context?: LogContext): void {
+        if (this._shouldLog('WARN')) {
+            console.warn(this._formatLog('WARN', message, context));
+        }
+    },
+
+    error(message: string, context?: LogContext, error?: Error): void {
+        if (this._shouldLog('ERROR')) {
+            console.error(this._formatLog('ERROR', message, context, error));
+        }
+    },
+
+    // Specialized logging methods
+    request(event: APIGatewayProxyEvent, userID: string | null): void {
+        this.info('Incoming request', {
+            requestId: event.requestContext.requestId,
+            userID: userID || 'unauthenticated',
+            httpMethod: event.httpMethod,
+            path: event.path,
+            queryParams: event.queryStringParameters,
+            hasBody: !!event.body,
+            sourceIp: event.requestContext.identity?.sourceIp,
+            userAgent: event.requestContext.identity?.userAgent,
+        });
+    },
+
+    dbOperation(operation: string, table: string, details: Record<string, any>, context?: LogContext): void {
+        this.debug(`DynamoDB ${operation}`, {
+            ...context,
+            operation,
+            table,
+            ...details,
+        });
+    },
+
+    dbResult(operation: string, table: string, itemCount: number, durationMs: number, context?: LogContext): void {
+        this.debug(`DynamoDB ${operation} completed`, {
+            ...context,
+            operation,
+            table,
+            itemCount,
+            durationMs,
+        });
+    },
+
+    validation(field: string, reason: string, context?: LogContext): void {
+        this.warn('Validation failure', {
+            ...context,
+            validationField: field,
+            validationReason: reason,
+        });
+    },
+
+    flowCount(functionName: string, step: string, count: number, context?: LogContext): void {
+        this.debug(`Flow count: ${step}`, {
+            ...context,
+            function: functionName,
+            step,
+            count,
+        });
+    },
+
+    response(statusCode: number, success: boolean, durationMs: number, context?: LogContext): void {
+        const level = statusCode >= 500 ? 'ERROR' : statusCode >= 400 ? 'WARN' : 'INFO';
+        const method = level === 'ERROR' ? this.error.bind(this) : level === 'WARN' ? this.warn.bind(this) : this.info.bind(this);
+        method('Request completed', {
+            ...context,
+            statusCode,
+            success,
+            durationMs,
+        });
+    },
+};
 
 // System Modules (from shared/types/user.ts)
 const SYSTEM_MODULES = ['HR', 'Accounting', 'Operations', 'Finance', 'Marketing', 'Legal', 'IT'] as const;
@@ -118,121 +255,172 @@ function getUserIdFromEvent(event: APIGatewayProxyEvent): string | null {
 // ========================================
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+    const handlerStartTime = Date.now();
+    const requestId = event.requestContext.requestId;
     const { httpMethod, path, pathParameters, queryStringParameters, body } = event;
     const userID = getUserIdFromEvent(event);
 
+    // Log incoming request
+    log.request(event, userID);
+
     if (!userID) {
+        log.warn('Authentication failed - no userID extracted', { requestId, path, httpMethod });
+        log.response(401, false, Date.now() - handlerStartTime, { requestId });
         return response(401, { success: false, message: 'Unauthorized' });
     }
 
+    const logCtx: LogContext = { requestId, userID, httpMethod, path };
+
     try {
         const parsedBody = body ? JSON.parse(body) : {};
+        log.debug('Request body parsed', { ...logCtx, hasBody: !!body });
+
+        let result: APIGatewayProxyResult;
+        let routeMatched = false;
 
         // Route based on path and method
         // Conversations endpoints
         if (path.match(/^\/api\/conversations\/search$/)) {
-            return await searchConversations(userID, queryStringParameters);
-        }
-        if (path.match(/^\/api\/conversations\/profiles$/)) {
-            return await getConversationProfiles(userID, queryStringParameters);
-        }
-        if (path.match(/^\/api\/conversations\/[^/]+\/complete$/)) {
+            log.info('Routing to searchConversations', logCtx);
+            routeMatched = true;
+            result = await searchConversations(userID, queryStringParameters, logCtx);
+        } else if (path.match(/^\/api\/conversations\/profiles$/)) {
+            log.info('Routing to getConversationProfiles', logCtx);
+            routeMatched = true;
+            result = await getConversationProfiles(userID, queryStringParameters, logCtx);
+        } else if (path.match(/^\/api\/conversations\/[^/]+\/complete$/)) {
             const favorRequestID = pathParameters?.favorRequestID || path.split('/')[3];
-            return await getConversationComplete(userID, favorRequestID);
-        }
-        if (path.match(/^\/api\/conversations\/[^/]+\/user-details$/)) {
+            log.info('Routing to getConversationComplete', { ...logCtx, favorRequestID });
+            routeMatched = true;
+            result = await getConversationComplete(userID, favorRequestID, logCtx);
+        } else if (path.match(/^\/api\/conversations\/[^/]+\/user-details$/)) {
             const favorRequestID = pathParameters?.favorRequestID || path.split('/')[3];
-            return await getConversationUserDetails(userID, favorRequestID);
-        }
-        if (path.match(/^\/api\/conversations\/[^/]+\/deadline$/) && httpMethod === 'PUT') {
+            log.info('Routing to getConversationUserDetails', { ...logCtx, favorRequestID });
+            routeMatched = true;
+            result = await getConversationUserDetails(userID, favorRequestID, logCtx);
+        } else if (path.match(/^\/api\/conversations\/[^/]+\/deadline$/) && httpMethod === 'PUT') {
             const favorRequestID = pathParameters?.favorRequestID || path.split('/')[3];
-            return await updateConversationDeadline(userID, favorRequestID, parsedBody);
-        }
-        if (path.match(/^\/api\/conversations\/[^/]+$/) && httpMethod === 'DELETE') {
+            log.info('Routing to updateConversationDeadline', { ...logCtx, favorRequestID });
+            routeMatched = true;
+            result = await updateConversationDeadline(userID, favorRequestID, parsedBody, logCtx);
+        } else if (path.match(/^\/api\/conversations\/[^/]+$/) && httpMethod === 'DELETE') {
             const favorRequestID = pathParameters?.favorRequestID || path.split('/')[3];
-            return await deleteConversation(userID, favorRequestID, queryStringParameters);
-        }
-        if (path.match(/^\/api\/conversations$/) && httpMethod === 'GET') {
-            return await getConversations(userID, queryStringParameters);
+            log.info('Routing to deleteConversation', { ...logCtx, favorRequestID });
+            routeMatched = true;
+            result = await deleteConversation(userID, favorRequestID, queryStringParameters, logCtx);
+        } else if (path.match(/^\/api\/conversations$/) && httpMethod === 'GET') {
+            log.info('Routing to getConversations', logCtx);
+            routeMatched = true;
+            result = await getConversations(userID, queryStringParameters, logCtx);
         }
 
         // Tasks endpoints
-        if (path.match(/^\/api\/tasks\/by-status$/) && httpMethod === 'GET') {
-            return await getTasksByStatus(userID, queryStringParameters);
-        }
-        if (path.match(/^\/api\/tasks\/forward-history$/) && httpMethod === 'GET') {
-            return await getForwardHistory(userID, queryStringParameters);
-        }
-        if (path.match(/^\/api\/tasks\/forwarded-to-me$/) && httpMethod === 'GET') {
-            return await getForwardedToMe(userID, queryStringParameters);
-        }
-        if (path.match(/^\/api\/tasks\/group$/) && httpMethod === 'POST') {
-            return await createGroupTask(userID, parsedBody);
-        }
-        if (path.match(/^\/api\/tasks\/[^/]+\/forward\/[^/]+\/respond$/) && httpMethod === 'POST') {
+        else if (path.match(/^\/api\/tasks\/by-status$/) && httpMethod === 'GET') {
+            log.info('Routing to getTasksByStatus', logCtx);
+            routeMatched = true;
+            result = await getTasksByStatus(userID, queryStringParameters, logCtx);
+        } else if (path.match(/^\/api\/tasks\/forward-history$/) && httpMethod === 'GET') {
+            log.info('Routing to getForwardHistory', logCtx);
+            routeMatched = true;
+            result = await getForwardHistory(userID, queryStringParameters, logCtx);
+        } else if (path.match(/^\/api\/tasks\/forwarded-to-me$/) && httpMethod === 'GET') {
+            log.info('Routing to getForwardedToMe', logCtx);
+            routeMatched = true;
+            result = await getForwardedToMe(userID, queryStringParameters, logCtx);
+        } else if (path.match(/^\/api\/tasks\/group$/) && httpMethod === 'POST') {
+            log.info('Routing to createGroupTask', logCtx);
+            routeMatched = true;
+            result = await createGroupTask(userID, parsedBody, logCtx);
+        } else if (path.match(/^\/api\/tasks\/[^/]+\/forward\/[^/]+\/respond$/) && httpMethod === 'POST') {
             const parts = path.split('/');
             const taskID = parts[3];
             const forwardID = parts[5];
-            return await respondToForward(userID, taskID, forwardID, parsedBody);
-        }
-        if (path.match(/^\/api\/tasks\/[^/]+\/forward$/) && httpMethod === 'POST') {
+            log.info('Routing to respondToForward', { ...logCtx, taskID, forwardID });
+            routeMatched = true;
+            result = await respondToForward(userID, taskID, forwardID, parsedBody, logCtx);
+        } else if (path.match(/^\/api\/tasks\/[^/]+\/forward$/) && httpMethod === 'POST') {
             const taskID = pathParameters?.taskID || path.split('/')[3];
-            return await forwardTask(userID, taskID, parsedBody);
-        }
-        if (path.match(/^\/api\/tasks\/[^/]+\/deadline$/) && httpMethod === 'PUT') {
+            log.info('Routing to forwardTask', { ...logCtx, taskID });
+            routeMatched = true;
+            result = await forwardTask(userID, taskID, parsedBody, logCtx);
+        } else if (path.match(/^\/api\/tasks\/[^/]+\/deadline$/) && httpMethod === 'PUT') {
             const taskID = pathParameters?.taskID || path.split('/')[3];
-            return await updateTaskDeadline(userID, taskID, parsedBody);
-        }
-        if (path.match(/^\/api\/tasks$/) && httpMethod === 'POST') {
-            return await createTask(userID, parsedBody);
+            log.info('Routing to updateTaskDeadline', { ...logCtx, taskID });
+            routeMatched = true;
+            result = await updateTaskDeadline(userID, taskID, parsedBody, logCtx);
+        } else if (path.match(/^\/api\/tasks$/) && httpMethod === 'POST') {
+            log.info('Routing to createTask', logCtx);
+            routeMatched = true;
+            result = await createTask(userID, parsedBody, logCtx);
         }
 
         // Meetings endpoints
-        if (path.match(/^\/api\/meetings\/[^/]+$/) && httpMethod === 'PUT') {
+        else if (path.match(/^\/api\/meetings\/[^/]+$/) && httpMethod === 'PUT') {
             const meetingID = pathParameters?.meetingID || path.split('/')[3];
-            return await updateMeeting(userID, meetingID, parsedBody);
-        }
-        if (path.match(/^\/api\/meetings\/[^/]+$/) && httpMethod === 'DELETE') {
+            log.info('Routing to updateMeeting', { ...logCtx, meetingID });
+            routeMatched = true;
+            result = await updateMeeting(userID, meetingID, parsedBody, logCtx);
+        } else if (path.match(/^\/api\/meetings\/[^/]+$/) && httpMethod === 'DELETE') {
             const meetingID = pathParameters?.meetingID || path.split('/')[3];
-            return await deleteMeeting(userID, meetingID, queryStringParameters);
-        }
-        if (path.match(/^\/api\/meetings$/) && httpMethod === 'POST') {
-            return await createMeeting(userID, parsedBody);
-        }
-        if (path.match(/^\/api\/meetings$/) && httpMethod === 'GET') {
-            return await getMeetings(userID, queryStringParameters);
+            log.info('Routing to deleteMeeting', { ...logCtx, meetingID });
+            routeMatched = true;
+            result = await deleteMeeting(userID, meetingID, queryStringParameters, logCtx);
+        } else if (path.match(/^\/api\/meetings$/) && httpMethod === 'POST') {
+            log.info('Routing to createMeeting', logCtx);
+            routeMatched = true;
+            result = await createMeeting(userID, parsedBody, logCtx);
+        } else if (path.match(/^\/api\/meetings$/) && httpMethod === 'GET') {
+            log.info('Routing to getMeetings', logCtx);
+            routeMatched = true;
+            result = await getMeetings(userID, queryStringParameters, logCtx);
         }
 
         // Groups endpoints
-        if (path.match(/^\/api\/groups\/[^/]+\/members\/[^/]+$/) && httpMethod === 'DELETE') {
+        else if (path.match(/^\/api\/groups\/[^/]+\/members\/[^/]+$/) && httpMethod === 'DELETE') {
             const parts = path.split('/');
             const teamID = parts[3];
             const memberUserID = parts[5];
-            return await removeGroupMember(userID, teamID, memberUserID);
-        }
-        if (path.match(/^\/api\/groups\/[^/]+\/members$/) && httpMethod === 'POST') {
+            log.info('Routing to removeGroupMember', { ...logCtx, teamID, memberUserID });
+            routeMatched = true;
+            result = await removeGroupMember(userID, teamID, memberUserID, logCtx);
+        } else if (path.match(/^\/api\/groups\/[^/]+\/members$/) && httpMethod === 'POST') {
             const teamID = pathParameters?.teamID || path.split('/')[3];
-            return await addGroupMember(userID, teamID, parsedBody);
-        }
-        if (path.match(/^\/api\/groups\/[^/]+$/) && httpMethod === 'GET') {
+            log.info('Routing to addGroupMember', { ...logCtx, teamID });
+            routeMatched = true;
+            result = await addGroupMember(userID, teamID, parsedBody, logCtx);
+        } else if (path.match(/^\/api\/groups\/[^/]+$/) && httpMethod === 'GET') {
             const teamID = pathParameters?.teamID || path.split('/')[3];
-            return await getGroupDetails(userID, teamID);
-        }
-        if (path.match(/^\/api\/groups\/[^/]+$/) && httpMethod === 'PUT') {
+            log.info('Routing to getGroupDetails', { ...logCtx, teamID });
+            routeMatched = true;
+            result = await getGroupDetails(userID, teamID, logCtx);
+        } else if (path.match(/^\/api\/groups\/[^/]+$/) && httpMethod === 'PUT') {
             const teamID = pathParameters?.teamID || path.split('/')[3];
-            return await updateGroup(userID, teamID, parsedBody);
-        }
-        if (path.match(/^\/api\/groups$/) && httpMethod === 'POST') {
-            return await createGroup(userID, parsedBody);
-        }
-        if (path.match(/^\/api\/groups$/) && httpMethod === 'GET') {
-            return await getGroups(userID, queryStringParameters);
+            log.info('Routing to updateGroup', { ...logCtx, teamID });
+            routeMatched = true;
+            result = await updateGroup(userID, teamID, parsedBody, logCtx);
+        } else if (path.match(/^\/api\/groups$/) && httpMethod === 'POST') {
+            log.info('Routing to createGroup', logCtx);
+            routeMatched = true;
+            result = await createGroup(userID, parsedBody, logCtx);
+        } else if (path.match(/^\/api\/groups$/) && httpMethod === 'GET') {
+            log.info('Routing to getGroups', logCtx);
+            routeMatched = true;
+            result = await getGroups(userID, queryStringParameters, logCtx);
         }
 
-        return response(404, { success: false, message: 'Endpoint not found' });
+        if (!routeMatched) {
+            log.warn('No route matched', logCtx);
+            log.response(404, false, Date.now() - handlerStartTime, logCtx);
+            return response(404, { success: false, message: 'Endpoint not found' });
+        }
+
+        log.response(result!.statusCode, result!.statusCode < 400, Date.now() - handlerStartTime, logCtx);
+        return result!;
 
     } catch (error) {
-        console.error('Error processing request:', error);
+        const err = error instanceof Error ? error : new Error(String(error));
+        log.error('Unhandled error processing request', logCtx, err);
+        log.response(500, false, Date.now() - handlerStartTime, logCtx);
         return response(500, { success: false, message: 'Internal server error' });
     }
 };
@@ -241,10 +429,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 // CONVERSATIONS ENDPOINTS
 // ========================================
 
-async function searchConversations(userID: string, params: any): Promise<APIGatewayProxyResult> {
+async function searchConversations(userID: string, params: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'searchConversations' };
     const { query, status, type, sort = 'newest', deadline, category, priority, limit = 20, offset = 0 } = params || {};
 
+    log.debug('Search params', { ...fnCtx, query, status, type, sort, category, priority, limit, offset });
+
     // Query by sender and receiver indexes, merge results
+    const dbStart = Date.now();
+    log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex'], userID }, fnCtx);
     const [sentResult, recvResult] = await Promise.all([
         ddb.send(new QueryCommand({
             TableName: FAVORS_TABLE,
@@ -261,8 +455,10 @@ async function searchConversations(userID: string, params: any): Promise<APIGate
             ScanIndexForward: false,
         })),
     ]);
+    log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
 
     let conversations = [...(sentResult.Items || []), ...(recvResult.Items || [])] as FavorRequest[];
+    log.flowCount('searchConversations', 'rawResults', conversations.length, fnCtx);
     
     // Deduplicate
     const byId = new Map<string, FavorRequest>();
@@ -270,6 +466,7 @@ async function searchConversations(userID: string, params: any): Promise<APIGate
         byId.set(conv.favorRequestID, conv);
     }
     conversations = Array.from(byId.values());
+    log.flowCount('searchConversations', 'afterDedupe', conversations.length, fnCtx);
 
     // Filter
     if (query) {
@@ -279,11 +476,13 @@ async function searchConversations(userID: string, params: any): Promise<APIGate
             c.initialMessage?.toLowerCase().includes(q) ||
             c.description?.toLowerCase().includes(q)
         );
+        log.flowCount('searchConversations', 'afterQueryFilter', conversations.length, fnCtx);
     }
-    if (status) conversations = conversations.filter(c => c.status === status);
-    if (type) conversations = conversations.filter(c => c.requestType === type);
-    if (category) conversations = conversations.filter(c => c.category === category);
-    if (priority) conversations = conversations.filter(c => c.priority === priority);
+    if (status) { conversations = conversations.filter(c => c.status === status); }
+    if (type) { conversations = conversations.filter(c => c.requestType === type); }
+    if (category) { conversations = conversations.filter(c => c.category === category); }
+    if (priority) { conversations = conversations.filter(c => c.priority === priority); }
+    log.flowCount('searchConversations', 'afterAllFilters', conversations.length, fnCtx);
 
     // Sort
     if (sort === 'newest') {
@@ -298,6 +497,8 @@ async function searchConversations(userID: string, params: any): Promise<APIGate
     const total = conversations.length;
     const paginatedConversations = conversations.slice(Number(offset), Number(offset) + Number(limit));
 
+    log.info('searchConversations completed', { ...fnCtx, total, returned: paginatedConversations.length, durationMs: Date.now() - fnStart });
+
     return response(200, {
         success: true,
         conversations: paginatedConversations,
@@ -306,12 +507,16 @@ async function searchConversations(userID: string, params: any): Promise<APIGate
     });
 }
 
-async function getConversationProfiles(userID: string, params: any): Promise<APIGatewayProxyResult> {
+async function getConversationProfiles(userID: string, params: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'getConversationProfiles' };
     const { tab = 'single', status, limit = 50, offset = 0 } = params || {};
 
-    const indexName = tab === 'group' ? 'TeamIndex' : 'SenderIndex';
-    
+    log.debug('Profile params', { ...fnCtx, tab, status, limit, offset });
+
     // For single conversations, query both sender and receiver
+    const dbStart = Date.now();
+    log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex'], userID }, fnCtx);
     const [sentResult, recvResult] = await Promise.all([
         ddb.send(new QueryCommand({
             TableName: FAVORS_TABLE,
@@ -328,8 +533,10 @@ async function getConversationProfiles(userID: string, params: any): Promise<API
             ScanIndexForward: false,
         })),
     ]);
+    log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
 
     let items = [...(sentResult.Items || []), ...(recvResult.Items || [])] as FavorRequest[];
+    log.flowCount('getConversationProfiles', 'rawResults', items.length, fnCtx);
     
     // Deduplicate and filter by tab type
     const byId = new Map<string, FavorRequest>();
@@ -341,10 +548,12 @@ async function getConversationProfiles(userID: string, params: any): Promise<API
         }
     }
     items = Array.from(byId.values());
+    log.flowCount('getConversationProfiles', 'afterTabFilter', items.length, fnCtx);
 
     // Filter by status
     if (status) {
         items = items.filter(i => i.status === status);
+        log.flowCount('getConversationProfiles', 'afterStatusFilter', items.length, fnCtx);
     }
 
     // Sort by updatedAt desc
@@ -366,6 +575,8 @@ async function getConversationProfiles(userID: string, params: any): Promise<API
         status: item.status,
     }));
 
+    log.info('getConversationProfiles completed', { ...fnCtx, total, returned: profiles.length, durationMs: Date.now() - fnStart });
+
     return response(200, {
         success: true,
         profiles,
@@ -374,65 +585,98 @@ async function getConversationProfiles(userID: string, params: any): Promise<API
     });
 }
 
-async function getConversationComplete(userID: string, favorRequestID: string): Promise<APIGatewayProxyResult> {
+async function getConversationComplete(userID: string, favorRequestID: string, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'getConversationComplete', favorRequestID };
+
+    log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID }, fnCtx);
+    const dbStart = Date.now();
     const favorResult = await ddb.send(new GetCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
     }));
+    log.dbResult('GetItem', FAVORS_TABLE, favorResult.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
     const favor = favorResult.Item as FavorRequest;
 
     if (!favor) {
+        log.warn('Conversation not found', fnCtx);
         return response(404, { success: false, message: 'Conversation not found' });
     }
 
     // Verify user is participant
     if (favor.senderID !== userID && favor.receiverID !== userID && favor.currentAssigneeID !== userID) {
+        log.debug('User not direct participant, checking team membership', fnCtx);
         // Check team membership if group
         if (favor.teamID && TEAMS_TABLE) {
+            const teamDbStart = Date.now();
+            log.dbOperation('GetItem', TEAMS_TABLE, { teamID: favor.teamID }, fnCtx);
             const teamResult = await ddb.send(new GetCommand({
                 TableName: TEAMS_TABLE,
                 Key: { teamID: favor.teamID },
             }));
+            log.dbResult('GetItem', TEAMS_TABLE, teamResult.Item ? 1 : 0, Date.now() - teamDbStart, fnCtx);
             const team = teamResult.Item as Team;
             if (!team?.members.includes(userID)) {
+                log.warn('User not in team members', { ...fnCtx, teamID: favor.teamID });
                 return response(403, { success: false, message: 'Unauthorized' });
             }
         } else {
+            log.warn('Unauthorized access attempt', fnCtx);
             return response(403, { success: false, message: 'Unauthorized' });
         }
     }
 
     // Get messages
+    const msgDbStart = Date.now();
+    log.dbOperation('Query', MESSAGES_TABLE, { favorRequestID }, fnCtx);
     const messagesResult = await ddb.send(new QueryCommand({
         TableName: MESSAGES_TABLE,
         KeyConditionExpression: 'favorRequestID = :id',
         ExpressionAttributeValues: { ':id': favorRequestID },
         ScanIndexForward: true,
     }));
+    log.dbResult('Query', MESSAGES_TABLE, messagesResult.Items?.length || 0, Date.now() - msgDbStart, fnCtx);
+
+    const files = (messagesResult.Items || []).filter((m: any) => m.type === 'file');
+    log.info('getConversationComplete completed', { 
+        ...fnCtx, 
+        messageCount: messagesResult.Items?.length || 0, 
+        fileCount: files.length,
+        durationMs: Date.now() - fnStart 
+    });
 
     return response(200, {
         success: true,
         conversation: favor,
         participants: [favor.senderID, favor.receiverID, favor.currentAssigneeID].filter(Boolean),
         tasks: [favor], // Each favor is a task
-        files: (messagesResult.Items || []).filter((m: any) => m.type === 'file'),
+        files,
         statistics: {
             totalMessages: messagesResult.Items?.length || 0,
-            totalFiles: (messagesResult.Items || []).filter((m: any) => m.type === 'file').length,
+            totalFiles: files.length,
         },
     });
 }
 
-async function getConversationUserDetails(userID: string, favorRequestID: string): Promise<APIGatewayProxyResult> {
+async function getConversationUserDetails(userID: string, favorRequestID: string, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'getConversationUserDetails', favorRequestID };
+
+    const dbStart = Date.now();
+    log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID }, fnCtx);
     const favorResult = await ddb.send(new GetCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
     }));
+    log.dbResult('GetItem', FAVORS_TABLE, favorResult.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
     const favor = favorResult.Item as FavorRequest;
 
     if (!favor) {
+        log.warn('Conversation not found', fnCtx);
         return response(404, { success: false, message: 'Conversation not found' });
     }
+
+    log.info('getConversationUserDetails completed', { ...fnCtx, durationMs: Date.now() - fnStart });
 
     return response(200, {
         success: true,
@@ -454,16 +698,25 @@ async function getConversationUserDetails(userID: string, favorRequestID: string
     });
 }
 
-async function updateConversationDeadline(userID: string, favorRequestID: string, body: any): Promise<APIGatewayProxyResult> {
+async function updateConversationDeadline(userID: string, favorRequestID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'updateConversationDeadline', favorRequestID };
     const { deadline } = body;
     const nowIso = new Date().toISOString();
 
+    log.debug('Updating deadline', { ...fnCtx, deadline, hasDeadline: !!deadline });
+
+    const dbStart = Date.now();
+    log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID, action: deadline ? 'SET' : 'REMOVE' }, fnCtx);
     await ddb.send(new UpdateCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
         UpdateExpression: deadline ? 'SET deadline = :d, updatedAt = :ua' : 'REMOVE deadline SET updatedAt = :ua',
         ExpressionAttributeValues: deadline ? { ':d': deadline, ':ua': nowIso } : { ':ua': nowIso },
     }));
+    log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - dbStart, fnCtx);
+
+    log.info('updateConversationDeadline completed', { ...fnCtx, deadline, durationMs: Date.now() - fnStart });
 
     return response(200, {
         success: true,
@@ -472,19 +725,28 @@ async function updateConversationDeadline(userID: string, favorRequestID: string
     });
 }
 
-async function deleteConversation(userID: string, favorRequestID: string, params: any): Promise<APIGatewayProxyResult> {
+async function deleteConversation(userID: string, favorRequestID: string, params: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'deleteConversation', favorRequestID };
+
+    const dbStart = Date.now();
+    log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID }, fnCtx);
     const favorResult = await ddb.send(new GetCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
     }));
+    log.dbResult('GetItem', FAVORS_TABLE, favorResult.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
     const favor = favorResult.Item as FavorRequest;
 
     if (!favor || favor.senderID !== userID) {
+        log.warn('Unauthorized delete attempt', { ...fnCtx, favorExists: !!favor, isCreator: favor?.senderID === userID });
         return response(403, { success: false, message: 'Unauthorized: Only the creator can delete' });
     }
 
     // Soft delete
     const nowIso = new Date().toISOString();
+    const updateStart = Date.now();
+    log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID, action: 'soft-delete' }, fnCtx);
     await ddb.send(new UpdateCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
@@ -492,6 +754,9 @@ async function deleteConversation(userID: string, favorRequestID: string, params
         ExpressionAttributeNames: { '#s': 'status' },
         ExpressionAttributeValues: { ':status': 'deleted', ':ua': nowIso },
     }));
+    log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - updateStart, fnCtx);
+
+    log.info('deleteConversation completed', { ...fnCtx, durationMs: Date.now() - fnStart });
 
     return response(200, {
         success: true,
@@ -500,9 +765,15 @@ async function deleteConversation(userID: string, favorRequestID: string, params
     });
 }
 
-async function getConversations(userID: string, params: any): Promise<APIGatewayProxyResult> {
+async function getConversations(userID: string, params: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'getConversations' };
     const { tab, status, category, limit = 20, offset = 0 } = params || {};
 
+    log.debug('Get conversations params', { ...fnCtx, tab, status, category, limit, offset });
+
+    const dbStart = Date.now();
+    log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex'], userID }, fnCtx);
     const [sentResult, recvResult] = await Promise.all([
         ddb.send(new QueryCommand({
             TableName: FAVORS_TABLE,
@@ -519,8 +790,10 @@ async function getConversations(userID: string, params: any): Promise<APIGateway
             ScanIndexForward: false,
         })),
     ]);
+    log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
 
     let conversations = [...(sentResult.Items || []), ...(recvResult.Items || [])] as FavorRequest[];
+    log.flowCount('getConversations', 'rawResults', conversations.length, fnCtx);
     
     // Deduplicate
     const byId = new Map<string, FavorRequest>();
@@ -528,12 +801,14 @@ async function getConversations(userID: string, params: any): Promise<APIGateway
         byId.set(conv.favorRequestID, conv);
     }
     conversations = Array.from(byId.values());
+    log.flowCount('getConversations', 'afterDedupe', conversations.length, fnCtx);
 
     // Filter
-    if (tab === 'single') conversations = conversations.filter(c => !c.teamID);
-    if (tab === 'group') conversations = conversations.filter(c => !!c.teamID);
-    if (status) conversations = conversations.filter(c => c.status === status);
-    if (category) conversations = conversations.filter(c => c.category === category);
+    if (tab === 'single') { conversations = conversations.filter(c => !c.teamID); }
+    if (tab === 'group') { conversations = conversations.filter(c => !!c.teamID); }
+    if (status) { conversations = conversations.filter(c => c.status === status); }
+    if (category) { conversations = conversations.filter(c => c.category === category); }
+    log.flowCount('getConversations', 'afterFilters', conversations.length, fnCtx);
 
     // Sort
     conversations.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -541,6 +816,8 @@ async function getConversations(userID: string, params: any): Promise<APIGateway
     // Paginate
     const total = conversations.length;
     const paginatedConversations = conversations.slice(Number(offset), Number(offset) + Number(limit));
+
+    log.info('getConversations completed', { ...fnCtx, total, returned: paginatedConversations.length, durationMs: Date.now() - fnStart });
 
     return response(200, {
         success: true,
@@ -554,12 +831,18 @@ async function getConversations(userID: string, params: any): Promise<APIGateway
 // TASKS ENDPOINTS
 // ========================================
 
-async function getTasksByStatus(userID: string, params: any): Promise<APIGatewayProxyResult> {
+async function getTasksByStatus(userID: string, params: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'getTasksByStatus' };
     const { status, conversationID, assignedTo, category, priority, limit = 20, offset = 0 } = params || {};
+
+    log.debug('Get tasks params', { ...fnCtx, status, category, priority, limit, offset });
 
     let items: FavorRequest[] = [];
 
     if (status) {
+        const dbStart = Date.now();
+        log.dbOperation('Query', FAVORS_TABLE, { index: 'StatusIndex', status }, fnCtx);
         const result = await ddb.send(new QueryCommand({
             TableName: FAVORS_TABLE,
             IndexName: 'StatusIndex',
@@ -568,9 +851,12 @@ async function getTasksByStatus(userID: string, params: any): Promise<APIGateway
             ExpressionAttributeValues: { ':status': status },
             ScanIndexForward: false,
         }));
+        log.dbResult('Query', FAVORS_TABLE, result.Items?.length || 0, Date.now() - dbStart, fnCtx);
         items = (result.Items || []) as FavorRequest[];
     } else {
         // Get all for user
+        const dbStart = Date.now();
+        log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex'], userID }, fnCtx);
         const [sentResult, recvResult] = await Promise.all([
             ddb.send(new QueryCommand({
                 TableName: FAVORS_TABLE,
@@ -585,8 +871,10 @@ async function getTasksByStatus(userID: string, params: any): Promise<APIGateway
                 ExpressionAttributeValues: { ':uid': userID },
             })),
         ]);
+        log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
         items = [...(sentResult.Items || []), ...(recvResult.Items || [])] as FavorRequest[];
     }
+    log.flowCount('getTasksByStatus', 'rawResults', items.length, fnCtx);
 
     // Deduplicate
     const byId = new Map<string, FavorRequest>();
@@ -597,10 +885,12 @@ async function getTasksByStatus(userID: string, params: any): Promise<APIGateway
         }
     }
     items = Array.from(byId.values());
+    log.flowCount('getTasksByStatus', 'afterDedupe', items.length, fnCtx);
 
     // Additional filters
-    if (category) items = items.filter(i => i.category === category);
-    if (priority) items = items.filter(i => i.priority === priority);
+    if (category) { items = items.filter(i => i.category === category); }
+    if (priority) { items = items.filter(i => i.priority === priority); }
+    log.flowCount('getTasksByStatus', 'afterFilters', items.length, fnCtx);
 
     // Statistics
     const stats = {
@@ -622,6 +912,8 @@ async function getTasksByStatus(userID: string, params: any): Promise<APIGateway
     const total = items.length;
     const tasks = items.slice(Number(offset), Number(offset) + Number(limit));
 
+    log.info('getTasksByStatus completed', { ...fnCtx, total, returned: tasks.length, durationMs: Date.now() - fnStart });
+
     return response(200, {
         success: true,
         tasks,
@@ -631,19 +923,29 @@ async function getTasksByStatus(userID: string, params: any): Promise<APIGateway
     });
 }
 
-async function getForwardHistory(userID: string, params: any): Promise<APIGatewayProxyResult> {
+async function getForwardHistory(userID: string, params: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'getForwardHistory' };
     const { conversationID, taskID, limit = 50, offset = 0 } = params || {};
+
+    log.debug('Get forward history params', { ...fnCtx, conversationID, taskID, limit, offset });
 
     let items: FavorRequest[] = [];
 
     if (taskID || conversationID) {
+        const dbStart = Date.now();
+        const id = taskID || conversationID;
+        log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID: id }, fnCtx);
         const result = await ddb.send(new GetCommand({
             TableName: FAVORS_TABLE,
-            Key: { favorRequestID: taskID || conversationID },
+            Key: { favorRequestID: id },
         }));
+        log.dbResult('GetItem', FAVORS_TABLE, result.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
         if (result.Item) items = [result.Item as FavorRequest];
     } else {
         // Get all user's tasks with forwarding chains
+        const dbStart = Date.now();
+        log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex'], userID }, fnCtx);
         const [sentResult, recvResult] = await Promise.all([
             ddb.send(new QueryCommand({
                 TableName: FAVORS_TABLE,
@@ -658,8 +960,10 @@ async function getForwardHistory(userID: string, params: any): Promise<APIGatewa
                 ExpressionAttributeValues: { ':uid': userID },
             })),
         ]);
+        log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
         const all = [...(sentResult.Items || []), ...(recvResult.Items || [])] as FavorRequest[];
         items = all.filter(i => i.forwardingChain && i.forwardingChain.length > 0);
+        log.flowCount('getForwardHistory', 'tasksWithForwards', items.length, fnCtx);
     }
 
     // Extract forward history
@@ -671,6 +975,7 @@ async function getForwardHistory(userID: string, params: any): Promise<APIGatewa
             conversationID: item.favorRequestID,
         }))
     );
+    log.flowCount('getForwardHistory', 'totalForwards', forwardHistory.length, fnCtx);
 
     // Sort by forwardedAt desc
     forwardHistory.sort((a, b) => b.forwardedAt.localeCompare(a.forwardedAt));
@@ -678,6 +983,8 @@ async function getForwardHistory(userID: string, params: any): Promise<APIGatewa
     // Paginate
     const total = forwardHistory.length;
     const paginated = forwardHistory.slice(Number(offset), Number(offset) + Number(limit));
+
+    log.info('getForwardHistory completed', { ...fnCtx, total, returned: paginated.length, durationMs: Date.now() - fnStart });
 
     return response(200, {
         success: true,
@@ -687,10 +994,16 @@ async function getForwardHistory(userID: string, params: any): Promise<APIGatewa
     });
 }
 
-async function getForwardedToMe(userID: string, params: any): Promise<APIGatewayProxyResult> {
+async function getForwardedToMe(userID: string, params: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'getForwardedToMe' };
     const { status, limit = 20, offset = 0 } = params || {};
 
+    log.debug('Get forwarded to me params', { ...fnCtx, status, limit, offset });
+
     // Query by current assignee
+    const dbStart = Date.now();
+    log.dbOperation('Query', FAVORS_TABLE, { index: 'CurrentAssigneeIndex', userID }, fnCtx);
     const result = await ddb.send(new QueryCommand({
         TableName: FAVORS_TABLE,
         IndexName: 'CurrentAssigneeIndex',
@@ -698,11 +1011,14 @@ async function getForwardedToMe(userID: string, params: any): Promise<APIGateway
         ExpressionAttributeValues: { ':uid': userID },
         ScanIndexForward: false,
     }));
+    log.dbResult('Query', FAVORS_TABLE, result.Items?.length || 0, Date.now() - dbStart, fnCtx);
 
     let items = (result.Items || []) as FavorRequest[];
+    log.flowCount('getForwardedToMe', 'assignedItems', items.length, fnCtx);
 
     // Filter to only forwarded tasks
     items = items.filter(i => i.forwardingChain && i.forwardingChain.length > 0);
+    log.flowCount('getForwardedToMe', 'withForwardChain', items.length, fnCtx);
 
     // Filter by forward status if provided
     if (status) {
@@ -710,6 +1026,7 @@ async function getForwardedToMe(userID: string, params: any): Promise<APIGateway
             const lastForward = i.forwardingChain?.[i.forwardingChain.length - 1];
             return lastForward?.status === status;
         });
+        log.flowCount('getForwardedToMe', 'afterStatusFilter', items.length, fnCtx);
     }
 
     // Map to forwarded task format
@@ -736,6 +1053,8 @@ async function getForwardedToMe(userID: string, params: any): Promise<APIGateway
     const total = forwardedTasks.length;
     const paginated = forwardedTasks.slice(Number(offset), Number(offset) + Number(limit));
 
+    log.info('getForwardedToMe completed', { ...fnCtx, total, returned: paginated.length, durationMs: Date.now() - fnStart });
+
     return response(200, {
         success: true,
         forwardedTasks: paginated,
@@ -744,20 +1063,29 @@ async function getForwardedToMe(userID: string, params: any): Promise<APIGateway
     });
 }
 
-async function forwardTask(userID: string, taskID: string, body: any): Promise<APIGatewayProxyResult> {
+async function forwardTask(userID: string, taskID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'forwardTask', taskID };
     const { forwardTo, message, deadline, requireAcceptance = false, notifyOriginalAssignee = true } = body;
 
+    log.debug('Forward task params', { ...fnCtx, forwardTo, requireAcceptance, hasDeadline: !!deadline });
+
     if (!forwardTo) {
+        log.validation('forwardTo', 'required field missing', fnCtx);
         return response(400, { success: false, message: 'forwardTo is required' });
     }
 
+    const dbStart = Date.now();
+    log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID: taskID }, fnCtx);
     const favorResult = await ddb.send(new GetCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID: taskID },
     }));
+    log.dbResult('GetItem', FAVORS_TABLE, favorResult.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
     const favor = favorResult.Item as FavorRequest;
 
     if (!favor) {
+        log.warn('Task not found', fnCtx);
         return response(404, { success: false, message: 'Task not found' });
     }
 
@@ -777,7 +1105,10 @@ async function forwardTask(userID: string, taskID: string, body: any): Promise<A
 
     const existingChain = favor.forwardingChain || [];
     const updatedChain = [...existingChain, forwardRecord];
+    log.flowCount('forwardTask', 'chainLength', updatedChain.length, fnCtx);
 
+    const updateStart = Date.now();
+    log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID: taskID, forwardTo }, fnCtx);
     await ddb.send(new UpdateCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID: taskID },
@@ -791,6 +1122,9 @@ async function forwardTask(userID: string, taskID: string, body: any): Promise<A
             ':ra': requireAcceptance,
         },
     }));
+    log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - updateStart, fnCtx);
+
+    log.info('forwardTask completed', { ...fnCtx, forwardID, forwardTo, requireAcceptance, durationMs: Date.now() - fnStart });
 
     return response(200, {
         success: true,
@@ -800,20 +1134,29 @@ async function forwardTask(userID: string, taskID: string, body: any): Promise<A
     });
 }
 
-async function respondToForward(userID: string, taskID: string, forwardID: string, body: any): Promise<APIGatewayProxyResult> {
+async function respondToForward(userID: string, taskID: string, forwardID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'respondToForward', taskID, forwardID };
     const { action, rejectionReason } = body;
 
+    log.debug('Respond to forward params', { ...fnCtx, action, hasRejectionReason: !!rejectionReason });
+
     if (!action || !['accept', 'reject'].includes(action)) {
+        log.validation('action', 'must be accept or reject', fnCtx);
         return response(400, { success: false, message: 'action must be accept or reject' });
     }
 
+    const dbStart = Date.now();
+    log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID: taskID }, fnCtx);
     const favorResult = await ddb.send(new GetCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID: taskID },
     }));
+    log.dbResult('GetItem', FAVORS_TABLE, favorResult.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
     const favor = favorResult.Item as FavorRequest;
 
     if (!favor) {
+        log.warn('Task not found', fnCtx);
         return response(404, { success: false, message: 'Task not found' });
     }
 
@@ -821,11 +1164,13 @@ async function respondToForward(userID: string, taskID: string, forwardID: strin
     const forwardIndex = forwardingChain.findIndex(f => f.forwardID === forwardID);
 
     if (forwardIndex === -1) {
+        log.warn('Forward record not found', fnCtx);
         return response(404, { success: false, message: 'Forward record not found' });
     }
 
     const forwardRecord = forwardingChain[forwardIndex];
     if (forwardRecord.toUserID !== userID) {
+        log.warn('Forward not assigned to user', { ...fnCtx, assignedTo: forwardRecord.toUserID });
         return response(403, { success: false, message: 'This forward is not assigned to you' });
     }
 
@@ -846,6 +1191,10 @@ async function respondToForward(userID: string, taskID: string, forwardID: strin
         newAssignee = forwardRecord.fromUserID;
     }
 
+    log.debug('Status transition', { ...fnCtx, oldStatus: favor.status, newStatus, newAssignee });
+
+    const updateStart = Date.now();
+    log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID: taskID, action }, fnCtx);
     await ddb.send(new UpdateCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID: taskID },
@@ -858,6 +1207,9 @@ async function respondToForward(userID: string, taskID: string, forwardID: strin
             ':ua': nowIso,
         },
     }));
+    log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - updateStart, fnCtx);
+
+    log.info('respondToForward completed', { ...fnCtx, action, newStatus, durationMs: Date.now() - fnStart });
 
     return response(200, {
         success: true,
@@ -866,16 +1218,25 @@ async function respondToForward(userID: string, taskID: string, forwardID: strin
     });
 }
 
-async function updateTaskDeadline(userID: string, taskID: string, body: any): Promise<APIGatewayProxyResult> {
+async function updateTaskDeadline(userID: string, taskID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'updateTaskDeadline', taskID };
     const { deadline } = body;
     const nowIso = new Date().toISOString();
 
+    log.debug('Update task deadline', { ...fnCtx, deadline, hasDeadline: !!deadline });
+
+    const dbStart = Date.now();
+    log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID: taskID, action: deadline ? 'SET' : 'REMOVE' }, fnCtx);
     await ddb.send(new UpdateCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID: taskID },
         UpdateExpression: deadline ? 'SET deadline = :d, updatedAt = :ua' : 'REMOVE deadline SET updatedAt = :ua',
         ExpressionAttributeValues: deadline ? { ':d': deadline, ':ua': nowIso } : { ':ua': nowIso },
     }));
+    log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - dbStart, fnCtx);
+
+    log.info('updateTaskDeadline completed', { ...fnCtx, deadline, durationMs: Date.now() - fnStart });
 
     return response(200, {
         success: true,
@@ -884,10 +1245,15 @@ async function updateTaskDeadline(userID: string, taskID: string, body: any): Pr
     });
 }
 
-async function createTask(userID: string, body: any): Promise<APIGatewayProxyResult> {
+async function createTask(userID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'createTask' };
     const { conversationID, receiverID, title, description, priority = 'Medium', category, deadline, requiresAcceptance = false } = body;
 
+    log.debug('Create task params', { ...fnCtx, receiverID, priority, category, hasDeadline: !!deadline });
+
     if (!receiverID || !title) {
+        log.validation('receiverID/title', 'required fields missing', fnCtx);
         return response(400, { success: false, message: 'receiverID and title are required' });
     }
 
@@ -914,10 +1280,15 @@ async function createTask(userID: string, body: any): Promise<APIGatewayProxyRes
         ...(deadline && { deadline }),
     };
 
+    const dbStart = Date.now();
+    log.dbOperation('PutItem', FAVORS_TABLE, { favorRequestID, receiverID }, fnCtx);
     await ddb.send(new PutCommand({
         TableName: FAVORS_TABLE,
         Item: newTask,
     }));
+    log.dbResult('PutItem', FAVORS_TABLE, 1, Date.now() - dbStart, fnCtx);
+
+    log.info('createTask completed', { ...fnCtx, taskID: favorRequestID, receiverID, priority, durationMs: Date.now() - fnStart });
 
     return response(201, {
         success: true,
@@ -928,10 +1299,15 @@ async function createTask(userID: string, body: any): Promise<APIGatewayProxyRes
     });
 }
 
-async function createGroupTask(userID: string, body: any): Promise<APIGatewayProxyResult> {
+async function createGroupTask(userID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'createGroupTask' };
     const { conversationID, teamID, title, description, assignedTo, priority = 'Medium', category, deadline, requiresAcceptance = false } = body;
 
+    log.debug('Create group task params', { ...fnCtx, teamID, assignedTo, priority, category, hasDeadline: !!deadline });
+
     if (!teamID || !title) {
+        log.validation('teamID/title', 'required fields missing', fnCtx);
         return response(400, { success: false, message: 'teamID and title are required' });
     }
 
@@ -958,10 +1334,15 @@ async function createGroupTask(userID: string, body: any): Promise<APIGatewayPro
         ...(deadline && { deadline }),
     };
 
+    const dbStart = Date.now();
+    log.dbOperation('PutItem', FAVORS_TABLE, { favorRequestID, teamID }, fnCtx);
     await ddb.send(new PutCommand({
         TableName: FAVORS_TABLE,
         Item: newTask,
     }));
+    log.dbResult('PutItem', FAVORS_TABLE, 1, Date.now() - dbStart, fnCtx);
+
+    log.info('createGroupTask completed', { ...fnCtx, taskID: favorRequestID, teamID, priority, durationMs: Date.now() - fnStart });
 
     return response(201, {
         success: true,
@@ -976,10 +1357,15 @@ async function createGroupTask(userID: string, body: any): Promise<APIGatewayPro
 // MEETINGS ENDPOINTS
 // ========================================
 
-async function createMeeting(userID: string, body: any): Promise<APIGatewayProxyResult> {
+async function createMeeting(userID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'createMeeting' };
     const { conversationID, title, description, startTime, endTime, location, meetingLink, participants, reminder } = body;
 
+    log.debug('Create meeting params', { ...fnCtx, conversationID, hasStartTime: !!startTime, participantCount: participants?.length || 0 });
+
     if (!conversationID || !description || !meetingLink) {
+        log.validation('conversationID/description/meetingLink', 'required fields missing', fnCtx);
         return response(400, { success: false, message: 'conversationID, description, and meetingLink are required' });
     }
 
@@ -1002,10 +1388,15 @@ async function createMeeting(userID: string, body: any): Promise<APIGatewayProxy
         updatedAt: nowIso,
     };
 
+    const dbStart = Date.now();
+    log.dbOperation('PutItem', MEETINGS_TABLE, { meetingID, conversationID }, fnCtx);
     await ddb.send(new PutCommand({
         TableName: MEETINGS_TABLE,
         Item: meeting,
     }));
+    log.dbResult('PutItem', MEETINGS_TABLE, 1, Date.now() - dbStart, fnCtx);
+
+    log.info('createMeeting completed', { ...fnCtx, meetingID, conversationID, participantCount: meeting.participants.length, durationMs: Date.now() - fnStart });
 
     return response(201, {
         success: true,
@@ -1015,12 +1406,18 @@ async function createMeeting(userID: string, body: any): Promise<APIGatewayProxy
     });
 }
 
-async function getMeetings(userID: string, params: any): Promise<APIGatewayProxyResult> {
+async function getMeetings(userID: string, params: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'getMeetings' };
     const { conversationID, status, startDate, endDate, limit = 20, offset = 0 } = params || {};
+
+    log.debug('Get meetings params', { ...fnCtx, conversationID, status, startDate, endDate, limit, offset });
 
     let meetings: Meeting[] = [];
 
     if (conversationID) {
+        const dbStart = Date.now();
+        log.dbOperation('Query', MEETINGS_TABLE, { index: 'ConversationIndex', conversationID }, fnCtx);
         const result = await ddb.send(new QueryCommand({
             TableName: MEETINGS_TABLE,
             IndexName: 'ConversationIndex',
@@ -1028,8 +1425,11 @@ async function getMeetings(userID: string, params: any): Promise<APIGatewayProxy
             ExpressionAttributeValues: { ':cid': conversationID },
             ScanIndexForward: false,
         }));
+        log.dbResult('Query', MEETINGS_TABLE, result.Items?.length || 0, Date.now() - dbStart, fnCtx);
         meetings = (result.Items || []) as Meeting[];
     } else {
+        const dbStart = Date.now();
+        log.dbOperation('Query', MEETINGS_TABLE, { index: 'OrganizerIndex', userID }, fnCtx);
         const result = await ddb.send(new QueryCommand({
             TableName: MEETINGS_TABLE,
             IndexName: 'OrganizerIndex',
@@ -1037,8 +1437,10 @@ async function getMeetings(userID: string, params: any): Promise<APIGatewayProxy
             ExpressionAttributeValues: { ':oid': userID },
             ScanIndexForward: false,
         }));
+        log.dbResult('Query', MEETINGS_TABLE, result.Items?.length || 0, Date.now() - dbStart, fnCtx);
         meetings = (result.Items || []) as Meeting[];
     }
+    log.flowCount('getMeetings', 'rawResults', meetings.length, fnCtx);
 
     // Filter by status
     if (status) {
@@ -1052,10 +1454,13 @@ async function getMeetings(userID: string, params: any): Promise<APIGatewayProxy
     if (endDate) {
         meetings = meetings.filter(m => m.startTime <= endDate);
     }
+    log.flowCount('getMeetings', 'afterFilters', meetings.length, fnCtx);
 
     // Paginate
     const total = meetings.length;
     const paginated = meetings.slice(Number(offset), Number(offset) + Number(limit));
+
+    log.info('getMeetings completed', { ...fnCtx, total, returned: paginated.length, durationMs: Date.now() - fnStart });
 
     return response(200, {
         success: true,
@@ -1065,18 +1470,26 @@ async function getMeetings(userID: string, params: any): Promise<APIGatewayProxy
     });
 }
 
-async function updateMeeting(userID: string, meetingID: string, body: any): Promise<APIGatewayProxyResult> {
+async function updateMeeting(userID: string, meetingID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'updateMeeting', meetingID };
+
+    const dbStart = Date.now();
+    log.dbOperation('GetItem', MEETINGS_TABLE, { meetingID }, fnCtx);
     const meetingResult = await ddb.send(new GetCommand({
         TableName: MEETINGS_TABLE,
         Key: { meetingID },
     }));
+    log.dbResult('GetItem', MEETINGS_TABLE, meetingResult.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
     const meeting = meetingResult.Item as Meeting;
 
     if (!meeting) {
+        log.warn('Meeting not found', fnCtx);
         return response(404, { success: false, message: 'Meeting not found' });
     }
 
     if (meeting.organizerID !== userID) {
+        log.warn('Unauthorized meeting update attempt', { ...fnCtx, organizerID: meeting.organizerID });
         return response(403, { success: false, message: 'Only the organizer can update this meeting' });
     }
 
@@ -1096,6 +1509,10 @@ async function updateMeeting(userID: string, meetingID: string, body: any): Prom
     if (participants !== undefined) { updateExpressions.push('participants = :parts'); expressionValues[':parts'] = participants; }
     if (status !== undefined) { updateExpressions.push('#s = :status'); expressionValues[':status'] = status; expressionNames['#s'] = 'status'; }
 
+    log.debug('Meeting update fields', { ...fnCtx, fieldsUpdated: updateExpressions.length - 1 });
+
+    const updateStart = Date.now();
+    log.dbOperation('UpdateItem', MEETINGS_TABLE, { meetingID }, fnCtx);
     await ddb.send(new UpdateCommand({
         TableName: MEETINGS_TABLE,
         Key: { meetingID },
@@ -1103,6 +1520,9 @@ async function updateMeeting(userID: string, meetingID: string, body: any): Prom
         ExpressionAttributeValues: expressionValues,
         ...(Object.keys(expressionNames).length > 0 ? { ExpressionAttributeNames: expressionNames } : {}),
     }));
+    log.dbResult('UpdateItem', MEETINGS_TABLE, 1, Date.now() - updateStart, fnCtx);
+
+    log.info('updateMeeting completed', { ...fnCtx, durationMs: Date.now() - fnStart });
 
     return response(200, {
         success: true,
@@ -1111,23 +1531,33 @@ async function updateMeeting(userID: string, meetingID: string, body: any): Prom
     });
 }
 
-async function deleteMeeting(userID: string, meetingID: string, params: any): Promise<APIGatewayProxyResult> {
+async function deleteMeeting(userID: string, meetingID: string, params: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'deleteMeeting', meetingID };
+
+    const dbStart = Date.now();
+    log.dbOperation('GetItem', MEETINGS_TABLE, { meetingID }, fnCtx);
     const meetingResult = await ddb.send(new GetCommand({
         TableName: MEETINGS_TABLE,
         Key: { meetingID },
     }));
+    log.dbResult('GetItem', MEETINGS_TABLE, meetingResult.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
     const meeting = meetingResult.Item as Meeting;
 
     if (!meeting) {
+        log.warn('Meeting not found', fnCtx);
         return response(404, { success: false, message: 'Meeting not found' });
     }
 
     if (meeting.organizerID !== userID) {
+        log.warn('Unauthorized meeting delete attempt', { ...fnCtx, organizerID: meeting.organizerID });
         return response(403, { success: false, message: 'Only the organizer can delete this meeting' });
     }
 
     // Soft delete by updating status
     const nowIso = new Date().toISOString();
+    const updateStart = Date.now();
+    log.dbOperation('UpdateItem', MEETINGS_TABLE, { meetingID, action: 'soft-delete' }, fnCtx);
     await ddb.send(new UpdateCommand({
         TableName: MEETINGS_TABLE,
         Key: { meetingID },
@@ -1135,6 +1565,9 @@ async function deleteMeeting(userID: string, meetingID: string, params: any): Pr
         ExpressionAttributeNames: { '#s': 'status' },
         ExpressionAttributeValues: { ':status': 'cancelled', ':ua': nowIso },
     }));
+    log.dbResult('UpdateItem', MEETINGS_TABLE, 1, Date.now() - updateStart, fnCtx);
+
+    log.info('deleteMeeting completed', { ...fnCtx, durationMs: Date.now() - fnStart });
 
     return response(200, {
         success: true,
@@ -1147,9 +1580,12 @@ async function deleteMeeting(userID: string, meetingID: string, params: any): Pr
 // GROUPS ENDPOINTS
 // ========================================
 
-async function createGroup(userID: string, body: any): Promise<APIGatewayProxyResult> {
+async function createGroup(userID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
     const startTime = Date.now();
+    const fnCtx = { ...logCtx, function: 'createGroup' };
     const { name, description, members, category, createConversation = true } = body;
+
+    log.debug('Create group params', { ...fnCtx, name, memberCount: members?.length, category, createConversation });
 
     // ========================================
     // AUTHORIZATION: Input Validation
@@ -1157,6 +1593,7 @@ async function createGroup(userID: string, body: any): Promise<APIGatewayProxyRe
 
     // Validate group name
     if (!name || typeof name !== 'string' || name.trim().length === 0) {
+        log.validation('name', 'Group name is required and must be a non-empty string', fnCtx);
         AuditService.logAction({
             userID,
             action: 'CREATE_GROUP',
@@ -1173,6 +1610,7 @@ async function createGroup(userID: string, body: any): Promise<APIGatewayProxyRe
     }
 
     if (name.length > 255) {
+        log.validation('name', 'Group name must be less than 255 characters', fnCtx);
         AuditService.logAction({
             userID,
             action: 'CREATE_GROUP',
@@ -1190,6 +1628,7 @@ async function createGroup(userID: string, body: any): Promise<APIGatewayProxyRe
 
     // Validate members array
     if (!members || !Array.isArray(members) || members.length === 0) {
+        log.validation('members', 'members must be a non-empty array of user IDs', fnCtx);
         AuditService.logAction({
             userID,
             action: 'CREATE_GROUP',
@@ -1208,6 +1647,7 @@ async function createGroup(userID: string, body: any): Promise<APIGatewayProxyRe
     // Validate member IDs format
     for (const memberId of members) {
         if (typeof memberId !== 'string' || memberId.trim().length === 0) {
+            log.validation('memberID', 'All member IDs must be non-empty strings', fnCtx);
             AuditService.logAction({
                 userID,
                 action: 'CREATE_GROUP',
@@ -1226,6 +1666,7 @@ async function createGroup(userID: string, body: any): Promise<APIGatewayProxyRe
 
     // Validate category if provided
     if (category && !SYSTEM_MODULES.includes(category)) {
+        log.validation('category', `Invalid category. Must be one of: ${SYSTEM_MODULES.join(', ')}`, fnCtx);
         AuditService.logAction({
             userID,
             action: 'CREATE_GROUP',
@@ -1247,9 +1688,11 @@ async function createGroup(userID: string, body: any): Promise<APIGatewayProxyRe
 
     // Ensure owner is in members and deduplicate
     const uniqueMembers = Array.from(new Set([...members, userID]));
+    log.flowCount('createGroup', 'uniqueMembers', uniqueMembers.length, fnCtx);
 
     // Check member limit
     if (uniqueMembers.length > MAX_GROUP_MEMBERS) {
+        log.warn('Member limit exceeded', { ...fnCtx, memberCount: uniqueMembers.length, maxMembers: MAX_GROUP_MEMBERS });
         AuditService.logAction({
             userID,
             action: 'CREATE_GROUP',
@@ -1267,6 +1710,7 @@ async function createGroup(userID: string, body: any): Promise<APIGatewayProxyRe
 
     // Ensure at least one other member
     if (uniqueMembers.length < 2) {
+        log.validation('members', 'Group must have at least one other member', fnCtx);
         AuditService.logAction({
             userID,
             action: 'CREATE_GROUP',
@@ -1297,10 +1741,13 @@ async function createGroup(userID: string, body: any): Promise<APIGatewayProxyRe
     };
 
     try {
+        const dbStart = Date.now();
+        log.dbOperation('PutItem', TEAMS_TABLE, { teamID }, fnCtx);
         await ddb.send(new PutCommand({
             TableName: TEAMS_TABLE,
             Item: team,
         }));
+        log.dbResult('PutItem', TEAMS_TABLE, 1, Date.now() - dbStart, fnCtx);
 
         let conversationID: string | undefined;
 
@@ -1324,10 +1771,13 @@ async function createGroup(userID: string, body: any): Promise<APIGatewayProxyRe
                 initialMessage: `Group ${name.trim()} created`,
             };
 
+            const convDbStart = Date.now();
+            log.dbOperation('PutItem', FAVORS_TABLE, { conversationID, teamID }, fnCtx);
             await ddb.send(new PutCommand({
                 TableName: FAVORS_TABLE,
                 Item: conversation,
             }));
+            log.dbResult('PutItem', FAVORS_TABLE, 1, Date.now() - convDbStart, fnCtx);
         }
 
         // Log successful group creation
@@ -1345,6 +1795,8 @@ async function createGroup(userID: string, body: any): Promise<APIGatewayProxyRe
             metadata: { ownerID: userID, conversationID },
         });
 
+        log.info('createGroup completed', { ...fnCtx, teamID, memberCount: uniqueMembers.length, conversationID, durationMs: Date.now() - startTime });
+
         return response(201, {
             success: true,
             teamID,
@@ -1353,6 +1805,8 @@ async function createGroup(userID: string, body: any): Promise<APIGatewayProxyRe
             group: team,
         });
     } catch (error: any) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        log.error('createGroup failed', fnCtx, err);
         AuditService.logAction({
             userID,
             action: 'CREATE_GROUP',
@@ -1369,21 +1823,30 @@ async function createGroup(userID: string, body: any): Promise<APIGatewayProxyRe
     }
 }
 
-async function getGroups(userID: string, params: any): Promise<APIGatewayProxyResult> {
+async function getGroups(userID: string, params: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'getGroups' };
     const { category, limit = 20, offset = 0 } = params || {};
 
+    log.debug('Get groups params', { ...fnCtx, category, limit, offset });
+
     // Scan for teams where user is a member
+    const dbStart = Date.now();
+    log.dbOperation('Scan', TEAMS_TABLE, { filter: 'contains(members, userID)' }, fnCtx);
     const result = await ddb.send(new ScanCommand({
         TableName: TEAMS_TABLE,
         FilterExpression: 'contains(members, :uid)',
         ExpressionAttributeValues: { ':uid': userID },
     }));
+    log.dbResult('Scan', TEAMS_TABLE, result.Items?.length || 0, Date.now() - dbStart, fnCtx);
 
     let groups = (result.Items || []) as Team[];
+    log.flowCount('getGroups', 'rawResults', groups.length, fnCtx);
 
     // Filter by category
     if (category) {
         groups = groups.filter(g => g.category === category);
+        log.flowCount('getGroups', 'afterCategoryFilter', groups.length, fnCtx);
     }
 
     // Sort by updatedAt desc
@@ -1392,6 +1855,8 @@ async function getGroups(userID: string, params: any): Promise<APIGatewayProxyRe
     // Paginate
     const total = groups.length;
     const paginated = groups.slice(Number(offset), Number(offset) + Number(limit));
+
+    log.info('getGroups completed', { ...fnCtx, total, returned: paginated.length, durationMs: Date.now() - fnStart });
 
     return response(200, {
         success: true,
@@ -1411,20 +1876,30 @@ async function getGroups(userID: string, params: any): Promise<APIGatewayProxyRe
     });
 }
 
-async function getGroupDetails(userID: string, teamID: string): Promise<APIGatewayProxyResult> {
+async function getGroupDetails(userID: string, teamID: string, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'getGroupDetails', teamID };
+
+    const dbStart = Date.now();
+    log.dbOperation('GetItem', TEAMS_TABLE, { teamID }, fnCtx);
     const result = await ddb.send(new GetCommand({
         TableName: TEAMS_TABLE,
         Key: { teamID },
     }));
+    log.dbResult('GetItem', TEAMS_TABLE, result.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
     const team = result.Item as Team;
 
     if (!team) {
+        log.warn('Group not found', fnCtx);
         return response(404, { success: false, message: 'Group not found' });
     }
 
     if (!team.members.includes(userID)) {
+        log.warn('Unauthorized group access attempt', fnCtx);
         return response(403, { success: false, message: 'Unauthorized' });
     }
+
+    log.info('getGroupDetails completed', { ...fnCtx, memberCount: team.members.length, durationMs: Date.now() - fnStart });
 
     return response(200, {
         success: true,
@@ -1445,20 +1920,27 @@ async function getGroupDetails(userID: string, teamID: string): Promise<APIGatew
     });
 }
 
-async function updateGroup(userID: string, teamID: string, body: any): Promise<APIGatewayProxyResult> {
+async function updateGroup(userID: string, teamID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
     const startTime = Date.now();
+    const fnCtx = { ...logCtx, function: 'updateGroup', teamID };
+
+    log.debug('Update group request', fnCtx);
 
     // ========================================
     // AUTHORIZATION: Team Existence & Ownership
     // ========================================
 
+    const dbStart = Date.now();
+    log.dbOperation('GetItem', TEAMS_TABLE, { teamID }, fnCtx);
     const result = await ddb.send(new GetCommand({
         TableName: TEAMS_TABLE,
         Key: { teamID },
     }));
+    log.dbResult('GetItem', TEAMS_TABLE, result.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
     const team = result.Item as Team;
 
     if (!team) {
+        log.warn('Group not found', fnCtx);
         AuditService.logAction({
             userID,
             action: 'UPDATE_GROUP',
@@ -1475,6 +1957,7 @@ async function updateGroup(userID: string, teamID: string, body: any): Promise<A
     }
 
     if (team.ownerID !== userID) {
+        log.warn('Unauthorized group update attempt', { ...fnCtx, ownerID: team.ownerID });
         AuditService.logAction({
             userID,
             action: 'UPDATE_GROUP',
@@ -1499,6 +1982,7 @@ async function updateGroup(userID: string, teamID: string, body: any): Promise<A
     // Validate name if provided
     if (name !== undefined) {
         if (typeof name !== 'string' || name.trim().length === 0) {
+            log.validation('name', 'Group name must be a non-empty string', fnCtx);
             AuditService.logAction({
                 userID,
                 action: 'UPDATE_GROUP',
@@ -1514,6 +1998,7 @@ async function updateGroup(userID: string, teamID: string, body: any): Promise<A
             return response(400, { success: false, message: 'Group name must be a non-empty string' });
         }
         if (name.length > 255) {
+            log.validation('name', 'Group name must be less than 255 characters', fnCtx);
             AuditService.logAction({
                 userID,
                 action: 'UPDATE_GROUP',
@@ -1532,6 +2017,7 @@ async function updateGroup(userID: string, teamID: string, body: any): Promise<A
 
     // Validate description if provided
     if (description !== undefined && typeof description !== 'string') {
+        log.validation('description', 'Group description must be a string', fnCtx);
         AuditService.logAction({
             userID,
             action: 'UPDATE_GROUP',
@@ -1549,6 +2035,7 @@ async function updateGroup(userID: string, teamID: string, body: any): Promise<A
 
     // Validate category if provided
     if (category !== undefined && !SYSTEM_MODULES.includes(category)) {
+        log.validation('category', `Invalid category. Must be one of: ${SYSTEM_MODULES.join(', ')}`, fnCtx);
         AuditService.logAction({
             userID,
             action: 'UPDATE_GROUP',
@@ -1574,6 +2061,8 @@ async function updateGroup(userID: string, teamID: string, body: any): Promise<A
     if (category !== undefined) { updateExpressions.push('category = :cat'); expressionValues[':cat'] = category; }
 
     try {
+        const updateStart = Date.now();
+        log.dbOperation('UpdateItem', TEAMS_TABLE, { teamID, fieldsUpdated: updateExpressions.length - 1 }, fnCtx);
         await ddb.send(new UpdateCommand({
             TableName: TEAMS_TABLE,
             Key: { teamID },
@@ -1581,6 +2070,7 @@ async function updateGroup(userID: string, teamID: string, body: any): Promise<A
             ExpressionAttributeNames: name !== undefined ? { '#n': 'name' } : undefined,
             ExpressionAttributeValues: expressionValues,
         }));
+        log.dbResult('UpdateItem', TEAMS_TABLE, 1, Date.now() - updateStart, fnCtx);
 
         AuditService.logAction({
             userID,
@@ -1598,12 +2088,16 @@ async function updateGroup(userID: string, teamID: string, body: any): Promise<A
             durationMs: Date.now() - startTime,
         });
 
+        log.info('updateGroup completed', { ...fnCtx, durationMs: Date.now() - startTime });
+
         return response(200, {
             success: true,
             message: 'Group updated successfully',
             group: { teamID, name: name?.trim(), description, category, updatedAt: nowIso },
         });
     } catch (error: any) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        log.error('updateGroup failed', fnCtx, err);
         AuditService.logAction({
             userID,
             action: 'UPDATE_GROUP',
@@ -1620,15 +2114,19 @@ async function updateGroup(userID: string, teamID: string, body: any): Promise<A
     }
 }
 
-async function addGroupMember(userID: string, teamID: string, body: any): Promise<APIGatewayProxyResult> {
+async function addGroupMember(userID: string, teamID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
     const startTime = Date.now();
+    const fnCtx = { ...logCtx, function: 'addGroupMember', teamID };
     const { userID: memberUserID } = body;
+
+    log.debug('Add group member request', { ...fnCtx, memberUserID });
 
     // ========================================
     // AUTHORIZATION: Input Validation
     // ========================================
 
     if (!memberUserID || typeof memberUserID !== 'string' || memberUserID.trim().length === 0) {
+        log.validation('userID', 'userID is required and must be a non-empty string', fnCtx);
         AuditService.logAction({
             userID,
             action: 'ADD_GROUP_MEMBER',
@@ -1645,6 +2143,7 @@ async function addGroupMember(userID: string, teamID: string, body: any): Promis
     }
 
     if (memberUserID === userID) {
+        log.validation('userID', 'Cannot add yourself to a group', fnCtx);
         AuditService.logAction({
             userID,
             action: 'ADD_GROUP_MEMBER',
@@ -1664,13 +2163,17 @@ async function addGroupMember(userID: string, teamID: string, body: any): Promis
     // AUTHORIZATION: Team Owner Verification
     // ========================================
 
+    const dbStart = Date.now();
+    log.dbOperation('GetItem', TEAMS_TABLE, { teamID }, fnCtx);
     const result = await ddb.send(new GetCommand({
         TableName: TEAMS_TABLE,
         Key: { teamID },
     }));
+    log.dbResult('GetItem', TEAMS_TABLE, result.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
     const team = result.Item as Team;
 
     if (!team) {
+        log.warn('Group not found', fnCtx);
         AuditService.logAction({
             userID,
             action: 'ADD_GROUP_MEMBER',
@@ -1687,6 +2190,7 @@ async function addGroupMember(userID: string, teamID: string, body: any): Promis
     }
 
     if (team.ownerID !== userID) {
+        log.warn('Unauthorized add member attempt', { ...fnCtx, ownerID: team.ownerID });
         AuditService.logAction({
             userID,
             action: 'ADD_GROUP_MEMBER',
@@ -1707,6 +2211,7 @@ async function addGroupMember(userID: string, teamID: string, body: any): Promis
     // ========================================
 
     if (team.members.includes(memberUserID)) {
+        log.warn('Member already exists', { ...fnCtx, memberUserID });
         AuditService.logAction({
             userID,
             action: 'ADD_GROUP_MEMBER',
@@ -1723,6 +2228,7 @@ async function addGroupMember(userID: string, teamID: string, body: any): Promis
     }
 
     if (team.members.length >= MAX_GROUP_MEMBERS) {
+        log.warn('Member limit reached', { ...fnCtx, currentCount: team.members.length, maxMembers: MAX_GROUP_MEMBERS });
         AuditService.logAction({
             userID,
             action: 'ADD_GROUP_MEMBER',
@@ -1742,12 +2248,15 @@ async function addGroupMember(userID: string, teamID: string, body: any): Promis
     const updatedMembers = [...team.members, memberUserID];
 
     try {
+        const updateStart = Date.now();
+        log.dbOperation('UpdateItem', TEAMS_TABLE, { teamID, addingMember: memberUserID }, fnCtx);
         await ddb.send(new UpdateCommand({
             TableName: TEAMS_TABLE,
             Key: { teamID },
             UpdateExpression: 'SET members = :members, updatedAt = :ua',
             ExpressionAttributeValues: { ':members': updatedMembers, ':ua': nowIso },
         }));
+        log.dbResult('UpdateItem', TEAMS_TABLE, 1, Date.now() - updateStart, fnCtx);
 
         AuditService.logAction({
             userID,
@@ -1765,12 +2274,16 @@ async function addGroupMember(userID: string, teamID: string, body: any): Promis
             durationMs: Date.now() - startTime,
         });
 
+        log.info('addGroupMember completed', { ...fnCtx, memberUserID, newMemberCount: updatedMembers.length, durationMs: Date.now() - startTime });
+
         return response(200, {
             success: true,
             message: 'Member added successfully',
             member: { userID: memberUserID, joinedAt: nowIso },
         });
     } catch (error: any) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        log.error('addGroupMember failed', fnCtx, err);
         AuditService.logAction({
             userID,
             action: 'ADD_GROUP_MEMBER',
@@ -1787,20 +2300,27 @@ async function addGroupMember(userID: string, teamID: string, body: any): Promis
     }
 }
 
-async function removeGroupMember(userID: string, teamID: string, memberUserID: string): Promise<APIGatewayProxyResult> {
+async function removeGroupMember(userID: string, teamID: string, memberUserID: string, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
     const startTime = Date.now();
+    const fnCtx = { ...logCtx, function: 'removeGroupMember', teamID, memberUserID };
+
+    log.debug('Remove group member request', fnCtx);
 
     // ========================================
     // AUTHORIZATION: Team Owner Verification
     // ========================================
 
+    const dbStart = Date.now();
+    log.dbOperation('GetItem', TEAMS_TABLE, { teamID }, fnCtx);
     const result = await ddb.send(new GetCommand({
         TableName: TEAMS_TABLE,
         Key: { teamID },
     }));
+    log.dbResult('GetItem', TEAMS_TABLE, result.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
     const team = result.Item as Team;
 
     if (!team) {
+        log.warn('Group not found', fnCtx);
         AuditService.logAction({
             userID,
             action: 'REMOVE_GROUP_MEMBER',
@@ -1817,6 +2337,7 @@ async function removeGroupMember(userID: string, teamID: string, memberUserID: s
     }
 
     if (team.ownerID !== userID) {
+        log.warn('Unauthorized remove member attempt', { ...fnCtx, ownerID: team.ownerID });
         AuditService.logAction({
             userID,
             action: 'REMOVE_GROUP_MEMBER',
@@ -1837,6 +2358,7 @@ async function removeGroupMember(userID: string, teamID: string, memberUserID: s
     // ========================================
 
     if (memberUserID === team.ownerID) {
+        log.warn('Attempted to remove group owner', fnCtx);
         AuditService.logAction({
             userID,
             action: 'REMOVE_GROUP_MEMBER',
@@ -1853,6 +2375,7 @@ async function removeGroupMember(userID: string, teamID: string, memberUserID: s
     }
 
     if (!team.members.includes(memberUserID)) {
+        log.warn('Member not found in group', fnCtx);
         AuditService.logAction({
             userID,
             action: 'REMOVE_GROUP_MEMBER',
@@ -1872,12 +2395,15 @@ async function removeGroupMember(userID: string, teamID: string, memberUserID: s
     const updatedMembers = team.members.filter(m => m !== memberUserID);
 
     try {
+        const updateStart = Date.now();
+        log.dbOperation('UpdateItem', TEAMS_TABLE, { teamID, removingMember: memberUserID }, fnCtx);
         await ddb.send(new UpdateCommand({
             TableName: TEAMS_TABLE,
             Key: { teamID },
             UpdateExpression: 'SET members = :members, updatedAt = :ua',
             ExpressionAttributeValues: { ':members': updatedMembers, ':ua': nowIso },
         }));
+        log.dbResult('UpdateItem', TEAMS_TABLE, 1, Date.now() - updateStart, fnCtx);
 
         AuditService.logAction({
             userID,
@@ -1895,11 +2421,15 @@ async function removeGroupMember(userID: string, teamID: string, memberUserID: s
             durationMs: Date.now() - startTime,
         });
 
+        log.info('removeGroupMember completed', { ...fnCtx, newMemberCount: updatedMembers.length, durationMs: Date.now() - startTime });
+
         return response(200, {
             success: true,
             message: 'Member removed successfully',
         });
     } catch (error: any) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        log.error('removeGroupMember failed', fnCtx, err);
         AuditService.logAction({
             userID,
             action: 'REMOVE_GROUP_MEMBER',
