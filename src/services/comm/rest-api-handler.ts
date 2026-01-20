@@ -67,25 +67,33 @@ const log = {
 
     debug(message: string, context?: LogContext): void {
         if (this._shouldLog('DEBUG')) {
-            console.log(this._formatLog('DEBUG', message, context));
+            const formatted = this._formatLog('DEBUG', message, context);
+            console.log(formatted);
+            console.log(`[DEBUG] ${message}`, context || '');
         }
     },
 
     info(message: string, context?: LogContext): void {
         if (this._shouldLog('INFO')) {
-            console.log(this._formatLog('INFO', message, context));
+            const formatted = this._formatLog('INFO', message, context);
+            console.log(formatted);
+            console.log(`[INFO] ${message}`, context || '');
         }
     },
 
     warn(message: string, context?: LogContext): void {
         if (this._shouldLog('WARN')) {
-            console.warn(this._formatLog('WARN', message, context));
+            const formatted = this._formatLog('WARN', message, context);
+            console.warn(formatted);
+            console.warn(`[WARN] ${message}`, context || '');
         }
     },
 
     error(message: string, context?: LogContext, error?: Error): void {
         if (this._shouldLog('ERROR')) {
-            console.error(this._formatLog('ERROR', message, context, error));
+            const formatted = this._formatLog('ERROR', message, context, error);
+            console.error(formatted);
+            console.error(`[ERROR] ${message}`, context || '', error || '');
         }
     },
 
@@ -246,8 +254,30 @@ function response(statusCode: number, body: any): APIGatewayProxyResult {
 
 function getUserIdFromEvent(event: APIGatewayProxyEvent): string | null {
     // Extract user ID from JWT claims (set by authorizer)
-    const claims = event.requestContext.authorizer?.claims;
-    return claims?.sub || claims?.['cognito:username'] || null;
+    const authorizer = event.requestContext.authorizer;
+    
+    // Log the full authorizer object for debugging
+    console.log('DEBUG: Authorizer object:', JSON.stringify(authorizer, null, 2));
+    
+    if (!authorizer) {
+        console.error('ERROR: No authorizer in request context');
+        return null;
+    }
+    
+    const claims = authorizer.claims;
+    console.log('DEBUG: Claims from authorizer:', JSON.stringify(claims, null, 2));
+    
+    // Try multiple ways to extract user ID
+    const userID = claims?.sub || claims?.['cognito:username'] || claims?.['sub'] || authorizer?.principalId;
+    
+    if (!userID) {
+        console.error('ERROR: Could not extract userID from claims or principalId');
+        console.error('DEBUG: Authorizer keys:', Object.keys(authorizer));
+    } else {
+        console.log('DEBUG: Successfully extracted userID:', userID);
+    }
+    
+    return userID || null;
 }
 
 // ========================================
@@ -258,15 +288,26 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const handlerStartTime = Date.now();
     const requestId = event.requestContext.requestId;
     const { httpMethod, path, pathParameters, queryStringParameters, body } = event;
+    
+    // Log full event for debugging
+    console.log('=== INCOMING REQUEST ===');
+    console.log('RequestID:', requestId);
+    console.log('Method:', httpMethod);
+    console.log('Path:', path);
+    console.log('RequestContext:', JSON.stringify(event.requestContext, null, 2));
+    console.log('========================');
+    
     const userID = getUserIdFromEvent(event);
 
     // Log incoming request
     log.request(event, userID);
 
     if (!userID) {
+        console.error('CRITICAL: Failed to extract userID from event');
+        console.error('Full event.requestContext.authorizer:', JSON.stringify(event.requestContext.authorizer, null, 2));
         log.warn('Authentication failed - no userID extracted', { requestId, path, httpMethod });
         log.response(401, false, Date.now() - handlerStartTime, { requestId });
-        return response(401, { success: false, message: 'Unauthorized' });
+        return response(401, { success: false, message: 'Unauthorized - Failed to extract user ID from request' });
     }
 
     const logCtx: LogContext = { requestId, userID, httpMethod, path };

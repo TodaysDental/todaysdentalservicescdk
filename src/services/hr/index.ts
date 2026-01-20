@@ -1703,29 +1703,24 @@ async function approveLeave(leaveId: string, userPerms?: UserPermissions, event?
             console.warn('⚠️ Leave request missing dates, skipping shift cancellation');
         }
 
-        // Cancel overlapping shifts
+        // DELETE overlapping shifts (not just cancel - actually remove from table)
         if (overlappingShifts.length > 0) {
             try {
-                console.log(`🔄 Cancelling ${overlappingShifts.length} overlapping shift(s)...`);
+                console.log(`🔄 DELETING ${overlappingShifts.length} overlapping shift(s) from table...`);
                 
-                const cancelPromises = overlappingShifts.map(async (shift) => {
-                    console.log('🔄 Cancelling shift:', shift.shiftId, 'for date:', shift.startTime);
+                const deletePromises = overlappingShifts.map(async (shift) => {
+                    console.log('🗑️ Deleting shift:', shift.shiftId, 'for date:', shift.startTime);
                     
-                    // Update shift status to cancelled
-                    await ddb.send(new UpdateCommand({
+                    // ACTUALLY DELETE the shift from the table
+                    await ddb.send(new DeleteCommand({
                         TableName: SHIFTS_TABLE,
-                        Key: { shiftId: shift.shiftId },
-                        UpdateExpression: 'set #status = :status, cancelReason = :reason',
-                        ExpressionAttributeNames: { '#status': 'status' },
-                        ExpressionAttributeValues: { 
-                          ':status': 'cancelled',
-                          ':reason': `Leave approved for ${leave.startDate} to ${leave.endDate}` 
-                        }
+                        Key: { shiftId: shift.shiftId }
                     }));
                     
-                    // Audit log for each cancelled shift
+                    console.log('✅ Shift deleted from table:', shift.shiftId);
+                    
+                    // Audit log for each deleted shift
                     if (userPerms) {
-                      const userClinicId = userPerms.clinicRoles?.[0]?.clinicId;
                       await auditLogger.log({
                         userId: userPerms.email,
                         userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
@@ -1733,56 +1728,67 @@ async function approveLeave(leaveId: string, userPerms?: UserPermissions, event?
                         action: 'DELETE',
                         resource: 'SHIFT',
                         resourceId: shift.shiftId,
-                        clinicId: shift.clinicId || userClinicId,
-                        before: { status: shift.status },
-                        after: { status: 'cancelled' },
-                        reason: `Shift cancelled due to approved leave request (${leaveId})`,
+                        clinicId: shift.clinicId, // Use shift's actual clinicId
+                        before: AuditLogger.sanitizeForAudit(shift),
+                        reason: `Shift deleted due to approved leave request (${leaveId})`,
                         metadata: {
                           ...AuditLogger.createShiftMetadata(shift),
                           leaveId: leaveId,
                           leaveStartDate: leave.startDate,
                           leaveEndDate: leave.endDate,
-                          actionType: 'Shift Cancelled (Leave Approved)',
+                          actionType: 'Shift Deleted (Leave Approved)',
+                          staffId: shift.staffId,
+                          shiftDate: shift.startTime,
                         },
                         ...AuditLogger.extractRequestContext(event),
                       });
                     }
                 });
 
-                await Promise.all(cancelPromises);
-                console.log('✅ All overlapping shifts cancelled and logged');
-            } catch (cancelError) {
-                console.error('⚠️ Error cancelling shifts (leave still approved):', cancelError);
-                // Don't fail the approval if shift cancellation fails
+                await Promise.all(deletePromises);
+                console.log('✅ All overlapping shifts DELETED from table and logged');
+            } catch (deleteError) {
+                console.error('⚠️ Error deleting shifts (leave still approved):', deleteError);
+                // Don't fail the approval if shift deletion fails
             }
         }
 
         // --- Audit Log ---
         if (userPerms) {
-          // Get the first clinicId from user's clinic roles for audit purposes
-          const userClinicId = userPerms.clinicRoles?.[0]?.clinicId;
+          // Get clinicId from deleted shifts (best match for filtering), or fallback to approver's clinic
+          // This ensures the leave audit shows up when filtering by the clinic where shifts were affected
+          const affectedClinicIds = [...new Set(overlappingShifts.map(s => s.clinicId).filter(Boolean))];
+          const primaryClinicId = affectedClinicIds[0] || userPerms.clinicRoles?.[0]?.clinicId;
           
-          await auditLogger.log({
-            userId: userPerms.email,
-            userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
-            userRole: AuditLogger.getUserRole(userPerms),
-            action: 'APPROVE',
-            resource: 'LEAVE',
-            resourceId: leaveId,
-            clinicId: userClinicId, // Include clinic for filtering
-            before: { status: leave.status, staffId: leave.staffId },
-            after: { status: 'approved' },
-            reason: approvalNotes,
-            metadata: {
-              ...AuditLogger.createLeaveMetadata(leave, { cancelledShifts: overlappingShifts.length }),
-              actionBy: userPerms.email,
-              actionByName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim(),
-              actionType: 'Leave Approved',
-            },
-            ...AuditLogger.extractRequestContext(event),
-          });
+          // Create audit log for each affected clinic to ensure visibility when filtering by clinic
+          const clinicsToLog = affectedClinicIds.length > 0 ? affectedClinicIds : [primaryClinicId];
           
-          console.log(`✅ Audit log created: APPROVE LEAVE ${leaveId} by ${userPerms.email}`);
+          for (const clinicIdForAudit of clinicsToLog) {
+            await auditLogger.log({
+              userId: userPerms.email,
+              userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+              userRole: AuditLogger.getUserRole(userPerms),
+              action: 'APPROVE',
+              resource: 'LEAVE',
+              resourceId: leaveId,
+              clinicId: clinicIdForAudit, // Use affected clinic(s) for proper filtering
+              before: { status: leave.status, staffId: leave.staffId },
+              after: { status: 'approved' },
+              reason: approvalNotes,
+              metadata: {
+                ...AuditLogger.createLeaveMetadata(leave, { cancelledShifts: overlappingShifts.length }),
+                actionBy: userPerms.email,
+                actionByName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim(),
+                actionType: 'Leave Approved',
+                requestedBy: leave.staffId, // Include the staff who requested leave
+                affectedClinics: affectedClinicIds,
+                deletedShiftCount: overlappingShifts.length,
+              },
+              ...AuditLogger.extractRequestContext(event),
+            });
+          }
+          
+          console.log(`✅ Audit log(s) created: APPROVE LEAVE ${leaveId} by ${userPerms.email} for clinics: ${clinicsToLog.join(', ')}`);
         }
 
         const response = {
@@ -1825,30 +1831,50 @@ async function updateLeaveStatus(leaveId: string, status: 'approved' | 'denied',
 
     // --- Audit Log ---
     if (userPerms) {
-      // Get the first clinicId from user's clinic roles for audit purposes
-      const userClinicId = userPerms.clinicRoles?.[0]?.clinicId;
+      // Look up the staff's clinics from StaffClinicInfo table for proper clinic filtering
+      // Table has partition key 'email' and sort key 'clinicId', so we can query directly
+      let staffClinicIds: string[] = [];
+      try {
+        const { Items: staffInfoItems } = await ddb.send(new QueryCommand({
+          TableName: STAFF_INFO_TABLE,
+          KeyConditionExpression: 'email = :email',
+          ExpressionAttributeValues: { ':email': leave.staffId.toLowerCase() },
+        }));
+        staffClinicIds = (staffInfoItems || []).map((item: any) => item.clinicId).filter(Boolean);
+        console.log(`📋 Found ${staffClinicIds.length} clinic(s) for staff ${leave.staffId}:`, staffClinicIds);
+      } catch (lookupError) {
+        console.warn('Could not look up staff clinics for audit:', lookupError);
+      }
       
-      await auditLogger.log({
-        userId: userPerms.email,
-        userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
-        userRole: AuditLogger.getUserRole(userPerms),
-        action: status === 'approved' ? 'APPROVE' : 'DENY',
-        resource: 'LEAVE',
-        resourceId: leaveId,
-        clinicId: userClinicId, // Include clinic for filtering
-        before: { status: previousStatus, staffId: leave.staffId },
-        after: { status },
-        reason: reason,
-        metadata: {
-          ...AuditLogger.createLeaveMetadata(leave),
-          actionBy: userPerms.email,
-          actionByName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim(),
-          actionType: status === 'approved' ? 'Leave Approved' : 'Leave Denied',
-        },
-        ...AuditLogger.extractRequestContext(event),
-      });
+      // Fallback to admin's clinic if we couldn't find staff's clinics
+      const clinicsToLog = staffClinicIds.length > 0 ? staffClinicIds : [userPerms.clinicRoles?.[0]?.clinicId].filter(Boolean);
       
-      console.log(`✅ Audit log created: ${status.toUpperCase()} LEAVE ${leaveId} by ${userPerms.email}`);
+      // Log to all relevant clinics for visibility
+      for (const clinicIdForAudit of clinicsToLog) {
+        await auditLogger.log({
+          userId: userPerms.email,
+          userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+          userRole: AuditLogger.getUserRole(userPerms),
+          action: status === 'approved' ? 'APPROVE' : 'DENY',
+          resource: 'LEAVE',
+          resourceId: leaveId,
+          clinicId: clinicIdForAudit, // Use staff's clinic(s) for proper filtering
+          before: { status: previousStatus, staffId: leave.staffId },
+          after: { status },
+          reason: reason,
+          metadata: {
+            ...AuditLogger.createLeaveMetadata(leave),
+            actionBy: userPerms.email,
+            actionByName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim(),
+            actionType: status === 'approved' ? 'Leave Approved' : 'Leave Denied',
+            requestedBy: leave.staffId,
+            denyReason: status === 'denied' ? reason : undefined,
+          },
+          ...AuditLogger.extractRequestContext(event),
+        });
+      }
+      
+      console.log(`✅ Audit log created: ${status.toUpperCase()} LEAVE ${leaveId} by ${userPerms.email} for clinics: ${clinicsToLog.join(', ')}`);
     }
 
     return httpOk({ leaveId, status });
