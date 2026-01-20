@@ -569,19 +569,6 @@ async function getOrCreateSession(
 // BEDROCK AGENT INVOCATION
 // ========================================================================
 
-// Voice call instruction prefix - injected into every voice call turn
-const VOICE_INSTRUCTION_PREFIX = `[VOICE CALL RULES - CRITICAL]:
-- Ask only ONE question at a time. Never combine questions.
-- Keep responses SHORT (1-2 sentences max).
-- For patient identification, ask in this order:
-  1. First: "What is your first name?"
-  2. After they answer: "And your last name?"
-  3. After they answer: "What is your date of birth?"
-- Accept any date format they speak (like "January 15th 1990").
-- After collecting all info, confirm: "I have [name], born [date]. Is that correct?"
-
-Caller said: `;
-
 async function invokeBedrock(params: {
   agentId: string;
   aliasId: string;
@@ -594,12 +581,9 @@ async function invokeBedrock(params: {
 }): Promise<{ response: string; toolsUsed: string[] }> {
   const { agentId, aliasId, sessionId, inputText, clinicId, inputMode, channel, timeoutMs } = params;
 
-  // For voice calls, prefix the input with voice-specific instructions
-  // This ensures the agent asks questions one at a time
-  const isVoiceCall = inputMode === 'Speech';
-  const effectiveInputText = isVoiceCall 
-    ? VOICE_INSTRUCTION_PREFIX + inputText
-    : inputText;
+  // Voice-specific instructions are now at the TOP of the system prompt (baked into agent)
+  // No need for runtime prefix - the agent knows to use short responses for voice calls
+  const isVoiceCall = channel === 'voice';
 
   const effectiveTimeoutMs = Number.isFinite(timeoutMs) ? Number(timeoutMs) : CONFIG.BEDROCK_TIMEOUT_MS;
   const controller = new AbortController();
@@ -610,7 +594,7 @@ async function invokeBedrock(params: {
       agentId,
       agentAliasId: aliasId,
       sessionId,
-      inputText: effectiveInputText,
+      inputText,
       sessionState: {
         sessionAttributes: {
           clinicId,

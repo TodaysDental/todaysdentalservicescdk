@@ -54,6 +54,7 @@ import {
   generateFullTTS,
   TTSChunk,
 } from '../chime/utils/streaming-tts-manager';
+import { getDateContext, getClinicTimezone } from '../../shared/prompts/ai-prompts';
 
 // ========================================================================
 // CONFIGURATION
@@ -1047,10 +1048,26 @@ async function invokeAiAgentWithStreaming(
     engine: voiceSettings.engine || 'neural',
   };
 
+  // Get timezone-aware date context for accurate scheduling
+  // Fetch clinic's timezone from the Clinics table
+  const clinicTimezone = await getClinicTimezone(session.clinicId);
+  const dateContext = getDateContext(clinicTimezone);
+  const [year, month, day] = dateContext.today.split('-');
+  const todayFormatted = `${month}/${day}/${year}`;
+
   const sessionAttributes: Record<string, string> = {
     clinicId: session.clinicId,
     callerNumber: session.callerNumber,
     isVoiceCall: 'true',
+    inputMode: 'Speech',
+    // Current date information for accurate scheduling (timezone-aware)
+    todayDate: dateContext.today,
+    todayFormatted: todayFormatted,
+    dayName: dateContext.dayName,
+    tomorrowDate: dateContext.tomorrowDate,
+    currentTime: dateContext.currentTime,
+    nextWeekDates: JSON.stringify(dateContext.nextWeekDates),
+    timezone: dateContext.timezone,
   };
 
   const invokeCommand = new InvokeAgentCommand({
@@ -1261,10 +1278,26 @@ async function invokeAiAgent(
   const thinking: string[] = [];
   let fullResponse = '';
 
+  // Get timezone-aware date context for accurate scheduling
+  // Fetch clinic's timezone from the Clinics table
+  const clinicTimezone = await getClinicTimezone(session.clinicId);
+  const dateContext = getDateContext(clinicTimezone);
+  const [year, month, day] = dateContext.today.split('-');
+  const todayFormatted = `${month}/${day}/${year}`;
+
   const sessionAttributes: Record<string, string> = {
     clinicId: session.clinicId,
     callerNumber: session.callerNumber,
     isVoiceCall: 'true',
+    inputMode: 'Speech',
+    // Current date information for accurate scheduling (timezone-aware)
+    todayDate: dateContext.today,
+    todayFormatted: todayFormatted,
+    dayName: dateContext.dayName,
+    tomorrowDate: dateContext.tomorrowDate,
+    currentTime: dateContext.currentTime,
+    nextWeekDates: JSON.stringify(dateContext.nextWeekDates),
+    timezone: dateContext.timezone,
   };
 
   const invokeCommand = new InvokeAgentCommand({

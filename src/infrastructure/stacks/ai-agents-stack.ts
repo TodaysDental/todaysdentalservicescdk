@@ -50,6 +50,21 @@ export interface AiAgentsStackProps extends StackProps {
   clinicInsuranceTableName?: string;
   
   // ========================================
+  // PATIENT PORTAL APPT TYPES INTEGRATION (from PatientPortalApptTypesStack)
+  // ========================================
+  /**
+   * Appointment types table name from PatientPortalApptTypesStack.
+   * Used by Action Group Lambda to look up appointment types when booking.
+   * Table schema: clinicId (PK), label (SK)
+   */
+  apptTypesTableName?: string;
+  
+  /**
+   * Appointment types table ARN for IAM permissions.
+   */
+  apptTypesTableArn?: string;
+  
+  // ========================================
   // CHIME STACK INTEGRATION (REQUIRED)
   // ========================================
   // These props MUST be passed from ChimeStack to avoid hardcoded imports
@@ -791,10 +806,59 @@ export class AiAgentsStack extends Stack {
     });
 
     // Allow Bedrock Agent to invoke foundation models
+    // ========================================
+    // SUPPORTED MODEL FAMILIES:
+    // ========================================
+    // 🧠 Anthropic Claude Family (top-tier reasoning, chat, summarization)
+    //    - Claude Sonnet 4.5 (anthropic.claude-sonnet-4-5-*)
+    //    - Claude Sonnet 4 (anthropic.claude-sonnet-4-*)
+    //    - Claude Opus 4.5 (anthropic.claude-opus-4-5-*)
+    //    - Claude Opus 4 (anthropic.claude-opus-4-*)
+    //    - Claude 3.7 Sonnet (anthropic.claude-3-7-sonnet-*)
+    //    - Claude 3.5 Sonnet v2 (anthropic.claude-3-5-sonnet-20241022-v2:0)
+    //    - Claude 3.5 Haiku (anthropic.claude-3-5-haiku-*)
+    //    - Claude 3 Sonnet (anthropic.claude-3-sonnet-*)
+    //    - Claude 3 Haiku (anthropic.claude-3-haiku-*)
+    // 🐘 Amazon Nova Series (AWS-native, cost-efficient, multimodal)
+    //    - Nova Micro (amazon.nova-micro-*) - ultra low-latency text
+    //    - Nova Lite (amazon.nova-lite-*) - multimodal text/image/video
+    //    - Nova Pro (amazon.nova-pro-*) - balanced high-capability
+    //    - Nova Premier (amazon.nova-premier-*) - advanced capabilities
+    //    - Nova Sonic (amazon.nova-sonic-*) - voice model
+    //    - Nova Canvas (amazon.nova-canvas-*) - image generation
+    //    - Nova Reel (amazon.nova-reel-*) - video generation
+    // 🦙 Meta Llama Family (open-source, instruction-following)
+    //    - Llama 4 (meta.llama4-*) - latest generation with MoE
+    //    - Llama 3.3 (meta.llama3-3-*) - performance-tuned
+    //    - Llama 3.2 (meta.llama3-2-*) - multimodal variants
+    //    - Llama 3.1 (meta.llama3-1-*) - 8B/70B/405B params
+    //    - Llama 3 (meta.llama3-*) - 8B/70B instruct
+    // 🤖 Cohere Command Models (enterprise text tasks, RAG)
+    //    - Command R (cohere.command-r-*)
+    //    - Command R+ (cohere.command-r-plus-*)
+    // 🔍 DeepSeek Models (reasoning, open-source)
+    //    - DeepSeek-R1 (deepseek.deepseek-r1-*)
+    //    - DeepSeek-V3 (deepseek.deepseek-v3-*)
+    // 🌟 Mistral AI Models (efficient, multilingual)
+    //    - Mistral Large (mistral.mistral-large-*)
+    //    - Mistral Small (mistral.mistral-small-*)
+    //    - Mixtral 8x7B (mistral.mixtral-8x7b-*)
+    // 💎 AI21 Labs Jamba (enterprise text generation)
+    //    - Jamba Instruct (ai21.jamba-instruct-*)
+    //    - Jamba 1.5 (ai21.jamba-1-5-*)
+    // ========================================
     this.bedrockAgentRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['bedrock:InvokeModel'],
-      resources: ['arn:aws:bedrock:*::foundation-model/*'],
+      actions: [
+        'bedrock:InvokeModel',
+        'bedrock:InvokeModelWithResponseStream', // Streaming support
+      ],
+      resources: [
+        // Wildcard for all foundation models (covers current and future models)
+        'arn:aws:bedrock:*::foundation-model/*',
+        // Cross-region inference profiles (us.anthropic.*, us.meta.*, etc.)
+        `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/*`,
+      ],
     }));
 
     // ========================================
@@ -832,6 +896,8 @@ export class AiAgentsStack extends Stack {
         INSURANCE_PLANS_TABLE: 'TodaysDentalInsightsInsurancePlanSyncN1-InsurancePlans',
         // Fee schedules table for fee lookup (synced from OpenDental every 15 mins)
         FEE_SCHEDULES_TABLE: 'TodaysDentalInsightsFeeScheduleSyncN1-FeeSchedules',
+        // Appointment types table for booking appointments (from PatientPortalApptTypesStack)
+        APPT_TYPES_TABLE: props.apptTypesTableName || 'TodaysDentalInsightsPatientPortalApptTypesN1-ApptTypes',
       },
     });
     applyTags(this.actionGroupFn, { Function: 'action-group' });
@@ -890,6 +956,16 @@ export class AiAgentsStack extends Stack {
         feeSchedulesTableArn,
         `${feeSchedulesTableArn}/index/*`, // Include GSIs for efficient lookups
       ],
+    }));
+
+    // Grant read access to Appointment Types table for booking appointments
+    // This table is managed by PatientPortalApptTypesStack with schema: clinicId (PK), label (SK)
+    const apptTypesTableArn = props.apptTypesTableArn || 
+      `arn:aws:dynamodb:${this.region}:${this.account}:table/TodaysDentalInsightsPatientPortalApptTypesN1-ApptTypes`;
+    this.actionGroupFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+      resources: [apptTypesTableArn],
     }));
 
     // Allow Bedrock Agent role to invoke the action group Lambda

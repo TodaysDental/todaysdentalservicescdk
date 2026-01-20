@@ -28,6 +28,7 @@ import {
 } from '../../shared/utils/permissions-helper';
 import { AiAgent } from './agents';
 import { ConversationMessage } from './conversation-history';
+import { getDateContext, getClinicTimezone } from '../../shared/prompts/ai-prompts';
 
 // ========================================================================
 // CLIENTS
@@ -543,38 +544,33 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // Build session attributes (passed to action group Lambda)
     // Include current date information for accurate date calculations
-    const now = new Date();
-    const todayDate = now.toISOString().slice(0, 10); // YYYY-MM-DD
-    const dayName = now.toLocaleDateString('en-US', { weekday: 'long' });
-    const todayFormatted = now.toLocaleDateString('en-US'); // MM/DD/YYYY
+    // Fetch clinic's timezone from the Clinics table
+    const clinicTimezone = await getClinicTimezone(clinicId);
+    const dateContext = getDateContext(clinicTimezone);
     
-    // Calculate next 7 days for day name reference
-    const nextWeekDates: Record<string, string> = {};
-    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    for (let i = 0; i < 7; i++) {
-      const futureDate = new Date(now);
-      futureDate.setDate(futureDate.getDate() + i);
-      const futureDayName = dayNames[futureDate.getDay()];
-      nextWeekDates[futureDayName] = futureDate.toISOString().slice(0, 10);
-    }
+    // Format today's date for display (MM/DD/YYYY format)
+    const [year, month, day] = dateContext.today.split('-');
+    const todayFormatted = `${month}/${day}/${year}`;
     
     const sessionAttributes: Record<string, string> = {
       clinicId: clinicId,
       userId: userId,
       userName: userName,
       isPublicRequest: isPublic ? 'true' : 'false',
-      // Current date information for accurate scheduling
-      todayDate: todayDate,
+      // Current date information for accurate scheduling (timezone-aware)
+      todayDate: dateContext.today,
       todayFormatted: todayFormatted,
-      dayName: dayName,
-      nextWeekDates: JSON.stringify(nextWeekDates),
+      dayName: dateContext.dayName,
+      tomorrowDate: dateContext.tomorrowDate,
+      nextWeekDates: JSON.stringify(dateContext.nextWeekDates),
+      timezone: dateContext.timezone,
     };
 
     // Build prompt session attributes (visible to the agent as context)
     // These appear in the agent's prompt and help with date calculations
     const promptSessionAttributes: Record<string, string> = {
-      currentDate: `Today is ${dayName}, ${todayFormatted} (${todayDate})`,
-      dateContext: `When scheduling appointments, use ${todayDate} as today's date. Next week dates: ${JSON.stringify(nextWeekDates)}`,
+      currentDate: `Today is ${dateContext.dayName}, ${todayFormatted} (${dateContext.today}). Current time: ${dateContext.currentTime} (${dateContext.timezone})`,
+      dateContext: `When scheduling appointments, use ${dateContext.today} as today's date. Tomorrow is ${dateContext.tomorrowDate}. Next week dates: ${JSON.stringify(dateContext.nextWeekDates)}`,
     };
 
     // Log user message to conversation history

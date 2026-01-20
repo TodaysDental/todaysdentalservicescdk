@@ -534,6 +534,7 @@ adminStack.addDependency(chimeStack);
 const hrStack = new HrStack(app, 'TodaysDentalInsightsHrN1', {
  env,
  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+ clinicsTableName: chimeStack.clinicsTable.tableName, // For timezone lookup in shift emails
 });
 // hrStack.addDependency(coreStack); // Implicit
 
@@ -604,6 +605,13 @@ const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   clinicHoursTableArn: clinicHoursStack.clinicHoursTable.tableArn,
   
   // ========================================
+  // PATIENT PORTAL APPT TYPES INTEGRATION (from PatientPortalApptTypesStack)
+  // ========================================
+  // Used by Action Group Lambda to look up appointment types when booking
+  apptTypesTableName: patientPortalApptTypesStack.apptTypesTable.tableName,
+  apptTypesTableArn: patientPortalApptTypesStack.apptTypesTable.tableArn,
+  
+  // ========================================
   // CHIME STACK INTEGRATION (REQUIRED)
   // ========================================
   // CRITICAL FIX: Pass all required props explicitly to avoid fragile hardcoded defaults
@@ -668,6 +676,7 @@ aiAgentsStack.addDependency(analyticsStack);
 aiAgentsStack.addDependency(chatbotStack);
 aiAgentsStack.addDependency(clinicHoursStack);
 aiAgentsStack.addDependency(secretsStack);
+aiAgentsStack.addDependency(patientPortalApptTypesStack); // For ApptTypes table access
 
 // ========================================
 // CONNECT + LEX AI STACK
@@ -765,6 +774,7 @@ clinicPricingStack.addDependency(coreStack); // Explicit - imports AuthorizerFun
 // clinicInsuranceStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn - DISABLED
 openDentalStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 hrStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+hrStack.addDependency(chimeStack); // Explicit - uses Clinics table for timezone lookup
 
 communicationsStack.addDependency(coreStack); // Explicit - uses JWT secret
 communicationsStack.addDependency(pushNotificationsStack); // Explicit - uses push notification Lambda

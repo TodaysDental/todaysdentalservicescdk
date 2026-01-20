@@ -33,6 +33,7 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 import { AiAgent } from './agents';
 import { ConversationMessage } from './conversation-history';
+import { getDateContext, getClinicTimezone } from '../../shared/prompts/ai-prompts';
 
 // ========================================================================
 // CLIENTS
@@ -383,6 +384,13 @@ export const handler = async (event: WebSocketMessageEvent) => {
       }
     }
 
+    // Get timezone-aware date context for accurate scheduling
+    // Fetch clinic's timezone from the Clinics table
+    const clinicTimezone = await getClinicTimezone(clinicId);
+    const dateContext = getDateContext(clinicTimezone);
+    const [year, month, day] = dateContext.today.split('-');
+    const todayFormatted = `${month}/${day}/${year}`;
+
     // Build session attributes
     const sessionAttributes: Record<string, string> = {
       clinicId,
@@ -390,6 +398,14 @@ export const handler = async (event: WebSocketMessageEvent) => {
       userName: body.visitorName || 'Website Visitor',
       isPublicRequest: 'true',
       connectionId, // Track which connection owns this session
+      // Current date information for accurate scheduling (timezone-aware)
+      todayDate: dateContext.today,
+      todayFormatted: todayFormatted,
+      dayName: dateContext.dayName,
+      tomorrowDate: dateContext.tomorrowDate,
+      currentTime: dateContext.currentTime,
+      nextWeekDates: JSON.stringify(dateContext.nextWeekDates),
+      timezone: dateContext.timezone,
     };
 
     // Log user message to conversation history

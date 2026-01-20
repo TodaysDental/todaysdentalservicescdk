@@ -230,6 +230,7 @@ import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface HrStackProps extends StackProps {
   staffClinicInfoTableName: string; // from coreStack
+  clinicsTableName: string; // from ChimeStack - for timezone lookup
 }
 
 export class HrStack extends Stack {
@@ -412,6 +413,7 @@ export class HrStack extends Stack {
         LEAVE_TABLE: this.leaveTable.tableName,
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName, // From CoreStack
         STAFF_USER_TABLE: staffUserTableName, // For user lookups (replaces Cognito)
+        CLINICS_TABLE: props.clinicsTableName, // From ChimeStack - for timezone lookup
         // --- SES ENVIRONMENT VARIABLES ---
         APP_NAME: 'TodaysDentalInsights',
         FROM_EMAIL: 'no-reply@todaysdentalinsights.com',
@@ -442,7 +444,14 @@ export class HrStack extends Stack {
       ],
     }));
 
-    
+    // Grant READ permission to Clinics table (for timezone lookup)
+    this.hrFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicsTableName}`,
+      ],
+    }));
+
     // --- UPDATED: SESv2 Permissions ---
     this.hrFn.addToRolePolicy(new iam.PolicyStatement({
       actions: [

@@ -673,11 +673,16 @@ const SHIFTS_TABLE = process.env.SHIFTS_TABLE!;
 const LEAVE_TABLE = process.env.LEAVE_TABLE!;
 const STAFF_INFO_TABLE = process.env.STAFF_CLINIC_INFO_TABLE!;
 const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE!; // DynamoDB table for user lookups (replaces Cognito)
+const CLINICS_TABLE = process.env.CLINICS_TABLE || 'Clinics'; // For timezone lookup
 
 // SES Environment Variables
 const APP_NAME = process.env.APP_NAME || 'TodaysDentalInsights';
 const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalinsights.com';
 const SES_REGION = process.env.SES_REGION || 'us-east-1';
+
+// Timezone cache to avoid repeated DynamoDB lookups
+const timezoneCache: Map<string, { timezone: string; timestamp: number }> = new Map();
+const TIMEZONE_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ses = new SESv2Client({ region: SES_REGION });
@@ -753,16 +758,56 @@ async function getOverlappingShifts(staffId: string, startDate: string, endDate:
   return Items || [];
 }
 
+// Get clinic timezone from Clinics table (with caching)
+async function getClinicTimezone(clinicId: string): Promise<string> {
+  const DEFAULT_TIMEZONE = 'America/New_York';
+  
+  // Check cache first
+  const cached = timezoneCache.get(clinicId);
+  if (cached && Date.now() - cached.timestamp < TIMEZONE_CACHE_TTL_MS) {
+    return cached.timezone;
+  }
+  
+  try {
+    const { Item } = await ddb.send(new GetCommand({
+      TableName: CLINICS_TABLE,
+      Key: { clinicId },
+    }));
+    
+    // Support both field names: timeZone and timezone
+    const timezone = Item?.timeZone || Item?.timezone || DEFAULT_TIMEZONE;
+    
+    // Cache the result
+    timezoneCache.set(clinicId, { timezone, timestamp: Date.now() });
+    
+    return timezone;
+  } catch (error) {
+    console.error(`Error fetching timezone for clinic ${clinicId}:`, error);
+    return DEFAULT_TIMEZONE;
+  }
+}
+
 // --- NEW: SES Email Function ---
-async function sendShiftNotificationEmail(recipientEmail: string, shiftDetails: any, staffName: string) {
+async function sendShiftNotificationEmail(recipientEmail: string, shiftDetails: any, staffName: string, clinicTimezone: string) {
     if (!FROM_EMAIL || !recipientEmail) {
         console.warn('Skipping shift notification: Missing FROM_EMAIL or recipientEmail.');
         return;
     }
     
-    const startTimeLocal = new Date(shiftDetails.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' });
-    const endTimeLocal = new Date(shiftDetails.endTime).toLocaleString('en-US', { timeZone: 'America/New_York' });
-    const shiftDate = new Date(shiftDetails.startTime).toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    // Format time only (not full date-time) for Start Time and End Time fields
+    const startTimeLocal = new Date(shiftDetails.startTime).toLocaleTimeString('en-US', { 
+        timeZone: clinicTimezone, 
+        hour: 'numeric', 
+        minute: '2-digit',
+        hour12: true 
+    });
+    const endTimeLocal = new Date(shiftDetails.endTime).toLocaleTimeString('en-US', { 
+        timeZone: clinicTimezone, 
+        hour: 'numeric', 
+        minute: '2-digit',
+        hour12: true 
+    });
+    const shiftDate = new Date(shiftDetails.startTime).toLocaleDateString('en-US', { timeZone: clinicTimezone, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     
     const subject = `New Shift Scheduled at ${shiftDetails.clinicId} for ${shiftDate}`;
     
@@ -1155,7 +1200,9 @@ async function createShift(body: any, allowedClinics: Set<string>) {
   await ddb.send(new PutCommand({ TableName: SHIFTS_TABLE, Item: shift }));
 
   // --- NEW: Send Email Notification ---
-  await sendShiftNotificationEmail(email, shift, staffName || staffId);
+  // Look up the clinic's timezone from the Clinics table
+  const clinicTimezone = await getClinicTimezone(clinicId);
+  await sendShiftNotificationEmail(email, shift, staffName || staffId, clinicTimezone);
   // --- END NEW ---
 
   return httpOk({ shiftId, message: "Shift created successfully" });
