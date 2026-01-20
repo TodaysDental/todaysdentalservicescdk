@@ -667,6 +667,7 @@ import {
   PermissionType,
   UserPermissions,
 } from '../../shared/utils/permissions-helper';
+import { AuditLogger, AuditResource } from '../shared/audit-logger';
 
 // Environment Variables
 const SHIFTS_TABLE = process.env.SHIFTS_TABLE!;
@@ -686,6 +687,7 @@ const TIMEZONE_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ses = new SESv2Client({ region: SES_REGION });
+const auditLogger = new AuditLogger(ddb);
 const MODULE_NAME = 'HR';
 const METHOD_PERMISSIONS: Record<string, PermissionType> = {
   GET: 'read',
@@ -740,20 +742,41 @@ async function isDateBlocked(staffId: string, date: Date): Promise<boolean> {
 }
 
 // Get all shifts that overlap with a date range
+// Leave dates are in YYYY-MM-DD format, shift times are in ISO format
 async function getOverlappingShifts(staffId: string, startDate: string, endDate: string): Promise<any[]> {
+  console.log(`🔍 getOverlappingShifts: Looking for shifts for staffId=${staffId} between ${startDate} and ${endDate}`);
+  
+  // Convert leave dates to ISO strings that cover the entire day range
+  // startDate should start at 00:00:00 of that day
+  // endDate should end at 23:59:59 of that day
+  const leaveStartISO = new Date(startDate + 'T00:00:00Z').toISOString();
+  const leaveEndISO = new Date(endDate + 'T23:59:59.999Z').toISOString();
+  
+  console.log(`🔍 Converted dates: leaveStart=${leaveStartISO}, leaveEnd=${leaveEndISO}`);
+  
+  // Query shifts for this staff member
+  // We need to find shifts where the shift's time range overlaps with the leave date range
+  // A shift overlaps if: shiftStart <= leaveEnd AND shiftEnd >= leaveStart
   const { Items } = await ddb.send(new QueryCommand({
     TableName: SHIFTS_TABLE,
     IndexName: 'byStaff',
     KeyConditionExpression: 'staffId = :staffId',
-    FilterExpression: '#status = :scheduled AND startTime <= :endDate AND endTime >= :startDate',
+    FilterExpression: '#status = :scheduled AND startTime <= :leaveEnd AND endTime >= :leaveStart',
     ExpressionAttributeNames: { '#status': 'status' },
     ExpressionAttributeValues: {
       ':staffId': staffId,
       ':scheduled': 'scheduled',
-      ':startDate': startDate,
-      ':endDate': endDate
+      ':leaveStart': leaveStartISO,
+      ':leaveEnd': leaveEndISO
     }
   }));
+
+  console.log(`🔍 Found ${Items?.length || 0} overlapping shifts:`, Items?.map((s: any) => ({ 
+    shiftId: s.shiftId, 
+    startTime: s.startTime, 
+    endTime: s.endTime,
+    status: s.status 
+  })));
 
   return Items || [];
 }
@@ -787,27 +810,132 @@ async function getClinicTimezone(clinicId: string): Promise<string> {
   }
 }
 
+function normalizeTimeZoneOrUtc(timeZone: string): string {
+  try {
+    // Throws RangeError for invalid IANA zones
+    new Intl.DateTimeFormat('en-US', { timeZone }).format(new Date());
+    return timeZone;
+  } catch {
+    return 'UTC';
+  }
+}
+
+function hasExplicitTimeZone(dateTime: string): boolean {
+  // Examples: 2026-01-20T14:00:00.000Z, 2026-01-20T14:00:00Z, 2026-01-20T14:00:00-05:00
+  return /([zZ]|[+-]\d{2}:\d{2}|[+-]\d{4})$/.test(dateTime);
+}
+
+type NaiveDateTimeParts = {
+  year: number;
+  month: number; // 1-12
+  day: number;   // 1-31
+  hour: number;  // 0-23
+  minute: number;// 0-59
+  second: number;// 0-59
+};
+
+function parseNaiveDateTime(dateTime: string): NaiveDateTimeParts | null {
+  const normalized = dateTime.trim().replace(' ', 'T');
+  const m = normalized.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/
+  );
+  if (!m) return null;
+  return {
+    year: Number(m[1]),
+    month: Number(m[2]),
+    day: Number(m[3]),
+    hour: Number(m[4]),
+    minute: Number(m[5]),
+    second: m[6] ? Number(m[6]) : 0,
+  };
+}
+
+function getTimeZoneOffsetMs(timeZone: string, utcInstant: Date): number {
+  // This returns the offset (in ms) between the provided timeZone and UTC at the given instant.
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  const parts = dtf.formatToParts(utcInstant);
+  const map: Record<string, string> = {};
+  for (const p of parts) {
+    if (p.type !== 'literal') map[p.type] = p.value;
+  }
+  const asUtc = Date.UTC(
+    Number(map.year),
+    Number(map.month) - 1,
+    Number(map.day),
+    Number(map.hour),
+    Number(map.minute),
+    Number(map.second)
+  );
+  return asUtc - utcInstant.getTime();
+}
+
+function clinicLocalPartsToUtcDate(parts: NaiveDateTimeParts, timeZone: string): Date {
+  // Create an initial UTC guess by treating the clinic-local wall time as if it were UTC.
+  const utcGuess = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second));
+
+  // First-pass offset at the guess instant.
+  const offset1 = getTimeZoneOffsetMs(timeZone, utcGuess);
+  let utcDate = new Date(utcGuess.getTime() - offset1);
+
+  // DST transitions can change the offset; do a second pass to stabilize.
+  const offset2 = getTimeZoneOffsetMs(timeZone, utcDate);
+  if (offset2 !== offset1) {
+    utcDate = new Date(utcGuess.getTime() - offset2);
+  }
+
+  return utcDate;
+}
+
+function normalizeToUtcIso(dateTime: string, clinicTimeZone: string): string {
+  const tz = normalizeTimeZoneOrUtc(clinicTimeZone);
+  const input = String(dateTime || '').trim();
+  if (!input) throw new Error('Missing date/time');
+
+  if (hasExplicitTimeZone(input)) {
+    const d = new Date(input);
+    if (isNaN(d.getTime())) throw new Error(`Invalid date/time: ${input}`);
+    return d.toISOString();
+  }
+
+  const parts = parseNaiveDateTime(input);
+  if (!parts) throw new Error(`Invalid date/time format (expected YYYY-MM-DDTHH:mm[:ss]): ${input}`);
+  const utc = clinicLocalPartsToUtcDate(parts, tz);
+  if (isNaN(utc.getTime())) throw new Error(`Invalid date/time after timezone conversion: ${input}`);
+  return utc.toISOString();
+}
+
 // --- NEW: SES Email Function ---
 async function sendShiftNotificationEmail(recipientEmail: string, shiftDetails: any, staffName: string, clinicTimezone: string) {
     if (!FROM_EMAIL || !recipientEmail) {
         console.warn('Skipping shift notification: Missing FROM_EMAIL or recipientEmail.');
         return;
     }
+
+    const tz = normalizeTimeZoneOrUtc(clinicTimezone);
     
     // Format time only (not full date-time) for Start Time and End Time fields
     const startTimeLocal = new Date(shiftDetails.startTime).toLocaleTimeString('en-US', { 
-        timeZone: clinicTimezone, 
+        timeZone: tz, 
         hour: 'numeric', 
         minute: '2-digit',
         hour12: true 
     });
     const endTimeLocal = new Date(shiftDetails.endTime).toLocaleTimeString('en-US', { 
-        timeZone: clinicTimezone, 
+        timeZone: tz, 
         hour: 'numeric', 
         minute: '2-digit',
         hour12: true 
     });
-    const shiftDate = new Date(shiftDetails.startTime).toLocaleDateString('en-US', { timeZone: clinicTimezone, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const shiftDate = new Date(shiftDetails.startTime).toLocaleDateString('en-US', { timeZone: tz, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     
     const subject = `New Shift Scheduled at ${shiftDetails.clinicId} for ${shiftDate}`;
     
@@ -931,23 +1059,24 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       if (!isAdmin) return httpErr(403, "Forbidden");
       if (!event.body) return httpErr(400, "Missing request body");
       const parsedBody = JSON.parse(event.body);
-      return createShift(parsedBody, allowedClinics); // <-- Will now send email
+      return createShift(parsedBody, allowedClinics, userPerms, event); // <-- Will now send email + audit log
     }
     if (method === 'PUT' && path.match(/^\/shifts\/[^\/]+$/)) {
       if (!isAdmin) return httpErr(403, "Forbidden");
       const shiftId = path.split('/')[2];
       if (!event.body) return httpErr(400, "Missing request body");
       const parsedBody = JSON.parse(event.body);
-      return updateShift(shiftId, parsedBody, allowedClinics);
+      return updateShift(shiftId, parsedBody, allowedClinics, userPerms, event);
     }
     if (method === 'DELETE' && path.match(/^\/shifts\/[^\/]+$/)) {
       if (!isAdmin) return httpErr(403, "Forbidden");
       const shiftId = path.split('/')[2];
-      return deleteShift(shiftId, allowedClinics);
+      return deleteShift(shiftId, allowedClinics, userPerms, event);
     }
     if (method === 'PUT' && path.match(/^\/shifts\/[^\/]+\/reject$/)) {
       const shiftId = path.split('/')[2];
-      return rejectShift(shiftId, userPerms.email); // Use email instead of staffId
+      const reason = event.body ? JSON.parse(event.body)?.reason : undefined;
+      return rejectShift(shiftId, userPerms.email, userPerms, event, reason);
     }
 
     // --- LEAVE ---
@@ -957,21 +1086,36 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (method === 'POST' && path === '/leave') {
       if (!event.body) return httpErr(400, "Missing request body");
       const parsedBody = JSON.parse(event.body);
-      return createLeave(userPerms.email, parsedBody); // Use email instead of staffId
+      return createLeave(userPerms.email, parsedBody, userPerms, event);
     }
     if (method === 'DELETE' && path.match(/^\/leave\/[^\/]+$/)) {
       const leaveId = path.split('/')[2];
-      return deleteLeave(leaveId, userPerms, isAdmin);
+      return deleteLeave(leaveId, userPerms, isAdmin, event);
     }
     if (method === 'PUT' && path.match(/^\/leave\/[^\/]+\/approve$/)) {
       if (!isAdmin) return httpErr(403, "Forbidden");
       const leaveId = path.split('/')[2];
-      return approveLeave(leaveId);
+      const approvalNotes = event.body ? JSON.parse(event.body)?.notes : undefined;
+      return approveLeave(leaveId, userPerms, event, approvalNotes);
     }
     if (method === 'PUT' && path.match(/^\/leave\/[^\/]+\/deny$/)) {
       if (!isAdmin) return httpErr(403, "Forbidden");
       const leaveId = path.split('/')[2];
-      return updateLeaveStatus(leaveId, 'denied');
+      const denyReason = event.body ? JSON.parse(event.body)?.reason : undefined;
+      return updateLeaveStatus(leaveId, 'denied', userPerms, event, denyReason);
+    }
+
+    // --- AUDIT TRAIL ROUTES (Admin only) ---
+    if (method === 'GET' && path === '/audit') {
+      if (!isAdmin) return httpErr(403, "Forbidden");
+      return queryAuditLogs(event.queryStringParameters);
+    }
+    if (method === 'GET' && path.match(/^\/audit\/[^\/]+\/[^\/]+$/)) {
+      if (!isAdmin) return httpErr(403, "Forbidden");
+      const parts = path.split('/');
+      const resourceType = parts[2].toUpperCase() as AuditResource;
+      const resourceId = parts[3];
+      return getResourceAuditTrail(resourceType, resourceId, event.queryStringParameters);
     }
 
     return httpErr(404, "Not Found");
@@ -1096,7 +1240,15 @@ async function getShifts(userPerms: UserPermissions, isAdmin: boolean, queryPara
             ':endDate': endDate,
         }
     }));
-    return httpOk({ shifts: Items || [] });
+
+    const tz = await getClinicTimezone(clinicId);
+    const shifts = Items || [];
+    const normalized = shifts.map((s: any) => ({
+      ...s,
+      startTime: normalizeToUtcIso(s.startTime, tz),
+      endTime: normalizeToUtcIso(s.endTime, tz),
+    }));
+    return httpOk({ shifts: normalized });
   }
 
   // Query own shifts (for both staff and admins when no clinicId specified)
@@ -1123,17 +1275,34 @@ async function getShifts(userPerms: UserPermissions, isAdmin: boolean, queryPara
       ExpressionAttributeNames: status ? { '#status': 'status' } : undefined,
       ExpressionAttributeValues
   }));
-  return httpOk({ shifts: Items || [] });
+
+  const shifts = Items || [];
+  const normalized = await Promise.all(
+    shifts.map(async (s: any) => {
+      const tz = await getClinicTimezone(s.clinicId);
+      return {
+        ...s,
+        startTime: normalizeToUtcIso(s.startTime, tz),
+        endTime: normalizeToUtcIso(s.endTime, tz),
+      };
+    })
+  );
+  return httpOk({ shifts: normalized });
 }
 
-async function createShift(body: any, allowedClinics: Set<string>) {
-  const { staffId, clinicId, startTime, endTime } = body;
-  if (!staffId || !clinicId || !startTime || !endTime) {
+async function createShift(body: any, allowedClinics: Set<string>, userPerms?: UserPermissions, event?: APIGatewayProxyEvent) {
+  const { staffId, clinicId, startTime: rawStartTime, endTime: rawEndTime, ...restBody } = body;
+  if (!staffId || !clinicId || !rawStartTime || !rawEndTime) {
     return httpErr(400, "staffId, clinicId, startTime, and endTime are required");
   }
   if (!hasClinicAccess(allowedClinics, clinicId)) {
     return httpErr(403, "Forbidden: no access to this clinic");
   }
+
+  // Always interpret any timezone-less timestamps as clinic-local time, then normalize to UTC ISO.
+  const clinicTimezone = await getClinicTimezone(clinicId);
+  const startTime = normalizeToUtcIso(rawStartTime, clinicTimezone);
+  const endTime = normalizeToUtcIso(rawEndTime, clinicTimezone);
 
   const shiftDate = new Date(startTime);
   const isBlocked = await isDateBlocked(staffId, shiftDate);
@@ -1194,21 +1363,34 @@ async function createShift(body: any, allowedClinics: Set<string>) {
     hourlyRate: hourlyRate,
     pay: parseFloat(pay.toFixed(2)),
     status: 'scheduled',
-    ...body
+    ...restBody
   };
 
   await ddb.send(new PutCommand({ TableName: SHIFTS_TABLE, Item: shift }));
 
-  // --- NEW: Send Email Notification ---
-  // Look up the clinic's timezone from the Clinics table
-  const clinicTimezone = await getClinicTimezone(clinicId);
+  // --- Audit Log ---
+  if (userPerms) {
+    await auditLogger.log({
+      userId: userPerms.email,
+      userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+      userRole: AuditLogger.getUserRole(userPerms),
+      action: 'CREATE',
+      resource: 'SHIFT',
+      resourceId: shiftId,
+      clinicId: clinicId,
+      after: AuditLogger.sanitizeForAudit(shift),
+      metadata: AuditLogger.createShiftMetadata(shift),
+      ...AuditLogger.extractRequestContext(event),
+    });
+  }
+
+  // --- Send Email Notification ---
   await sendShiftNotificationEmail(email, shift, staffName || staffId, clinicTimezone);
-  // --- END NEW ---
 
   return httpOk({ shiftId, message: "Shift created successfully" });
 }
 
-async function updateShift(shiftId: string, body: any, allowedClinics: Set<string>) {
+async function updateShift(shiftId: string, body: any, allowedClinics: Set<string>, userPerms?: UserPermissions, event?: APIGatewayProxyEvent) {
     const { Item: oldShift } = await ddb.send(new GetCommand({ TableName: SHIFTS_TABLE, Key: { shiftId }}));
     if (!oldShift) return httpErr(404, "Shift not found");
 
@@ -1217,7 +1399,9 @@ async function updateShift(shiftId: string, body: any, allowedClinics: Set<strin
     if (!hasClinicAccess(allowedClinics, clinicId)) {
       return httpErr(403, "Forbidden: no access to this clinic");
     }
-    const startTime = body.startTime || oldShift.startTime;
+
+    const clinicTimezone = await getClinicTimezone(clinicId);
+    const startTime = normalizeToUtcIso(body.startTime || oldShift.startTime, clinicTimezone);
 
     const shiftDate = new Date(startTime);
     const isBlocked = await isDateBlocked(staffId, shiftDate);
@@ -1254,7 +1438,7 @@ async function updateShift(shiftId: string, body: any, allowedClinics: Set<strin
     }));
     
     const hourlyRate = staffInfo?.hourlyPay ? parseFloat(String(staffInfo.hourlyPay)) : 0;
-    const endTime = body.endTime || oldShift.endTime;
+    const endTime = normalizeToUtcIso(body.endTime || oldShift.endTime, clinicTimezone);
     const totalHours = (new Date(endTime).getTime() - new Date(startTime).getTime()) / (1000 * 60 * 60);
     
     if (totalHours <= 0) {
@@ -1263,23 +1447,44 @@ async function updateShift(shiftId: string, body: any, allowedClinics: Set<strin
 
     const pay = totalHours * hourlyRate;
 
+    const { startTime: _bodyStartTime, endTime: _bodyEndTime, ...restBody } = body || {};
     const updatedShift = {
         ...oldShift,
-        ...body,
+        ...restBody,
         shiftId,
         staffId,
         email: email,
         clinicId,
+        startTime,
+        endTime,
         totalHours: parseFloat(totalHours.toFixed(2)),
         hourlyRate: hourlyRate,
         pay: parseFloat(pay.toFixed(2))
     };
     
     await ddb.send(new PutCommand({ TableName: SHIFTS_TABLE, Item: updatedShift }));
+
+    // --- Audit Log ---
+    if (userPerms) {
+      await auditLogger.log({
+        userId: userPerms.email,
+        userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+        userRole: AuditLogger.getUserRole(userPerms),
+        action: 'UPDATE',
+        resource: 'SHIFT',
+        resourceId: shiftId,
+        clinicId: clinicId,
+        before: AuditLogger.sanitizeForAudit(oldShift),
+        after: AuditLogger.sanitizeForAudit(updatedShift),
+        metadata: AuditLogger.createShiftMetadata(updatedShift),
+        ...AuditLogger.extractRequestContext(event),
+      });
+    }
+
     return httpOk({ shiftId, message: "Shift updated successfully" });
 }
 
-async function deleteShift(shiftId: string, allowedClinics: Set<string>) {
+async function deleteShift(shiftId: string, allowedClinics: Set<string>, userPerms?: UserPermissions, event?: APIGatewayProxyEvent) {
     const { Item } = await ddb.send(new GetCommand({ TableName: SHIFTS_TABLE, Key: { shiftId }}));
     if (!Item) return httpErr(404, "Shift not found");
     const clinicId = Item.clinicId;
@@ -1287,10 +1492,27 @@ async function deleteShift(shiftId: string, allowedClinics: Set<string>) {
         return httpErr(403, "Forbidden: no access to this clinic");
     }
     await ddb.send(new DeleteCommand({ TableName: SHIFTS_TABLE, Key: { shiftId } }));
+
+    // --- Audit Log ---
+    if (userPerms) {
+      await auditLogger.log({
+        userId: userPerms.email,
+        userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+        userRole: AuditLogger.getUserRole(userPerms),
+        action: 'DELETE',
+        resource: 'SHIFT',
+        resourceId: shiftId,
+        clinicId: clinicId,
+        before: AuditLogger.sanitizeForAudit(Item),
+        metadata: AuditLogger.createShiftMetadata(Item),
+        ...AuditLogger.extractRequestContext(event),
+      });
+    }
+
     return httpOk({ message: "Shift deleted successfully" });
 }
 
-async function rejectShift(shiftId: string, staffId: string) {
+async function rejectShift(shiftId: string, staffId: string, userPerms?: UserPermissions, event?: APIGatewayProxyEvent, reason?: string) {
     const { Item } = await ddb.send(new GetCommand({ TableName: SHIFTS_TABLE, Key: { shiftId }}));
     if (!Item) return httpErr(404, "Shift not found");
     
@@ -1304,6 +1526,25 @@ async function rejectShift(shiftId: string, staffId: string) {
         ExpressionAttributeNames: { '#status': 'status' },
         ExpressionAttributeValues: { ':status': 'rejected' }
     }));
+
+    // --- Audit Log ---
+    if (userPerms) {
+      await auditLogger.log({
+        userId: userPerms.email,
+        userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+        userRole: AuditLogger.getUserRole(userPerms),
+        action: 'REJECT',
+        resource: 'SHIFT',
+        resourceId: shiftId,
+        clinicId: Item.clinicId,
+        before: { status: Item.status },
+        after: { status: 'rejected' },
+        reason: reason,
+        metadata: AuditLogger.createShiftMetadata(Item),
+        ...AuditLogger.extractRequestContext(event),
+      });
+    }
+
     return httpOk({ shiftId, status: 'rejected' });
 }
 
@@ -1323,8 +1564,8 @@ async function getLeave(userPerms: any, isAdmin: boolean) {
     }
 }
 
-async function createLeave(staffId: string, body: any) {
-  const { startDate, endDate } = body;
+async function createLeave(staffId: string, body: any, userPerms?: UserPermissions, event?: APIGatewayProxyEvent) {
+  const { startDate, endDate, reason } = body;
   if (!startDate || !endDate) {
     return httpErr(400, "startDate and endDate are required");
   }
@@ -1334,25 +1575,70 @@ async function createLeave(staffId: string, body: any) {
     staffId,
     startDate,
     endDate,
+    reason,
     status: 'pending'
   };
   await ddb.send(new PutCommand({ TableName: LEAVE_TABLE, Item: leaveRequest }));
+
+  // --- Audit Log ---
+  if (userPerms) {
+    // Get the first clinicId from user's clinic roles for audit purposes
+    const userClinicId = userPerms.clinicRoles?.[0]?.clinicId;
+    
+    await auditLogger.log({
+      userId: userPerms.email,
+      userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+      userRole: AuditLogger.getUserRole(userPerms),
+      action: 'CREATE',
+      resource: 'LEAVE',
+      resourceId: leaveId,
+      clinicId: userClinicId, // Include clinic for filtering
+      after: AuditLogger.sanitizeForAudit(leaveRequest),
+      metadata: {
+        ...AuditLogger.createLeaveMetadata(leaveRequest),
+        actionType: 'Leave Request Created',
+      },
+      ...AuditLogger.extractRequestContext(event),
+    });
+  }
+
   return httpOk({ leaveId, message: "Leave request submitted" });
 }
 
-async function deleteLeave(leaveId: string, userPerms: any, isAdmin:boolean) {
+async function deleteLeave(leaveId: string, userPerms: UserPermissions, isAdmin:boolean, event?: APIGatewayProxyEvent) {
     const { Item } = await ddb.send(new GetCommand({ TableName: LEAVE_TABLE, Key: { leaveId }}));
     if (!Item) return httpErr(404, "Leave request not found");
 
-    if (!isAdmin && Item.staffId !== userPerms.email) { // Use email instead of staffId
+    if (!isAdmin && Item.staffId !== userPerms.email) {
         return httpErr(403, "Forbidden");
     }
 
     await ddb.send(new DeleteCommand({ TableName: LEAVE_TABLE, Key: { leaveId } }));
+
+    // --- Audit Log ---
+    // Get the first clinicId from user's clinic roles for audit purposes
+    const userClinicId = userPerms.clinicRoles?.[0]?.clinicId;
+    
+    await auditLogger.log({
+      userId: userPerms.email,
+      userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+      userRole: AuditLogger.getUserRole(userPerms),
+      action: 'DELETE',
+      resource: 'LEAVE',
+      resourceId: leaveId,
+      clinicId: userClinicId, // Include clinic for filtering
+      before: AuditLogger.sanitizeForAudit(Item),
+      metadata: {
+        ...AuditLogger.createLeaveMetadata(Item),
+        actionType: 'Leave Request Deleted',
+      },
+      ...AuditLogger.extractRequestContext(event),
+    });
+
     return httpOk({ message: "Leave request deleted" });
 }
 
-async function approveLeave(leaveId: string) {
+async function approveLeave(leaveId: string, userPerms?: UserPermissions, event?: APIGatewayProxyEvent, approvalNotes?: string) {
     console.log('🔄 Starting approveLeave for leaveId:', leaveId);
     console.log('🔄 LEAVE_TABLE:', LEAVE_TABLE);
     console.log('🔄 SHIFTS_TABLE:', SHIFTS_TABLE);
@@ -1420,23 +1706,83 @@ async function approveLeave(leaveId: string) {
         // Cancel overlapping shifts
         if (overlappingShifts.length > 0) {
             try {
-                const cancelPromises = overlappingShifts.map(shift => {
-                    console.log('🔄 Cancelling shift:', shift.shiftId);
-                    return ddb.send(new UpdateCommand({
+                console.log(`🔄 Cancelling ${overlappingShifts.length} overlapping shift(s)...`);
+                
+                const cancelPromises = overlappingShifts.map(async (shift) => {
+                    console.log('🔄 Cancelling shift:', shift.shiftId, 'for date:', shift.startTime);
+                    
+                    // Update shift status to cancelled
+                    await ddb.send(new UpdateCommand({
                         TableName: SHIFTS_TABLE,
                         Key: { shiftId: shift.shiftId },
-                        UpdateExpression: 'set #status = :status',
+                        UpdateExpression: 'set #status = :status, cancelReason = :reason',
                         ExpressionAttributeNames: { '#status': 'status' },
-                        ExpressionAttributeValues: { ':status': 'rejected' }
+                        ExpressionAttributeValues: { 
+                          ':status': 'cancelled',
+                          ':reason': `Leave approved for ${leave.startDate} to ${leave.endDate}` 
+                        }
                     }));
+                    
+                    // Audit log for each cancelled shift
+                    if (userPerms) {
+                      const userClinicId = userPerms.clinicRoles?.[0]?.clinicId;
+                      await auditLogger.log({
+                        userId: userPerms.email,
+                        userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+                        userRole: AuditLogger.getUserRole(userPerms),
+                        action: 'DELETE',
+                        resource: 'SHIFT',
+                        resourceId: shift.shiftId,
+                        clinicId: shift.clinicId || userClinicId,
+                        before: { status: shift.status },
+                        after: { status: 'cancelled' },
+                        reason: `Shift cancelled due to approved leave request (${leaveId})`,
+                        metadata: {
+                          ...AuditLogger.createShiftMetadata(shift),
+                          leaveId: leaveId,
+                          leaveStartDate: leave.startDate,
+                          leaveEndDate: leave.endDate,
+                          actionType: 'Shift Cancelled (Leave Approved)',
+                        },
+                        ...AuditLogger.extractRequestContext(event),
+                      });
+                    }
                 });
 
                 await Promise.all(cancelPromises);
-                console.log('✅ All overlapping shifts cancelled');
+                console.log('✅ All overlapping shifts cancelled and logged');
             } catch (cancelError) {
                 console.error('⚠️ Error cancelling shifts (leave still approved):', cancelError);
                 // Don't fail the approval if shift cancellation fails
             }
+        }
+
+        // --- Audit Log ---
+        if (userPerms) {
+          // Get the first clinicId from user's clinic roles for audit purposes
+          const userClinicId = userPerms.clinicRoles?.[0]?.clinicId;
+          
+          await auditLogger.log({
+            userId: userPerms.email,
+            userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+            userRole: AuditLogger.getUserRole(userPerms),
+            action: 'APPROVE',
+            resource: 'LEAVE',
+            resourceId: leaveId,
+            clinicId: userClinicId, // Include clinic for filtering
+            before: { status: leave.status, staffId: leave.staffId },
+            after: { status: 'approved' },
+            reason: approvalNotes,
+            metadata: {
+              ...AuditLogger.createLeaveMetadata(leave, { cancelledShifts: overlappingShifts.length }),
+              actionBy: userPerms.email,
+              actionByName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim(),
+              actionType: 'Leave Approved',
+            },
+            ...AuditLogger.extractRequestContext(event),
+          });
+          
+          console.log(`✅ Audit log created: APPROVE LEAVE ${leaveId} by ${userPerms.email}`);
         }
 
         const response = {
@@ -1460,7 +1806,15 @@ async function approveLeave(leaveId: string) {
     }
 }
 
-async function updateLeaveStatus(leaveId: string, status: 'approved' | 'denied') {
+async function updateLeaveStatus(leaveId: string, status: 'approved' | 'denied', userPerms?: UserPermissions, event?: APIGatewayProxyEvent, reason?: string) {
+    // Get the leave request before updating for audit purposes
+    const { Item: leave } = await ddb.send(new GetCommand({ TableName: LEAVE_TABLE, Key: { leaveId }}));
+    if (!leave) {
+      return httpErr(404, "Leave request not found");
+    }
+    
+    const previousStatus = leave?.status;
+
     await ddb.send(new UpdateCommand({
         TableName: LEAVE_TABLE,
         Key: { leaveId },
@@ -1468,5 +1822,96 @@ async function updateLeaveStatus(leaveId: string, status: 'approved' | 'denied')
         ExpressionAttributeNames: { '#status': 'status' },
         ExpressionAttributeValues: { ':status': status }
     }));
+
+    // --- Audit Log ---
+    if (userPerms) {
+      // Get the first clinicId from user's clinic roles for audit purposes
+      const userClinicId = userPerms.clinicRoles?.[0]?.clinicId;
+      
+      await auditLogger.log({
+        userId: userPerms.email,
+        userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+        userRole: AuditLogger.getUserRole(userPerms),
+        action: status === 'approved' ? 'APPROVE' : 'DENY',
+        resource: 'LEAVE',
+        resourceId: leaveId,
+        clinicId: userClinicId, // Include clinic for filtering
+        before: { status: previousStatus, staffId: leave.staffId },
+        after: { status },
+        reason: reason,
+        metadata: {
+          ...AuditLogger.createLeaveMetadata(leave),
+          actionBy: userPerms.email,
+          actionByName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim(),
+          actionType: status === 'approved' ? 'Leave Approved' : 'Leave Denied',
+        },
+        ...AuditLogger.extractRequestContext(event),
+      });
+      
+      console.log(`✅ Audit log created: ${status.toUpperCase()} LEAVE ${leaveId} by ${userPerms.email}`);
+    }
+
     return httpOk({ leaveId, status });
+}
+
+// ========================================
+// AUDIT TRAIL FUNCTIONS
+// ========================================
+
+/**
+ * Query audit logs with filters
+ * GET /hr/audit?userId=...&clinicId=...&startDate=...&endDate=...&limit=...
+ */
+async function queryAuditLogs(queryParams: any) {
+  const { userId, clinicId, startDate, endDate, limit: limitStr } = queryParams || {};
+  const limit = parseInt(limitStr) || 100;
+
+  // If userId is provided, query by user
+  if (userId) {
+    const result = await auditLogger.queryByUser(userId, { startDate, endDate, limit });
+    return httpOk({
+      auditLogs: result.auditLogs,
+      count: result.count,
+      lastEvaluatedKey: result.lastEvaluatedKey,
+    });
+  }
+
+  // If clinicId is provided, query by clinic
+  if (clinicId) {
+    const result = await auditLogger.queryByClinic(clinicId, { startDate, endDate, limit });
+    return httpOk({
+      auditLogs: result.auditLogs,
+      count: result.count,
+      lastEvaluatedKey: result.lastEvaluatedKey,
+    });
+  }
+
+  // Default: scan recent audit logs (not recommended for large datasets)
+  // For production, require at least one filter
+  return httpErr(400, "Please provide at least one filter: userId or clinicId");
+}
+
+/**
+ * Get audit trail for a specific resource
+ * GET /hr/audit/{resourceType}/{resourceId}
+ */
+async function getResourceAuditTrail(resourceType: AuditResource, resourceId: string, queryParams: any) {
+  const { limit: limitStr } = queryParams || {};
+  const limit = parseInt(limitStr) || 100;
+
+  // Validate resource type
+  const validResourceTypes = ['STAFF', 'SHIFT', 'LEAVE', 'CLINIC_ROLE'];
+  if (!validResourceTypes.includes(resourceType)) {
+    return httpErr(400, `Invalid resource type. Must be one of: ${validResourceTypes.join(', ')}`);
+  }
+
+  const result = await auditLogger.queryByResource(resourceType, resourceId, { limit });
+  
+  return httpOk({
+    resource: resourceType.toLowerCase(),
+    resourceId,
+    auditTrail: result.auditLogs,
+    count: result.count,
+    lastEvaluatedKey: result.lastEvaluatedKey,
+  });
 }

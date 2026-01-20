@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput, Tags } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput, Tags, Fn } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -42,6 +42,7 @@ export class CommStack extends Stack {
   public readonly connectionsTable: dynamodb.Table;
   public readonly teamsTable: dynamodb.Table;
   public readonly meetingsTable: dynamodb.Table; // Meetings table for scheduled meetings
+  public readonly auditLogsTable: dynamodb.Table; // Audit trail table
   public readonly fileBucket: s3.Bucket;
   public readonly notificationsTopic: sns.Topic;
   public readonly getFileFn: lambdaNode.NodejsFunction;
@@ -239,6 +240,41 @@ export class CommStack extends Stack {
         projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // 6. Audit Logs Table (for tracking all user actions)
+    this.auditLogsTable = new dynamodb.Table(this, 'AuditLogsTableV1', {
+        tableName: `${this.stackName}-AuditLogsV1`,
+        partitionKey: { name: 'auditID', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+        removalPolicy: RemovalPolicy.RETAIN,
+        timeToLiveAttribute: 'expiryDate', // Auto-delete after 90 days
+    });
+    applyTags(this.auditLogsTable, { Table: 'audit-logs' });
+
+    // GSI: Lookup audit logs by user
+    this.auditLogsTable.addGlobalSecondaryIndex({
+        indexName: 'UserIDIndex',
+        partitionKey: { name: 'userID', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI: Lookup audit logs by resource
+    this.auditLogsTable.addGlobalSecondaryIndex({
+        indexName: 'ResourceIndex',
+        partitionKey: { name: 'resourceID', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI: Lookup audit logs by action type
+    this.auditLogsTable.addGlobalSecondaryIndex({
+        indexName: 'ActionIndex',
+        partitionKey: { name: 'action', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+    });
+
 
     // ========================================
     // S3 BUCKET (for File Sharing)
@@ -284,6 +320,7 @@ export class CommStack extends Stack {
       FAVORS_TABLE: this.favorsTable.tableName,
       TEAMS_TABLE: this.teamsTable.tableName,
       MEETINGS_TABLE: this.meetingsTable.tableName,
+      AUDIT_LOGS_TABLE: this.auditLogsTable.tableName,
       FILE_BUCKET_NAME: this.fileBucket.bucketName,
       NOTIFICATIONS_TOPIC_ARN: this.notificationsTopic.topicArn,
       // Push Notifications Integration
@@ -424,6 +461,7 @@ export class CommStack extends Stack {
     this.favorsTable.grantReadWriteData(restApiHandler);
     this.teamsTable.grantReadWriteData(restApiHandler);
     this.meetingsTable.grantReadWriteData(restApiHandler);
+    this.auditLogsTable.grantReadWriteData(restApiHandler);
 
     // Grant push notification permissions to REST API handler
     if (props.deviceTokensTableArn) {
@@ -594,6 +632,18 @@ export class CommStack extends Stack {
     createDynamoThrottleAlarm(this.messagesTable.tableName, 'MessagesTable');
     createDynamoThrottleAlarm(this.teamsTable.tableName, 'TeamsTable');
     createDynamoThrottleAlarm(this.meetingsTable.tableName, 'MeetingsTable');
+    createDynamoThrottleAlarm(this.auditLogsTable.tableName, 'AuditLogsTable');
+
+    // ========================================
+    // CUSTOM DOMAIN MAPPING
+    // ========================================
+    // Map REST API to the shared custom domain: apig.todaysdentalinsights.com/comm
+    new apigw.CfnBasePathMapping(this, 'CommRestApiBasePathMapping', {
+      domainName: 'apig.todaysdentalinsights.com',
+      basePath: 'comm',
+      restApiId: this.restApi.restApiId,
+      stage: this.restApi.deploymentStage.stageName,
+    });
 
     // ========================================
     // OUTPUTS
@@ -606,14 +656,18 @@ export class CommStack extends Stack {
         value: this.meetingsTable.tableName,
         exportName: `${this.stackName}-MeetingsTableName`,
     });
+    new CfnOutput(this, 'AuditLogsTableName', {
+        value: this.auditLogsTable.tableName,
+        exportName: `${this.stackName}-AuditLogsTableName`,
+    });
     new CfnOutput(this, 'WebSocketApiUrl', {
       value: this.websocketApi.apiEndpoint,
       description: 'The WebSocket API Endpoint',
       exportName: `${this.stackName}-WebSocketApiUrl`,
     });
     new CfnOutput(this, 'RestApiUrl', {
-      value: this.restApi.url,
-      description: 'The REST API Endpoint for Tasks, Meetings, Groups',
+      value: 'https://apig.todaysdentalinsights.com/comm/',
+      description: 'The REST API Endpoint for Tasks, Meetings, Groups (Custom Domain)',
       exportName: `${this.stackName}-RestApiUrl`,
     });
     new CfnOutput(this, 'MessagesTableName', {

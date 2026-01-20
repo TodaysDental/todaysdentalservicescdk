@@ -239,6 +239,7 @@ export class HrStack extends Stack {
   public readonly hrFn: lambdaNode.NodejsFunction;
   public readonly shiftsTable: dynamodb.Table;
   public readonly leaveTable: dynamodb.Table;
+  public readonly auditTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: HrStackProps) {
     super(scope, id, props);
@@ -338,6 +339,44 @@ export class HrStack extends Stack {
     });
 
     // ========================================
+    // AUDIT TABLE - Complete Audit Trail
+    // ========================================
+    this.auditTable = new dynamodb.Table(this, 'AuditTable', {
+      tableName: `${this.stackName}-AuditLogs`,
+      partitionKey: { name: 'auditId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      // CRITICAL: Never delete audit logs
+      removalPolicy: RemovalPolicy.RETAIN,
+      // Enable point-in-time recovery for compliance
+      pointInTimeRecovery: true,
+      // Optional: Auto-delete after 7 years (adjust per compliance needs)
+      // timeToLiveAttribute: 'expiresAt',
+    });
+    applyTags(this.auditTable, { Table: 'audit-logs', Critical: 'true' });
+
+    // GSI 1: Query by user - Get all actions performed by a specific user
+    this.auditTable.addGlobalSecondaryIndex({
+      indexName: 'byUserId',
+      partitionKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+    });
+
+    // GSI 2: Query by resource - Get all changes to a specific resource
+    this.auditTable.addGlobalSecondaryIndex({
+      indexName: 'byResource',
+      partitionKey: { name: 'resourceKey', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+    });
+
+    // GSI 3: Query by clinic - Get all actions within a clinic
+    this.auditTable.addGlobalSecondaryIndex({
+      indexName: 'byClinic',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+    });
+
+    // ========================================
     // API GATEWAY
     // ========================================
 
@@ -414,6 +453,9 @@ export class HrStack extends Stack {
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName, // From CoreStack
         STAFF_USER_TABLE: staffUserTableName, // For user lookups (replaces Cognito)
         CLINICS_TABLE: props.clinicsTableName, // From ChimeStack - for timezone lookup
+        // --- AUDIT TRAIL ---
+        AUDIT_TABLE: this.auditTable.tableName,
+        ENABLE_AUDIT_LOGGING: 'true',
         // --- SES ENVIRONMENT VARIABLES ---
         APP_NAME: 'TodaysDentalInsights',
         FROM_EMAIL: 'no-reply@todaysdentalinsights.com',
@@ -425,6 +467,10 @@ export class HrStack extends Stack {
     // Grant Lambda permissions
     this.shiftsTable.grantReadWriteData(this.hrFn);
     this.leaveTable.grantReadWriteData(this.hrFn);
+    
+    // Grant WRITE permission to Audit table (for logging)
+    // Grant READ permission for audit query endpoints (admin only)
+    this.auditTable.grantReadWriteData(this.hrFn);
 
     // Grant READ-ONLY permission to the existing StaffClinicInfo table
     this.hrFn.addToRolePolicy(new iam.PolicyStatement({
@@ -521,6 +567,19 @@ export class HrStack extends Stack {
     leaveDenyRes.addMethod('PUT', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Deny leave (Admin only)
 
     // ========================================
+    // AUDIT TRAIL ROUTES (Admin only)
+    // ========================================
+    
+    // /audit - Query audit logs with filters
+    const auditRes = this.api.root.addResource('audit');
+    auditRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
+
+    // /audit/{resourceType}/{resourceId} - Get audit trail for specific resource
+    const auditResourceTypeRes = auditRes.addResource('{resourceType}');
+    const auditResourceIdRes = auditResourceTypeRes.addResource('{resourceId}');
+    auditResourceIdRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
+
+    // ========================================
     // CloudWatch Alarms
     // ========================================
     [
@@ -533,6 +592,7 @@ export class HrStack extends Stack {
 
     createDynamoThrottleAlarm(this.shiftsTable.tableName, 'ShiftsTable');
     createDynamoThrottleAlarm(this.leaveTable.tableName, 'LeaveTable');
+    createDynamoThrottleAlarm(this.auditTable.tableName, 'AuditTable');
 
     // ========================================
     // DOMAIN MAPPING

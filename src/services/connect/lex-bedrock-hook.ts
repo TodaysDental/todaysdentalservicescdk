@@ -72,7 +72,15 @@ const TRANSCRIPTION_CONFIDENCE_THRESHOLD = Number(process.env.TRANSCRIPTION_CONF
 
 // For Amazon Connect InvokeLambdaFunction, keep Bedrock time safely under the contact flow
 // InvocationTimeLimitSeconds (currently 8s) to avoid Connect timeouts.
-const CONNECT_BEDROCK_TIMEOUT_MS = Number(process.env.CONNECT_BEDROCK_TIMEOUT_MS || '7500');
+// REDUCED from 7500ms to 5500ms to leave buffer for:
+// - Session management (~500ms)
+// - Analytics/transcript writes (~500ms)  
+// - Streaming loop overhead (~500ms)
+// - Response serialization (~200ms)
+const CONNECT_BEDROCK_TIMEOUT_MS = Number(process.env.CONNECT_BEDROCK_TIMEOUT_MS || '5500');
+
+// Maximum time to spend in the streaming loop before returning partial response
+const MAX_STREAMING_LOOP_MS = 6000;
 
 // AI phone numbers mapping: aiPhoneNumber -> clinicId
 const AI_PHONE_NUMBERS_JSON = process.env.AI_PHONE_NUMBERS_JSON || '{}';
@@ -588,6 +596,9 @@ async function invokeBedrock(params: {
   const effectiveTimeoutMs = Number.isFinite(timeoutMs) ? Number(timeoutMs) : CONFIG.BEDROCK_TIMEOUT_MS;
   const controller = new AbortController();
   const bedrockTimeout = setTimeout(() => controller.abort(), effectiveTimeoutMs);
+  
+  // Track when we started for streaming loop timeout
+  const invocationStartMs = Date.now();
 
   try {
     const command = new InvokeAgentCommand({
@@ -609,9 +620,25 @@ async function invokeBedrock(params: {
     
     let fullResponse = '';
     const toolsUsed: string[] = [];
+    let streamingTimedOut = false;
 
     if (response.completion) {
       for await (const event of response.completion) {
+        // FIX: Check if we're exceeding the streaming loop timeout
+        // The abort signal may not properly terminate the stream, so we need
+        // to manually break out of the loop to ensure we respond before Connect times out
+        const elapsedMs = Date.now() - invocationStartMs;
+        if (elapsedMs > MAX_STREAMING_LOOP_MS || controller.signal.aborted) {
+          console.warn('[LexBedrockHook] Streaming loop timeout, returning partial response', {
+            elapsedMs,
+            maxMs: MAX_STREAMING_LOOP_MS,
+            aborted: controller.signal.aborted,
+            partialResponseLength: fullResponse.length,
+          });
+          streamingTimedOut = true;
+          break;
+        }
+        
         if (event.chunk?.bytes) {
           fullResponse += new TextDecoder().decode(event.chunk.bytes);
         }
@@ -623,6 +650,17 @@ async function invokeBedrock(params: {
           }
         }
       }
+    }
+
+    // If we got a partial response due to timeout but have some content, return it
+    // Otherwise, return a timeout message
+    if (streamingTimedOut && !fullResponse.trim()) {
+      return {
+        response: isVoiceCall
+          ? "I'm sorry — I'm still working on that. Could you ask again in a moment?"
+          : "I apologize, the request is taking longer than expected. Please try again.",
+        toolsUsed: [...new Set(toolsUsed)],
+      };
     }
 
     return { 
@@ -816,23 +854,24 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
     timeoutMs: CONNECT_BEDROCK_TIMEOUT_MS,
   });
 
-  // Update analytics
-  await updateAnalyticsTurn({
+  // FIX: Make analytics and transcript updates fire-and-forget to reduce response time
+  // These are non-critical for the voice response and shouldn't block the caller
+  // The Lambda will continue running after we return the response
+  updateAnalyticsTurn({
     callId: session.callId,
     timestamp: session.callStartMs,
     callerUtterance: trimmedInput,
     aiResponse,
     toolsUsed,
-  });
+  }).catch(err => console.error('[LexBedrockHook] Analytics update failed (non-blocking):', err));
 
-  // Add to transcript buffer
-  await addTranscriptTurn({
+  addTranscriptTurn({
     callId: session.callId,
     callerUtterance: trimmedInput,
     aiResponse,
     callStartMs: session.callStartMs,
     confidence: safeConfidence,
-  });
+  }).catch(err => console.error('[LexBedrockHook] Transcript buffer update failed (non-blocking):', err));
 
   console.log('[LexBedrockHook] Connect direct: Returning response:', {
     clinicId,
@@ -982,23 +1021,23 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
     channel: event.inputMode === 'Speech' ? 'voice' : 'chat',
   });
 
-  // Update analytics with this turn
-  await updateAnalyticsTurn({
+  // FIX: Make analytics and transcript updates fire-and-forget to reduce response time
+  // These are non-critical for the voice response and shouldn't block the caller
+  updateAnalyticsTurn({
     callId: session.callId,
     timestamp: analyticsInfo.timestamp,
     callerUtterance: trimmedInput,
     aiResponse,
     toolsUsed,
-  });
+  }).catch(err => console.error('[LexBedrockHook] Lex analytics update failed (non-blocking):', err));
 
-  // Add to transcript buffer
-  await addTranscriptTurn({
+  addTranscriptTurn({
     callId: session.callId,
     callerUtterance: trimmedInput,
     aiResponse,
     callStartMs: session.callStartMs,
     confidence: transcriptionConfidence,
-  });
+  }).catch(err => console.error('[LexBedrockHook] Lex transcript buffer update failed (non-blocking):', err));
 
   // Build Lex response
   // IMPORTANT: Store lastUtterance in session attributes so Connect can read it

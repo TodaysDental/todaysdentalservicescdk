@@ -819,7 +819,11 @@ async function scanConversations(
 
   const result = await docClient.send(new ScanCommand(scanParams));
   const messages = (result.Items || []) as ConversationMessage[];
-  const sessions = aggregateToSessions(messages).slice(0, limit || 50);
+  // IMPORTANT:
+  // Do NOT slice sessions here.
+  // Slicing would permanently drop sessions from this scan page while still advancing the
+  // LastEvaluatedKey cursor, making it impossible for clients to ever retrieve the dropped sessions.
+  const sessions = aggregateToSessions(messages);
 
   return {
     sessions,

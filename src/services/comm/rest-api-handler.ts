@@ -2,6 +2,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
+import { AuditService } from './audit-service';
 
 // Environment Variables
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -9,6 +10,9 @@ const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
 const TEAMS_TABLE = process.env.TEAMS_TABLE || '';
 const MEETINGS_TABLE = process.env.MEETINGS_TABLE || '';
 const MESSAGES_TABLE = process.env.MESSAGES_TABLE || '';
+
+// Authorization Constants
+const MAX_GROUP_MEMBERS = 100;
 
 // System Modules (from shared/types/user.ts)
 const SYSTEM_MODULES = ['HR', 'Accounting', 'Operations', 'Finance', 'Marketing', 'Legal', 'IT'] as const;
@@ -1144,22 +1148,147 @@ async function deleteMeeting(userID: string, meetingID: string, params: any): Pr
 // ========================================
 
 async function createGroup(userID: string, body: any): Promise<APIGatewayProxyResult> {
+    const startTime = Date.now();
     const { name, description, members, category, createConversation = true } = body;
 
-    if (!name || !members || members.length === 0) {
-        return response(400, { success: false, message: 'name and members are required' });
+    // ========================================
+    // AUTHORIZATION: Input Validation
+    // ========================================
+
+    // Validate group name
+    if (!name || typeof name !== 'string' || name.trim().length === 0) {
+        AuditService.logAction({
+            userID,
+            action: 'CREATE_GROUP',
+            resourceType: 'group',
+            resourceID: 'unknown',
+            httpMethod: 'POST',
+            endpoint: '/api/groups',
+            status: 'failure',
+            statusCode: 400,
+            errorMessage: 'Group name is required and must be a non-empty string',
+            durationMs: Date.now() - startTime,
+        });
+        return response(400, { success: false, message: 'Group name is required and must be a non-empty string' });
+    }
+
+    if (name.length > 255) {
+        AuditService.logAction({
+            userID,
+            action: 'CREATE_GROUP',
+            resourceType: 'group',
+            resourceID: 'unknown',
+            httpMethod: 'POST',
+            endpoint: '/api/groups',
+            status: 'failure',
+            statusCode: 400,
+            errorMessage: 'Group name must be less than 255 characters',
+            durationMs: Date.now() - startTime,
+        });
+        return response(400, { success: false, message: 'Group name must be less than 255 characters' });
+    }
+
+    // Validate members array
+    if (!members || !Array.isArray(members) || members.length === 0) {
+        AuditService.logAction({
+            userID,
+            action: 'CREATE_GROUP',
+            resourceType: 'group',
+            resourceID: 'unknown',
+            httpMethod: 'POST',
+            endpoint: '/api/groups',
+            status: 'failure',
+            statusCode: 400,
+            errorMessage: 'members must be a non-empty array of user IDs',
+            durationMs: Date.now() - startTime,
+        });
+        return response(400, { success: false, message: 'members must be a non-empty array of user IDs' });
+    }
+
+    // Validate member IDs format
+    for (const memberId of members) {
+        if (typeof memberId !== 'string' || memberId.trim().length === 0) {
+            AuditService.logAction({
+                userID,
+                action: 'CREATE_GROUP',
+                resourceType: 'group',
+                resourceID: 'unknown',
+                httpMethod: 'POST',
+                endpoint: '/api/groups',
+                status: 'failure',
+                statusCode: 400,
+                errorMessage: 'All member IDs must be non-empty strings',
+                durationMs: Date.now() - startTime,
+            });
+            return response(400, { success: false, message: 'All member IDs must be non-empty strings' });
+        }
+    }
+
+    // Validate category if provided
+    if (category && !SYSTEM_MODULES.includes(category)) {
+        AuditService.logAction({
+            userID,
+            action: 'CREATE_GROUP',
+            resourceType: 'group',
+            resourceID: 'unknown',
+            httpMethod: 'POST',
+            endpoint: '/api/groups',
+            status: 'failure',
+            statusCode: 400,
+            errorMessage: `Invalid category. Must be one of: ${SYSTEM_MODULES.join(', ')}`,
+            durationMs: Date.now() - startTime,
+        });
+        return response(400, { success: false, message: `Invalid category. Must be one of: ${SYSTEM_MODULES.join(', ')}` });
+    }
+
+    // ========================================
+    // AUTHORIZATION: Business Rules
+    // ========================================
+
+    // Ensure owner is in members and deduplicate
+    const uniqueMembers = Array.from(new Set([...members, userID]));
+
+    // Check member limit
+    if (uniqueMembers.length > MAX_GROUP_MEMBERS) {
+        AuditService.logAction({
+            userID,
+            action: 'CREATE_GROUP',
+            resourceType: 'group',
+            resourceID: 'unknown',
+            httpMethod: 'POST',
+            endpoint: '/api/groups',
+            status: 'failure',
+            statusCode: 403,
+            errorMessage: `Group cannot have more than ${MAX_GROUP_MEMBERS} members`,
+            durationMs: Date.now() - startTime,
+        });
+        return response(403, { success: false, message: `Group cannot have more than ${MAX_GROUP_MEMBERS} members` });
+    }
+
+    // Ensure at least one other member
+    if (uniqueMembers.length < 2) {
+        AuditService.logAction({
+            userID,
+            action: 'CREATE_GROUP',
+            resourceType: 'group',
+            resourceID: 'unknown',
+            httpMethod: 'POST',
+            endpoint: '/api/groups',
+            status: 'failure',
+            statusCode: 400,
+            errorMessage: 'Group must have at least one other member',
+            durationMs: Date.now() - startTime,
+        });
+        return response(400, { success: false, message: 'Group must have at least one other member' });
     }
 
     const teamID = uuidv4();
     const nowIso = new Date().toISOString();
 
-    // Ensure owner is in members
-    const uniqueMembers = Array.from(new Set([...members, userID]));
-
     const team: Team = {
         teamID,
         ownerID: userID,
-        name,
+        name: name.trim(),
         description,
         members: uniqueMembers,
         ...(category && { category: category as SystemModule }),
@@ -1167,46 +1296,77 @@ async function createGroup(userID: string, body: any): Promise<APIGatewayProxyRe
         updatedAt: nowIso,
     };
 
-    await ddb.send(new PutCommand({
-        TableName: TEAMS_TABLE,
-        Item: team,
-    }));
-
-    let conversationID: string | undefined;
-
-    // Create initial conversation if requested
-    if (createConversation) {
-        conversationID = uuidv4();
-        const conversation: FavorRequest = {
-            favorRequestID: conversationID,
-            senderID: userID,
-            teamID,
-            title: name,
-            description: description || `Group conversation for ${name}`,
-            status: 'active',
-            priority: 'Medium',
-            ...(category && { category: category as SystemModule }),
-            createdAt: nowIso,
-            updatedAt: nowIso,
-            userID,
-            requestType: 'General',
-            unreadCount: 0,
-            initialMessage: `Group ${name} created`,
-        };
-
+    try {
         await ddb.send(new PutCommand({
-            TableName: FAVORS_TABLE,
-            Item: conversation,
+            TableName: TEAMS_TABLE,
+            Item: team,
         }));
-    }
 
-    return response(201, {
-        success: true,
-        teamID,
-        conversationID,
-        message: 'Group created successfully',
-        group: team,
-    });
+        let conversationID: string | undefined;
+
+        // Create initial conversation if requested
+        if (createConversation) {
+            conversationID = uuidv4();
+            const conversation: FavorRequest = {
+                favorRequestID: conversationID,
+                senderID: userID,
+                teamID,
+                title: name.trim(),
+                description: description || `Group conversation for ${name.trim()}`,
+                status: 'active',
+                priority: 'Medium',
+                ...(category && { category: category as SystemModule }),
+                createdAt: nowIso,
+                updatedAt: nowIso,
+                userID,
+                requestType: 'General',
+                unreadCount: 0,
+                initialMessage: `Group ${name.trim()} created`,
+            };
+
+            await ddb.send(new PutCommand({
+                TableName: FAVORS_TABLE,
+                Item: conversation,
+            }));
+        }
+
+        // Log successful group creation
+        AuditService.logAction({
+            userID,
+            action: 'CREATE_GROUP',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'POST',
+            endpoint: '/api/groups',
+            status: 'success',
+            statusCode: 201,
+            changes: { after: { teamID, name: name.trim(), memberCount: uniqueMembers.length, category } },
+            durationMs: Date.now() - startTime,
+            metadata: { ownerID: userID, conversationID },
+        });
+
+        return response(201, {
+            success: true,
+            teamID,
+            conversationID,
+            message: 'Group created successfully',
+            group: team,
+        });
+    } catch (error: any) {
+        AuditService.logAction({
+            userID,
+            action: 'CREATE_GROUP',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'POST',
+            endpoint: '/api/groups',
+            status: 'failure',
+            statusCode: 500,
+            errorMessage: error.message,
+            durationMs: Date.now() - startTime,
+        });
+        throw error;
+    }
 }
 
 async function getGroups(userID: string, params: any): Promise<APIGatewayProxyResult> {
@@ -1286,6 +1446,12 @@ async function getGroupDetails(userID: string, teamID: string): Promise<APIGatew
 }
 
 async function updateGroup(userID: string, teamID: string, body: any): Promise<APIGatewayProxyResult> {
+    const startTime = Date.now();
+
+    // ========================================
+    // AUTHORIZATION: Team Existence & Ownership
+    // ========================================
+
     const result = await ddb.send(new GetCommand({
         TableName: TEAMS_TABLE,
         Key: { teamID },
@@ -1293,44 +1459,210 @@ async function updateGroup(userID: string, teamID: string, body: any): Promise<A
     const team = result.Item as Team;
 
     if (!team) {
+        AuditService.logAction({
+            userID,
+            action: 'UPDATE_GROUP',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'PUT',
+            endpoint: `/api/groups/${teamID}`,
+            status: 'failure',
+            statusCode: 404,
+            errorMessage: 'Group not found',
+            durationMs: Date.now() - startTime,
+        });
         return response(404, { success: false, message: 'Group not found' });
     }
 
     if (team.ownerID !== userID) {
-        return response(403, { success: false, message: 'Only the owner can update this group' });
+        AuditService.logAction({
+            userID,
+            action: 'UPDATE_GROUP',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'PUT',
+            endpoint: `/api/groups/${teamID}`,
+            status: 'failure',
+            statusCode: 403,
+            errorMessage: 'Only the group owner can update this group',
+            durationMs: Date.now() - startTime,
+        });
+        return response(403, { success: false, message: 'Only the group owner can update this group' });
+    }
+
+    // ========================================
+    // AUTHORIZATION: Input Validation
+    // ========================================
+
+    const { name, description, category } = body;
+
+    // Validate name if provided
+    if (name !== undefined) {
+        if (typeof name !== 'string' || name.trim().length === 0) {
+            AuditService.logAction({
+                userID,
+                action: 'UPDATE_GROUP',
+                resourceType: 'group',
+                resourceID: teamID,
+                httpMethod: 'PUT',
+                endpoint: `/api/groups/${teamID}`,
+                status: 'failure',
+                statusCode: 400,
+                errorMessage: 'Group name must be a non-empty string',
+                durationMs: Date.now() - startTime,
+            });
+            return response(400, { success: false, message: 'Group name must be a non-empty string' });
+        }
+        if (name.length > 255) {
+            AuditService.logAction({
+                userID,
+                action: 'UPDATE_GROUP',
+                resourceType: 'group',
+                resourceID: teamID,
+                httpMethod: 'PUT',
+                endpoint: `/api/groups/${teamID}`,
+                status: 'failure',
+                statusCode: 400,
+                errorMessage: 'Group name must be less than 255 characters',
+                durationMs: Date.now() - startTime,
+            });
+            return response(400, { success: false, message: 'Group name must be less than 255 characters' });
+        }
+    }
+
+    // Validate description if provided
+    if (description !== undefined && typeof description !== 'string') {
+        AuditService.logAction({
+            userID,
+            action: 'UPDATE_GROUP',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'PUT',
+            endpoint: `/api/groups/${teamID}`,
+            status: 'failure',
+            statusCode: 400,
+            errorMessage: 'Group description must be a string',
+            durationMs: Date.now() - startTime,
+        });
+        return response(400, { success: false, message: 'Group description must be a string' });
+    }
+
+    // Validate category if provided
+    if (category !== undefined && !SYSTEM_MODULES.includes(category)) {
+        AuditService.logAction({
+            userID,
+            action: 'UPDATE_GROUP',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'PUT',
+            endpoint: `/api/groups/${teamID}`,
+            status: 'failure',
+            statusCode: 400,
+            errorMessage: `Invalid category. Must be one of: ${SYSTEM_MODULES.join(', ')}`,
+            durationMs: Date.now() - startTime,
+        });
+        return response(400, { success: false, message: `Invalid category. Must be one of: ${SYSTEM_MODULES.join(', ')}` });
     }
 
     const nowIso = new Date().toISOString();
-    const { name, description, category } = body;
 
     const updateExpressions: string[] = ['updatedAt = :ua'];
     const expressionValues: Record<string, any> = { ':ua': nowIso };
 
-    if (name !== undefined) { updateExpressions.push('#n = :name'); expressionValues[':name'] = name; }
+    if (name !== undefined) { updateExpressions.push('#n = :name'); expressionValues[':name'] = name.trim(); }
     if (description !== undefined) { updateExpressions.push('description = :desc'); expressionValues[':desc'] = description; }
     if (category !== undefined) { updateExpressions.push('category = :cat'); expressionValues[':cat'] = category; }
 
-    await ddb.send(new UpdateCommand({
-        TableName: TEAMS_TABLE,
-        Key: { teamID },
-        UpdateExpression: 'SET ' + updateExpressions.join(', '),
-        ExpressionAttributeNames: name !== undefined ? { '#n': 'name' } : undefined,
-        ExpressionAttributeValues: expressionValues,
-    }));
+    try {
+        await ddb.send(new UpdateCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID },
+            UpdateExpression: 'SET ' + updateExpressions.join(', '),
+            ExpressionAttributeNames: name !== undefined ? { '#n': 'name' } : undefined,
+            ExpressionAttributeValues: expressionValues,
+        }));
 
-    return response(200, {
-        success: true,
-        message: 'Group updated successfully',
-        group: { teamID, name, description, category, updatedAt: nowIso },
-    });
+        AuditService.logAction({
+            userID,
+            action: 'UPDATE_GROUP',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'PUT',
+            endpoint: `/api/groups/${teamID}`,
+            status: 'success',
+            statusCode: 200,
+            changes: {
+                before: { name: team.name, description: team.description, category: team.category },
+                after: { name: name?.trim() || team.name, description: description ?? team.description, category: category ?? team.category },
+            },
+            durationMs: Date.now() - startTime,
+        });
+
+        return response(200, {
+            success: true,
+            message: 'Group updated successfully',
+            group: { teamID, name: name?.trim(), description, category, updatedAt: nowIso },
+        });
+    } catch (error: any) {
+        AuditService.logAction({
+            userID,
+            action: 'UPDATE_GROUP',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'PUT',
+            endpoint: `/api/groups/${teamID}`,
+            status: 'failure',
+            statusCode: 500,
+            errorMessage: error.message,
+            durationMs: Date.now() - startTime,
+        });
+        throw error;
+    }
 }
 
 async function addGroupMember(userID: string, teamID: string, body: any): Promise<APIGatewayProxyResult> {
+    const startTime = Date.now();
     const { userID: memberUserID } = body;
 
-    if (!memberUserID) {
-        return response(400, { success: false, message: 'userID is required' });
+    // ========================================
+    // AUTHORIZATION: Input Validation
+    // ========================================
+
+    if (!memberUserID || typeof memberUserID !== 'string' || memberUserID.trim().length === 0) {
+        AuditService.logAction({
+            userID,
+            action: 'ADD_GROUP_MEMBER',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'POST',
+            endpoint: `/api/groups/${teamID}/members`,
+            status: 'failure',
+            statusCode: 400,
+            errorMessage: 'userID is required and must be a non-empty string',
+            durationMs: Date.now() - startTime,
+        });
+        return response(400, { success: false, message: 'userID is required and must be a non-empty string' });
     }
+
+    if (memberUserID === userID) {
+        AuditService.logAction({
+            userID,
+            action: 'ADD_GROUP_MEMBER',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'POST',
+            endpoint: `/api/groups/${teamID}/members`,
+            status: 'failure',
+            statusCode: 400,
+            errorMessage: 'Cannot add yourself to a group',
+            durationMs: Date.now() - startTime,
+        });
+        return response(400, { success: false, message: 'Cannot add yourself to a group' });
+    }
+
+    // ========================================
+    // AUTHORIZATION: Team Owner Verification
+    // ========================================
 
     const result = await ddb.send(new GetCommand({
         TableName: TEAMS_TABLE,
@@ -1339,35 +1671,129 @@ async function addGroupMember(userID: string, teamID: string, body: any): Promis
     const team = result.Item as Team;
 
     if (!team) {
+        AuditService.logAction({
+            userID,
+            action: 'ADD_GROUP_MEMBER',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'POST',
+            endpoint: `/api/groups/${teamID}/members`,
+            status: 'failure',
+            statusCode: 404,
+            errorMessage: 'Group not found',
+            durationMs: Date.now() - startTime,
+        });
         return response(404, { success: false, message: 'Group not found' });
     }
 
     if (team.ownerID !== userID) {
-        return response(403, { success: false, message: 'Only the owner can add members' });
+        AuditService.logAction({
+            userID,
+            action: 'ADD_GROUP_MEMBER',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'POST',
+            endpoint: `/api/groups/${teamID}/members`,
+            status: 'failure',
+            statusCode: 403,
+            errorMessage: 'Only the group owner can add members',
+            durationMs: Date.now() - startTime,
+        });
+        return response(403, { success: false, message: 'Only the group owner can add members' });
     }
 
+    // ========================================
+    // AUTHORIZATION: Business Rules
+    // ========================================
+
     if (team.members.includes(memberUserID)) {
-        return response(400, { success: false, message: 'User is already a member' });
+        AuditService.logAction({
+            userID,
+            action: 'ADD_GROUP_MEMBER',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'POST',
+            endpoint: `/api/groups/${teamID}/members`,
+            status: 'failure',
+            statusCode: 400,
+            errorMessage: 'User is already a member of this group',
+            durationMs: Date.now() - startTime,
+        });
+        return response(400, { success: false, message: 'User is already a member of this group' });
+    }
+
+    if (team.members.length >= MAX_GROUP_MEMBERS) {
+        AuditService.logAction({
+            userID,
+            action: 'ADD_GROUP_MEMBER',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'POST',
+            endpoint: `/api/groups/${teamID}/members`,
+            status: 'failure',
+            statusCode: 403,
+            errorMessage: `Group has reached maximum member limit of ${MAX_GROUP_MEMBERS}`,
+            durationMs: Date.now() - startTime,
+        });
+        return response(403, { success: false, message: `Group has reached maximum member limit of ${MAX_GROUP_MEMBERS}` });
     }
 
     const nowIso = new Date().toISOString();
     const updatedMembers = [...team.members, memberUserID];
 
-    await ddb.send(new UpdateCommand({
-        TableName: TEAMS_TABLE,
-        Key: { teamID },
-        UpdateExpression: 'SET members = :members, updatedAt = :ua',
-        ExpressionAttributeValues: { ':members': updatedMembers, ':ua': nowIso },
-    }));
+    try {
+        await ddb.send(new UpdateCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID },
+            UpdateExpression: 'SET members = :members, updatedAt = :ua',
+            ExpressionAttributeValues: { ':members': updatedMembers, ':ua': nowIso },
+        }));
 
-    return response(200, {
-        success: true,
-        message: 'Member added successfully',
-        member: { userID: memberUserID, joinedAt: nowIso },
-    });
+        AuditService.logAction({
+            userID,
+            action: 'ADD_GROUP_MEMBER',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'POST',
+            endpoint: `/api/groups/${teamID}/members`,
+            status: 'success',
+            statusCode: 200,
+            changes: {
+                before: { memberCount: team.members.length },
+                after: { memberCount: updatedMembers.length, newMember: memberUserID },
+            },
+            durationMs: Date.now() - startTime,
+        });
+
+        return response(200, {
+            success: true,
+            message: 'Member added successfully',
+            member: { userID: memberUserID, joinedAt: nowIso },
+        });
+    } catch (error: any) {
+        AuditService.logAction({
+            userID,
+            action: 'ADD_GROUP_MEMBER',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'POST',
+            endpoint: `/api/groups/${teamID}/members`,
+            status: 'failure',
+            statusCode: 500,
+            errorMessage: error.message,
+            durationMs: Date.now() - startTime,
+        });
+        throw error;
+    }
 }
 
 async function removeGroupMember(userID: string, teamID: string, memberUserID: string): Promise<APIGatewayProxyResult> {
+    const startTime = Date.now();
+
+    // ========================================
+    // AUTHORIZATION: Team Owner Verification
+    // ========================================
+
     const result = await ddb.send(new GetCommand({
         TableName: TEAMS_TABLE,
         Key: { teamID },
@@ -1375,33 +1801,117 @@ async function removeGroupMember(userID: string, teamID: string, memberUserID: s
     const team = result.Item as Team;
 
     if (!team) {
+        AuditService.logAction({
+            userID,
+            action: 'REMOVE_GROUP_MEMBER',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'DELETE',
+            endpoint: `/api/groups/${teamID}/members/${memberUserID}`,
+            status: 'failure',
+            statusCode: 404,
+            errorMessage: 'Group not found',
+            durationMs: Date.now() - startTime,
+        });
         return response(404, { success: false, message: 'Group not found' });
     }
 
     if (team.ownerID !== userID) {
-        return response(403, { success: false, message: 'Only the owner can remove members' });
+        AuditService.logAction({
+            userID,
+            action: 'REMOVE_GROUP_MEMBER',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'DELETE',
+            endpoint: `/api/groups/${teamID}/members/${memberUserID}`,
+            status: 'failure',
+            statusCode: 403,
+            errorMessage: 'Only the group owner can remove members',
+            durationMs: Date.now() - startTime,
+        });
+        return response(403, { success: false, message: 'Only the group owner can remove members' });
     }
 
+    // ========================================
+    // AUTHORIZATION: Business Rules
+    // ========================================
+
     if (memberUserID === team.ownerID) {
-        return response(400, { success: false, message: 'Cannot remove the owner' });
+        AuditService.logAction({
+            userID,
+            action: 'REMOVE_GROUP_MEMBER',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'DELETE',
+            endpoint: `/api/groups/${teamID}/members/${memberUserID}`,
+            status: 'failure',
+            statusCode: 400,
+            errorMessage: 'Cannot remove the group owner',
+            durationMs: Date.now() - startTime,
+        });
+        return response(400, { success: false, message: 'Cannot remove the group owner' });
     }
 
     if (!team.members.includes(memberUserID)) {
-        return response(400, { success: false, message: 'User is not a member' });
+        AuditService.logAction({
+            userID,
+            action: 'REMOVE_GROUP_MEMBER',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'DELETE',
+            endpoint: `/api/groups/${teamID}/members/${memberUserID}`,
+            status: 'failure',
+            statusCode: 400,
+            errorMessage: 'User is not a member of this group',
+            durationMs: Date.now() - startTime,
+        });
+        return response(400, { success: false, message: 'User is not a member of this group' });
     }
 
     const nowIso = new Date().toISOString();
     const updatedMembers = team.members.filter(m => m !== memberUserID);
 
-    await ddb.send(new UpdateCommand({
-        TableName: TEAMS_TABLE,
-        Key: { teamID },
-        UpdateExpression: 'SET members = :members, updatedAt = :ua',
-        ExpressionAttributeValues: { ':members': updatedMembers, ':ua': nowIso },
-    }));
+    try {
+        await ddb.send(new UpdateCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID },
+            UpdateExpression: 'SET members = :members, updatedAt = :ua',
+            ExpressionAttributeValues: { ':members': updatedMembers, ':ua': nowIso },
+        }));
 
-    return response(200, {
-        success: true,
-        message: 'Member removed successfully',
-    });
+        AuditService.logAction({
+            userID,
+            action: 'REMOVE_GROUP_MEMBER',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'DELETE',
+            endpoint: `/api/groups/${teamID}/members/${memberUserID}`,
+            status: 'success',
+            statusCode: 200,
+            changes: {
+                before: { memberCount: team.members.length, removedMember: memberUserID },
+                after: { memberCount: updatedMembers.length },
+            },
+            durationMs: Date.now() - startTime,
+        });
+
+        return response(200, {
+            success: true,
+            message: 'Member removed successfully',
+        });
+    } catch (error: any) {
+        AuditService.logAction({
+            userID,
+            action: 'REMOVE_GROUP_MEMBER',
+            resourceType: 'group',
+            resourceID: teamID,
+            httpMethod: 'DELETE',
+            endpoint: `/api/groups/${teamID}/members/${memberUserID}`,
+            status: 'failure',
+            statusCode: 500,
+            errorMessage: error.message,
+            durationMs: Date.now() - startTime,
+        });
+        throw error;
+    }
 }
