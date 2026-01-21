@@ -337,6 +337,13 @@ export class HrStack extends Stack {
       partitionKey: { name: 'staffId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'startDate', type: dynamodb.AttributeType.STRING },
     });
+    // GSI for querying leaves by clinic and status (for admin dashboards)
+    // This allows filtering leaves by clinic and approval status
+    this.leaveTable.addGlobalSecondaryIndex({
+      indexName: 'byClinicAndStatus',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'startDate', type: dynamodb.AttributeType.STRING },
+    });
 
     // ========================================
     // AUDIT TABLE - Complete Audit Trail

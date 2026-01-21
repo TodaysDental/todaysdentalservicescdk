@@ -1551,14 +1551,51 @@ async function rejectShift(shiftId: string, staffId: string, userPerms?: UserPer
 // --- LEAVE ---
 async function getLeave(userPerms: any, isAdmin: boolean) {
     if (isAdmin) {
-        const { Items } = await ddb.send(new ScanCommand({ TableName: LEAVE_TABLE }));
-        return httpOk({ leaveRequests: Items || [] });
+        // Admin can view leaves from multiple clinics
+        const adminClinics = userPerms.clinicRoles?.map((cr: any) => cr.clinicId) || [];
+        
+        if (adminClinics.length === 0) {
+          // Super admin - scan all leaves
+          const { Items } = await ddb.send(new ScanCommand({ TableName: LEAVE_TABLE }));
+          return httpOk({ leaveRequests: Items || [] });
+        }
+        
+        // Query leaves for each clinic admin has access to
+        const allLeaves: any[] = [];
+        const queryPromises = adminClinics.map((clinicId: string) =>
+          ddb.send(new QueryCommand({
+            TableName: LEAVE_TABLE,
+            IndexName: 'byClinicAndStatus',
+            KeyConditionExpression: 'clinicId = :clinicId',
+            ExpressionAttributeValues: { ':clinicId': clinicId },
+          }))
+        );
+        
+        try {
+          const results = await Promise.all(queryPromises);
+          results.forEach(result => {
+            if (result.Items) allLeaves.push(...result.Items);
+          });
+        } catch (err) {
+          console.warn('⚠️ Error querying leaves by clinic, falling back to scan:', err);
+          // Fallback: scan all and filter by clinic
+          const { Items } = await ddb.send(new ScanCommand({ TableName: LEAVE_TABLE }));
+          return httpOk({ 
+            leaveRequests: (Items || []).filter((item: any) => 
+              adminClinics.includes(item.clinicId) || 
+              (item.clinicIds && item.clinicIds.some((cid: string) => adminClinics.includes(cid)))
+            )
+          });
+        }
+        
+        return httpOk({ leaveRequests: allLeaves });
     } else {
+        // Staff member views their own leaves
         const { Items } = await ddb.send(new QueryCommand({
             TableName: LEAVE_TABLE,
             IndexName: 'byStaff',
             KeyConditionExpression: 'staffId = :staffId',
-            ExpressionAttributeValues: { ':staffId': userPerms.email } // Use email instead of staffId
+            ExpressionAttributeValues: { ':staffId': userPerms.email }
         }));
         return httpOk({ leaveRequests: Items || [] });
     }
@@ -1569,6 +1606,24 @@ async function createLeave(staffId: string, body: any, userPerms?: UserPermissio
   if (!startDate || !endDate) {
     return httpErr(400, "startDate and endDate are required");
   }
+
+  // Lookup all clinics where this staff member works
+  let staffClinicIds: string[] = [];
+  try {
+    const { Items: staffInfoItems } = await ddb.send(new QueryCommand({
+      TableName: STAFF_INFO_TABLE,
+      KeyConditionExpression: 'email = :email',
+      ExpressionAttributeValues: { ':email': staffId.toLowerCase() },
+    }));
+    staffClinicIds = (staffInfoItems || []).map((item: any) => item.clinicId).filter(Boolean);
+    console.log(`📋 Staff ${staffId} works at ${staffClinicIds.length} clinic(s):`, staffClinicIds);
+  } catch (lookupError) {
+    console.warn('⚠️ Could not look up staff clinics:', lookupError);
+    // Fallback to admin's clinic if lookup fails
+    const adminClinicId = userPerms?.clinicRoles?.[0]?.clinicId;
+    staffClinicIds = adminClinicId ? [adminClinicId] : [];
+  }
+
   const leaveId = uuidv4();
   const leaveRequest = {
     leaveId,
@@ -1576,30 +1631,65 @@ async function createLeave(staffId: string, body: any, userPerms?: UserPermissio
     startDate,
     endDate,
     reason,
-    status: 'pending'
+    status: 'pending',
+    clinicIds: staffClinicIds, // Store all clinics where this staff member works
   };
+  
+  // Store the main leave record
   await ddb.send(new PutCommand({ TableName: LEAVE_TABLE, Item: leaveRequest }));
-
-  // --- Audit Log ---
-  if (userPerms) {
-    // Get the first clinicId from user's clinic roles for audit purposes
-    const userClinicId = userPerms.clinicRoles?.[0]?.clinicId;
-    
-    await auditLogger.log({
-      userId: userPerms.email,
-      userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
-      userRole: AuditLogger.getUserRole(userPerms),
-      action: 'CREATE',
-      resource: 'LEAVE',
-      resourceId: leaveId,
-      clinicId: userClinicId, // Include clinic for filtering
-      after: AuditLogger.sanitizeForAudit(leaveRequest),
-      metadata: {
-        ...AuditLogger.createLeaveMetadata(leaveRequest),
-        actionType: 'Leave Request Created',
+  
+  // Also store clinic-specific entries for GSI (denormalization for clinic filtering)
+  // This allows efficient queries by clinic via the byClinicAndStatus GSI
+  const clinicLeavePromises = staffClinicIds.map((clinicId: string) =>
+    ddb.send(new PutCommand({
+      TableName: LEAVE_TABLE,
+      Item: {
+        leaveId: `${leaveId}#${clinicId}`, // Compound key for GSI
+        clinicId, // GSI partition key
+        startDate, // GSI sort key
+        staffId,
+        endDate,
+        reason,
+        status: 'pending',
+        clinicIds: staffClinicIds,
+        isClinicIndexEntry: true, // Marker to identify GSI entries
+        primaryLeaveId: leaveId, // Link back to primary record
       },
-      ...AuditLogger.extractRequestContext(event),
-    });
+    }))
+  );
+  
+  if (clinicLeavePromises.length > 0) {
+    try {
+      await Promise.all(clinicLeavePromises);
+      console.log(`✅ Created ${clinicLeavePromises.length} clinic index entries`);
+    } catch (err) {
+      console.warn('⚠️ Failed to create clinic index entries (primary record saved):', err);
+    }
+  }
+
+  // --- Audit Logs (one per clinic for visibility when filtering by clinic) ---
+  if (userPerms && staffClinicIds.length > 0) {
+    const auditPromises = staffClinicIds.map((clinicId: string) =>
+      auditLogger.log({
+        userId: userPerms.email,
+        userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+        userRole: AuditLogger.getUserRole(userPerms),
+        action: 'CREATE',
+        resource: 'LEAVE',
+        resourceId: leaveId,
+        clinicId: clinicId, // Include each clinic for filtering
+        after: AuditLogger.sanitizeForAudit(leaveRequest),
+        metadata: {
+          ...AuditLogger.createLeaveMetadata(leaveRequest),
+          actionType: 'Leave Request Created',
+          staffClinicIds: staffClinicIds,
+          createdBy: userPerms.email,
+        },
+        ...AuditLogger.extractRequestContext(event),
+      })
+    );
+    await Promise.all(auditPromises);
+    console.log(`✅ Audit logs created for leave ${leaveId} across ${staffClinicIds.length} clinic(s)`);
   }
 
   return httpOk({ leaveId, message: "Leave request submitted" });
@@ -1615,25 +1705,49 @@ async function deleteLeave(leaveId: string, userPerms: UserPermissions, isAdmin:
 
     await ddb.send(new DeleteCommand({ TableName: LEAVE_TABLE, Key: { leaveId } }));
 
-    // --- Audit Log ---
-    // Get the first clinicId from user's clinic roles for audit purposes
-    const userClinicId = userPerms.clinicRoles?.[0]?.clinicId;
+    // --- Audit Logs (one per clinic for visibility) ---
+    // Use stored clinic IDs or lookup staff's clinics
+    let clinicsToLog = Item.clinicIds || [];
+    if (clinicsToLog.length === 0) {
+      // Fallback: lookup staff's clinics
+      try {
+        const { Items: staffInfoItems } = await ddb.send(new QueryCommand({
+          TableName: STAFF_INFO_TABLE,
+          KeyConditionExpression: 'email = :email',
+          ExpressionAttributeValues: { ':email': Item.staffId.toLowerCase() },
+        }));
+        clinicsToLog = (staffInfoItems || []).map((item: any) => item.clinicId).filter(Boolean);
+      } catch (err) {
+        console.warn('Could not look up staff clinics for audit:', err);
+        clinicsToLog = [userPerms.clinicRoles?.[0]?.clinicId].filter(Boolean);
+      }
+    }
+
+    // Log deletion to all relevant clinics
+    const auditPromises = clinicsToLog.map((clinicId: string) =>
+      auditLogger.log({
+        userId: userPerms.email,
+        userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+        userRole: AuditLogger.getUserRole(userPerms),
+        action: 'DELETE',
+        resource: 'LEAVE',
+        resourceId: leaveId,
+        clinicId: clinicId,
+        before: AuditLogger.sanitizeForAudit(Item),
+        metadata: {
+          ...AuditLogger.createLeaveMetadata(Item),
+          actionType: 'Leave Request Deleted',
+          staffClinicIds: clinicsToLog,
+          deletedBy: userPerms.email,
+        },
+        ...AuditLogger.extractRequestContext(event),
+      })
+    );
     
-    await auditLogger.log({
-      userId: userPerms.email,
-      userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
-      userRole: AuditLogger.getUserRole(userPerms),
-      action: 'DELETE',
-      resource: 'LEAVE',
-      resourceId: leaveId,
-      clinicId: userClinicId, // Include clinic for filtering
-      before: AuditLogger.sanitizeForAudit(Item),
-      metadata: {
-        ...AuditLogger.createLeaveMetadata(Item),
-        actionType: 'Leave Request Deleted',
-      },
-      ...AuditLogger.extractRequestContext(event),
-    });
+    if (auditPromises.length > 0) {
+      await Promise.all(auditPromises);
+      console.log(`✅ Audit logs created for leave deletion across ${clinicsToLog.length} clinic(s)`);
+    }
 
     return httpOk({ message: "Leave request deleted" });
 }
@@ -1755,14 +1869,21 @@ async function approveLeave(leaveId: string, userPerms?: UserPermissions, event?
 
         // --- Audit Log ---
         if (userPerms) {
-          // Get clinicId from deleted shifts (best match for filtering), or fallback to approver's clinic
-          // This ensures the leave audit shows up when filtering by the clinic where shifts were affected
-          const affectedClinicIds = [...new Set(overlappingShifts.map(s => s.clinicId).filter(Boolean))];
-          const primaryClinicId = affectedClinicIds[0] || userPerms.clinicRoles?.[0]?.clinicId;
+          // Get clinicIds from stored leave request (created when leave was submitted)
+          // This ensures proper clinic filtering in audit logs
+          let clinicsToLog = leave.clinicIds || [];
           
-          // Create audit log for each affected clinic to ensure visibility when filtering by clinic
-          const clinicsToLog = affectedClinicIds.length > 0 ? affectedClinicIds : [primaryClinicId];
+          // If clinicIds not stored, derive from affected shifts
+          if (clinicsToLog.length === 0 && overlappingShifts.length > 0) {
+            clinicsToLog = [...new Set(overlappingShifts.map(s => s.clinicId).filter(Boolean))];
+          }
           
+          // Fallback to approver's first clinic
+          if (clinicsToLog.length === 0) {
+            clinicsToLog = [userPerms.clinicRoles?.[0]?.clinicId].filter(Boolean);
+          }
+          
+          // Create audit log for each clinic to ensure visibility when filtering by clinic
           for (const clinicIdForAudit of clinicsToLog) {
             await auditLogger.log({
               userId: userPerms.email,
@@ -1771,7 +1892,7 @@ async function approveLeave(leaveId: string, userPerms?: UserPermissions, event?
               action: 'APPROVE',
               resource: 'LEAVE',
               resourceId: leaveId,
-              clinicId: clinicIdForAudit, // Use affected clinic(s) for proper filtering
+              clinicId: clinicIdForAudit, // Use clinic(s) for proper filtering
               before: { status: leave.status, staffId: leave.staffId },
               after: { status: 'approved' },
               reason: approvalNotes,
@@ -1781,7 +1902,8 @@ async function approveLeave(leaveId: string, userPerms?: UserPermissions, event?
                 actionByName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim(),
                 actionType: 'Leave Approved',
                 requestedBy: leave.staffId, // Include the staff who requested leave
-                affectedClinics: affectedClinicIds,
+                staffClinicIds: leave.clinicIds || clinicsToLog,
+                affectedClinics: [...new Set(overlappingShifts.map(s => s.clinicId).filter(Boolean))],
                 deletedShiftCount: overlappingShifts.length,
               },
               ...AuditLogger.extractRequestContext(event),
