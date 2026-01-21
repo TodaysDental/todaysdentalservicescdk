@@ -36,10 +36,10 @@ import {
 const CONFIG = {
   // Analytics retention (90 days TTL, aligned with Chime analytics)
   ANALYTICS_TTL_DAYS: 90,
-  
+
   // Bedrock timeout
   BEDROCK_TIMEOUT_MS: 25000, // 25 seconds (leaves buffer for Lambda timeout)
-  
+
   // Max retries for analytics writes
   ANALYTICS_MAX_RETRIES: 2,
   ANALYTICS_RETRY_DELAY_MS: 50,
@@ -71,16 +71,14 @@ const SESSIONS_TABLE = process.env.SESSIONS_TABLE || 'AiAgentSessions';
 const TRANSCRIPTION_CONFIDENCE_THRESHOLD = Number(process.env.TRANSCRIPTION_CONFIDENCE_THRESHOLD || '0.6');
 
 // For Amazon Connect InvokeLambdaFunction, keep Bedrock time safely under the contact flow
-// InvocationTimeLimitSeconds (currently 8s) to avoid Connect timeouts.
-// REDUCED from 7500ms to 5500ms to leave buffer for:
-// - Session management (~500ms)
-// - Analytics/transcript writes (~500ms)  
-// - Streaming loop overhead (~500ms)
-// - Response serialization (~200ms)
-const CONNECT_BEDROCK_TIMEOUT_MS = Number(process.env.CONNECT_BEDROCK_TIMEOUT_MS || '5500');
+// InvocationTimeLimitSeconds (hard limit: 8s) to avoid Connect timeouts.
+// MAXIMIZED to 7800ms - leaves only ~200ms for Lambda serialization/network overhead.
+// Analytics/transcript writes are fire-and-forget so don't block the response.
+const CONNECT_BEDROCK_TIMEOUT_MS = Number(process.env.CONNECT_BEDROCK_TIMEOUT_MS || '7800');
 
 // Maximum time to spend in the streaming loop before returning partial response
-const MAX_STREAMING_LOOP_MS = 6000;
+// Slightly higher than CONNECT_BEDROCK_TIMEOUT_MS to allow graceful partial response handling
+const MAX_STREAMING_LOOP_MS = 7900;
 
 // AI phone numbers mapping: aiPhoneNumber -> clinicId
 const AI_PHONE_NUMBERS_JSON = process.env.AI_PHONE_NUMBERS_JSON || '{}';
@@ -445,7 +443,7 @@ async function addTranscriptTurn(params: {
 
   const { callId, callerUtterance, aiResponse, callStartMs, confidence } = params;
   const nowMs = Date.now();
-  
+
   // Calculate time offsets in seconds since call start
   const callerStartTime = (nowMs - callStartMs) / 1000;
   const callerEndTime = callerStartTime + 0.5; // Approximate
@@ -507,7 +505,7 @@ async function getOrCreateSession(
   callerNumber?: string
 ): Promise<ConnectLexSession> {
   const sessionKey = `lex-${lexSessionId}`;
-  
+
   // Try to get existing session
   try {
     const existing = await docClient.send(new GetCommand({
@@ -596,7 +594,7 @@ async function invokeBedrock(params: {
   const effectiveTimeoutMs = Number.isFinite(timeoutMs) ? Number(timeoutMs) : CONFIG.BEDROCK_TIMEOUT_MS;
   const controller = new AbortController();
   const bedrockTimeout = setTimeout(() => controller.abort(), effectiveTimeoutMs);
-  
+
   // Track when we started for streaming loop timeout
   const invocationStartMs = Date.now();
 
@@ -617,7 +615,7 @@ async function invokeBedrock(params: {
     });
 
     const response = await bedrockAgentClient.send(command, { abortSignal: controller.signal });
-    
+
     let fullResponse = '';
     const toolsUsed: string[] = [];
     let streamingTimedOut = false;
@@ -638,7 +636,7 @@ async function invokeBedrock(params: {
           streamingTimedOut = true;
           break;
         }
-        
+
         if (event.chunk?.bytes) {
           fullResponse += new TextDecoder().decode(event.chunk.bytes);
         }
@@ -663,7 +661,7 @@ async function invokeBedrock(params: {
       };
     }
 
-    return { 
+    return {
       response: fullResponse.trim() || "I'm sorry, I couldn't generate a response. How else can I help you?",
       toolsUsed: [...new Set(toolsUsed)], // Dedupe
     };
@@ -759,7 +757,7 @@ export const handler = async (event: LexV2Event | ConnectLambdaEvent): Promise<L
 async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<ConnectLambdaResponse> {
   const contactData = event.Details?.ContactData;
   const params = event.Details?.Parameters || {};
-  
+
   const contactId = contactData?.ContactId || '';
   const inputTranscript = params['inputTranscript'] || '';
   const confidenceRaw = params['confidence'];
@@ -903,10 +901,10 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
   // Determine clinic from dialed number or session attributes
   let clinicId = sessionAttributes['clinicId'] || '';
   let callerNumber = requestAttributes['x-amz-lex:caller-number'] || sessionAttributes['callerNumber'] || '';
-  
+
   // Try to get dialed number from Connect system endpoint
   const dialedNumber = requestAttributes['x-amz-lex:dialed-number'] || sessionAttributes['dialedNumber'] || '';
-  
+
   if (!clinicId && dialedNumber) {
     // Look up clinic from AI phone numbers mapping
     const normalizedDialed = dialedNumber.replace(/\D/g, '');
@@ -1073,9 +1071,9 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
     ],
   };
 
-  console.log('[LexBedrockHook] Returning response:', { 
-    clinicId, 
-    turnCount: session.turnCount, 
+  console.log('[LexBedrockHook] Returning response:', {
+    clinicId,
+    turnCount: session.turnCount,
     responseLength: aiResponse.length,
     lastUtteranceSet: !!nextSessionAttributes.lastUtterance,
   });

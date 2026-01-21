@@ -39,16 +39,16 @@ export interface AiAgentsStackProps extends StackProps {
    * REQUIRED for Voice AI to determine after-hours routing.
    */
   clinicHoursTableName: string;
-  
+
   /**
    * Clinic hours table ARN from ClinicHoursStack for IAM permissions.
    * REQUIRED for Voice AI Lambda to read clinic hours.
    */
   clinicHoursTableArn: string;
-  
+
   clinicPricingTableName?: string;
   clinicInsuranceTableName?: string;
-  
+
   // ========================================
   // PATIENT PORTAL APPT TYPES INTEGRATION (from PatientPortalApptTypesStack)
   // ========================================
@@ -58,30 +58,30 @@ export interface AiAgentsStackProps extends StackProps {
    * Table schema: clinicId (PK), label (SK)
    */
   apptTypesTableName?: string;
-  
+
   /**
    * Appointment types table ARN for IAM permissions.
    */
   apptTypesTableArn?: string;
-  
+
   // ========================================
   // CHIME STACK INTEGRATION (REQUIRED)
   // ========================================
   // These props MUST be passed from ChimeStack to avoid hardcoded imports
   // and circular dependencies. Do not rely on default stack names.
-  
+
   /**
    * Clinics table name from ChimeStack.
    * REQUIRED for outbound calls to look up clinic SIP configuration.
    */
   clinicsTableName: string;
-  
+
   /**
    * Clinics table ARN from ChimeStack for IAM permissions.
    * REQUIRED for outbound call Lambda to read clinic data.
    */
   clinicsTableArn?: string;
-  
+
   /**
    * SSM Parameter name containing the SMA ID Map JSON.
    * The Lambda will read the value from SSM at runtime.
@@ -89,7 +89,7 @@ export interface AiAgentsStackProps extends StackProps {
    * REQUIRED for initiating outbound calls via the correct SMA.
    */
   smaIdMapParameterName: string;
-  
+
   /**
    * ChimeStack name for additional dynamic imports if needed.
    * Optional - prefer explicit props over dynamic imports.
@@ -158,52 +158,52 @@ export interface AiAgentsStackProps extends StackProps {
    * Required if this stack reads from KMS-encrypted secrets tables (e.g. ActionGroupFn reads ClinicSecrets).
    */
   secretsEncryptionKeyArn?: string;
-  
+
   // ========================================
   // UNIFIED ANALYTICS INTEGRATION (REQUIRED)
   // ========================================
   // CRITICAL: Use the shared CallAnalytics table from AnalyticsStack to avoid
   // data fragmentation. The AnalyticsStack table (CallAnalyticsN1) uses callId/timestamp
   // schema which aligns with Chime stream processor and reconciliation jobs.
-  
+
   /**
    * Name of the shared CallAnalytics table from AnalyticsStack.
    * Schema: PK=callId (String), SK=timestamp (Number)
    * REQUIRED for unified call analytics. If not provided, Voice AI analytics will be disabled.
    */
   callAnalyticsTableName?: string;
-  
+
   /**
    * ARN of the shared CallAnalytics table for IAM permissions.
    * MUST be provided if callAnalyticsTableName is provided.
    */
   callAnalyticsTableArn?: string;
-  
+
   /**
    * AnalyticsStack name for deriving import names.
    * Optional - prefer explicit props (callAnalyticsTableName/Arn) over dynamic imports.
    */
   analyticsStackName?: string;
-  
+
   // ========================================
   // SHARED RECORDINGS BUCKET (from ChimeStack)
   // ========================================
   // CRITICAL: Use the shared recordings bucket from ChimeStack to avoid
   // data fragmentation between AI calls and human calls.
-  
+
   /**
    * Shared recordings bucket name from ChimeStack.
    * If provided, AiAgentsStack will NOT create its own recordings bucket.
    * RECOMMENDED: Always pass this to have unified call recordings.
    */
   sharedRecordingsBucketName?: string;
-  
+
   /**
    * Shared recordings bucket ARN for IAM permissions.
    * MUST be provided together with sharedRecordingsBucketName.
    */
   sharedRecordingsBucketArn?: string;
-  
+
   // ========================================
   // HOLD MUSIC / TTS AUDIO BUCKET (from ChimeStack)
   // ========================================
@@ -213,13 +213,13 @@ export interface AiAgentsStackProps extends StackProps {
    * REQUIRED for streaming TTS to work properly.
    */
   holdMusicBucketName?: string;
-  
+
   /**
    * Hold music bucket ARN for IAM permissions.
    * MUST be provided together with holdMusicBucketName for S3 write access.
    */
   holdMusicBucketArn?: string;
-  
+
   // ========================================
   // WEBSOCKET DOMAIN (from ChatbotStack)
   // ========================================
@@ -228,13 +228,13 @@ export interface AiAgentsStackProps extends StackProps {
    * REQUIRED for adding the /ai-agents API mapping to the shared domain.
    */
   webSocketDomainName: string;
-  
+
   /**
    * Regional domain name for the WebSocket domain (d-xxx.execute-api.region.amazonaws.com).
    * REQUIRED for importing the domain as an L2 construct.
    */
   webSocketRegionalDomainName: string;
-  
+
   /**
    * Regional hosted zone ID for the WebSocket domain.
    * REQUIRED for importing the domain as an L2 construct.
@@ -307,21 +307,21 @@ export class AiAgentsStack extends Stack {
     // REQUIRED PROPS VALIDATION
     // ========================================
     // Validate all required props upfront to fail fast with clear error messages
-    
+
     if (!props.clinicsTableName) {
       throw new Error(
         '[AiAgentsStack] CONFIGURATION ERROR: clinicsTableName is REQUIRED. ' +
         'This must be passed from ChimeStack for outbound calls to look up clinic SIP configuration.'
       );
     }
-    
+
     if (!props.smaIdMapParameterName) {
       throw new Error(
         '[AiAgentsStack] CONFIGURATION ERROR: smaIdMapParameterName is REQUIRED. ' +
         'This SSM Parameter contains the SIP Media Application ID mapping for initiating outbound calls.'
       );
     }
-    
+
     // Validate SSM parameter name format (must start with /)
     if (!props.smaIdMapParameterName.startsWith('/')) {
       throw new Error(
@@ -329,21 +329,21 @@ export class AiAgentsStack extends Stack {
         `(e.g., "/ai-agents/sma-id-map"). Received: "${props.smaIdMapParameterName}"`
       );
     }
-    
+
     if (!props.webSocketDomainName) {
       throw new Error(
         '[AiAgentsStack] CONFIGURATION ERROR: webSocketDomainName is REQUIRED. ' +
         'This must be passed from ChatbotStack for the /ai-agents API mapping on the shared WebSocket domain.'
       );
     }
-    
+
     if (!props.webSocketRegionalDomainName) {
       throw new Error(
         '[AiAgentsStack] CONFIGURATION ERROR: webSocketRegionalDomainName is REQUIRED. ' +
         'This is the regional domain name (d-xxx.execute-api.region.amazonaws.com) for importing the WebSocket domain.'
       );
     }
-    
+
     if (!props.webSocketRegionalHostedZoneId) {
       throw new Error(
         '[AiAgentsStack] CONFIGURATION ERROR: webSocketRegionalHostedZoneId is REQUIRED. ' +
@@ -647,7 +647,7 @@ export class AiAgentsStack extends Stack {
     //
     // If callAnalyticsTableName is not provided, Voice AI analytics will be disabled
     // with a warning at synth time.
-    
+
     // ========================================
     // ANALYTICS INTEGRATION VALIDATION
     // ========================================
@@ -664,7 +664,7 @@ export class AiAgentsStack extends Stack {
         'Both must be provided together for environment variable configuration.'
       );
     }
-    
+
     // Use explicit props for analytics table (preferred over dynamic imports)
     if (props.callAnalyticsTableName) {
       this.callAnalyticsTableName = props.callAnalyticsTableName;
@@ -688,7 +688,7 @@ export class AiAgentsStack extends Stack {
     // ========================================
     // CRITICAL FIX: Use shared recordings bucket from ChimeStack if provided
     // This avoids data fragmentation between AI calls and human calls.
-    
+
     // Validate shared bucket name+ARN pair
     if (props.sharedRecordingsBucketName && !props.sharedRecordingsBucketArn) {
       throw new Error(
@@ -702,19 +702,19 @@ export class AiAgentsStack extends Stack {
         'Both must be provided together for bucket reference.'
       );
     }
-    
+
     // Declare bucket variable for use throughout constructor
     let recordingsBucket: s3.IBucket;
-    
+
     if (props.sharedRecordingsBucketName && props.sharedRecordingsBucketArn) {
       // Use shared recordings bucket from ChimeStack (RECOMMENDED)
       console.log(`[AiAgentsStack] Using shared recordings bucket from ChimeStack: ${props.sharedRecordingsBucketName}`);
-      
+
       recordingsBucket = s3.Bucket.fromBucketAttributes(this, 'SharedRecordingsBucket', {
         bucketName: props.sharedRecordingsBucketName,
         bucketArn: props.sharedRecordingsBucketArn,
       });
-      
+
       // Note: Bucket policies are configured in ChimeStack
       // AiAgentsStack just needs write permissions (granted via IAM role policy below)
     } else {
@@ -725,7 +725,7 @@ export class AiAgentsStack extends Stack {
         'This causes data fragmentation between AI and human call recordings. ' +
         'Pass sharedRecordingsBucketName/Arn from ChimeStack for unified storage.'
       );
-      
+
       const ownBucket = new s3.Bucket(this, 'CallRecordingsBucket', {
         bucketName: `${this.stackName.toLowerCase()}-call-recordings-${this.account}`,
         encryption: s3.BucketEncryption.S3_MANAGED,
@@ -759,10 +759,10 @@ export class AiAgentsStack extends Stack {
           },
         },
       }));
-      
+
       recordingsBucket = ownBucket;
     }
-    
+
     // Store reference for other parts of the stack
     this.callRecordingsBucket = recordingsBucket;
 
@@ -772,7 +772,7 @@ export class AiAgentsStack extends Stack {
     // Temporary storage for insurance card images during Textract OCR processing.
     // Images are automatically deleted after 1 day to minimize storage costs and
     // comply with data retention best practices.
-    
+
     this.insuranceImageBucket = new s3.Bucket(this, 'InsuranceImageBucket', {
       bucketName: `${this.stackName.toLowerCase()}-insurance-images-${this.account}`,
       encryption: s3.BucketEncryption.S3_MANAGED,
@@ -904,12 +904,12 @@ export class AiAgentsStack extends Stack {
 
     this.agentsTable.grantReadData(this.actionGroupFn);
     this.circuitBreakerTable.grantReadWriteData(this.actionGroupFn);
-    
+
     // Grant read access to Clinics table for clinic metadata
     // Use explicit ARN from props if available, otherwise construct from table name
-    const clinicsTableArnForActionGroup = props.clinicsTableArn || 
+    const clinicsTableArnForActionGroup = props.clinicsTableArn ||
       `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicsTableName}`;
-    
+
     this.actionGroupFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['dynamodb:GetItem'],
@@ -960,7 +960,7 @@ export class AiAgentsStack extends Stack {
 
     // Grant read access to Appointment Types table for booking appointments
     // This table is managed by PatientPortalApptTypesStack with schema: clinicId (PK), label (SK)
-    const apptTypesTableArn = props.apptTypesTableArn || 
+    const apptTypesTableArn = props.apptTypesTableArn ||
       `arn:aws:dynamodb:${this.region}:${this.account}:table/TodaysDentalInsightsPatientPortalApptTypesN1-ApptTypes`;
     this.actionGroupFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
@@ -1084,7 +1084,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'agents.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 512,
+      memorySize: 1024, // Increased from 512 for faster AI response times
       timeout: Duration.seconds(60), // Agent creation/prepare can take time
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
@@ -1211,7 +1211,7 @@ export class AiAgentsStack extends Stack {
     this.clinicHoursTable.grantReadData(this.voiceAiFn);
     this.voiceConfigTable.grantReadData(this.voiceAiFn);
     this.callRecordingsBucket.grantWrite(this.voiceAiFn);
-    
+
     // FIX: Grant S3 write access to hold music bucket for streaming TTS audio
     // VoiceAiFn generates TTS audio via Polly and uploads to S3 for PlayAudio actions
     if (props.holdMusicBucketArn) {
@@ -1235,7 +1235,7 @@ export class AiAgentsStack extends Stack {
     // The table schema is: PK=callId, SK=timestamp (Number)
     // Use explicit ARN from props (validated above to be present if name is present)
     const callAnalyticsTableArn = props.callAnalyticsTableArn;
-    
+
     if (callAnalyticsTableArn) {
       this.voiceAiFn.addToRolePolicy(new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
@@ -1361,7 +1361,7 @@ export class AiAgentsStack extends Stack {
     // This avoids fragile dependencies on stack naming conventions
     const clinicsTableName = props.clinicsTableName;
     const smaIdMapParameterName = props.smaIdMapParameterName;
-    
+
     console.log('[AiAgentsStack] Chime integration configured:', {
       clinicsTable: clinicsTableName,
       smaIdMapParameterName,
@@ -1623,9 +1623,9 @@ export class AiAgentsStack extends Stack {
 
     // Grant read access to Clinics table (from ChimeStack)
     // Use explicit ARN from props if available, otherwise construct from table name
-    const clinicsTableArn = props.clinicsTableArn || 
+    const clinicsTableArn = props.clinicsTableArn ||
       `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicsTableName}`;
-    
+
     this.outboundExecutorFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['dynamodb:GetItem'],
@@ -1832,7 +1832,7 @@ export class AiAgentsStack extends Stack {
       },
     });
     applyTags(this.wsMessageFn, { Function: 'ws-message' });
-    
+
     this.agentsTable.grantReadWriteData(this.wsMessageFn);
     this.connectionsTable.grantReadWriteData(this.wsMessageFn);
     this.conversationsTable.grantWriteData(this.wsMessageFn);
@@ -2092,7 +2092,7 @@ export class AiAgentsStack extends Stack {
       regionalDomainName: props.webSocketRegionalDomainName,
       regionalHostedZoneId: props.webSocketRegionalHostedZoneId,
     });
-    
+
     // CRITICAL FIX: Use CfnApiMapping (L1) with explicit stage ID to avoid "Invalid stage identifier" errors
     // The L2 ApiMapping sometimes has timing issues where CloudFormation validates the stage before it exists
     const wsApiMapping = new apigwv2.CfnApiMapping(this, 'AiAgentsWebSocketMapping', {
@@ -2101,7 +2101,7 @@ export class AiAgentsStack extends Stack {
       stage: websocketStage.stageName,
       apiMappingKey: 'ai-agents',
     });
-    
+
     // Explicit dependency ensures the stage is fully created before the mapping
     wsApiMapping.addDependency(websocketStage.node.defaultChild as apigwv2.CfnStage);
 
@@ -2232,8 +2232,8 @@ export class AiAgentsStack extends Stack {
 
     new CfnOutput(this, 'CallRecordingsBucketName', {
       value: this.callRecordingsBucket.bucketName,
-      description: props.sharedRecordingsBucketName 
-        ? 'Shared recordings bucket (from ChimeStack)' 
+      description: props.sharedRecordingsBucketName
+        ? 'Shared recordings bucket (from ChimeStack)'
         : 'Dedicated AI recordings bucket (consider using shared bucket from ChimeStack)',
       exportName: `${Stack.of(this).stackName}-CallRecordingsBucketName`,
     });

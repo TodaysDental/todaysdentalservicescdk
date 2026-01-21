@@ -85,7 +85,7 @@ export interface ChimeStackProps extends StackProps {
    * Custom vocabulary name for medical/dental transcription
    */
   medicalVocabularyName?: string;
-  
+
   /**
    * AWS region for Chime SDK Media operations (meetings, voice).
    * Chime SDK Meetings only supports specific regions. Common options:
@@ -98,60 +98,60 @@ export interface ChimeStackProps extends StackProps {
    * @default 'us-east-1'
    */
   chimeMediaRegion?: string;
-  
+
   // ========================================
   // VOICE AI INTEGRATION (from AiAgentsStack)
   // ========================================
-  
+
   /**
    * Voice AI Lambda ARN for after-hours call handling
    */
   voiceAiLambdaArn?: string;
-  
+
   /**
    * Clinic Hours table name for checking business hours
    */
   clinicHoursTableName?: string;
-  
+
   /**
    * AI Agents table name for getting agent configuration
    */
   aiAgentsTableName?: string;
-  
+
   /**
    * Voice Config table name for voice agent configuration
    */
   voiceConfigTableName?: string;
-  
+
   /**
    * Scheduled Calls table name for AI outbound calls
    */
   scheduledCallsTableName?: string;
-  
+
   /**
    * Voice Sessions table name for AI voice call sessions
    * This is the VoiceAiSessions table from AiAgentsStack, NOT the VoiceConfig table
    */
   voiceSessionsTableName?: string;
-  
+
   /**
    * Enable after-hours AI routing (default: false)
    */
   enableAfterHoursAi?: boolean;
-  
+
   /**
    * Enable real-time transcription for AI calls (default: false)
    * Requires Media Insights Pipeline to be configured
    */
   enableRealTimeTranscription?: boolean;
-  
+
   /**
    * Enable AI phone numbers (default: false)
    * When enabled, creates SIP Rules for aiPhoneNumber entries in clinic-config.json
    * and routes calls to those numbers directly to Voice AI (no business hours check)
    */
   enableAiPhoneNumbers?: boolean;
-  
+
   /**
    * External call recordings bucket name from AiAgentsStack.
    * When provided, ChimeStack will NOT create its own recordings bucket
@@ -159,13 +159,13 @@ export interface ChimeStackProps extends StackProps {
    * All recordings will go to this shared bucket.
    */
   sharedRecordingsBucketName?: string;
-  
+
   /**
    * External call recordings bucket ARN for IAM permissions.
    * Required when sharedRecordingsBucketName is provided.
    */
   sharedRecordingsBucketArn?: string;
-  
+
   /**
    * AiAgentsStack name for dynamic imports.
    * When provided along with enableAfterHoursAi, ChimeStack can dynamically import
@@ -179,40 +179,40 @@ export interface ChimeStackProps extends StackProps {
   // ========================================
   // PUSH NOTIFICATIONS INTEGRATION (from PushNotificationsStack)
   // ========================================
-  
+
   /**
    * Device tokens table name for looking up registered mobile devices
    */
   deviceTokensTableName?: string;
-  
+
   /**
    * Device tokens table ARN for IAM permissions
    */
   deviceTokensTableArn?: string;
-  
+
   /**
    * Send push Lambda function ARN for invoking push notifications
    */
   sendPushFunctionArn?: string;
-  
+
   // ========================================
   // PERFORMANCE OPTIMIZATION
   // ========================================
-  
+
   /**
    * Enable provisioned concurrency for critical real-time voice AI Lambdas.
    * This reduces cold start latency but incurs additional cost.
    * @default false
    */
   enableProvisionedConcurrency?: boolean;
-  
+
   /**
    * Number of provisioned concurrent instances for AI Transcript Bridge Lambda.
    * Only used when enableProvisionedConcurrency is true.
    * @default 5
    */
   aiTranscriptBridgeProvisionedConcurrency?: number;
-  
+
   /**
    * Number of provisioned concurrent instances for Inbound Router (SMA Handler) Lambda.
    * Only used when enableProvisionedConcurrency is true.
@@ -252,7 +252,7 @@ export class ChimeStack extends Stack {
     // Two modes are supported:
     // 1. Explicit props (voiceAiLambdaArn, clinicHoursTableName, etc.) - requires AiAgentsStack deployed first
     // 2. Dynamic imports via aiAgentsStackName - uses Fn.importValue at deploy time
-    
+
     // Resolve Voice AI integration values (explicit props take precedence over dynamic imports)
     let resolvedVoiceAiLambdaArn = props.voiceAiLambdaArn;
     let resolvedClinicHoursTableName = props.clinicHoursTableName;
@@ -260,11 +260,11 @@ export class ChimeStack extends Stack {
     let resolvedVoiceConfigTableName = props.voiceConfigTableName;
     let resolvedScheduledCallsTableName = props.scheduledCallsTableName;
     let resolvedVoiceSessionsTableName = props.voiceSessionsTableName;
-    
+
     // If aiAgentsStackName is provided, use dynamic imports for missing props
     if (props.aiAgentsStackName && props.enableAfterHoursAi) {
       console.log(`[ChimeStack] Using dynamic imports from AiAgentsStack: ${props.aiAgentsStackName}`);
-      
+
       if (!resolvedVoiceAiLambdaArn) {
         resolvedVoiceAiLambdaArn = Fn.importValue(`${props.aiAgentsStackName}-VoiceAiFunctionArn`);
       }
@@ -286,11 +286,11 @@ export class ChimeStack extends Stack {
         resolvedVoiceSessionsTableName = Fn.importValue(`${props.aiAgentsStackName}-VoiceSessionsTableName`);
       }
     }
-    
+
     if (props.enableAfterHoursAi) {
       // Validate that all required values are now available (either from props or imports)
       const missingProps: string[] = [];
-      
+
       if (!resolvedVoiceAiLambdaArn) {
         missingProps.push('voiceAiLambdaArn');
       }
@@ -303,7 +303,7 @@ export class ChimeStack extends Stack {
       if (!resolvedVoiceConfigTableName) {
         missingProps.push('voiceConfigTableName');
       }
-      
+
       if (missingProps.length > 0) {
         throw new Error(
           `[ChimeStack] CONFIGURATION ERROR: enableAfterHoursAi is true but required props are missing: ` +
@@ -313,7 +313,7 @@ export class ChimeStack extends Stack {
           `Required props: voiceAiLambdaArn, clinicHoursTableName, aiAgentsTableName, voiceConfigTableName.`
         );
       }
-      
+
       console.log('[ChimeStack] Voice AI integration enabled with all required values resolved.');
     }
 
@@ -365,8 +365,9 @@ export class ChimeStack extends Stack {
     // IAM policy size limits (previously used 27+ individual AwsCustomResource
     // calls which exceeded the 10KB inline policy limit on the shared Lambda role)
     // ========================================
-    
+
     // Prepare clinic data for seeding - filter to only those with phone numbers
+    // Include ALL clinic fields to ensure complete information is available
     const clinicsToSeed = (clinicsData as Clinic[])
       .filter(c => c.phoneNumber)
       .map(c => ({
@@ -376,6 +377,17 @@ export class ChimeStack extends Stack {
             phoneNumber: { S: c.phoneNumber },
             clinicName: { S: c.clinicName || c.clinicId },
             aiPhoneNumber: { S: c.aiPhoneNumber || '' },
+            timezone: { S: c.timezone || 'America/New_York' },
+            clinicAddress: { S: c.clinicAddress || '' },
+            clinicCity: { S: c.clinicCity || '' },
+            clinicState: { S: c.clinicState || '' },
+            clinicZipCode: { S: c.clinicZipCode || '' },
+            clinicPhone: { S: c.clinicPhone || '' },
+            clinicEmail: { S: c.clinicEmail || '' },
+            websiteLink: { S: c.websiteLink || '' },
+            logoUrl: { S: c.logoUrl || '' },
+            mapsUrl: { S: c.mapsUrl || '' },
+            scheduleUrl: { S: c.scheduleUrl || '' },
           },
         },
       }));
@@ -389,7 +401,7 @@ export class ChimeStack extends Stack {
         iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
       ],
     });
-    
+
     // Grant write access to the clinics table
     this.clinicsTable.grantWriteData(seedClinicsRole);
 
@@ -448,7 +460,7 @@ export class ChimeStack extends Stack {
       partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
-    
+
     // GSI for querying by status - CRITICAL for finding online agents
     this.agentPresenceTable.addGlobalSecondaryIndex({
       indexName: 'status-index',
@@ -571,10 +583,10 @@ export class ChimeStack extends Stack {
         // Only populated when enableAiPhoneNumbers is true and aiPhoneNumber is configured
         AI_PHONE_NUMBERS_JSON: props.enableAiPhoneNumbers
           ? JSON.stringify(
-              clinicsData
-                .filter(c => c.aiPhoneNumber)
-                .reduce((acc, c) => ({ ...acc, [c.aiPhoneNumber]: c.clinicId }), {} as Record<string, string>)
-            )
+            clinicsData
+              .filter(c => c.aiPhoneNumber)
+              .reduce((acc, c) => ({ ...acc, [c.aiPhoneNumber]: c.clinicId }), {} as Record<string, string>)
+          )
           : '{}',
         ENABLE_AI_PHONE_NUMBERS: props.enableAiPhoneNumbers ? 'true' : 'false',
         // Real-time meeting transcription for natural language AI conversation
@@ -684,7 +696,7 @@ export class ChimeStack extends Stack {
       ],
       resources: ['*'],
     }));
-    
+
     // Grant Transcribe permissions for real-time transcription
     smaHandler.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
@@ -701,7 +713,7 @@ export class ChimeStack extends Stack {
       actions: ['polly:SynthesizeSpeech'],
       resources: ['*'],
     }));
-    
+
     // Grant KVS permissions for Media Insights Pipeline
     smaHandler.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
@@ -809,7 +821,7 @@ export class ChimeStack extends Stack {
     // Build the public S3 HTTPS URL for the thinking audio
     // IMPORTANT: keep this file short (<= ~5s) for best UX in voice bots
     this.thinkingAudioUrl = `https://${publicAudioBucket.bucketName}.s3.${this.region}.amazonaws.com/Computer-keyboard-sound-short.mp3`;
-    
+
     new CfnOutput(this, 'ThinkingAudioUrl', {
       value: this.thinkingAudioUrl,
       description: 'Public S3 URL for thinking audio (keyboard sounds) - use in ConnectLexAiStack',
@@ -829,15 +841,15 @@ export class ChimeStack extends Stack {
     // to reduce cold start latency for incoming calls
     if (props.enableProvisionedConcurrency) {
       console.log('[ChimeStack] Configuring provisioned concurrency for SMA Handler (inbound-router)');
-      
+
       const smaHandlerAlias = new lambda.Alias(this, 'SmaHandlerAlias', {
         aliasName: 'live',
         version: smaHandler.currentVersion,
         provisionedConcurrentExecutions: props.inboundRouterProvisionedConcurrency ?? 5,
       });
-      
+
       console.log(`[ChimeStack] SMA Handler: ${props.inboundRouterProvisionedConcurrency ?? 5} provisioned instances`);
-      
+
       new CfnOutput(this, 'SmaHandlerAliasArn', {
         value: smaHandlerAlias.functionArn,
         description: 'SMA Handler Lambda alias with provisioned concurrency',
@@ -1191,7 +1203,7 @@ export class ChimeStack extends Stack {
     // Load clinic phone numbers from clinics.json
     // ========================================
     // Using the imported clinicsData from the top of the file
-    
+
     const clinicsWithPhones = (clinicsData as Clinic[])
       .filter(clinic => clinic.phoneNumber && clinic.phoneNumber.startsWith('+'))
       .map(clinic => ({
@@ -1323,18 +1335,18 @@ export class ChimeStack extends Stack {
     console.log(`Associating ${clinicsWithPhones.length} phone numbers with Voice Connector`);
 
     let associatePhones: customResources.AwsCustomResource[] = [];
-    
+
     if (clinicsWithPhones.length > 0) {
       const BATCH_SIZE = 5;
       const phoneNumberBatches: string[][] = [];
-      
+
       for (let i = 0; i < clinicsWithPhones.length; i += BATCH_SIZE) {
         const batch = clinicsWithPhones.slice(i, i + BATCH_SIZE).map(c => c.phoneNumber);
         phoneNumberBatches.push(batch);
       }
-      
+
       console.log(`Processing ${clinicsWithPhones.length} phone numbers in ${phoneNumberBatches.length} batches`);
-      
+
       phoneNumberBatches.forEach((phoneBatch, index) => {
         const resource = new customResources.AwsCustomResource(this, `AssociatePhoneNumbers-${index}`, {
           onCreate: {
@@ -1343,7 +1355,7 @@ export class ChimeStack extends Stack {
             parameters: {
               VoiceConnectorId: voiceConnectorId,
               E164PhoneNumbers: phoneBatch,
-              ForceAssociate: true 
+              ForceAssociate: true
             },
             physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-associate-phones-batch-${index}`),
           },
@@ -1353,7 +1365,7 @@ export class ChimeStack extends Stack {
             parameters: {
               VoiceConnectorId: voiceConnectorId,
               E164PhoneNumbers: phoneBatch,
-              ForceAssociate: true 
+              ForceAssociate: true
             },
             physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-associate-phones-batch-${index}`),
           },
@@ -1570,7 +1582,7 @@ export class ChimeStack extends Stack {
 
         associateAiPhones.node.addDependency(voiceConnector);
         associateAiPhones.node.addDependency(vcIngressSipRule);
-        
+
         // NOTE: SIP rules with TriggerType=ToPhoneNumber do NOT support Voice Connector product type numbers.
         // Direct inbound calls to AI phone numbers (Voice Connector) are routed via the Voice Connector
         // RequestUriHostname SIP rule created above. The inbound-router.ts Lambda detects AI numbers
@@ -1578,7 +1590,7 @@ export class ChimeStack extends Stack {
         //
         // For a fully serverless direct-dial AI number, use Amazon Connect with Lex instead.
         // See: connect-lex-ai-stack.ts for that implementation.
-        
+
       } else {
         console.log('[AI Phone Numbers] No clinics with aiPhoneNumber configured');
       }
@@ -1760,11 +1772,11 @@ export class ChimeStack extends Stack {
     this.locksTable.grantReadWriteData(transferCallFn);
     transferCallFn.addToRolePolicy(chimeSdkPolicy);
     transferCallFn.addToRolePolicy(new iam.PolicyStatement({
-        actions: [
-          'chime:UpdateSipMediaApplicationCall',
-          'chime-sdk-voice:UpdateSipMediaApplicationCall',
-        ],
-        resources: ['*'],
+      actions: [
+        'chime:UpdateSipMediaApplicationCall',
+        'chime-sdk-voice:UpdateSipMediaApplicationCall',
+      ],
+      resources: ['*'],
     }));
     transferCallFn.addPermission('AdminApiInvokeTransferCall', {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
@@ -1794,11 +1806,11 @@ export class ChimeStack extends Stack {
     this.locksTable.grantReadWriteData(callAcceptedFn);
     callAcceptedFn.addToRolePolicy(chimeSdkPolicy);
     callAcceptedFn.addToRolePolicy(new iam.PolicyStatement({
-        actions: [
-          'chime:UpdateSipMediaApplicationCall',
-          'chime-sdk-voice:UpdateSipMediaApplicationCall',
-        ],
-        resources: ['*'],
+      actions: [
+        'chime:UpdateSipMediaApplicationCall',
+        'chime-sdk-voice:UpdateSipMediaApplicationCall',
+      ],
+      resources: ['*'],
     }));
     callAcceptedFn.addPermission('AdminApiInvokeCallAccepted', {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
@@ -1880,7 +1892,7 @@ export class ChimeStack extends Stack {
         actions: ['lambda:InvokeFunction'],
         resources: [props.sendPushFunctionArn],
       }));
-    } 
+    }
     callHungupFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
@@ -1916,12 +1928,12 @@ export class ChimeStack extends Stack {
     this.callQueueTable.grantReadWriteData(leaveCallFn);
     // FIX: Grant access to locks table for distributed locking during queue check
     this.locksTable.grantReadWriteData(leaveCallFn);
-    leaveCallFn.addToRolePolicy(chimeSdkPolicy); 
+    leaveCallFn.addToRolePolicy(chimeSdkPolicy);
     leaveCallFn.addPermission('AdminApiInvokeLeaveCall', {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
-    
+
     // Lambda for POST /chime/hold-call
     // NOTE: COMPENSATING_ACTIONS_QUEUE_URL is added after the queue is created (see below)
     const holdCallFn = new lambdaNode.NodejsFunction(this, 'HoldCallFn', {
@@ -1956,7 +1968,7 @@ export class ChimeStack extends Stack {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
-    
+
     // Lambda for POST /chime/resume-call
     const resumeCallFn = new lambdaNode.NodejsFunction(this, 'ResumeCallFn', {
       functionName: `${this.stackName}-ResumeCall`,
@@ -2197,7 +2209,7 @@ export class ChimeStack extends Stack {
     // ========================================
     // 4. API Gateway Routes
     // ========================================
-    
+
     // Routes are now handled by AdminStack to avoid circular dependencies.
 
     // ========================================
@@ -2210,33 +2222,33 @@ export class ChimeStack extends Stack {
       description: 'Clinics table name for cross-stack references',
       exportName: `${this.stackName}-ClinicsTableName`,
     });
-    
+
     // Export Clinics table ARN for IAM permissions
     new CfnOutput(this, 'ClinicsTableArn', {
       value: this.clinicsTable.tableArn,
       description: 'Clinics table ARN for cross-stack IAM policies',
       exportName: `${this.stackName}-ClinicsTableArn`,
     });
-    
+
     new CfnOutput(this, 'AgentPresenceTableName', {
       value: this.agentPresenceTable.tableName,
       exportName: `${this.stackName}-AgentPresenceTableName`,
     });
-    
+
     // Export CallQueue table name for AnalyticsStack derived references
     new CfnOutput(this, 'CallQueueTableName', {
       value: this.callQueueTable.tableName,
       description: 'CallQueue table name - use this instead of deriving from stack name',
       exportName: `${this.stackName}-CallQueueTableName`,
     });
-    
+
     // Export AgentPerformance table name for AnalyticsStack
     new CfnOutput(this, 'AgentPerformanceTableNameExport', {
       value: this.agentPerformanceTable.tableName,
       description: 'AgentPerformance table name for cross-stack references',
       exportName: `${this.stackName}-AgentPerformanceTableName`,
     });
-    
+
     // Store SMA ID Map in SSM Parameter Store instead of CfnOutput
     // CloudFormation exports have a 1024 char limit which the SMA map exceeds
     // CRITICAL FIX: Use ADVANCED tier to support larger clinic lists (up to 8KB vs 4KB for STANDARD)
@@ -2246,14 +2258,14 @@ export class ChimeStack extends Stack {
       description: 'JSON map of clinicId to SIP Media Application ID',
       tier: ssm.ParameterTier.ADVANCED, // ADVANCED supports up to 8KB, STANDARD only 4KB
     });
-    
+
     // Export the parameter name for cross-stack references
     new CfnOutput(this, 'SmaIdMapParameterName', {
       value: smaIdMapParameter.parameterName,
       description: 'SSM Parameter name containing SMA ID Map',
       exportName: `${this.stackName}-SmaIdMapParameterName`,
     });
-    
+
     new CfnOutput(this, 'StartSessionFnArn', {
       value: startSessionFn.functionArn,
       exportName: `${this.stackName}-StartSessionArn`,
@@ -2328,14 +2340,14 @@ export class ChimeStack extends Stack {
       description: 'S3 bucket for hold music and streaming TTS audio.',
       exportName: `${this.stackName}-HoldMusicBucketName`,
     });
-    
+
     // FIX: Export bucket ARN for cross-stack permissions (used by AiAgentsStack for streaming TTS)
     new CfnOutput(this, 'HoldMusicBucketArn', {
       value: holdMusicBucket.bucketArn,
       description: 'S3 bucket ARN for hold music and streaming TTS audio.',
       exportName: `${this.stackName}-HoldMusicBucketArn`,
     });
-    
+
 
 
     // ========================================
@@ -2356,19 +2368,19 @@ export class ChimeStack extends Stack {
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
     });
-    
+
     this.agentPresenceTable.grantReadWriteData(heartbeatFn);
-    
+
     heartbeatFn.addPermission('AdminApiInvokeHeartbeat', {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
-    
+
     new CfnOutput(this, 'HeartbeatFnArn', {
       value: heartbeatFn.functionArn,
       exportName: `${this.stackName}-HeartbeatArn`,
     });
-    
+
     const cleanupMonitorFn = new lambdaNode.NodejsFunction(this, 'CleanupMonitorFn', {
       functionName: `${this.stackName}-CleanupMonitor`,
       entry: path.join(__dirname, '..', '..', 'services', 'chime', 'cleanup-monitor.ts'),
@@ -2385,14 +2397,14 @@ export class ChimeStack extends Stack {
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
     });
-    
+
     this.agentPresenceTable.grantReadWriteData(cleanupMonitorFn);
     this.callQueueTable.grantReadWriteData(cleanupMonitorFn);
-    
+
     cleanupMonitorFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
-        'chime:DeleteMeeting', 
+        'chime:DeleteMeeting',
         'chime:ListMeetings',
         'chime:DeleteAttendee',      // CRITICAL FIX: Added to cleanup orphaned attendees
         'chime:ListAttendees',       // CRITICAL FIX: Added to find attendees to cleanup
@@ -2401,7 +2413,7 @@ export class ChimeStack extends Stack {
         'chime-sdk-meetings:DeleteAttendee',
         'chime-sdk-meetings:ListAttendees',
       ],
-      resources: ['*'], 
+      resources: ['*'],
     }));
 
     // Add Voice Connector outputs for reference
@@ -2410,20 +2422,20 @@ export class ChimeStack extends Stack {
       description: 'Voice Connector ID - use this to associate phone numbers',
       exportName: `${this.stackName}-VoiceConnectorId`,
     });
-    
+
     new CfnOutput(this, 'VoiceConnectorOutboundHostName', {
       value: voiceConnectorOutboundHost,
       description: 'Voice Connector Outbound Host - use this for SIP routing',
       exportName: `${this.stackName}-VoiceConnectorHost`,
     });
-    
+
     const rule = new events.Rule(this, 'CleanupMonitorRule', {
       schedule: events.Schedule.rate(Duration.minutes(5)),
       description: 'Trigger cleanup monitor to handle orphaned resources and stale agent presence',
     });
-    
+
     rule.addTarget(new targets.LambdaFunction(cleanupMonitorFn));
-    
+
     new CfnOutput(this, 'CleanupMonitorFnArn', {
       value: cleanupMonitorFn.functionArn,
       exportName: `${this.stackName}-CleanupMonitorArn`,
@@ -2519,16 +2531,16 @@ export class ChimeStack extends Stack {
     let recordingsKey: kms.Key | undefined;
     // Track whether we own the bucket (for event notifications, which can only be added to owned buckets)
     let isOwnedBucket = false;
-    
+
     // CRITICAL FIX: Always create getRecordingFn to ensure export exists
     // This prevents CloudFormation failures when AdminStack imports the ARN
     const recordingEnabled = props.enableCallRecording !== false;
-    
+
     // Check if using shared recordings bucket from AiAgentsStack to avoid data fragmentation
     // Validate that both bucket name AND ARN are provided together
     const hasSharedBucketName = Boolean(props.sharedRecordingsBucketName);
     const hasSharedBucketArn = Boolean(props.sharedRecordingsBucketArn);
-    
+
     if (hasSharedBucketName !== hasSharedBucketArn) {
       console.warn(
         `[ChimeStack] PARTIAL CONFIGURATION: Shared recordings bucket is partially configured. ` +
@@ -2537,12 +2549,12 @@ export class ChimeStack extends Stack {
         `Both must be provided to use a shared bucket. Falling back to creating a dedicated bucket.`
       );
     }
-    
+
     const useSharedBucket = hasSharedBucketName && hasSharedBucketArn;
     if (useSharedBucket) {
       console.log(`[ChimeStack] Using shared recordings bucket: ${props.sharedRecordingsBucketName}`);
     }
-    
+
     // Create getRecordingFn outside conditional to ensure export always exists
     const getRecordingFn = new lambdaNode.NodejsFunction(this, 'GetRecordingFn', {
       functionName: `${this.stackName}-GetRecording`,
@@ -2558,7 +2570,7 @@ export class ChimeStack extends Stack {
         RECORDING_ENABLED: recordingEnabled ? 'true' : 'false',
       },
     });
-    
+
     // Always export the ARN to prevent CloudFormation import failures
     new CfnOutput(this, 'GetRecordingFnArn', {
       value: getRecordingFn.functionArn,
@@ -2580,13 +2592,13 @@ export class ChimeStack extends Stack {
         recordingsBucket = sharedBucket;
         this.recordingsBucket = sharedBucket;
         isOwnedBucket = false; // Cannot add event notifications to imported buckets
-        
+
         console.log(`[ChimeStack] Using shared recordings bucket: ${props.sharedRecordingsBucketName}`);
         // Note: Bucket policies and event notifications must be configured in AiAgentsStack
       } else {
         // Create ChimeStack's own recordings bucket (legacy behavior)
         console.log('[ChimeStack] Creating dedicated recordings bucket');
-        
+
         // 1. KMS Key for encryption at rest (HIPAA compliance)
         recordingsKey = new kms.Key(this, 'RecordingsEncryptionKey', {
           description: 'Encryption key for call recordings',
@@ -2634,7 +2646,7 @@ export class ChimeStack extends Stack {
 
         // 2. S3 Bucket for storing recordings
         const retentionDays = props.recordingRetentionDays || 2555; // ~7 years (common compliance requirement)
-        
+
         const newRecordingsBucket = new s3.Bucket(this, 'CallRecordingsBucket', {
           bucketName: `${this.stackName.toLowerCase()}-recordings-${this.account}-${this.region}`,
           encryption: s3.BucketEncryption.KMS,
@@ -2664,7 +2676,7 @@ export class ChimeStack extends Stack {
           removalPolicy: RemovalPolicy.RETAIN, // Never delete recordings accidentally
           autoDeleteObjects: false, // Extra safety - don't auto-delete
         });
-        
+
         recordingsBucket = newRecordingsBucket;
         isOwnedBucket = true; // We own this bucket, can add event notifications
 
@@ -2862,7 +2874,7 @@ export class ChimeStack extends Stack {
           `to trigger the RecordingProcessor Lambda (${recordingProcessorFn.functionArn}). ` +
           `Without this configuration, recordings will not be automatically processed.`
         );
-        
+
         // Export the RecordingProcessor ARN so AiAgentsStack can configure notifications
         new CfnOutput(this, 'RecordingProcessorFnArn', {
           value: recordingProcessorFn.functionArn,
@@ -2883,7 +2895,7 @@ export class ChimeStack extends Stack {
       // 6. Update getRecordingFn with actual bucket/table names (created outside conditional)
       getRecordingFn.addEnvironment('RECORDINGS_BUCKET', recordingsBucket.bucketName);
       getRecordingFn.addEnvironment('RECORDING_METADATA_TABLE', recordingMetadataTable.tableName);
-      
+
       // Grant permissions to getRecordingFn
       recordingsBucket.grantRead(getRecordingFn);
       recordingMetadataTable.grantReadData(getRecordingFn);
@@ -2976,7 +2988,7 @@ export class ChimeStack extends Stack {
         description: 'S3 bucket for call recordings (shared with AiAgentsStack)',
         exportName: `${this.stackName}-RecordingsBucketName`,
       });
-      
+
       // CRITICAL FIX: Export bucket ARN for AiAgentsStack to use as shared bucket
       new CfnOutput(this, 'RecordingsBucketArn', {
         value: recordingsBucket.bucketArn,
@@ -3009,11 +3021,11 @@ export class ChimeStack extends Stack {
     // ========================================
     // CallQueue Stream Processor for Analytics
     // ========================================
-    
+
     // Validate analytics configuration - warn if partially configured
     const hasAnalyticsTable = Boolean(props.analyticsTableName);
     const hasDedupTable = Boolean(props.analyticsDedupTableName);
-    
+
     if (hasAnalyticsTable !== hasDedupTable) {
       console.warn(
         `[ChimeStack] PARTIAL CONFIGURATION: Analytics tables are partially configured. ` +
@@ -3022,7 +3034,7 @@ export class ChimeStack extends Stack {
         `Both must be provided for call analytics to work. CallQueue stream processor will NOT be created.`
       );
     }
-    
+
     // Only create if BOTH analytics table names are provided
     if (hasAnalyticsTable && hasDedupTable) {
       const callQueueStreamProcessor = new lambdaNode.NodejsFunction(this, 'CallQueueStreamProcessor', {
@@ -3044,7 +3056,7 @@ export class ChimeStack extends Stack {
 
       // Grant read access to CallQueue table's stream
       this.callQueueTable.grantStreamRead(callQueueStreamProcessor);
-      
+
       // CRITICAL FIX: Grant write access to agent performance table for metrics tracking
       this.agentPerformanceTable.grantReadWriteData(callQueueStreamProcessor);
 
@@ -3105,7 +3117,7 @@ export class ChimeStack extends Stack {
     // ========================================
     // Creates a Kinesis Data Stream to receive transcripts from Media Insights Pipeline
     // and a Lambda to process them and invoke Voice AI handler
-    
+
     if (props.enableAfterHoursAi && resolvedVoiceAiLambdaArn) {
       // Create Kinesis Data Stream for real-time transcripts
       const aiTranscriptStream = new kinesis.Stream(this, 'AiTranscriptStream', {
@@ -3158,7 +3170,7 @@ export class ChimeStack extends Stack {
 
       // Grant read access to CallQueue table
       this.callQueueTable.grantReadData(aiTranscriptBridgeFn);
-      
+
       // Grant read access to VoiceSessions table if configured
       if (resolvedVoiceSessionsTableName) {
         aiTranscriptBridgeFn.addToRolePolicy(new iam.PolicyStatement({
@@ -3170,7 +3182,7 @@ export class ChimeStack extends Stack {
           ],
         }));
       }
-      
+
       // FIX: Grant read access to VoiceConfig table for clinic-specific voice settings
       if (resolvedVoiceConfigTableName) {
         aiTranscriptBridgeFn.addToRolePolicy(new iam.PolicyStatement({
@@ -3220,16 +3232,16 @@ export class ChimeStack extends Stack {
       // This is enabled via stack props to allow for cost management
       if (props.enableProvisionedConcurrency) {
         console.log('[ChimeStack] Configuring provisioned concurrency for real-time voice AI Lambdas');
-        
+
         // Create alias for AI Transcript Bridge Lambda with provisioned concurrency
         const aiTranscriptBridgeAlias = new lambda.Alias(this, 'AiTranscriptBridgeAlias', {
           aliasName: 'live',
           version: aiTranscriptBridgeFn.currentVersion,
           provisionedConcurrentExecutions: props.aiTranscriptBridgeProvisionedConcurrency ?? 5,
         });
-        
+
         console.log(`[ChimeStack] AI Transcript Bridge: ${props.aiTranscriptBridgeProvisionedConcurrency ?? 5} provisioned instances`);
-        
+
         new CfnOutput(this, 'AiTranscriptBridgeAliasArn', {
           value: aiTranscriptBridgeAlias.functionArn,
           description: 'AI Transcript Bridge Lambda alias with provisioned concurrency',
@@ -3343,7 +3355,7 @@ export class ChimeStack extends Stack {
       // Creates a Media Insights Pipeline Configuration for real-time transcription
       // This enables Amazon Transcribe to process call audio and send transcripts
       // to the Kinesis stream for the AI Transcript Bridge Lambda
-      
+
       if (props.enableRealTimeTranscription) {
         console.log('[ChimeStack] Creating Media Insights Pipeline Configuration for real-time transcription');
 
@@ -3530,7 +3542,7 @@ export class ChimeStack extends Stack {
         // Ensure the role and its policies are fully created before the pipeline config
         // The Media Insights Pipeline validates role permissions at creation time
         mediaPipelineConfig.node.addDependency(mediaPipelineRole);
-        
+
         // CRITICAL FIX: Ensure Kinesis stream exists before creating the pipeline configuration
         // Chime SDK validates access to the stream during creation
         mediaPipelineConfig.node.addDependency(aiTranscriptStream);
@@ -3598,7 +3610,7 @@ export class ChimeStack extends Stack {
         // VOICE CONNECTOR STREAMING CONFIGURATION
         // ========================================
         // Configure Voice Connector to stream audio for transcription
-        
+
         const vcStreaming = new customResources.AwsCustomResource(this, 'VCStreamingConfig', {
           onCreate: {
             service: 'ChimeSDKVoice',

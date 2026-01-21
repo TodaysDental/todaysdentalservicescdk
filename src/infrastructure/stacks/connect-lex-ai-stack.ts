@@ -160,7 +160,7 @@ export class ConnectLexAiStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
-      memorySize: 512,
+      memorySize: 1024, // Increased from 512 for faster AI response times
       environment: {
         AGENTS_TABLE: props.agentsTableName,
         SESSIONS_TABLE: props.sessionsTableName,
@@ -277,7 +277,7 @@ export class ConnectLexAiStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
-      memorySize: 512,
+      memorySize: 1024, // Increased from 512 for faster AI response times
       environment: {
         MODEL_ID: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
         SYSTEM_PROMPT: 'You are a helpful AI assistant on a phone call. Keep responses concise and natural for voice conversation.',
@@ -478,7 +478,7 @@ export class ConnectLexAiStack extends Stack {
     // IMPORTANT: Using 'associateBot' for Lex V2 (not 'associateLexBot' which is for Lex V1)
     // Include bot ID in physical resource ID so updates trigger re-association
     const botAliasArnForConnect = `arn:aws:lex:${this.region}:${this.account}:bot-alias/${lexBot.attrId}/${botAlias.attrBotAliasId}`;
-    
+
     const lexIntegration = new customResources.AwsCustomResource(this, 'ConnectLexIntegration', {
       onCreate: {
         service: 'Connect',
@@ -736,7 +736,7 @@ export class ConnectLexAiStack extends Stack {
 
     // Amazon Connect Contact Flow JSON uses a specific format.
     // The flow language is documented at: https://docs.aws.amazon.com/connect/latest/adminguide/contact-flow-language.html
-    
+
     // Disconnect Contact Flow - Invokes finalizer Lambda on call end
     // Note: This is a regular CONTACT_FLOW that gets called on disconnect events
     const disconnectFlowContent = {
@@ -839,7 +839,7 @@ export class ConnectLexAiStack extends Stack {
     inboundFlow.node.addDependency(lexIntegration);
     inboundFlow.node.addDependency(connectDirectIntegration);
     inboundFlow.node.addDependency(keyboardSoundPrompt);
-    
+
     // Disconnect flow is set automatically via UpdateContactEventHooks in the inbound flow.
 
     // ========================================
