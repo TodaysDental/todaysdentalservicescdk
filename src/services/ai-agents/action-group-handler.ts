@@ -24,7 +24,11 @@ const CONFIG = {
   // Circuit breaker configuration
   CIRCUIT_BREAKER_THRESHOLD: 5,      // Failures before opening circuit
   CIRCUIT_BREAKER_RESET_MS: 60000,   // Time before attempting to close circuit (1 min)
-  RATE_LIMIT_REQUESTS_PER_SEC: 10,   // Max requests per second per clinic
+  // NOTE: Bedrock agent flows can make multiple OpenDental calls per user message (patient lookup,
+  // slot lookup, provider lookup, etc.). Keep this high enough to avoid false positives while still
+  // protecting OpenDental from bursts. The searchPatients tool now checks rate limit once for its
+  // multi-attempt fuzzy search, so this limit applies more to concurrent sessions.
+  RATE_LIMIT_REQUESTS_PER_SEC: 500,   // Max requests per second per clinic
 };
 
 // ========================================================================
@@ -199,6 +203,8 @@ async function checkCircuitBreaker(clinicId: string): Promise<{ allowed: boolean
           ':ttl': Math.floor(now / 1000) + 3600,
         },
       }));
+      // FIX: Invalidate local cache after resetting window to prevent stale state in subsequent calls
+      circuitCache.delete(clinicId);
     } catch (error) {
       // FIX: Failed to reset window - use fallback limiter
       console.warn(`[CircuitBreaker] Failed to reset rate limit window, using fallback:`, error);
@@ -229,6 +235,8 @@ async function checkCircuitBreaker(clinicId: string): Promise<{ allowed: boolean
       UpdateExpression: 'SET requestCount = if_not_exists(requestCount, :zero) + :one',
       ExpressionAttributeValues: { ':zero': 0, ':one': 1 },
     }));
+    // FIX: Invalidate local cache after incrementing to keep cache in sync
+    circuitCache.delete(clinicId);
   } catch (error) {
     // FIX: Failed to increment - use in-memory tracking as backup
     console.warn(`[CircuitBreaker] Failed to increment counter, tracking in memory:`, error);
@@ -497,11 +505,17 @@ class OpenDentalClient {
     });
   }
 
-  async request(method: string, endpoint: string, { params, data }: any = {}) {
-    // Check circuit breaker and rate limit before making request
-    const circuitCheck = await checkCircuitBreaker(this.clinicId);
-    if (!circuitCheck.allowed) {
-      throw new Error(circuitCheck.reason || 'Request blocked by circuit breaker');
+  getClinicId(): string {
+    return this.clinicId;
+  }
+
+  async request(method: string, endpoint: string, { params, data, skipRateLimit }: any = {}) {
+    // Check circuit breaker and rate limit before making request (unless skipped for internal retries)
+    if (!skipRateLimit) {
+      const circuitCheck = await checkCircuitBreaker(this.clinicId);
+      if (!circuitCheck.allowed) {
+        throw new Error(circuitCheck.reason || 'Request blocked by circuit breaker');
+      }
     }
 
     for (let attempt = 1; attempt <= CONFIG.MAX_API_RETRIES; attempt++) {
@@ -963,34 +977,198 @@ async function handleTool(
       }
 
       case 'searchPatients': {
+        const isPublicRequest = sessionAttributes?.isPublicRequest === 'true';
+
+        const cleanName = (value: any): string => {
+          if (!value || typeof value !== 'string') return '';
+          return value
+            .trim()
+            .replace(/\s+/g, ' ')
+            // keep common name punctuation
+            .replace(/[^a-zA-Z\s'\-]/g, '')
+            .trim();
+        };
+
+        const normalizeForCompare = (value: string): string =>
+          (value || '').toUpperCase().replace(/[^A-Z]/g, '');
+
+        const levenshteinDistance = (a: string, b: string): number => {
+          if (a === b) return 0;
+          if (!a) return b.length;
+          if (!b) return a.length;
+          const m = a.length;
+          const n = b.length;
+          const dp = new Array(n + 1);
+          for (let j = 0; j <= n; j++) dp[j] = j;
+          for (let i = 1; i <= m; i++) {
+            let prev = dp[0];
+            dp[0] = i;
+            for (let j = 1; j <= n; j++) {
+              const temp = dp[j];
+              const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+              dp[j] = Math.min(
+                dp[j] + 1,        // deletion
+                dp[j - 1] + 1,    // insertion
+                prev + cost       // substitution
+              );
+              prev = temp;
+            }
+          }
+          return dp[n];
+        };
+
+        const similarity = (a: string, b: string): number => {
+          if (!a || !b) return 0;
+          const dist = levenshteinDistance(a, b);
+          const maxLen = Math.max(a.length, b.length);
+          return maxLen === 0 ? 1 : 1 - dist / maxLen;
+        };
+
+        const toSafePatient = (p: any) => ({
+          PatNum: p.PatNum,
+          LName: p.LName,
+          FName: p.FName,
+          Birthdate: p.Birthdate,
+          DateFirstVisit: p.DateFirstVisit,
+        });
+
         // Normalize birthdate to YYYY-MM-DD format (OpenDental API requirement)
         let normalizedBirthdate = params.Birthdate;
         if (normalizedBirthdate) {
           normalizedBirthdate = normalizeDateFormat(normalizedBirthdate);
           console.log(`[searchPatients] Normalized birthdate: ${params.Birthdate} → ${normalizedBirthdate}`);
         }
-        
-        const searchParams = { LName: params.LName, FName: params.FName, Birthdate: normalizedBirthdate };
-        console.log(`[searchPatients] Searching with params:`, JSON.stringify(searchParams));
-        
-        const resp = await odClient.request('GET', 'patients/Simple', { params: searchParams });
-        const patients = Array.isArray(resp) ? resp : resp?.items ?? [];
 
-        if (patients.length === 1) {
-          const patient = patients[0];
-          updatedSessionAttributes.PatNum = patient.PatNum.toString();
-          updatedSessionAttributes.FName = patient.FName;
-          updatedSessionAttributes.LName = patient.LName;
-          updatedSessionAttributes.Birthdate = patient.Birthdate;
-          updatedSessionAttributes.IsNewPatient = (patient.DateFirstVisit === '0001-01-01').toString();
+        const providedFName = cleanName(params.FName);
+        const providedLName = cleanName(params.LName);
+
+        const buildSearchParams = (p: { LName?: string; FName?: string; Birthdate?: string }) => {
+          const out: any = {};
+          if (p.LName) out.LName = p.LName;
+          if (p.FName) out.FName = p.FName;
+          if (p.Birthdate) out.Birthdate = p.Birthdate;
+          return out;
+        };
+
+        // Check rate limit ONCE before the multi-attempt search loop
+        // This prevents consuming multiple rate limit tokens for a single user request
+        const circuitCheck = await checkCircuitBreaker(odClient.getClinicId());
+        if (!circuitCheck.allowed) {
+          throw new Error(circuitCheck.reason || 'Request blocked by circuit breaker');
         }
 
+        const doSearch = async (label: string, p: { LName?: string; FName?: string; Birthdate?: string }) => {
+          const searchParams = buildSearchParams(p);
+          console.log(`[searchPatients] Attempt "${label}" with params:`, JSON.stringify(searchParams));
+          // Skip rate limit check for internal retry calls (already checked once above)
+          const resp = await odClient.request('GET', 'patients/Simple', { params: searchParams, skipRateLimit: true });
+          const items = Array.isArray(resp) ? resp : resp?.items ?? [];
+          return items as any[];
+        };
+
+        // Try progressively more flexible lookups while still requiring high-confidence name match.
+        // Goal: tolerate swapped first/last name and minor typos (e.g., "Emani" vs "Eamani").
+        const attempts: Array<{ label: string; p: { LName?: string; FName?: string; Birthdate?: string } }> = [];
+        if (providedLName || providedFName || normalizedBirthdate) {
+          attempts.push({ label: 'exact', p: { LName: providedLName, FName: providedFName, Birthdate: normalizedBirthdate } });
+        }
+        if (providedLName && providedFName) {
+          attempts.push({ label: 'swapped', p: { LName: providedFName, FName: providedLName, Birthdate: normalizedBirthdate } });
+        }
+        // Relax one field at a time (still using DOB), then score candidates by similarity.
+        if (normalizedBirthdate && providedFName) {
+          attempts.push({ label: 'fname+dob', p: { FName: providedFName, Birthdate: normalizedBirthdate } });
+        }
+        if (normalizedBirthdate && providedLName) {
+          attempts.push({ label: 'lname+dob', p: { LName: providedLName, Birthdate: normalizedBirthdate } });
+        }
+        // Also try swapped single-field searches (handles swapped names with typos)
+        // e.g., user says "eamani, sumil" meaning "Sunil Eamani" - lname+dob with swapped name would find it
+        if (normalizedBirthdate && providedLName && providedFName) {
+          attempts.push({ label: 'swapped_lname+dob', p: { LName: providedFName, Birthdate: normalizedBirthdate } });
+          attempts.push({ label: 'swapped_fname+dob', p: { FName: providedLName, Birthdate: normalizedBirthdate } });
+        }
+
+        let patients: any[] = [];
+        let usedAttempt = 'exact';
+        for (const a of attempts) {
+          patients = await doSearch(a.label, a.p);
+          usedAttempt = a.label;
+          if (patients.length > 0) break;
+        }
+
+        if (patients.length === 0) {
+          return {
+            statusCode: 404,
+            body: {
+              status: 'FAILURE',
+              data: { items: [] },
+              message: 'No matching patient found',
+            },
+            updatedSessionAttributes,
+          };
+        }
+
+        // Choose best candidate by name similarity (handles typos + swapped names)
+        const pf = normalizeForCompare(providedFName);
+        const pl = normalizeForCompare(providedLName);
+
+        const scored = patients
+          .filter((p) => !normalizedBirthdate || p?.Birthdate === normalizedBirthdate)
+          .map((p) => {
+            const cf = normalizeForCompare(String(p?.FName || ''));
+            const cl = normalizeForCompare(String(p?.LName || ''));
+
+            const directScore = pf && pl
+              ? (similarity(pf, cf) * 0.5 + similarity(pl, cl) * 0.5)
+              : (pf ? similarity(pf, cf) : similarity(pl, cl));
+
+            const swappedScore = pf && pl
+              ? (similarity(pf, cl) * 0.5 + similarity(pl, cf) * 0.5)
+              : 0;
+
+            return { p, score: Math.max(directScore, swappedScore) };
+          })
+          .sort((a, b) => b.score - a.score);
+
+        const best = scored[0];
+        const second = scored[1];
+
+        // If we had to relax the search, require a stronger similarity threshold to avoid wrong matches.
+        const minScore = usedAttempt === 'exact' ? 0.75 : 0.85;
+        const isConfident =
+          !!best &&
+          best.score >= minScore &&
+          (!second || best.score - second.score >= 0.08);
+
+        if (!isConfident) {
+          // Avoid leaking lists of patient records to public visitors when ambiguous.
+          return {
+            statusCode: 404,
+            body: {
+              status: 'FAILURE',
+              data: { items: isPublicRequest ? [] : patients.slice(0, 5).map(toSafePatient) },
+              message: isPublicRequest
+                ? 'I found more than one possible match. Please double-check the spelling of your name, or call the office and we’ll help you.'
+                : `Multiple matches found (${patients.length}). Refine search.`,
+            },
+            updatedSessionAttributes,
+          };
+        }
+
+        const patient = best.p;
+        updatedSessionAttributes.PatNum = patient.PatNum.toString();
+        updatedSessionAttributes.FName = patient.FName;
+        updatedSessionAttributes.LName = patient.LName;
+        updatedSessionAttributes.Birthdate = patient.Birthdate;
+        updatedSessionAttributes.IsNewPatient = (patient.DateFirstVisit === '0001-01-01').toString();
+
         return {
-          statusCode: patients.length > 0 ? 200 : 404,
+          statusCode: 200,
           body: {
-            status: patients.length > 0 ? 'SUCCESS' : 'FAILURE',
-            data: { items: patients },
-            message: patients.length > 0 ? `Found ${patients.length} patient(s)` : 'No matching patient found',
+            status: 'SUCCESS',
+            data: { items: [toSafePatient(patient)] },
+            message: 'Found 1 patient(s)',
           },
           updatedSessionAttributes,
         };
@@ -3514,20 +3692,51 @@ async function handleTool(
 
       // ===== APPOINTMENT TOOLS =====
       case 'scheduleAppointment': {
-        const isNewPatient = sessionAttributes.IsNewPatient === 'true';
-        let opNum = getOperatoryNumber(params.Op || params.OpName);
-        if (!opNum) opNum = isNewPatient ? DEFAULT_OPERATORY_MAP.EXAM : DEFAULT_OPERATORY_MAP.MINOR;
+        // The AI agent should call getClinicAppointmentTypes first to get available types,
+        // then pass the appropriate Op, ProvNum, AppointmentTypeNum based on patient needs.
+        const isNewPatient = sessionAttributes.IsNewPatient === 'true' || params.IsNewPatient === true || params.IsNewPatient === 'true';
+        const reason = params.Reason || params.reason || 'Appointment';
+        
+        // Get operatory number - agent should pass this from getClinicAppointmentTypes result
+        let opNum = getOperatoryNumber(params.Op || params.OpName || params.opNum);
+        if (!opNum) {
+          // Fallback to default if agent didn't specify
+          opNum = isNewPatient ? DEFAULT_OPERATORY_MAP.EXAM : DEFAULT_OPERATORY_MAP.MINOR;
+          console.log(`[scheduleAppointment] No Op provided, using default: ${opNum}`);
+        }
 
-        const appointmentData = {
+        // Build appointment data using values provided by the AI agent
+        const appointmentData: Record<string, any> = {
           PatNum: parseInt(params.PatNum.toString()),
           Op: opNum,
           AptDateTime: params.Date,
-          ProcDescript: params.Reason,
-          Note: params.Note || `${params.Reason} - Created by AI Agent`,
+          ProcDescript: reason,
+          Note: params.Note || `${reason} - Created by AI Agent`,
           ClinicNum: 0,
           IsNewPatient: isNewPatient,
         };
+
+        // Add provider if specified by agent (from appointment type's defaultProvNum)
+        if (params.ProvNum || params.provNum || params.defaultProvNum) {
+          appointmentData.ProvNum = parseInt((params.ProvNum || params.provNum || params.defaultProvNum).toString());
+        }
+
+        // Add appointment type number if specified by agent
+        if (params.AppointmentTypeNum || params.appointmentTypeNum) {
+          appointmentData.AppointmentTypeNum = parseInt((params.AppointmentTypeNum || params.appointmentTypeNum).toString());
+        }
+
+        // Add pattern (duration) if specified - OpenDental uses Pattern string
+        // Pattern is made of 'X' characters where each X is 5 minutes
+        if (params.duration && !params.Pattern) {
+          const patternLength = Math.ceil(parseInt(params.duration.toString()) / 5);
+          appointmentData.Pattern = 'X'.repeat(patternLength);
+        } else if (params.Pattern) {
+          appointmentData.Pattern = params.Pattern;
+        }
+
         const newAppt = await odClient.request('POST', 'appointments', { data: appointmentData });
+        
         return {
           statusCode: 201,
           body: {
@@ -3951,17 +4160,45 @@ async function handleTool(
       }
 
       case 'createAppointment': {
-        let opNum = getOperatoryNumber(params.Op);
-        if (!opNum) opNum = DEFAULT_OPERATORY_MAP.MINOR;
+        // The AI agent should call getClinicAppointmentTypes first to get available types,
+        // then pass the appropriate Op, ProvNum, AppointmentTypeNum based on patient needs.
+        const isNewPatient = params.IsNewPatient === true || params.IsNewPatient === 'true' || sessionAttributes.IsNewPatient === 'true';
+        
+        // Get operatory number - agent should pass this from getClinicAppointmentTypes result
+        let opNum = getOperatoryNumber(params.Op || params.opNum);
+        if (!opNum) {
+          opNum = isNewPatient ? DEFAULT_OPERATORY_MAP.EXAM : DEFAULT_OPERATORY_MAP.MINOR;
+        }
+
         const aptData: any = {
           PatNum: parseInt(params.PatNum.toString()),
           Op: opNum,
           AptDateTime: params.AptDateTime,
         };
+        
         if (params.Note) aptData.Note = params.Note;
-        if (params.IsNewPatient !== undefined) aptData.IsNewPatient = params.IsNewPatient.toString();
+        if (isNewPatient) aptData.IsNewPatient = 'true';
+        if (params.ProvNum || params.provNum || params.defaultProvNum) {
+          aptData.ProvNum = parseInt((params.ProvNum || params.provNum || params.defaultProvNum).toString());
+        }
+        if (params.AppointmentTypeNum || params.appointmentTypeNum) {
+          aptData.AppointmentTypeNum = parseInt((params.AppointmentTypeNum || params.appointmentTypeNum).toString());
+        }
+        if (params.duration && !params.Pattern) {
+          aptData.Pattern = 'X'.repeat(Math.ceil(parseInt(params.duration.toString()) / 5));
+        } else if (params.Pattern) {
+          aptData.Pattern = params.Pattern;
+        }
+
         const newApt = await odClient.request('POST', 'appointments', { data: aptData });
-        return { statusCode: 201, body: { status: 'SUCCESS', data: newApt } };
+        return {
+          statusCode: 201,
+          body: {
+            status: 'SUCCESS',
+            data: newApt,
+            message: 'Appointment created successfully',
+          },
+        };
       }
 
       case 'updateAppointment': {
@@ -3980,16 +4217,49 @@ async function handleTool(
       }
 
       case 'getAppointmentSlots': {
-        const slots = await odClient.request('GET', 'appointments/Slots', {
-          params: { date: params.date, lengthMinutes: params.lengthMinutes || 30 },
-        });
-        const availableSlots = Array.isArray(slots) ? slots : slots?.items ?? [];
+        // IMPORTANT (TodaysDental): We do NOT use OpenDental appointments/Slots for web/voice booking.
+        // It has proven unreliable and often fails with "date is invalid".
+        // Instead, return the office schedule using OpenDental /schedules.
+
+        const normalizeIsoDate = (value: any): string | undefined => {
+          if (!value || typeof value !== 'string') return undefined;
+          const normalized = normalizeDateFormat(value);
+          return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : undefined;
+        };
+
+        const addDays = (isoDate: string, days: number): string => {
+          const d = new Date(`${isoDate}T12:00:00Z`);
+          d.setUTCDate(d.getUTCDate() + days);
+          return d.toISOString().slice(0, 10);
+        };
+
+        const todayIso = normalizeIsoDate(sessionAttributes?.todayDate) || new Date().toISOString().slice(0, 10);
+
+        // Accept caller-provided date range, but guard against obviously stale/invalid dates
+        const requestedStart = normalizeIsoDate(params.dateStart || params.DateStart || params.date || params.Date);
+        const requestedEnd = normalizeIsoDate(params.dateEnd || params.DateEnd);
+
+        // If the model sends very old dates (e.g., 2023), ignore and use today+14d
+        const dateStart = requestedStart && requestedStart >= addDays(todayIso, -7) ? requestedStart : todayIso;
+        const dateEnd = requestedEnd && requestedEnd >= dateStart ? requestedEnd : addDays(dateStart, 14);
+
+        const queryParams: any = {
+          dateStart,
+          dateEnd,
+          SchedType: 'Practice',
+        };
+
+        const schedules = await odClient.request('GET', 'schedules', { params: queryParams });
+        const schedulesArray = Array.isArray(schedules) ? schedules : [];
+
         return {
-          statusCode: availableSlots.length > 0 ? 200 : 404,
+          statusCode: schedulesArray.length > 0 ? 200 : 404,
           body: {
-            status: availableSlots.length > 0 ? 'SUCCESS' : 'FAILURE',
-            data: availableSlots,
-            message: availableSlots.length > 0 ? `Found ${availableSlots.length} available slot(s)` : 'No available slots',
+            status: schedulesArray.length > 0 ? 'SUCCESS' : 'FAILURE',
+            data: { items: schedulesArray.slice(0, 200) },
+            message: schedulesArray.length > 0
+              ? `Found ${schedulesArray.length} schedule entry(ies) from ${dateStart} to ${dateEnd}`
+              : 'No schedule entries found',
           },
         };
       }
@@ -8673,23 +8943,47 @@ interface FeeScheduleRecord {
  * Appointment Type Record - from PatientPortalApptTypesStack
  * Contains clinic-specific appointment type definitions with duration and operatory mappings
  * Table schema: clinicId (PK), label (SK)
+ * 
+ * Example record:
+ * {
+ *   "clinicId": "dentistinbowie",
+ *   "label": "Existing patient current treatment Plan",
+ *   "AppointmentTypeNum": 24,
+ *   "apptTypeName": "Online_Treatment_Plan",
+ *   "defaultProvName": "Billing",
+ *   "defaultProvNum": 3,
+ *   "duration": 30,
+ *   "opName": "ONLINE_BOOKING_MINOR",
+ *   "opNum": 20,
+ *   "value": "Existing patient current treatment Plan"
+ * }
  */
 interface AppointmentTypeRecord {
-  clinicId: string;  // PK
-  label: string;     // SK - e.g., "New Patient", "Cleaning", "Crown"
-  value: string;     // Internal value/code
-  duration: number;  // Duration in minutes
-  opNum: number;     // Operatory number
-  AppointmentTypeNum?: number; // OpenDental AppointmentTypeNum (if mapped)
+  clinicId: string;           // PK
+  label: string;              // SK - e.g., "New Patient", "Existing patient emergency", etc.
+  value: string;              // Internal value/code (usually same as label)
+  duration: number;           // Duration in minutes (e.g., 30, 60)
+  opNum: number;              // Operatory number for OpenDental
+  opName?: string;            // Operatory name (e.g., "ONLINE_BOOKING_MINOR")
+  AppointmentTypeNum?: number; // OpenDental AppointmentTypeNum
+  apptTypeName?: string;      // OpenDental appointment type name (e.g., "Online_Treatment_Plan")
+  defaultProvNum?: number;    // Default provider number
+  defaultProvName?: string;   // Default provider name (e.g., "Billing")
 }
+
 
 /**
  * Look up appointment types from the ApptTypes DynamoDB table
- * Supports: listing all types for a clinic, or getting a specific type by label
+ * Supports: listing all types for a clinic, getting a specific type by label,
+ * or intelligent matching based on patient request
  * 
- * @param params - Search parameters (clinicId required, label optional)
+ * @param params - Search parameters:
+ *   - clinicId: Required clinic identifier
+ *   - label: Optional exact label match
+ *   - patientRequest: Optional natural language request to match (e.g., "I need a cleaning")
+ *   - isNewPatient: Optional flag for new patient matching
  * @param clinicId - Clinic ID from session (fallback)
- * @returns Appointment types data
+ * @returns Appointment types data with optional best match
  */
 async function lookupAppointmentTypes(
   params: Record<string, any>,
@@ -8698,6 +8992,8 @@ async function lookupAppointmentTypes(
   try {
     const searchClinicId = clinicId || params.clinicId;
     const searchLabel = params.label || params.appointmentType;
+    const patientRequest = params.patientRequest || params.reason || params.query;
+    const isNewPatient = params.isNewPatient === true || params.isNewPatient === 'true';
 
     if (!searchClinicId) {
       return {
@@ -8709,12 +9005,12 @@ async function lookupAppointmentTypes(
       };
     }
 
-    console.log(`[AppointmentTypeLookup] Searching clinic=${searchClinicId}, label=${searchLabel || 'ALL'}`);
+    console.log(`[AppointmentTypeLookup] Searching clinic=${searchClinicId}, label=${searchLabel || 'ALL'}, patientRequest=${patientRequest || 'NONE'}, isNewPatient=${isNewPatient}`);
 
     let appointmentTypes: AppointmentTypeRecord[] = [];
 
     if (searchLabel) {
-      // Get specific appointment type by label
+      // First try exact match
       const result = await docClient.send(new GetCommand({
         TableName: APPT_TYPES_TABLE,
         Key: {
@@ -8725,6 +9021,27 @@ async function lookupAppointmentTypes(
 
       if (result.Item) {
         appointmentTypes = [result.Item as AppointmentTypeRecord];
+      } else {
+        // If exact match fails, fetch all and do fuzzy match on label
+        const allResult = await docClient.send(new QueryCommand({
+          TableName: APPT_TYPES_TABLE,
+          KeyConditionExpression: 'clinicId = :clinicId',
+          ExpressionAttributeValues: { ':clinicId': searchClinicId },
+        }));
+        const allTypes = (allResult.Items || []) as AppointmentTypeRecord[];
+        
+        // Fuzzy match on label
+        const searchLower = searchLabel.toLowerCase();
+        const fuzzyMatch = allTypes.find(t => 
+          t.label.toLowerCase().includes(searchLower) || 
+          searchLower.includes(t.label.toLowerCase()) ||
+          (t.apptTypeName && t.apptTypeName.toLowerCase().includes(searchLower))
+        );
+        
+        if (fuzzyMatch) {
+          appointmentTypes = [fuzzyMatch];
+          console.log(`[AppointmentTypeLookup] Fuzzy matched "${searchLabel}" to "${fuzzyMatch.label}"`);
+        }
       }
     } else {
       // List all appointment types for the clinic
@@ -8753,25 +9070,65 @@ async function lookupAppointmentTypes(
       };
     }
 
-    // Format response
+    // Format response - provide all information for the AI agent to make the decision
     let directAnswer = '';
-    if (searchLabel) {
+    if (searchLabel && appointmentTypes.length === 1) {
       const apptType = appointmentTypes[0];
       directAnswer = `=== APPOINTMENT TYPE: ${apptType.label} ===\n`;
       directAnswer += `Duration: ${apptType.duration} minutes\n`;
-      directAnswer += `Operatory: ${apptType.opNum}\n`;
-      if (apptType.AppointmentTypeNum) {
-        directAnswer += `OpenDental TypeNum: ${apptType.AppointmentTypeNum}\n`;
+      directAnswer += `Operatory Number (Op): ${apptType.opNum}\n`;
+      if (apptType.opName) {
+        directAnswer += `Operatory Name: ${apptType.opName}\n`;
       }
+      if (apptType.defaultProvNum) {
+        directAnswer += `Default Provider: ${apptType.defaultProvName || 'Provider'} (ProvNum: ${apptType.defaultProvNum})\n`;
+      }
+      if (apptType.AppointmentTypeNum) {
+        directAnswer += `AppointmentTypeNum: ${apptType.AppointmentTypeNum}\n`;
+      }
+      directAnswer += `\nUse these values when calling scheduleAppointment:\n`;
+      directAnswer += `  Op: ${apptType.opNum}\n`;
+      if (apptType.defaultProvNum) directAnswer += `  ProvNum: ${apptType.defaultProvNum}\n`;
+      if (apptType.AppointmentTypeNum) directAnswer += `  AppointmentTypeNum: ${apptType.AppointmentTypeNum}\n`;
+      directAnswer += `  duration: ${apptType.duration}\n`;
     } else {
-      directAnswer = `=== AVAILABLE APPOINTMENT TYPES ===\n\n`;
-      for (const apptType of appointmentTypes) {
-        directAnswer += `• ${apptType.label}: ${apptType.duration} min`;
-        if (apptType.AppointmentTypeNum) {
-          directAnswer += ` (TypeNum: ${apptType.AppointmentTypeNum})`;
+      directAnswer = `=== AVAILABLE APPOINTMENT TYPES FOR CLINIC ===\n\n`;
+      directAnswer += `Choose the best appointment type based on the patient's needs:\n\n`;
+      
+      // Group by new patient vs existing patient for easier selection
+      const newPatientTypes = appointmentTypes.filter(t => t.label.toLowerCase().includes('new patient'));
+      const existingPatientTypes = appointmentTypes.filter(t => !t.label.toLowerCase().includes('new patient'));
+      
+      if (newPatientTypes.length > 0) {
+        directAnswer += `--- NEW PATIENT TYPES ---\n`;
+        for (const apptType of newPatientTypes) {
+          directAnswer += `• "${apptType.label}"\n`;
+          directAnswer += `  Op: ${apptType.opNum} | Duration: ${apptType.duration}min`;
+          if (apptType.defaultProvNum) directAnswer += ` | ProvNum: ${apptType.defaultProvNum}`;
+          if (apptType.AppointmentTypeNum) directAnswer += ` | TypeNum: ${apptType.AppointmentTypeNum}`;
+          directAnswer += `\n`;
         }
         directAnswer += `\n`;
       }
+      
+      if (existingPatientTypes.length > 0) {
+        directAnswer += `--- EXISTING PATIENT TYPES ---\n`;
+        for (const apptType of existingPatientTypes) {
+          directAnswer += `• "${apptType.label}"\n`;
+          directAnswer += `  Op: ${apptType.opNum} | Duration: ${apptType.duration}min`;
+          if (apptType.defaultProvNum) directAnswer += ` | ProvNum: ${apptType.defaultProvNum}`;
+          if (apptType.AppointmentTypeNum) directAnswer += ` | TypeNum: ${apptType.AppointmentTypeNum}`;
+          directAnswer += `\n`;
+        }
+      }
+      
+      directAnswer += `\n=== HOW TO CHOOSE ===\n`;
+      directAnswer += `• For emergencies/pain → Choose "emergency" type\n`;
+      directAnswer += `• For treatment plan follow-up → Choose "treatment plan" type\n`;
+      directAnswer += `• For routine checkup/cleaning → Choose "other" type\n`;
+      directAnswer += `• New patients → Use "new patient" types\n`;
+      directAnswer += `• Existing patients → Use "existing patient" types\n`;
+      directAnswer += `\nPass the Op, ProvNum, AppointmentTypeNum, and duration to scheduleAppointment.\n`;
     }
 
     return {
@@ -8786,7 +9143,7 @@ async function lookupAppointmentTypes(
         },
         message: searchLabel
           ? `Found appointment type "${searchLabel}"`
-          : `Found ${appointmentTypes.length} appointment type(s) for clinic`,
+          : `Found ${appointmentTypes.length} appointment type(s) for clinic. Choose the best one based on the patient's needs.`,
       },
     };
   } catch (error: any) {
@@ -14370,6 +14727,9 @@ async function estimateTreatmentCost(
 export const handler = async (event: ActionGroupEvent): Promise<ActionGroupResponse> => {
   console.log('Action Group Event:', JSON.stringify(event, null, 2));
 
+  // Global try-catch to ensure we always return a valid ActionGroupResponse
+  // Bedrock throws DependencyFailedException if the Lambda throws an unhandled exception
+  try {
   // Extract tool name from apiPath or parameters
   // The apiPath may contain a template like "/open-dental/{toolName}" 
   // In that case, the actual tool name is in the parameters array
@@ -14749,10 +15109,15 @@ export const handler = async (event: ActionGroupEvent): Promise<ActionGroupRespo
         actionGroup: event.actionGroup,
         apiPath: event.apiPath,
         httpMethod: event.httpMethod,
-        httpStatusCode: 400,
+        // IMPORTANT: Always return 200 to Bedrock. Non-2xx here can surface as DependencyFailedException.
+        httpStatusCode: 200,
         responseBody: {
           'application/json': {
-            body: JSON.stringify({ status: 'FAILURE', message: 'clinicId is required in session attributes' }),
+            body: JSON.stringify({
+              status: 'FAILURE',
+              message: 'clinicId is required in session attributes',
+              httpStatusCode: 400,
+            }),
           },
         },
       },
@@ -14768,12 +15133,14 @@ export const handler = async (event: ActionGroupEvent): Promise<ActionGroupRespo
         actionGroup: event.actionGroup,
         apiPath: event.apiPath,
         httpMethod: event.httpMethod,
-        httpStatusCode: 400,
+        // IMPORTANT: Always return 200 to Bedrock. Non-2xx here can surface as DependencyFailedException.
+        httpStatusCode: 200,
         responseBody: {
           'application/json': {
             body: JSON.stringify({ 
               status: 'FAILURE', 
-              message: `Clinic configuration not found: ${clinicId}. Ensure clinic credentials are configured in the Clinics or ClinicSecrets DynamoDB table.` 
+              message: `Clinic configuration not found: ${clinicId}. Ensure clinic credentials are configured in the Clinics or ClinicSecrets DynamoDB table.`,
+              httpStatusCode: 400,
             }),
           },
         },
@@ -14787,6 +15154,18 @@ export const handler = async (event: ActionGroupEvent): Promise<ActionGroupRespo
   // Execute the tool
   const result = await handleTool(toolName, params, odClient, event.sessionAttributes);
 
+  // IMPORTANT: Bedrock treats non-2xx action group responses as API execution failures
+  // and can surface them as DependencyFailedException to the caller. We always return 200
+  // and embed the tool-level status code in the JSON body.
+  const safeBody =
+    result.body && typeof result.body === 'object'
+      ? { ...(result.body as any), httpStatusCode: result.statusCode }
+      : {
+          status: result.statusCode >= 200 && result.statusCode < 300 ? 'SUCCESS' : 'FAILURE',
+          message: String(result.body ?? ''),
+          httpStatusCode: result.statusCode,
+        };
+
   // Build response
   const response: ActionGroupResponse = {
     messageVersion: '1.0',
@@ -14794,10 +15173,11 @@ export const handler = async (event: ActionGroupEvent): Promise<ActionGroupRespo
       actionGroup: event.actionGroup,
       apiPath: event.apiPath,
       httpMethod: event.httpMethod,
-      httpStatusCode: result.statusCode,
+      // IMPORTANT: Always return 200 to Bedrock to avoid DependencyFailedException.
+      httpStatusCode: 200,
       responseBody: {
         'application/json': {
-          body: JSON.stringify(result.body),
+          body: JSON.stringify(safeBody),
         },
       },
     },
@@ -14810,4 +15190,32 @@ export const handler = async (event: ActionGroupEvent): Promise<ActionGroupRespo
 
   console.log('Action Group Response:', JSON.stringify(response, null, 2));
   return response;
+  } catch (error: any) {
+    // CRITICAL: Always return a valid ActionGroupResponse to prevent DependencyFailedException
+    // If we throw an unhandled exception, Bedrock receives DependencyFailedException and the user
+    // gets a cryptic error message instead of a helpful response
+    console.error('[ActionGroup] UNHANDLED ERROR:', error);
+    console.error('[ActionGroup] Event that caused error:', JSON.stringify(event, null, 2));
+    
+    return {
+      messageVersion: '1.0',
+      response: {
+        actionGroup: event.actionGroup || 'unknown',
+        apiPath: event.apiPath || '/unknown',
+        httpMethod: event.httpMethod || 'POST',
+        // IMPORTANT: Always return 200 to Bedrock to avoid DependencyFailedException.
+        httpStatusCode: 200,
+        responseBody: {
+          'application/json': {
+            body: JSON.stringify({
+              status: 'FAILURE',
+              message: 'An internal error occurred. Please try again or contact support.',
+              errorType: error.name || 'UnhandledException',
+              httpStatusCode: 500,
+            }),
+          },
+        },
+      },
+    };
+  }
 };

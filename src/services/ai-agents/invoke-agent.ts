@@ -28,7 +28,7 @@ import {
 } from '../../shared/utils/permissions-helper';
 import { AiAgent } from './agents';
 import { ConversationMessage } from './conversation-history';
-import { getDateContext, getClinicTimezone } from '../../shared/prompts/ai-prompts';
+import { getDateContext, getClinicName, getClinicTimezone } from '../../shared/prompts/ai-prompts';
 
 // ========================================================================
 // CLIENTS
@@ -45,6 +45,31 @@ const SESSIONS_TABLE = process.env.SESSIONS_TABLE || 'AiAgentSessions';
 const CONVERSATIONS_TABLE = process.env.CONVERSATIONS_TABLE || 'AiAgentConversations';
 
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
+
+// ========================================================================
+// PERFORMANCE: AGENT CACHING
+// ========================================================================
+
+// Cache agent config to avoid repeated DynamoDB lookups (agents rarely change)
+const agentCache = new Map<string, { agent: AiAgent; timestamp: number }>();
+const AGENT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+async function getCachedAgent(agentId: string): Promise<AiAgent | null> {
+  const cached = agentCache.get(agentId);
+  if (cached && Date.now() - cached.timestamp < AGENT_CACHE_TTL_MS) {
+    return cached.agent;
+  }
+  
+  const response = await docClient.send(
+    new GetCommand({ TableName: AGENTS_TABLE, Key: { agentId } })
+  );
+  
+  const agent = response.Item as AiAgent | undefined;
+  if (agent) {
+    agentCache.set(agentId, { agent, timestamp: Date.now() });
+  }
+  return agent || null;
+}
 
 // ========================================================================
 // CONVERSATION LOGGING
@@ -414,11 +439,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    // Get agent from DynamoDB
-    const getAgentResponse = await docClient.send(
-      new GetCommand({ TableName: AGENTS_TABLE, Key: { agentId } })
-    );
-    const agent = getAgentResponse.Item as AiAgent | undefined;
+    // Get agent from DynamoDB (with caching for performance)
+    const agent = await getCachedAgent(agentId);
 
     if (!agent) {
       return {
@@ -522,17 +544,26 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    // SECURITY FIX: Get or create session with user binding
-    // Sessions are now stored in DynamoDB and bound to specific users
-    // to prevent session hijacking across Lambda instances
-    const { session, isNew, shouldEnd } = await getOrCreateSession(
-      body.sessionId || uuidv4(),
-      agent.bedrockAgentId!,
-      agent.bedrockAgentAliasId!,
-      clinicId,
-      userId || `anon-${uuidv4().slice(0, 8)}`
-    );
+    // PERFORMANCE: Parallelize session creation, timezone lookup, and clinic name lookup
+    // These are independent operations that can run concurrently
+    const [sessionResult, clinicTimezone, clinicName] = await Promise.all([
+      // SECURITY FIX: Get or create session with user binding
+      // Sessions are now stored in DynamoDB and bound to specific users
+      // to prevent session hijacking across Lambda instances
+      getOrCreateSession(
+        body.sessionId || uuidv4(),
+        agent.bedrockAgentId!,
+        agent.bedrockAgentAliasId!,
+        clinicId,
+        userId || `anon-${uuidv4().slice(0, 8)}`
+      ),
+      // Fetch clinic's timezone from the Clinics table
+      getClinicTimezone(clinicId),
+      // Fetch clinic display name for natural greetings
+      getClinicName(clinicId),
+    ]);
     
+    const { session, isNew, shouldEnd } = sessionResult;
     const sessionId = session.sessionId;
     
     // Force end session if message limit exceeded
@@ -544,8 +575,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // Build session attributes (passed to action group Lambda)
     // Include current date information for accurate date calculations
-    // Fetch clinic's timezone from the Clinics table
-    const clinicTimezone = await getClinicTimezone(clinicId);
     const dateContext = getDateContext(clinicTimezone);
     
     // Format today's date for display (MM/DD/YYYY format)
@@ -554,6 +583,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     
     const sessionAttributes: Record<string, string> = {
       clinicId: clinicId,
+      clinicName,
       userId: userId,
       userName: userName,
       isPublicRequest: isPublic ? 'true' : 'false',
@@ -569,6 +599,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Build prompt session attributes (visible to the agent as context)
     // These appear in the agent's prompt and help with date calculations
     const promptSessionAttributes: Record<string, string> = {
+      clinicName,
       currentDate: `Today is ${dateContext.dayName}, ${todayFormatted} (${dateContext.today}). Current time: ${dateContext.currentTime} (${dateContext.timezone})`,
       dateContext: `When scheduling appointments, use ${dateContext.today} as today's date. Tomorrow is ${dateContext.tomorrowDate}. Next week dates: ${JSON.stringify(dateContext.nextWeekDates)}`,
     };
@@ -724,6 +755,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         body: JSON.stringify({ 
           error: 'Access denied to Bedrock Agent',
           details: error.message,
+        }),
+      };
+    }
+
+    if (error.name === 'DependencyFailedException') {
+      // This error occurs when the Bedrock Agent's action group Lambda fails
+      // Common causes: timeout, OpenDental API issues, or configuration problems
+      console.error('[InvokeAgent] DependencyFailedException - Action group Lambda may have failed');
+      return {
+        statusCode: 502,
+        headers: getCorsHeaders(event),
+        body: JSON.stringify({ 
+          error: 'The AI assistant encountered an issue while processing your request. Please try again.',
+          details: 'Action group execution failed. This may be a temporary issue.',
+          errorType: error.name,
         }),
       };
     }

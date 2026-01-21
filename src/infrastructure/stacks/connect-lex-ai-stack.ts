@@ -19,6 +19,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as lex from 'aws-cdk-lib/aws-lex';
 import * as connect from 'aws-cdk-lib/aws-connect';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as path from 'path';
@@ -118,6 +119,27 @@ export interface ConnectLexAiStackProps extends StackProps {
    * Range: 0.0 - 1.0. Default: 0.6
    */
   transcriptionConfidenceThreshold?: number;
+
+  /**
+   * Enable async Lambda pattern for Bedrock invocation.
+   * 
+   * When true:
+   * - Uses async Lambda invocation (up to 60s) instead of sync (8s limit)
+   * - Plays continuous keyboard sounds while Bedrock processes
+   * - Allows complex tool calls (patient search) to complete without timeout
+   * 
+   * When false (default):
+   * - Uses sync Lambda with 7.2s timeout
+   * - Single keyboard sound plays before Lambda
+   * - May timeout on complex operations
+   */
+  useAsyncPattern?: boolean;
+
+  /**
+   * Maximum number of poll loops for async pattern (default 20 = ~40 seconds).
+   * Each loop plays ~2 seconds of keyboard sounds.
+   */
+  asyncMaxPollLoops?: number;
 }
 
 // ========================================================================
@@ -168,6 +190,8 @@ export class ConnectLexAiStack extends Stack {
         TRANSCRIPT_BUFFER_TABLE_NAME: props.transcriptBufferTableName,
         AI_PHONE_NUMBERS_JSON: props.aiPhoneNumbersJson || '{}',
         DEFAULT_CLINIC_ID: props.defaultClinicId || 'dentistingreenville',
+        // Keep Bedrock comfortably under Connect's ~8s InvokeLambdaFunction hard limit
+        CONNECT_BEDROCK_TIMEOUT_MS: '6500',
         // Thinking audio configuration - plays keyboard sounds during AI processing
         HOLD_MUSIC_BUCKET: props.holdMusicBucketName || '',
         ENABLE_THINKING_AUDIO: 'true',
@@ -235,6 +259,84 @@ export class ConnectLexAiStack extends Stack {
       console.log(`[ConnectLexAiStack] LexBedrockHookFn granted S3 read access for thinking audio`);
     }
 
+    // ========================================
+    // 1b. Async Bedrock Pattern (Optional)
+    // ========================================
+    // When enabled, uses async Lambda invocation to overcome the 8-second limit.
+    // This allows Bedrock agent tool calls (like patient search) to take 30+ seconds
+    // while the caller hears continuous keyboard typing sounds.
+
+    let asyncBedrockLambda: lambdaNode.NodejsFunction | undefined;
+    let asyncResultsTable: dynamodb.Table | undefined;
+
+    if (props.useAsyncPattern) {
+      // DynamoDB table for storing async results
+      asyncResultsTable = new dynamodb.Table(this, 'AsyncResultsTable', {
+        tableName: `${this.stackName}-AsyncResults`,
+        partitionKey: { name: 'requestId', type: dynamodb.AttributeType.STRING },
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+        removalPolicy: RemovalPolicy.DESTROY,
+        timeToLiveAttribute: 'ttl',
+      });
+      applyTags(asyncResultsTable, { Resource: 'async-results-table' });
+
+      // Async Bedrock Lambda
+      asyncBedrockLambda = new lambdaNode.NodejsFunction(this, 'AsyncBedrockLambda', {
+        functionName: `${this.stackName}-AsyncBedrock`,
+        entry: path.join(__dirname, '..', '..', 'services', 'connect', 'async-bedrock-handler.ts'),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_20_X,
+        timeout: Duration.seconds(60), // Full 60 seconds for async processing
+        memorySize: 1024,
+        environment: {
+          ASYNC_RESULTS_TABLE: asyncResultsTable.tableName,
+          AGENTS_TABLE: props.agentsTableName,
+          SESSIONS_TABLE: props.sessionsTableName,
+          AI_PHONE_NUMBERS_JSON: props.aiPhoneNumbersJson || '{}',
+          DEFAULT_CLINIC_ID: props.defaultClinicId || 'dentistingreenville',
+        },
+        logRetention: logs.RetentionDays.ONE_WEEK,
+      });
+      applyTags(asyncBedrockLambda, { Function: 'async-bedrock' });
+
+      // Grant DynamoDB permissions for async results
+      asyncResultsTable.grantReadWriteData(asyncBedrockLambda);
+
+      // Grant DynamoDB permissions for agent/session lookup
+      asyncBedrockLambda.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+        resources: [
+          props.agentsTableArn,
+          `${props.agentsTableArn}/index/*`,
+        ],
+      }));
+
+      asyncBedrockLambda.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem'],
+        resources: [props.sessionsTableArn],
+      }));
+
+      // Grant Bedrock Agent invocation permissions
+      asyncBedrockLambda.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'bedrock:InvokeAgent',
+          'bedrock:InvokeModel',
+        ],
+        resources: ['*'],
+      }));
+
+      // Grant Connect permission to invoke async Lambda
+      asyncBedrockLambda.addPermission('ConnectInvoke', {
+        principal: new iam.ServicePrincipal('connect.amazonaws.com'),
+        sourceArn: props.connectInstanceArn,
+      });
+
+      console.log(`[ConnectLexAiStack] Async pattern enabled with 60s timeout`);
+    }
+
     // Lex ASR-only transcript capture hook (fast; no Bedrock)
     this.lexTranscriptCaptureFn = new lambdaNode.NodejsFunction(this, 'LexTranscriptCaptureFn', {
       functionName: `${this.stackName}-LexTranscriptCapture`,
@@ -281,16 +383,21 @@ export class ConnectLexAiStack extends Stack {
       environment: {
         MODEL_ID: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
         SYSTEM_PROMPT: 'You are a helpful AI assistant on a phone call. Keep responses concise and natural for voice conversation.',
+        // Keep Bedrock comfortably under Connect's ~8s InvokeLambdaFunction hard limit
+        CONNECT_BEDROCK_TIMEOUT_MS: '6500',
       },
       logRetention: logs.RetentionDays.ONE_WEEK,
     });
     applyTags(connectDirectLambda, { Function: 'connect-direct-lambda' });
 
-    // Grant Bedrock model invocation permissions
+    // Grant Bedrock model invocation permissions (including inference profiles for Claude 3.5+)
     connectDirectLambda.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['bedrock:InvokeModel'],
-      resources: ['arn:aws:bedrock:*::foundation-model/*'],
+      actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+      resources: [
+        'arn:aws:bedrock:*::foundation-model/*',
+        `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/*`,
+      ],
     }));
 
     // Grant DynamoDB permissions
@@ -645,6 +752,55 @@ export class ConnectLexAiStack extends Stack {
     // Avoid parallel API calls to Connect
     connectDirectIntegration.node.addDependency(lexHookIntegration);
 
+    // Associate async Bedrock Lambda with Connect (if async pattern enabled)
+    let asyncLambdaIntegration: customResources.AwsCustomResource | undefined;
+    if (asyncBedrockLambda) {
+      asyncLambdaIntegration = new customResources.AwsCustomResource(this, 'AsyncLambdaIntegration', {
+        onCreate: {
+          service: 'Connect',
+          action: 'associateLambdaFunction',
+          parameters: {
+            InstanceId: props.connectInstanceId,
+            FunctionArn: asyncBedrockLambda.functionArn,
+          },
+          physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-async-integration`),
+        },
+        onDelete: {
+          service: 'Connect',
+          action: 'disassociateLambdaFunction',
+          parameters: {
+            InstanceId: props.connectInstanceId,
+            FunctionArn: asyncBedrockLambda.functionArn,
+          },
+          ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
+        },
+        policy: customResources.AwsCustomResourcePolicy.fromStatements([
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: [
+              'connect:AssociateLambdaFunction',
+              'connect:DisassociateLambdaFunction',
+              'connect:ListLambdaFunctions',
+            ],
+            resources: ['*'],
+          }),
+          new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: [
+              'lambda:GetFunction',
+              'lambda:GetPolicy',
+              'lambda:AddPermission',
+              'lambda:RemovePermission',
+            ],
+            resources: [asyncBedrockLambda.functionArn],
+          }),
+        ]),
+      });
+
+      asyncLambdaIntegration.node.addDependency(asyncBedrockLambda);
+      asyncLambdaIntegration.node.addDependency(connectDirectIntegration);
+    }
+
     // ========================================
     // 5b. Keyboard Sound Prompt for Thinking Audio
     // ========================================
@@ -840,6 +996,72 @@ export class ConnectLexAiStack extends Stack {
     inboundFlow.node.addDependency(connectDirectIntegration);
     inboundFlow.node.addDependency(keyboardSoundPrompt);
 
+    // ========================================
+    // 6b. Async Contact Flow (Optional)
+    // ========================================
+    // When async pattern is enabled, create a second contact flow that:
+    // - Starts async Lambda (returns immediately)
+    // - Loops playing keyboard sounds while polling for result
+    // - Speaks AI response when ready
+    // This allows Bedrock to take 30+ seconds for complex tool calls.
+
+    let asyncInboundFlow: CustomResource | undefined;
+
+    if (props.useAsyncPattern && asyncBedrockLambda) {
+      // Create the async contact flow handler
+      const createAsyncContactFlowFn = new lambdaNode.NodejsFunction(this, 'CreateAsyncContactFlowFn', {
+        functionName: `${this.stackName}-CreateAsyncContactFlow`,
+        entry: path.join(__dirname, '..', '..', 'services', 'connect', 'create-async-contact-flow-handler.ts'),
+        handler: 'handler',
+        runtime: lambda.Runtime.NODEJS_20_X,
+        timeout: Duration.seconds(30),
+        memorySize: 256,
+        logRetention: logs.RetentionDays.ONE_WEEK,
+      });
+      applyTags(createAsyncContactFlowFn, { Function: 'create-async-contact-flow' });
+
+      createAsyncContactFlowFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'connect:CreateContactFlow',
+          'connect:UpdateContactFlowContent',
+          'connect:DescribeContactFlow',
+          'connect:ListContactFlows',
+          'connect:DeleteContactFlow',
+        ],
+        resources: ['*'],
+      }));
+
+      const createAsyncContactFlowProvider = new customResources.Provider(this, 'CreateAsyncContactFlowProvider', {
+        onEventHandler: createAsyncContactFlowFn,
+        logRetention: logs.RetentionDays.ONE_WEEK,
+      });
+
+      asyncInboundFlow = new CustomResource(this, 'AsyncInboundAiFlow', {
+        serviceToken: createAsyncContactFlowProvider.serviceToken,
+        properties: {
+          InstanceId: props.connectInstanceId,
+          FlowName: `${this.stackName}-AsyncInboundAiFlow`,
+          FlowType: 'CONTACT_FLOW',
+          Description: 'AI voice assistant with async pattern - continuous keyboard sounds during processing',
+          LexBotAliasArn: lexBotAliasArn,
+          AsyncLambdaArn: asyncBedrockLambda.functionArn,
+          KeyboardPromptId: keyboardPromptId,
+          MaxPollLoops: String(props.asyncMaxPollLoops || 20),
+          UpdateTrigger: `${lexBotAliasArn}|${asyncBedrockLambda.functionArn}|${keyboardPromptId}|v1`,
+        },
+      });
+      asyncInboundFlow.node.addDependency(disconnectFlow);
+      asyncInboundFlow.node.addDependency(lexIntegration);
+      asyncInboundFlow.node.addDependency(asyncLambdaIntegration!);
+      asyncInboundFlow.node.addDependency(keyboardSoundPrompt);
+
+      console.log(`[ConnectLexAiStack] Async contact flow created with ${props.asyncMaxPollLoops || 20} max poll loops`);
+    }
+
+    // Determine which flow to use for phone number association
+    const activeInboundFlow = props.useAsyncPattern && asyncInboundFlow ? asyncInboundFlow : inboundFlow;
+
     // Disconnect flow is set automatically via UpdateContactEventHooks in the inbound flow.
 
     // ========================================
@@ -878,8 +1100,8 @@ export class ConnectLexAiStack extends Stack {
       environment: {
         CONNECT_INSTANCE_ARN: props.connectInstanceArn,
         PHONE_NUMBER: props.connectAiPhoneNumber,
-        // Get the contact flow ARN from the custom resource
-        CONTACT_FLOW_ARN: inboundFlow.getAttString('ContactFlowArn'),
+        // Get the contact flow ARN from the active custom resource (sync or async)
+        CONTACT_FLOW_ARN: activeInboundFlow.getAttString('ContactFlowArn'),
       },
       logRetention: logs.RetentionDays.ONE_WEEK,
     });
@@ -907,15 +1129,15 @@ export class ConnectLexAiStack extends Stack {
       properties: {
         InstanceArn: props.connectInstanceArn,
         PhoneNumber: props.connectAiPhoneNumber,
-        ContactFlowArn: inboundFlow.getAttString('ContactFlowArn'),
+        ContactFlowArn: activeInboundFlow.getAttString('ContactFlowArn'),
         // Force update when flow changes
         FlowVersion: Date.now().toString(),
       },
     });
-    phoneNumberAssociation.node.addDependency(inboundFlow);
+    phoneNumberAssociation.node.addDependency(activeInboundFlow);
 
     // Store flow ARNs for reference
-    this.inboundFlowArn = inboundFlow.getAttString('ContactFlowArn');
+    this.inboundFlowArn = activeInboundFlow.getAttString('ContactFlowArn');
     this.disconnectFlowArn = disconnectFlow.attrContactFlowArn;
 
     // ========================================
@@ -946,8 +1168,8 @@ export class ConnectLexAiStack extends Stack {
     });
 
     new CfnOutput(this, 'InboundFlowArn', {
-      value: inboundFlow.getAttString('ContactFlowArn'),
-      description: 'Inbound AI Contact Flow ARN',
+      value: activeInboundFlow.getAttString('ContactFlowArn'),
+      description: 'Active Inbound AI Contact Flow ARN (sync or async based on useAsyncPattern)',
       exportName: `${this.stackName}-InboundFlowArn`,
     });
 
@@ -956,6 +1178,26 @@ export class ConnectLexAiStack extends Stack {
       description: 'Disconnect Contact Flow ARN',
       exportName: `${this.stackName}-DisconnectFlowArn`,
     });
+
+    // Async pattern outputs
+    if (props.useAsyncPattern && asyncBedrockLambda && asyncResultsTable) {
+      new CfnOutput(this, 'AsyncBedrockLambdaArn', {
+        value: asyncBedrockLambda.functionArn,
+        description: 'Async Bedrock Lambda ARN (60s timeout for complex tool calls)',
+        exportName: `${this.stackName}-AsyncBedrockLambdaArn`,
+      });
+
+      new CfnOutput(this, 'AsyncResultsTableName', {
+        value: asyncResultsTable.tableName,
+        description: 'DynamoDB table for async results polling',
+        exportName: `${this.stackName}-AsyncResultsTableName`,
+      });
+
+      new CfnOutput(this, 'AsyncPatternEnabled', {
+        value: 'true',
+        description: 'Async pattern is enabled with continuous keyboard sounds',
+      });
+    }
 
     new CfnOutput(this, 'AssociatedPhoneNumber', {
       value: props.connectAiPhoneNumber,
@@ -975,14 +1217,21 @@ export class ConnectLexAiStack extends Stack {
       exportName: `${this.stackName}-ConnectPromptsBucketName`,
     });
 
+    const asyncInfo = props.useAsyncPattern
+      ? `
+- Async Pattern: ENABLED (60s timeout, continuous keyboard sounds)
+- Max Poll Loops: ${props.asyncMaxPollLoops || 20} (~${(props.asyncMaxPollLoops || 20) * 2}s max wait)`
+      : `
+- Async Pattern: DISABLED (7.2s sync timeout)`;
+
     new CfnOutput(this, 'DeploymentInfo', {
       value: `
 DEPLOYMENT COMPLETE:
-- Inbound AI Flow: ${this.stackName}-InboundAiFlowV2
+- Inbound AI Flow: ${props.useAsyncPattern ? `${this.stackName}-AsyncInboundAiFlow` : `${this.stackName}-InboundAiFlowV2`}
 - Disconnect Flow: ${this.stackName}-DisconnectFlow  
 - Phone Number: ${props.connectAiPhoneNumber} (auto-associated)
 - Lex Bot: ${lexBot.name} (alias: prod)
-- Keyboard Sound: Plays during AI thinking
+- Keyboard Sound: Plays during AI thinking${asyncInfo}
 
 Then call ${props.connectAiPhoneNumber} to test the AI assistant!
       `.trim(),

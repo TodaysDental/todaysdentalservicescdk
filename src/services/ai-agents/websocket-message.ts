@@ -33,7 +33,7 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 import { AiAgent } from './agents';
 import { ConversationMessage } from './conversation-history';
-import { getDateContext, getClinicTimezone } from '../../shared/prompts/ai-prompts';
+import { getDateContext, getClinicName, getClinicTimezone } from '../../shared/prompts/ai-prompts';
 
 // ========================================================================
 // CLIENTS
@@ -48,6 +48,32 @@ const bedrockAgentClient = new BedrockAgentRuntimeClient({
 const AGENTS_TABLE = process.env.AGENTS_TABLE || 'AiAgents';
 const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || 'AiAgentConnections';
 const CONVERSATIONS_TABLE = process.env.CONVERSATIONS_TABLE || 'AiAgentConversations';
+
+// ========================================================================
+// PERFORMANCE: AGENT CACHING
+// ========================================================================
+
+// Cache agent config to avoid repeated DynamoDB lookups (agents rarely change)
+const agentCache = new Map<string, { agent: AiAgent; timestamp: number }>();
+const AGENT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+async function getCachedAgent(agentId: string): Promise<AiAgent | null> {
+  const cached = agentCache.get(agentId);
+  if (cached && Date.now() - cached.timestamp < AGENT_CACHE_TTL_MS) {
+    return cached.agent;
+  }
+  
+  const response = await docClient.send(new GetCommand({
+    TableName: AGENTS_TABLE,
+    Key: { agentId },
+  }));
+  
+  const agent = response.Item as AiAgent | undefined;
+  if (agent) {
+    agentCache.set(agentId, { agent, timestamp: Date.now() });
+  }
+  return agent || null;
+}
 
 // ========================================================================
 // CONVERSATION LOGGING
@@ -300,13 +326,8 @@ export const handler = async (event: WebSocketMessageEvent) => {
 
     const { clinicId, agentId } = connectionInfo;
 
-    // Get agent configuration
-    const agentResponse = await docClient.send(new GetCommand({
-      TableName: AGENTS_TABLE,
-      Key: { agentId },
-    }));
-
-    const agent = agentResponse.Item as AiAgent | undefined;
+    // Get agent configuration (with caching for performance)
+    const agent = await getCachedAgent(agentId);
     if (!agent) {
       await sendToClient(apiClient, connectionId, {
         type: 'error',
@@ -384,9 +405,11 @@ export const handler = async (event: WebSocketMessageEvent) => {
       }
     }
 
-    // Get timezone-aware date context for accurate scheduling
-    // Fetch clinic's timezone from the Clinics table
-    const clinicTimezone = await getClinicTimezone(clinicId);
+    // Get timezone-aware date context + clinic display name for accurate scheduling & natural greetings
+    const [clinicTimezone, clinicName] = await Promise.all([
+      getClinicTimezone(clinicId),
+      getClinicName(clinicId),
+    ]);
     const dateContext = getDateContext(clinicTimezone);
     const [year, month, day] = dateContext.today.split('-');
     const todayFormatted = `${month}/${day}/${year}`;
@@ -394,6 +417,7 @@ export const handler = async (event: WebSocketMessageEvent) => {
     // Build session attributes
     const sessionAttributes: Record<string, string> = {
       clinicId,
+      clinicName,
       userId: body.visitorId || `visitor-${uuidv4().slice(0, 8)}`,
       userName: body.visitorName || 'Website Visitor',
       isPublicRequest: 'true',
@@ -406,6 +430,13 @@ export const handler = async (event: WebSocketMessageEvent) => {
       currentTime: dateContext.currentTime,
       nextWeekDates: JSON.stringify(dateContext.nextWeekDates),
       timezone: dateContext.timezone,
+    };
+
+    // Prompt session attributes are visible to the agent as context (useful for greetings + date logic)
+    const promptSessionAttributes: Record<string, string> = {
+      clinicName,
+      currentDate: `Today is ${dateContext.dayName}, ${todayFormatted} (${dateContext.today}). Current time: ${dateContext.currentTime} (${dateContext.timezone})`,
+      dateContext: `When scheduling appointments, use ${dateContext.today} as today's date. Tomorrow is ${dateContext.tomorrowDate}. Next week dates: ${JSON.stringify(dateContext.nextWeekDates)}`,
     };
 
     // Log user message to conversation history
@@ -437,15 +468,20 @@ export const handler = async (event: WebSocketMessageEvent) => {
 
     const invokeStartTime = Date.now();
 
-    // Invoke Bedrock Agent with trace enabled
+    // PERFORMANCE: Disable trace for faster responses (trace adds overhead)
+    // Only enable for debugging when needed
+    const enableTrace = (body as any).enableTrace === true;
+
+    // Invoke Bedrock Agent
     const invokeCommand = new InvokeAgentCommand({
       agentId: agent.bedrockAgentId,
       agentAliasId: agent.bedrockAgentAliasId,
       sessionId,
       inputText: body.message,
-      enableTrace: true,  // Enable thinking/trace
+      enableTrace, // Only enable trace when explicitly requested
       sessionState: {
         sessionAttributes,
+        promptSessionAttributes,
       },
     });
 
@@ -453,18 +489,25 @@ export const handler = async (event: WebSocketMessageEvent) => {
 
     // Stream response and trace events
     let fullResponse = '';
+    
+    // PERFORMANCE: Batch trace events to avoid serializing WebSocket sends
+    const pendingTraceEvents: StreamEvent[] = [];
+    let lastTraceSendTime = Date.now();
+    const TRACE_BATCH_INTERVAL_MS = 200; // Send trace batches every 200ms max
 
     if (bedrockResponse.completion) {
       for await (const event of bedrockResponse.completion) {
-        // Handle trace events (thinking)
-        if (event.trace?.trace) {
+        const now = Date.now();
+        
+        // Handle trace events (thinking) - only if trace enabled
+        if (enableTrace && event.trace?.trace) {
           const trace = event.trace.trace;
 
           // Pre-processing trace (understanding the request)
           if (trace.preProcessingTrace) {
             const preProc = trace.preProcessingTrace;
             if (preProc.modelInvocationOutput?.parsedResponse?.rationale) {
-              await sendToClient(apiClient, connectionId, {
+              pendingTraceEvents.push({
                 type: 'thinking',
                 content: `Understanding: ${preProc.modelInvocationOutput.parsedResponse.rationale}`,
                 timestamp: new Date().toISOString(),
@@ -483,7 +526,7 @@ export const handler = async (event: WebSocketMessageEvent) => {
                 // Try to extract thinking from the content
                 const thinkingMatch = content.match(/<thinking>([\s\S]*?)<\/thinking>/);
                 if (thinkingMatch) {
-                  await sendToClient(apiClient, connectionId, {
+                  pendingTraceEvents.push({
                     type: 'thinking',
                     content: thinkingMatch[1].trim(),
                     timestamp: new Date().toISOString(),
@@ -492,19 +535,20 @@ export const handler = async (event: WebSocketMessageEvent) => {
               }
             }
 
-            // Tool invocation
+            // Tool invocation - send immediately for user feedback
             if (orch.invocationInput?.actionGroupInvocationInput) {
               const action = orch.invocationInput.actionGroupInvocationInput;
-              await sendToClient(apiClient, connectionId, {
+              // Tool events are important - send immediately
+              sendToClient(apiClient, connectionId, {
                 type: 'tool_use',
                 toolName: action.apiPath?.replace('/', '') || 'unknown',
                 toolInput: action.parameters || action.requestBody,
                 content: `Calling: ${action.apiPath}`,
                 timestamp: new Date().toISOString(),
-              });
+              }); // Fire and forget for speed
             }
 
-            // Tool result
+            // Tool result - send immediately
             if (orch.observation?.actionGroupInvocationOutput) {
               const result = orch.observation.actionGroupInvocationOutput;
               let resultContent = 'Tool completed';
@@ -520,17 +564,17 @@ export const handler = async (event: WebSocketMessageEvent) => {
                 // Ignore parse errors
               }
 
-              await sendToClient(apiClient, connectionId, {
+              sendToClient(apiClient, connectionId, {
                 type: 'tool_result',
                 content: resultContent,
                 toolResult: result.text,
                 timestamp: new Date().toISOString(),
-              });
+              }); // Fire and forget for speed
             }
 
-            // Rationale/thinking
+            // Rationale/thinking - batch
             if (orch.rationale?.text) {
-              await sendToClient(apiClient, connectionId, {
+              pendingTraceEvents.push({
                 type: 'thinking',
                 content: orch.rationale.text,
                 timestamp: new Date().toISOString(),
@@ -538,31 +582,46 @@ export const handler = async (event: WebSocketMessageEvent) => {
             }
           }
 
-          // Post-processing trace
+          // Post-processing trace - batch
           if (trace.postProcessingTrace?.modelInvocationOutput?.parsedResponse) {
             const postProc = trace.postProcessingTrace.modelInvocationOutput.parsedResponse;
             if (postProc.text) {
-              await sendToClient(apiClient, connectionId, {
+              pendingTraceEvents.push({
                 type: 'thinking',
                 content: `Finalizing: ${postProc.text}`,
                 timestamp: new Date().toISOString(),
               });
             }
           }
+          
+          // Periodically flush trace events
+          if (pendingTraceEvents.length > 0 && now - lastTraceSendTime > TRACE_BATCH_INTERVAL_MS) {
+            for (const traceEvent of pendingTraceEvents) {
+              sendToClient(apiClient, connectionId, traceEvent); // Fire and forget
+            }
+            pendingTraceEvents.length = 0;
+            lastTraceSendTime = now;
+          }
         }
 
-        // Handle response chunks
+        // Handle response chunks - send immediately for real-time feel
         if (event.chunk?.bytes) {
           const chunk = new TextDecoder().decode(event.chunk.bytes);
           fullResponse += chunk;
 
-          await sendToClient(apiClient, connectionId, {
+          // Send chunk immediately for real-time streaming
+          sendToClient(apiClient, connectionId, {
             type: 'chunk',
             content: chunk,
             timestamp: new Date().toISOString(),
-          });
+          }); // Fire and forget for speed
         }
       }
+    }
+    
+    // Flush any remaining trace events
+    for (const traceEvent of pendingTraceEvents) {
+      sendToClient(apiClient, connectionId, traceEvent);
     }
 
     // Send completion event
@@ -602,9 +661,27 @@ export const handler = async (event: WebSocketMessageEvent) => {
   } catch (error: any) {
     console.error('WebSocket message error:', error);
 
+    // Provide user-friendly error messages for known error types
+    let userMessage = 'An error occurred processing your request. Please try again.';
+    
+    if (error.name === 'DependencyFailedException') {
+      // This error occurs when the Bedrock Agent's action group Lambda fails
+      // Common causes: timeout, OpenDental API issues, or configuration problems
+      console.error('[WebSocket] DependencyFailedException - Action group Lambda may have failed');
+      userMessage = 'I had trouble looking that up. Could you please try again? If the problem persists, please contact the office directly.';
+    } else if (error.name === 'ThrottlingException') {
+      userMessage = 'The system is busy right now. Please wait a moment and try again.';
+    } else if (error.name === 'ResourceNotFoundException') {
+      userMessage = 'The AI assistant is currently unavailable. Please try again later or contact the office.';
+    } else if (error.name === 'ValidationException') {
+      userMessage = 'There was an issue with your request. Please try rephrasing your question.';
+    } else if (error.name === 'AccessDeniedException') {
+      userMessage = 'Access denied. Please contact the office for assistance.';
+    }
+
     await sendToClient(apiClient, connectionId, {
       type: 'error',
-      content: error.message || 'An error occurred processing your request',
+      content: userMessage,
       timestamp: new Date().toISOString(),
     });
 

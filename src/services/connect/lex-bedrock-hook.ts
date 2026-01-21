@@ -70,15 +70,26 @@ const SESSIONS_TABLE = process.env.SESSIONS_TABLE || 'AiAgentSessions';
 // potentially incorrect text to Bedrock.
 const TRANSCRIPTION_CONFIDENCE_THRESHOLD = Number(process.env.TRANSCRIPTION_CONFIDENCE_THRESHOLD || '0.6');
 
-// For Amazon Connect InvokeLambdaFunction, keep Bedrock time safely under the contact flow
-// InvocationTimeLimitSeconds (hard limit: 8s) to avoid Connect timeouts.
-// MAXIMIZED to 7800ms - leaves only ~200ms for Lambda serialization/network overhead.
-// Analytics/transcript writes are fire-and-forget so don't block the response.
-const CONNECT_BEDROCK_TIMEOUT_MS = Number(process.env.CONNECT_BEDROCK_TIMEOUT_MS || '7800');
+// Amazon Connect InvokeLambdaFunction has a hard ~8s execution limit.
+// If we get too close to that, the contact flow will time out and may disconnect before
+// the caller hears the first response.
+//
+// Default to ~7.2s for Bedrock, and cap any env override to a safe maximum.
+// Since analytics/transcript updates are now fire-and-forget, we only need ~500ms buffer
+// for Lambda overhead (return serialization, final network I/O).
+// This gives tool-calling operations (like patient search) more time to complete.
+const CONNECT_LAMBDA_HARD_LIMIT_MS = 8000;
+const CONNECT_SAFE_MAX_BEDROCK_TIMEOUT_MS = CONNECT_LAMBDA_HARD_LIMIT_MS - 800;
+const CONNECT_BEDROCK_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.CONNECT_BEDROCK_TIMEOUT_MS || '7200');
+  const n = Number.isFinite(raw) ? raw : 7200;
+  return Math.max(1000, Math.min(n, CONNECT_SAFE_MAX_BEDROCK_TIMEOUT_MS));
+})();
 
-// Maximum time to spend in the streaming loop before returning partial response
-// Slightly higher than CONNECT_BEDROCK_TIMEOUT_MS to allow graceful partial response handling
-const MAX_STREAMING_LOOP_MS = 7900;
+// Maximum time to spend iterating streaming chunks before returning a partial response.
+// This is a last-resort guard in case the abort signal doesn't terminate the stream promptly.
+// Leave 500ms for Lambda response serialization and network overhead.
+const CONNECT_SAFE_MAX_STREAMING_LOOP_MS = CONNECT_LAMBDA_HARD_LIMIT_MS - 500;
 
 // AI phone numbers mapping: aiPhoneNumber -> clinicId
 const AI_PHONE_NUMBERS_JSON = process.env.AI_PHONE_NUMBERS_JSON || '{}';
@@ -173,7 +184,7 @@ interface LexV2Response {
 }
 
 // ========================================================================
-// AGENT LOOKUP
+// AGENT LOOKUP (with caching for performance)
 // ========================================================================
 
 interface AgentInfo {
@@ -182,78 +193,81 @@ interface AgentInfo {
   agentName?: string;
 }
 
+// PERFORMANCE: Cache agent lookups to avoid repeated DynamoDB queries
+// Agents rarely change, so a 5-minute cache significantly reduces latency
+const agentCache = new Map<string, { agent: AgentInfo | null; timestamp: number }>();
+const AGENT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 async function getAgentForClinic(clinicId: string): Promise<AgentInfo | null> {
+  // Check cache first
+  const cached = agentCache.get(clinicId);
+  if (cached && Date.now() - cached.timestamp < AGENT_CACHE_TTL_MS) {
+    return cached.agent;
+  }
+
   try {
-    // Query using ClinicIndex GSI (clinicId HASH, createdAt RANGE)
-    // Filter for voice-type agent
-    const result = await docClient.send(new QueryCommand({
+    // PERFORMANCE: Single query with broader filter, then prioritize in-memory
+    // This reduces 2-3 DynamoDB calls to just 1
+    const allAgents = await docClient.send(new QueryCommand({
       TableName: AGENTS_TABLE,
       IndexName: 'ClinicIndex',
       KeyConditionExpression: 'clinicId = :clinicId',
-      FilterExpression: 'agentType = :agentType',
       ExpressionAttributeValues: {
         ':clinicId': clinicId,
-        ':agentType': 'voice',
       },
-      Limit: 10, // Get a few to find voice type
+      Limit: 20,
       ScanIndexForward: false, // Most recent first
     }));
 
-    if (result.Items && result.Items.length > 0) {
-      const agent = result.Items[0];
-      return {
-        agentId: agent.bedrockAgentId,
-        aliasId: agent.bedrockAliasId || 'TSTALIASID',
-        agentName: agent.agentName || agent.name,
-      };
+    if (!allAgents.Items || allAgents.Items.length === 0) {
+      agentCache.set(clinicId, { agent: null, timestamp: Date.now() });
+      return null;
     }
 
-    // Fallback: query for any chatbot agent
-    const fallback = await docClient.send(new QueryCommand({
-      TableName: AGENTS_TABLE,
-      IndexName: 'ClinicIndex',
-      KeyConditionExpression: 'clinicId = :clinicId',
-      FilterExpression: 'agentType = :agentType',
-      ExpressionAttributeValues: {
-        ':clinicId': clinicId,
-        ':agentType': 'chatbot',
-      },
-      Limit: 10,
-      ScanIndexForward: false,
-    }));
+    // Prioritize: 1) default voice agent, 2) any voice-enabled, 3) any agent
+    let selectedAgent: any = null;
 
-    if (fallback.Items && fallback.Items.length > 0) {
-      const agent = fallback.Items[0];
-      return {
-        agentId: agent.bedrockAgentId,
-        aliasId: agent.bedrockAliasId || 'TSTALIASID',
-        agentName: agent.agentName || agent.name,
-      };
+    // Look for default voice agent first
+    const defaultVoice = allAgents.Items.find(
+      (a: any) => a.isDefaultVoiceAgent === true && a.isVoiceEnabled === true
+    );
+    if (defaultVoice) {
+      selectedAgent = defaultVoice;
+      console.log('[LexBedrockHook] Selected default voice agent:', {
+        clinicId,
+        agentId: selectedAgent.agentId,
+        agentName: selectedAgent.agentName || selectedAgent.name,
+      });
     }
 
-    // Final fallback: get any agent for this clinic
-    const anyAgent = await docClient.send(new QueryCommand({
-      TableName: AGENTS_TABLE,
-      IndexName: 'ClinicIndex',
-      KeyConditionExpression: 'clinicId = :clinicId',
-      ExpressionAttributeValues: {
-        ':clinicId': clinicId,
-      },
-      Limit: 1,
-      ScanIndexForward: false,
-    }));
-
-    if (anyAgent.Items && anyAgent.Items.length > 0) {
-      const agent = anyAgent.Items[0];
-      console.log('[LexBedrockHook] Using fallback agent (any type):', agent.agentId || agent.agentName);
-      return {
-        agentId: agent.bedrockAgentId,
-        aliasId: agent.bedrockAliasId || 'TSTALIASID',
-        agentName: agent.agentName || agent.name,
-      };
+    // Fall back to any voice-enabled agent
+    if (!selectedAgent) {
+      const voiceEnabled = allAgents.Items.find((a: any) => a.isVoiceEnabled === true);
+      if (voiceEnabled) {
+        selectedAgent = voiceEnabled;
+        console.log('[LexBedrockHook] Selected voice-enabled agent:', {
+          clinicId,
+          agentId: selectedAgent.agentId,
+          agentName: selectedAgent.agentName || selectedAgent.name,
+        });
+      }
     }
 
-    return null;
+    // Final fallback: any agent
+    if (!selectedAgent) {
+      selectedAgent = allAgents.Items[0];
+      console.log('[LexBedrockHook] Using fallback agent (any type):', selectedAgent.agentId || selectedAgent.agentName);
+    }
+
+    const agentInfo: AgentInfo = {
+      agentId: selectedAgent.bedrockAgentId,
+      aliasId: selectedAgent.bedrockAliasId || 'TSTALIASID',
+      agentName: selectedAgent.agentName || selectedAgent.name,
+    };
+
+    // Cache the result
+    agentCache.set(clinicId, { agent: agentInfo, timestamp: Date.now() });
+    return agentInfo;
   } catch (error) {
     console.error('[LexBedrockHook] Error looking up agent:', error);
     return null;
@@ -597,6 +611,9 @@ async function invokeBedrock(params: {
 
   // Track when we started for streaming loop timeout
   const invocationStartMs = Date.now();
+  const streamingLoopMaxMs = isVoiceCall
+    ? Math.min(effectiveTimeoutMs + 250, CONNECT_SAFE_MAX_STREAMING_LOOP_MS)
+    : effectiveTimeoutMs + 2000;
 
   try {
     const command = new InvokeAgentCommand({
@@ -626,10 +643,10 @@ async function invokeBedrock(params: {
         // The abort signal may not properly terminate the stream, so we need
         // to manually break out of the loop to ensure we respond before Connect times out
         const elapsedMs = Date.now() - invocationStartMs;
-        if (elapsedMs > MAX_STREAMING_LOOP_MS || controller.signal.aborted) {
+        if (elapsedMs > streamingLoopMaxMs || controller.signal.aborted) {
           console.warn('[LexBedrockHook] Streaming loop timeout, returning partial response', {
             elapsedMs,
-            maxMs: MAX_STREAMING_LOOP_MS,
+            maxMs: streamingLoopMaxMs,
             aborted: controller.signal.aborted,
             partialResponseLength: fullResponse.length,
           });
@@ -675,10 +692,13 @@ async function invokeBedrock(params: {
       console.warn('[LexBedrockHook] Bedrock invocation timed out', {
         clinicId,
         timeoutMs: effectiveTimeoutMs,
+        inputTextPreview: inputText.substring(0, 50),
       });
+      // Provide a more natural voice response that acknowledges we're still processing
+      // and invites the caller to repeat their request
       return {
         response: isVoiceCall
-          ? "I'm sorry — I'm having trouble right now. Could you please try again?"
+          ? "I'm still looking that up. Could you please repeat what you just said?"
           : "I apologize, but I'm having trouble processing your request right now. Please try again.",
         toolsUsed: [],
       };
@@ -1017,6 +1037,7 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
     clinicId,
     inputMode: event.inputMode, // 'Speech' for voice calls, 'Text' for chat
     channel: event.inputMode === 'Speech' ? 'voice' : 'chat',
+    timeoutMs: event.inputMode === 'Speech' ? CONNECT_BEDROCK_TIMEOUT_MS : CONFIG.BEDROCK_TIMEOUT_MS,
   });
 
   // FIX: Make analytics and transcript updates fire-and-forget to reduce response time

@@ -729,6 +729,11 @@ const connectLexAiStack = new ConnectLexAiStack(app, 'TodaysDentalInsightsConnec
   // Thinking audio URL from ChimeStack - plays keyboard sounds during AI processing
   thinkingAudioUrl: chimeStack.thinkingAudioUrl,
   thinkingAudioMode: 'verbal',
+  // Enable async pattern for 60s Bedrock timeout (overcomes Connect's 8s sync limit)
+  // This allows complex tool calls (patient search, appointment booking) to complete
+  // while playing continuous keyboard sounds to the caller
+  useAsyncPattern: true,
+  asyncMaxPollLoops: 25, // ~50 seconds max wait with continuous typing sounds
 });
 connectLexAiStack.addDependency(aiAgentsStack);
 connectLexAiStack.addDependency(analyticsStack);

@@ -54,7 +54,7 @@ import {
   generateFullTTS,
   TTSChunk,
 } from '../chime/utils/streaming-tts-manager';
-import { getDateContext, getClinicTimezone } from '../../shared/prompts/ai-prompts';
+import { getDateContext, getClinicName, getClinicTimezone } from '../../shared/prompts/ai-prompts';
 
 // ========================================================================
 // CONFIGURATION
@@ -1048,15 +1048,18 @@ async function invokeAiAgentWithStreaming(
     engine: voiceSettings.engine || 'neural',
   };
 
-  // Get timezone-aware date context for accurate scheduling
-  // Fetch clinic's timezone from the Clinics table
-  const clinicTimezone = await getClinicTimezone(session.clinicId);
+  // Get timezone-aware date context + clinic display name for accurate scheduling & natural greetings
+  const [clinicTimezone, clinicName] = await Promise.all([
+    getClinicTimezone(session.clinicId),
+    getClinicName(session.clinicId),
+  ]);
   const dateContext = getDateContext(clinicTimezone);
   const [year, month, day] = dateContext.today.split('-');
   const todayFormatted = `${month}/${day}/${year}`;
 
   const sessionAttributes: Record<string, string> = {
     clinicId: session.clinicId,
+    clinicName,
     callerNumber: session.callerNumber,
     isVoiceCall: 'true',
     inputMode: 'Speech',
@@ -1070,6 +1073,12 @@ async function invokeAiAgentWithStreaming(
     timezone: dateContext.timezone,
   };
 
+  const promptSessionAttributes: Record<string, string> = {
+    clinicName,
+    currentDate: `Today is ${dateContext.dayName}, ${todayFormatted} (${dateContext.today}). Current time: ${dateContext.currentTime} (${dateContext.timezone})`,
+    dateContext: `When scheduling appointments, use ${dateContext.today} as today's date. Tomorrow is ${dateContext.tomorrowDate}. Next week dates: ${JSON.stringify(dateContext.nextWeekDates)}`,
+  };
+
   const invokeCommand = new InvokeAgentCommand({
     agentId: agent.bedrockAgentId,
     agentAliasId: agent.bedrockAgentAliasId,
@@ -1078,6 +1087,7 @@ async function invokeAiAgentWithStreaming(
     enableTrace: true,
     sessionState: {
       sessionAttributes,
+      promptSessionAttributes,
     },
   });
 
@@ -1278,15 +1288,18 @@ async function invokeAiAgent(
   const thinking: string[] = [];
   let fullResponse = '';
 
-  // Get timezone-aware date context for accurate scheduling
-  // Fetch clinic's timezone from the Clinics table
-  const clinicTimezone = await getClinicTimezone(session.clinicId);
+  // Get timezone-aware date context + clinic display name for accurate scheduling & natural greetings
+  const [clinicTimezone, clinicName] = await Promise.all([
+    getClinicTimezone(session.clinicId),
+    getClinicName(session.clinicId),
+  ]);
   const dateContext = getDateContext(clinicTimezone);
   const [year, month, day] = dateContext.today.split('-');
   const todayFormatted = `${month}/${day}/${year}`;
 
   const sessionAttributes: Record<string, string> = {
     clinicId: session.clinicId,
+    clinicName,
     callerNumber: session.callerNumber,
     isVoiceCall: 'true',
     inputMode: 'Speech',
@@ -1300,6 +1313,12 @@ async function invokeAiAgent(
     timezone: dateContext.timezone,
   };
 
+  const promptSessionAttributes: Record<string, string> = {
+    clinicName,
+    currentDate: `Today is ${dateContext.dayName}, ${todayFormatted} (${dateContext.today}). Current time: ${dateContext.currentTime} (${dateContext.timezone})`,
+    dateContext: `When scheduling appointments, use ${dateContext.today} as today's date. Tomorrow is ${dateContext.tomorrowDate}. Next week dates: ${JSON.stringify(dateContext.nextWeekDates)}`,
+  };
+
   const invokeCommand = new InvokeAgentCommand({
     agentId: agent.bedrockAgentId,
     agentAliasId: agent.bedrockAgentAliasId,
@@ -1308,6 +1327,7 @@ async function invokeAiAgent(
     enableTrace: true,
     sessionState: {
       sessionAttributes,
+      promptSessionAttributes,
     },
   });
 

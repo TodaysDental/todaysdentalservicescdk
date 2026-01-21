@@ -95,25 +95,25 @@ export const AVAILABLE_MODELS = [
     recommended: false,
   },
   {
-    id: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
+    id: 'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
     name: 'Claude 3.7 Sonnet',
     provider: 'Anthropic',
-    description: 'Optimized for broad use with strong capabilities',
+    description: 'Optimized for broad use with strong capabilities (cross-region)',
     recommended: false,
   },
   {
-    id: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+    id: 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
     name: 'Claude 3.5 Sonnet v2',
     provider: 'Anthropic',
-    description: 'Best balance of intelligence and speed',
+    description: 'Best balance of intelligence and speed (cross-region inference)',
     recommended: false,
   },
   {
-    id: 'anthropic.claude-3-5-haiku-20241022-v1:0',
+    id: 'us.anthropic.claude-3-5-haiku-20241022-v1:0',
     name: 'Claude 3.5 Haiku',
     provider: 'Anthropic',
-    description: 'Fast and efficient for simple tasks',
-    recommended: false,
+    description: 'Fast and efficient for simple tasks (cross-region inference)',
+    recommended: true,
   },
   {
     id: 'anthropic.claude-3-sonnet-20240229-v1:0',
@@ -252,6 +252,13 @@ export const AVAILABLE_MODELS = [
 ] as const;
 
 export type ModelId = (typeof AVAILABLE_MODELS)[number]['id'];
+
+// Default model choice for voice agents (optimize for low latency).
+// NOTE: This can be overridden by explicitly passing modelId in the create/update request.
+// PERFORMANCE: Use Claude 3.5 Haiku with cross-region inference profile for best latency/quality.
+// The 'us.' prefix enables system-defined inference profiles (required for Claude 3.5 models).
+// Alternative: 'amazon.nova-micro-v1:0' for ultra-low latency (but less capable).
+const DEFAULT_VOICE_MODEL_ID: ModelId = 'us.anthropic.claude-3-5-haiku-20241022-v1:0';
 
 // ========================================================================
 // TYPES
@@ -2478,7 +2485,13 @@ async function createAgent(event: APIGatewayProxyEvent, userPerms: UserPermissio
     return { statusCode: 403, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Permission denied' }) };
   }
 
-  const modelId = body.modelId || AVAILABLE_MODELS.find((m) => m.recommended)?.id || AVAILABLE_MODELS[0].id;
+  // Voice calls have a strict real-time budget (e.g., Amazon Connect ~8s hard limit on InvokeLambdaFunction),
+  // so default voice-enabled agents to a fast model unless explicitly overridden.
+  const defaultModelId = body.isVoiceEnabled === true
+    ? DEFAULT_VOICE_MODEL_ID
+    : (AVAILABLE_MODELS.find((m) => m.recommended)?.id || AVAILABLE_MODELS[0].id);
+
+  const modelId = body.modelId || defaultModelId;
   const selectedModel = AVAILABLE_MODELS.find((m) => m.id === modelId);
   if (!selectedModel) {
     return { statusCode: 400, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Invalid model ID' }) };
@@ -2915,6 +2928,13 @@ async function updateAgent(
   agent.systemPrompt = body.systemPrompt ?? agent.systemPrompt;
   agent.negativePrompt = body.negativePrompt ?? agent.negativePrompt;
   agent.userPrompt = body.userPrompt ?? agent.userPrompt;
+  if (body.modelId && body.modelId !== agent.modelId) {
+    const selectedModel = AVAILABLE_MODELS.find((m) => m.id === body.modelId);
+    if (!selectedModel) {
+      return { statusCode: 400, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Invalid model ID' }) };
+    }
+    agent.modelId = body.modelId as ModelId;
+  }
   agent.isPublic = typeof body.isPublic === 'boolean' ? body.isPublic : agent.isPublic;
   agent.tags = Array.isArray(body.tags) ? body.tags : agent.tags;
 

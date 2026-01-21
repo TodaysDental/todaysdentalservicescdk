@@ -17,6 +17,16 @@ const bedrockClient = new BedrockRuntimeClient({});
 const MODEL_ID = process.env.MODEL_ID || 'anthropic.claude-3-5-sonnet-20241022-v2:0';
 const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT || 'You are a helpful AI assistant on a phone call. Keep responses concise and natural for voice conversation.';
 
+// Amazon Connect InvokeLambdaFunction has a hard ~8s limit. Keep the Bedrock call comfortably under that
+// so the contact flow doesn't time out before playing the first response.
+const CONNECT_LAMBDA_HARD_LIMIT_MS = 8000;
+const CONNECT_SAFE_MAX_BEDROCK_TIMEOUT_MS = CONNECT_LAMBDA_HARD_LIMIT_MS - 1500;
+const CONNECT_BEDROCK_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.CONNECT_BEDROCK_TIMEOUT_MS || '6500');
+  const n = Number.isFinite(raw) ? raw : 6500;
+  return Math.max(1000, Math.min(n, CONNECT_SAFE_MAX_BEDROCK_TIMEOUT_MS));
+})();
+
 // ========================================================================
 // TYPES - Connect Direct Lambda Event
 // ========================================================================
@@ -56,6 +66,8 @@ interface ConnectDirectLambdaResponse {
  * Call Bedrock to generate AI response
  */
 async function generateAiResponse(userMessage: string): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), CONNECT_BEDROCK_TIMEOUT_MS);
   try {
     const response = await bedrockClient.send(new ConverseCommand({
       modelId: MODEL_ID,
@@ -70,7 +82,7 @@ async function generateAiResponse(userMessage: string): Promise<string> {
         maxTokens: 200, // Keep responses short for phone calls
         temperature: 0.7,
       },
-    }));
+    }), { abortSignal: controller.signal });
 
     const aiMessage = response.output?.message?.content?.[0];
     if (aiMessage && 'text' in aiMessage && aiMessage.text) {
@@ -79,8 +91,20 @@ async function generateAiResponse(userMessage: string): Promise<string> {
 
     return "I'm sorry, I didn't quite catch that. Could you please repeat?";
   } catch (error) {
+    const isAbort =
+      controller.signal.aborted ||
+      (error as any)?.name === 'AbortError' ||
+      (error as any)?.code === 'ABORT_ERR';
+
+    if (isAbort) {
+      console.warn('[ConnectDirectLambda] Bedrock invocation timed out', { timeoutMs: CONNECT_BEDROCK_TIMEOUT_MS });
+      return "I'm sorry — I'm having trouble right now. Could you please try again?";
+    }
+
     console.error('[ConnectDirectLambda] Error calling Bedrock:', error);
     return "I'm sorry, I'm having trouble processing that right now. Please try again.";
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
