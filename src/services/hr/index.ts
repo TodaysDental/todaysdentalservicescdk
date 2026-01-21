@@ -1062,14 +1062,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return { statusCode: 204, headers: currentCorsHeaders, body: "" };
   }
 
-  // Extract JWT token from request headers (for logging, forwarding, or additional validation)
-  const jwtToken = extractJwtToken(event.headers);
-  if (!jwtToken) {
-    console.warn('No valid JWT token found in request headers');
-    // Note: The custom authorizer should have already validated the token,
-    // but this provides an additional check and makes the token available for use
-  }
-
   // Get user permissions from custom authorizer
   const userPerms = getUserPermissions(event);
   if (!userPerms) {
