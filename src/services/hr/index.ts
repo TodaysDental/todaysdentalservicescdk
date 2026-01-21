@@ -710,6 +710,50 @@ const httpOk = (data: Record<string, any>) => ({
     statusCode: 200, headers: currentCorsHeaders, body: JSON.stringify({ success: true, ...data })
 });
 
+// ========================================
+// JWT TOKEN EXTRACTION HELPER
+// ========================================
+
+/**
+ * Safely extracts the JWT token from request headers.
+ * Handles case-insensitive header names and 'Bearer ' prefix.
+ * 
+ * @param headers - Request headers object (may have various casing)
+ * @returns The extracted JWT token string, or null if not found/invalid
+ */
+function extractJwtToken(headers: Record<string, string | undefined> | null | undefined): string | null {
+  if (!headers) {
+    return null;
+  }
+
+  // Find the Authorization header with case-insensitive lookup
+  const authHeaderKey = Object.keys(headers).find(
+    (key) => key.toLowerCase() === 'authorization'
+  );
+
+  if (!authHeaderKey) {
+    return null;
+  }
+
+  const authHeaderValue = headers[authHeaderKey];
+  if (!authHeaderValue || typeof authHeaderValue !== 'string') {
+    return null;
+  }
+
+  const trimmedValue = authHeaderValue.trim();
+
+  // Check for 'Bearer ' prefix (case-insensitive)
+  const bearerPrefix = 'bearer ';
+  if (trimmedValue.toLowerCase().startsWith(bearerPrefix)) {
+    const token = trimmedValue.slice(bearerPrefix.length).trim();
+    // Return null if the token is empty after stripping the prefix
+    return token.length > 0 ? token : null;
+  }
+
+  // If no Bearer prefix, return null (we expect Bearer tokens)
+  return null;
+}
+
 
 // ========================================
 // HELPER FUNCTIONS
@@ -1016,6 +1060,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 204, headers: currentCorsHeaders, body: "" };
+  }
+
+  // Extract JWT token from request headers (for logging, forwarding, or additional validation)
+  const jwtToken = extractJwtToken(event.headers);
+  if (!jwtToken) {
+    console.warn('No valid JWT token found in request headers');
+    // Note: The custom authorizer should have already validated the token,
+    // but this provides an additional check and makes the token available for use
   }
 
   // Get user permissions from custom authorizer
