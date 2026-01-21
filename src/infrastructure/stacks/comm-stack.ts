@@ -16,6 +16,11 @@ export interface CommStackProps extends StackProps {
   // Authorizer imported via CloudFormation export
   jwtSecret: string;
   
+  /**
+   * ARN of the shared Lambda authorizer function for REST API authentication
+   */
+  authorizerFunctionArn: string;
+  
   // ========================================
   // PUSH NOTIFICATIONS INTEGRATION (from PushNotificationsStack)
   // ========================================
@@ -498,6 +503,29 @@ export class CommStack extends Stack {
       },
     });
 
+    // ========================================
+    // REST API AUTHORIZER
+    // ========================================
+    const authorizerFn = lambda.Function.fromFunctionArn(
+      this,
+      'ImportedAuthFn',
+      props.authorizerFunctionArn
+    );
+
+    const authorizer = new apigw.RequestAuthorizer(this, 'CommAuthorizer', {
+      handler: authorizerFn,
+      identitySources: [apigw.IdentitySource.header('Authorization')],
+      resultsCacheTtl: Duration.seconds(0),
+    });
+
+    // Grant API Gateway permission to invoke the authorizer Lambda
+    new lambda.CfnPermission(this, 'AuthorizerInvokePermission', {
+      action: 'lambda:InvokeFunction',
+      functionName: props.authorizerFunctionArn,
+      principal: 'apigateway.amazonaws.com',
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${this.restApi.restApiId}/authorizers/*`,
+    });
+
     // Create Lambda integration for REST API
     // Use allowTestInvoke: false to prevent individual permissions per method (avoids 20KB policy limit)
     const restIntegration = new apigw.LambdaIntegration(restApiHandler, {
@@ -516,59 +544,59 @@ export class CommStack extends Stack {
 
     // /api/conversations endpoints
     const conversations = api.addResource('conversations');
-    conversations.addMethod('GET', restIntegration);
+    conversations.addMethod('GET', restIntegration, { authorizer });
     const conversationsSearch = conversations.addResource('search');
-    conversationsSearch.addMethod('GET', restIntegration);
+    conversationsSearch.addMethod('GET', restIntegration, { authorizer });
     const conversationsProfiles = conversations.addResource('profiles');
-    conversationsProfiles.addMethod('GET', restIntegration);
+    conversationsProfiles.addMethod('GET', restIntegration, { authorizer });
     const conversationById = conversations.addResource('{favorRequestID}');
-    conversationById.addMethod('DELETE', restIntegration);
+    conversationById.addMethod('DELETE', restIntegration, { authorizer });
     const conversationComplete = conversationById.addResource('complete');
-    conversationComplete.addMethod('GET', restIntegration);
+    conversationComplete.addMethod('GET', restIntegration, { authorizer });
     const conversationUserDetails = conversationById.addResource('user-details');
-    conversationUserDetails.addMethod('GET', restIntegration);
+    conversationUserDetails.addMethod('GET', restIntegration, { authorizer });
     const conversationDeadline = conversationById.addResource('deadline');
-    conversationDeadline.addMethod('PUT', restIntegration);
+    conversationDeadline.addMethod('PUT', restIntegration, { authorizer });
 
     // /api/tasks endpoints
     const tasks = api.addResource('tasks');
-    tasks.addMethod('POST', restIntegration);
+    tasks.addMethod('POST', restIntegration, { authorizer });
     const tasksByStatus = tasks.addResource('by-status');
-    tasksByStatus.addMethod('GET', restIntegration);
+    tasksByStatus.addMethod('GET', restIntegration, { authorizer });
     const tasksForwardHistory = tasks.addResource('forward-history');
-    tasksForwardHistory.addMethod('GET', restIntegration);
+    tasksForwardHistory.addMethod('GET', restIntegration, { authorizer });
     const tasksForwardedToMe = tasks.addResource('forwarded-to-me');
-    tasksForwardedToMe.addMethod('GET', restIntegration);
+    tasksForwardedToMe.addMethod('GET', restIntegration, { authorizer });
     const tasksGroup = tasks.addResource('group');
-    tasksGroup.addMethod('POST', restIntegration);
+    tasksGroup.addMethod('POST', restIntegration, { authorizer });
     const taskById = tasks.addResource('{taskID}');
     const taskForward = taskById.addResource('forward');
-    taskForward.addMethod('POST', restIntegration);
+    taskForward.addMethod('POST', restIntegration, { authorizer });
     const taskDeadline = taskById.addResource('deadline');
-    taskDeadline.addMethod('PUT', restIntegration);
+    taskDeadline.addMethod('PUT', restIntegration, { authorizer });
     const taskForwardById = taskForward.addResource('{forwardID}');
     const taskForwardRespond = taskForwardById.addResource('respond');
-    taskForwardRespond.addMethod('POST', restIntegration);
+    taskForwardRespond.addMethod('POST', restIntegration, { authorizer });
 
     // /api/meetings endpoints
     const meetings = api.addResource('meetings');
-    meetings.addMethod('GET', restIntegration);
-    meetings.addMethod('POST', restIntegration);
+    meetings.addMethod('GET', restIntegration, { authorizer });
+    meetings.addMethod('POST', restIntegration, { authorizer });
     const meetingById = meetings.addResource('{meetingID}');
-    meetingById.addMethod('PUT', restIntegration);
-    meetingById.addMethod('DELETE', restIntegration);
+    meetingById.addMethod('PUT', restIntegration, { authorizer });
+    meetingById.addMethod('DELETE', restIntegration, { authorizer });
 
     // /api/groups endpoints
     const groups = api.addResource('groups');
-    groups.addMethod('GET', restIntegration);
-    groups.addMethod('POST', restIntegration);
+    groups.addMethod('GET', restIntegration, { authorizer });
+    groups.addMethod('POST', restIntegration, { authorizer });
     const groupById = groups.addResource('{teamID}');
-    groupById.addMethod('GET', restIntegration);
-    groupById.addMethod('PUT', restIntegration);
+    groupById.addMethod('GET', restIntegration, { authorizer });
+    groupById.addMethod('PUT', restIntegration, { authorizer });
     const groupMembers = groupById.addResource('members');
-    groupMembers.addMethod('POST', restIntegration);
+    groupMembers.addMethod('POST', restIntegration, { authorizer });
     const groupMemberById = groupMembers.addResource('{memberUserID}');
-    groupMemberById.addMethod('DELETE', restIntegration);
+    groupMemberById.addMethod('DELETE', restIntegration, { authorizer });
 
     // CloudWatch alarms for REST API handler
     createLambdaErrorAlarm(restApiHandler, 'rest-api-handler');

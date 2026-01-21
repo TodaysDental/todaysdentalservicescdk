@@ -443,12 +443,15 @@ chimeStack.addDependency(pushNotificationsStack);
 const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommN1', {
     env,
     jwtSecret: coreStack.jwtSecretValue,
+    // REST API Authorizer - authenticates all API requests
+    authorizerFunctionArn: coreStack.authorizerFunction.functionArn,
     // Push Notifications Integration
     // Enables mobile push notifications for offline users receiving messages/tasks
     deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
     deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
     sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
 });
+communicationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 
 // Chatbot Stack - WebSocket-based dental assistant chatbot (depends on core and clinic data)
 // NOTE: Use CHATBOT_STACK_NAME constant for consistent naming and to avoid cross-stack reference issues
