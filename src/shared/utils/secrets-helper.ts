@@ -17,15 +17,15 @@
  *   const config = await getClinicConfig('dentistinnewbritain');
  */
 
-import { DynamoDBClient, GetItemCommand, QueryCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDB } from '@aws-sdk/client-dynamodb';
 import { unmarshall } from '@aws-sdk/util-dynamodb';
 
 // DynamoDB client - singleton
-let dynamoClient: DynamoDBClient | null = null;
+let dynamoClient: DynamoDB | null = null;
 
-function getDynamoClient(): DynamoDBClient {
+function getDynamoClient(): DynamoDB {
   if (!dynamoClient) {
-    dynamoClient = new DynamoDBClient({});
+    dynamoClient = new DynamoDB({});
   }
   return dynamoClient;
 }
@@ -162,12 +162,12 @@ export async function getClinicSecrets(clinicId: string): Promise<ClinicSecrets 
   }
 
   try {
-    const response = await getDynamoClient().send(new GetItemCommand({
+    const response = await getDynamoClient().getItem({
       TableName: CLINIC_SECRETS_TABLE,
       Key: {
         clinicId: { S: clinicId },
       },
-    }));
+    });
 
     if (!response.Item) {
       console.warn(`[SecretsHelper] No secrets found for clinic: ${clinicId}`);
@@ -206,9 +206,9 @@ export async function getClinicSecret(
  */
 export async function getAllClinicSecrets(): Promise<ClinicSecrets[]> {
   try {
-    const response = await getDynamoClient().send(new ScanCommand({
+    const response = await getDynamoClient().scan({
       TableName: CLINIC_SECRETS_TABLE,
-    }));
+    });
 
     if (!response.Items) {
       return [];
@@ -248,13 +248,13 @@ export async function getGlobalSecret(secretId: string, secretType: string): Pro
   }
 
   try {
-    const response = await getDynamoClient().send(new GetItemCommand({
+    const response = await getDynamoClient().getItem({
       TableName: GLOBAL_SECRETS_TABLE,
       Key: {
         secretId: { S: secretId },
         secretType: { S: secretType },
       },
-    }));
+    });
 
     if (!response.Item) {
       console.warn(`[SecretsHelper] No global secret found: ${secretId}/${secretType}`);
@@ -278,13 +278,13 @@ export async function getGlobalSecret(secretId: string, secretType: string): Pro
  */
 export async function getGlobalSecretEntry(secretId: string, secretType: string): Promise<GlobalSecretEntry | null> {
   try {
-    const response = await getDynamoClient().send(new GetItemCommand({
+    const response = await getDynamoClient().getItem({
       TableName: GLOBAL_SECRETS_TABLE,
       Key: {
         secretId: { S: secretId },
         secretType: { S: secretType },
       },
-    }));
+    });
 
     if (!response.Item) {
       return null;
@@ -304,13 +304,13 @@ export async function getGlobalSecretEntry(secretId: string, secretType: string)
  */
 export async function getGlobalSecretsByType(secretId: string): Promise<GlobalSecretEntry[]> {
   try {
-    const response = await getDynamoClient().send(new QueryCommand({
+    const response = await getDynamoClient().query({
       TableName: GLOBAL_SECRETS_TABLE,
       KeyConditionExpression: 'secretId = :sid',
       ExpressionAttributeValues: {
         ':sid': { S: secretId },
       },
-    }));
+    });
 
     if (!response.Items) {
       return [];
@@ -340,12 +340,12 @@ export async function getClinicConfig(clinicId: string): Promise<ClinicConfig | 
   }
 
   try {
-    const response = await getDynamoClient().send(new GetItemCommand({
+    const response = await getDynamoClient().getItem({
       TableName: CLINIC_CONFIG_TABLE,
       Key: {
         clinicId: { S: clinicId },
       },
-    }));
+    });
 
     if (!response.Item) {
       console.warn(`[SecretsHelper] No config found for clinic: ${clinicId}`);
@@ -367,9 +367,9 @@ export async function getClinicConfig(clinicId: string): Promise<ClinicConfig | 
  */
 export async function getAllClinicConfigs(): Promise<ClinicConfig[]> {
   try {
-    const response = await getDynamoClient().send(new ScanCommand({
+    const response = await getDynamoClient().scan({
       TableName: CLINIC_CONFIG_TABLE,
-    }));
+    });
 
     if (!response.Items) {
       return [];
@@ -396,14 +396,14 @@ export async function getAllClinicConfigs(): Promise<ClinicConfig[]> {
  */
 export async function getClinicConfigsByState(state: string): Promise<ClinicConfig[]> {
   try {
-    const response = await getDynamoClient().send(new QueryCommand({
+    const response = await getDynamoClient().query({
       TableName: CLINIC_CONFIG_TABLE,
       IndexName: 'byState',
       KeyConditionExpression: 'clinicState = :state',
       ExpressionAttributeValues: {
         ':state': { S: state },
       },
-    }));
+    });
 
     if (!response.Items) {
       return [];

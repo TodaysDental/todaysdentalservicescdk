@@ -83,7 +83,7 @@
 //         dataTraceEnabled: false,
 //       },
 //     });
-    
+
 //     // Add Gateway responses for errors (like in your admin-stack.ts)
 //     const corsErrorHeaders = getCorsErrorHeaders();
 //     new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
@@ -188,7 +188,7 @@
 //     // /leave/{leaveId}/approve
 //     const leaveApproveRes = leaveIdRes.addResource('approve');
 //     leaveApproveRes.addMethod('PUT', lambdaIntegration, authOptions); // Approve leave (Admin only)
-    
+
 //     // /leave/{leaveId}/deny
 //     const leaveDenyRes = leaveIdRes.addResource('deny');
 //     leaveDenyRes.addMethod('PUT', lambdaIntegration, authOptions); // Deny leave (Admin only)
@@ -403,7 +403,7 @@ export class HrStack extends Stack {
         dataTraceEnabled: false,
       },
     });
-    
+
     // Add Gateway responses for errors (like in your admin-stack.ts)
     const corsErrorHeaders = getCorsErrorHeaders();
     new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
@@ -422,7 +422,7 @@ export class HrStack extends Stack {
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
     const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
-    
+
     // Create authorizer for this stack's API
     this.authorizer = new apigw.RequestAuthorizer(this, 'HrAuthorizer', {
       handler: authorizerFn,
@@ -474,7 +474,7 @@ export class HrStack extends Stack {
     // Grant Lambda permissions
     this.shiftsTable.grantReadWriteData(this.hrFn);
     this.leaveTable.grantReadWriteData(this.hrFn);
-    
+
     // Grant WRITE permission to Audit table (for logging)
     // Grant READ permission for audit query endpoints (admin only)
     this.auditTable.grantReadWriteData(this.hrFn);
@@ -510,7 +510,7 @@ export class HrStack extends Stack {
       actions: [
         'ses:SendEmail', // This is the required SESv2 send action
       ],
-      resources: ['*'], 
+      resources: ['*'],
     }));
     // --- END UPDATED ---
 
@@ -556,6 +556,10 @@ export class HrStack extends Stack {
     const shiftRejectRes = shiftIdRes.addResource('reject');
     shiftRejectRes.addMethod('PUT', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Reject shift (Staff only)
 
+    // /shifts/sync - Sync shift statuses from Open Dental clock events (Admin only)
+    const shiftSyncRes = shiftsRes.addResource('sync');
+    shiftSyncRes.addMethod('POST', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // POST /shifts/sync
+
     // /leave
     const leaveRes = this.api.root.addResource('leave');
     leaveRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });  // Get leave requests (Admin or Staff)
@@ -568,7 +572,7 @@ export class HrStack extends Stack {
     // /leave/{leaveId}/approve
     const leaveApproveRes = leaveIdRes.addResource('approve');
     leaveApproveRes.addMethod('PUT', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Approve leave (Admin only)
-    
+
     // /leave/{leaveId}/deny
     const leaveDenyRes = leaveIdRes.addResource('deny');
     leaveDenyRes.addMethod('PUT', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Deny leave (Admin only)
@@ -576,7 +580,7 @@ export class HrStack extends Stack {
     // ========================================
     // AUDIT TRAIL ROUTES (Admin only)
     // ========================================
-    
+
     // /audit - Query audit logs with filters
     const auditRes = this.api.root.addResource('audit');
     auditRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });

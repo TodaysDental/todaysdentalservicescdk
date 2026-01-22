@@ -42,6 +42,7 @@ import { InsurancePlanSyncStack } from './stacks/insurance-plan-sync-stack';
 import { FeeScheduleSyncStack } from './stacks/fee-schedule-sync-stack';
 import { EmailStack } from './stacks/email-stack';
 import { AccountingStack } from './stacks/accounting-stack';
+import { InsuranceAutomationStack } from './stacks/insurance-automation-stack';
 import { SecretsStack } from './stacks/secrets-stack';
 import { PushNotificationsStack } from './stacks/push-notifications-stack';
 import { ConnectLexAiStack } from './stacks/connect-lex-ai-stack';
@@ -886,6 +887,21 @@ const accountingStack = new AccountingStack(app, 'TodaysDentalInsightsAccounting
 });
 accountingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 accountingStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets table for Odoo credentials
+
+// Insurance Automation Stack - Commission tracking and document processing for insurance team
+// Features: Commission tracking, Textract document processing, Note copying between patients
+const insuranceAutomationStack = new InsuranceAutomationStack(app, 'TodaysDentalInsightsInsuranceAutomationN1', {
+  env,
+  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
+  // Pass secrets table names for dynamic credential retrieval
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+});
+insuranceAutomationStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+insuranceAutomationStack.addDependency(openDentalStack); // Explicit - uses SFTP server ID
+insuranceAutomationStack.addDependency(secretsStack); // Explicit - uses secrets tables
 
 // Push Notifications Stack is instantiated earlier in the file (before ChimeStack and CommStack)
 // See the PUSH NOTIFICATIONS STACK section above
