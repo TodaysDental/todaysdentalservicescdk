@@ -893,6 +893,7 @@ accountingStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets ta
 const insuranceAutomationStack = new InsuranceAutomationStack(app, 'TodaysDentalInsightsInsuranceAutomationN1', {
   env,
   consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
+  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
   // Pass secrets table names for dynamic credential retrieval
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
   clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,

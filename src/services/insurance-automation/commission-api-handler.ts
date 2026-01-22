@@ -36,6 +36,7 @@ const doc = DynamoDBDocumentClient.from(ddb);
 const COMMISSIONS_TABLE = process.env.COMMISSIONS_TABLE || '';
 const CONFIG_TABLE = process.env.CONFIG_TABLE || '';
 const AUDIT_LOGS_TABLE = process.env.AUDIT_LOGS_TABLE || '';
+const STAFF_CLINIC_INFO_TABLE = process.env.STAFF_CLINIC_INFO_TABLE || '';
 
 // CORS helper
 function getCorsHeaders(event: APIGatewayProxyEvent) {
@@ -45,32 +46,104 @@ function getCorsHeaders(event: APIGatewayProxyEvent) {
 }
 
 // Roles that can view all commissions (not just their own)
-const ADMIN_ROLES = ['Admin', 'SuperAdmin', 'Global Super Admin'];
+const ADMIN_ROLES = ['Admin', 'SuperAdmin', 'Global Super Admin', 'GlobalSuperAdmin'];
 
 // User info from JWT token
 interface UserInfo {
   userId: string;
   userName: string;
-  clinicIds: string[];
   role: string;
   isAdmin: boolean;
+  email?: string;
 }
 
-// Parse JWT token to get user info including role
+function parseBool(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    return v === 'true' || v === '1' || v === 'yes';
+  }
+  if (typeof value === 'number') return value === 1;
+  return false;
+}
+
+function extractBearerToken(event: APIGatewayProxyEvent): string | null {
+  const authHeader = event.headers?.Authorization || event.headers?.authorization;
+  if (!authHeader || typeof authHeader !== 'string') return null;
+  const match = authHeader.trim().match(/^Bearer\s+(.+)$/i);
+  return (match ? match[1] : authHeader).trim() || null;
+}
+
+function decodeJwtPayload(token: string): Record<string, any> | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length < 2) return null;
+    const base64Url = parts[1];
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(base64Url.length / 4) * 4, '=');
+    const json = Buffer.from(base64, 'base64').toString('utf8');
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+async function resolveOpenDentalUserForClinic(email: string, clinicId: string): Promise<{ userId: string; userName?: string } | null> {
+  if (!STAFF_CLINIC_INFO_TABLE) return null;
+  const safeEmail = email.trim().toLowerCase();
+  if (!safeEmail || !clinicId) return null;
+
+  const result = await doc.send(new GetCommand({
+    TableName: STAFF_CLINIC_INFO_TABLE,
+    Key: { email: safeEmail, clinicId },
+  }));
+
+  const item: any = result.Item;
+  const userNum = item?.UserNum ?? item?.userNum;
+  const userName = item?.UserName ?? item?.userName;
+  if (userNum == null || userNum === '') return null;
+  return { userId: String(userNum), userName: typeof userName === 'string' ? userName : undefined };
+}
+
+// Parse authorizer context + (fallback) JWT to get user info
 function parseUserFromToken(event: APIGatewayProxyEvent): UserInfo | null {
   try {
-    const authContext = event.requestContext?.authorizer;
-    if (authContext) {
-      const role = authContext.role || authContext.userRole || '';
-      return {
-        userId: authContext.userId || authContext.sub,
-        userName: authContext.userName || authContext.name || 'Unknown',
-        clinicIds: authContext.clinicIds ? JSON.parse(authContext.clinicIds) : [],
-        role,
-        isAdmin: ADMIN_ROLES.includes(role),
-      };
-    }
-    return null;
+    const authContext: any = event.requestContext?.authorizer || {};
+
+    // Our shared authorizer provides: email, givenName, familyName, clinicRoles, isSuperAdmin, isGlobalSuperAdmin
+    const token = extractBearerToken(event);
+    const jwtPayload = token ? decodeJwtPayload(token) : null;
+
+    const email =
+      authContext.email ||
+      authContext.principalId ||
+      jwtPayload?.email ||
+      jwtPayload?.sub ||
+      '';
+
+    if (!email || typeof email !== 'string') return null;
+
+    const givenName = (authContext.givenName || jwtPayload?.givenName || '').toString();
+    const familyName = (authContext.familyName || jwtPayload?.familyName || '').toString();
+    const fullName = `${givenName} ${familyName}`.trim();
+
+    const isSuperAdmin = parseBool(authContext.isSuperAdmin) || parseBool(jwtPayload?.isSuperAdmin);
+    const isGlobalSuperAdmin = parseBool(authContext.isGlobalSuperAdmin) || parseBool(jwtPayload?.isGlobalSuperAdmin);
+
+    const role =
+      (isGlobalSuperAdmin ? 'Global Super Admin' : isSuperAdmin ? 'SuperAdmin' : '') ||
+      (authContext.role || authContext.userRole || jwtPayload?.role || 'User');
+
+    const isAdmin = isGlobalSuperAdmin || isSuperAdmin || ADMIN_ROLES.includes(role);
+
+    return {
+      // IMPORTANT: Insurance commissions are keyed by OpenDental UserNum.
+      // We still treat email as the authenticated identity, and map to UserNum when clinicId is provided.
+      userId: email,
+      email,
+      userName: fullName || email,
+      role,
+      isAdmin,
+    };
   } catch {
     return null;
   }
@@ -359,7 +432,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
   console.log('Insurance Commission API - Request:', {
     method: event.httpMethod,
+    resource: event.resource,
     path: event.path,
+    requestContextPath: event.requestContext?.path,
+    stage: event.requestContext?.stage,
     pathParams: event.pathParameters,
     queryParams: event.queryStringParameters,
   });
@@ -374,16 +450,30 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    const path = event.path;
+    const path = event.path || '';
+    const resource = event.resource || '';
     const method = event.httpMethod;
     const pathParams = event.pathParameters || {};
     const queryParams = event.queryStringParameters || {};
 
     // Route handling
     // GET /commissions
-    if (method === 'GET' && path === '/commissions') {
+    // NOTE: For API Gateway REST APIs behind a custom domain/base path mapping,
+    // `event.path` can include the base path and/or stage (e.g. `/insurance-automation/commissions` or `/prod/commissions`).
+    // `event.resource` is the stable, canonical route (e.g. `/commissions`) and is preferred for routing.
+    if (method === 'GET' && (resource === '/commissions' || (!resource && path.endsWith('/commissions')))) {
+      // Map authenticated email -> OpenDental UserNum when clinicId is provided.
+      // Audit sync writes commissions using OpenDental UserNum, so querying by email will return empty.
+      let effectiveUserId = user.userId;
+      if (queryParams.clinicId && user.email) {
+        const mapped = await resolveOpenDentalUserForClinic(user.email, queryParams.clinicId);
+        if (mapped?.userId) {
+          effectiveUserId = mapped.userId;
+        }
+      }
+
       const result = await getCommissionsForUser(
-        user.userId,
+        effectiveUserId,
         queryParams.clinicId,
         queryParams.startDate,
         queryParams.endDate,
@@ -399,8 +489,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // GET /commissions/{userId}
-    if (method === 'GET' && path.startsWith('/commissions/') && !path.includes('/clinic/')) {
-      const targetUserId = pathParams.userId;
+    if (
+      method === 'GET' &&
+      (resource === '/commissions/{userId}' ||
+        (!resource && /\/commissions\/[^/]+$/.test(path) && !/\/commissions\/clinic\/[^/]+$/.test(path)))
+    ) {
+      const targetUserId = pathParams.userId || path.split('/').pop();
       if (!targetUserId) {
         return {
           statusCode: 400,
@@ -438,8 +532,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // GET /commissions/clinic/{clinicId}
-    if (method === 'GET' && path.includes('/clinic/')) {
-      const clinicId = pathParams.clinicId;
+    if (
+      method === 'GET' &&
+      (resource === '/commissions/clinic/{clinicId}' || (!resource && /\/commissions\/clinic\/[^/]+$/.test(path)))
+    ) {
+      const clinicId = pathParams.clinicId || path.split('/').pop();
       if (!clinicId) {
         return {
           statusCode: 400,
@@ -476,8 +573,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // GET /config/{clinicId}
-    if (method === 'GET' && path.startsWith('/config/')) {
-      const clinicId = pathParams.clinicId;
+    if (method === 'GET' && (resource === '/config/{clinicId}' || (!resource && /\/config\/[^/]+$/.test(path)))) {
+      const clinicId = pathParams.clinicId || path.split('/').pop();
       if (!clinicId) {
         return {
           statusCode: 400,
@@ -496,8 +593,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // PUT /config/{clinicId}
-    if (method === 'PUT' && path.startsWith('/config/')) {
-      const clinicId = pathParams.clinicId;
+    if (method === 'PUT' && (resource === '/config/{clinicId}' || (!resource && /\/config\/[^/]+$/.test(path)))) {
+      const clinicId = pathParams.clinicId || path.split('/').pop();
       if (!clinicId) {
         return {
           statusCode: 400,

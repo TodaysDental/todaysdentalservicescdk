@@ -21,6 +21,8 @@ export interface InsuranceAutomationStackProps extends StackProps {
   clinicSecretsTableName?: string;
   /** ClinicConfig DynamoDB table name for clinic configuration */
   clinicConfigTableName?: string;
+  /** StaffClinicInfo DynamoDB table name for mapping authenticated email -> OpenDental UserNum */
+  staffClinicInfoTableName?: string;
   /** KMS key ARN for decrypting secrets */
   secretsEncryptionKeyArn?: string;
   /** S3 bucket for temporary document processing */
@@ -186,6 +188,7 @@ export class InsuranceAutomationStack extends Stack {
       GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
       CLINIC_SECRETS_TABLE: props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets',
       CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
+      STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName || '',
     };
 
     const commonBundlingOptions = {
@@ -271,6 +274,16 @@ export class InsuranceAutomationStack extends Stack {
     this.auditLogsTable.grantReadWriteData(this.auditSyncFn);
     this.auditLogsTable.grantReadWriteData(this.docProcessorFn);
     this.auditLogsTable.grantReadData(this.commissionApiFn);
+
+    // StaffClinicInfo lookup (email -> clinic mappings) for commissions API
+    if (props.staffClinicInfoTableName) {
+      const staffClinicInfoTable = dynamodb.Table.fromTableName(
+        this,
+        'StaffClinicInfoTableImport',
+        props.staffClinicInfoTableName
+      );
+      staffClinicInfoTable.grantReadData(this.commissionApiFn);
+    }
 
     // Grant S3 permissions for document processing
     this.docProcessingBucket.grantReadWrite(this.docProcessorFn);
