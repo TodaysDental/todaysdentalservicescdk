@@ -6,8 +6,8 @@ import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as events from 'aws-cdk-lib/aws-events'; 
-import * as targets from 'aws-cdk-lib/aws-events-targets'; 
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
@@ -15,7 +15,7 @@ import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 import clinicConfigData from '../configs/clinic-config.json';
 
 // Alias for backward compatibility
-const clinicsData = clinicConfigData; 
+const clinicsData = clinicConfigData;
 
 export interface ClinicHoursStackProps extends StackProps {
   // Authorizer imported via CloudFormation export
@@ -101,7 +101,7 @@ export class ClinicHoursStack extends Stack {
     // ========================================
 
     const corsConfig = getCdkCorsConfig();
-    
+
     this.api = new apigw.RestApi(this, 'ClinicHoursApi', {
       restApiName: 'ClinicHoursApi',
       description: 'Clinic Hours service API',
@@ -119,19 +119,19 @@ export class ClinicHoursStack extends Stack {
     });
 
     const corsErrorHeaders = getCorsErrorHeaders();
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
       restApi: this.api,
       type: apigw.ResponseType.DEFAULT_4XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault5XX', {
       restApi: this.api,
       type: apigw.ResponseType.DEFAULT_5XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseUnauthorized', {
       restApi: this.api,
       type: apigw.ResponseType.UNAUTHORIZED,
@@ -141,7 +141,7 @@ export class ClinicHoursStack extends Stack {
     // Import the authorizer function ARN
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
     const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
-    
+
     this.authorizer = new apigw.RequestAuthorizer(this, 'ClinicHoursAuthorizer', {
       handler: authorizerFn,
       identitySources: [apigw.IdentitySource.header('Authorization')],
@@ -158,12 +158,12 @@ export class ClinicHoursStack extends Stack {
     // =========================================================
     // CRUD LAMBDA FUNCTION (Updated to use merged clinicHours.ts)
     // =========================================================
-    
+
     this.hoursCrudFn = new lambdaNode.NodejsFunction(this, 'ClinicHoursCrudFn', {
       // Point to the MERGED file
-      entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'clinicHours.ts'), 
+      entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'clinicHours.ts'),
       // Use the API handler export
-      handler: 'apiHandler', 
+      handler: 'apiHandler',
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 512,
       timeout: Duration.seconds(30),
@@ -196,7 +196,7 @@ export class ClinicHoursStack extends Stack {
     }));
 
     this.hoursCrudFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: [ 'logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents' ],
+      actions: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents'],
       resources: [`arn:aws:logs:${this.region}:${this.account}:*`],
     }));
 
@@ -204,14 +204,14 @@ export class ClinicHoursStack extends Stack {
     // ================================================================
     // HOURLY SCHEDULER LAMBDA (Updated to use merged clinicHours.ts)
     // ================================================================
-    
+
     const allClinicIds = (clinicsData as any[]).map(c => c.clinicId).join(',');
 
     const hoursSchedulerFn = new lambdaNode.NodejsFunction(this, 'HoursSchedulerFn', {
       // Point to the MERGED file
-      entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'clinicHours.ts'), 
+      entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'clinicHours.ts'),
       // Use the Scheduler handler export
-      handler: 'schedulerHandler', 
+      handler: 'schedulerHandler',
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 256,
       timeout: Duration.seconds(60),
@@ -221,7 +221,7 @@ export class ClinicHoursStack extends Stack {
         minify: false,
         sourceMap: true,
         externalModules: ['@aws-sdk/*'],
-        nodeModules: ['@aws-sdk/client-dynamodb', '@aws-sdk/lib-dynamodb', 'axios'], 
+        nodeModules: ['@aws-sdk/client-dynamodb', '@aws-sdk/lib-dynamodb', 'axios'],
       },
       environment: {
         NODE_OPTIONS: '--enable-source-maps',
@@ -232,8 +232,8 @@ export class ClinicHoursStack extends Stack {
     });
     applyTags(hoursSchedulerFn, { Function: 'hours-scheduler' });
 
-    this.clinicHoursTable.grantReadWriteData(hoursSchedulerFn); 
-    
+    this.clinicHoursTable.grantReadWriteData(hoursSchedulerFn);
+
     // ========================================
     // EVENTBRIDGE RULE
     // ========================================
@@ -266,8 +266,7 @@ export class ClinicHoursStack extends Stack {
     // Legacy hours routes
     const hoursRes = this.api.root.addResource('hours');
     hoursRes.addMethod('GET', new apigw.LambdaIntegration(this.hoursCrudFn), {
-      authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.CUSTOM,
+      authorizationType: apigw.AuthorizationType.NONE,
       methodResponses: [{ statusCode: '200' }]
     });
     hoursRes.addMethod('POST', new apigw.LambdaIntegration(this.hoursCrudFn), {
@@ -278,8 +277,7 @@ export class ClinicHoursStack extends Stack {
 
     const hoursIdRes = hoursRes.addResource('{clinicId}');
     hoursIdRes.addMethod('GET', new apigw.LambdaIntegration(this.hoursCrudFn), {
-      authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.CUSTOM,
+      authorizationType: apigw.AuthorizationType.NONE,
       methodResponses: [{ statusCode: '200' }, { statusCode: '404' }]
     });
     hoursIdRes.addMethod('PUT', new apigw.LambdaIntegration(this.hoursCrudFn), {
@@ -299,8 +297,7 @@ export class ClinicHoursStack extends Stack {
     const clinicHoursRes = clinicIdRes.addResource('hours');
 
     clinicHoursRes.addMethod('GET', new apigw.LambdaIntegration(this.hoursCrudFn), {
-      authorizer: this.authorizer,
-      authorizationType: apigw.AuthorizationType.CUSTOM,
+      authorizationType: apigw.AuthorizationType.NONE,
       methodResponses: [{ statusCode: '200' }, { statusCode: '404' }]
     });
     clinicHoursRes.addMethod('PUT', new apigw.LambdaIntegration(this.hoursCrudFn), {

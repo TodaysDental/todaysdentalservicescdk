@@ -23,6 +23,8 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as crypto from 'crypto';
 import * as customResources from 'aws-cdk-lib/custom-resources';
 
 // ========================================================================
@@ -268,6 +270,7 @@ export class ConnectLexAiStack extends Stack {
 
     let asyncBedrockLambda: lambdaNode.NodejsFunction | undefined;
     let asyncResultsTable: dynamodb.Table | undefined;
+    let asyncBedrockConnectPermission: lambda.CfnPermission | undefined;
 
     if (props.useAsyncPattern) {
       // DynamoDB table for storing async results
@@ -280,9 +283,13 @@ export class ConnectLexAiStack extends Stack {
       });
       applyTags(asyncResultsTable, { Resource: 'async-results-table' });
 
+      // IMPORTANT: Keep a stable, string-based function name so we can reference it in IAM
+      // policies without creating a CFN circular dependency (Policy -> Ref Function -> Policy).
+      const asyncBedrockFunctionName = `${this.stackName}-AsyncBedrock`;
+
       // Async Bedrock Lambda
       asyncBedrockLambda = new lambdaNode.NodejsFunction(this, 'AsyncBedrockLambda', {
-        functionName: `${this.stackName}-AsyncBedrock`,
+        functionName: asyncBedrockFunctionName,
         entry: path.join(__dirname, '..', '..', 'services', 'connect', 'async-bedrock-handler.ts'),
         handler: 'handler',
         runtime: lambda.Runtime.NODEJS_20_X,
@@ -328,11 +335,29 @@ export class ConnectLexAiStack extends Stack {
         resources: ['*'],
       }));
 
+      // Allow the START path to invoke the worker invocation asynchronously (self-invocation).
+      // IMPORTANT: Avoid referencing asyncBedrockLambda.functionArn here, which can create a CFN
+      // circular dependency (Lambda -> RolePolicy -> Lambda). Use a static ARN string instead.
+      const asyncBedrockLambdaInvokeArn = Stack.of(this).formatArn({
+        service: 'lambda',
+        resource: 'function',
+        resourceName: asyncBedrockFunctionName,
+      });
+      asyncBedrockLambda.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [
+          asyncBedrockLambdaInvokeArn,
+          `${asyncBedrockLambdaInvokeArn}:*`,
+        ],
+      }));
+
       // Grant Connect permission to invoke async Lambda
       asyncBedrockLambda.addPermission('ConnectInvoke', {
         principal: new iam.ServicePrincipal('connect.amazonaws.com'),
         sourceArn: props.connectInstanceArn,
       });
+      asyncBedrockConnectPermission = asyncBedrockLambda.node.findChild('ConnectInvoke') as lambda.CfnPermission;
 
       console.log(`[ConnectLexAiStack] Async pattern enabled with 60s timeout`);
     }
@@ -368,38 +393,6 @@ export class ConnectLexAiStack extends Stack {
     });
     applyTags(this.connectFinalizerFn, { Function: 'connect-finalizer' });
 
-    // ========================================
-    // 2b. Connect Direct AI Lambda (Bedrock Runtime)
-    // ========================================
-    // Invoked directly by the Connect contact flow (InvokeLambdaFunction) after Lex ASR,
-    // while Connect handles the typing WAV prompt + response playback.
-    const connectDirectLambda = new lambdaNode.NodejsFunction(this, 'ConnectDirectLambda', {
-      functionName: `${this.stackName}-ConnectDirectLambda`,
-      entry: path.join(__dirname, '..', '..', 'services', 'connect', 'connect-direct-lambda-handler.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(30),
-      memorySize: 1024, // Increased from 512 for faster AI response times
-      environment: {
-        MODEL_ID: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
-        SYSTEM_PROMPT: 'You are a helpful AI assistant on a phone call. Keep responses concise and natural for voice conversation.',
-        // Keep Bedrock comfortably under Connect's ~8s InvokeLambdaFunction hard limit
-        CONNECT_BEDROCK_TIMEOUT_MS: '6500',
-      },
-      logRetention: logs.RetentionDays.ONE_WEEK,
-    });
-    applyTags(connectDirectLambda, { Function: 'connect-direct-lambda' });
-
-    // Grant Bedrock model invocation permissions (including inference profiles for Claude 3.5+)
-    connectDirectLambda.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
-      resources: [
-        'arn:aws:bedrock:*::foundation-model/*',
-        `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/*`,
-      ],
-    }));
-
     // Grant DynamoDB permissions
     this.connectFinalizerFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
@@ -423,22 +416,18 @@ export class ConnectLexAiStack extends Stack {
     }));
 
     // Grant Connect permission to invoke finalizer Lambda
-    const connectFinalizerPermission = this.connectFinalizerFn.addPermission('ConnectInvoke', {
+    this.connectFinalizerFn.addPermission('ConnectInvoke', {
       principal: new iam.ServicePrincipal('connect.amazonaws.com'),
       sourceArn: props.connectInstanceArn,
     });
+    const connectFinalizerPermission = this.connectFinalizerFn.node.findChild('ConnectInvoke') as lambda.CfnPermission;
 
     // Grant Connect permission to invoke Lex hook Lambda (for contact flows)
-    const lexHookConnectPermission = this.lexBedrockHookFn.addPermission('ConnectInvoke', {
+    this.lexBedrockHookFn.addPermission('ConnectInvoke', {
       principal: new iam.ServicePrincipal('connect.amazonaws.com'),
       sourceArn: props.connectInstanceArn,
     });
-
-    // Grant Connect permission to invoke the direct AI Lambda
-    connectDirectLambda.addPermission('ConnectInvoke', {
-      principal: new iam.ServicePrincipal('connect.amazonaws.com'),
-      sourceArn: props.connectInstanceArn,
-    });
+    const lexHookConnectPermission = this.lexBedrockHookFn.node.findChild('ConnectInvoke') as lambda.CfnPermission;
 
     // ========================================
     // 3. Lex V2 Bot
@@ -610,6 +599,17 @@ export class ConnectLexAiStack extends Stack {
         },
         physicalResourceId: customResources.PhysicalResourceId.of(`lex-integration-${lexBot.attrId}`),
       },
+      onDelete: {
+        service: 'Connect',
+        action: 'disassociateBot',
+        parameters: {
+          InstanceId: props.connectInstanceId,
+          LexV2Bot: {
+            AliasArn: botAliasArnForConnect,
+          },
+        },
+        ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
+      },
       policy: customResources.AwsCustomResourcePolicy.fromStatements([
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,
@@ -665,7 +665,6 @@ export class ConnectLexAiStack extends Stack {
         resources: [
           this.connectFinalizerFn.functionArn,
           this.lexBedrockHookFn.functionArn,
-          connectDirectLambda.functionArn,
         ],
       }),
     ]);
@@ -694,7 +693,7 @@ export class ConnectLexAiStack extends Stack {
     });
 
     // CRITICAL: Ensure the Lambda permission is created before trying to associate
-    finalizerIntegration.node.addDependency(this.connectFinalizerFn);
+    finalizerIntegration.node.addDependency(connectFinalizerPermission);
 
     // Associate Lex hook Lambda with Connect (for direct invocation from contact flows)
     const lexHookIntegration = new customResources.AwsCustomResource(this, 'ConnectLexHookIntegration', {
@@ -720,37 +719,9 @@ export class ConnectLexAiStack extends Stack {
     });
 
     // CRITICAL: Ensure the Lambda permission is created before trying to associate
-    lexHookIntegration.node.addDependency(this.lexBedrockHookFn);
+    lexHookIntegration.node.addDependency(lexHookConnectPermission);
     // Avoid parallel API calls to Connect
     lexHookIntegration.node.addDependency(finalizerIntegration);
-
-    // Associate Connect direct AI Lambda with Connect (for InvokeLambdaFunction blocks)
-    const connectDirectIntegration = new customResources.AwsCustomResource(this, 'ConnectDirectIntegration', {
-      onCreate: {
-        service: 'Connect',
-        action: 'associateLambdaFunction',
-        parameters: {
-          InstanceId: props.connectInstanceId,
-          FunctionArn: connectDirectLambda.functionArn,
-        },
-        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-connectdirect-integration`),
-      },
-      onDelete: {
-        service: 'Connect',
-        action: 'disassociateLambdaFunction',
-        parameters: {
-          InstanceId: props.connectInstanceId,
-          FunctionArn: connectDirectLambda.functionArn,
-        },
-        ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
-      },
-      policy: lambdaIntegrationPolicy,
-    });
-
-    // CRITICAL: Ensure the Lambda permission is created before trying to associate
-    connectDirectIntegration.node.addDependency(connectDirectLambda);
-    // Avoid parallel API calls to Connect
-    connectDirectIntegration.node.addDependency(lexHookIntegration);
 
     // Associate async Bedrock Lambda with Connect (if async pattern enabled)
     let asyncLambdaIntegration: customResources.AwsCustomResource | undefined;
@@ -797,8 +768,10 @@ export class ConnectLexAiStack extends Stack {
         ]),
       });
 
-      asyncLambdaIntegration.node.addDependency(asyncBedrockLambda);
-      asyncLambdaIntegration.node.addDependency(connectDirectIntegration);
+      // Ensure Connect can invoke the Lambda before associating it
+      asyncLambdaIntegration.node.addDependency(asyncBedrockConnectPermission || asyncBedrockLambda);
+      // Avoid parallel API calls to Connect
+      asyncLambdaIntegration.node.addDependency(lexHookIntegration);
     }
 
     // ========================================
@@ -815,7 +788,7 @@ export class ConnectLexAiStack extends Stack {
     });
 
     // Upload the keyboard sound WAV file to S3
-    new s3deploy.BucketDeployment(this, 'DeployKeyboardSound', {
+    const deployKeyboardSound = new s3deploy.BucketDeployment(this, 'DeployKeyboardSound', {
       sources: [
         s3deploy.Source.asset(path.join(__dirname, '..', '..', '..', 'assets', 'audio'), {
           exclude: ['*.mp3'], // Only include WAV files (Connect requires WAV)
@@ -824,6 +797,27 @@ export class ConnectLexAiStack extends Stack {
       destinationBucket: connectPromptsBucket,
       prune: false,
     });
+
+    // Deterministic trigger to update the prompt when the WAV bytes change
+    const keyboardWavPath = path.join(
+      __dirname,
+      '..',
+      '..',
+      '..',
+      'assets',
+      'audio',
+      'Computer-keyboard-short.wav'
+    );
+    let keyboardWavHash = 'unknown';
+    try {
+      keyboardWavHash = crypto
+        .createHash('sha256')
+        .update(fs.readFileSync(keyboardWavPath))
+        .digest('hex')
+        .slice(0, 16);
+    } catch (e) {
+      console.warn('[ConnectLexAiStack] Could not hash keyboard WAV for update trigger:', e);
+    }
 
     // Create Lambda function for keyboard prompt custom resource
     // This properly extracts PromptId from the PromptARN returned by Connect API
@@ -843,6 +837,7 @@ export class ConnectLexAiStack extends Stack {
       effect: iam.Effect.ALLOW,
       actions: [
         'connect:CreatePrompt',
+        'connect:UpdatePrompt',
         'connect:DeletePrompt',
         'connect:DescribePrompt',
         'connect:ListPrompts',
@@ -875,10 +870,12 @@ export class ConnectLexAiStack extends Stack {
         Description: 'Keyboard typing sound for AI thinking indicator',
         S3Bucket: connectPromptsBucket.bucketName,
         S3Key: 'Computer-keyboard-short.wav',
-        // Force update when bucket changes
-        UpdateTrigger: connectPromptsBucket.bucketName,
+        // Force update when WAV bytes change (ensures Connect prompt refreshes)
+        UpdateTrigger: keyboardWavHash,
       },
     });
+    // Ensure the WAV is uploaded before Connect tries to create/update the prompt
+    keyboardSoundPrompt.node.addDependency(deployKeyboardSound);
 
     // Get the PromptId from the custom resource (properly extracted from ARN)
     const keyboardPromptId = keyboardSoundPrompt.getAttString('PromptId');
@@ -987,13 +984,15 @@ export class ConnectLexAiStack extends Stack {
         LambdaFunctionArn: this.lexBedrockHookFn.functionArn,
         // Pass the prompt ID from the custom resource (PlayPrompt expects ID, not ARN)
         KeyboardPromptId: keyboardPromptId,
+        // Used by UpdateContactEventHooks (CustomerRemaining) to run a disconnect flow for finalization
+        DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
         // Force update ONLY when dependencies actually change
-        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|v6`,
+        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v7`,
       },
     });
     inboundFlow.node.addDependency(disconnectFlow);
     inboundFlow.node.addDependency(lexIntegration);
-    inboundFlow.node.addDependency(connectDirectIntegration);
+    inboundFlow.node.addDependency(lexHookIntegration);
     inboundFlow.node.addDependency(keyboardSoundPrompt);
 
     // ========================================
@@ -1047,8 +1046,9 @@ export class ConnectLexAiStack extends Stack {
           LexBotAliasArn: lexBotAliasArn,
           AsyncLambdaArn: asyncBedrockLambda.functionArn,
           KeyboardPromptId: keyboardPromptId,
+          DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
           MaxPollLoops: String(props.asyncMaxPollLoops || 20),
-          UpdateTrigger: `${lexBotAliasArn}|${asyncBedrockLambda.functionArn}|${keyboardPromptId}|v1`,
+          UpdateTrigger: `${lexBotAliasArn}|${asyncBedrockLambda.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|${props.asyncMaxPollLoops || 20}|v2`,
         },
       });
       asyncInboundFlow.node.addDependency(disconnectFlow);
@@ -1067,28 +1067,7 @@ export class ConnectLexAiStack extends Stack {
     // ========================================
     // 7. Associate Phone Number with Flow
     // ========================================
-    // Step 1: Lookup the phone number ID using the E.164 number
-    // The Connect API needs phone number ID/ARN, not the E.164 number
-    const phoneNumberLookup = new customResources.AwsCustomResource(this, 'PhoneNumberLookup', {
-      onCreate: {
-        service: 'Connect',
-        action: 'listPhoneNumbersV2',
-        parameters: {
-          TargetArn: props.connectInstanceArn,
-          PhoneNumberTypes: ['DID', 'TOLL_FREE'],
-        },
-        physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-phone-lookup`),
-      },
-      policy: customResources.AwsCustomResourcePolicy.fromStatements([
-        new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: ['connect:ListPhoneNumbersV2'],
-          resources: ['*'],
-        }),
-      ]),
-    });
-
-    // Step 2: Use a Lambda-backed custom resource to find and update the phone number
+    // Use a Lambda-backed custom resource to find and update the phone number
     // This is more reliable than trying to parse the lookup result in CloudFormation
     const phoneAssociationFn = new lambdaNode.NodejsFunction(this, 'PhoneAssociationFn', {
       functionName: `${this.stackName}-PhoneAssociation`,
@@ -1097,12 +1076,6 @@ export class ConnectLexAiStack extends Stack {
       memorySize: 256,
       handler: 'handler',
       entry: path.join(__dirname, '..', '..', 'services', 'connect', 'phone-association-handler.ts'),
-      environment: {
-        CONNECT_INSTANCE_ARN: props.connectInstanceArn,
-        PHONE_NUMBER: props.connectAiPhoneNumber,
-        // Get the contact flow ARN from the active custom resource (sync or async)
-        CONTACT_FLOW_ARN: activeInboundFlow.getAttString('ContactFlowArn'),
-      },
       logRetention: logs.RetentionDays.ONE_WEEK,
     });
 
@@ -1110,8 +1083,6 @@ export class ConnectLexAiStack extends Stack {
       effect: iam.Effect.ALLOW,
       actions: [
         'connect:ListPhoneNumbersV2',
-        'connect:UpdatePhoneNumber',
-        'connect:DescribePhoneNumber',
         'connect:AssociatePhoneNumberContactFlow',
         'connect:DisassociatePhoneNumberContactFlow',
       ],
@@ -1130,8 +1101,6 @@ export class ConnectLexAiStack extends Stack {
         InstanceArn: props.connectInstanceArn,
         PhoneNumber: props.connectAiPhoneNumber,
         ContactFlowArn: activeInboundFlow.getAttString('ContactFlowArn'),
-        // Force update when flow changes
-        FlowVersion: Date.now().toString(),
       },
     });
     phoneNumberAssociation.node.addDependency(activeInboundFlow);

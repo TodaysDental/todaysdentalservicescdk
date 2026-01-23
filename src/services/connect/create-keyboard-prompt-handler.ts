@@ -11,6 +11,7 @@
 import {
   ConnectClient,
   CreatePromptCommand,
+  UpdatePromptCommand,
   DeletePromptCommand,
   ListPromptsCommand,
   DuplicateResourceException,
@@ -132,20 +133,42 @@ export const handler = async (
     switch (event.RequestType) {
       case 'Create':
       case 'Update': {
+        const desiredS3Uri = `s3://${props.S3Bucket}/${props.S3Key}`;
+
         // Step 1: Check if prompt already exists
         console.log(`Checking for existing prompt "${props.PromptName}"...`);
         const existingPrompt = await findExistingPrompt(props.InstanceId, props.PromptName);
         
         if (existingPrompt) {
           console.log(`Found existing prompt: ${existingPrompt.promptArn}`);
-          console.log(`Returning existing PromptId: ${existingPrompt.promptId}`);
-          
-          // Return the existing prompt's info
+          console.log(`Updating existing prompt PromptId: ${existingPrompt.promptId}`);
+
+          // Step 2: Upload audio to S3 if URL is provided (optional path)
+          if (props.AudioFileUrl) {
+            await uploadAudioToS3(
+              props.AudioFileUrl,
+              props.S3Bucket,
+              props.S3Key
+            );
+          }
+
+          // Step 3: Update prompt (forces Connect to refresh the prompt audio)
+          const updateResult = await connectClient.send(new UpdatePromptCommand({
+            InstanceId: props.InstanceId,
+            PromptId: existingPrompt.promptId,
+            Name: props.PromptName,
+            Description: props.Description,
+            S3Uri: desiredS3Uri,
+          }));
+
+          const promptArn = updateResult.PromptARN || existingPrompt.promptArn;
+          const promptId = updateResult.PromptId || existingPrompt.promptId;
+
           return {
-            PhysicalResourceId: existingPrompt.promptId,
+            PhysicalResourceId: promptId,
             Data: {
-              PromptId: existingPrompt.promptId,
-              PromptArn: existingPrompt.promptArn,
+              PromptId: promptId,
+              PromptArn: promptArn,
             },
           };
         }
@@ -167,7 +190,7 @@ export const handler = async (
             InstanceId: props.InstanceId,
             Name: props.PromptName,
             Description: props.Description,
-            S3Uri: `s3://${props.S3Bucket}/${props.S3Key}`,
+            S3Uri: desiredS3Uri,
           }));
 
           if (!createResult.PromptARN) {

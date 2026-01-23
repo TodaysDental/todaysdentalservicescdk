@@ -33,6 +33,7 @@ interface ContactFlowEvent {
     LexBotAliasArn: string;
     AsyncLambdaArn: string;
     KeyboardPromptId: string;
+    DisconnectFlowArn: string;
     // Maximum number of poll loops (default 15 = ~30 seconds with 2s waits)
     MaxPollLoops?: string;
   };
@@ -90,6 +91,7 @@ export const handler = async (event: ContactFlowEvent): Promise<any> => {
       lexBotAliasArn: props.LexBotAliasArn,
       asyncLambdaArn: props.AsyncLambdaArn,
       keyboardPromptId: props.KeyboardPromptId,
+      disconnectFlowArn: props.DisconnectFlowArn,
       maxPollLoops: parseInt(props.MaxPollLoops || '15', 10),
     });
 
@@ -187,9 +189,10 @@ function buildAsyncContactFlowContent(params: {
   lexBotAliasArn: string;
   asyncLambdaArn: string;
   keyboardPromptId: string;
+  disconnectFlowArn: string;
   maxPollLoops: number;
 }): any {
-  const { lexBotAliasArn, asyncLambdaArn, keyboardPromptId } = params;
+  const { lexBotAliasArn, asyncLambdaArn, keyboardPromptId, disconnectFlowArn, maxPollLoops } = params;
 
   return {
     Version: '2019-10-30',
@@ -199,14 +202,16 @@ function buildAsyncContactFlowContent(params: {
       ActionMetadata: {
         'welcome-message': { position: { x: 160, y: 20 } },
         'set-contact-attrs': { position: { x: 360, y: 20 } },
-        'lex-asr': { position: { x: 560, y: 20 } },
-        'start-async': { position: { x: 760, y: 20 } },
-        'store-request-id': { position: { x: 960, y: 20 } },
-        'typing-sound': { position: { x: 1160, y: 20 } },
-        'poll-result': { position: { x: 1360, y: 20 } },
-        'speak-ai': { position: { x: 1560, y: 20 } },
-        'timeout-message': { position: { x: 1360, y: 140 } },
-        'disconnect-action': { position: { x: 1760, y: 20 } },
+        'set-disconnect-flow': { position: { x: 560, y: 20 } },
+        'lex-asr': { position: { x: 760, y: 20 } },
+        'start-async': { position: { x: 960, y: 20 } },
+        'store-request-id': { position: { x: 1160, y: 20 } },
+        'typing-sound': { position: { x: 1360, y: 20 } },
+        'poll-result': { position: { x: 1560, y: 20 } },
+        'check-status': { position: { x: 1760, y: 20 } },
+        'speak-ai': { position: { x: 1960, y: 20 } },
+        'timeout-message': { position: { x: 1560, y: 160 } },
+        'disconnect-action': { position: { x: 2160, y: 20 } },
       },
     },
     Actions: [
@@ -234,12 +239,28 @@ function buildAsyncContactFlowContent(params: {
           },
         },
         Transitions: {
-          NextAction: 'lex-asr',
+          NextAction: 'set-disconnect-flow',
           Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
         },
       },
 
-      // 3) Lex ASR: captures speech, stores in session attributes
+      // 3) Set disconnect flow (CustomerRemaining hook) so Connect runs our finalizer flow
+      // when the disconnect event occurs (e.g., for post-contact processing).
+      {
+        Identifier: 'set-disconnect-flow',
+        Type: 'UpdateContactEventHooks',
+        Parameters: {
+          EventHooks: {
+            CustomerRemaining: disconnectFlowArn,
+          },
+        },
+        Transitions: {
+          NextAction: 'lex-asr',
+          Errors: [{ NextAction: 'lex-asr', ErrorType: 'NoMatchingError' }], // fail open
+        },
+      },
+
+      // 4) Lex ASR: captures speech, stores in session attributes
       {
         Identifier: 'lex-asr',
         Type: 'ConnectParticipantWithLexBot',
@@ -262,7 +283,7 @@ function buildAsyncContactFlowContent(params: {
         },
       },
 
-      // 4) Start async Lambda - kicks off background processing, returns requestId
+      // 5) Start async Lambda - stores requestId and spawns background Bedrock processing
       {
         Identifier: 'start-async',
         Type: 'InvokeLambdaFunction',
@@ -283,7 +304,7 @@ function buildAsyncContactFlowContent(params: {
         },
       },
 
-      // 5) Store request ID from start Lambda response
+      // 6) Store request ID from start Lambda response
       {
         Identifier: 'store-request-id',
         Type: 'UpdateContactAttributes',
@@ -298,7 +319,7 @@ function buildAsyncContactFlowContent(params: {
         },
       },
 
-      // 6) Play keyboard typing sound while processing
+      // 7) Play keyboard typing sound while processing
       {
         Identifier: 'typing-sound',
         Type: 'MessageParticipant',
@@ -311,9 +332,7 @@ function buildAsyncContactFlowContent(params: {
         },
       },
 
-      // 7) Poll for result - this Lambda internally polls DynamoDB and returns
-      //    aiResponse with either the actual response or a "still thinking" message.
-      //    The Lambda also sets continuePolling='true'/'false' to control looping.
+      // 8) Poll for result - must be fast. Connect handles looping/typing prompt.
       {
         Identifier: 'poll-result',
         Type: 'InvokeLambdaFunction',
@@ -323,16 +342,41 @@ function buildAsyncContactFlowContent(params: {
           LambdaInvocationAttributes: {
             functionType: 'poll',
             requestId: '$.Attributes.requestId',
+            maxPollLoops: String(maxPollLoops),
           },
         },
         Transitions: {
-          NextAction: 'speak-ai',
+          NextAction: 'check-status',
           Errors: [{ NextAction: 'timeout-message', ErrorType: 'NoMatchingError' }],
         },
       },
 
-      // 8) Speak AI response - this will either be the real response or
-      //    a short "still thinking" message that loops back to typing
+      // 9) If still pending, loop back to typing. Otherwise speak the AI response.
+      // We use Compare because it can branch on any JSONPath expression (including $.External.*).
+      {
+        Identifier: 'check-status',
+        Type: 'Compare',
+        Parameters: {
+          ComparisonValue: '$.External.status',
+        },
+        Transitions: {
+          // Default: treat unknown statuses as an error -> timeout branch
+          NextAction: 'timeout-message',
+          Errors: [{ NextAction: 'timeout-message', ErrorType: 'NoMatchingCondition' }],
+          Conditions: [
+            {
+              NextAction: 'typing-sound',
+              Condition: { Operator: 'Equals', Operands: ['pending'] },
+            },
+            {
+              NextAction: 'speak-ai',
+              Condition: { Operator: 'Equals', Operands: ['completed'] },
+            },
+          ],
+        },
+      },
+
+      // 10) Speak AI response returned by Lambda (only when completed)
       {
         Identifier: 'speak-ai',
         Type: 'MessageParticipant',
@@ -340,14 +384,12 @@ function buildAsyncContactFlowContent(params: {
           Text: '$.External.aiResponse',
         },
         Transitions: {
-          // Next action is set by Lambda in continueAction attribute
-          // If still polling: go to typing-sound, else go to lex-asr
-          NextAction: 'lex-asr', // Default: conversation turn complete
+          NextAction: 'lex-asr', // Conversation turn complete
           Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
         },
       },
 
-      // 9) Timeout/error message
+      // 11) Timeout/error message
       {
         Identifier: 'timeout-message',
         Type: 'MessageParticipant',
@@ -360,7 +402,7 @@ function buildAsyncContactFlowContent(params: {
         },
       },
 
-      // 10) Disconnect
+      // 12) Disconnect
       {
         Identifier: 'disconnect-action',
         Type: 'DisconnectParticipant',

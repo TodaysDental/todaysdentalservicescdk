@@ -120,7 +120,7 @@ export class NotificationsStack extends Stack {
       tableName: `${id}-EmailAnalytics`,
       timeToLiveAttribute: 'ttl', // Auto-cleanup old records after 1 year
     });
-    
+
     // GSI for querying by clinic and date
     this.emailAnalyticsTable.addGlobalSecondaryIndex({
       indexName: 'clinicId-sentAt-index',
@@ -128,7 +128,7 @@ export class NotificationsStack extends Stack {
       sortKey: { name: 'sentAt', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
-    
+
     // GSI for querying by status
     this.emailAnalyticsTable.addGlobalSecondaryIndex({
       indexName: 'clinicId-status-index',
@@ -136,7 +136,7 @@ export class NotificationsStack extends Stack {
       sortKey: { name: 'status', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
-    
+
     // GSI for querying by recipient email
     this.emailAnalyticsTable.addGlobalSecondaryIndex({
       indexName: 'recipientEmail-sentAt-index',
@@ -170,21 +170,21 @@ export class NotificationsStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
       tableName: `${id}-UnsubscribePreferences`,
     });
-    
+
     // GSI for querying by email
     this.unsubscribeTable.addGlobalSecondaryIndex({
       indexName: 'email-index',
       partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
-    
+
     // GSI for querying by phone
     this.unsubscribeTable.addGlobalSecondaryIndex({
       indexName: 'phone-index',
       partitionKey: { name: 'phone', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
-    
+
     // GSI for querying by patient ID
     this.unsubscribeTable.addGlobalSecondaryIndex({
       indexName: 'patientId-index',
@@ -220,7 +220,7 @@ export class NotificationsStack extends Stack {
     // This enables automatic unsubscribe handling via SES
     // Emails using ListManagementOptions will have unsubscribe links automatically managed
     // The {{amazonSESUnsubscribeUrl}} placeholder in emails will be replaced with the actual URL
-    
+
     // Create SES Contact List for patient email subscriptions
     const patientEmailsContactList = new ses.CfnContactList(this, 'PatientEmailsContactList', {
       contactListName: 'PatientEmails',
@@ -384,7 +384,7 @@ export class NotificationsStack extends Stack {
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
     const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
-    
+
     // Create authorizer for this stack's API
     this.authorizer = new apigw.RequestAuthorizer(this, 'NotificationsAuthorizer', {
       handler: authorizerFn,
@@ -408,25 +408,25 @@ export class NotificationsStack extends Stack {
     });
 
     const corsErrorHeaders = getCorsErrorHeaders();
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
       restApi: this.notificationsApi,
       type: apigw.ResponseType.DEFAULT_4XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault5XX', {
       restApi: this.notificationsApi,
       type: apigw.ResponseType.DEFAULT_5XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseUnauthorized', {
       restApi: this.notificationsApi,
       type: apigw.ResponseType.UNAUTHORIZED,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseAccessDenied', {
       restApi: this.notificationsApi,
       type: apigw.ResponseType.ACCESS_DENIED,
@@ -491,13 +491,13 @@ export class NotificationsStack extends Stack {
     }
 
     // Grant SES and SMS permissions
-    this.notifyFn.addToRolePolicy(new iam.PolicyStatement({ 
-      actions: ['ses:SendEmail', 'ses:SendRawEmail'], 
-      resources: ['*'] 
+    this.notifyFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:SendEmail', 'ses:SendRawEmail'],
+      resources: ['*']
     }));
-    this.notifyFn.addToRolePolicy(new iam.PolicyStatement({ 
-      actions: ['sms-voice:SendTextMessage'], 
-      resources: ['*'] 
+    this.notifyFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['sms-voice:SendTextMessage'],
+      resources: ['*']
     }));
 
     // Grant read access to templates table
@@ -597,17 +597,17 @@ export class NotificationsStack extends Stack {
               PatNum: { type: apigw.JsonSchemaType.STRING },
               FName: { type: apigw.JsonSchemaType.STRING },
               LName: { type: apigw.JsonSchemaType.STRING },
-              Email: { 
+              Email: {
                 type: apigw.JsonSchemaType.STRING,
                 pattern: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$'
               },
-              phone: { 
+              phone: {
                 type: apigw.JsonSchemaType.STRING,
                 pattern: '^\\+?[1-9]\\d{9,14}$'
               },
-              notificationTypes: { 
+              notificationTypes: {
                 type: apigw.JsonSchemaType.ARRAY,
-                items: { 
+                items: {
                   type: apigw.JsonSchemaType.STRING,
                   enum: ['EMAIL', 'SMS']
                 },
@@ -742,7 +742,7 @@ export class NotificationsStack extends Stack {
     // GET /unsubscribe/{token} - Render unsubscribe page
     const unsubscribeResource = this.notificationsApi.root.addResource('unsubscribe');
     const unsubscribeTokenResource = unsubscribeResource.addResource('{token}');
-    
+
     unsubscribeTokenResource.addMethod('GET', unsubscribeIntegration, {
       authorizationType: apigw.AuthorizationType.NONE,
       methodResponses: [
@@ -777,7 +777,7 @@ export class NotificationsStack extends Stack {
     // Protected preferences endpoints (auth required)
     // GET /preferences - Get preferences for authenticated user
     const preferencesResource = this.notificationsApi.root.addResource('preferences');
-    
+
     preferencesResource.addMethod('GET', unsubscribeIntegration, {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
@@ -873,9 +873,30 @@ export class NotificationsStack extends Stack {
       ],
     });
 
-    // POST /email/ai/full-template - Generate AI full template design
+    // POST /email/ai/full-template - Generate AI full template design (Unlayer JSON)
     const fullTemplateResource = emailAiResource.addResource('full-template');
     fullTemplateResource.addMethod('POST', emailAiIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Access-Control-Allow-Origin': true,
+            'method.response.header.Access-Control-Allow-Headers': true,
+            'method.response.header.Access-Control-Allow-Methods': true
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' },
+        { statusCode: '500' }
+      ],
+    });
+
+    // POST /email/ai/html-template - Generate complete HTML email template
+    const htmlTemplateResource = emailAiResource.addResource('html-template');
+    htmlTemplateResource.addMethod('POST', emailAiIntegration, {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [

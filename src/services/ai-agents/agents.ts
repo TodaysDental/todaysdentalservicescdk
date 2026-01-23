@@ -33,6 +33,12 @@ import {
   UserPermissions,
 } from '../../shared/utils/permissions-helper';
 import {
+  // Channel-specific prompts
+  VOICE_SYSTEM_PROMPT,
+  VOICE_NEGATIVE_PROMPT,
+  CHAT_SYSTEM_PROMPT,
+  CHAT_NEGATIVE_PROMPT,
+  // Legacy aliases (for backward compatibility)
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_NEGATIVE_PROMPT,
   buildSystemPromptWithDate,
@@ -40,7 +46,16 @@ import {
 } from '../../shared/prompts/ai-prompts';
 
 // Re-export prompts for backward compatibility
-export { DEFAULT_SYSTEM_PROMPT, DEFAULT_NEGATIVE_PROMPT, buildSystemPromptWithDate };
+export {
+  DEFAULT_SYSTEM_PROMPT,
+  DEFAULT_NEGATIVE_PROMPT,
+  buildSystemPromptWithDate,
+  // Also export channel-specific prompts
+  VOICE_SYSTEM_PROMPT,
+  VOICE_NEGATIVE_PROMPT,
+  CHAT_SYSTEM_PROMPT,
+  CHAT_NEGATIVE_PROMPT,
+};
 
 // ========================================================================
 // CLIENTS
@@ -2418,8 +2433,14 @@ async function listAgents(event: APIGatewayProxyEvent, userPerms: UserPermission
     body: JSON.stringify({
       agents,
       totalCount: agents.length,
+      // Legacy prompts (backward compatibility)
       defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT,
       defaultNegativePrompt: DEFAULT_NEGATIVE_PROMPT,
+      // Channel-specific prompts for voice and chat
+      voiceSystemPrompt: VOICE_SYSTEM_PROMPT,
+      voiceNegativePrompt: VOICE_NEGATIVE_PROMPT,
+      chatSystemPrompt: CHAT_SYSTEM_PROMPT,
+      chatNegativePrompt: CHAT_NEGATIVE_PROMPT,
     }),
   };
 }
@@ -2501,9 +2522,16 @@ async function createAgent(event: APIGatewayProxyEvent, userPerms: UserPermissio
   const createdBy = getUserDisplayName(userPerms);
   const internalAgentId = uuidv4();
 
+  // Determine channel type based on agent configuration
+  // Voice-enabled agents get VOICE prompts optimized for phone calls
+  // All other agents (website chat, etc.) get CHAT prompts optimized for text
+  const isVoiceAgent = body.isVoiceEnabled === true;
+  const defaultSystem = isVoiceAgent ? VOICE_SYSTEM_PROMPT : CHAT_SYSTEM_PROMPT;
+  const defaultNegative = isVoiceAgent ? VOICE_NEGATIVE_PROMPT : CHAT_NEGATIVE_PROMPT;
+
   // Build instruction from 3-level prompt system
-  const systemPrompt = body.systemPrompt || DEFAULT_SYSTEM_PROMPT;
-  const negativePrompt = body.negativePrompt || DEFAULT_NEGATIVE_PROMPT;
+  const systemPrompt = body.systemPrompt || defaultSystem;
+  const negativePrompt = body.negativePrompt || defaultNegative;
   const userPrompt = body.userPrompt || '';
 
   const fullInstruction = [

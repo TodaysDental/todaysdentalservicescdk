@@ -9,12 +9,12 @@ import {
   hasModulePermission,
   UserPermissions,
 } from '../../shared/utils/permissions-helper';
-import { 
-  getClinicConfig, 
-  getClinicSecrets, 
+import {
+  getClinicConfig,
+  getClinicSecrets,
   getAllClinicConfigs,
-  ClinicConfig, 
-  ClinicSecrets 
+  ClinicConfig,
+  ClinicSecrets
 } from '../../shared/utils/secrets-helper';
 
 // --- CONFIGURATION & CLIENTS ---
@@ -79,118 +79,118 @@ interface ClinicHoursItem {
 }
 
 interface ScheduleBlock {
-    ScheduleNum: string;
-    SchedDate: string; // e.g., "2025-11-29"
-    StartTime: string; // e.g., "07:00:00"
-    StopTime: string;  // e.g., "15:00:00"
-    [key: string]: any;
+  ScheduleNum: string;
+  SchedDate: string; // e.g., "2025-11-29"
+  StartTime: string; // e.g., "07:00:00"
+  StopTime: string;  // e.g., "15:00:00"
+  [key: string]: any;
 }
 
 // ==========================================
 // HANDLER 1: SCHEDULER (Background Cron Job)
 // ==========================================
 export const schedulerHandler = async (): Promise<APIGatewayProxyResult> => {
-    console.log(`Starting hourly clinic hours update for ${ALL_CLINIC_IDS.length} clinics.`);
-    const { dateStart, dateEnd } = getCurrentWeekBounds();
-    console.log(`Fetching schedules from ${dateStart} (Monday) to ${dateEnd} (Saturday)`);
+  console.log(`Starting hourly clinic hours update for ${ALL_CLINIC_IDS.length} clinics.`);
+  const { dateStart, dateEnd } = getCurrentWeekBounds();
+  console.log(`Fetching schedules from ${dateStart} (Monday) to ${dateEnd} (Saturday)`);
 
-    if (ALL_CLINIC_IDS.length === 0) {
-        console.warn("No clinic IDs configured. Exiting.");
-        return { statusCode: 200, body: JSON.stringify({ message: "No clinics to process." }) };
-    }
-    
-    const daysOfWeek = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    const closedHoursDefault = { open: '', close: '', closed: true };
+  if (ALL_CLINIC_IDS.length === 0) {
+    console.warn("No clinic IDs configured. Exiting.");
+    return { statusCode: 200, body: JSON.stringify({ message: "No clinics to process." }) };
+  }
 
-    let successCount = 0;
-    let errorCount = 0;
+  const daysOfWeek = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const closedHoursDefault = { open: '', close: '', closed: true };
 
-    for (const clinicId of ALL_CLINIC_IDS) {
-        if (!clinicId) continue;
-        
-        try {
-            console.log(`Processing clinic: ${clinicId}`);
+  let successCount = 0;
+  let errorCount = 0;
 
-            // Get clinic credentials from DynamoDB
-            const creds = await getClinicCredentials(clinicId);
-            if (!creds || !creds.developerKey || !creds.customerKey) {
-                console.warn(`No OpenDental credentials found for clinic: ${clinicId}. Skipping.`);
-                errorCount++;
-                continue;
-            }
+  for (const clinicId of ALL_CLINIC_IDS) {
+    if (!clinicId) continue;
 
-            // Call OpenDental API directly with ODFHIR authentication
-            const schedulesPath = `${OPEN_DENTAL_API_BASE}/schedules?dateStart=${dateStart}&dateEnd=${dateEnd}`;
-            const response = await axios.get(`${OPEN_DENTAL_API_HOST}${schedulesPath}`, {
-                headers: {
-                    'Authorization': `ODFHIR ${creds.developerKey}/${creds.customerKey}`,
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                },
-                timeout: 30000, // 30 second timeout
-            });
-            
-            const fullWeekScheduleData: ScheduleBlock[] = response.data || []; 
+    try {
+      console.log(`Processing clinic: ${clinicId}`);
 
-            // Initialize DynamoDB item with defaults
-            let finalHoursItem: ClinicHoursItem = {
-                clinicId,
-                updatedAt: Date.now(),
-                updatedBy: 'AutomatedScheduler',
-                timeZone: creds.timeZone || 'America/New_York', 
-            };
-            
-            // Set all days to closed by default
-            daysOfWeek.forEach(day => {
-                (finalHoursItem as any)[day] = closedHoursDefault;
-            });
-            
-            if (fullWeekScheduleData.length > 0) {
-                // Group blocks by date
-                const dailyGroupedData = fullWeekScheduleData.reduce((acc, block) => {
-                    const dateKey = block.SchedDate;
-                    if (!acc[dateKey]) acc[dateKey] = [];
-                    acc[dateKey].push(block);
-                    return acc;
-                }, {} as Record<string, ScheduleBlock[]>);
+      // Get clinic credentials from DynamoDB
+      const creds = await getClinicCredentials(clinicId);
+      if (!creds || !creds.developerKey || !creds.customerKey) {
+        console.warn(`No OpenDental credentials found for clinic: ${clinicId}. Skipping.`);
+        errorCount++;
+        continue;
+      }
 
-                // Derive hours for days that have data
-                for (const date of Object.keys(dailyGroupedData)) {
-                    const dailyBlocks = dailyGroupedData[date];
-                    const { dayName, hours } = deriveDailyHours(dailyBlocks, date);
-                    
-                    if (hours) {
-                        (finalHoursItem as any)[dayName] = hours;
-                    }
-                }
-            }
-            
-            // Save to DB
-            await ddb.send(new PutCommand({
-                TableName: TABLE_NAME,
-                Item: finalHoursItem,
-            }));
+      // Call OpenDental API directly with ODFHIR authentication
+      const schedulesPath = `${OPEN_DENTAL_API_BASE}/schedules?dateStart=${dateStart}&dateEnd=${dateEnd}`;
+      const response = await axios.get(`${OPEN_DENTAL_API_HOST}${schedulesPath}`, {
+        headers: {
+          'Authorization': `ODFHIR ${creds.developerKey}/${creds.customerKey}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        timeout: 30000, // 30 second timeout
+      });
 
-            console.log(`Successfully updated clinic hours for ${clinicId}`);
-            successCount++;
+      const fullWeekScheduleData: ScheduleBlock[] = response.data || [];
 
-        } catch (error: any) {
-            errorCount++;
-            const errorDetails = error.response?.data || error.message;
-            console.error(`Failed to update clinic hours for ${clinicId}. Error:`, JSON.stringify(errorDetails));
+      // Initialize DynamoDB item with defaults
+      let finalHoursItem: ClinicHoursItem = {
+        clinicId,
+        updatedAt: Date.now(),
+        updatedBy: 'AutomatedScheduler',
+        timeZone: creds.timeZone || 'America/New_York',
+      };
+
+      // Set all days to closed by default
+      daysOfWeek.forEach(day => {
+        (finalHoursItem as any)[day] = closedHoursDefault;
+      });
+
+      if (fullWeekScheduleData.length > 0) {
+        // Group blocks by date
+        const dailyGroupedData = fullWeekScheduleData.reduce((acc, block) => {
+          const dateKey = block.SchedDate;
+          if (!acc[dateKey]) acc[dateKey] = [];
+          acc[dateKey].push(block);
+          return acc;
+        }, {} as Record<string, ScheduleBlock[]>);
+
+        // Derive hours for days that have data
+        for (const date of Object.keys(dailyGroupedData)) {
+          const dailyBlocks = dailyGroupedData[date];
+          const { dayName, hours } = deriveDailyHours(dailyBlocks, date);
+
+          if (hours) {
+            (finalHoursItem as any)[dayName] = hours;
+          }
         }
-    }
+      }
 
-    console.log(`Clinic hours update finished. Success: ${successCount}, Errors: ${errorCount}`);
-    return {
-        statusCode: 200,
-        body: JSON.stringify({ 
-            message: `Clinic hours update finished.`,
-            successCount,
-            errorCount,
-            totalClinics: ALL_CLINIC_IDS.length 
-        }),
-    };
+      // Save to DB
+      await ddb.send(new PutCommand({
+        TableName: TABLE_NAME,
+        Item: finalHoursItem,
+      }));
+
+      console.log(`Successfully updated clinic hours for ${clinicId}`);
+      successCount++;
+
+    } catch (error: any) {
+      errorCount++;
+      const errorDetails = error.response?.data || error.message;
+      console.error(`Failed to update clinic hours for ${clinicId}. Error:`, JSON.stringify(errorDetails));
+    }
+  }
+
+  console.log(`Clinic hours update finished. Success: ${successCount}, Errors: ${errorCount}`);
+  return {
+    statusCode: 200,
+    body: JSON.stringify({
+      message: `Clinic hours update finished.`,
+      successCount,
+      errorCount,
+      totalClinics: ALL_CLINIC_IDS.length
+    }),
+  };
 };
 
 // ==========================================
@@ -200,41 +200,52 @@ export const apiHandler = async (event: APIGatewayProxyEvent): Promise<APIGatewa
   if (event.httpMethod === 'OPTIONS') return ok({ ok: true }, event);
 
   try {
-    const userPerms = getUserPermissions(event);
-    if (!userPerms) return err(401, 'Unauthorized', event);
-
     const path = event.resource || '';
     const method = event.httpMethod;
     const clinicId = event.pathParameters?.clinicId;
 
-    // Permissions Checks
+    // GET requests are public (no auth required)
+    if (method === 'GET') {
+      // Handle GET routes without auth
+      if (path.endsWith('/hours') && !path.includes('/clinics/')) {
+        return listHoursPublic(event); // List all (public)
+      }
+      if (path.endsWith('/hours') && path.includes('/clinics/') && clinicId) {
+        return getHoursPublic(event, clinicId); // Get one (public)
+      }
+      if (path.endsWith('/hours/{clinicId}') && clinicId) {
+        return getHoursPublic(event, clinicId); // Get one (public)
+      }
+    }
+
+    // POST, PUT, DELETE require authentication
+    const userPerms = getUserPermissions(event);
+    if (!userPerms) return err(401, 'Unauthorized', event);
+
+    // Permissions Checks for write operations
     if (clinicId && !hasModulePermission(
-      userPerms.clinicRoles, 'Operations', method === 'GET' ? 'read' : 'write',
+      userPerms.clinicRoles, 'Operations', 'write',
       userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin, clinicId
     )) {
       return err(403, 'Permission denied', event);
     }
 
-    if (!clinicId && method !== 'GET' && !hasModulePermission(
+    if (!clinicId && !hasModulePermission(
       userPerms.clinicRoles, 'Operations', 'write',
       userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin
     )) {
       return err(403, 'Permission denied', event);
     }
 
-    // Routing Logic
-    // Support both legacy (/hours) and new (/clinics/.../hours) paths
+    // Routing Logic for write operations
     if (path.endsWith('/hours')) {
-        if (method === 'GET' && !path.includes('/clinics/')) return listHours(event, userPerms); // List all
-        if (method === 'GET' && path.includes('/clinics/')) return getHours(event, userPerms, clinicId!); // Get one
-        if (method === 'POST') return createHours(event, userPerms);
-        if (method === 'PUT') return updateHours(event, userPerms, clinicId!);
+      if (method === 'POST') return createHours(event, userPerms);
+      if (method === 'PUT') return updateHours(event, userPerms, clinicId!);
     }
-    
+
     if (path.endsWith('/hours/{clinicId}')) {
-        if (method === 'GET') return getHours(event, userPerms, clinicId!);
-        if (method === 'PUT') return updateHours(event, userPerms, clinicId!);
-        if (method === 'DELETE') return deleteHours(event, userPerms, clinicId!);
+      if (method === 'PUT') return updateHours(event, userPerms, clinicId!);
+      if (method === 'DELETE') return deleteHours(event, userPerms, clinicId!);
     }
 
     return err(404, 'not found', event);
@@ -244,53 +255,69 @@ export const apiHandler = async (event: APIGatewayProxyEvent): Promise<APIGatewa
   }
 };
 
+
+// --- PUBLIC HELPER FUNCTIONS (No Auth Required) ---
+
+async function listHoursPublic(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
+  // Public endpoint returns all clinic hours
+  const resp = await ddb.send(new ScanCommand({ TableName: TABLE_NAME, Limit: 200 }));
+  const items = resp.Items || [];
+  return ok({ items }, event);
+}
+
+async function getHoursPublic(event: APIGatewayProxyEvent, clinicId: string): Promise<APIGatewayProxyResult> {
+  const resp = await ddb.send(new GetCommand({ TableName: TABLE_NAME, Key: { clinicId } }));
+  if (!resp.Item) return err(404, 'not found', event);
+  return ok(resp.Item, event);
+}
+
 // --- CRUD HELPER FUNCTIONS ---
 
 async function listHours(event: APIGatewayProxyEvent, userPerms: UserPermissions): Promise<APIGatewayProxyResult> {
   // Logic to scan table or get specific items based on permissions
   let items: any[] = [];
   if (isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin)) {
-      const resp = await ddb.send(new ScanCommand({ TableName: TABLE_NAME, Limit: 200 }));
-      items = resp.Items || [];
+    const resp = await ddb.send(new ScanCommand({ TableName: TABLE_NAME, Limit: 200 }));
+    items = resp.Items || [];
   } else {
-      const accessibleClinics = userPerms.clinicRoles.map((cr) => cr.clinicId);
-      for (const clinicId of accessibleClinics) {
-        const clinicResp = await ddb.send(new GetCommand({ TableName: TABLE_NAME, Key: { clinicId } }));
-        if (clinicResp.Item) items.push(clinicResp.Item);
-      }
+    const accessibleClinics = userPerms.clinicRoles.map((cr) => cr.clinicId);
+    for (const clinicId of accessibleClinics) {
+      const clinicResp = await ddb.send(new GetCommand({ TableName: TABLE_NAME, Key: { clinicId } }));
+      if (clinicResp.Item) items.push(clinicResp.Item);
+    }
   }
   return ok({ items }, event);
 }
 
 async function createHours(event: APIGatewayProxyEvent, userPerms: UserPermissions): Promise<APIGatewayProxyResult> {
-    const body = parse(event.body);
-    const clinicId = String(body.clinicId || '').trim();
-    if (!clinicId) return err(400, 'clinicId required', event);
-    return saveHours(clinicId, body, userPerms, event, true);
+  const body = parse(event.body);
+  const clinicId = String(body.clinicId || '').trim();
+  if (!clinicId) return err(400, 'clinicId required', event);
+  return saveHours(clinicId, body, userPerms, event, true);
 }
 
 async function updateHours(event: APIGatewayProxyEvent, userPerms: UserPermissions, clinicId: string): Promise<APIGatewayProxyResult> {
-    const body = parse(event.body);
-    return saveHours(clinicId, body, userPerms, event, false);
+  const body = parse(event.body);
+  return saveHours(clinicId, body, userPerms, event, false);
 }
 
 async function saveHours(clinicId: string, body: any, userPerms: UserPermissions, event: APIGatewayProxyEvent, isCreate: boolean) {
-    const config = await getClinicConfig(clinicId);
-    if (!config) return err(404, 'Clinic not found', event);
+  const config = await getClinicConfig(clinicId);
+  if (!config) return err(404, 'Clinic not found', event);
 
-    const hoursData = validateHoursData(body);
-    if (!hoursData.valid) return err(400, hoursData.message, event);
+  const hoursData = validateHoursData(body);
+  if (!hoursData.valid) return err(400, hoursData.message, event);
 
-    const item: ClinicHoursItem = {
-      clinicId,
-      ...body,
-      timeZone: config.timezone || 'America/New_York',
-      updatedAt: Date.now(),
-      updatedBy: userPerms.email,
-    };
+  const item: ClinicHoursItem = {
+    clinicId,
+    ...body,
+    timeZone: config.timezone || 'America/New_York',
+    updatedAt: Date.now(),
+    updatedBy: userPerms.email,
+  };
 
-    await ddb.send(new PutCommand({ TableName: TABLE_NAME, Item: item }));
-    return ok({ clinicId, message: isCreate ? 'Created' : 'Updated' }, event);
+  await ddb.send(new PutCommand({ TableName: TABLE_NAME, Item: item }));
+  return ok({ clinicId, message: isCreate ? 'Created' : 'Updated' }, event);
 }
 
 async function getHours(event: APIGatewayProxyEvent, userPerms: UserPermissions, clinicId: string): Promise<APIGatewayProxyResult> {
@@ -307,38 +334,38 @@ async function deleteHours(event: APIGatewayProxyEvent, userPerms: UserPermissio
 // --- SHARED UTILS ---
 
 const getCurrentWeekBounds = () => {
-    const today = new Date();
-    const dayOfWeek = today.getDay(); 
-    const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1; 
-    
-    const monday = new Date(today);
-    monday.setDate(today.getDate() - diffToMonday);
-    
-    const saturday = new Date(monday);
-    saturday.setDate(monday.getDate() + 5); 
+  const today = new Date();
+  const dayOfWeek = today.getDay();
+  const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
 
-    const formatDate = (date: Date) => date.toISOString().split('T')[0];
-    return { dateStart: formatDate(monday), dateEnd: formatDate(saturday) };
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - diffToMonday);
+
+  const saturday = new Date(monday);
+  saturday.setDate(monday.getDate() + 5);
+
+  const formatDate = (date: Date) => date.toISOString().split('T')[0];
+  return { dateStart: formatDate(monday), dateEnd: formatDate(saturday) };
 };
 
 function deriveDailyHours(dailyScheduleBlocks: ScheduleBlock[], date: string): { dayName: string; hours?: { open: string; close: string; closed?: boolean } } {
-    let minOpenTime: string | null = null;
-    let maxCloseTime: string | null = null;
-    const dayName = new Date(date).toLocaleString('en-us', { weekday: 'long' }).toLowerCase();
+  let minOpenTime: string | null = null;
+  let maxCloseTime: string | null = null;
+  const dayName = new Date(date).toLocaleString('en-us', { weekday: 'long' }).toLowerCase();
 
-    for (const block of dailyScheduleBlocks) {
-        if (!block.StartTime || !block.StopTime) continue;
-        if (minOpenTime === null || block.StartTime < minOpenTime) minOpenTime = block.StartTime;
-        if (maxCloseTime === null || block.StopTime > maxCloseTime) maxCloseTime = block.StopTime;
-    }
+  for (const block of dailyScheduleBlocks) {
+    if (!block.StartTime || !block.StopTime) continue;
+    if (minOpenTime === null || block.StartTime < minOpenTime) minOpenTime = block.StartTime;
+    if (maxCloseTime === null || block.StopTime > maxCloseTime) maxCloseTime = block.StopTime;
+  }
 
-    if (minOpenTime && maxCloseTime) {
-        return {
-            dayName,
-            hours: { open: minOpenTime.substring(0, 5), close: maxCloseTime.substring(0, 5), closed: false },
-        };
-    } 
-    return { dayName, hours: { open: '', close: '', closed: true } };
+  if (minOpenTime && maxCloseTime) {
+    return {
+      dayName,
+      hours: { open: minOpenTime.substring(0, 5), close: maxCloseTime.substring(0, 5), closed: false },
+    };
+  }
+  return { dayName, hours: { open: '', close: '', closed: true } };
 }
 
 function validateHoursData(body: any): { valid: boolean; message: string } {

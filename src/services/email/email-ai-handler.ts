@@ -39,7 +39,7 @@ const CONFIG = {
   TEMPERATURE: 0.7,
 };
 
-const bedrockClient = new BedrockRuntimeClient({ 
+const bedrockClient = new BedrockRuntimeClient({
   // Uses AWS_REGION from Lambda environment automatically
   maxAttempts: 3,
 });
@@ -108,6 +108,46 @@ RESPOND WITH ONLY a JSON object in this exact format:
   "unsubscribeText": "Unsubscribe from these emails",
   "suggestedSubject": "Suggested email subject line"
 }`,
+
+  HTML_TEMPLATE: `You are an expert dental email marketing designer. Generate a COMPLETE, PRODUCTION-READY HTML email template.
+
+CRITICAL REQUIREMENTS:
+1. Generate a complete HTML email using TABLE-BASED layout (for email client compatibility)
+2. Use INLINE STYLES only (no <style> blocks, emails don't support external CSS)
+3. Include proper DOCTYPE, html, head (with meta charset, viewport, title), and body
+4. Maximum width: 650px, centered on page
+5. Use a professional, modern design with:
+   - Rounded corners (border-radius) on containers
+   - Box shadows for depth
+   - Clean typography (system fonts: Arial, Helvetica)
+   - Balanced padding and spacing
+6. Color scheme: Use dark headers (#404041 or similar), white content areas, light gray backgrounds (#f0f0f0)
+7. Include merge tags for personalization: {{patient_name}}, {{clinic_name}}, {{clinic_url}}, {{clinic_phone}}, {{clinic_address}}
+
+STRUCTURE (adapt based on email type):
+- Header section with badge/tagline and main headline
+- Hero image area (use placeholder: https://todaysdentalpartners.com/assets/email-hero.jpg)
+- Content section with personalized greeting and body paragraphs
+- Feature boxes section if applicable (e.g., financing options with Sunbit, CareCredit, Cherry)
+- CTA section with prominent button
+- Footer with clinic info
+
+FINANCING SECTION (include when relevant):
+If the email mentions payment options or financing, include a 3-column section with:
+- Sunbit: {{sunbit_link}}, logo: https://image2url.com/images/1764588068012-9d6eefb9-49ac-40f6-b35e-3c6315978a8d.jpg
+- CareCredit: {{clinic_url}}/book-appointment, logo: https://image2url.com/images/1764588048486-6240d5b5-1f96-4e12-a532-44fdf43081cd.jpg  
+- Cherry: {{cherry_link}}, logo: https://image2url.com/images/1764588097175-b5354e57-dd46-434f-94bc-c925ee153630.jpg
+
+BUTTON STYLES:
+- Primary CTA: background:#ffffff, color:#232323, padding:18px 50px, border-radius:35px, font-weight:700
+- Secondary buttons: background:#232323, color:#ffffff, padding:8px 22px, border-radius:999px
+
+RESPOND WITH ONLY a JSON object in this exact format:
+{
+  "subject": "Email subject line",
+  "preheader": "Preview text for email clients",
+  "html": "<complete HTML email code here>"
+}`,
 };
 
 // ============================================
@@ -142,6 +182,22 @@ interface FullTemplateRequest {
   promotionDetails?: string;
   customContext?: string;
   tone?: 'professional' | 'friendly' | 'urgent' | 'casual';
+  includeServices?: string[];
+}
+
+interface HtmlTemplateRequest {
+  emailType: 'welcome' | 'appointment_reminder' | 'appointment_confirmation' | 'recall' | 'promotion' | 'follow_up' | 'newsletter' | 'new_year' | 'benefits_reminder' | 'financing' | 'custom';
+  clinicName?: string;
+  clinicPhone?: string;
+  clinicAddress?: string;
+  clinicUrl?: string;
+  sunbitLink?: string;
+  cherryLink?: string;
+  heroImageUrl?: string;
+  promotionDetails?: string;
+  customContext?: string;
+  tone?: 'professional' | 'friendly' | 'urgent' | 'casual' | 'seasonal';
+  includeFinancing?: boolean;
   includeServices?: string[];
 }
 
@@ -193,6 +249,11 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return await generateFullTemplate(event, corsHeaders);
     }
 
+    // Route: POST /email/ai/html-template
+    if (method === 'POST' && path.includes('/ai/html-template')) {
+      return await generateHtmlTemplate(event, corsHeaders);
+    }
+
     return {
       statusCode: 404,
       headers: corsHeaders,
@@ -240,7 +301,7 @@ async function invokeClaudeModel(systemPrompt: string, userPrompt: string): Prom
 
   // Extract the text content from Claude's response
   const textContent = responseBody.content?.find((c: any) => c.type === 'text')?.text;
-  
+
   if (!textContent) {
     throw new Error('No text content in Claude response');
   }
@@ -271,6 +332,9 @@ const EMAIL_TYPE_CONTEXT: Record<string, string> = {
   promotion: 'Promotional email highlighting a special offer, discount, or seasonal promotion',
   follow_up: 'Follow-up email after a patient visit to check on their recovery and satisfaction',
   newsletter: 'Monthly/quarterly newsletter with dental tips, clinic updates, and health information',
+  new_year: 'New Year themed email encouraging patients to start fresh with their dental health, use their benefits, and take advantage of financing options',
+  benefits_reminder: 'Reminder email about unused dental insurance benefits that may expire at year end, encouraging patients to schedule appointments',
+  financing: 'Email highlighting flexible financing and payment options like Sunbit, CareCredit, and Cherry for dental treatments',
   custom: 'Custom email based on specific requirements',
 };
 
@@ -308,7 +372,7 @@ Generate exactly 10 compelling subject lines for this email type.`;
 
   try {
     const result = await invokeClaudeModel(SYSTEM_PROMPTS.SUBJECT_LINES, userPrompt);
-    
+
     const subjectLines = (result.subjectLines || []).map((s: SubjectLineSuggestion, index: number) => ({
       ...s,
       id: index + 1,
@@ -415,11 +479,11 @@ interface AITemplateContent {
 
 function buildUnlayerDesign(content: AITemplateContent, brandColor: string): object {
   const primaryColor = brandColor || '#2563eb';
-  
+
   // Generate unique IDs
   let counter = 1;
   const nextId = () => `u_content_${counter++}`;
-  
+
   const design = {
     counters: {
       u_column: 6,
@@ -721,7 +785,7 @@ function buildUnlayerDesign(content: AITemplateContent, brandColor: string): obj
     },
     schemaVersion: 16,
   };
-  
+
   return design;
 }
 
@@ -762,7 +826,7 @@ Generate the text content for this email. Use merge tags like {{first_name}}, {{
 
   try {
     const result = await invokeClaudeModel(SYSTEM_PROMPTS.FULL_TEMPLATE, userPrompt);
-    
+
     // Build Unlayer design from AI content
     const aiContent: AITemplateContent = {
       headerText: result.headerText || clinicName || '{{clinic_name}}',
@@ -775,7 +839,7 @@ Generate the text content for this email. Use merge tags like {{first_name}}, {{
       unsubscribeText: result.unsubscribeText || 'Unsubscribe',
       suggestedSubject: result.suggestedSubject || 'Message from your dental office',
     };
-    
+
     const design = buildUnlayerDesign(aiContent, brandColor || '#2563eb');
 
     return {
@@ -792,6 +856,109 @@ Generate the text content for this email. Use merge tags like {{first_name}}, {{
     };
   } catch (error: any) {
     console.error('[EmailAI] Error generating full template:', error);
+    return {
+      statusCode: 500,
+      headers: corsHeaders,
+      body: JSON.stringify({ success: false, error: error.message }),
+    };
+  }
+}
+
+// ============================================
+// HTML TEMPLATE GENERATION
+// ============================================
+
+async function generateHtmlTemplate(
+  event: APIGatewayProxyEvent,
+  corsHeaders: Record<string, string>
+): Promise<APIGatewayProxyResult> {
+  const body: HtmlTemplateRequest = JSON.parse(event.body || '{}');
+  const {
+    emailType,
+    clinicName,
+    clinicPhone,
+    clinicAddress,
+    clinicUrl,
+    sunbitLink,
+    cherryLink,
+    heroImageUrl,
+    promotionDetails,
+    customContext,
+    tone,
+    includeFinancing,
+    includeServices,
+  } = body;
+
+  if (!emailType) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({ success: false, error: 'emailType is required' }),
+    };
+  }
+
+  const emailContext = EMAIL_TYPE_CONTEXT[emailType] || customContext || 'General dental email';
+
+  // Build a detailed prompt with all the context
+  const userPrompt = `Generate a complete HTML email template for a dental practice:
+
+EMAIL TYPE: ${emailType}
+CONTEXT: ${emailContext}
+CLINIC NAME: ${clinicName || '{{clinic_name}}'}
+CLINIC PHONE: ${clinicPhone || '{{clinic_phone}}'}
+CLINIC ADDRESS: ${clinicAddress || '{{clinic_address}}'}
+CLINIC URL: ${clinicUrl || '{{clinic_url}}'}
+${heroImageUrl ? `HERO IMAGE URL: ${heroImageUrl}` : 'HERO IMAGE URL: https://todaysdentalpartners.com/assets/newmefamily.jpg'}
+${promotionDetails ? `PROMOTION DETAILS: ${promotionDetails}` : ''}
+${includeServices?.length ? `SERVICES TO FEATURE: ${includeServices.join(', ')}` : ''}
+${customContext ? `ADDITIONAL CONTEXT: ${customContext}` : ''}
+TONE: ${tone || 'professional'}
+
+FINANCING SECTION: ${includeFinancing !== false ? 'YES - Include financing options section' : 'NO'}
+${sunbitLink ? `SUNBIT LINK: ${sunbitLink}` : 'SUNBIT LINK: {{sunbit_link}}'}
+${cherryLink ? `CHERRY LINK: ${cherryLink}` : 'CHERRY LINK: {{cherry_link}}'}
+
+IMPORTANT DESIGN REQUIREMENTS:
+1. Use table-based layout with 650px max width
+2. All styles must be INLINE (no <style> blocks)
+3. Wrap all content in nested divs with style="font-family:inherit; font-size:inherit; line-height:inherit; color:inherit;"
+4. Header background: #404041, rounded badge for tagline
+5. Content on white background with proper padding
+6. If including financing: 3-column layout with Sunbit, CareCredit, Cherry boxes with rounded borders, logos, and Apply buttons
+7. Dark CTA section at bottom with prominent white button
+8. Use {{patient_name}} for patient personalization in greeting
+
+Generate a complete, production-ready HTML email that matches modern email marketing standards.`;
+
+  try {
+    const result = await invokeClaudeModel(SYSTEM_PROMPTS.HTML_TEMPLATE, userPrompt);
+
+    // Validate the response has the expected structure
+    if (!result.html) {
+      throw new Error('AI response missing html field');
+    }
+
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        success: true,
+        subject: result.subject || 'Message from your dental office',
+        preheader: result.preheader || '',
+        html: result.html,
+        emailType,
+        context: {
+          clinicName,
+          clinicPhone,
+          clinicAddress,
+          clinicUrl,
+          tone,
+          includeFinancing,
+        },
+      }),
+    };
+  } catch (error: any) {
+    console.error('[EmailAI] Error generating HTML template:', error);
     return {
       statusCode: 500,
       headers: corsHeaders,

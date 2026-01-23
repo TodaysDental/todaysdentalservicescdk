@@ -8,7 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 // TYPES
 // ========================================
 
-export type AuditAction = 
+export type AuditAction =
   | 'CREATE'
   | 'UPDATE'
   | 'DELETE'
@@ -17,15 +17,16 @@ export type AuditAction =
   | 'REJECT'
   | 'ACTIVATE'
   | 'DEACTIVATE'
-  | 'ROLE_CHANGE';
+  | 'ROLE_CHANGE'
+  | 'SYNC_COMPLETE';
 
-export type AuditResource = 
+export type AuditResource =
   | 'STAFF'
   | 'SHIFT'
   | 'LEAVE'
   | 'CLINIC_ROLE';
 
-export type AuditUserRole = 
+export type AuditUserRole =
   | 'SUPER_ADMIN'
   | 'ADMIN'
   | 'USER'
@@ -35,28 +36,28 @@ export interface AuditLogEntry {
   auditId: string;
   timestamp: string;
   resourceKey: string;  // "RESOURCE_TYPE#ID" for GSI
-  
+
   // Who
   userId: string;
   userName?: string;
   userRole: AuditUserRole;
-  
+
   // What
   action: AuditAction;
   resource: AuditResource;
   resourceId: string;
-  
+
   // Context
   clinicId?: string;
   ipAddress?: string;
   userAgent?: string;
-  
+
   // Changes
   before?: Record<string, any>;
   after?: Record<string, any>;
   reason?: string;
   metadata?: Record<string, any>;
-  
+
   // TTL (optional - for auto-cleanup after retention period)
   expiresAt?: number;
 }
@@ -103,7 +104,7 @@ export class AuditLogger {
   private ddb: DynamoDBDocumentClient;
   private tableName: string;
   private enabled: boolean;
-  
+
   // Retention period in seconds (7 years = ~220,752,000 seconds)
   private static readonly DEFAULT_RETENTION_SECONDS = 7 * 365 * 24 * 60 * 60;
 
@@ -125,7 +126,7 @@ export class AuditLogger {
 
     const auditId = uuidv4();
     const timestamp = new Date().toISOString();
-    
+
     const entry: AuditLogEntry = {
       auditId,
       timestamp,
@@ -152,7 +153,7 @@ export class AuditLogger {
         TableName: this.tableName,
         Item: entry,
       }));
-      
+
       console.log(`✅ Audit log created: ${params.action} ${params.resource} ${params.resourceId} by ${params.userId}`);
       return auditId;
     } catch (error) {
@@ -166,9 +167,9 @@ export class AuditLogger {
   /**
    * Query audit logs by user ID
    */
-  async queryByUser(userId: string, options?: { 
-    startDate?: string; 
-    endDate?: string; 
+  async queryByUser(userId: string, options?: {
+    startDate?: string;
+    endDate?: string;
     limit?: number;
     lastEvaluatedKey?: Record<string, any>;
   }): Promise<AuditQueryResult> {
@@ -177,7 +178,7 @@ export class AuditLogger {
     }
 
     const limit = options?.limit || 100;
-    
+
     let KeyConditionExpression = 'userId = :userId';
     const ExpressionAttributeValues: Record<string, any> = { ':userId': userId };
 
@@ -260,7 +261,7 @@ export class AuditLogger {
     }
 
     const limit = options?.limit || 100;
-    
+
     let KeyConditionExpression = 'clinicId = :clinicId';
     const ExpressionAttributeValues: Record<string, any> = { ':clinicId': clinicId };
 
@@ -303,14 +304,14 @@ export class AuditLogger {
   static getUserRole(userPerms: any): AuditUserRole {
     if (userPerms?.isGlobalSuperAdmin) return 'SUPER_ADMIN';
     if (userPerms?.isSuperAdmin) return 'SUPER_ADMIN';
-    
+
     // Check if any clinic role is admin
     const clinicRoles = userPerms?.clinicRoles || [];
-    const hasAdminRole = clinicRoles.some((cr: any) => 
-      cr.role === 'A' || cr.role === 'S' || 
+    const hasAdminRole = clinicRoles.some((cr: any) =>
+      cr.role === 'A' || cr.role === 'S' ||
       cr.role === 'ADMIN' || cr.role === 'SUPER_ADMIN'
     );
-    
+
     if (hasAdminRole) return 'ADMIN';
     return 'USER';
   }
@@ -320,8 +321,8 @@ export class AuditLogger {
    */
   static extractRequestContext(event: any): { ipAddress?: string; userAgent?: string } {
     return {
-      ipAddress: event?.requestContext?.identity?.sourceIp || 
-                 event?.headers?.['X-Forwarded-For']?.split(',')[0]?.trim(),
+      ipAddress: event?.requestContext?.identity?.sourceIp ||
+        event?.headers?.['X-Forwarded-For']?.split(',')[0]?.trim(),
       userAgent: event?.headers?.['User-Agent'] || event?.headers?.['user-agent'],
     };
   }
@@ -370,20 +371,20 @@ export class AuditLogger {
    */
   static sanitizeForAudit(data: any): any {
     if (!data || typeof data !== 'object') return data;
-    
+
     const sensitiveFields = [
-      'password', 'passwordHash', 'token', 'accessToken', 
+      'password', 'passwordHash', 'token', 'accessToken',
       'refreshToken', 'idToken', 'secret', 'apiKey',
       'ssn', 'socialSecurityNumber', 'bankAccount',
     ];
-    
+
     const sanitized = { ...data };
     for (const field of sensitiveFields) {
       if (field in sanitized) {
         sanitized[field] = '[REDACTED]';
       }
     }
-    
+
     return sanitized;
   }
 
@@ -393,23 +394,23 @@ export class AuditLogger {
   static calculateChanges(before: any, after: any): { changedFields: string[]; changes: Record<string, { from: any; to: any }> } {
     const changedFields: string[] = [];
     const changes: Record<string, { from: any; to: any }> = {};
-    
+
     if (!before || !after) {
       return { changedFields, changes };
     }
-    
+
     const allKeys = new Set([...Object.keys(before), ...Object.keys(after)]);
-    
+
     for (const key of allKeys) {
       const beforeVal = before[key];
       const afterVal = after[key];
-      
+
       if (JSON.stringify(beforeVal) !== JSON.stringify(afterVal)) {
         changedFields.push(key);
         changes[key] = { from: beforeVal, to: afterVal };
       }
     }
-    
+
     return { changedFields, changes };
   }
 }
