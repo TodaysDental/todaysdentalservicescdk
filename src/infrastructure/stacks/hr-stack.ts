@@ -617,7 +617,11 @@ export class HrStack extends Stack {
     this.authorizer = new apigw.RequestAuthorizer(this, 'HrAuthorizer', {
       handler: authorizerFn,
       identitySources: [apigw.IdentitySource.header('Authorization')],
+<<<<<<< HEAD
       resultsCacheTtl: Duration.minutes(5),
+=======
+      resultsCacheTtl: Duration.seconds(0), // Disable caching to prevent header parsing issues
+>>>>>>> fe36e325ec15559c5da6af698cb81f8b7474864f
     });
 
     // Grant API Gateway permission to invoke the authorizer Lambda
