@@ -1122,6 +1122,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const reason = event.body ? JSON.parse(event.body)?.reason : undefined;
       return rejectShift(shiftId, userPerms.email, userPerms, event, reason);
     }
+    if (method === 'PUT' && path.match(/^\/shifts\/[^\/]+\/complete$/)) {
+      const shiftId = path.split('/')[2];
+      return completeShift(shiftId, allowedClinics, userPerms, event);
+    }
 
     // --- LEAVE ---
     if (method === 'GET' && path === '/leave') {
