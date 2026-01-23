@@ -15,6 +15,7 @@ export type AuditAction =
   | 'APPROVE'
   | 'DENY'
   | 'REJECT'
+  | 'COMPLETE'
   | 'ACTIVATE'
   | 'DEACTIVATE'
   | 'ROLE_CHANGE'

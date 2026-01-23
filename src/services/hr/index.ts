@@ -1604,6 +1604,68 @@ async function rejectShift(shiftId: string, staffId: string, userPerms?: UserPer
   return httpOk({ shiftId, status: 'rejected' });
 }
 
+async function completeShift(shiftId: string, allowedClinics: Set<string>, userPerms?: UserPermissions, event?: APIGatewayProxyEvent) {
+    const { Item: shift } = await ddb.send(new GetCommand({ 
+      TableName: SHIFTS_TABLE, 
+      Key: { shiftId } 
+    }));
+    
+    if (!shift) {
+      return httpErr(404, "Shift not found");
+    }
+    
+    if (!hasClinicAccess(allowedClinics, shift.clinicId)) {
+      return httpErr(403, "Forbidden: no access to this clinic");
+    }
+    
+    // Only scheduled shifts can be completed
+    if (shift.status !== 'scheduled') {
+      return httpErr(400, `Cannot complete shift with status: ${shift.status}`);
+    }
+
+    const completedAt = new Date().toISOString();
+    const updatedShift = {
+      ...shift,
+      status: 'completed',
+      completedAt: completedAt,
+    };
+
+    await ddb.send(new UpdateCommand({
+        TableName: SHIFTS_TABLE,
+        Key: { shiftId },
+        UpdateExpression: 'set #status = :status, completedAt = :completedAt',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: { 
+          ':status': 'completed',
+          ':completedAt': completedAt,
+        }
+    }));
+
+    // --- Audit Log ---
+    if (userPerms) {
+      await auditLogger.log({
+        userId: userPerms.email,
+        userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+        userRole: AuditLogger.getUserRole(userPerms),
+        action: 'COMPLETE',
+        resource: 'SHIFT',
+        resourceId: shiftId,
+        clinicId: shift.clinicId,
+        before: { status: shift.status },
+        after: { status: 'completed', completedAt: completedAt },
+        metadata: {
+          ...AuditLogger.createShiftMetadata(updatedShift),
+          actionType: 'Shift Marked as Completed',
+          completedBy: userPerms.email,
+          completedAt: completedAt,
+        },
+        ...AuditLogger.extractRequestContext(event),
+      });
+    }
+
+    return httpOk({ shiftId, status: 'completed', message: "Shift marked as completed" });
+}
+
 // ========================================
 // SHIFT STATUS SYNC FROM CLOCK EVENTS
 // ========================================
@@ -1853,9 +1915,9 @@ async function syncShiftStatusFromClockEvents(
 /**
  * Find a matching clock event for a shift
  * Matches based on:
- * 1. Employee name (from StaffUser table) matching Open Dental employee name
- * 2. Clock event date overlapping with shift date
- * 3. Clock event time window overlapping with shift time window
+ * 1. Employee email matching shift's staff email
+ * 2. Clock event date matching shift date
+ * 3. Clock event time window overlapping with shift time window (at least 50% coverage)
  */
 function findMatchingClockEvent(
   shift: any,
@@ -1866,16 +1928,36 @@ function findMatchingClockEvent(
   const shiftEnd = new Date(shift.endTime);
   const shiftDate = shiftStart.toISOString().split('T')[0];
 
-  // Get staff name from shift (staffId is email, we need to lookup name)
-  const staffEmail = (shift.staffId || shift.email || '').toLowerCase();
+  // Get staff email from shift (primary identifier)
+  const staffEmail = (shift.staffId || shift.email || '').toLowerCase().trim();
 
-  // For matching, we'll use the shift's stored name or try to parse from email
-  // The shift should have email stored, we'll try to match by looking up in StaffUser
-  // For now, we'll try simple name matching from the email prefix
+  if (!staffEmail) {
+    console.warn(`⚠️ Shift ${shift.shiftId} has no staffId or email, cannot match`);
+    return null;
+  }
 
   for (const clockEvent of clockEvents) {
     const employee = employeeMap.get(clockEvent.EmployeeNum);
     if (!employee) continue;
+
+    // First, try to match by email (most reliable)
+    const empEmailWork = (employee.EmailWork || '').toLowerCase().trim();
+    const empEmailPersonal = (employee.EmailPersonal || '').toLowerCase().trim();
+
+    const emailMatches = staffEmail === empEmailWork || staffEmail === empEmailPersonal;
+
+    if (!emailMatches) {
+      // If no email match, try name matching as fallback
+      const empFirstName = (employee.FName || '').toLowerCase().trim();
+      const empLastName = (employee.LName || '').toLowerCase().trim();
+
+      // Extract name components from email (e.g., "john.doe@example.com" -> "john" "doe")
+      const emailPrefix = staffEmail.split('@')[0].replace(/[._-]/g, ' ');
+      const nameMatch = (emailPrefix.includes(empFirstName) && empFirstName.length > 2) ||
+                       (emailPrefix.includes(empLastName) && empLastName.length > 2);
+
+      if (!nameMatch) continue;
+    }
 
     // Check if clock event is on the same date as the shift
     const clockInTime = new Date(clockEvent.TimeDisplayed1);
@@ -1884,56 +1966,26 @@ function findMatchingClockEvent(
 
     if (clockDate !== shiftDate) continue;
 
-    // Check time overlap: at least 80% of shift time should be covered
-    // For a simpler approach: clock in should be within 2 hours of shift start,
-    // and clock out should be after shift start
+    // Check time overlap
+    // Clock out should be after shift start (staff worked during shift time)
+    if (clockOutTime <= shiftStart) continue;
+
+    // Clock in should be before shift end (staff started before shift ended)
+    if (clockInTime >= shiftEnd) continue;
+
+    // Calculate overlap duration
+    const overlapStart = Math.max(clockInTime.getTime(), shiftStart.getTime());
+    const overlapEnd = Math.min(clockOutTime.getTime(), shiftEnd.getTime());
+    const overlapDurationMs = overlapEnd - overlapStart;
+
     const shiftDurationMs = shiftEnd.getTime() - shiftStart.getTime();
-    const clockDurationMs = clockOutTime.getTime() - clockInTime.getTime();
 
-    // Clock in should be within 2 hours before or after shift start
-    const clockInDiffMs = Math.abs(clockInTime.getTime() - shiftStart.getTime());
-    const twoHoursMs = 2 * 60 * 60 * 1000;
+    // Require at least 50% overlap
+    const overlapPercentage = (overlapDurationMs / shiftDurationMs) * 100;
+    if (overlapPercentage < 50) continue;
 
-    if (clockInDiffMs > twoHoursMs) continue;
-
-    // Clock out should be at least 50% of shift duration after clock in
-    if (clockDurationMs < shiftDurationMs * 0.5) continue;
-
-    // Try to match employee name
-    // Open Dental employee: FName, LName
-    // HR shift: staffId (email), we need to compare names
-
-    const empFirstName = (employee.FName || '').toLowerCase().trim();
-    const empLastName = (employee.LName || '').toLowerCase().trim();
-    const empFullName = `${empFirstName} ${empLastName}`.trim();
-
-    // Check email matching (if employee has email fields)
-    const empEmails = [
-      employee.EmailWork,
-      employee.EmailPersonal,
-    ].filter(Boolean).map(e => e?.toLowerCase());
-
-    if (empEmails.includes(staffEmail)) {
-      console.log(`✅ Matched shift ${shift.shiftId} to employee ${empFullName} via email`);
-      return clockEvent;
-    }
-
-    // Try name-based matching: extract name from email or shift metadata
-    // This is a fallback - ideally shifts should store employee mapping
-    const emailPrefix = staffEmail.split('@')[0].replace(/[._]/g, ' ');
-    if (emailPrefix.includes(empFirstName) || emailPrefix.includes(empLastName)) {
-      console.log(`✅ Matched shift ${shift.shiftId} to employee ${empFullName} via name`);
-      return clockEvent;
-    }
-
-    // Check if shift has stored name that matches
-    if (shift.staffName) {
-      const shiftStaffName = shift.staffName.toLowerCase();
-      if (shiftStaffName.includes(empFirstName) && shiftStaffName.includes(empLastName)) {
-        console.log(`✅ Matched shift ${shift.shiftId} to employee ${empFullName} via staffName`);
-        return clockEvent;
-      }
-    }
+    console.log(`✅ Matched shift ${shift.shiftId} to employee ${employee.FName} ${employee.LName} (${overlapPercentage.toFixed(1)}% overlap)`);
+    return clockEvent;
   }
 
   return null;
@@ -2016,6 +2068,7 @@ async function createLeave(staffId: string, body: any, userPerms?: UserPermissio
   }
 
   const leaveId = uuidv4();
+  const createdAt = new Date().toISOString();
   const leaveRequest = {
     leaveId,
     staffId,
@@ -2024,6 +2077,7 @@ async function createLeave(staffId: string, body: any, userPerms?: UserPermissio
     reason,
     status: 'pending',
     clinicIds: staffClinicIds, // Store all clinics where this staff member works
+    createdAt: createdAt, // Timestamp for audit trail
   };
 
   // Store the main leave record
