@@ -71,6 +71,15 @@ ORDER BY c.CarrierName, ip.GroupName;
 
 // SQL query to find patients with matching plans but empty notes
 const MATCHING_PATIENTS_QUERY = (carrierName: string, groupName: string, groupNum: string, annualMax: number | null, isHumana: boolean) => {
+  // OpenDental query CSV can contain backslash-escaped apostrophes like: O\'REILLY
+  // If we naively replace `'` -> `''` we can produce `\''` which breaks SQL in MySQL modes
+  // where backslash escapes quotes. So we first normalize \'+ -> ' and then escape quotes.
+  const sqlEq = (v: string) =>
+    v
+      .replace(/\0/g, '')       // safety: never send null bytes
+      .replace(/\\+'/g, "'")    // normalize backslash-escaped apostrophes
+      .replace(/'/g, "''");     // standard SQL string literal escaping
+
   let query = `
 SELECT DISTINCT
     pp.PatNum,
@@ -89,9 +98,9 @@ LEFT JOIN benefit b ON b.PlanNum = ip.PlanNum
     AND b.CovCatNum = 0
     AND b.TimePeriod IN (1,2)
     AND b.CoverageLevel = 1
-WHERE c.CarrierName = '${carrierName.replace(/'/g, "''")}'
-    AND ip.GroupName = '${groupName.replace(/'/g, "''")}'
-    AND ip.GroupNum = '${groupNum.replace(/'/g, "''")}'
+WHERE c.CarrierName = '${sqlEq(carrierName)}'
+    AND ip.GroupName = '${sqlEq(groupName)}'
+    AND ip.GroupNum = '${sqlEq(groupNum)}'
     AND (ip.PlanNote IS NULL OR ip.PlanNote = '')
 `;
 
@@ -282,7 +291,9 @@ async function runQueryViaSftp(creds: ClinicCreds, query: string, queryName: str
   const apiResp = await httpRequest({ hostname: API_HOST, path: `${API_BASE}/queries`, method: 'POST', headers }, body);
 
   if (apiResp.statusCode !== 201) {
-    console.error(`[${creds.clinicId}] OpenDental API failed: ${apiResp.statusCode}`);
+    console.error(
+      `[${creds.clinicId}] OpenDental /queries failed: ${apiResp.statusCode}. Response: ${String(apiResp.body || '').slice(0, 2000)}`
+    );
     return [];
   }
 
@@ -308,31 +319,6 @@ async function runQueryViaSftp(creds: ClinicCreds, query: string, queryName: str
     });
   } catch (error: any) {
     console.error(`[${creds.clinicId}] Failed to download/parse CSV: ${error.message}`);
-    return [];
-  }
-}
-
-// Run short query via OpenDental API (returns JSON directly)
-async function runShortQuery(creds: ClinicCreds, query: string): Promise<Record<string, any>[]> {
-  const API_HOST = 'api.opendental.com';
-  const API_BASE = '/api/v1';
-
-  const headers = {
-    Authorization: `ODFHIR ${creds.developerKey}/${creds.customerKey}`,
-    'Content-Type': 'application/json',
-  };
-
-  const body = JSON.stringify({ SqlCommand: query });
-  const response = await httpRequest({ hostname: API_HOST, path: `${API_BASE}/queries/ShortQuery`, method: 'PUT', headers }, body);
-
-  if (response.statusCode !== 200) {
-    console.error(`[${creds.clinicId}] ShortQuery failed: ${response.statusCode}`);
-    return [];
-  }
-
-  try {
-    return JSON.parse(response.body);
-  } catch {
     return [];
   }
 }
@@ -403,7 +389,7 @@ async function processClinic(creds: ClinicCreds): Promise<NoteCopyResult[]> {
 
       // Find matching patients with empty notes
       const matchingQuery = MATCHING_PATIENTS_QUERY(carrierName, groupName, groupNum, annualMax, isHumana);
-      const matchingPatients = await runShortQuery(creds, matchingQuery);
+      const matchingPatients = await runQueryViaSftp(creds, matchingQuery, 'matchingpatients');
 
       console.log(`[${creds.clinicId}] Found ${matchingPatients.length} patients needing note copy`);
 

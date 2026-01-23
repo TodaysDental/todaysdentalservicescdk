@@ -20,6 +20,7 @@ import {
   DynamoDBDocumentClient,
   PutCommand,
   GetCommand,
+  UpdateCommand,
   DeleteCommand,
   QueryCommand,
 } from '@aws-sdk/lib-dynamodb';
@@ -27,6 +28,7 @@ import {
   BedrockAgentRuntimeClient,
   InvokeAgentCommand,
 } from '@aws-sdk/client-bedrock-agent-runtime';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { v4 as uuidv4 } from 'uuid';
 
 // ========================================================================
@@ -54,9 +56,17 @@ try {
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
+const lambdaClient = new LambdaClient({});
 const bedrockAgentClient = new BedrockAgentRuntimeClient({
   region: process.env.AWS_REGION || 'us-east-1',
 });
+
+// Used by the START path to spawn a separate background invocation that can run up to the Lambda timeout.
+// Defaulting to AWS_LAMBDA_FUNCTION_NAME allows "self-invocation" without extra wiring.
+const ASYNC_WORKER_FUNCTION_NAME =
+  process.env.ASYNC_WORKER_FUNCTION_NAME ||
+  process.env.AWS_LAMBDA_FUNCTION_NAME ||
+  '';
 
 // ========================================================================
 // TYPES
@@ -71,6 +81,8 @@ interface AsyncResult {
   toolsUsed?: string[];
   startedAt: string;
   completedAt?: string;
+  pollCount?: number;
+  lastPolledAt?: string;
   ttl: number;
 }
 
@@ -253,6 +265,7 @@ async function startAsync(event: any): Promise<{ requestId: string; status: stri
     contactId,
     status: 'pending',
     startedAt: now,
+    pollCount: 0,
     ttl: Math.floor(Date.now() / 1000) + RESULT_TTL_SECONDS,
   };
 
@@ -261,16 +274,46 @@ async function startAsync(event: any): Promise<{ requestId: string; status: stri
     Item: pendingResult,
   }));
 
-  // Start background processing (don't await - let Lambda continue in background)
-  // NOTE: In Lambda, the handler returns but execution continues until completion
-  processBedrockInvocation({
-    requestId,
-    contactId,
-    inputText: inputTranscript.trim(),
-    clinicId,
-  }).catch(err => {
-    console.error('[AsyncBedrock] Background processing error:', err);
-  });
+  // Spawn a separate invocation (InvocationType=Event) to do the long Bedrock work.
+  // This is the crucial piece that avoids relying on "work continues after return",
+  // which is not a safe assumption for Lambda runtimes.
+  if (!ASYNC_WORKER_FUNCTION_NAME) {
+    console.error('[AsyncBedrock] Missing ASYNC_WORKER_FUNCTION_NAME/AWS_LAMBDA_FUNCTION_NAME');
+    await updateResult(requestId, {
+      status: 'error',
+      response: "I'm sorry, the AI assistant is not available right now. Please try again.",
+      errorMessage: 'Missing ASYNC_WORKER_FUNCTION_NAME',
+    });
+    throw new Error('Missing ASYNC_WORKER_FUNCTION_NAME');
+  }
+
+  try {
+    const payload = {
+      Details: {
+        Parameters: {
+          functionType: 'process',
+          requestId,
+          contactId,
+          inputText: inputTranscript.trim(),
+          clinicId,
+        },
+      },
+    };
+
+    await lambdaClient.send(new InvokeCommand({
+      FunctionName: ASYNC_WORKER_FUNCTION_NAME,
+      InvocationType: 'Event',
+      Payload: Buffer.from(JSON.stringify(payload)),
+    }));
+  } catch (err: any) {
+    console.error('[AsyncBedrock] Failed to invoke async worker:', err);
+    await updateResult(requestId, {
+      status: 'error',
+      response: "I'm sorry, I'm having trouble right now. Please try again.",
+      errorMessage: err?.message || 'Failed to invoke async worker',
+    });
+    throw err;
+  }
 
   // Return immediately so Connect can start playing thinking sounds
   return {
@@ -293,7 +336,7 @@ async function processBedrockInvocation(params: {
   try {
     // Handle empty input
     if (!inputText) {
-      await storeResult(requestId, contactId, {
+      await updateResult(requestId, {
         status: 'completed',
         response: "I'm sorry, I didn't catch that. Could you please repeat what you said?",
       });
@@ -305,7 +348,7 @@ async function processBedrockInvocation(params: {
     const agent = await getAgentForClinic(session.clinicId);
 
     if (!agent) {
-      await storeResult(requestId, contactId, {
+      await updateResult(requestId, {
         status: 'error',
         errorMessage: `No Bedrock agent configured for clinic: ${clinicId}`,
         response: "I'm sorry, the AI assistant is not available right now. Please call back during office hours.",
@@ -360,7 +403,7 @@ async function processBedrockInvocation(params: {
       toolsUsed,
     });
 
-    await storeResult(requestId, contactId, {
+    await updateResult(requestId, {
       status: 'completed',
       response: fullResponse.trim() || "I'm sorry, I couldn't process that. How else can I help you?",
       toolsUsed: [...new Set(toolsUsed)],
@@ -369,7 +412,7 @@ async function processBedrockInvocation(params: {
   } catch (error: any) {
     console.error('[AsyncBedrock] Bedrock invocation error:', error);
 
-    await storeResult(requestId, contactId, {
+    await updateResult(requestId, {
       status: 'error',
       errorMessage: error.message || 'Unknown error',
       response: "I'm sorry, I had trouble processing that. Could you please try again?",
@@ -378,11 +421,11 @@ async function processBedrockInvocation(params: {
 }
 
 /**
- * Store the result in DynamoDB for polling
+ * Update the result in DynamoDB for polling.
+ * Uses UpdateItem so we don't clobber fields like startedAt/pollCount.
  */
-async function storeResult(
+async function updateResult(
   requestId: string,
-  contactId: string,
   result: {
     status: 'completed' | 'error';
     response?: string;
@@ -390,21 +433,32 @@ async function storeResult(
     toolsUsed?: string[];
   }
 ): Promise<void> {
-  const completedResult: AsyncResult = {
-    requestId,
-    contactId,
-    status: result.status,
-    response: result.response,
-    errorMessage: result.errorMessage,
-    toolsUsed: result.toolsUsed,
-    startedAt: new Date().toISOString(), // Will be overwritten but that's OK
-    completedAt: new Date().toISOString(),
-    ttl: Math.floor(Date.now() / 1000) + RESULT_TTL_SECONDS,
-  };
+  const now = new Date().toISOString();
+  const ttl = Math.floor(Date.now() / 1000) + RESULT_TTL_SECONDS;
 
-  await docClient.send(new PutCommand({
+  await docClient.send(new UpdateCommand({
     TableName: ASYNC_RESULTS_TABLE,
-    Item: completedResult,
+    Key: { requestId },
+    UpdateExpression: [
+      'SET #status = :status',
+      '#response = :response',
+      'completedAt = :completedAt',
+      'ttl = :ttl',
+      'errorMessage = :errorMessage',
+      'toolsUsed = :toolsUsed',
+    ].join(', '),
+    ExpressionAttributeNames: {
+      '#status': 'status',
+      '#response': 'response',
+    },
+    ExpressionAttributeValues: {
+      ':status': result.status,
+      ':response': result.response || '',
+      ':completedAt': now,
+      ':ttl': ttl,
+      ':errorMessage': result.errorMessage || '',
+      ':toolsUsed': result.toolsUsed || [],
+    },
   }));
 }
 
@@ -484,29 +538,27 @@ async function checkResult(event: any): Promise<{
 }
 
 // ========================================================================
-// POLL RESULT (long-polling - simplifies Connect flow by avoiding loops)
+// POLL RESULT (Connect loop + prompt drives the wait; Lambda should be fast)
 // ========================================================================
 
 /**
- * Called by Connect synchronously. Does internal long-polling to wait for results.
- * This simplifies the Connect flow by avoiding complex branching loops.
- * 
- * Polls DynamoDB every 500ms for up to 6 seconds, then returns:
- * - aiResponse with the actual AI response if ready
- * - aiResponse with a timeout message if still pending after 6s
+ * Called by Connect synchronously. Must be fast (< ~1s typical).
+ *
+ * This function does NOT sleep/long-poll. The Connect contact flow provides the
+ * caller experience by looping a short typing prompt while polling.
  */
 async function pollResult(event: any): Promise<{
   status: string;
-  aiResponse: string;
+  aiResponse?: string;
   ssmlResponse?: string;
 }> {
   const params = event.Details?.Parameters || {};
   const requestId = params.requestId || '';
-  
-  // Long-poll settings: 14 attempts × 500ms = 7 seconds max
-  // (Connect has 8s Lambda limit, leave 1s buffer for response serialization)
-  const MAX_POLL_ATTEMPTS = 50;
-  const POLL_INTERVAL_MS = 500;
+  const maxPollLoopsRaw = params.maxPollLoops || '';
+  const maxPollLoops = (() => {
+    const n = parseInt(String(maxPollLoopsRaw || '20'), 10);
+    return Number.isFinite(n) && n > 0 ? n : 20;
+  })();
 
   if (!requestId) {
     console.warn('[AsyncBedrock] pollResult called without requestId');
@@ -516,70 +568,130 @@ async function pollResult(event: any): Promise<{
     };
   }
 
-  console.log('[AsyncBedrock] Starting long-poll for:', { requestId });
+  // Read the record once
+  const result = await docClient.send(new GetCommand({
+    TableName: ASYNC_RESULTS_TABLE,
+    Key: { requestId },
+  }));
 
-  for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
+  if (!result.Item) {
+    // Not found yet (or expired). Keep polling a bit.
+    return { status: 'pending' };
+  }
+
+  const item = result.Item as AsyncResult;
+
+  if (item.status === 'completed') {
+    // Clean up the record (fire and forget)
+    docClient.send(new DeleteCommand({
+      TableName: ASYNC_RESULTS_TABLE,
+      Key: { requestId },
+    })).catch(() => {});
+
+    const aiResponse = item.response || '';
+    return {
+      status: 'completed',
+      aiResponse,
+      ssmlResponse: `<speak>${escapeSSML(aiResponse)}</speak>`,
+    };
+  }
+
+  if (item.status === 'error') {
+    // Clean up the record (fire and forget)
+    docClient.send(new DeleteCommand({
+      TableName: ASYNC_RESULTS_TABLE,
+      Key: { requestId },
+    })).catch(() => {});
+
+    const aiResponse = item.response || "I'm sorry, I had trouble processing that. Could you please try again?";
+    return {
+      status: 'completed',
+      aiResponse,
+      ssmlResponse: `<speak>${escapeSSML(aiResponse)}</speak>`,
+    };
+  }
+
+  // Pending: increment pollCount (best-effort). If we exceed max loops, fail closed with a message.
+  let nextPollCount = (item.pollCount ?? 0) + 1;
+  try {
+    const updated = await docClient.send(new UpdateCommand({
+      TableName: ASYNC_RESULTS_TABLE,
+      Key: { requestId },
+      UpdateExpression: 'SET lastPolledAt = :now, pollCount = if_not_exists(pollCount, :zero) + :one',
+      ConditionExpression: '#status = :pending',
+      ExpressionAttributeNames: { '#status': 'status' },
+      ExpressionAttributeValues: {
+        ':now': new Date().toISOString(),
+        ':zero': 0,
+        ':one': 1,
+        ':pending': 'pending',
+      },
+      ReturnValues: 'UPDATED_NEW',
+    }));
+    if (updated.Attributes && typeof (updated.Attributes as any).pollCount === 'number') {
+      nextPollCount = (updated.Attributes as any).pollCount;
+    }
+  } catch {
+    // Ignore conditional failures/throttles; we'll just keep polling.
+  }
+
+  if (nextPollCount >= maxPollLoops) {
+    // Avoid clobbering a just-completed response: re-check once before timing out.
     try {
-      const result = await docClient.send(new GetCommand({
+      const reread = await docClient.send(new GetCommand({
         TableName: ASYNC_RESULTS_TABLE,
         Key: { requestId },
       }));
-
-      if (result.Item) {
-        const item = result.Item as AsyncResult;
-
-        if (item.status === 'completed') {
-          console.log('[AsyncBedrock] Long-poll completed:', { 
-            requestId, 
-            attempt, 
-            responseLength: item.response?.length 
-          });
-
-          // Clean up the record (fire and forget)
-          docClient.send(new DeleteCommand({
-            TableName: ASYNC_RESULTS_TABLE,
-            Key: { requestId },
-          })).catch(() => {});
-
-          const aiResponse = item.response || '';
-          return {
-            status: 'completed',
-            aiResponse,
-            ssmlResponse: `<speak>${escapeSSML(aiResponse)}</speak>`,
-          };
-        }
-
-        if (item.status === 'error') {
-          console.warn('[AsyncBedrock] Long-poll found error:', { requestId, error: item.errorMessage });
-
-          const aiResponse = item.response || "I'm sorry, I had trouble processing that. Could you please try again?";
-          return {
-            status: 'completed',
-            aiResponse,
-            ssmlResponse: `<speak>${escapeSSML(aiResponse)}</speak>`,
-          };
-        }
+      const current = reread.Item as AsyncResult | undefined;
+      if (current && current.status === 'completed') {
+        const aiResponse = current.response || '';
+        // Clean up (fire and forget)
+        docClient.send(new DeleteCommand({
+          TableName: ASYNC_RESULTS_TABLE,
+          Key: { requestId },
+        })).catch(() => {});
+        return {
+          status: 'completed',
+          aiResponse,
+          ssmlResponse: `<speak>${escapeSSML(aiResponse)}</speak>`,
+        };
       }
-
-      // Still pending - wait before next poll (unless this is the last attempt)
-      if (attempt < MAX_POLL_ATTEMPTS - 1) {
-        await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+      if (current && current.status === 'error') {
+        const aiResponse = current.response || "I'm sorry, I had trouble processing that. Could you please try again?";
+        docClient.send(new DeleteCommand({
+          TableName: ASYNC_RESULTS_TABLE,
+          Key: { requestId },
+        })).catch(() => {});
+        return {
+          status: 'completed',
+          aiResponse,
+          ssmlResponse: `<speak>${escapeSSML(aiResponse)}</speak>`,
+        };
       }
-
-    } catch (error) {
-      console.error('[AsyncBedrock] Long-poll error:', error);
-      // Don't fail immediately - continue polling
+    } catch {
+      // Ignore and proceed with timeout handling
     }
+
+    const aiResponse = "I'm sorry — this is taking longer than expected. Could you please repeat your question?";
+    await updateResult(requestId, {
+      status: 'completed',
+      response: aiResponse,
+      errorMessage: 'Polling timeout',
+    });
+    // Clean up (fire and forget)
+    docClient.send(new DeleteCommand({
+      TableName: ASYNC_RESULTS_TABLE,
+      Key: { requestId },
+    })).catch(() => {});
+
+    return {
+      status: 'completed',
+      aiResponse,
+      ssmlResponse: `<speak>${escapeSSML(aiResponse)}</speak>`,
+    };
   }
 
-  // Timed out after MAX_POLL_ATTEMPTS
-  console.warn('[AsyncBedrock] Long-poll timed out:', { requestId, attempts: MAX_POLL_ATTEMPTS });
-  
-  return {
-    status: 'timeout',
-    aiResponse: "I'm still working on that. Let me look this up for you.",
-    ssmlResponse: '<speak>I\'m still working on that. Let me look this up for you.</speak>',
-  };
+  return { status: 'pending' };
 }
 
 // ========================================================================
@@ -610,8 +722,30 @@ export const handler = async (event: any): Promise<any> => {
       return checkResult(event);
     
     case 'poll':
-      // Long-poll - simplifies Connect flow by doing internal polling
+      // Fast poll - Connect flow loops while playing typing prompt
       return pollResult(event);
+
+    case 'process': {
+      // Background worker invocation (InvocationType=Event)
+      const params = event.Details?.Parameters || {};
+      const requestId = params.requestId || '';
+      const contactId = params.contactId || '';
+      const inputText = (params.inputText || '').toString();
+      const clinicId = params.clinicId || DEFAULT_CLINIC_ID;
+
+      if (!requestId) {
+        console.error('[AsyncBedrock] process called without requestId');
+        return { status: 'error' };
+      }
+
+      await processBedrockInvocation({
+        requestId,
+        contactId,
+        inputText: inputText.trim(),
+        clinicId,
+      });
+      return { status: 'processing_complete' };
+    }
     
     case 'start':
     default:

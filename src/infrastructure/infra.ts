@@ -841,6 +841,7 @@ const insurancePlanSyncStack = new InsurancePlanSyncStack(app, 'TodaysDentalInsi
   consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
   // Pass secrets table names for dynamic SFTP credential retrieval
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
@@ -854,6 +855,7 @@ const feeScheduleSyncStack = new FeeScheduleSyncStack(app, 'TodaysDentalInsights
   consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
   // Pass secrets table names for dynamic SFTP credential retrieval
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });

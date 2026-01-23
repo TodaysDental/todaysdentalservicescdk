@@ -52,10 +52,63 @@ const CONSOLIDATED_SFTP_HOST = process.env.CONSOLIDATED_SFTP_HOST || '';
 
 // SQL Queries for OpenDental
 const INSURANCE_EDIT_LOG_QUERY = `
-SET @StartDate = DATE_SUB(NOW(), INTERVAL 26 HOUR);
-SET @EndDate = NOW();
-
-WITH planlink AS (
+SELECT 
+    iel.InsEditLogNum,
+    DATE_FORMAT(iel.DateTStamp, '%Y-%m-%d %H:%i:%s') AS DateTStamp,
+    iel.UserNum,
+    u.UserName,
+    iel.LogType,
+    iel.FKey,
+    iel.ParentKey,
+    iel.FieldName,
+    iel.OldValue,
+    iel.NewValue,
+    iel.Description,
+    CASE 
+        WHEN iel.LogType = 0 THEN iel.FKey
+        WHEN iel.LogType = 2 THEN iel.ParentKey
+        ELSE NULL
+    END AS PlanNum,
+    CASE 
+        WHEN iel.LogType = 0 THEN c1.CarrierName
+        WHEN iel.LogType = 1 THEN c2.CarrierName
+        WHEN iel.LogType = 2 THEN c3.CarrierName
+        ELSE NULL
+    END AS CarrierName,
+    CASE 
+        WHEN iel.LogType = 0 THEN ip1.GroupName
+        WHEN iel.LogType = 2 THEN ip2.GroupName
+        ELSE NULL
+    END AS GroupName,
+    CASE 
+        WHEN iel.LogType = 0 THEN ip1.GroupNum
+        WHEN iel.LogType = 2 THEN ip2.GroupNum
+        ELSE NULL
+    END AS GroupNum,
+    pl.PatNum,
+    pl.PatientName,
+    pl.InsSubNum,
+    pl.InsSubCreatedByUserNum,
+    pl.InsSubCreatedByUserName,
+    ip.SecUserNumEntry AS PlanCreatedByUserNum,
+    planCreator.UserName AS PlanCreatedByUserName,
+    DATE_FORMAT(ip.SecDateEntry, '%Y-%m-%d') AS PlanCreatedDate
+FROM inseditlog iel
+LEFT JOIN userod u ON u.UserNum = iel.UserNum
+LEFT JOIN insplan ip1 ON ip1.PlanNum = iel.FKey AND iel.LogType = 0
+LEFT JOIN carrier c1 ON c1.CarrierNum = ip1.CarrierNum
+LEFT JOIN carrier c2 ON c2.CarrierNum = iel.FKey AND iel.LogType = 1
+LEFT JOIN insplan ip2 ON ip2.PlanNum = iel.ParentKey AND iel.LogType = 2
+LEFT JOIN carrier c3 ON c3.CarrierNum = ip2.CarrierNum
+LEFT JOIN insplan ip ON ip.PlanNum = (
+    CASE 
+        WHEN iel.LogType = 0 THEN iel.FKey
+        WHEN iel.LogType = 2 THEN iel.ParentKey
+        ELSE NULL
+    END
+)
+LEFT JOIN userod planCreator ON planCreator.UserNum = ip.SecUserNumEntry
+LEFT JOIN (
   SELECT
     t.PlanNum,
     t.PatNum,
@@ -76,100 +129,32 @@ WITH planlink AS (
   LEFT JOIN patient p ON p.PatNum = t.PatNum
   LEFT JOIN userod uo ON uo.UserNum = t.InsSubSecUserNumEntry
   WHERE t.rn = 1
-)
-
-SELECT 
-    iel.InsEditLogNum,
-    DATE_FORMAT(iel.DateTStamp, '%Y-%m-%d %H:%i:%s') AS 'DateTStamp',
-    iel.UserNum,
-    u.UserName,
-    iel.LogType,
-    iel.FKey,
-    iel.ParentKey,
-    iel.FieldName,
-    iel.OldValue,
-    iel.NewValue,
-    iel.Description,
-    CASE 
-        WHEN iel.LogType = 0 THEN iel.FKey
-        WHEN iel.LogType = 2 THEN iel.ParentKey
-        ELSE NULL
-    END AS 'PlanNum',
-    CASE 
-        WHEN iel.LogType = 0 THEN c1.CarrierName
-        WHEN iel.LogType = 1 THEN c2.CarrierName
-        WHEN iel.LogType = 2 THEN c3.CarrierName
-        ELSE NULL
-    END AS 'CarrierName',
-    CASE 
-        WHEN iel.LogType = 0 THEN ip1.GroupName
-        WHEN iel.LogType = 2 THEN ip2.GroupName
-        ELSE NULL
-    END AS 'GroupName',
-    CASE 
-        WHEN iel.LogType = 0 THEN ip1.GroupNum
-        WHEN iel.LogType = 2 THEN ip2.GroupNum
-        ELSE NULL
-    END AS 'GroupNum',
-    pl.PatNum,
-    pl.PatientName,
-    pl.InsSubNum,
-    pl.InsSubCreatedByUserNum,
-    pl.InsSubCreatedByUserName,
-    ip.SecUserNumEntry AS 'PlanCreatedByUserNum',
-    planCreator.UserName AS 'PlanCreatedByUserName',
-    DATE_FORMAT(ip.SecDateEntry, '%Y-%m-%d') AS 'PlanCreatedDate'
-FROM inseditlog iel
-LEFT JOIN userod u ON u.UserNum = iel.UserNum
-LEFT JOIN insplan ip1 ON ip1.PlanNum = iel.FKey AND iel.LogType = 0
-LEFT JOIN carrier c1 ON c1.CarrierNum = ip1.CarrierNum
-LEFT JOIN carrier c2 ON c2.CarrierNum = iel.FKey AND iel.LogType = 1
-LEFT JOIN insplan ip2 ON ip2.PlanNum = iel.ParentKey AND iel.LogType = 2
-LEFT JOIN carrier c3 ON c3.CarrierNum = ip2.CarrierNum
-LEFT JOIN insplan ip ON ip.PlanNum = (
+) pl ON pl.PlanNum = (
     CASE 
         WHEN iel.LogType = 0 THEN iel.FKey
         WHEN iel.LogType = 2 THEN iel.ParentKey
         ELSE NULL
     END
 )
-LEFT JOIN userod planCreator ON planCreator.UserNum = ip.SecUserNumEntry
-LEFT JOIN planlink pl ON pl.PlanNum = (
-    CASE 
-        WHEN iel.LogType = 0 THEN iel.FKey
-        WHEN iel.LogType = 2 THEN iel.ParentKey
-        ELSE NULL
-    END
-)
-WHERE iel.DateTStamp BETWEEN @StartDate AND @EndDate
-ORDER BY iel.DateTStamp DESC;
+WHERE iel.DateTStamp BETWEEN DATE_SUB(NOW(), INTERVAL 26 HOUR) AND NOW()
+ORDER BY iel.DateTStamp DESC
 `;
 
 const INSURANCE_DOCUMENTS_QUERY = `
-SET @StartDate = DATE_SUB(NOW(), INTERVAL 26 HOUR);
-SET @EndDate = NOW();
-SET @InsuranceFolderDefNum = (
-    SELECT DefNum 
-    FROM definition 
-    WHERE Category = 18 
-    AND UPPER(ItemName) LIKE '%INSURANCE%'
-    LIMIT 1
-);
-
 SELECT 
     d.DocNum,
-    DATE_FORMAT(d.DateCreated, '%Y-%m-%d %H:%i:%s') AS 'DateCreated',
-    DATE_FORMAT(d.DateTStamp, '%Y-%m-%d %H:%i:%s') AS 'DateTStamp',
+    DATE_FORMAT(d.DateCreated, '%Y-%m-%d %H:%i:%s') AS DateCreated,
+    DATE_FORMAT(d.DateTStamp, '%Y-%m-%d %H:%i:%s') AS DateTStamp,
     d.Description,
     d.FileName,
     d.PatNum,
-    CONCAT(p.LName, ', ', p.FName) AS 'PatientName',
-    def.ItemName AS 'FolderName',
+    CONCAT(p.LName, ', ', p.FName) AS PatientName,
+    def.ItemName AS FolderName,
     d.DocCategory,
     d.ImgType,
-    COALESCE(creator.UserName, u.UserName, 'Unknown') AS 'CreatedBy',
-    creator.UserNum AS 'CreatedByUserNum',
-    DATE_FORMAT(create_log.LogDateTime, '%Y-%m-%d %H:%i:%s') AS 'CreatedLogTime'
+    COALESCE(creator.UserName, u.UserName, 'Unknown') AS CreatedBy,
+    creator.UserNum AS CreatedByUserNum,
+    DATE_FORMAT(create_log.LogDateTime, '%Y-%m-%d %H:%i:%s') AS CreatedLogTime
 FROM document d
 LEFT JOIN patient p ON p.PatNum = d.PatNum
 LEFT JOIN definition def ON def.DefNum = d.DocCategory
@@ -181,9 +166,15 @@ LEFT JOIN (
     WHERE PermType = 202
 ) create_log ON create_log.FKey = d.DocNum AND create_log.rn = 1
 LEFT JOIN userod creator ON creator.UserNum = create_log.UserNum
-WHERE d.DocCategory = @InsuranceFolderDefNum
-    AND d.DateCreated BETWEEN @StartDate AND @EndDate
-ORDER BY d.DateCreated DESC;
+WHERE d.DocCategory = (
+    SELECT DefNum 
+    FROM definition 
+    WHERE Category = 18 
+    AND UPPER(ItemName) LIKE '%INSURANCE%'
+    LIMIT 1
+)
+    AND d.DateCreated BETWEEN DATE_SUB(NOW(), INTERVAL 26 HOUR) AND NOW()
+ORDER BY d.DateCreated DESC
 `;
 
 // Clinic credentials type
@@ -328,7 +319,14 @@ async function downloadCsv(opts: {
 }
 
 // Run OpenDental query and get results
-async function runQuery(creds: ClinicCreds, query: string, queryName: string): Promise<Record<string, string>[]> {
+interface RunQueryResult {
+  ok: boolean;
+  records: Record<string, string>[];
+  statusCode?: number;
+  error?: string;
+}
+
+async function runQuery(creds: ClinicCreds, query: string, queryName: string): Promise<RunQueryResult> {
   const API_HOST = 'api.opendental.com';
   const API_BASE = '/api/v1';
 
@@ -359,8 +357,8 @@ async function runQuery(creds: ClinicCreds, query: string, queryName: string): P
   const apiResp = await httpRequest({ hostname: API_HOST, path: `${API_BASE}/queries`, method: 'POST', headers }, body);
 
   if (apiResp.statusCode !== 201) {
-    console.error(`[${creds.clinicId}] OpenDental API failed with status ${apiResp.statusCode}: ${apiResp.body}`);
-    return [];
+    console.error(`[${creds.clinicId}] OpenDental API failed for ${queryName} with status ${apiResp.statusCode}: ${apiResp.body}`);
+    return { ok: false, records: [], statusCode: apiResp.statusCode, error: apiResp.body };
   }
 
   try {
@@ -374,7 +372,7 @@ async function runQuery(creds: ClinicCreds, query: string, queryName: string): P
     });
 
     if (csvData.trim() === 'OK' || csvData.trim() === '') {
-      return [];
+      return { ok: true, records: [] };
     }
 
     const records = parseCsv(csvData, {
@@ -384,10 +382,10 @@ async function runQuery(creds: ClinicCreds, query: string, queryName: string): P
       relax_column_count: true,
     });
 
-    return Array.isArray(records) ? records : [];
+    return { ok: true, records: Array.isArray(records) ? records : [] };
   } catch (error: any) {
-    console.error(`[${creds.clinicId}] Failed to download/parse CSV: ${error.message}`);
-    return [];
+    console.error(`[${creds.clinicId}] Failed to download/parse CSV for ${queryName}: ${error.message}`);
+    return { ok: false, records: [], error: error.message };
   }
 }
 
@@ -672,125 +670,169 @@ function determineServiceForCluster(cluster: InsuranceEditLogRow[]): {
 async function processClinic(creds: ClinicCreds): Promise<{ processed: number; credited: number; debited: number }> {
   const stats = { processed: 0, credited: 0, debited: 0 };
 
-  try {
-    // Check if automation is enabled
-    const enabled = await isAutomationEnabled(creds.clinicId);
-    if (!enabled) {
-      console.log(`[${creds.clinicId}] Insurance automation is disabled, skipping`);
-      return stats;
-    }
+  // Check if automation is enabled
+  const enabled = await isAutomationEnabled(creds.clinicId);
+  if (!enabled) {
+    console.log(`[${creds.clinicId}] Insurance automation is disabled, skipping`);
+    return stats;
+  }
 
-    // Run queries
-    const [editLogs, documents] = await Promise.all([
-      runQuery(creds, INSURANCE_EDIT_LOG_QUERY, 'inseditlog'),
-      runQuery(creds, INSURANCE_DOCUMENTS_QUERY, 'insdocs'),
-    ]);
+  // Run queries
+  const [editRes, docRes] = await Promise.all([
+    runQuery(creds, INSURANCE_EDIT_LOG_QUERY, 'inseditlog'),
+    runQuery(creds, INSURANCE_DOCUMENTS_QUERY, 'insdocs'),
+  ]);
 
-    console.log(`[${creds.clinicId}] Found ${editLogs.length} edit log entries, ${documents.length} documents`);
+  if (!editRes.ok) {
+    throw new Error(`[${creds.clinicId}] inseditlog query failed (status ${editRes.statusCode ?? 'n/a'}): ${editRes.error || 'Unknown error'}`);
+  }
+  if (!docRes.ok) {
+    throw new Error(`[${creds.clinicId}] insdocs query failed (status ${docRes.statusCode ?? 'n/a'}): ${docRes.error || 'Unknown error'}`);
+  }
 
-    if (editLogs.length === 0) {
-      return stats;
-    }
+  const editLogs = editRes.records;
+  const documents = docRes.records;
 
-    const typedLogs = (editLogs as unknown as InsuranceEditLogRow[]).filter((r) => normalizeEmpty(r.PlanNum) !== '');
-    const typedDocs = (documents as unknown as InsuranceDocumentRow[]);
+  console.log(`[${creds.clinicId}] Found ${editLogs.length} edit log entries, ${documents.length} documents`);
 
-    // Group logs by (PlanNum, UserNum) and then time-cluster to avoid paying per-field.
-    const byPlanUser = new Map<string, InsuranceEditLogRow[]>();
-    for (const row of typedLogs) {
-      const planNum = normalizeEmpty(row.PlanNum);
-      const userNum = normalizeEmpty(row.UserNum);
-      if (!planNum || !userNum) continue;
-      const key = `${planNum}#${userNum}`;
-      const list = byPlanUser.get(key) || [];
-      list.push(row);
-      byPlanUser.set(key, list);
-    }
+  if (editLogs.length === 0) {
+    return stats;
+  }
 
-    const transactions: CommissionTransaction[] = [];
+  const typedLogs = (editLogs as unknown as InsuranceEditLogRow[]).filter((r) => normalizeEmpty(r.PlanNum) !== '');
+  const typedDocs = (documents as unknown as InsuranceDocumentRow[]);
 
-    for (const [, rows] of byPlanUser) {
-      const clusters = clusterByTime(rows, 2 * 60 * 1000);
+  // Group logs by (PlanNum, UserNum) and then time-cluster to avoid paying per-field.
+  const byPlanUser = new Map<string, InsuranceEditLogRow[]>();
+  for (const row of typedLogs) {
+    const planNum = normalizeEmpty(row.PlanNum);
+    const userNum = normalizeEmpty(row.UserNum);
+    if (!planNum || !userNum) continue;
+    const key = `${planNum}#${userNum}`;
+    const list = byPlanUser.get(key) || [];
+    list.push(row);
+    byPlanUser.set(key, list);
+  }
 
-      for (const cluster of clusters) {
-        stats.processed++;
-        const first = cluster[0];
-        const service = determineServiceForCluster(cluster);
-        if (!service) continue;
+  const transactions: CommissionTransaction[] = [];
 
-        const userId = normalizeEmpty(first.UserNum) || 'unknown';
-        const userName = normalizeEmpty(first.UserName) || 'Unknown';
-        const planNum = parseInt(normalizeEmpty(first.PlanNum) || '0', 10);
-        const patNum = parseInt(normalizeEmpty(first.PatNum) || '0', 10);
-        const eventTimeIso = toIsoFromMySqlDateTime(first.DateTStamp);
-        const eventIdBase = `evt:${creds.clinicId}:${service.serviceType}:${planNum}:${userId}:${normalizeEmpty(first.InsEditLogNum)}`;
+  for (const [, rows] of byPlanUser) {
+    const clusters = clusterByTime(rows, 2 * 60 * 1000);
 
-        // Document requirement (same day). If no patient linkage, we cannot pay.
-        const docInfo = patNum ? pickBestDocumentForSameDay(typedDocs, patNum, first.DateTStamp) : null;
-        if (!docInfo) {
-          console.log(`[${creds.clinicId}] Missing same-day Insurance document for PatNum=${patNum} (${service.serviceType}), skipping credit`);
-          continue;
-        }
+    for (const cluster of clusters) {
+      stats.processed++;
+      const first = cluster[0];
+      const service = determineServiceForCluster(cluster);
+      if (!service) continue;
 
-        // Credit
-        const creditTx = createCommissionTransaction(
-          creds.clinicId,
-          userId,
-          userName,
-          service.serviceType,
-          false,
-          first,
-          eventTimeIso,
-          eventIdBase + ':CREDIT',
-          docInfo
-        );
-        // Add original creator context on credit for transparency (who will be deducted)
-        if (service.debitUserId) {
-          creditTx.originalCreatorUserId = service.debitUserId;
-          creditTx.originalCreatorUserName = service.debitUserName;
-        }
-        transactions.push(creditTx);
-        stats.credited++;
+      const userId = normalizeEmpty(first.UserNum) || 'unknown';
+      const userName = normalizeEmpty(first.UserName) || 'Unknown';
+      const planNum = parseInt(normalizeEmpty(first.PlanNum) || '0', 10);
+      const patNum = parseInt(normalizeEmpty(first.PatNum) || '0', 10);
+      const eventTimeIso = toIsoFromMySqlDateTime(first.DateTStamp);
+      const eventIdBase = `evt:${creds.clinicId}:${service.serviceType}:${planNum}:${userId}:${normalizeEmpty(first.InsEditLogNum)}`;
 
-        // Optional deduction
-        if (service.debitUserId && service.debitUserId !== userId) {
+      // Document requirement (same day). If no patient linkage, we cannot pay.
+      const docInfo = patNum ? pickBestDocumentForSameDay(typedDocs, patNum, first.DateTStamp) : null;
+      if (!docInfo) {
+        const todayDate = new Date().toISOString().slice(0, 10);
+        const actionDate = dateOnlyFromMySqlDateTime(first.DateTStamp);
+
+        // Special rule: VERIFICATION and CREATE_INSURANCE_PLAN get a -25 penalty
+        // if insurance docs are NOT uploaded on the same date.
+        // Important: don't penalize while it's still the same date (user may upload later today).
+        if (
+          (service.serviceType === 'VERIFICATION' || service.serviceType === 'CREATE_INSURANCE_PLAN') &&
+          patNum &&
+          actionDate &&
+          actionDate < todayDate
+        ) {
+          const penaltyReason =
+            service.serviceType === 'VERIFICATION'
+              ? 'Verification: insurance folder document not uploaded on the same date'
+              : 'Create insurance plan: insurance folder document not uploaded on the same date';
+
+          console.log(
+            `[${creds.clinicId}] ${service.serviceType} missing same-day Insurance document for PatNum=${patNum} on ${actionDate}. Applying -25 penalty.`
+          );
+
           const debitTx = createCommissionTransaction(
             creds.clinicId,
-            service.debitUserId,
-            service.debitUserName || 'Unknown',
+            userId,
+            userName,
             service.serviceType,
             true,
             first,
             eventTimeIso,
-            eventIdBase + `:DEBIT:${service.debitUserId}`,
+            eventIdBase + ':DEBIT:MISSING_DOC',
             undefined,
-            service.debitReason || 'Deduction applied',
-            { userId, userName }
+            penaltyReason
           );
           transactions.push(debitTx);
           stats.debited++;
+        } else {
+          console.log(
+            `[${creds.clinicId}] Missing same-day Insurance document for PatNum=${patNum} (${service.serviceType}), skipping credit`
+          );
         }
+        continue;
+      }
+
+      // Credit
+      const creditTx = createCommissionTransaction(
+        creds.clinicId,
+        userId,
+        userName,
+        service.serviceType,
+        false,
+        first,
+        eventTimeIso,
+        eventIdBase + ':CREDIT',
+        docInfo
+      );
+      // Add original creator context on credit for transparency (who will be deducted)
+      if (service.debitUserId) {
+        creditTx.originalCreatorUserId = service.debitUserId;
+        creditTx.originalCreatorUserName = service.debitUserName;
+      }
+      transactions.push(creditTx);
+      stats.credited++;
+
+      // Optional deduction
+      if (service.debitUserId && service.debitUserId !== userId) {
+        const debitTx = createCommissionTransaction(
+          creds.clinicId,
+          service.debitUserId,
+          service.debitUserName || 'Unknown',
+          service.serviceType,
+          true,
+          first,
+          eventTimeIso,
+          eventIdBase + `:DEBIT:${service.debitUserId}`,
+          undefined,
+          service.debitReason || 'Deduction applied',
+          { userId, userName }
+        );
+        transactions.push(debitTx);
+        stats.debited++;
       }
     }
+  }
 
-    // Batch write transactions
-    if (transactions.length > 0) {
-      const batchSize = 25;
-      for (let i = 0; i < transactions.length; i += batchSize) {
-        const batch = transactions.slice(i, i + batchSize);
-        await doc.send(new BatchWriteCommand({
-          RequestItems: {
-            [COMMISSIONS_TABLE]: batch.map(tx => ({
-              PutRequest: { Item: tx },
-            })),
-          },
-        }));
-      }
-      console.log(`[${creds.clinicId}] Wrote ${transactions.length} commission transactions`);
+  // Batch write transactions
+  if (transactions.length > 0) {
+    const batchSize = 25;
+    for (let i = 0; i < transactions.length; i += batchSize) {
+      const batch = transactions.slice(i, i + batchSize);
+      await doc.send(new BatchWriteCommand({
+        RequestItems: {
+          [COMMISSIONS_TABLE]: batch.map(tx => ({
+            PutRequest: { Item: tx },
+          })),
+        },
+      }));
     }
-
-  } catch (error: any) {
-    console.error(`[${creds.clinicId}] Error processing clinic:`, error.message);
+    console.log(`[${creds.clinicId}] Wrote ${transactions.length} commission transactions`);
   }
 
   return stats;
@@ -811,12 +853,12 @@ export const handler = async (event: any): Promise<any> => {
 
     // Process clinics sequentially to avoid SFTP connection limits
     for (const creds of clinicCreds) {
+      processedClinics++;
       try {
         const stats = await processClinic(creds);
         totalStats.processed += stats.processed;
         totalStats.credited += stats.credited;
         totalStats.debited += stats.debited;
-        processedClinics++;
       } catch (error: any) {
         console.error(`Failed to process clinic ${creds.clinicId}: ${error.message}`);
         totalStats.errors++;

@@ -26,6 +26,7 @@ interface ContactFlowEvent {
     LexBotAliasArn: string;
     LambdaFunctionArn: string;
     KeyboardPromptId: string;
+    DisconnectFlowArn: string;
   };
   PhysicalResourceId?: string;
 }
@@ -82,6 +83,7 @@ export const handler = async (event: ContactFlowEvent): Promise<any> => {
       lexBotAliasArn: props.LexBotAliasArn,
       lambdaFunctionArn: props.LambdaFunctionArn,
       keyboardPromptId: props.KeyboardPromptId,
+      disconnectFlowArn: props.DisconnectFlowArn,
     });
 
     // For both Create and Update, first try to find existing flow
@@ -183,8 +185,9 @@ function buildContactFlowContent(params: {
   lexBotAliasArn: string;
   lambdaFunctionArn: string;
   keyboardPromptId: string;
+  disconnectFlowArn: string;
 }): any {
-  const { lexBotAliasArn, lambdaFunctionArn, keyboardPromptId } = params;
+  const { lexBotAliasArn, lambdaFunctionArn, keyboardPromptId, disconnectFlowArn } = params;
 
   return {
     Version: '2019-10-30',
@@ -194,11 +197,12 @@ function buildContactFlowContent(params: {
       ActionMetadata: {
         'welcome-message': { position: { x: 160, y: 20 } },
         'set-contact-attrs': { position: { x: 360, y: 20 } },
-        'lex-asr': { position: { x: 560, y: 20 } },
-        'typing-once': { position: { x: 760, y: 20 } },
-        'invoke-ai': { position: { x: 960, y: 20 } },
-        'speak-ai': { position: { x: 1160, y: 20 } },
-        'disconnect-action': { position: { x: 1360, y: 20 } },
+        'set-disconnect-flow': { position: { x: 560, y: 20 } },
+        'lex-asr': { position: { x: 760, y: 20 } },
+        'typing-once': { position: { x: 960, y: 20 } },
+        'invoke-ai': { position: { x: 1160, y: 20 } },
+        'speak-ai': { position: { x: 1360, y: 20 } },
+        'disconnect-action': { position: { x: 1560, y: 20 } },
       },
     },
     Actions: [
@@ -226,12 +230,28 @@ function buildContactFlowContent(params: {
           },
         },
         Transitions: {
-          NextAction: 'lex-asr',
+          NextAction: 'set-disconnect-flow',
           Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
         },
       },
 
-      // 3) Lex ASR (single turn): Lex code hook stores transcript in session attrs
+      // 3) Set disconnect flow (CustomerRemaining hook) so Connect runs our finalizer flow
+      // when the disconnect event occurs (e.g., post-contact processing).
+      {
+        Identifier: 'set-disconnect-flow',
+        Type: 'UpdateContactEventHooks',
+        Parameters: {
+          EventHooks: {
+            CustomerRemaining: disconnectFlowArn,
+          },
+        },
+        Transitions: {
+          NextAction: 'lex-asr',
+          Errors: [{ NextAction: 'lex-asr', ErrorType: 'NoMatchingError' }], // fail open
+        },
+      },
+
+      // 4) Lex ASR (single turn): Lex code hook stores transcript in session attrs
       {
         Identifier: 'lex-asr',
         Type: 'ConnectParticipantWithLexBot',

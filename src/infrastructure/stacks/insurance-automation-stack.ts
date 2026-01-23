@@ -273,7 +273,7 @@ export class InsuranceAutomationStack extends Stack {
 
     this.auditLogsTable.grantReadWriteData(this.auditSyncFn);
     this.auditLogsTable.grantReadWriteData(this.docProcessorFn);
-    this.auditLogsTable.grantReadData(this.commissionApiFn);
+    this.auditLogsTable.grantReadWriteData(this.commissionApiFn);
 
     // StaffClinicInfo lookup (email -> clinic mappings) for commissions API
     if (props.staffClinicInfoTableName) {

@@ -13,6 +13,8 @@ export interface FeeScheduleSyncStackProps extends StackProps {
   consolidatedTransferServerId: string;
   /** GlobalSecrets DynamoDB table name for retrieving SFTP credentials */
   globalSecretsTableName?: string;
+  /** ClinicSecrets DynamoDB table name for per-clinic credentials */
+  clinicSecretsTableName?: string;
   /** ClinicConfig DynamoDB table name for clinic configuration */
   clinicConfigTableName?: string;
   /** KMS key ARN for decrypting secrets */
@@ -178,6 +180,7 @@ export class FeeScheduleSyncStack extends Stack {
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1',
         // Secrets tables for dynamic SFTP credential retrieval
         GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
+        CLINIC_SECRETS_TABLE: props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets',
         CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
       },
       retryAttempts: 0, // Don't retry on failure - next scheduled run will pick up
@@ -187,16 +190,22 @@ export class FeeScheduleSyncStack extends Stack {
     // Grant permissions to DynamoDB table
     this.feeSchedulesTable.grantReadWriteData(this.syncFn);
 
-    // Grant read access to secrets tables for dynamic SFTP credential retrieval
-    if (props.globalSecretsTableName) {
-      this.syncFn.addToRolePolicy(new iam.PolicyStatement({
-        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
-        resources: [
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
-        ],
-      }));
-    }
+    // Grant read access to secrets tables for credential retrieval (includes Scan for getAllClinicSecrets/getAllClinicConfigs)
+    const globalSecretsTableName = props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets';
+    const clinicSecretsTableName = props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets';
+    const clinicConfigTableName = props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig';
+
+    this.syncFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${globalSecretsTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${globalSecretsTableName}/index/*`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicSecretsTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicSecretsTableName}/index/*`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicConfigTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicConfigTableName}/index/*`,
+      ],
+    }));
 
     // Grant KMS decryption for secrets encryption key
     if (props.secretsEncryptionKeyArn) {
