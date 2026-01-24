@@ -36,7 +36,7 @@ import { ClinicImagesStack } from './stacks/clinic-images-stack';
 import { AiAgentsStack } from './stacks/ai-agents-stack';
 import { QueryGeneratorStack } from './stacks/query-generator-stack';
 import { RcsStack } from './stacks/rcs-stack';
-// import { CredentialingStack } from './stacks/credentialing-stack'; // TEMPORARILY DISABLED
+import { CredentialingStack } from './stacks/credentialing-stack';
 import { LeaseManagementStack } from './stacks/lease-management-stack';
 import { InsurancePlanSyncStack } from './stacks/insurance-plan-sync-stack';
 import { FeeScheduleSyncStack } from './stacks/fee-schedule-sync-stack';
@@ -542,12 +542,12 @@ const hrStack = new HrStack(app, 'TodaysDentalInsightsHrN1', {
 });
 // hrStack.addDependency(coreStack); // Implicit
 
-// TEMPORARILY DISABLED - Credentialing Stack
-// const credentialingStack = new CredentialingStack(app, 'TodaysDentalInsightsCredentialingN1', {
-//   env,
-//   staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
-// });
-// credentialingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+// Credentialing Stack - Provider credentialing and payer enrollment management
+const credentialingStack = new CredentialingStack(app, 'TodaysDentalInsightsCredentialingN1', {
+  env,
+  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+});
+credentialingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 
 
 // Schedules service (depends on other services for cross-table access)

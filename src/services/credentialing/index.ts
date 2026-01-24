@@ -3,14 +3,14 @@
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { 
-  DynamoDBDocumentClient, 
-  QueryCommand, 
-  ScanCommand, 
-  PutCommand, 
-  DeleteCommand, 
-  UpdateCommand, 
-  GetCommand 
+import {
+  DynamoDBDocumentClient,
+  QueryCommand,
+  ScanCommand,
+  PutCommand,
+  DeleteCommand,
+  UpdateCommand,
+  GetCommand
 } from '@aws-sdk/lib-dynamodb';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -26,6 +26,15 @@ import {
   PermissionType,
   UserPermissions,
 } from '../../shared/utils/permissions-helper';
+import {
+  VALID_DOCUMENT_TYPES,
+  DOCUMENT_TYPE_SECTIONS,
+  CANONICAL_FIELDS,
+  CANONICAL_FIELDS_FLAT,
+  validateDocumentType,
+  findUploadSection,
+  SubmissionMode,
+} from './credentialing-schema';
 
 // Environment Variables
 const PROVIDERS_TABLE = process.env.PROVIDERS_TABLE!;
@@ -107,7 +116,7 @@ const httpCreated = (data: Record<string, any>): APIGatewayProxyResult => ({
 // ========================================
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  currentCorsHeaders = buildCorsHeaders({}, event.headers?.origin);
+  currentCorsHeaders = buildCorsHeaders({}, event.headers?.origin || event.headers?.Origin);
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 204, headers: currentCorsHeaders, body: '' };
@@ -392,7 +401,7 @@ async function getDashboard(userPerms: UserPermissions, isAdmin: boolean, allowe
   // Get expiring credentials (next 30 days)
   const thirtyDaysFromNow = new Date();
   thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
-  
+
   const { Items: credentials } = await ddb.send(new ScanCommand({
     TableName: PROVIDER_CREDENTIALS_TABLE,
     FilterExpression: 'expirationDate <= :expDate',
@@ -453,9 +462,9 @@ async function listProviders(queryParams: any, allowedClinics: Set<string>) {
       if (allowedClinics.has('*')) return true;
       return p.clinicIds?.some((cid: string) => allowedClinics.has(cid));
     });
-    return httpOk({ 
-      providers: filtered, 
-      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null 
+    return httpOk({
+      providers: filtered,
+      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null
     });
   }
 
@@ -470,9 +479,9 @@ async function listProviders(queryParams: any, allowedClinics: Set<string>) {
       ExpressionAttributeValues: { ':clinicId': clinicId },
     };
     const result = await ddb.send(new QueryCommand(params));
-    return httpOk({ 
-      providers: result.Items || [], 
-      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null 
+    return httpOk({
+      providers: result.Items || [],
+      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null
     });
   }
 
@@ -481,10 +490,10 @@ async function listProviders(queryParams: any, allowedClinics: Set<string>) {
     if (allowedClinics.has('*')) return true;
     return p.clinicIds?.some((cid: string) => allowedClinics.has(cid));
   });
-  
-  return httpOk({ 
-    providers: filtered, 
-    lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null 
+
+  return httpOk({
+    providers: filtered,
+    lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null
   });
 }
 
@@ -953,9 +962,9 @@ async function listEnrollments(queryParams: any, allowedClinics: Set<string>) {
       ExpressionAttributeValues: { ':status': status },
     };
     const result = await ddb.send(new QueryCommand(params));
-    return httpOk({ 
-      enrollments: result.Items || [], 
-      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null 
+    return httpOk({
+      enrollments: result.Items || [],
+      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null
     });
   }
 
@@ -967,16 +976,16 @@ async function listEnrollments(queryParams: any, allowedClinics: Set<string>) {
       ExpressionAttributeValues: { ':payerId': payerId },
     };
     const result = await ddb.send(new QueryCommand(params));
-    return httpOk({ 
-      enrollments: result.Items || [], 
-      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null 
+    return httpOk({
+      enrollments: result.Items || [],
+      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null
     });
   }
 
   const result = await ddb.send(new ScanCommand(params));
-  return httpOk({ 
-    enrollments: result.Items || [], 
-    lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null 
+  return httpOk({
+    enrollments: result.Items || [],
+    lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null
   });
 }
 
@@ -1162,9 +1171,9 @@ async function listTasks(queryParams: any, userPerms: UserPermissions, isAdmin: 
     };
     const result = await ddb.send(new QueryCommand(params));
     const filtered = filterTasksByAccess(result.Items || [], allowedClinics, userPerms, isAdmin);
-    return httpOk({ 
-      tasks: filtered, 
-      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null 
+    return httpOk({
+      tasks: filtered,
+      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null
     });
   }
 
@@ -1177,9 +1186,9 @@ async function listTasks(queryParams: any, userPerms: UserPermissions, isAdmin: 
     };
     const result = await ddb.send(new QueryCommand(params));
     const filtered = filterTasksByAccess(result.Items || [], allowedClinics, userPerms, isAdmin);
-    return httpOk({ 
-      tasks: filtered, 
-      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null 
+    return httpOk({
+      tasks: filtered,
+      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null
     });
   }
 
@@ -1194,9 +1203,9 @@ async function listTasks(queryParams: any, userPerms: UserPermissions, isAdmin: 
       ExpressionAttributeValues: { ':clinicId': clinicId },
     };
     const result = await ddb.send(new QueryCommand(params));
-    return httpOk({ 
-      tasks: result.Items || [], 
-      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null 
+    return httpOk({
+      tasks: result.Items || [],
+      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null
     });
   }
 
@@ -1209,23 +1218,23 @@ async function listTasks(queryParams: any, userPerms: UserPermissions, isAdmin: 
     };
     const result = await ddb.send(new QueryCommand(params));
     const filtered = filterTasksByAccess(result.Items || [], allowedClinics, userPerms, isAdmin);
-    return httpOk({ 
-      tasks: filtered, 
-      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null 
+    return httpOk({
+      tasks: filtered,
+      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null
     });
   }
 
   const result = await ddb.send(new ScanCommand(params));
   const filtered = filterTasksByAccess(result.Items || [], allowedClinics, userPerms, isAdmin);
-  return httpOk({ 
-    tasks: filtered, 
-    lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null 
+  return httpOk({
+    tasks: filtered,
+    lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null
   });
 }
 
 function filterTasksByAccess(tasks: any[], allowedClinics: Set<string>, userPerms: UserPermissions, isAdmin: boolean) {
   if (allowedClinics.has('*')) return tasks;
-  
+
   return tasks.filter(t => {
     // Allow access if user is assignee
     if (t.assigneeId === userPerms.email) return true;
@@ -1402,8 +1411,14 @@ async function getDocumentUploadUrl(providerId: string, body: any, userPerms: Us
     return httpErr(400, 'fileName and documentType are required');
   }
 
+  // Validate document type and normalize
+  const validatedType = validateDocumentType(documentType);
+  if (validatedType === 'other' && documentType !== 'other') {
+    console.warn(`Unknown document type '${documentType}', using 'other'. Valid types: ${VALID_DOCUMENT_TYPES.join(', ')}`);
+  }
+
   const documentId = uuidv4();
-  const s3Key = `providers/${providerId}/${documentType}/${documentId}-${fileName}`;
+  const s3Key = `providers/${providerId}/${validatedType}/${documentId}-${fileName}`;
   const now = new Date().toISOString();
 
   // Create presigned URL for upload
@@ -1430,9 +1445,9 @@ async function getDocumentUploadUrl(providerId: string, body: any, userPerms: Us
 
   await ddb.send(new PutCommand({ TableName: DOCUMENTS_TABLE, Item: document }));
 
-  return httpOk({ 
-    documentId, 
-    uploadUrl, 
+  return httpOk({
+    documentId,
+    uploadUrl,
     message: 'Upload URL generated. URL expires in 1 hour.',
     document,
   });
@@ -1458,16 +1473,16 @@ async function listDocuments(queryParams: any, allowedClinics: Set<string>) {
       ExpressionAttributeValues: { ':documentType': documentType },
     };
     const result = await ddb.send(new QueryCommand(params));
-    return httpOk({ 
-      documents: result.Items || [], 
-      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null 
+    return httpOk({
+      documents: result.Items || [],
+      lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null
     });
   }
 
   const result = await ddb.send(new ScanCommand(params));
-  return httpOk({ 
-    documents: result.Items || [], 
-    lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null 
+  return httpOk({
+    documents: result.Items || [],
+    lastKey: result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null
   });
 }
 
@@ -1489,11 +1504,11 @@ async function getDocumentDownloadUrl(documentId: string, allowedClinics: Set<st
 
   const downloadUrl = await getSignedUrl(s3, command, { expiresIn: 3600 }); // 1 hour
 
-  return httpOk({ 
-    documentId, 
-    downloadUrl, 
+  return httpOk({
+    documentId,
+    downloadUrl,
     document: Item,
-    message: 'Download URL generated. URL expires in 1 hour.' 
+    message: 'Download URL generated. URL expires in 1 hour.'
   });
 }
 
@@ -1726,8 +1741,8 @@ async function getAnalytics(queryParams: any, allowedClinics: Set<string>) {
   });
 
   const completedTasks = filteredTasks.filter(t => t.status === 'completed').length;
-  const taskCompletionRate = filteredTasks.length > 0 
-    ? Math.round((completedTasks / filteredTasks.length) * 100) 
+  const taskCompletionRate = filteredTasks.length > 0
+    ? Math.round((completedTasks / filteredTasks.length) * 100)
     : 0;
 
   return httpOk({
