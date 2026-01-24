@@ -24,18 +24,26 @@ export type CorsOptions = {
 
 // Static list for CDK build-time (synchronous)
 // This is required because CDK synthesis cannot use async operations
-export const ALLOWED_ORIGINS_LIST = [
+function toOrigin(maybeUrl: unknown): string | null {
+  try {
+    const s = String(maybeUrl || '').trim();
+    if (!s) return null;
+    return new URL(s).origin;
+  } catch {
+    return null;
+  }
+}
+
+const STATIC_ALLOWED_ORIGIN_INPUTS: unknown[] = [
   'https://todaysdentalinsights.com',
   'https://www.todaysdentalinsights.com',
-  'https://todaysdentalinsights.com/',
-  'https://www.todaysdentalinsights.com/',
-  ...(clinicsData as any[])
-    .map(c => String(c.websiteLink))
-    .filter(Boolean),
-  ...(clinicsData as any[])
-    .map(c => String(c.wwwUrl))
-    .filter(Boolean)
+  ...(clinicsData as any[]).map(c => c.websiteLink).filter(Boolean),
+  ...(clinicsData as any[]).map(c => c.wwwUrl).filter(Boolean),
 ];
+
+export const ALLOWED_ORIGINS_LIST = Array.from(
+  new Set(STATIC_ALLOWED_ORIGIN_INPUTS.map(toOrigin).filter(Boolean) as string[])
+);
 
 // Cache for runtime-loaded origins
 let runtimeOriginsCache: string[] | null = null;
@@ -71,21 +79,36 @@ const DEFAULT_HEADERS = ['Content-Type', 'Authorization', 'X-Requested-With', 'R
 
 // Helper function to determine which origin to allow based on request origin
 function getAllowedOrigin(requestOrigin?: string, allowedOrigins: string[] = ALLOWED_ORIGINS_LIST): string {
-  console.log('[CORS] Determining allowed origin', { requestOrigin, allowedOrigins: allowedOrigins.slice(0, 5) });
+  const origin = requestOrigin?.trim();
+  console.log('[CORS] Determining allowed origin', { requestOrigin: origin, allowedOrigins: allowedOrigins.slice(0, 5) });
   
   // If no specific origin requested, use the main domain
-  if (!requestOrigin) {
+  if (!origin) {
 
     return allowedOrigins[0]; // 'https://todaysdentalinsights.com'
   }
+
+  // Chrome extension / Firefox extension origins (used heavily by the credentialing autofill extension)
+  // Example: chrome-extension://<extensionId>
+  if (origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://')) {
+    return origin;
+  }
+
+  // Local dev (explicitly allow localhost/127.0.0.1 with any port)
+  if (
+    /^https?:\/\/localhost(?::\d+)?$/i.test(origin) ||
+    /^https?:\/\/127\.0\.0\.1(?::\d+)?$/i.test(origin)
+  ) {
+    return origin;
+  }
   
   // If the request origin is in our allowed list, use it
-  if (allowedOrigins.includes(requestOrigin)) {
-    return requestOrigin;
+  if (allowedOrigins.includes(origin)) {
+    return origin;
   }
   
   // Otherwise, default to main domain
-  console.warn('[CORS] Request origin not allowed, using default:', { requestOrigin, defaultOrigin: allowedOrigins[0] });
+  console.warn('[CORS] Request origin not allowed, using default:', { requestOrigin: origin, defaultOrigin: allowedOrigins[0] });
   return allowedOrigins[0];
 }
 
