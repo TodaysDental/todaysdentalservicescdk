@@ -1287,9 +1287,6 @@
 //     lastEvaluatedKey: result.lastEvaluatedKey,
 //   });
 // }
-// services/hr/index.ts
-// COMPLETE FIXED VERSION with all requested features
-
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand, ScanCommand, PutCommand, DeleteCommand, UpdateCommand, GetCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
@@ -1311,15 +1308,15 @@ import { AuditLogger, AuditResource } from '../shared/audit-logger';
 const SHIFTS_TABLE = process.env.SHIFTS_TABLE!;
 const LEAVE_TABLE = process.env.LEAVE_TABLE!;
 const STAFF_INFO_TABLE = process.env.STAFF_CLINIC_INFO_TABLE!;
-const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE!; // DynamoDB table for user lookups
-const CLINICS_TABLE = process.env.CLINICS_TABLE || 'Clinics'; // For timezone lookup
+const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE!;
+const CLINICS_TABLE = process.env.CLINICS_TABLE || 'Clinics';
 
 // SES Environment Variables
 const APP_NAME = process.env.APP_NAME || 'TodaysDentalInsights';
 const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalinsights.com';
 const SES_REGION = process.env.SES_REGION || 'us-east-1';
 
-// Timezone cache to avoid repeated DynamoDB lookups
+// Timezone cache
 const timezoneCache: Map<string, { timezone: string; timestamp: number }> = new Map();
 const TIMEZONE_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -1338,7 +1335,7 @@ const METHOD_PERMISSIONS: Record<string, PermissionType> = {
 // AUTH & ROUTING
 // ========================================
 
-const corsHeaders = buildCorsHeaders(); // default fallback
+const corsHeaders = buildCorsHeaders();
 let currentCorsHeaders = corsHeaders;
 
 const httpErr = (code: number, message: string) => ({
@@ -1347,7 +1344,6 @@ const httpErr = (code: number, message: string) => ({
 const httpOk = (data: Record<string, any>) => ({
     statusCode: 200, headers: currentCorsHeaders, body: JSON.stringify({ success: true, ...data })
 });
-
 
 // ========================================
 // HELPER FUNCTIONS
@@ -1377,7 +1373,7 @@ async function isDateBlocked(staffId: string, date: Date): Promise<boolean> {
   });
 }
 
-// Get all shifts that overlap with a date range
+// Get all shifts that overlap with a date range - RETURNS SHIFTS TO DELETE
 async function getOverlappingShifts(staffId: string, startDate: string, endDate: string): Promise<any[]> {
   console.log(`🔍 getOverlappingShifts: Looking for shifts for staffId=${staffId} between ${startDate} and ${endDate}`);
   
@@ -1400,7 +1396,13 @@ async function getOverlappingShifts(staffId: string, startDate: string, endDate:
     }
   }));
 
-  console.log(`🔍 Found ${Items?.length || 0} overlapping shifts`);
+  console.log(`🔍 Found ${Items?.length || 0} overlapping shifts:`, Items?.map((s: any) => ({ 
+    shiftId: s.shiftId, 
+    startTime: s.startTime, 
+    endTime: s.endTime,
+    status: s.status 
+  })));
+
   return Items || [];
 }
 
@@ -1505,57 +1507,60 @@ function clinicLocalPartsToUtcDate(parts: NaiveDateTimeParts, timeZone: string):
 function normalizeToUtcIso(dateTime: string, clinicTimeZone: string): string {
   const tz = normalizeTimeZoneOrUtc(clinicTimeZone);
   const input = String(dateTime || '').trim();
+  if (!input) throw new Error('Missing date/time');
+
   if (hasExplicitTimeZone(input)) {
     const d = new Date(input);
-    return isNaN(d.getTime()) ? input : d.toISOString();
+    if (isNaN(d.getTime())) throw new Error(`Invalid date/time: ${input}`);
+    return d.toISOString();
   }
+
   const parts = parseNaiveDateTime(input);
-  if (!parts) {
-    const d = new Date(input);
-    return isNaN(d.getTime()) ? input : d.toISOString();
-  }
-  const utcDate = clinicLocalPartsToUtcDate(parts, tz);
-  return utcDate.toISOString();
+  if (!parts) throw new Error(`Invalid date/time format (expected YYYY-MM-DDTHH:mm[:ss]): ${input}`);
+  const utc = clinicLocalPartsToUtcDate(parts, tz);
+  if (isNaN(utc.getTime())) throw new Error(`Invalid date/time after timezone conversion: ${input}`);
+  return utc.toISOString();
 }
 
-// Send email notification for new shift
-async function sendShiftNotificationEmail(shiftDetails: any) {
-    const recipientEmail = shiftDetails.staffId; // staffId is the email
-    
-    const clinicTimezone = await getClinicTimezone(shiftDetails.clinicId);
-    const startTimeLocal = new Date(shiftDetails.startTime).toLocaleString('en-US', { timeZone: clinicTimezone });
-    const endTimeLocal = new Date(shiftDetails.endTime).toLocaleString('en-US', { timeZone: clinicTimezone });
-    const shiftDate = new Date(shiftDetails.startTime).toLocaleDateString('en-US', { 
-        timeZone: clinicTimezone,
-        weekday: 'long',
-        month: 'long',
-        day: 'numeric',
-        year: 'numeric'
-    });
-
-    let staffName = recipientEmail;
-    try {
-        const { Item: staffUser } = await ddb.send(new GetCommand({
-            TableName: STAFF_USER_TABLE,
-            Key: { email: recipientEmail.toLowerCase() },
-        }));
-        if (staffUser && staffUser.givenName) {
-            staffName = `${staffUser.givenName} ${staffUser.familyName || ''}`.trim();
-        }
-    } catch (err) {
-        console.log('Could not fetch staff name:', err);
+// SES Email Function
+async function sendShiftNotificationEmail(recipientEmail: string, shiftDetails: any, staffName: string, clinicTimezone: string) {
+    if (!FROM_EMAIL || !recipientEmail) {
+        console.warn('Skipping shift notification: Missing FROM_EMAIL or recipientEmail.');
+        return;
     }
 
-    const subject = `New Shift Scheduled - ${shiftDate}`;
+    const tz = normalizeTimeZoneOrUtc(clinicTimezone);
+    
+    const startTimeLocal = new Date(shiftDetails.startTime).toLocaleTimeString('en-US', { 
+        timeZone: tz, 
+        hour: 'numeric', 
+        minute: '2-digit',
+        hour12: true 
+    });
+    const endTimeLocal = new Date(shiftDetails.endTime).toLocaleTimeString('en-US', { 
+        timeZone: tz, 
+        hour: 'numeric', 
+        minute: '2-digit',
+        hour12: true 
+    });
+    const shiftDate = new Date(shiftDetails.startTime).toLocaleDateString('en-US', { 
+        timeZone: tz, 
+        weekday: 'long', 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+    });
+    
+    const subject = `New Shift Scheduled at ${shiftDetails.clinicId} for ${shiftDate}`;
+    
     const bodyHtml = `
-        <!DOCTYPE html>
         <html>
         <head>
             <style>
                 body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-                .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
-                .details { background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; }
+                .container { max-width: 600px; margin: 20px auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px; }
+                .header { background-color: #f4f4f4; padding: 10px; text-align: center; border-radius: 6px 6px 0 0; }
+                .details { margin-top: 20px; border-top: 2px solid #333; padding-top: 15px; }
                 .detail-row { margin-bottom: 10px; }
                 .label { font-weight: bold; display: inline-block; width: 150px; }
                 .footer { margin-top: 30px; text-align: center; font-size: 0.8em; color: #777; }
@@ -1566,7 +1571,7 @@ async function sendShiftNotificationEmail(shiftDetails: any) {
                 <div class="header">
                     <h2>Shift Schedule Notification</h2>
                 </div>
-                <p>Dear ${staffName},</p>
+                <p>Dear ${staffName || shiftDetails.staffId},</p>
                 <p>A new shift has been scheduled for you. Please check the details below:</p>
                 
                 <div class="details">
@@ -1667,13 +1672,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const parsedBody = JSON.parse(event.body);
       return createShift(parsedBody, allowedClinics, userPerms, event);
     }
-    // NEW: Copy week schedule endpoint
-    if (method === 'POST' && path === '/shifts/copy-week') {
-      if (!isAdmin) return httpErr(403, "Forbidden");
-      if (!event.body) return httpErr(400, "Missing request body");
-      const parsedBody = JSON.parse(event.body);
-      return copyWeekSchedule(parsedBody, allowedClinics, userPerms, event);
-    }
     if (method === 'PUT' && path.match(/^\/shifts\/[^\/]+$/)) {
       if (!isAdmin) return httpErr(403, "Forbidden");
       const shiftId = path.split('/')[2];
@@ -1690,6 +1688,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const shiftId = path.split('/')[2];
       const reason = event.body ? JSON.parse(event.body)?.reason : undefined;
       return rejectShift(shiftId, userPerms.email, userPerms, event, reason);
+    }
+
+    // --- COPY WEEK SCHEDULE - NEW ---
+    if (method === 'POST' && path === '/shifts/copy-week') {
+      if (!isAdmin) return httpErr(403, "Forbidden");
+      if (!event.body) return httpErr(400, "Missing request body");
+      const parsedBody = JSON.parse(event.body);
+      return copyWeekSchedule(parsedBody, allowedClinics, userPerms, event);
     }
 
     // --- LEAVE ---
@@ -1714,20 +1720,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (method === 'PUT' && path.match(/^\/leave\/[^\/]+\/deny$/)) {
       if (!isAdmin) return httpErr(403, "Forbidden");
       const leaveId = path.split('/')[2];
-      const denialReason = event.body ? JSON.parse(event.body)?.reason : undefined;
-      return updateLeaveStatus(leaveId, 'denied', userPerms, event, denialReason);
+      const denyReason = event.body ? JSON.parse(event.body)?.reason : undefined;
+      return updateLeaveStatus(leaveId, 'denied', userPerms, event, denyReason);
     }
 
     // --- AUDIT TRAIL ---
     if (method === 'GET' && path === '/audit') {
-      return getAuditLogs(event.queryStringParameters, isAdmin, allowedClinics);
+      if (!isAdmin) return httpErr(403, "Forbidden");
+      return queryAuditLogs(event.queryStringParameters);
     }
-    if (method === 'GET' && path.match(/^\/audit\/(staff|shift|leave)\/[^\/]+$/)) {
+    if (method === 'GET' && path.match(/^\/audit\/[^\/]+\/[^\/]+$/)) {
+      if (!isAdmin) return httpErr(403, "Forbidden");
       const parts = path.split('/');
-      const resourceType = parts[2] as 'staff' | 'shift' | 'leave';
-      const resourceId = decodeURIComponent(parts[3]);
-      const limit = event.queryStringParameters?.limit ? parseInt(event.queryStringParameters.limit) : 50;
-      return getResourceAuditTrail(resourceType, resourceId, limit);
+      const resourceType = parts[2].toUpperCase() as AuditResource;
+      const resourceId = parts[3];
+      return getResourceAuditTrail(resourceType, resourceId, event.queryStringParameters);
     }
 
     return httpErr(404, "Not Found");
@@ -1741,7 +1748,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 // BUSINESS LOGIC
 // ========================================
 
-async function getDashboard(userPerms: UserPermissions, isAdmin: boolean) {
+async function getDashboard(userPerms: any, isAdmin: boolean) {
   if (isAdmin) {
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -1750,18 +1757,11 @@ async function getDashboard(userPerms: UserPermissions, isAdmin: boolean) {
     const weekStart = new Date(today.setDate(diff)).toISOString();
     const weekEnd = new Date(today.setDate(diff + 6)).toISOString();
 
-    // Count active staff
     const staffCountPromise = ddb.send(new ScanCommand({
       TableName: STAFF_USER_TABLE,
       FilterExpression: 'isActive = :active',
       ExpressionAttributeValues: { ':active': true },
       Select: 'COUNT',
-    }));
-
-    // Get all staff with work locations
-    const allStaffPromise = ddb.send(new ScanCommand({
-      TableName: STAFF_INFO_TABLE,
-      FilterExpression: 'attribute_exists(workLocation)',
     }));
 
     const adminClinics = userPerms.clinicRoles.map((cr: any) => cr.clinicId);
@@ -1778,37 +1778,13 @@ async function getDashboard(userPerms: UserPermissions, isAdmin: boolean) {
       }))
     );
 
-    const [staffResponse, allStaffResponse, ...shiftResponses] = await Promise.all([
+    const [staffResponse, ...shiftResponses] = await Promise.all([
       staffCountPromise,
-      allStaffPromise,
       ...shiftQueryPromises
     ]);
     
     const totalStaff = staffResponse.Count || 0;
     const allShifts = shiftResponses.flatMap(res => res.Items || []);
-    
-    // Calculate on-premise and remote staff
-    let onPremiseStaff = 0;
-    let remoteStaff = 0;
-    const processedEmails = new Set<string>();
-    
-    (allStaffResponse.Items || []).forEach(staffInfo => {
-      const email = staffInfo.email?.toLowerCase();
-      if (!email || processedEmails.has(email)) return;
-      processedEmails.add(email);
-      
-      if (staffInfo.workLocation) {
-        if (staffInfo.workLocation.isRemote && !staffInfo.workLocation.isOnPremise) {
-          remoteStaff++;
-        } else if (staffInfo.workLocation.isOnPremise) {
-          onPremiseStaff++;
-        } else if (staffInfo.workLocation.isRemote) {
-          remoteStaff++;
-        }
-      } else {
-        onPremiseStaff++; // Default to on-premise if no location specified
-      }
-    });
     
     let estimatedHours = 0;
     let estimatedCost = 0;
@@ -1822,8 +1798,6 @@ async function getDashboard(userPerms: UserPermissions, isAdmin: boolean) {
       totalStaff: totalStaff,
       thisWeeksShifts: allShifts.length,
       budgetStatus: "On Track",
-      onPremiseStaff: onPremiseStaff,
-      remoteStaff: remoteStaff,
       currentWeekOverview: {
         totalShifts: allShifts.length,
         estimatedHours: parseFloat(estimatedHours.toFixed(2)),
@@ -1832,7 +1806,6 @@ async function getDashboard(userPerms: UserPermissions, isAdmin: boolean) {
     });
 
   } else {
-    // STAFF DASHBOARD - FIXED TO USE ACTUAL COMPLETED HOURS
     const { Items: shifts } = await ddb.send(new QueryCommand({
         TableName: SHIFTS_TABLE,
         IndexName: 'byStaff',
@@ -1849,7 +1822,6 @@ async function getDashboard(userPerms: UserPermissions, isAdmin: boolean) {
     let totalEarnings = 0;
     const completedShifts = (shifts || []);
 
-    // Use totalHours from each completed shift (which should be calculated from actual clock events)
     for (const shift of completedShifts) {
         completedHours += shift.totalHours || 0;
         totalEarnings += shift.pay || 0;
@@ -1933,81 +1905,81 @@ async function getShifts(userPerms: UserPermissions, isAdmin: boolean, queryPara
 }
 
 async function createShift(body: any, allowedClinics: Set<string>, userPerms?: UserPermissions, event?: APIGatewayProxyEvent) {
-  const { staffId, clinicId, startTime, endTime } = body;
-  if (!staffId || !clinicId || !startTime || !endTime) {
+  const { staffId, clinicId, startTime: rawStartTime, endTime: rawEndTime, ...restBody } = body;
+  if (!staffId || !clinicId || !rawStartTime || !rawEndTime) {
     return httpErr(400, "staffId, clinicId, startTime, and endTime are required");
   }
-
   if (!hasClinicAccess(allowedClinics, clinicId)) {
     return httpErr(403, "Forbidden: no access to this clinic");
   }
 
   const clinicTimezone = await getClinicTimezone(clinicId);
-  const normalizedStartTime = normalizeToUtcIso(startTime, clinicTimezone);
-  const shiftDate = new Date(normalizedStartTime);
+  const startTime = normalizeToUtcIso(rawStartTime, clinicTimezone);
+  const endTime = normalizeToUtcIso(rawEndTime, clinicTimezone);
+
+  const shiftDate = new Date(startTime);
   const isBlocked = await isDateBlocked(staffId, shiftDate);
   if (isBlocked) {
     return httpErr(400, "Cannot schedule shift: Staff has approved leave on this date");
   }
 
-  let email: string | undefined;
+  let email: string;
+  let staffName: string | undefined;
   try {
     const { Item: staffUser } = await ddb.send(new GetCommand({
-        TableName: STAFF_USER_TABLE,
-        Key: { email: staffId.toLowerCase() },
+      TableName: STAFF_USER_TABLE,
+      Key: { email: staffId.toLowerCase() },
     }));
     
     if (!staffUser) {
-        console.error("Staff user not found:", staffId);
-        return httpErr(404, "Staff user not found");
+      console.error("Staff user not found in StaffUser table:", staffId);
+      return httpErr(404, "Staff user not found");
     }
     
     email = staffUser.email?.toLowerCase();
+    const givenName = staffUser.givenName;
+    const familyName = staffUser.familyName;
+    staffName = `${givenName || ''} ${familyName || ''}`.trim();
   } catch (err) {
     console.error("StaffUser table lookup failed:", err);
     return httpErr(500, "Error looking up staff user");
   }
 
   if (!email) {
-      return httpErr(404, "Staff email not found, cannot determine pay");
+    return httpErr(404, "Staff email not found, cannot determine pay");
   }
 
   const { Item: staffInfo } = await ddb.send(new GetCommand({
-    TableName: STAFF_INFO_TABLE,
-    Key: { email: email, clinicId: clinicId }
+      TableName: STAFF_INFO_TABLE,
+      Key: { email: email, clinicId: clinicId }
   }));
-  
+
   const hourlyRate = staffInfo?.hourlyPay ? parseFloat(String(staffInfo.hourlyPay)) : 0;
-  const normalizedEndTime = normalizeToUtcIso(endTime, clinicTimezone);
-  const totalHours = (new Date(normalizedEndTime).getTime() - new Date(normalizedStartTime).getTime()) / (1000 * 60 * 60);
+  const totalHours = (new Date(endTime).getTime() - new Date(startTime).getTime()) / (1000 * 60 * 60);
   
   if (totalHours <= 0) {
       return httpErr(400, "End time must be after start time");
   }
 
   const pay = totalHours * hourlyRate;
-  const shiftId = uuidv4();
 
+  const shiftId = uuidv4();
   const shift = {
-      shiftId,
-      staffId,
-      email: email,
-      clinicId,
-      startTime: normalizedStartTime,
-      endTime: normalizedEndTime,
-      role: body.role || 'Staff',
-      totalHours: parseFloat(totalHours.toFixed(2)),
-      hourlyRate: hourlyRate,
-      pay: parseFloat(pay.toFixed(2)),
-      status: 'scheduled'
+    shiftId,
+    staffId,
+    email: email,
+    clinicId,
+    startTime,
+    endTime,
+    totalHours: parseFloat(totalHours.toFixed(2)),
+    hourlyRate: hourlyRate,
+    pay: parseFloat(pay.toFixed(2)),
+    status: 'scheduled',
+    ...restBody
   };
 
   await ddb.send(new PutCommand({ TableName: SHIFTS_TABLE, Item: shift }));
 
-  // Send email notification
-  await sendShiftNotificationEmail(shift);
-
-  // Audit log
   if (userPerms) {
     await auditLogger.log({
       userId: userPerms.email,
@@ -2023,156 +1995,17 @@ async function createShift(body: any, allowedClinics: Set<string>, userPerms?: U
     });
   }
 
+  await sendShiftNotificationEmail(email, shift, staffName || staffId, clinicTimezone);
+
   return httpOk({ shiftId, message: "Shift created successfully" });
-}
-
-// NEW: Copy week schedule functionality
-async function copyWeekSchedule(
-  body: any, 
-  allowedClinics: Set<string>, 
-  userPerms?: UserPermissions, 
-  event?: APIGatewayProxyEvent
-) {
-  const { clinicId, sourceWeekStart, targetWeekStart } = body;
-  
-  if (!clinicId || !sourceWeekStart || !targetWeekStart) {
-    return httpErr(400, "clinicId, sourceWeekStart, and targetWeekStart are required");
-  }
-
-  if (!hasClinicAccess(allowedClinics, clinicId)) {
-    return httpErr(403, "Forbidden: no access to this clinic");
-  }
-
-  // Calculate week end dates (7 days from start)
-  const sourceStart = new Date(sourceWeekStart);
-  const sourceEnd = new Date(sourceStart);
-  sourceEnd.setDate(sourceEnd.getDate() + 7);
-  
-  const targetStart = new Date(targetWeekStart);
-  const targetEnd = new Date(targetStart);
-  targetEnd.setDate(targetEnd.getDate() + 7);
-
-  console.log(`📅 Copying schedule from ${sourceStart.toISOString()} to ${targetStart.toISOString()}`);
-
-  // Fetch source week shifts
-  const { Items: sourceShifts } = await ddb.send(new QueryCommand({
-    TableName: SHIFTS_TABLE,
-    IndexName: 'byClinicAndDate',
-    KeyConditionExpression: 'clinicId = :clinicId AND startTime BETWEEN :start AND :end',
-    ExpressionAttributeValues: {
-      ':clinicId': clinicId,
-      ':start': sourceStart.toISOString(),
-      ':end': sourceEnd.toISOString(),
-    }
-  }));
-
-  if (!sourceShifts || sourceShifts.length === 0) {
-    return httpErr(400, "No shifts found in the source week");
-  }
-
-  console.log(`📋 Found ${sourceShifts.length} shifts to copy`);
-
-  // Calculate time offset (in milliseconds)
-  const timeOffset = targetStart.getTime() - sourceStart.getTime();
-
-  // Create new shifts for target week
-  const newShifts: any[] = [];
-  const createdShiftIds: string[] = [];
-
-  for (const sourceShift of sourceShifts) {
-    // Skip non-scheduled shifts
-    if (sourceShift.status !== 'scheduled') {
-      console.log(`⏭️ Skipping shift ${sourceShift.shiftId} with status ${sourceShift.status}`);
-      continue;
-    }
-
-    // Calculate new times
-    const newStartTime = new Date(new Date(sourceShift.startTime).getTime() + timeOffset).toISOString();
-    const newEndTime = new Date(new Date(sourceShift.endTime).getTime() + timeOffset).toISOString();
-
-    // Check if staff has leave on this date
-    const isBlocked = await isDateBlocked(sourceShift.staffId, new Date(newStartTime));
-    if (isBlocked) {
-      console.log(`⏭️ Skipping shift for ${sourceShift.staffId} - staff has leave on ${newStartTime}`);
-      continue;
-    }
-
-    const newShiftId = uuidv4();
-    const newShift = {
-      ...sourceShift,
-      shiftId: newShiftId,
-      startTime: newStartTime,
-      endTime: newEndTime,
-      status: 'scheduled'
-    };
-
-    newShifts.push(newShift);
-    createdShiftIds.push(newShiftId);
-  }
-
-  if (newShifts.length === 0) {
-    return httpErr(400, "No shifts could be copied (all staff may have leave during target week)");
-  }
-
-  // Batch write new shifts (max 25 at a time)
-  const batchSize = 25;
-  for (let i = 0; i < newShifts.length; i += batchSize) {
-    const batch = newShifts.slice(i, i + batchSize);
-    await ddb.send(new BatchWriteCommand({
-      RequestItems: {
-        [SHIFTS_TABLE]: batch.map(shift => ({
-          PutRequest: { Item: shift }
-        }))
-      }
-    }));
-  }
-
-  console.log(`✅ Successfully copied ${newShifts.length} shifts`);
-
-  // Send email notifications for all new shifts
-  for (const shift of newShifts) {
-    try {
-      await sendShiftNotificationEmail(shift);
-    } catch (err) {
-      console.error(`Failed to send email for shift ${shift.shiftId}:`, err);
-    }
-  }
-
-  // Audit log
-  if (userPerms) {
-    await auditLogger.log({
-      userId: userPerms.email,
-      userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
-      userRole: AuditLogger.getUserRole(userPerms),
-      action: 'CREATE',
-      resource: 'SHIFT',
-      resourceId: 'BULK_COPY',
-      clinicId: clinicId,
-      metadata: {
-        actionType: 'Bulk Copy Schedule',
-        sourceWeekStart: sourceWeekStart,
-        targetWeekStart: targetWeekStart,
-        shiftsCreated: newShifts.length,
-        shiftIds: createdShiftIds,
-      },
-      ...AuditLogger.extractRequestContext(event),
-    });
-  }
-
-  return httpOk({ 
-    message: `Successfully copied ${newShifts.length} shifts to the target week`,
-    shiftsCreated: newShifts.length,
-    shiftIds: createdShiftIds
-  });
 }
 
 async function updateShift(shiftId: string, body: any, allowedClinics: Set<string>, userPerms?: UserPermissions, event?: APIGatewayProxyEvent) {
     const { Item: oldShift } = await ddb.send(new GetCommand({ TableName: SHIFTS_TABLE, Key: { shiftId }}));
     if (!oldShift) return httpErr(404, "Shift not found");
 
-    const clinicId = body.clinicId || oldShift.clinicId;
     const staffId = body.staffId || oldShift.staffId;
-
+    const clinicId = body.clinicId || oldShift.clinicId;
     if (!hasClinicAccess(allowedClinics, clinicId)) {
       return httpErr(403, "Forbidden: no access to this clinic");
     }
@@ -2194,7 +2027,7 @@ async function updateShift(shiftId: string, body: any, allowedClinics: Set<strin
         }));
         
         if (!staffUser) {
-            console.error("Staff user not found:", staffId);
+            console.error("Staff user not found in StaffUser table:", staffId);
             return httpErr(404, "Staff user not found");
         }
         
@@ -2321,7 +2154,117 @@ async function rejectShift(shiftId: string, staffId: string, userPerms?: UserPer
     return httpOk({ shiftId, status: 'rejected' });
 }
 
-// --- LEAVE ---
+// ========================================
+// COPY WEEK SCHEDULE - NEW FUNCTIONALITY
+// ========================================
+
+async function copyWeekSchedule(body: any, allowedClinics: Set<string>, userPerms?: UserPermissions, event?: APIGatewayProxyEvent) {
+    const { sourceStartDate, targetStartDate, clinicId } = body;
+    
+    if (!sourceStartDate || !targetStartDate || !clinicId) {
+        return httpErr(400, "sourceStartDate, targetStartDate, and clinicId are required");
+    }
+
+    if (!hasClinicAccess(allowedClinics, clinicId)) {
+      return httpErr(403, "Forbidden: no access to this clinic");
+    }
+
+    // Calculate week boundaries
+    const sourceStart = new Date(sourceStartDate + 'T00:00:00Z');
+    const sourceEnd = new Date(sourceStart);
+    sourceEnd.setDate(sourceEnd.getDate() + 6);
+    sourceEnd.setHours(23, 59, 59, 999);
+
+    const targetStart = new Date(targetStartDate + 'T00:00:00Z');
+
+    // Fetch source week shifts
+    const { Items: sourceShifts } = await ddb.send(new QueryCommand({
+        TableName: SHIFTS_TABLE,
+        IndexName: 'byClinicAndDate',
+        KeyConditionExpression: 'clinicId = :clinicId AND startTime BETWEEN :startDate AND :endDate',
+        ExpressionAttributeValues: {
+            ':clinicId': clinicId,
+            ':startDate': sourceStart.toISOString(),
+            ':endDate': sourceEnd.toISOString(),
+        }
+    }));
+
+    if (!sourceShifts || sourceShifts.length === 0) {
+        return httpErr(404, "No shifts found in the source week");
+    }
+
+    const timeDiff = targetStart.getTime() - sourceStart.getTime();
+    const newShifts: any[] = [];
+
+    for (const shift of sourceShifts) {
+        const newStartTime = new Date(new Date(shift.startTime).getTime() + timeDiff);
+        const newEndTime = new Date(new Date(shift.endTime).getTime() + timeDiff);
+
+        // Check if staff has approved leave on the new date
+        const isBlocked = await isDateBlocked(shift.staffId, newStartTime);
+        if (isBlocked) {
+            console.log(`⚠️ Skipping shift for ${shift.staffId} - has approved leave on ${newStartTime.toISOString()}`);
+            continue;
+        }
+
+        const newShiftId = uuidv4();
+        const newShift = {
+            ...shift,
+            shiftId: newShiftId,
+            startTime: newStartTime.toISOString(),
+            endTime: newEndTime.toISOString(),
+        };
+
+        newShifts.push(newShift);
+    }
+
+    // Batch write new shifts
+    if (newShifts.length > 0) {
+        const batchSize = 25; // DynamoDB limit
+        for (let i = 0; i < newShifts.length; i += batchSize) {
+            const batch = newShifts.slice(i, i + batchSize);
+            await ddb.send(new BatchWriteCommand({
+                RequestItems: {
+                    [SHIFTS_TABLE]: batch.map(shift => ({
+                        PutRequest: { Item: shift }
+                    }))
+                }
+            }));
+        }
+
+        // Audit log
+        if (userPerms) {
+          await auditLogger.log({
+            userId: userPerms.email,
+            userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+            userRole: AuditLogger.getUserRole(userPerms),
+            action: 'CREATE',
+            resource: 'SHIFT',
+            resourceId: 'BATCH_COPY',
+            clinicId: clinicId,
+            metadata: {
+              sourceWeek: sourceStartDate,
+              targetWeek: targetStartDate,
+              copiedShifts: newShifts.length,
+              skippedDueToLeave: sourceShifts.length - newShifts.length,
+              actionType: 'Copy Week Schedule',
+            },
+            ...AuditLogger.extractRequestContext(event),
+          });
+        }
+    }
+
+    return httpOk({
+        message: `Successfully copied ${newShifts.length} shifts. ${sourceShifts.length - newShifts.length} shifts skipped due to approved leave.`,
+        copiedShifts: newShifts.length,
+        skippedShifts: sourceShifts.length - newShifts.length
+    });
+}
+
+// ========================================
+// LEAVE MANAGEMENT
+// ========================================
+
 async function getLeave(userPerms: any, isAdmin: boolean) {
     if (isAdmin) {
         const { Items } = await ddb.send(new ScanCommand({ TableName: LEAVE_TABLE }));
@@ -2376,40 +2319,37 @@ async function createLeave(staffId: string, body: any, userPerms?: UserPermissio
   return httpOk({ leaveId, message: "Leave request submitted" });
 }
 
-async function deleteLeave(leaveId: string, userPerms: UserPermissions, isAdmin: boolean, event?: APIGatewayProxyEvent) {
+async function deleteLeave(leaveId: string, userPerms: UserPermissions, isAdmin:boolean, event?: APIGatewayProxyEvent) {
     const { Item } = await ddb.send(new GetCommand({ TableName: LEAVE_TABLE, Key: { leaveId }}));
     if (!Item) return httpErr(404, "Leave request not found");
-    
+
     if (!isAdmin && Item.staffId !== userPerms.email) {
         return httpErr(403, "Forbidden");
     }
 
     await ddb.send(new DeleteCommand({ TableName: LEAVE_TABLE, Key: { leaveId } }));
 
-    if (userPerms) {
-      const userClinicId = userPerms.clinicRoles?.[0]?.clinicId;
-      
-      await auditLogger.log({
-        userId: userPerms.email,
-        userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
-        userRole: AuditLogger.getUserRole(userPerms),
-        action: 'DELETE',
-        resource: 'LEAVE',
-        resourceId: leaveId,
-        clinicId: userClinicId,
-        before: AuditLogger.sanitizeForAudit(Item),
-        metadata: {
-          ...AuditLogger.createLeaveMetadata(Item),
-          actionType: 'Leave Request Deleted',
-        },
-        ...AuditLogger.extractRequestContext(event),
-      });
-    }
+    const userClinicId = userPerms.clinicRoles?.[0]?.clinicId;
+    
+    await auditLogger.log({
+      userId: userPerms.email,
+      userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+      userRole: AuditLogger.getUserRole(userPerms),
+      action: 'DELETE',
+      resource: 'LEAVE',
+      resourceId: leaveId,
+      clinicId: userClinicId,
+      before: AuditLogger.sanitizeForAudit(Item),
+      metadata: {
+        ...AuditLogger.createLeaveMetadata(Item),
+        actionType: 'Leave Request Deleted',
+      },
+      ...AuditLogger.extractRequestContext(event),
+    });
 
     return httpOk({ message: "Leave request deleted" });
 }
 
-// UPDATED: Leave approval automatically deletes overlapping shifts
 async function approveLeave(leaveId: string, userPerms?: UserPermissions, event?: APIGatewayProxyEvent, approvalNotes?: string) {
     console.log('🔄 Starting approveLeave for leaveId:', leaveId);
     
@@ -2447,7 +2387,7 @@ async function approveLeave(leaveId: string, userPerms?: UserPermissions, event?
 
         console.log('✅ Leave status updated to approved');
 
-        // Find and DELETE overlapping shifts
+        // Find overlapping shifts
         let overlappingShifts: any[] = [];
         if (leave.startDate && leave.endDate) {
             try {
@@ -2457,24 +2397,30 @@ async function approveLeave(leaveId: string, userPerms?: UserPermissions, event?
                     leave.endDate
                 );
                 
-                console.log(`📊 Found ${overlappingShifts.length} overlapping shifts to delete`);
+                console.log(`📊 Found ${overlappingShifts.length} overlapping shifts:`, 
+                    overlappingShifts.map(s => ({ shiftId: s.shiftId, startTime: s.startTime }))
+                );
             } catch (shiftError) {
-                console.error('⚠️ Error finding overlapping shifts:', shiftError);
+                console.error('⚠️ Error finding overlapping shifts (continuing anyway):', shiftError);
             }
+        } else {
+            console.warn('⚠️ Leave request missing dates, skipping shift cancellation');
         }
 
-        // DELETE overlapping shifts from the table
+        // DELETE overlapping shifts (not just cancel - actually remove from table)
         if (overlappingShifts.length > 0) {
             try {
-                console.log(`🗑️ DELETING ${overlappingShifts.length} overlapping shift(s)...`);
+                console.log(`🔄 DELETING ${overlappingShifts.length} overlapping shift(s) from table...`);
                 
                 const deletePromises = overlappingShifts.map(async (shift) => {
-                    console.log('🗑️ Deleting shift:', shift.shiftId);
+                    console.log('🗑️ Deleting shift:', shift.shiftId, 'for date:', shift.startTime);
                     
                     await ddb.send(new DeleteCommand({
                         TableName: SHIFTS_TABLE,
                         Key: { shiftId: shift.shiftId }
                     }));
+                    
+                    console.log('✅ Shift deleted from table:', shift.shiftId);
                     
                     // Audit log for each deleted shift
                     if (userPerms) {
@@ -2503,9 +2449,9 @@ async function approveLeave(leaveId: string, userPerms?: UserPermissions, event?
                 });
 
                 await Promise.all(deletePromises);
-                console.log('✅ All overlapping shifts DELETED');
+                console.log('✅ All overlapping shifts DELETED from table and logged');
             } catch (deleteError) {
-                console.error('⚠️ Error deleting shifts:', deleteError);
+                console.error('⚠️ Error deleting shifts (leave still approved):', deleteError);
             }
         }
 
@@ -2541,24 +2487,31 @@ async function approveLeave(leaveId: string, userPerms?: UserPermissions, event?
           }
         }
 
-        return httpOk({
+        const response = {
             leaveId, 
             status: 'approved',
             cancelledShifts: overlappingShifts.length,
             message: overlappingShifts.length > 0 
-                ? `Leave approved. ${overlappingShifts.length} overlapping shift(s) have been automatically cancelled.`
+                ? `Leave approved. ${overlappingShifts.length} overlapping shift(s) have been automatically deleted.`
                 : 'Leave approved successfully. No shifts were affected.'
-        });
+        };
 
-    } catch (error) {
+        console.log('✅ Returning response:', response);
+        return httpOk(response);
+
+    } catch (error: any) {
         console.error('❌ Error in approveLeave:', error);
-        throw error;
+        return httpErr(500, `Failed to approve leave: ${error?.message || 'Unknown error'}`);
     }
 }
 
-async function updateLeaveStatus(leaveId: string, status: 'approved' | 'denied', userPerms?: UserPermissions, event?: APIGatewayProxyEvent, denialReason?: string) {
+async function updateLeaveStatus(leaveId: string, status: 'approved' | 'denied', userPerms?: UserPermissions, event?: APIGatewayProxyEvent, reason?: string) {
     const { Item: leave } = await ddb.send(new GetCommand({ TableName: LEAVE_TABLE, Key: { leaveId }}));
-    if (!leave) return httpErr(404, "Leave request not found");
+    if (!leave) {
+      return httpErr(404, "Leave request not found");
+    }
+    
+    const previousStatus = leave?.status;
 
     await ddb.send(new UpdateCommand({
         TableName: LEAVE_TABLE,
@@ -2569,124 +2522,93 @@ async function updateLeaveStatus(leaveId: string, status: 'approved' | 'denied',
     }));
 
     if (userPerms) {
-      const userClinicId = userPerms.clinicRoles?.[0]?.clinicId;
+      let staffClinicIds: string[] = [];
+      try {
+        const { Items: staffInfoItems } = await ddb.send(new QueryCommand({
+          TableName: STAFF_INFO_TABLE,
+          KeyConditionExpression: 'email = :email',
+          ExpressionAttributeValues: { ':email': leave.staffId.toLowerCase() },
+        }));
+        staffClinicIds = (staffInfoItems || []).map((item: any) => item.clinicId).filter(Boolean);
+      } catch (lookupError) {
+        console.warn('Could not look up staff clinics for audit:', lookupError);
+      }
       
-      await auditLogger.log({
-        userId: userPerms.email,
-        userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
-        userRole: AuditLogger.getUserRole(userPerms),
-        action: status === 'denied' ? 'DENY' : 'APPROVE',
-        resource: 'LEAVE',
-        resourceId: leaveId,
-        clinicId: userClinicId,
-        before: { status: leave.status },
-        after: { status },
-        reason: denialReason,
-        metadata: {
-          ...AuditLogger.createLeaveMetadata(leave),
-          actionType: status === 'denied' ? 'Leave Denied' : 'Leave Approved',
-        },
-        ...AuditLogger.extractRequestContext(event),
-      });
+      const clinicsToLog = staffClinicIds.length > 0 ? staffClinicIds : [userPerms.clinicRoles?.[0]?.clinicId].filter(Boolean);
+      
+      for (const clinicIdForAudit of clinicsToLog) {
+        await auditLogger.log({
+          userId: userPerms.email,
+          userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+          userRole: AuditLogger.getUserRole(userPerms),
+          action: status === 'approved' ? 'APPROVE' : 'DENY',
+          resource: 'LEAVE',
+          resourceId: leaveId,
+          clinicId: clinicIdForAudit,
+          before: { status: previousStatus, staffId: leave.staffId },
+          after: { status },
+          reason: reason,
+          metadata: {
+            ...AuditLogger.createLeaveMetadata(leave),
+            actionBy: userPerms.email,
+            actionByName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim(),
+            actionType: status === 'approved' ? 'Leave Approved' : 'Leave Denied',
+            requestedBy: leave.staffId,
+            denyReason: status === 'denied' ? reason : undefined,
+          },
+          ...AuditLogger.extractRequestContext(event),
+        });
+      }
     }
 
     return httpOk({ leaveId, status });
 }
 
-// --- AUDIT TRAIL ---
-async function getAuditLogs(queryParams: any, isAdmin: boolean, allowedClinics: Set<string>) {
-  const { userId, clinicId, startDate, endDate, action, resource, limit } = queryParams || {};
+// ========================================
+// AUDIT TRAIL FUNCTIONS
+// ========================================
 
-  if (!isAdmin) {
-    return httpErr(403, "Forbidden: Only admins can access audit logs");
-  }
-
- 
-  if (clinicId && !hasClinicAccess(allowedClinics, clinicId)) {
-    return httpErr(403, "Forbidden: no access to this clinic");
-  }
-
-  const params: any = {
-    TableName: process.env.AUDIT_LOGS_TABLE || 'AuditLogs',
-    Limit: limit ? parseInt(limit) : 100,
-  };
-
-  // Build filter expression
-  const filterExpressions: string[] = [];
-  const expressionAttributeNames: Record<string, string> = {};
-  const expressionAttributeValues: Record<string, any> = {};
+async function queryAuditLogs(queryParams: any) {
+  const { userId, clinicId, startDate, endDate, limit: limitStr } = queryParams || {};
+  const limit = parseInt(limitStr) || 100;
 
   if (userId) {
-    filterExpressions.push('userId = :userId');
-    expressionAttributeValues[':userId'] = userId;
+    const result = await auditLogger.queryByUser(userId, { startDate, endDate, limit });
+    return httpOk({
+      auditLogs: result.auditLogs,
+      count: result.count,
+      lastEvaluatedKey: result.lastEvaluatedKey,
+    });
   }
 
   if (clinicId) {
-    filterExpressions.push('clinicId = :clinicId');
-    expressionAttributeValues[':clinicId'] = clinicId;
+    const result = await auditLogger.queryByClinic(clinicId, { startDate, endDate, limit });
+    return httpOk({
+      auditLogs: result.auditLogs,
+      count: result.count,
+      lastEvaluatedKey: result.lastEvaluatedKey,
+    });
   }
 
-  if (action) {
-    filterExpressions.push('#action = :action');
-    expressionAttributeNames['#action'] = 'action';
-    expressionAttributeValues[':action'] = action;
-  }
-
-  if (resource) {
-    filterExpressions.push('#resource = :resource');
-    expressionAttributeNames['#resource'] = 'resource';
-    expressionAttributeValues[':resource'] = resource;
-  }
-
-  if (startDate && endDate) {
-    filterExpressions.push('#timestamp BETWEEN :startDate AND :endDate');
-    expressionAttributeNames['#timestamp'] = 'timestamp';
-    expressionAttributeValues[':startDate'] = startDate;
-    expressionAttributeValues[':endDate'] = endDate;
-  }
-
-  if (filterExpressions.length > 0) {
-    params.FilterExpression = filterExpressions.join(' AND ');
-    if (Object.keys(expressionAttributeNames).length > 0) {
-      params.ExpressionAttributeNames = expressionAttributeNames;
-    }
-    params.ExpressionAttributeValues = expressionAttributeValues;
-  }
-
-  const { Items, Count } = await ddb.send(new ScanCommand(params));
-
-  return httpOk({
-    auditLogs: Items || [],
-    count: Count || 0
-  });
+  return httpErr(400, "Please provide at least one filter: userId or clinicId");
 }
 
-async function getResourceAuditTrail(
-  resourceType: 'staff' | 'shift' | 'leave',
-  resourceId: string,
-  limit: number
-) {
-  const resourceMap: Record<string, string> = {
-    'staff': 'STAFF',
-    'shift': 'SHIFT',
-    'leave': 'LEAVE'
-  };
+async function getResourceAuditTrail(resourceType: AuditResource, resourceId: string, queryParams: any) {
+  const { limit: limitStr } = queryParams || {};
+  const limit = parseInt(limitStr) || 100;
 
-  const { Items } = await ddb.send(new QueryCommand({
-    TableName: process.env.AUDIT_LOGS_TABLE || 'AuditLogs',
-    IndexName: 'byResource',
-    KeyConditionExpression: '#resource = :resource AND resourceId = :resourceId',
-    ExpressionAttributeNames: { '#resource': 'resource' },
-    ExpressionAttributeValues: {
-      ':resource': resourceMap[resourceType],
-      ':resourceId': resourceId
-    },
-    Limit: limit,
-    ScanIndexForward: false // Most recent first
-  }));
+  const validResourceTypes = ['STAFF', 'SHIFT', 'LEAVE', 'CLINIC_ROLE'];
+  if (!validResourceTypes.includes(resourceType)) {
+    return httpErr(400, `Invalid resource type. Must be one of: ${validResourceTypes.join(', ')}`);
+  }
 
+  const result = await auditLogger.queryByResource(resourceType, resourceId, { limit });
+  
   return httpOk({
-    auditTrail: Items || [],
-    count: Items?.length || 0
+    resource: resourceType.toLowerCase(),
+    resourceId,
+    auditTrail: result.auditLogs,
+    count: result.count,
+    lastEvaluatedKey: result.lastEvaluatedKey,
   });
 }
