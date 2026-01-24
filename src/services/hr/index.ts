@@ -2601,7 +2601,7 @@ async function getAuditLogs(queryParams: any, isAdmin: boolean, allowedClinics: 
     return httpErr(403, "Forbidden: Only admins can access audit logs");
   }
 
-  // If clinicId is specified, ensure admin has access
+ 
   if (clinicId && !hasClinicAccess(allowedClinics, clinicId)) {
     return httpErr(403, "Forbidden: no access to this clinic");
   }
