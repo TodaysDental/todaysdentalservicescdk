@@ -1039,52 +1039,34 @@ export class CredentialingStack extends Stack {
     // API ROUTES
     // ========================================
 
-    // Grant blanket API Gateway invoke permissions to avoid Lambda policy size limits.
-    // Each addMethod() would normally add a separate permission, causing the policy to exceed 20KB.
-    const apiSourceArn = `arn:aws:execute-api:${this.region}:${this.account}:${this.api.restApiId}/*`;
+    // Avoid Lambda resource policy size limit (20KB):
+    // - CDK's `LambdaIntegration` auto-adds one `AWS::Lambda::Permission` *per method* (and per OPTIONS),
+    //   which quickly exceeds Lambda's 20KB resource policy limit for large APIs.
+    // - We instead add ONE wildcard permission per Lambda and use a raw AWS_PROXY integration so CDK
+    //   does not auto-create per-method permissions.
+    const apiInvokeSourceArn = `arn:aws:execute-api:${this.region}:${this.account}:${this.api.restApiId}/*/*/*`;
 
-    // Blanket permission for main credentialing handler
-    new lambda.CfnPermission(this, 'CredentialingFnApiPermission', {
-      action: 'lambda:InvokeFunction',
-      functionName: this.credentialingFn.functionArn,
-      principal: 'apigateway.amazonaws.com',
-      sourceArn: apiSourceArn,
-    });
+    const allowInvokeFromApi = (id: string, fn: lambda.IFunction) => {
+      fn.addPermission(id, {
+        principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+        sourceArn: apiInvokeSourceArn,
+      });
+    };
 
-    // Blanket permission for autofill handler
-    new lambda.CfnPermission(this, 'AutofillFnApiPermission', {
-      action: 'lambda:InvokeFunction',
-      functionName: this.autofillFn.functionArn,
-      principal: 'apigateway.amazonaws.com',
-      sourceArn: apiSourceArn,
-    });
+    allowInvokeFromApi('CredentialingFnInvokePermission', this.credentialingFn);
+    allowInvokeFromApi('AutofillFnInvokePermission', this.autofillFn);
+    allowInvokeFromApi('VerificationFnInvokePermission', this.verificationFn);
+    allowInvokeFromApi('WorkflowFnInvokePermission', this.workflowFn);
+    allowInvokeFromApi('ExpirationApiHandlerInvokePermission', this.expirationApiHandler);
 
-    // Blanket permission for verification handler
-    new lambda.CfnPermission(this, 'VerificationFnApiPermission', {
-      action: 'lambda:InvokeFunction',
-      functionName: this.verificationFn.functionArn,
-      principal: 'apigateway.amazonaws.com',
-      sourceArn: apiSourceArn,
-    });
+    const lambdaProxyIntegration = (fn: lambda.IFunction) =>
+      new apigw.Integration({
+        type: apigw.IntegrationType.AWS_PROXY,
+        integrationHttpMethod: 'POST',
+        uri: `arn:aws:apigateway:${this.region}:lambda:path/2015-03-31/functions/${fn.functionArn}/invocations`,
+      });
 
-    // Blanket permission for workflow handler
-    new lambda.CfnPermission(this, 'WorkflowFnApiPermission', {
-      action: 'lambda:InvokeFunction',
-      functionName: this.workflowFn.functionArn,
-      principal: 'apigateway.amazonaws.com',
-      sourceArn: apiSourceArn,
-    });
-
-    // Blanket permission for expiration API handler
-    new lambda.CfnPermission(this, 'ExpirationApiFnApiPermission', {
-      action: 'lambda:InvokeFunction',
-      functionName: this.expirationApiHandler.functionArn,
-      principal: 'apigateway.amazonaws.com',
-      sourceArn: apiSourceArn,
-    });
-
-    // Use allowAllMethods to prevent per-method permission creation
-    const lambdaIntegration = new apigw.LambdaIntegration(this.credentialingFn, { allowTestInvoke: false });
+    const lambdaIntegration = lambdaProxyIntegration(this.credentialingFn);
     const authOptions = {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
@@ -1225,7 +1207,7 @@ export class CredentialingStack extends Stack {
     // AUTOFILL API ROUTES (for Chrome Extension)
     // ========================================
 
-    const autofillIntegration = new apigw.LambdaIntegration(this.autofillFn, { allowTestInvoke: false });
+    const autofillIntegration = lambdaProxyIntegration(this.autofillFn);
 
     // /autofill - Root resource for autofill APIs
     const autofillRes = this.api.root.addResource('autofill');
@@ -1286,7 +1268,7 @@ export class CredentialingStack extends Stack {
     // VERIFICATION API ROUTES
     // ========================================
 
-    const verifyIntegration = new apigw.LambdaIntegration(this.verificationFn, { allowTestInvoke: false });
+    const verifyIntegration = lambdaProxyIntegration(this.verificationFn);
     const verifyRes = this.api.root.addResource('verify');
     addCorsOptions(verifyRes);
 
@@ -1319,7 +1301,7 @@ export class CredentialingStack extends Stack {
     // WORKFLOW API ROUTES
     // ========================================
 
-    const workflowIntegration = new apigw.LambdaIntegration(this.workflowFn, { allowTestInvoke: false });
+    const workflowIntegration = lambdaProxyIntegration(this.workflowFn);
 
     // /workflows - List workflows for provider
     const workflowsRes = this.api.root.addResource('workflows');
@@ -1352,7 +1334,7 @@ export class CredentialingStack extends Stack {
     // EXPIRATION API ROUTES
     // ========================================
 
-    const expirationIntegration = new apigw.LambdaIntegration(this.expirationApiHandler, { allowTestInvoke: false });
+    const expirationIntegration = lambdaProxyIntegration(this.expirationApiHandler);
     const expirationsRes = this.api.root.addResource('expirations');
     addCorsOptions(expirationsRes);
 

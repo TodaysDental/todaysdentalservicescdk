@@ -58,7 +58,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const body: InitiateRequest = JSON.parse(event.body);
-    
+
     // Sanitize and validate email input
     const email = body.email?.trim().toLowerCase();
 
@@ -107,7 +107,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return {
         statusCode: 429,
         headers,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           error: `Please wait ${waitTime} seconds before requesting a new code`,
           retryAfter: waitTime,
         }),
@@ -165,12 +165,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 function generateOTPCode(length: number): string {
   const digits = '0123456789';
   let code = '';
-  
+
   for (let i = 0; i < length; i++) {
     const randomIndex = crypto.randomInt(0, digits.length);
     code += digits[randomIndex];
   }
-  
+
   return code;
 }
 
@@ -179,7 +179,7 @@ function generateOTPCode(length: number): string {
  */
 async function sendOTPEmail(email: string, otpCode: string, userName: string): Promise<void> {
   const subject = `Your ${APP_NAME} Login Code`;
-  
+
   const htmlBody = `
 <!DOCTYPE html>
 <html>

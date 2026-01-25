@@ -54,7 +54,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const body: VerifyRequest = JSON.parse(event.body);
-    
+
     // Sanitize and validate inputs
     const email = body.email?.trim().toLowerCase();
     const code = body.code?.trim();
@@ -120,7 +120,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return {
         statusCode: 429,
         headers,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           error: 'Too many failed attempts. Please request a new code.',
           maxAttempts: MAX_OTP_ATTEMPTS,
         }),
@@ -143,7 +143,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return {
         statusCode: 401,
         headers,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           error: 'Invalid code',
           remainingAttempts,
         }),

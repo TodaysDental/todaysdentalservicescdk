@@ -45,7 +45,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const body: RefreshRequest = JSON.parse(event.body);
-    
+
     // Sanitize input
     const refreshToken = body.refreshToken?.trim();
 
@@ -132,7 +132,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     };
   } catch (error) {
     console.error('Refresh token error:', error);
-    
+
     if (error instanceof Error && error.message.includes('Invalid or expired token')) {
       return {
         statusCode: 401,

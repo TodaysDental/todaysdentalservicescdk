@@ -75,7 +75,9 @@ export async function getAllowedOriginsAsync(): Promise<string[]> {
 }
 
 const DEFAULT_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'];
-const DEFAULT_HEADERS = ['Content-Type', 'Authorization', 'X-Requested-With', 'Referer'];
+// NOTE: Keep this in sync with frontend request headers. In particular, many
+// finance/workflow modules send `x-clinic-id` which triggers a CORS preflight.
+const DEFAULT_HEADERS = ['Content-Type', 'Authorization', 'X-Requested-With', 'Referer', 'X-Clinic-Id'];
 
 // Helper function to determine which origin to allow based on request origin
 function getAllowedOrigin(requestOrigin?: string, allowedOrigins: string[] = ALLOWED_ORIGINS_LIST): string {
