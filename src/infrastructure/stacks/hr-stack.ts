@@ -548,7 +548,9 @@ export class HrStack extends Stack {
     // /shifts/{shiftId}/reject
     const shiftRejectRes = shiftIdRes.addResource('reject');
     shiftRejectRes.addMethod('PUT', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Reject shift (Staff only)
-
+// /shifts/copy-week - NEW ROUTE
+const shiftsCopyWeekRes = shiftsRes.addResource('copy-week');
+shiftsCopyWeekRes.addMethod('POST', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Copy week schedule (Admin only)
     // /leave
     const leaveRes = this.api.root.addResource('leave');
     leaveRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });  // Get leave requests (Admin or Staff)

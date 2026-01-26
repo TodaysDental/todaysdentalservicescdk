@@ -1770,11 +1770,16 @@ async function getDashboard(userPerms: any, isAdmin: boolean) {
 
     const adminClinics = userPerms.clinicRoles.map((cr: any) => cr.clinicId);
     
-    // FIXED: Get ALL staff users and calculate onPremise/remote in backend
+    // FIXED: Get staff count from StaffUser table
     const staffUsersPromise = ddb.send(new ScanCommand({
       TableName: STAFF_USER_TABLE,
       FilterExpression: 'isActive = :active',
       ExpressionAttributeValues: { ':active': true },
+    }));
+
+    // FIXED: Get ALL StaffClinicInfo records to calculate on-premise/remote counts
+    const staffClinicInfoPromise = ddb.send(new ScanCommand({
+      TableName: STAFF_INFO_TABLE,
     }));
 
     const shiftQueryPromises = adminClinics.map((clinicId: string) =>
@@ -1790,33 +1795,56 @@ async function getDashboard(userPerms: any, isAdmin: boolean) {
       }))
     );
 
-    const [staffUsersResponse, ...shiftResponses] = await Promise.all([
+    const [staffUsersResponse, staffClinicInfoResponse, ...shiftResponses] = await Promise.all([
       staffUsersPromise,
+      staffClinicInfoPromise,
       ...shiftQueryPromises
     ]);
     
     const staffUsers = staffUsersResponse.Items || [];
     const totalStaff = staffUsers.length;
+    const staffClinicInfoRecords = staffClinicInfoResponse.Items || [];
     
-    // FIXED: Calculate on-premise and remote staff counts
+    // FIXED: Calculate on-premise and remote staff counts using StaffClinicInfo data
+    // Match the exact frontend logic from AdminOverview.tsx
     let onPremiseStaff = 0;
     let remoteStaff = 0;
+    const processedStaff = new Set<string>(); // Track processed staff to avoid duplicates
     
-    staffUsers.forEach((user: any) => {
-      // Check staffDetails for work location
-      const staffDetails = user.staffDetails || [];
-      const hasRemote = staffDetails.some((detail: any) => detail.workLocation?.isRemote === true);
-      const hasOnPremise = staffDetails.some((detail: any) => detail.workLocation?.isOnPremise === true);
+    staffClinicInfoRecords.forEach((staffInfo: any) => {
+      const staffId = staffInfo.email || staffInfo.staffId;
       
-      if (hasRemote && !hasOnPremise) {
-        remoteStaff++;
-      } else if (hasOnPremise) {
-        onPremiseStaff++;
+      // Skip if already processed (staff can appear in multiple clinics)
+      if (processedStaff.has(staffId)) {
+        return;
+      }
+      processedStaff.add(staffId);
+      
+      // Check work location - matches frontend logic exactly
+      if (staffInfo.workLocation) {
+        // If explicitly marked as remote, count as remote
+        if (staffInfo.workLocation.isRemote && !staffInfo.workLocation.isOnPremise) {
+          remoteStaff++;
+        } 
+        // If explicitly marked as on-premise, count as on-premise
+        else if (staffInfo.workLocation.isOnPremise) {
+          onPremiseStaff++;
+        }
+        // If both are true or only remote is marked, default to on-premise
+        else if (staffInfo.workLocation.isRemote) {
+          remoteStaff++;
+        }
+        else {
+          // Default to on-premise if no flags are true
+          onPremiseStaff++;
+        }
       } else {
-        // Default to on-premise if no work location specified
+        // If no work location info, default to on-premise
         onPremiseStaff++;
       }
     });
+    
+    console.log(`📊 Staff counts calculated: Total=${totalStaff}, OnPremise=${onPremiseStaff}, Remote=${remoteStaff}`);
     
     const allShifts = shiftResponses.flatMap(res => res.Items || []);
     
