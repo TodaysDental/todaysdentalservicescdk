@@ -1814,13 +1814,21 @@ async function getDashboard(userPerms: any, isAdmin: boolean) {
     const totalStaff = staffUsers.length;
     const staffClinicInfoRecords = staffClinicInfoResponse.Items || [];
 
+    // FIXED: Create a set of admin's clinics for fast lookup
+    const adminClinicSet = new Set(adminClinics);
+
     // FIXED: Calculate on-premise and remote staff counts using StaffClinicInfo data
-    // Match the exact frontend logic from AdminOverview.tsx
+    // Only count staff from the admin's accessible clinics
     let onPremiseStaff = 0;
     let remoteStaff = 0;
     const processedStaff = new Set<string>(); // Track processed staff to avoid duplicates
 
-    staffClinicInfoRecords.forEach((staffInfo: any) => {
+    // First, filter records to only include staff in admin's clinics
+    const relevantStaffRecords = staffClinicInfoRecords.filter((staffInfo: any) =>
+      adminClinicSet.has(staffInfo.clinicId)
+    );
+
+    relevantStaffRecords.forEach((staffInfo: any) => {
       const staffId = staffInfo.email || staffInfo.staffId;
 
       // Skip if already processed (staff can appear in multiple clinics)
@@ -1853,7 +1861,7 @@ async function getDashboard(userPerms: any, isAdmin: boolean) {
       }
     });
 
-    console.log(`📊 Staff counts calculated: Total=${totalStaff}, OnPremise=${onPremiseStaff}, Remote=${remoteStaff}`);
+    console.log(`📊 Staff counts calculated: Total=${totalStaff}, OnPremise=${onPremiseStaff}, Remote=${remoteStaff}, RelevantRecords=${relevantStaffRecords.length}`);
 
     const allShifts = shiftResponses.flatMap(res => res.Items || []);
 
@@ -2683,25 +2691,53 @@ async function updateLeaveStatus(leaveId: string, status: 'approved' | 'denied',
   }));
 
   if (userPerms) {
-    const userClinicId = userPerms.clinicRoles?.[0]?.clinicId;
+    // FIXED: Look up the staff's clinics from StaffClinicInfo to log audit to correct clinic
+    let staffClinicIds: string[] = [];
+    try {
+      const { Items: staffInfoRecords } = await ddb.send(new QueryCommand({
+        TableName: STAFF_INFO_TABLE,
+        IndexName: 'byEmail',
+        KeyConditionExpression: 'email = :email',
+        ExpressionAttributeValues: { ':email': leave.staffId }
+      }));
 
-    await auditLogger.log({
-      userId: userPerms.email,
-      userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
-      userRole: AuditLogger.getUserRole(userPerms),
-      action: status === 'approved' ? 'APPROVE' : 'REJECT',
-      resource: 'LEAVE',
-      resourceId: leaveId,
-      clinicId: userClinicId,
-      before: { status: previousStatus },
-      after: { status },
-      reason,
-      metadata: {
-        ...AuditLogger.createLeaveMetadata(leave),
-        actionType: status === 'approved' ? 'Leave Approved' : 'Leave Denied',
-      },
-      ...AuditLogger.extractRequestContext(event),
-    });
+      if (staffInfoRecords && staffInfoRecords.length > 0) {
+        staffClinicIds = staffInfoRecords.map((record: any) => record.clinicId).filter(Boolean);
+      }
+    } catch (lookupError) {
+      console.warn('Could not look up staff clinics for audit:', lookupError);
+    }
+
+    // Use staff's clinics, or fall back to approver's first clinic
+    const clinicsToLog = staffClinicIds.length > 0
+      ? staffClinicIds
+      : [userPerms.clinicRoles?.[0]?.clinicId].filter(Boolean);
+
+    // Log to each relevant clinic
+    for (const clinicIdForAudit of clinicsToLog) {
+      await auditLogger.log({
+        userId: userPerms.email,
+        userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+        userRole: AuditLogger.getUserRole(userPerms),
+        // FIXED: Use 'DENY' for denied status to match what the frontend expects
+        action: status === 'approved' ? 'APPROVE' : 'DENY',
+        resource: 'LEAVE',
+        resourceId: leaveId,
+        clinicId: clinicIdForAudit,
+        before: { status: previousStatus, staffId: leave.staffId },
+        after: { status },
+        reason,
+        metadata: {
+          ...AuditLogger.createLeaveMetadata(leave),
+          actionType: status === 'approved' ? 'Leave Approved' : 'Leave Denied',
+          actionBy: userPerms.email,
+          actionByName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim(),
+          requestedBy: leave.staffId,
+          affectedClinics: staffClinicIds,
+        },
+        ...AuditLogger.extractRequestContext(event),
+      });
+    }
   }
 
   return httpOk({ leaveId, status, message: `Leave request ${status}` });

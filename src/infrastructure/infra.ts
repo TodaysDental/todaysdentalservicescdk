@@ -20,6 +20,8 @@ import { QueriesStack } from './stacks/queries-stack';
 import { ReportsStack } from './stacks/reports-stack';
 import { ClinicHoursStack } from './stacks/clinic-hours-stack';
 import { ClinicPricingStack } from './stacks/clinic-pricing-stack';
+import { ClinicCostStack } from './stacks/clinic-cost-stack';
+import { ClinicBudgetStack } from './stacks/clinic-budget-stack';
 import { ClinicInsuranceStack } from './stacks/clinic-insurance-stack';
 import { AdminStack } from './stacks/admin-stack';
 import { OpenDentalStack } from './stacks/opendental-stack';
@@ -53,9 +55,9 @@ import clinicConfigData from './configs/clinic-config.json';
 
 const app = new cdk.App();
 
-const env = { 
- account: process.env.CDK_DEFAULT_ACCOUNT,
- region: process.env.CDK_DEFAULT_REGION || process.env.AWS_REGION,
+const env = {
+  account: process.env.CDK_DEFAULT_ACCOUNT,
+  region: process.env.CDK_DEFAULT_REGION || process.env.AWS_REGION,
 };
 
 const voiceConnectorTerminationCidrsContext = app.node.tryGetContext('voiceConnectorTerminationCidrs');
@@ -64,117 +66,117 @@ const voiceConnectorOriginationRoutesContext = app.node.tryGetContext('voiceConn
 let voiceConnectorOriginationRoutes: VoiceConnectorOriginationRouteConfig[] | undefined;
 
 if (Array.isArray(voiceConnectorTerminationCidrsContext)) {
- voiceConnectorTerminationCidrs = voiceConnectorTerminationCidrsContext
-  .map((value) => String(value).trim())
-  .filter((value) => value.length > 0);
+  voiceConnectorTerminationCidrs = voiceConnectorTerminationCidrsContext
+    .map((value) => String(value).trim())
+    .filter((value) => value.length > 0);
 } else if (typeof voiceConnectorTerminationCidrsContext === 'string') {
- const trimmed = voiceConnectorTerminationCidrsContext.trim();
+  const trimmed = voiceConnectorTerminationCidrsContext.trim();
 
- if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-  try {
-   const parsed = JSON.parse(trimmed);
-   if (Array.isArray(parsed)) {
-    voiceConnectorTerminationCidrs = parsed
-     .map((value) => String(value).trim())
-     .filter((value) => value.length > 0);
-   }
-  } catch (error) {
-   throw new Error(`Failed to parse voiceConnectorTerminationCidrs context as JSON array: ${error}`);
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        voiceConnectorTerminationCidrs = parsed
+          .map((value) => String(value).trim())
+          .filter((value) => value.length > 0);
+      }
+    } catch (error) {
+      throw new Error(`Failed to parse voiceConnectorTerminationCidrs context as JSON array: ${error}`);
+    }
+  } else if (trimmed.length > 0) {
+    voiceConnectorTerminationCidrs = trimmed.split(',').map((value) => value.trim()).filter((value) => value.length > 0);
   }
- } else if (trimmed.length > 0) {
-  voiceConnectorTerminationCidrs = trimmed.split(',').map((value) => value.trim()).filter((value) => value.length > 0);
- }
 }
 
 if (voiceConnectorTerminationCidrs && voiceConnectorTerminationCidrs.length === 0) {
- voiceConnectorTerminationCidrs = undefined;
+  voiceConnectorTerminationCidrs = undefined;
 }
 
 const normalizeOriginationRoute = (value: unknown, index: number): VoiceConnectorOriginationRouteConfig => {
- if (typeof value === 'string') {
-  const host = value.trim();
-  if (!host) {
-   throw new Error(`voiceConnectorOriginationRoutes[${index}] must include a non-empty host value.`);
-  }
-  return { host };
- }
-
- if (value && typeof value === 'object') {
-  const routeObject = value as Record<string, unknown>;
-  const hostValue = routeObject.host;
-  const host = typeof hostValue === 'string' ? hostValue.trim() : hostValue != null ? String(hostValue).trim() : '';
-
-  if (!host) {
-   throw new Error(`voiceConnectorOriginationRoutes[${index}] must include a non-empty host value.`);
+  if (typeof value === 'string') {
+    const host = value.trim();
+    if (!host) {
+      throw new Error(`voiceConnectorOriginationRoutes[${index}] must include a non-empty host value.`);
+    }
+    return { host };
   }
 
-  const route: VoiceConnectorOriginationRouteConfig = { host };
+  if (value && typeof value === 'object') {
+    const routeObject = value as Record<string, unknown>;
+    const hostValue = routeObject.host;
+    const host = typeof hostValue === 'string' ? hostValue.trim() : hostValue != null ? String(hostValue).trim() : '';
 
-  if ('port' in routeObject && routeObject.port != null) {
-   const port = Number(routeObject.port);
-   if (!Number.isFinite(port)) {
-    throw new Error(`voiceConnectorOriginationRoutes[${index}] port must be a finite number.`);
-   }
-   route.port = port;
+    if (!host) {
+      throw new Error(`voiceConnectorOriginationRoutes[${index}] must include a non-empty host value.`);
+    }
+
+    const route: VoiceConnectorOriginationRouteConfig = { host };
+
+    if ('port' in routeObject && routeObject.port != null) {
+      const port = Number(routeObject.port);
+      if (!Number.isFinite(port)) {
+        throw new Error(`voiceConnectorOriginationRoutes[${index}] port must be a finite number.`);
+      }
+      route.port = port;
+    }
+
+    if ('protocol' in routeObject && routeObject.protocol != null) {
+      route.protocol = String(routeObject.protocol).trim().toUpperCase() as VoiceConnectorOriginationRouteConfig['protocol'];
+    }
+
+    if ('priority' in routeObject && routeObject.priority != null) {
+      const priority = Number(routeObject.priority);
+      if (!Number.isFinite(priority)) {
+        throw new Error(`voiceConnectorOriginationRoutes[${index}] priority must be a finite number.`);
+      }
+      route.priority = priority;
+    }
+
+    if ('weight' in routeObject && routeObject.weight != null) {
+      const weight = Number(routeObject.weight);
+      if (!Number.isFinite(weight)) {
+        throw new Error(`voiceConnectorOriginationRoutes[${index}] weight must be a finite number.`);
+      }
+      route.weight = weight;
+    }
+
+    return route;
   }
 
-  if ('protocol' in routeObject && routeObject.protocol != null) {
-   route.protocol = String(routeObject.protocol).trim().toUpperCase() as VoiceConnectorOriginationRouteConfig['protocol'];
-  }
-
-  if ('priority' in routeObject && routeObject.priority != null) {
-   const priority = Number(routeObject.priority);
-   if (!Number.isFinite(priority)) {
-    throw new Error(`voiceConnectorOriginationRoutes[${index}] priority must be a finite number.`);
-   }
-   route.priority = priority;
-  }
-
-  if ('weight' in routeObject && routeObject.weight != null) {
-   const weight = Number(routeObject.weight);
-   if (!Number.isFinite(weight)) {
-    throw new Error(`voiceConnectorOriginationRoutes[${index}] weight must be a finite number.`);
-   }
-   route.weight = weight;
-  }
-
-  return route;
- }
-
- throw new Error(`voiceConnectorOriginationRoutes[${index}] must be a string host or an object with a host property.`);
+  throw new Error(`voiceConnectorOriginationRoutes[${index}] must be a string host or an object with a host property.`);
 };
 
 if (Array.isArray(voiceConnectorOriginationRoutesContext)) {
- voiceConnectorOriginationRoutes = voiceConnectorOriginationRoutesContext.map((value, index) =>
-  normalizeOriginationRoute(value, index)
- );
+  voiceConnectorOriginationRoutes = voiceConnectorOriginationRoutesContext.map((value, index) =>
+    normalizeOriginationRoute(value, index)
+  );
 } else if (typeof voiceConnectorOriginationRoutesContext === 'string') {
- const trimmed = voiceConnectorOriginationRoutesContext.trim();
- if (trimmed.length > 0) {
-  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-   try {
-    const parsed = JSON.parse(trimmed);
-    if (!Array.isArray(parsed)) {
-     throw new Error('voiceConnectorOriginationRoutes context must be a JSON array.');
+  const trimmed = voiceConnectorOriginationRoutesContext.trim();
+  if (trimmed.length > 0) {
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (!Array.isArray(parsed)) {
+          throw new Error('voiceConnectorOriginationRoutes context must be a JSON array.');
+        }
+        voiceConnectorOriginationRoutes = parsed.map((value, index) => normalizeOriginationRoute(value, index));
+      } catch (error) {
+        throw new Error(`Failed to parse voiceConnectorOriginationRoutes context: ${error}`);
+      }
+    } else {
+      voiceConnectorOriginationRoutes = trimmed
+        .split(',')
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+        .map((value, index) => normalizeOriginationRoute(value, index));
     }
-    voiceConnectorOriginationRoutes = parsed.map((value, index) => normalizeOriginationRoute(value, index));
-   } catch (error) {
-    throw new Error(`Failed to parse voiceConnectorOriginationRoutes context: ${error}`);
-   }
-  } else {
-   voiceConnectorOriginationRoutes = trimmed
-    .split(',')
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0)
-    .map((value, index) => normalizeOriginationRoute(value, index));
   }
- }
 } else if (voiceConnectorOriginationRoutesContext && typeof voiceConnectorOriginationRoutesContext === 'object') {
- voiceConnectorOriginationRoutes = [normalizeOriginationRoute(voiceConnectorOriginationRoutesContext, 0)];
+  voiceConnectorOriginationRoutes = [normalizeOriginationRoute(voiceConnectorOriginationRoutesContext, 0)];
 }
 
 if (voiceConnectorOriginationRoutes && voiceConnectorOriginationRoutes.length === 0) {
- voiceConnectorOriginationRoutes = undefined;
+  voiceConnectorOriginationRoutes = undefined;
 }
 
 // 1. Core Stack - JWT-based authentication (minimal resources)
@@ -205,6 +207,18 @@ const clinicHoursStack = new ClinicHoursStack(app, 'TodaysDentalInsightsClinicHo
 
 // Clinic Pricing service
 const clinicPricingStack = new ClinicPricingStack(app, 'TodaysDentalInsightsClinicPricingN1', {
+  env,
+});
+
+// Clinic Cost of Operation service - Stores daily operational costs per clinic
+// Only Super Admins and Global Super Admins can update costs (PUT)
+const clinicCostStack = new ClinicCostStack(app, 'TodaysDentalInsightsClinicCostN1', {
+  env,
+});
+
+// Clinic Daily Budget service - Stores daily budget targets per clinic
+// Only Super Admins and Global Super Admins can update budgets (PUT)
+const clinicBudgetStack = new ClinicBudgetStack(app, 'TodaysDentalInsightsClinicBudgetN1', {
   env,
 });
 
@@ -351,23 +365,23 @@ const analyticsStack = new AnalyticsStack(app, ANALYTICS_STACK_NAME, {
   callQueueTableName: CALL_QUEUE_TABLE_NAME,
   agentPresenceTableName: AGENT_PRESENCE_TABLE_NAME,
   agentPerformanceTableName: AGENT_PERFORMANCE_TABLE_NAME,
-  
+
   // ========================================
   // VOICE AI INTEGRATION (Phase 2 Deployment)
   // ========================================
   // Requires AiAgentsStack to be deployed first
   // Set ENABLE_VOICE_AI_ANALYTICS=true after initial deployment
-  voiceSessionsTableName: ENABLE_VOICE_AI_ANALYTICS 
-    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceSessionsTableName`) 
+  voiceSessionsTableName: ENABLE_VOICE_AI_ANALYTICS
+    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceSessionsTableName`)
     : undefined,
-  voiceSessionsTableArn: ENABLE_VOICE_AI_ANALYTICS 
-    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceSessionsTableArn`) 
+  voiceSessionsTableArn: ENABLE_VOICE_AI_ANALYTICS
+    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceSessionsTableArn`)
     : undefined,
-  aiAgentsTableName: ENABLE_VOICE_AI_ANALYTICS 
-    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableName`) 
+  aiAgentsTableName: ENABLE_VOICE_AI_ANALYTICS
+    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableName`)
     : undefined,
-  aiAgentsTableArn: ENABLE_VOICE_AI_ANALYTICS 
-    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableArn`) 
+  aiAgentsTableArn: ENABLE_VOICE_AI_ANALYTICS
+    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableArn`)
     : undefined,
 });
 
@@ -400,57 +414,57 @@ const pushNotificationsStack = new PushNotificationsStack(app, PUSH_NOTIFICATION
 pushNotificationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 
 const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
- env,
- jwtSecret: coreStack.jwtSecretValue,
- voiceConnectorTerminationCidrs,
- voiceConnectorOriginationRoutes,
- // CRITICAL FIX: Use constant table names instead of direct references to avoid CloudFormation
- // implicit exports which cause UPDATE_ROLLBACK failures when the table needs replacement
- analyticsTableName: ANALYTICS_TABLE_NAME,
- analyticsDedupTableName: ANALYTICS_DEDUP_TABLE_NAME,
- enableCallRecording: true, // Enable call recording by default
- recordingRetentionDays: 2555, // ~7 years for compliance
- medicalVocabularyName: analyticsStack.medicalVocabularyName,
- // Chime Media Region - passed to all Lambda functions for consistent region usage
- chimeMediaRegion: CHIME_MEDIA_REGION,
+  env,
+  jwtSecret: coreStack.jwtSecretValue,
+  voiceConnectorTerminationCidrs,
+  voiceConnectorOriginationRoutes,
+  // CRITICAL FIX: Use constant table names instead of direct references to avoid CloudFormation
+  // implicit exports which cause UPDATE_ROLLBACK failures when the table needs replacement
+  analyticsTableName: ANALYTICS_TABLE_NAME,
+  analyticsDedupTableName: ANALYTICS_DEDUP_TABLE_NAME,
+  enableCallRecording: true, // Enable call recording by default
+  recordingRetentionDays: 2555, // ~7 years for compliance
+  medicalVocabularyName: analyticsStack.medicalVocabularyName,
+  // Chime Media Region - passed to all Lambda functions for consistent region usage
+  chimeMediaRegion: CHIME_MEDIA_REGION,
   // Voice AI integration (from AiAgentsStack)
   // NOTE: Set ENABLE_AFTER_HOURS_AI=true after AiAgentsStack is deployed
   enableAfterHoursAi: ENABLE_AFTER_HOURS_AI,
   voiceAiLambdaArn: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceAiFunctionArn`) : undefined,
   // CRITICAL FIX: Use ClinicHoursStack table directly - it's the source of truth for clinic hours
   clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
- aiAgentsTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableName`) : undefined,
- voiceConfigTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceConfigTableName`) : undefined,
- scheduledCallsTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-ScheduledCallsTableName`) : undefined,
- // NOTE: ChimeStack creates the recordings bucket - it will be shared with AiAgentsStack
- // Enable real-time transcription for Voice AI - required for AI to listen to speech
- // This sets up Media Insights Pipeline + Amazon Transcribe + Kinesis for speech-to-text
- enableRealTimeTranscription: ENABLE_AFTER_HOURS_AI,
- // Enable AI phone numbers - creates SIP Rules for aiPhoneNumber entries in clinic-config.json
- // Calls to AI phone numbers route directly to Voice AI (no business hours check)
- enableAiPhoneNumbers: ENABLE_AFTER_HOURS_AI,
- // ========================================
- // PUSH NOTIFICATIONS INTEGRATION
- // ========================================
- // Enables mobile push notifications for call events (incoming, missed, voicemail)
- deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
- deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
- sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
+  aiAgentsTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableName`) : undefined,
+  voiceConfigTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceConfigTableName`) : undefined,
+  scheduledCallsTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-ScheduledCallsTableName`) : undefined,
+  // NOTE: ChimeStack creates the recordings bucket - it will be shared with AiAgentsStack
+  // Enable real-time transcription for Voice AI - required for AI to listen to speech
+  // This sets up Media Insights Pipeline + Amazon Transcribe + Kinesis for speech-to-text
+  enableRealTimeTranscription: ENABLE_AFTER_HOURS_AI,
+  // Enable AI phone numbers - creates SIP Rules for aiPhoneNumber entries in clinic-config.json
+  // Calls to AI phone numbers route directly to Voice AI (no business hours check)
+  enableAiPhoneNumbers: ENABLE_AFTER_HOURS_AI,
+  // ========================================
+  // PUSH NOTIFICATIONS INTEGRATION
+  // ========================================
+  // Enables mobile push notifications for call events (incoming, missed, voicemail)
+  deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
+  deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
+  sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
 });
 // ChimeStack depends on PushNotificationsStack for call notifications
 chimeStack.addDependency(pushNotificationsStack);
 
 // ** COMMUNICATIONS STACK INSTANTIATION **
 const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommN1', {
-    env,
-    jwtSecret: coreStack.jwtSecretValue,
-    // REST API Authorizer - authenticates all API requests
-    authorizerFunctionArn: coreStack.authorizerFunction.functionArn,
-    // Push Notifications Integration
-    // Enables mobile push notifications for offline users receiving messages/tasks
-    deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
-    deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
-    sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
+  env,
+  jwtSecret: coreStack.jwtSecretValue,
+  // REST API Authorizer - authenticates all API requests
+  authorizerFunctionArn: coreStack.authorizerFunction.functionArn,
+  // Push Notifications Integration
+  // Enables mobile push notifications for offline users receiving messages/tasks
+  deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
+  deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
+  sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
 });
 communicationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 
@@ -468,8 +482,8 @@ const chatbotStack = new ChatbotStack(app, CHATBOT_STACK_NAME, {
 // methods). Importing the ARNs makes Admin depend on Chime (one-way), which
 // avoids the cyclic dependency we were seeing.
 const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
- env,
- staffUserTableName: coreStack.staffUserTable.tableName,
+  env,
+  staffUserTableName: coreStack.staffUserTable.tableName,
   staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
   // CRITICAL FIX: Use constant table names instead of direct references to avoid CloudFormation
   // implicit exports which cause UPDATE_ROLLBACK failures when the table needs replacement
@@ -484,39 +498,39 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
- // Additional table names for detailed analytics
- callQueueTableName: chimeStack.callQueueTable.tableName,
- recordingMetadataTableName: chimeStack.recordingMetadataTable?.tableName,
- // CRITICAL FIX: Use constant table name instead of cross-stack reference
- // This avoids CloudFormation export/import which causes UPDATE_ROLLBACK_IN_PROGRESS issues
- // when the exporting stack (ChatbotStack) tries to rollback while AdminStack still references the export
- chatHistoryTableName: CHATBOT_CONVERSATIONS_TABLE_NAME,
- clinicsTableName: chimeStack.clinicsTable.tableName,
- recordingsBucketName: chimeStack.recordingsBucket?.bucketName,
- // Import ARNs exported by the Chime stack
- startSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StartSessionArn`),
- stopSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StopSessionArn`),
- outboundCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-OutboundCallArn`),
- transferCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-TransferCallArn`),
- callAcceptedFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallAcceptedArn`),
- callRejectedFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallRejectedArn`),
- callHungupFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallHungupArn`),
- leaveCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-LeaveCallArn`),
- heartbeatFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-HeartbeatArn`),
- agentPresenceTableName: cdk.Fn.importValue(`${chimeStack.stackName}-AgentPresenceTableName`),
- holdCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-HoldCallArn`),
- resumeCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-ResumeCallArn`),
- // New features: Add Call, DTMF, Notes, Conference
- addCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-AddCallArn`),
- sendDtmfFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-SendDtmfArn`),
- callNotesFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallNotesArn`),
- conferenceCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-ConferenceCallArn`),
- // New features: Join Queue and Active Calls
- joinQueuedCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-JoinQueuedCallArn`),
- joinActiveCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-JoinActiveCallArn`),
- getJoinableCallsFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-GetJoinableCallsArn`),
- // Call Recording
- getRecordingFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-GetRecordingFnArn`),
+  // Additional table names for detailed analytics
+  callQueueTableName: chimeStack.callQueueTable.tableName,
+  recordingMetadataTableName: chimeStack.recordingMetadataTable?.tableName,
+  // CRITICAL FIX: Use constant table name instead of cross-stack reference
+  // This avoids CloudFormation export/import which causes UPDATE_ROLLBACK_IN_PROGRESS issues
+  // when the exporting stack (ChatbotStack) tries to rollback while AdminStack still references the export
+  chatHistoryTableName: CHATBOT_CONVERSATIONS_TABLE_NAME,
+  clinicsTableName: chimeStack.clinicsTable.tableName,
+  recordingsBucketName: chimeStack.recordingsBucket?.bucketName,
+  // Import ARNs exported by the Chime stack
+  startSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StartSessionArn`),
+  stopSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StopSessionArn`),
+  outboundCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-OutboundCallArn`),
+  transferCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-TransferCallArn`),
+  callAcceptedFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallAcceptedArn`),
+  callRejectedFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallRejectedArn`),
+  callHungupFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallHungupArn`),
+  leaveCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-LeaveCallArn`),
+  heartbeatFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-HeartbeatArn`),
+  agentPresenceTableName: cdk.Fn.importValue(`${chimeStack.stackName}-AgentPresenceTableName`),
+  holdCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-HoldCallArn`),
+  resumeCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-ResumeCallArn`),
+  // New features: Add Call, DTMF, Notes, Conference
+  addCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-AddCallArn`),
+  sendDtmfFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-SendDtmfArn`),
+  callNotesFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallNotesArn`),
+  conferenceCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-ConferenceCallArn`),
+  // New features: Join Queue and Active Calls
+  joinQueuedCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-JoinQueuedCallArn`),
+  joinActiveCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-JoinActiveCallArn`),
+  getJoinableCallsFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-GetJoinableCallsArn`),
+  // Call Recording
+  getRecordingFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-GetRecordingFnArn`),
 });
 
 // CRITICAL FIX: Avoid circular dependencies between adminStack and chimeStack
@@ -536,9 +550,9 @@ adminStack.addDependency(chimeStack);
 // so no additional configuration is needed here.
 
 const hrStack = new HrStack(app, 'TodaysDentalInsightsHrN1', {
- env,
- staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
- clinicsTableName: chimeStack.clinicsTable.tableName, // For timezone lookup in shift emails
+  env,
+  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+  clinicsTableName: chimeStack.clinicsTable.tableName, // For timezone lookup in shift emails
 });
 // hrStack.addDependency(coreStack); // Implicit
 
@@ -552,36 +566,36 @@ credentialingStack.addDependency(coreStack); // Explicit - imports AuthorizerFun
 
 // Schedules service (depends on other services for cross-table access)
 const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesN1', {
- env,
- templatesTableName: templatesStack.templatesTable.tableName,
- queriesTableName: queriesStack.queriesTable.tableName,
- clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
- consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
- // Pass secrets table names for dynamic SFTP credential retrieval
- globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
- clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
- secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  env,
+  templatesTableName: templatesStack.templatesTable.tableName,
+  queriesTableName: queriesStack.queriesTable.tableName,
+  clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
+  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
+  // Pass secrets table names for dynamic SFTP credential retrieval
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
 schedulesStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
 
 const callbackStack = new CallbackStack(app, 'TodaysDentalInsightsCallbackN1', {
- env,
+  env,
 });
 
 // 7. Patient Portal Stack - Dedicated patient portal API (depends on core and OpenDental)
 const patientPortalStack = new PatientPortalStack(app, 'TodaysDentalInsightsPatientPortalN1', {
- env,
- consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
- consolidatedTransferServerBucket: openDentalStack.consolidatedSftpBucket.bucketName,
- // Pass secrets table names for dynamic SFTP credential retrieval
- globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
- clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
- clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
- secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  env,
+  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
+  consolidatedTransferServerBucket: openDentalStack.consolidatedSftpBucket.bucketName,
+  // Pass secrets table names for dynamic SFTP credential retrieval
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
 patientPortalStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
 const patientPortalApptTypesStack = new PatientPortalApptTypesStack(app, 'TodaysDentalInsightsPatientPortalApptTypesN1', {
- env,
+  env,
 });
 // patientPortalApptTypesStack.addDependency(coreStack); // Implicit
 
@@ -607,14 +621,14 @@ const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   // This table is synced hourly from OpenDental and contains the authoritative clinic hours
   clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
   clinicHoursTableArn: clinicHoursStack.clinicHoursTable.tableArn,
-  
+
   // ========================================
   // PATIENT PORTAL APPT TYPES INTEGRATION (from PatientPortalApptTypesStack)
   // ========================================
   // Used by Action Group Lambda to look up appointment types when booking
   apptTypesTableName: patientPortalApptTypesStack.apptTypesTable.tableName,
   apptTypesTableArn: patientPortalApptTypesStack.apptTypesTable.tableArn,
-  
+
   // ========================================
   // CHIME STACK INTEGRATION (REQUIRED)
   // ========================================
@@ -639,7 +653,7 @@ const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   // ========================================
   // Required for Action Group Lambda to read from KMS-encrypted secrets tables (ClinicSecrets fallback)
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-  
+
   // ========================================
   // UNIFIED ANALYTICS (REQUIRED)
   // ========================================
@@ -652,7 +666,7 @@ const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   callAnalyticsTableName: ANALYTICS_TABLE_NAME,
   // Construct ARN from known components to avoid cross-stack reference
   callAnalyticsTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/${ANALYTICS_TABLE_NAME}`,
-  
+
   // ========================================
   // SHARED RECORDINGS BUCKET
   // ========================================
@@ -660,7 +674,7 @@ const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   // between AI calls and human calls
   sharedRecordingsBucketName: chimeStack.recordingsBucket?.bucketName,
   sharedRecordingsBucketArn: chimeStack.recordingsBucket?.bucketArn,
-  
+
   // ========================================
   // WEBSOCKET DOMAIN (from ChatbotStack)
   // ========================================
@@ -780,6 +794,8 @@ queriesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionA
 reportsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 clinicHoursStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 clinicPricingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+clinicCostStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+clinicBudgetStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 // clinicInsuranceStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn - DISABLED
 openDentalStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 hrStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
