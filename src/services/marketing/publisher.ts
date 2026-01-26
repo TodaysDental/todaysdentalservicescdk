@@ -2,8 +2,8 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, BatchGetCommand, GetCommand, PutCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
-import { 
-  ayrsharePost, 
+import {
+  ayrsharePost,
   ayrshareDeletePost,
   ayrshareGetHistory,
   ayrshareGetAnalytics,
@@ -101,11 +101,11 @@ async function postToClinicWithRetry(
       }));
     }
 
-    return { 
-      clinicId: config.clinicId, 
-      status: 'success', 
-      id: res.id, 
-      refId: res.refId 
+    return {
+      clinicId: config.clinicId,
+      status: 'success',
+      id: res.id,
+      refId: res.refId
     };
   } catch (error: any) {
     console.error(`Post failed for clinic ${config.clinicId}:`, error.message);
@@ -117,10 +117,10 @@ async function postToClinicWithRetry(
       return postToClinicWithRetry(apiKey, config, postData, saveHistory, retries + 1);
     }
 
-    return { 
-      clinicId: config.clinicId, 
-      status: 'failed', 
-      error: error.message 
+    return {
+      clinicId: config.clinicId,
+      status: 'failed',
+      error: error.message
     };
   }
 }
@@ -146,7 +146,7 @@ function isRetryableError(error: any): boolean {
  */
 function resolvePostPlaceholders(postData: any, clinicData: any): any {
   const resolvedPost = { ...postData };
-  
+
   if (resolvedPost.post) {
     // Build replacement map from all possible clinic data fields
     const replacements: Record<string, string> = {
@@ -173,7 +173,7 @@ function resolvePostPlaceholders(postData: any, clinicData: any): any {
       'scheduleUrl': clinicData.scheduleUrl || '',
       'mapsUrl': clinicData.mapsUrl || '',
     };
-    
+
     // Apply all replacements
     let text = resolvedPost.post;
     for (const [placeholder, value] of Object.entries(replacements)) {
@@ -182,7 +182,7 @@ function resolvePostPlaceholders(postData: any, clinicData: any): any {
     }
     resolvedPost.post = text;
   }
-  
+
   return resolvedPost;
 }
 
@@ -199,7 +199,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     if (event.path.endsWith('/post') && event.httpMethod === 'POST') {
       const body = JSON.parse(event.body || '{}');
-      const { targetClinicIds, postData, saveHistory = true, resolvePlaceholders = false } = body; 
+      const { targetClinicIds, postData, saveHistory = true, resolvePlaceholders = false } = body;
       // postData: { post: "text", platforms: ["facebook"], mediaUrls: [], scheduleDate?: "..." }
 
       if (!targetClinicIds || !Array.isArray(targetClinicIds) || targetClinicIds.length === 0) {
@@ -208,7 +208,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
       // Get Profile Keys for all requested clinics
       const keys = targetClinicIds.map(id => ({ clinicId: String(id) }));
-      
+
       const dbRes = await ddb.send(new BatchGetCommand({
         RequestItems: {
           [TABLE_NAME]: { Keys: keys }
@@ -238,10 +238,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const batchResults = await Promise.all(
           batch.map(async (config) => {
             // Resolve placeholders if requested
-            const resolvedPostData = resolvePlaceholders 
+            const resolvedPostData = resolvePlaceholders
               ? resolvePostPlaceholders(postData, config)
               : postData;
-            
+
             return postToClinicWithRetry(apiKey, config, resolvedPostData, saveHistory);
           })
         );
@@ -281,11 +281,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     if (event.path.endsWith('/post/bulk') && event.httpMethod === 'POST') {
       const body = JSON.parse(event.body || '{}');
-      const { 
-        targetClinicIds, 
-        postData, 
+      const {
+        targetClinicIds,
+        postData,
         canvasJson,
-        saveHistory = true 
+        saveHistory = true
       } = body;
 
       if (!targetClinicIds || !Array.isArray(targetClinicIds) || targetClinicIds.length === 0) {
@@ -294,7 +294,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
       // Get clinic configs
       const keys = targetClinicIds.map(id => ({ clinicId: String(id) }));
-      
+
       const dbRes = await ddb.send(new BatchGetCommand({
         RequestItems: {
           [TABLE_NAME]: { Keys: keys }
@@ -332,7 +332,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           if (invokeRes.Payload) {
             const payload = JSON.parse(Buffer.from(invokeRes.Payload).toString());
             const imageGenResponse = JSON.parse(payload.body || '{}');
-            
+
             if (imageGenResponse.images) {
               for (const img of imageGenResponse.images) {
                 generatedImages[img.clinicId] = img.imageUrl;
@@ -354,18 +354,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
       for (let i = 0; i < batches.length; i++) {
         const batch = batches[i];
-        
+
         const batchResults = await Promise.all(
           batch.map(async (config) => {
             try {
               // For bulk posts, always resolve placeholders
               const resolvedPostData = resolvePostPlaceholders(postData, config);
-              
+
               // If we have generated images for this clinic, add them to mediaUrls
               if (generatedImages[config.clinicId]) {
                 resolvedPostData.mediaUrls = [generatedImages[config.clinicId], ...(resolvedPostData.mediaUrls || [])];
               }
-              
+
               if (!config.ayrshareProfileKey) {
                 throw new Error('Missing Ayrshare profile key');
               }
@@ -564,8 +564,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
       // Reply to comment
       const result = await ayrshareReplyToComment(
-        apiKey, 
-        dbRes.Item.ayrshareProfileKey, 
+        apiKey,
+        dbRes.Item.ayrshareProfileKey,
         commentId,
         replyText,
         platform
@@ -579,7 +579,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     if (event.path.endsWith('/stats') && event.httpMethod === 'GET') {
       const clinicId = event.queryStringParameters?.clinicId;
-      const platforms = event.queryStringParameters?.platforms?.split(',') || ['facebook', 'instagram'];
+      const platforms = event.queryStringParameters?.platforms?.split(',') || ['facebook', 'instagram', 'x', 'threads', 'gbusiness'];
 
       if (!clinicId) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'clinicId required' }) };
@@ -609,9 +609,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     if (event.path.endsWith('/rate-limit') && event.httpMethod === 'GET') {
       // Return rate limiting configuration
-      return { 
-        statusCode: 200, 
-        headers: corsHeaders, 
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
         body: JSON.stringify({
           plan: 'business',
           batchSize: BATCH_SIZE,
@@ -636,7 +636,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
       try {
         let posts: any[] = [];
-        
+
         if (clinicId) {
           // Query by clinic ID
           const queryRes = await ddb.send(new QueryCommand({
@@ -676,7 +676,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
 
         // Sort by scheduled date
-        posts.sort((a, b) => 
+        posts.sort((a, b) =>
           new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime()
         );
 

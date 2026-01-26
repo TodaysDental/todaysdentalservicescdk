@@ -24,7 +24,21 @@ import {
   getGoogleAdsClient,
   dollarsToMicros,
   addKeywords as addKeywordsToGoogle,
+  CAMPAIGN_TYPE_TO_AD_GROUP_TYPE,
+  validateAdText,
+  truncateToLimit,
+  HEADLINE_MAX_CHARS,
+  DESCRIPTION_MAX_CHARS,
+  PATH_MAX_CHARS,
+  MIN_TARGET_ROAS_PERCENT,
+  MAX_TARGET_ROAS_PERCENT,
+  validateTargetRoas,
+  sanitizeAdTextValue,
 } from '../../shared/utils/google-ads-client';
+import {
+  getAllowedClinicIds,
+  hasClinicAccess,
+} from '../../shared/utils/permissions-helper';
 
 // Module permission configuration
 const MODULE_NAME = 'Marketing';
@@ -42,6 +56,121 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
 const GOOGLE_ADS_CAMPAIGNS_TABLE = process.env.GOOGLE_ADS_CAMPAIGNS_TABLE || 'GoogleAdsCampaigns';
 
 // ============================================
+// RATE LIMITING CONSTANTS (matching Ayrshare pattern)
+// ============================================
+const BATCH_SIZE = 3; // Max accounts to process in parallel
+const DELAY_BETWEEN_BATCHES_MS = 2000; // 2 second delay between batches
+const MAX_RETRIES = 2; // Retry failed operations up to 2 times
+const RETRY_DELAY_MS = 1000; // 1 second before retry
+
+// Lambda timeout protection (4.5 minutes to leave buffer before 5-minute timeout)
+const LAMBDA_TIMEOUT_BUFFER_MS = 4.5 * 60 * 1000;
+
+// NOTE: startTime is now passed as parameter to isApproachingTimeout() to fix warm Lambda issue
+// Previously, module-level startTime would persist across warm invocations
+
+// Note: HEADLINE_MAX_CHARS, DESCRIPTION_MAX_CHARS, PATH_MAX_CHARS, validateAdText, truncateToLimit
+// are now imported from google-ads-client.ts for consistency
+
+/**
+ * Helper to delay execution
+ */
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Check if error is retryable (rate limiting, network issues)
+ */
+function isRetryableError(error: any): boolean {
+  const message = error.message?.toLowerCase() || '';
+  return (
+    message.includes('rate limit') ||
+    message.includes('too many requests') ||
+    message.includes('429') ||
+    message.includes('quota') ||
+    message.includes('timeout') ||
+    message.includes('network') ||
+    message.includes('econnreset') ||
+    message.includes('socket hang up')
+  );
+}
+
+/**
+ * Check if Lambda is approaching timeout
+ * @param startTime - The start time of the current request (not module load time)
+ */
+function isApproachingTimeout(startTime: number): boolean {
+  return (Date.now() - startTime) > LAMBDA_TIMEOUT_BUFFER_MS;
+}
+
+/**
+ * Comprehensive placeholder replacement - matches Aryshare's resolvePostPlaceholders
+ * Supports both snake_case and camelCase placeholders
+ * FIX: Now sanitizes clinic values to prevent injection via malicious clinic config
+ */
+function replacePlaceholders(text: string, clinic: any): string {
+  if (!text) return text;
+
+  // Sanitize clinic values before interpolation to prevent injection
+  const sanitize = (val: string | undefined) => sanitizeAdTextValue(val || '');
+
+  const replacements: Record<string, string> = {
+    // CamelCase placeholders (primary format)
+    'clinicName': sanitize(clinic.clinicName),
+    'clinicCity': sanitize(clinic.clinicCity),
+    'city': sanitize(clinic.clinicCity),
+    'clinicState': sanitize(clinic.clinicState),
+    'state': sanitize(clinic.clinicState),
+    'clinicAddress': sanitize(clinic.clinicAddress),
+    'address': sanitize(clinic.clinicAddress),
+    'clinicZipCode': sanitize(clinic.clinicZipCode),
+    'zipCode': sanitize(clinic.clinicZipCode),
+    'clinicPhone': sanitize(clinic.clinicPhone),
+    'phone': sanitize(clinic.clinicPhone),
+    'phoneNumber': sanitize(clinic.clinicPhone),
+    'clinicEmail': sanitize(clinic.clinicEmail),
+    'email': sanitize(clinic.clinicEmail),
+    'websiteLink': clinic.websiteLink || '', // URLs don't need text sanitization
+    'website': clinic.websiteLink || '',
+    'domain': clinic.domain || '',
+    'logoUrl': clinic.logoUrl || '',
+    'mapsUrl': clinic.mapsUrl || '',
+    'scheduleUrl': clinic.scheduleUrl || '',
+    'clinicId': clinic.clinicId || '',
+
+    // Snake_case placeholders (for compatibility)
+    'clinic_name': sanitize(clinic.clinicName),
+    'clinic_city': sanitize(clinic.clinicCity),
+    'clinic_state': sanitize(clinic.clinicState),
+    'clinic_address': sanitize(clinic.clinicAddress),
+    'clinic_zip_code': sanitize(clinic.clinicZipCode),
+    'clinic_phone': sanitize(clinic.clinicPhone),
+    'phone_number': sanitize(clinic.clinicPhone),
+    'clinic_email': sanitize(clinic.clinicEmail),
+    'website_link': clinic.websiteLink || '',
+    'logo_url': clinic.logoUrl || '',
+    'maps_url': clinic.mapsUrl || '',
+    'schedule_url': clinic.scheduleUrl || '',
+    'clinic_id': clinic.clinicId || '',
+  };
+
+  let result = text;
+  for (const [placeholder, value] of Object.entries(replacements)) {
+    const regex = new RegExp(`\\{\\{${placeholder}\\}\\}`, 'g');
+    result = result.replace(regex, value);
+  }
+
+  // Final check: Warn if any unresolved placeholders remain
+  const unresolvedMatch = result.match(/\{\{[^}]+\}\}/g);
+  if (unresolvedMatch) {
+    console.warn(`[GoogleAdsBulk] Unresolved placeholders in text: ${unresolvedMatch.join(', ')}`);
+    // Remove unresolved placeholders to prevent rejection
+    result = result.replace(/\{\{[^}]+\}\}/g, '');
+  }
+
+  return result;
+}
+
+// ============================================
 // TYPE DEFINITIONS
 // ============================================
 
@@ -49,17 +178,18 @@ interface BulkPublishRequest {
   customerIds: string[];
   campaignTemplate: {
     name: string;
-    type: 'SEARCH' | 'DISPLAY';
+    type: 'SEARCH' | 'DISPLAY' | 'VIDEO';
     dailyBudget: number;
     status: 'ENABLED' | 'PAUSED';
-    // Smart bidding options
-    biddingStrategy?: 'MANUAL_CPC' | 'TARGET_CPA' | 'MAXIMIZE_CONVERSIONS' | 'MAXIMIZE_CLICKS';
-    targetCpa?: number;
+    // Smart bidding options (parity with single-campaign endpoint)
+    biddingStrategy?: 'MANUAL_CPC' | 'TARGET_CPA' | 'MAXIMIZE_CONVERSIONS' | 'MAXIMIZE_CLICKS' | 'TARGET_ROAS';
+    targetCpa?: number; // Required when biddingStrategy is TARGET_CPA
+    targetRoas?: number; // Required when biddingStrategy is TARGET_ROAS (e.g., 300 = 300%)
   };
   // Ad group template (required for functional campaigns)
   adGroupTemplate?: {
     name: string; // Use {{clinicName}} placeholder
-    cpcBid?: number; // Default CPC bid in dollars
+    cpcBid: number; // REQUIRED: CPC bid in dollars (no default - must be explicit)
   };
   // Ad template for responsive search ads
   adTemplate?: {
@@ -141,6 +271,11 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return await bulkAddKeywords(event, corsHeaders);
     }
 
+    // Route: GET /google-ads/bulk/rate-limit
+    if (method === 'GET' && path.includes('/bulk/rate-limit')) {
+      return await getRateLimitInfo(corsHeaders);
+    }
+
     return {
       statusCode: 404,
       headers: corsHeaders,
@@ -175,7 +310,7 @@ async function listClinicsForSelection(
     clinics.sort((a, b) => a.clinicName.localeCompare(b.clinicName));
 
     // Filter to only configured clinics if requested
-    const filteredClinics = filterConfigured 
+    const filteredClinics = filterConfigured
       ? clinics.filter(c => c.hasGoogleAds)
       : clinics;
 
@@ -225,11 +360,51 @@ async function bulkPublishCampaigns(
     };
   }
 
-  console.log(`[GoogleAdsBulk] Publishing to ${customerIds.length} accounts`);
+  // Validate smart bidding requirements (parity with single-campaign endpoint)
+  if (campaignTemplate.biddingStrategy === 'TARGET_CPA' && !campaignTemplate.targetCpa) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        error: 'targetCpa is required when using TARGET_CPA bidding strategy',
+      }),
+    };
+  }
+
+  if (campaignTemplate.biddingStrategy === 'TARGET_ROAS' && !campaignTemplate.targetRoas) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        error: 'targetRoas is required when using TARGET_ROAS bidding strategy',
+      }),
+    };
+  }
+
+  // Validate targetRoas range (Google Ads API requires >= 0.01 and <= 100)
+  if (campaignTemplate.biddingStrategy === 'TARGET_ROAS' && campaignTemplate.targetRoas) {
+    const roasValidation = validateTargetRoas(campaignTemplate.targetRoas);
+    if (!roasValidation.isValid) {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          error: roasValidation.error,
+        }),
+      };
+    }
+  }
+
+  // Track request start time for timeout detection (not module load time)
+  const requestStartTime = Date.now();
+
+  console.log(`[GoogleAdsBulk] Publishing to ${customerIds.length} accounts in batches of ${BATCH_SIZE}`);
 
   // Get clinic configs for placeholder replacement
   const clinics = await getAllClinicsWithGoogleAdsStatus();
   const clinicMap = new Map(clinics.map(c => [c.customerId, c]));
+  // Also map by clinicId for cases where clinicId is passed instead of customerId
+  const clinicByIdMap = new Map(clinics.map(c => [c.clinicId, c]));
 
   const result: BulkOperationResult = {
     total: customerIds.length,
@@ -237,224 +412,396 @@ async function bulkPublishCampaigns(
     failed: [],
   };
 
-  // Helper to replace placeholders
-  const replacePlaceholders = (text: string, clinic: any): string => {
-    return text
-      .replace(/\{\{clinicName\}\}/g, clinic.clinicName || '')
-      .replace(/\{\{city\}\}/g, clinic.clinicCity || '')
-      .replace(/\{\{state\}\}/g, clinic.clinicState || '')
-      .replace(/\{\{domain\}\}/g, clinic.domain || 'example.com');
-  };
+  // Collect all validation warnings
+  const allWarnings: string[] = [];
 
-  // Process accounts in parallel batches of 3
-  const batchSize = 3;
-  for (let i = 0; i < customerIds.length; i += batchSize) {
-    const batch = customerIds.slice(i, i + batchSize);
-    
-    const batchPromises = batch.map(async (customerId) => {
-      const clinic = clinicMap.get(customerId);
-      
-      try {
-        console.log(`[GoogleAdsBulk] Creating campaign for ${customerId} (${clinic?.clinicName || 'Unknown'})`);
-        
-        const client = await getGoogleAdsClient(customerId);
-        const campaignName = replacePlaceholders(campaignTemplate.name, clinic || {});
+  // PERMISSION CROSS-VALIDATION: Build set of allowed clinics for the user
+  const userPerms = getUserPermissions(event);
+  let allowedClinicIds: Set<string> | null = null;
+  if (userPerms) {
+    allowedClinicIds = getAllowedClinicIds(
+      userPerms.clinicRoles,
+      userPerms.isSuperAdmin,
+      userPerms.isGlobalSuperAdmin
+    );
+  }
 
-        // Create budget first
-        const budgetOperation = {
-          create: {
-            name: `Budget - ${campaignName} - ${Date.now()}`,
-            amount_micros: dollarsToMicros(campaignTemplate.dailyBudget),
-            delivery_method: 'STANDARD',
-          },
-        };
+  /**
+   * Process a single account with retry logic
+   */
+  async function processAccountWithRetry(customerId: string, retries: number = 0): Promise<void> {
+    // Look up clinic by customerId or clinicId
+    let clinic = clinicMap.get(customerId) || clinicByIdMap.get(customerId);
 
-        const budgetResponse = await (client as any).campaignBudgets.create([budgetOperation]);
-        const budgetResourceName = budgetResponse.results[0].resource_name;
+    // If we found by clinicId, get the actual customerId
+    if (clinic && !clinicMap.has(customerId)) {
+      customerId = clinic.customerId;
+    }
 
-        // Build bidding configuration
-        const biddingConfig: any = {};
-        switch (campaignTemplate.biddingStrategy || 'MANUAL_CPC') {
-          case 'MANUAL_CPC':
-            biddingConfig.manual_cpc = { enhanced_cpc_enabled: true };
-            break;
-          case 'TARGET_CPA':
-            biddingConfig.target_cpa = { target_cpa_micros: dollarsToMicros(campaignTemplate.targetCpa || 50) };
-            break;
-          case 'MAXIMIZE_CONVERSIONS':
-            biddingConfig.maximize_conversions = {};
-            break;
-          case 'MAXIMIZE_CLICKS':
-            biddingConfig.maximize_clicks = {};
-            break;
+    if (!clinic) {
+      result.failed.push({
+        customerId,
+        error: 'Clinic not found for this customerId/clinicId',
+      });
+      return;
+    }
+
+    // VALIDATION: Check if customerId is valid (not empty)
+    if (!customerId || customerId.trim() === '') {
+      result.failed.push({
+        customerId: clinic.clinicId || 'unknown',
+        error: `Clinic "${clinic.clinicName}" does not have Google Ads configured (missing customerId)`,
+      });
+      return;
+    }
+
+    // PERMISSION CROSS-VALIDATION: Verify user has access to this clinic
+    if (allowedClinicIds && !hasClinicAccess(allowedClinicIds, clinic.clinicId)) {
+      console.warn(`[GoogleAdsBulk] Permission denied for clinic ${clinic.clinicId} (${clinic.clinicName})`);
+      result.failed.push({
+        customerId,
+        error: `Access denied: You do not have permission to manage campaigns for clinic ${clinic.clinicName}`,
+      });
+      return;
+    }
+
+    // Declare outside try for cleanup access in catch
+    let client: any;
+    let budgetResourceName: string | undefined;
+    let campaignResourceName: string | undefined;
+
+    try {
+      console.log(`[GoogleAdsBulk] Creating campaign for ${customerId} (${clinic.clinicName})${retries > 0 ? ` [retry ${retries}]` : ''}`);
+
+      client = await getGoogleAdsClient(customerId);
+      const campaignName = replacePlaceholders(campaignTemplate.name, clinic);
+
+      // Create budget first
+      const budgetOperation = {
+        create: {
+          name: `Budget - ${campaignName} - ${Date.now()}`,
+          amount_micros: dollarsToMicros(campaignTemplate.dailyBudget),
+          delivery_method: 'STANDARD',
+        },
+      };
+
+      const budgetResponse = await (client as any).campaignBudgets.create([budgetOperation]);
+      budgetResourceName = budgetResponse.results[0].resource_name;
+
+      // Build bidding configuration
+      const biddingConfig: any = {};
+      switch (campaignTemplate.biddingStrategy || 'MANUAL_CPC') {
+        case 'MANUAL_CPC':
+          biddingConfig.manual_cpc = { enhanced_cpc_enabled: true };
+          break;
+        case 'TARGET_CPA':
+          // No fallback - validation above ensures targetCpa is present
+          biddingConfig.target_cpa = { target_cpa_micros: dollarsToMicros(campaignTemplate.targetCpa!) };
+          break;
+        case 'MAXIMIZE_CONVERSIONS':
+          biddingConfig.maximize_conversions = {};
+          break;
+        case 'MAXIMIZE_CLICKS':
+          biddingConfig.maximize_clicks = {};
+          break;
+        case 'TARGET_ROAS':
+          // No fallback - validation above ensures targetRoas is present
+          biddingConfig.target_roas = { target_roas: campaignTemplate.targetRoas! / 100 }; // Convert percentage to decimal
+          break;
+      }
+
+      // Build network settings based on campaign type
+      const campaignType = campaignTemplate.type || 'SEARCH';
+      const networkSettings = campaignType === 'SEARCH' ? {
+        target_google_search: true,
+        target_search_network: true,
+      } : campaignType === 'VIDEO' ? {
+        target_youtube: true,
+      } : undefined;
+
+      // Create campaign
+      const campaignOperation = {
+        create: {
+          name: campaignName,
+          status: campaignTemplate.status || 'PAUSED',
+          advertising_channel_type: campaignType,
+          campaign_budget: budgetResourceName,
+          ...biddingConfig,
+          network_settings: networkSettings,
+        },
+      };
+
+      // Note: campaignResourceName is declared outside try block for cleanup access
+      let googleCampaignId: string | undefined;
+
+      const campaignResponse = await (client as any).campaigns.create([campaignOperation]);
+      campaignResourceName = campaignResponse.results[0].resource_name;
+      googleCampaignId = campaignResourceName?.split('/').pop();
+
+      let adGroupResourceName: string | undefined;
+      let adCreated = false;
+      let keywordsAdded = 0;
+      let negativeKeywordsAdded = 0;
+
+      // Create Ad Group if template provided
+      if (adGroupTemplate) {
+        // VALIDATION: cpcBid is required (no default)
+        if (!adGroupTemplate.cpcBid) {
+          throw new Error('adGroupTemplate.cpcBid is required. Specify the CPC bid in dollars.');
         }
 
-        // Create campaign
-        const campaignOperation = {
+        const adGroupName = replacePlaceholders(adGroupTemplate.name || `${campaignName} - Ad Group`, clinic);
+
+        // Get proper ad group type based on campaign type
+        const adGroupType = CAMPAIGN_TYPE_TO_AD_GROUP_TYPE[campaignTemplate.type || 'SEARCH'] || 'SEARCH_STANDARD';
+
+        const adGroupOperation = {
           create: {
-            name: campaignName,
-            status: campaignTemplate.status || 'PAUSED',
-            advertising_channel_type: campaignTemplate.type || 'SEARCH',
-            campaign_budget: budgetResourceName,
-            ...biddingConfig,
-            network_settings: campaignTemplate.type === 'SEARCH' ? {
-              target_google_search: true,
-              target_search_network: true,
-            } : undefined,
+            name: adGroupName,
+            campaign: campaignResourceName,
+            status: 'ENABLED',
+            type: adGroupType,
+            cpc_bid_micros: dollarsToMicros(adGroupTemplate.cpcBid),
           },
         };
 
-        const campaignResponse = await (client as any).campaigns.create([campaignOperation]);
-        const campaignResourceName = campaignResponse.results[0].resource_name;
-        const googleCampaignId = campaignResourceName.split('/').pop();
+        const adGroupResponse = await (client as any).adGroups.create([adGroupOperation]);
+        adGroupResourceName = adGroupResponse.results[0].resource_name;
+        console.log(`[GoogleAdsBulk] Created ad group for ${customerId}: ${adGroupResourceName}`);
 
-        let adGroupResourceName: string | undefined;
-        let adCreated = false;
-        let keywordsAdded = 0;
-        let negativeKeywordsAdded = 0;
+        // Create Responsive Search Ad if template provided (only for SEARCH campaigns)
+        // NOTE: VIDEO campaigns require VIDEO_IN_STREAM_AD or similar - RSA is not supported
+        if (adTemplate && campaignTemplate.type === 'SEARCH') {
+          const rawHeadlines = adTemplate.headlines.map(h => replacePlaceholders(h, clinic));
+          const rawDescriptions = adTemplate.descriptions.map(d => replacePlaceholders(d, clinic));
+          const finalUrl = replacePlaceholders(adTemplate.finalUrlTemplate, clinic);
 
-        // Create Ad Group if template provided
-        if (adGroupTemplate) {
-          const adGroupName = replacePlaceholders(adGroupTemplate.name || `${campaignName} - Ad Group`, clinic || {});
-          
-          const adGroupOperation = {
-            create: {
-              name: adGroupName,
-              campaign: campaignResourceName,
-              status: 'ENABLED',
-              type: campaignTemplate.type === 'SEARCH' ? 'SEARCH_STANDARD' : 'DISPLAY_STANDARD',
-              cpc_bid_micros: dollarsToMicros(adGroupTemplate.cpcBid || 2),
-            },
-          };
+          // Validate and truncate to fit Google Ads character limits
+          const { validHeadlines, validDescriptions, warnings } = validateAdText(rawHeadlines, rawDescriptions);
 
-          const adGroupResponse = await (client as any).adGroups.create([adGroupOperation]);
-          adGroupResourceName = adGroupResponse.results[0].resource_name;
-          console.log(`[GoogleAdsBulk] Created ad group for ${customerId}: ${adGroupResourceName}`);
-
-          // Create Responsive Search Ad if template provided
-          if (adTemplate && campaignTemplate.type === 'SEARCH') {
-            const headlines = adTemplate.headlines.map(h => ({
-              text: replacePlaceholders(h, clinic || {}),
-            }));
-            const descriptions = adTemplate.descriptions.map(d => ({
-              text: replacePlaceholders(d, clinic || {}),
-            }));
-            const finalUrl = replacePlaceholders(adTemplate.finalUrlTemplate, clinic || {});
-
-            if (headlines.length >= 3 && descriptions.length >= 2) {
-              const adOperation = {
-                create: {
-                  ad_group: adGroupResourceName,
-                  status: 'ENABLED',
-                  ad: {
-                    responsive_search_ad: {
-                      headlines: headlines.slice(0, 15),
-                      descriptions: descriptions.slice(0, 4),
-                      path1: adTemplate.path1,
-                      path2: adTemplate.path2,
-                    },
-                    final_urls: [finalUrl],
-                  },
-                },
-              };
-
-              await (client as any).adGroupAds.create([adOperation]);
-              adCreated = true;
-              console.log(`[GoogleAdsBulk] Created ad for ${customerId}`);
-            }
+          if (warnings.length > 0) {
+            allWarnings.push(`${clinic.clinicName}: ${warnings.join('; ')}`);
           }
 
-          // Add default keywords if provided
-          if (defaultKeywords && defaultKeywords.length > 0) {
-            const keywordOperations = defaultKeywords.map(kw => ({
+          // Validate path lengths
+          let path1 = adTemplate.path1 ? replacePlaceholders(adTemplate.path1, clinic) : undefined;
+          let path2 = adTemplate.path2 ? replacePlaceholders(adTemplate.path2, clinic) : undefined;
+
+          if (path1 && path1.length > PATH_MAX_CHARS) {
+            path1 = truncateToLimit(path1, PATH_MAX_CHARS);
+            allWarnings.push(`${clinic.clinicName}: path1 truncated to ${PATH_MAX_CHARS} chars`);
+          }
+          if (path2 && path2.length > PATH_MAX_CHARS) {
+            path2 = truncateToLimit(path2, PATH_MAX_CHARS);
+            allWarnings.push(`${clinic.clinicName}: path2 truncated to ${PATH_MAX_CHARS} chars`);
+          }
+
+          if (validHeadlines.length >= 3 && validDescriptions.length >= 2) {
+            const adOperation = {
               create: {
                 ad_group: adGroupResourceName,
                 status: 'ENABLED',
-                keyword: {
-                  text: replacePlaceholders(kw.text, clinic || {}),
-                  match_type: kw.matchType,
+                ad: {
+                  responsive_search_ad: {
+                    headlines: validHeadlines.slice(0, 15).map(text => ({ text })),
+                    descriptions: validDescriptions.slice(0, 4).map(text => ({ text })),
+                    path1,
+                    path2,
+                  },
+                  final_urls: [finalUrl],
                 },
               },
-            }));
+            };
 
-            await (client as any).adGroupCriteria.create(keywordOperations);
-            keywordsAdded = defaultKeywords.length;
-            console.log(`[GoogleAdsBulk] Added ${keywordsAdded} keywords for ${customerId}`);
+            await (client as any).adGroupAds.create([adOperation]);
+            adCreated = true;
+            console.log(`[GoogleAdsBulk] Created ad for ${customerId}`);
+          } else {
+            console.warn(`[GoogleAdsBulk] Skipping ad creation for ${customerId}: need at least 3 headlines and 2 descriptions`);
           }
-
-          // Add default negative keywords if provided
-          if (defaultNegativeKeywords && defaultNegativeKeywords.length > 0) {
-            const negativeKeywordOperations = defaultNegativeKeywords.map(text => ({
-              create: {
-                ad_group: adGroupResourceName,
-                negative: true,
-                keyword: {
-                  text,
-                  match_type: 'PHRASE',
-                },
-              },
-            }));
-
-            await (client as any).adGroupCriteria.create(negativeKeywordOperations);
-            negativeKeywordsAdded = defaultNegativeKeywords.length;
-            console.log(`[GoogleAdsBulk] Added ${negativeKeywordsAdded} negative keywords for ${customerId}`);
-          }
+        } else if (adTemplate && campaignTemplate.type === 'VIDEO') {
+          // VIDEO campaigns don't support RSA - log informational message
+          console.info(`[GoogleAdsBulk] Skipping RSA for VIDEO campaign ${customerId}: VIDEO campaigns require manual ad creation (VIDEO_IN_STREAM_AD, etc.)`);
         }
 
-        // Store in DynamoDB with TTL
-        const campaignId = `${customerId}-${googleCampaignId}`;
-        const now = new Date().toISOString();
-        const ttl = Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60); // 90 days
+        // Add default keywords if provided
+        if (defaultKeywords && defaultKeywords.length > 0) {
+          const keywordOperations = defaultKeywords.map(kw => ({
+            create: {
+              ad_group: adGroupResourceName,
+              status: 'ENABLED',
+              keyword: {
+                text: replacePlaceholders(kw.text, clinic),
+                match_type: kw.matchType,
+              },
+            },
+          }));
 
-        await ddb.send(new PutCommand({
-          TableName: GOOGLE_ADS_CAMPAIGNS_TABLE,
-          Item: {
-            campaignId,
-            customerId,
-            googleCampaignId,
-            name: campaignName,
-            status: campaignTemplate.status || 'PAUSED',
-            type: campaignTemplate.type || 'SEARCH',
-            budget: campaignTemplate.dailyBudget,
-            biddingStrategy: campaignTemplate.biddingStrategy || 'MANUAL_CPC',
-            spent: 0,
-            impressions: 0,
-            clicks: 0,
-            ctr: 0,
-            conversions: 0,
-            costPerConversion: 0,
-            adGroupResourceName,
-            createdAt: now,
-            updatedAt: now,
-            syncedAt: now,
-            ttl,
-          },
-        }));
+          await (client as any).adGroupCriteria.create(keywordOperations);
+          keywordsAdded = defaultKeywords.length;
+          console.log(`[GoogleAdsBulk] Added ${keywordsAdded} keywords for ${customerId}`);
+        }
 
-        result.successful.push({
-          customerId,
-          campaignId,
-          message: `Campaign "${campaignName}" created${adGroupResourceName ? ' with ad group' : ''}${adCreated ? ' and ad' : ''}${keywordsAdded > 0 ? ` (${keywordsAdded} keywords)` : ''}`,
-        });
-      } catch (error: any) {
-        console.error(`[GoogleAdsBulk] Error for account ${customerId}:`, error.message);
-        result.failed.push({
-          customerId,
-          error: error.message,
-        });
+        // Add default negative keywords if provided
+        if (defaultNegativeKeywords && defaultNegativeKeywords.length > 0) {
+          const negativeKeywordOperations = defaultNegativeKeywords.map(text => ({
+            create: {
+              ad_group: adGroupResourceName,
+              negative: true,
+              keyword: {
+                text: replacePlaceholders(text, clinic),
+                match_type: 'PHRASE',
+              },
+            },
+          }));
+
+          await (client as any).adGroupCriteria.create(negativeKeywordOperations);
+          negativeKeywordsAdded = defaultNegativeKeywords.length;
+          console.log(`[GoogleAdsBulk] Added ${negativeKeywordsAdded} negative keywords for ${customerId}`);
+        }
       }
-    });
 
-    await Promise.all(batchPromises);
+      // Store in DynamoDB with TTL - now includes clinicId!
+      const campaignId = `${customerId}-${googleCampaignId}`;
+      const now = new Date().toISOString();
+      const ttl = Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60); // 90 days
+
+      await ddb.send(new PutCommand({
+        TableName: GOOGLE_ADS_CAMPAIGNS_TABLE,
+        Item: {
+          campaignId,
+          clinicId: clinic.clinicId, // Now storing clinicId for easier querying
+          customerId,
+          googleCampaignId,
+          name: campaignName,
+          status: campaignTemplate.status || 'PAUSED',
+          type: campaignTemplate.type || 'SEARCH',
+          budget: campaignTemplate.dailyBudget,
+          biddingStrategy: campaignTemplate.biddingStrategy || 'MANUAL_CPC',
+          spent: 0,
+          impressions: 0,
+          clicks: 0,
+          ctr: 0,
+          conversions: 0,
+          costPerConversion: 0,
+          adGroupResourceName,
+          createdAt: now,
+          updatedAt: now,
+          syncedAt: now,
+          ttl,
+        },
+      }));
+
+      result.successful.push({
+        customerId,
+        campaignId,
+        message: `Campaign "${campaignName}" created${adGroupResourceName ? ' with ad group' : ''}${adCreated ? ' and ad' : ''}${keywordsAdded > 0 ? ` (${keywordsAdded} keywords)` : ''}`,
+      });
+    } catch (error: any) {
+      console.error(`[GoogleAdsBulk] Error for account ${customerId}:`, error.message);
+
+      // CLEANUP: Remove orphaned budget if campaign creation failed
+      if (budgetResourceName && !campaignResourceName && client) {
+        console.warn(`[GoogleAdsBulk] Cleaning up orphaned budget ${budgetResourceName} due to campaign creation failure`);
+        try {
+          await client.campaignBudgets.remove([budgetResourceName]);
+          console.log(`[GoogleAdsBulk] Cleaned up orphaned budget: ${budgetResourceName}`);
+        } catch (cleanupError: any) {
+          // ORPHAN TRACKING: Log for CloudWatch alerting and manual remediation
+          console.error(`[GoogleAdsBulk] ORPHAN_RESOURCE: Budget cleanup failed - ${budgetResourceName} for customer ${customerId} may need manual removal. Error: ${cleanupError.message}`);
+        }
+      }
+
+      // CLEANUP: If campaign was created but subsequent steps failed, mark it as REMOVED
+      if (campaignResourceName && client) {
+        console.warn(`[GoogleAdsBulk] Cleaning up orphaned campaign ${campaignResourceName} due to partial failure`);
+        try {
+          const removeOperation = {
+            update: {
+              resource_name: campaignResourceName,
+              status: 'REMOVED',
+            },
+            update_mask: { paths: ['status'] },
+          };
+          await client.campaigns.update([removeOperation]);
+          console.log(`[GoogleAdsBulk] Cleaned up orphaned campaign: ${campaignResourceName}`);
+        } catch (cleanupError: any) {
+          // ORPHAN TRACKING: Log for CloudWatch alerting and manual remediation
+          console.error(`[GoogleAdsBulk] ORPHAN_RESOURCE: Campaign cleanup failed - ${campaignResourceName} for customer ${customerId} may need manual removal. Error: ${cleanupError.message}`);
+        }
+      }
+
+      // Retry if we have retries left and it's a potentially transient error
+      if (retries < MAX_RETRIES && isRetryableError(error)) {
+        console.log(`[GoogleAdsBulk] Retrying account ${customerId} (attempt ${retries + 1}/${MAX_RETRIES})`);
+        await delay(RETRY_DELAY_MS);
+        return processAccountWithRetry(customerId, retries + 1);
+      }
+
+      result.failed.push({
+        customerId,
+        error: error.message,
+      });
+    }
   }
 
+  // Process accounts in parallel batches with rate limiting and timeout protection
+  let earlyExitDueToTimeout = false;
+  let processedCount = 0;
+
+  for (let i = 0; i < customerIds.length; i += BATCH_SIZE) {
+    // Check for Lambda timeout before processing next batch (use request start time, not module load time)
+    if (isApproachingTimeout(requestStartTime)) {
+      console.warn(`[GoogleAdsBulk] Approaching Lambda timeout after ${processedCount} accounts. Stopping early.`);
+      earlyExitDueToTimeout = true;
+      // Mark remaining accounts as skipped
+      const remainingIds = customerIds.slice(i);
+      for (const remainingId of remainingIds) {
+        result.failed.push({
+          customerId: remainingId,
+          error: 'Skipped due to Lambda timeout - please retry remaining accounts',
+        });
+      }
+      break;
+    }
+
+    const batch = customerIds.slice(i, i + BATCH_SIZE);
+    const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(customerIds.length / BATCH_SIZE);
+
+    console.log(`[GoogleAdsBulk] Processing batch ${batchNumber}/${totalBatches} (${batch.length} accounts)`);
+
+    await Promise.all(batch.map(customerId => processAccountWithRetry(customerId)));
+    processedCount += batch.length;
+
+    // Delay between batches (except for the last batch)
+    if (i + BATCH_SIZE < customerIds.length) {
+      console.log(`[GoogleAdsBulk] Waiting ${DELAY_BETWEEN_BATCHES_MS}ms before next batch...`);
+      await delay(DELAY_BETWEEN_BATCHES_MS);
+    }
+  }
+
+  console.log(`[GoogleAdsBulk] Complete: ${result.successful.length} success, ${result.failed.length} failed${earlyExitDueToTimeout ? ' (early exit due to timeout)' : ''}`);
+
   return {
-    statusCode: 200,
+    statusCode: earlyExitDueToTimeout ? 206 : 200, // 206 Partial Content if timed out
     headers: corsHeaders,
     body: JSON.stringify({
-      success: true,
+      success: !earlyExitDueToTimeout,
+      partialSuccess: earlyExitDueToTimeout,
       result,
-      message: `Published to ${result.successful.length} accounts, ${result.failed.length} failed`,
+      warnings: allWarnings.length > 0 ? allWarnings : undefined,
+      message: earlyExitDueToTimeout
+        ? `Partial completion: Published to ${result.successful.length} accounts before timeout. ${result.failed.length} accounts need retry.`
+        : `Published to ${result.successful.length} accounts, ${result.failed.length} failed`,
+      batchInfo: {
+        batchSize: BATCH_SIZE,
+        totalBatches: Math.ceil(customerIds.length / BATCH_SIZE),
+        processedBatches: Math.ceil(processedCount / BATCH_SIZE),
+        delayMs: DELAY_BETWEEN_BATCHES_MS,
+        maxRetries: MAX_RETRIES,
+        earlyExitDueToTimeout,
+      },
     }),
   };
 }
@@ -484,7 +831,27 @@ async function bulkAddKeywords(
     };
   }
 
-  console.log(`[GoogleAdsBulk] Adding keywords to ${customerIds.length} accounts`);
+  // FIX: Extract adGroupId from resource name to construct customer-specific resource names
+  // Resource name format: customers/{customerId}/adGroups/{adGroupId}
+  // IMPORTANT: This assumes all target accounts have ad groups with the SAME adGroupId
+  // which is the case when campaigns are bulk-created with the same template
+  const adGroupIdMatch = adGroupResourceName.match(/adGroups\/(\d+)$/);
+  if (!adGroupIdMatch) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        error: `Invalid adGroupResourceName format: ${adGroupResourceName}. Expected format: customers/{customerId}/adGroups/{adGroupId}`,
+      }),
+    };
+  }
+  const adGroupId = adGroupIdMatch[1];
+
+  console.log(`[GoogleAdsBulk] Adding keywords to ${customerIds.length} accounts in batches of ${BATCH_SIZE} (adGroupId: ${adGroupId})`);
+
+  // Get clinic configs for placeholder replacement in keywords
+  const clinics = await getAllClinicsWithGoogleAdsStatus();
+  const clinicMap = new Map(clinics.map(c => [c.customerId, c]));
 
   const result: BulkOperationResult = {
     total: customerIds.length,
@@ -492,32 +859,77 @@ async function bulkAddKeywords(
     failed: [],
   };
 
-  // Process accounts in parallel batches of 3
-  const batchSize = 3;
-  for (let i = 0; i < customerIds.length; i += batchSize) {
-    const batch = customerIds.slice(i, i + batchSize);
-    
-    const batchPromises = batch.map(async (customerId) => {
-      try {
-        console.log(`[GoogleAdsBulk] Adding keywords for ${customerId}`);
+  /**
+   * Process a single account with retry logic
+   */
+  async function addKeywordsWithRetry(customerId: string, retries: number = 0): Promise<void> {
+    const clinic = clinicMap.get(customerId);
 
-        await addKeywordsToGoogle(customerId, adGroupResourceName, keywords);
+    // FIX: Validate clinic exists before attempting to add keywords
+    // This prevents unresolved placeholders like "{{clinicName}} dentist" from being added
+    if (!clinic) {
+      console.warn(`[GoogleAdsBulk] No clinic found for customerId ${customerId} - cannot resolve keyword placeholders`);
+      result.failed.push({
+        customerId,
+        error: `No clinic configuration found for customerId ${customerId}. Cannot resolve keyword placeholders.`,
+      });
+      return;
+    }
 
-        result.successful.push({
-          customerId,
-          message: `Added ${keywords.length} keywords successfully`,
-        });
-      } catch (error: any) {
-        console.error(`[GoogleAdsBulk] Error for account ${customerId}:`, error.message);
-        result.failed.push({
-          customerId,
-          error: error.message,
-        });
+    try {
+      console.log(`[GoogleAdsBulk] Adding keywords for ${customerId}${retries > 0 ? ` [retry ${retries}]` : ''}`);
+
+      // Replace placeholders in keyword text
+      const resolvedKeywords = keywords.map(kw => ({
+        text: replacePlaceholders(kw.text, clinic),
+        matchType: kw.matchType,
+      }));
+
+      // FIX: Construct customer-specific ad group resource name
+      // Previously used the same resource name for all customers, which would fail
+      const customerAdGroupResourceName = `customers/${customerId.replace(/-/g, '')}/adGroups/${adGroupId}`;
+
+      await addKeywordsToGoogle(customerId, customerAdGroupResourceName, resolvedKeywords);
+
+      result.successful.push({
+        customerId,
+        message: `Added ${keywords.length} keywords successfully`,
+      });
+    } catch (error: any) {
+      console.error(`[GoogleAdsBulk] Error for account ${customerId}:`, error.message);
+
+      // Retry if we have retries left and it's a potentially transient error
+      if (retries < MAX_RETRIES && isRetryableError(error)) {
+        console.log(`[GoogleAdsBulk] Retrying keywords for ${customerId} (attempt ${retries + 1}/${MAX_RETRIES})`);
+        await delay(RETRY_DELAY_MS);
+        return addKeywordsWithRetry(customerId, retries + 1);
       }
-    });
 
-    await Promise.all(batchPromises);
+      result.failed.push({
+        customerId,
+        error: error.message,
+      });
+    }
   }
+
+  // Process accounts in parallel batches with rate limiting
+  for (let i = 0; i < customerIds.length; i += BATCH_SIZE) {
+    const batch = customerIds.slice(i, i + BATCH_SIZE);
+    const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(customerIds.length / BATCH_SIZE);
+
+    console.log(`[GoogleAdsBulk] Processing batch ${batchNumber}/${totalBatches} (${batch.length} accounts)`);
+
+    await Promise.all(batch.map(customerId => addKeywordsWithRetry(customerId)));
+
+    // Delay between batches (except for the last batch)
+    if (i + BATCH_SIZE < customerIds.length) {
+      console.log(`[GoogleAdsBulk] Waiting ${DELAY_BETWEEN_BATCHES_MS}ms before next batch...`);
+      await delay(DELAY_BETWEEN_BATCHES_MS);
+    }
+  }
+
+  console.log(`[GoogleAdsBulk] Keywords complete: ${result.successful.length} success, ${result.failed.length} failed`);
 
   return {
     statusCode: 200,
@@ -526,6 +938,42 @@ async function bulkAddKeywords(
       success: true,
       result,
       message: `Added keywords to ${result.successful.length} accounts, ${result.failed.length} failed`,
+      batchInfo: {
+        batchSize: BATCH_SIZE,
+        totalBatches: Math.ceil(customerIds.length / BATCH_SIZE),
+        delayMs: DELAY_BETWEEN_BATCHES_MS,
+        maxRetries: MAX_RETRIES,
+      },
+    }),
+  };
+}
+
+/**
+ * Get rate limit configuration info
+ */
+async function getRateLimitInfo(
+  corsHeaders: Record<string, string>
+): Promise<APIGatewayProxyResult> {
+  return {
+    statusCode: 200,
+    headers: corsHeaders,
+    body: JSON.stringify({
+      success: true,
+      rateLimits: {
+        batchSize: BATCH_SIZE,
+        delayBetweenBatchesMs: DELAY_BETWEEN_BATCHES_MS,
+        maxRetries: MAX_RETRIES,
+        retryDelayMs: RETRY_DELAY_MS,
+      },
+      characterLimits: {
+        headline: HEADLINE_MAX_CHARS,
+        description: DESCRIPTION_MAX_CHARS,
+        path: PATH_MAX_CHARS,
+      },
+      recommendations: {
+        maxAccountsPerMinute: Math.floor(60000 / DELAY_BETWEEN_BATCHES_MS) * BATCH_SIZE,
+        optimalBatchSize: BATCH_SIZE,
+      },
     }),
   };
 }

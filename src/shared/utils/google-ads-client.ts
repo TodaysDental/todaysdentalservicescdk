@@ -16,8 +16,8 @@
  */
 
 import { GoogleAdsApi, Customer } from 'google-ads-api';
-import { 
-  getGlobalSecret, 
+import {
+  getGlobalSecret,
   getAllClinicConfigs,
   ClinicConfig,
 } from './secrets-helper';
@@ -39,6 +39,15 @@ export interface ClinicGoogleAdsMapping {
   clinicName: string;
   clinicCity: string;
   clinicState: string;
+  clinicAddress: string;
+  clinicZipCode: string;
+  clinicPhone: string;
+  clinicEmail: string;
+  websiteLink: string;
+  logoUrl: string;
+  mapsUrl: string;
+  scheduleUrl: string;
+  domain: string; // Extracted from websiteLink
   customerId: string;
   hasGoogleAds: boolean;
 }
@@ -48,9 +57,138 @@ let googleAdsApiInstance: GoogleAdsApi | null = null;
 let globalRefreshToken: string | null = null;
 let globalLoginCustomerId: string | null = null;
 
+// Mutex for thread-safe singleton initialization
+let initializationPromise: Promise<GoogleAdsApi> | null = null;
+
 // ========================================
 // GOOGLE ADS API INITIALIZATION
 // ========================================
+
+// ========================================
+// GOOGLE ADS CHARACTER LIMITS & VALIDATION
+// ========================================
+export const HEADLINE_MAX_CHARS = 30;
+export const DESCRIPTION_MAX_CHARS = 90;
+export const PATH_MAX_CHARS = 15;
+
+// Target ROAS must be >= 0.01 (1%) and <= 100 (10000%) per Google Ads API
+export const MIN_TARGET_ROAS_PERCENT = 1;
+export const MAX_TARGET_ROAS_PERCENT = 10000; // 10000% = 100.0 in API
+
+// Configurable performance alert thresholds
+export const PERFORMANCE_THRESHOLDS = {
+  lowCtrPercent: 2,
+  highCpaDollars: 100,
+  minImpressionsForCtrAlert: 1000,
+  minClicksForConversionAlert: 100,
+};
+
+/**
+ * Sanitize text for use in Google Ads ad copy to prevent injection via placeholders
+ * Removes or escapes characters that could cause ad rejection or display issues
+ * @param value - The text value to sanitize
+ * @returns Sanitized value safe for ad copy
+ */
+export function sanitizeAdTextValue(value: string): string {
+  if (!value) return '';
+  return value
+    // Remove control characters
+    .replace(/[\x00-\x1F\x7F]/g, '')
+    // Remove excessive whitespace
+    .replace(/\s+/g, ' ')
+    // Remove HTML tags (basic protection)
+    .replace(/<[^>]*>/g, '')
+    // Escape characters that could break ad rendering
+    .replace(/[{}]/g, '') // Remove stray braces (unresolved placeholders)
+    .trim();
+}
+
+/**
+ * Validate Target ROAS is within acceptable range
+ * @param targetRoas - Target ROAS percentage (e.g., 300 = 300%)
+ * @returns Object with isValid flag and error message if invalid
+ */
+export function validateTargetRoas(targetRoas: number): { isValid: boolean; error?: string } {
+  if (targetRoas < MIN_TARGET_ROAS_PERCENT) {
+    return {
+      isValid: false,
+      error: `targetRoas must be at least ${MIN_TARGET_ROAS_PERCENT}% (received ${targetRoas}%)`,
+    };
+  }
+  if (targetRoas > MAX_TARGET_ROAS_PERCENT) {
+    return {
+      isValid: false,
+      error: `targetRoas cannot exceed ${MAX_TARGET_ROAS_PERCENT}% (received ${targetRoas}%)`,
+    };
+  }
+  return { isValid: true };
+}
+
+/**
+ * Truncate text to fit within character limit
+ * Uses ASCII periods (...) instead of Unicode ellipsis (…) for better Google Ads API compatibility
+ */
+export function truncateToLimit(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  // Use 3 ASCII periods instead of Unicode ellipsis for API compatibility
+  return text.substring(0, maxChars - 3) + '...';
+}
+
+/**
+ * Validate and truncate headlines/descriptions to fit Google Ads limits
+ */
+export function validateAdText(headlines: string[], descriptions: string[]): {
+  validHeadlines: string[];
+  validDescriptions: string[];
+  warnings: string[];
+} {
+  const warnings: string[] = [];
+
+  const validHeadlines = headlines.map((h, i) => {
+    if (h.length > HEADLINE_MAX_CHARS) {
+      warnings.push(`Headline ${i + 1} truncated from ${h.length} to ${HEADLINE_MAX_CHARS} chars`);
+      return truncateToLimit(h, HEADLINE_MAX_CHARS);
+    }
+    return h;
+  });
+
+  const validDescriptions = descriptions.map((d, i) => {
+    if (d.length > DESCRIPTION_MAX_CHARS) {
+      warnings.push(`Description ${i + 1} truncated from ${d.length} to ${DESCRIPTION_MAX_CHARS} chars`);
+      return truncateToLimit(d, DESCRIPTION_MAX_CHARS);
+    }
+    return d;
+  });
+
+  return { validHeadlines, validDescriptions, warnings };
+}
+
+/**
+ * Sanitize a value for use in GAQL queries to prevent injection
+ * @param value - The value to sanitize
+ * @returns Sanitized value safe for GAQL interpolation
+ */
+export function sanitizeGaqlValue(value: string): string {
+  if (!value) return '';
+  // IMPORTANT: Escape backslashes FIRST, then single quotes
+  // GAQL uses single quotes for string literals
+  return value
+    .replace(/\\/g, '\\\\')  // Escape backslashes first
+    .replace(/'/g, "\\'")    // Then escape single quotes
+    .replace(/\n/g, ' ')     // Remove newlines
+    .replace(/\r/g, ' ');    // Remove carriage returns
+}
+
+/**
+ * Validate that a resource name follows the expected format
+ * @param resourceName - The resource name to validate
+ * @param expectedPattern - Regex pattern the resource name should match
+ * @returns true if valid, false otherwise
+ */
+export function validateResourceName(resourceName: string, expectedPattern: RegExp): boolean {
+  if (!resourceName) return false;
+  return expectedPattern.test(resourceName);
+}
 
 /**
  * Get Google Ads API credentials from GlobalSecrets
@@ -71,12 +209,18 @@ export async function getGoogleAdsCredentials(): Promise<GoogleAdsCredentials | 
       return null;
     }
 
-    return { 
-      developerToken, 
-      clientId, 
-      clientSecret, 
+    // loginCustomerId is REQUIRED for MCC (Manager Account) access to sub-accounts
+    if (!loginCustomerId) {
+      console.error('[GoogleAdsClient] login_customer_id is required for MCC access but was not found in GlobalSecrets');
+      throw new Error('login_customer_id is required for MCC access. Please configure it in GlobalSecrets under google-ads/login_customer_id');
+    }
+
+    return {
+      developerToken,
+      clientId,
+      clientSecret,
       refreshToken,
-      loginCustomerId: loginCustomerId || '',
+      loginCustomerId,
     };
   } catch (error) {
     console.error('[GoogleAdsClient] Error fetching Google Ads credentials:', error);
@@ -86,30 +230,62 @@ export async function getGoogleAdsCredentials(): Promise<GoogleAdsCredentials | 
 
 /**
  * Initialize the Google Ads API instance
- * Uses singleton pattern - credentials are global (MCC approach)
+ * Uses singleton pattern with mutex to prevent race conditions
+ * Credentials are global (MCC approach)
  */
 export async function initializeGoogleAdsApi(): Promise<GoogleAdsApi> {
+  // Fast path: already initialized
   if (googleAdsApiInstance && globalRefreshToken) {
     return googleAdsApiInstance;
   }
 
-  const credentials = await getGoogleAdsCredentials();
-  if (!credentials) {
-    throw new Error('Google Ads credentials not found in GlobalSecrets');
+  // Mutex pattern: if initialization is in progress, wait for it
+  if (initializationPromise) {
+    return initializationPromise;
   }
 
-  googleAdsApiInstance = new GoogleAdsApi({
-    client_id: credentials.clientId,
-    client_secret: credentials.clientSecret,
-    developer_token: credentials.developerToken,
-  });
-  
-  globalRefreshToken = credentials.refreshToken;
-  globalLoginCustomerId = credentials.loginCustomerId;
+  // Start initialization and store the promise (mutex)
+  // FIX: Don't clear initializationPromise inside the async IIFE to prevent race condition
+  const initPromise = (async () => {
+    try {
+      // Double-check after acquiring "lock"
+      if (googleAdsApiInstance && globalRefreshToken) {
+        return googleAdsApiInstance;
+      }
 
-  console.log('[GoogleAdsClient] Google Ads API initialized with global credentials');
-  console.log(`[GoogleAdsClient] Login Customer ID (MCC): ${globalLoginCustomerId}`);
-  return googleAdsApiInstance;
+      const credentials = await getGoogleAdsCredentials();
+      if (!credentials) {
+        throw new Error('Google Ads credentials not found in GlobalSecrets');
+      }
+
+      googleAdsApiInstance = new GoogleAdsApi({
+        client_id: credentials.clientId,
+        client_secret: credentials.clientSecret,
+        developer_token: credentials.developerToken,
+      });
+
+      globalRefreshToken = credentials.refreshToken;
+      globalLoginCustomerId = credentials.loginCustomerId;
+
+      console.log('[GoogleAdsClient] Google Ads API initialized with global credentials');
+      console.log(`[GoogleAdsClient] Login Customer ID (MCC): ${globalLoginCustomerId}`);
+
+      return googleAdsApiInstance;
+    } catch (error) {
+      throw error;
+    }
+  })();
+
+  initializationPromise = initPromise;
+
+  try {
+    const result = await initPromise;
+    return result;
+  } finally {
+    // Clear mutex AFTER the promise resolves/rejects, not inside the async IIFE
+    // This prevents race conditions where concurrent callers could start new initialization
+    initializationPromise = null;
+  }
 }
 
 // ========================================
@@ -154,7 +330,7 @@ export async function getGoogleAdsClient(customerId: string): Promise<Customer> 
 export async function getCustomerIdForClinic(clinicId: string): Promise<string | null> {
   const { getClinicConfig } = await import('./secrets-helper');
   const config = await getClinicConfig(clinicId);
-  
+
   if (!config) {
     console.warn(`[GoogleAdsClient] Clinic config not found: ${clinicId}`);
     return null;
@@ -165,13 +341,29 @@ export async function getCustomerIdForClinic(clinicId: string): Promise<string |
   if (googleAdsConfig?.enabled && googleAdsConfig?.customerId) {
     return googleAdsConfig.customerId;
   }
-  
+
   console.warn(`[GoogleAdsClient] No Google Ads customer ID for clinic: ${clinicId}`);
   return null;
 }
 
 /**
- * Get all clinics with their Google Ads customer IDs
+ * Extract domain from a URL (e.g., "https://example.com/path" -> "example.com")
+ */
+function extractDomainFromUrl(url: string): string {
+  if (!url) return '';
+  try {
+    // Handle URLs with or without protocol
+    const urlWithProtocol = url.startsWith('http') ? url : `https://${url}`;
+    const parsed = new URL(urlWithProtocol);
+    return parsed.hostname.replace(/^www\./, '');
+  } catch {
+    // Fallback: simple extraction
+    return url.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+  }
+}
+
+/**
+ * Get all clinics with their Google Ads customer IDs and all placeholder fields
  * Used for bulk operations and clinic selection
  */
 export async function getAllClinicsWithGoogleAdsStatus(): Promise<ClinicGoogleAdsMapping[]> {
@@ -182,12 +374,24 @@ export async function getAllClinicsWithGoogleAdsStatus(): Promise<ClinicGoogleAd
     const googleAdsConfig = (config as any).googleAds;
     const customerId = googleAdsConfig?.customerId || '';
     const hasGoogleAds = googleAdsConfig?.enabled && !!customerId;
-    
+
+    // Extract domain from websiteLink for URL templates
+    const domain = extractDomainFromUrl(config.websiteLink);
+
     return {
       clinicId: config.clinicId,
       clinicName: config.clinicName,
       clinicCity: config.clinicCity,
       clinicState: config.clinicState,
+      clinicAddress: config.clinicAddress || '',
+      clinicZipCode: config.clinicZipCode || '',
+      clinicPhone: config.clinicPhone || config.phoneNumber || '',
+      clinicEmail: config.clinicEmail || '',
+      websiteLink: config.websiteLink || '',
+      logoUrl: config.logoUrl || '',
+      mapsUrl: config.mapsUrl || '',
+      scheduleUrl: config.scheduleUrl || '',
+      domain,
       customerId,
       hasGoogleAds,
     };
@@ -206,18 +410,67 @@ export async function getClinicsWithGoogleAds(): Promise<ClinicGoogleAdsMapping[
 // QUERY HELPERS
 // ========================================
 
+// Regex patterns for validating Google Ads resource names
+export const RESOURCE_NAME_PATTERNS = {
+  campaign: /^customers\/\d+\/campaigns\/\d+$/,
+  adGroup: /^customers\/\d+\/adGroups\/\d+$/,
+  // Note: adGroupCriteria uses plural form in resource names per Google Ads API spec
+  adGroupCriterion: /^customers\/\d+\/adGroupCriteria\/\d+~\d+$/,
+  budget: /^customers\/\d+\/campaignBudgets\/\d+$/,
+};
+
+// Supported campaign types and their corresponding ad group types
+export const CAMPAIGN_TYPE_TO_AD_GROUP_TYPE: Record<string, string> = {
+  SEARCH: 'SEARCH_STANDARD',
+  DISPLAY: 'DISPLAY_STANDARD',
+  VIDEO: 'VIDEO_TRUE_VIEW_IN_STREAM', // Default VIDEO ad group type
+};
+
+// Valid campaign types
+export const VALID_CAMPAIGN_TYPES = ['SEARCH', 'DISPLAY', 'VIDEO'] as const;
+export type CampaignType = typeof VALID_CAMPAIGN_TYPES[number];
+
 /**
- * Execute a GAQL query against Google Ads API
+ * Execute a GAQL query against Google Ads API with pagination support
  * @param customerId - The Google Ads customer ID
  * @param query - GAQL query string
+ * @param options - Query options including pagination
  * @returns Query results
  */
-export async function executeGoogleAdsQuery(customerId: string, query: string): Promise<any[]> {
+export async function executeGoogleAdsQuery(
+  customerId: string,
+  query: string,
+  options: { pageSize?: number; maxResults?: number } = {}
+): Promise<any[]> {
   const client = await getGoogleAdsClient(customerId);
-  
+  const { pageSize = 10000, maxResults = 100000 } = options;
+
   try {
-    const results = await client.query(query);
-    return results;
+    const allResults: any[] = [];
+    let pageToken: string | undefined;
+
+    do {
+      const response: any = await client.query(query, { page_size: pageSize, page_token: pageToken } as any);
+
+      if (Array.isArray(response)) {
+        allResults.push(...response);
+        break; // Array responses don't have pagination
+      } else if (response?.results) {
+        allResults.push(...response.results);
+        pageToken = response.next_page_token;
+      } else {
+        // Single page or empty response
+        break;
+      }
+
+      // Prevent runaway queries
+      if (allResults.length >= maxResults) {
+        console.warn(`[GoogleAdsClient] Query hit maxResults limit (${maxResults})`);
+        break;
+      }
+    } while (pageToken);
+
+    return allResults;
   } catch (error: any) {
     console.error(`[GoogleAdsClient] Query error for customer ${customerId}:`, error.message);
     throw error;
@@ -255,6 +508,12 @@ export async function getCampaigns(customerId: string): Promise<any[]> {
  * Get all ad groups for a campaign
  */
 export async function getAdGroups(customerId: string, campaignResourceName: string): Promise<any[]> {
+  // Validate resource name format to prevent GAQL injection
+  if (!validateResourceName(campaignResourceName, RESOURCE_NAME_PATTERNS.campaign)) {
+    throw new Error(`Invalid campaign resource name format: ${campaignResourceName}`);
+  }
+
+  const sanitizedResourceName = sanitizeGaqlValue(campaignResourceName);
   const query = `
     SELECT
       ad_group.id,
@@ -263,7 +522,7 @@ export async function getAdGroups(customerId: string, campaignResourceName: stri
       ad_group.type,
       ad_group.resource_name
     FROM ad_group
-    WHERE ad_group.campaign = '${campaignResourceName}'
+    WHERE ad_group.campaign = '${sanitizedResourceName}'
       AND ad_group.status != 'REMOVED'
     ORDER BY ad_group.name
   `;
@@ -275,6 +534,12 @@ export async function getAdGroups(customerId: string, campaignResourceName: stri
  * Get keywords for an ad group
  */
 export async function getKeywords(customerId: string, adGroupResourceName: string): Promise<any[]> {
+  // Validate resource name format to prevent GAQL injection
+  if (!validateResourceName(adGroupResourceName, RESOURCE_NAME_PATTERNS.adGroup)) {
+    throw new Error(`Invalid ad group resource name format: ${adGroupResourceName}`);
+  }
+
+  const sanitizedResourceName = sanitizeGaqlValue(adGroupResourceName);
   const query = `
     SELECT
       ad_group_criterion.resource_name,
@@ -282,12 +547,19 @@ export async function getKeywords(customerId: string, adGroupResourceName: strin
       ad_group_criterion.keyword.match_type,
       ad_group_criterion.status
     FROM ad_group_criterion
-    WHERE ad_group_criterion.ad_group = '${adGroupResourceName}'
+    WHERE ad_group_criterion.ad_group = '${sanitizedResourceName}'
       AND ad_group_criterion.type = 'KEYWORD'
       AND ad_group_criterion.status != 'REMOVED'
   `;
 
   return executeGoogleAdsQuery(customerId, query);
+}
+
+/**
+ * Validate date format (YYYY-MM-DD)
+ */
+function validateDateFormat(date: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(date);
 }
 
 /**
@@ -299,6 +571,11 @@ export async function getSearchQueryReport(
   endDate: string,
   limit: number = 10000
 ): Promise<any[]> {
+  // Validate date formats to prevent GAQL injection
+  if (!validateDateFormat(startDate) || !validateDateFormat(endDate)) {
+    throw new Error('Invalid date format. Expected YYYY-MM-DD');
+  }
+
   const query = `
     SELECT
       search_term_view.search_term,
@@ -329,7 +606,7 @@ export async function addKeywords(
   keywords: Array<{ text: string; matchType: string }>
 ): Promise<any> {
   const client = await getGoogleAdsClient(customerId);
-  
+
   const operations = keywords.map(kw => ({
     create: {
       ad_group: adGroupResourceName,
@@ -352,7 +629,7 @@ export async function removeKeywords(
   keywordResourceNames: string[]
 ): Promise<any> {
   const client = await getGoogleAdsClient(customerId);
-  
+
   const operations = keywordResourceNames.map(resourceName => ({
     remove: resourceName,
   }));
@@ -369,7 +646,7 @@ export async function addNegativeKeywords(
   keywords: Array<{ text: string; matchType?: string }>
 ): Promise<any> {
   const client = await getGoogleAdsClient(customerId);
-  
+
   const operations = keywords.map(kw => ({
     create: {
       ad_group: adGroupResourceName,

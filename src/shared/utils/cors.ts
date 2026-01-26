@@ -83,7 +83,7 @@ const DEFAULT_HEADERS = ['Content-Type', 'Authorization', 'X-Requested-With', 'R
 function getAllowedOrigin(requestOrigin?: string, allowedOrigins: string[] = ALLOWED_ORIGINS_LIST): string {
   const origin = requestOrigin?.trim();
   console.log('[CORS] Determining allowed origin', { requestOrigin: origin, allowedOrigins: allowedOrigins.slice(0, 5) });
-  
+
   // If no specific origin requested, use the main domain
   if (!origin) {
 
@@ -103,19 +103,19 @@ function getAllowedOrigin(requestOrigin?: string, allowedOrigins: string[] = ALL
   ) {
     return origin;
   }
-  
+
   // If the request origin is in our allowed list, use it
   if (allowedOrigins.includes(origin)) {
     return origin;
   }
-  
+
   // Otherwise, default to main domain
   console.warn('[CORS] Request origin not allowed, using default:', { requestOrigin: origin, defaultOrigin: allowedOrigins[0] });
   return allowedOrigins[0];
 }
 
 export function buildCorsHeaders(options: CorsOptions = {}, requestOrigin?: string): Record<string, string> {
-  
+
   const allowOrigin = options.allowOrigin || getAllowedOrigin(requestOrigin);
   const allowMethods = (options.allowMethods || DEFAULT_METHODS).join(', ');
   const uniqueHeaders = Array.from(new Set([...(options.allowHeaders || []), ...DEFAULT_HEADERS]));
@@ -128,7 +128,7 @@ export function buildCorsHeaders(options: CorsOptions = {}, requestOrigin?: stri
   };
   const maxAgeSeconds = options.maxAgeSeconds ?? 86400;
   if (maxAgeSeconds > 0) headers['Access-Control-Max-Age'] = String(maxAgeSeconds);
-  
+
   console.log('[CORS] Generated headers:', headers);
   return headers;
 }
@@ -139,7 +139,7 @@ export function buildCorsHeaders(options: CorsOptions = {}, requestOrigin?: stri
  */
 export async function buildCorsHeadersAsync(options: CorsOptions = {}, requestOrigin?: string): Promise<Record<string, string>> {
   const allowedOrigins = await getAllowedOriginsAsync();
-  
+
   const allowOrigin = options.allowOrigin || getAllowedOrigin(requestOrigin, allowedOrigins);
   const allowMethods = (options.allowMethods || DEFAULT_METHODS).join(', ');
   const uniqueHeaders = Array.from(new Set([...(options.allowHeaders || []), ...DEFAULT_HEADERS]));
@@ -152,7 +152,7 @@ export async function buildCorsHeadersAsync(options: CorsOptions = {}, requestOr
   };
   const maxAgeSeconds = options.maxAgeSeconds ?? 86400;
   if (maxAgeSeconds > 0) headers['Access-Control-Max-Age'] = String(maxAgeSeconds);
-  
+
   return headers;
 }
 
@@ -161,7 +161,7 @@ export function getCdkCorsConfig(options: CorsOptions = {}) {
   const allowOrigins = options.allowOrigin ? [options.allowOrigin] : ALLOWED_ORIGINS_LIST;
   const allowMethods = options.allowMethods || DEFAULT_METHODS;
   const uniqueHeaders = Array.from(new Set([...(options.allowHeaders || []), ...DEFAULT_HEADERS]));
-  
+
   return {
     allowOrigins,
     allowHeaders: uniqueHeaders,
@@ -173,14 +173,14 @@ export function getCdkCorsConfig(options: CorsOptions = {}) {
 // Get CORS error headers for API Gateway responses
 export function getCorsErrorHeaders(options: CorsOptions = {}): Record<string, string> {
   console.log('[CORS] Building error headers for API Gateway');
-  
+
   // For API Gateway error responses, use the main domain as default
   const corsHeaders = buildCorsHeaders(options, ALLOWED_ORIGINS_LIST[0]);
   const errorHeaders = Object.entries(corsHeaders).reduce((acc, [key, value]) => {
     acc[key] = `'${value}'`; // API Gateway expects single quotes around header values
     return acc;
   }, {} as Record<string, string>);
-  
+
   console.log('[CORS] Generated error headers:', errorHeaders);
   return errorHeaders;
 }
@@ -194,7 +194,7 @@ export function getCorsOptionsIntegrationParams(options: CorsOptions = {}): {
 } {
   const allowMethods = options.allowMethods || DEFAULT_METHODS;
   const uniqueHeaders = Array.from(new Set([...(options.allowHeaders || []), ...DEFAULT_HEADERS]));
-  
+
   return {
     responseParameters: {
       // Echo back the requesting origin (API Gateway will validate it's in allowed list)

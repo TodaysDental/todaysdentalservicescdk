@@ -20,6 +20,7 @@ const PLATFORM_LIMITS: Record<string, number> = {
   youtube: 5000,
   threads: 500,
   bluesky: 300,
+  gbusiness: 1500, // Google My Business / Google Business Profile
 };
 
 // Platform media requirements
@@ -36,12 +37,24 @@ const PLATFORM_MEDIA_REQUIREMENTS: Record<string, any> = {
     image: { maxSize: 5 * 1024 * 1024, formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'] },
     video: { maxSize: 512 * 1024 * 1024, maxDuration: 140, formats: ['mp4'] }
   },
+  x: {
+    image: { maxSize: 5 * 1024 * 1024, formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'] },
+    video: { maxSize: 512 * 1024 * 1024, maxDuration: 140, formats: ['mp4'] }
+  },
   tiktok: {
     video: { maxSize: 287 * 1024 * 1024, maxDuration: 180, formats: ['mp4', 'webm'] }
   },
   linkedin: {
     image: { maxSize: 8 * 1024 * 1024, formats: ['jpg', 'jpeg', 'png', 'gif'] },
     video: { maxSize: 200 * 1024 * 1024, maxDuration: 600, formats: ['mp4'] }
+  },
+  threads: {
+    image: { maxSize: 8 * 1024 * 1024, formats: ['jpg', 'jpeg', 'png', 'gif'] },
+    video: { maxSize: 1024 * 1024 * 1024, maxDuration: 300, formats: ['mp4', 'mov'] }
+  },
+  gbusiness: {
+    image: { maxSize: 5 * 1024 * 1024, formats: ['jpg', 'jpeg', 'png'] },
+    video: { maxSize: 75 * 1024 * 1024, maxDuration: 30, formats: ['mp4'] }
   }
 };
 
@@ -67,9 +80,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 400,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
-            error: 'content and platforms array are required' 
+          body: JSON.stringify({
+            success: false,
+            error: 'content and platforms array are required'
           })
         };
       }
@@ -142,9 +155,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 400,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
-            error: 'mediaUrls array is required' 
+          body: JSON.stringify({
+            success: false,
+            error: 'mediaUrls array is required'
           })
         };
       }
@@ -153,9 +166,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 400,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
-            error: 'platforms array is required' 
+          body: JSON.stringify({
+            success: false,
+            error: 'platforms array is required'
           })
         };
       }
@@ -245,8 +258,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ 
-        success: false, 
+      body: JSON.stringify({
+        success: false,
         error: err.message,
         code: 'VALIDATE_ERROR'
       })

@@ -109,10 +109,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           },
           topPerformingClinics,
           platformPerformance: {
-            facebook: { totalEngagement: Math.floor(totalLikes * 0.4), avgEngagementRate: 5.8, reach: Math.floor(totalReach * 0.5) },
-            instagram: { totalEngagement: Math.floor(totalLikes * 0.3), avgEngagementRate: 5.1, reach: Math.floor(totalReach * 0.3) },
-            twitter: { totalEngagement: Math.floor(totalLikes * 0.2), avgEngagementRate: 6.9, reach: Math.floor(totalReach * 0.15) },
-            linkedin: { totalEngagement: Math.floor(totalLikes * 0.1), avgEngagementRate: 4.2, reach: Math.floor(totalReach * 0.05) }
+            facebook: { totalEngagement: Math.floor(totalLikes * 0.30), avgEngagementRate: 5.8, reach: Math.floor(totalReach * 0.35) },
+            instagram: { totalEngagement: Math.floor(totalLikes * 0.25), avgEngagementRate: 5.1, reach: Math.floor(totalReach * 0.25) },
+            x: { totalEngagement: Math.floor(totalLikes * 0.15), avgEngagementRate: 6.9, reach: Math.floor(totalReach * 0.15) },
+            threads: { totalEngagement: Math.floor(totalLikes * 0.15), avgEngagementRate: 4.5, reach: Math.floor(totalReach * 0.12) },
+            gbusiness: { totalEngagement: Math.floor(totalLikes * 0.15), avgEngagementRate: 3.8, reach: Math.floor(totalReach * 0.13) }
           }
         })
       };
@@ -281,35 +282,43 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           byPlatform: {
             facebook: {
               posts: posts.length,
-              likes: Math.floor(totalLikes * 0.4),
-              comments: Math.floor(totalComments * 0.4),
-              shares: Math.floor(totalShares * 0.5),
-              reach: Math.floor(totalReach * 0.5),
+              likes: Math.floor(totalLikes * 0.30),
+              comments: Math.floor(totalComments * 0.30),
+              shares: Math.floor(totalShares * 0.35),
+              reach: Math.floor(totalReach * 0.35),
               avgEngagement: 5.5
             },
             instagram: {
               posts: posts.length,
-              likes: Math.floor(totalLikes * 0.35),
-              comments: Math.floor(totalComments * 0.35),
-              saves: Math.floor(totalShares * 0.2),
-              reach: Math.floor(totalReach * 0.3),
+              likes: Math.floor(totalLikes * 0.25),
+              comments: Math.floor(totalComments * 0.25),
+              saves: Math.floor(totalShares * 0.15),
+              reach: Math.floor(totalReach * 0.25),
               avgEngagement: 4.7
             },
-            twitter: {
+            x: {
               posts: posts.length,
               likes: Math.floor(totalLikes * 0.15),
-              retweets: Math.floor(totalShares * 0.2),
+              retweets: Math.floor(totalShares * 0.15),
               replies: Math.floor(totalComments * 0.15),
-              impressions: Math.floor(totalImpressions * 0.1),
+              impressions: Math.floor(totalImpressions * 0.15),
               avgEngagement: 6.5
             },
-            linkedin: {
+            threads: {
               posts: posts.length,
-              likes: Math.floor(totalLikes * 0.1),
-              comments: Math.floor(totalComments * 0.1),
-              shares: Math.floor(totalShares * 0.1),
-              impressions: Math.floor(totalImpressions * 0.1),
-              avgEngagement: 4.2
+              likes: Math.floor(totalLikes * 0.15),
+              comments: Math.floor(totalComments * 0.15),
+              reposts: Math.floor(totalShares * 0.15),
+              reach: Math.floor(totalReach * 0.12),
+              avgEngagement: 4.5
+            },
+            gbusiness: {
+              posts: posts.length,
+              views: Math.floor(totalLikes * 0.15),
+              clicks: Math.floor(totalComments * 0.15),
+              actions: Math.floor(totalShares * 0.20),
+              reach: Math.floor(totalReach * 0.13),
+              avgEngagement: 3.8
             }
           },
           trends: {
@@ -351,7 +360,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         };
       }
 
-      const platformList = platforms ? platforms.split(',') : ['facebook', 'instagram', 'twitter', 'linkedin'];
+      const platformList = platforms ? platforms.split(',') : ['facebook', 'instagram', 'x', 'threads', 'gbusiness'];
 
       try {
         const socialStats = await ayrshareGetSocialStats(
@@ -374,8 +383,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 500,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
+          body: JSON.stringify({
+            success: false,
             error: err.message,
             code: 'SOCIAL_ANALYTICS_ERROR'
           })
@@ -432,8 +441,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 500,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
+          body: JSON.stringify({
+            success: false,
             error: err.message,
             code: 'LINK_ANALYTICS_ERROR'
           })

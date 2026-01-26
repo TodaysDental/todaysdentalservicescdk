@@ -30,7 +30,24 @@ import {
   microsToDollars,
   dollarsToMicros,
   getAllClinicsWithGoogleAdsStatus,
+  CAMPAIGN_TYPE_TO_AD_GROUP_TYPE,
+  VALID_CAMPAIGN_TYPES,
+  CampaignType,
+  sanitizeGaqlValue,
+  validateAdText,
+  truncateToLimit,
+  HEADLINE_MAX_CHARS,
+  DESCRIPTION_MAX_CHARS,
+  PATH_MAX_CHARS,
+  MIN_TARGET_ROAS_PERCENT,
+  MAX_TARGET_ROAS_PERCENT,
+  PERFORMANCE_THRESHOLDS,
+  validateTargetRoas,
 } from '../../shared/utils/google-ads-client';
+import {
+  getAllowedClinicIds,
+  hasClinicAccess,
+} from '../../shared/utils/permissions-helper';
 
 // Module permission configuration
 // Requires 'Marketing' module access OR SuperAdmin/GlobalSuperAdmin
@@ -47,6 +64,9 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
 });
 
 const GOOGLE_ADS_CAMPAIGNS_TABLE = process.env.GOOGLE_ADS_CAMPAIGNS_TABLE || 'GoogleAdsCampaigns';
+
+// Note: HEADLINE_MAX_CHARS, DESCRIPTION_MAX_CHARS, PATH_MAX_CHARS, validateAdText, truncateToLimit
+// are now imported from google-ads-client.ts for consistency
 
 // ============================================
 // TYPE DEFINITIONS
@@ -74,7 +94,7 @@ interface Campaign {
 interface CreateCampaignRequest {
   customerId: string;
   name: string;
-  type: 'SEARCH' | 'DISPLAY' | 'VIDEO';
+  type: CampaignType; // 'SEARCH' | 'DISPLAY' | 'VIDEO'
   dailyBudget: number;
   status?: 'ENABLED' | 'PAUSED';
   // Smart bidding options
@@ -142,9 +162,9 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return {
       statusCode: 403,
       headers: corsHeaders,
-      body: JSON.stringify({ 
-        success: false, 
-        error: `Access denied: requires ${MODULE_NAME} module ${requiredPermission} permission or SuperAdmin access` 
+      body: JSON.stringify({
+        success: false,
+        error: `Access denied: requires ${MODULE_NAME} module ${requiredPermission} permission or SuperAdmin access`
       }),
     };
   }
@@ -231,6 +251,9 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
 // CAMPAIGN HANDLERS
 // ============================================
 
+// Cache staleness threshold (15 minutes)
+const CACHE_STALENESS_THRESHOLD_MS = 15 * 60 * 1000;
+
 async function listCampaigns(
   event: APIGatewayProxyEvent,
   corsHeaders: Record<string, string>
@@ -243,7 +266,7 @@ async function listCampaigns(
     return {
       statusCode: 400,
       headers: corsHeaders,
-      body: JSON.stringify({ error: 'customerId is required' }),
+      body: JSON.stringify({ success: false, error: 'customerId is required' }),
     };
   }
 
@@ -251,9 +274,22 @@ async function listCampaigns(
     if (syncFromGoogle) {
       // Fetch fresh data from Google Ads API
       const googleCampaigns = await getCampaigns(customerId);
+      const now = new Date().toISOString();
+      // FIX: Add TTL for consistency with createCampaign (90 days)
+      const ttl = Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60);
+
+      // FIX: Look up clinicId for consistency with createCampaign
+      const clinics = await getAllClinicsWithGoogleAdsStatus();
+      const clinic = clinics.find(c => c.customerId === customerId);
+      const clinicId = clinic?.clinicId || '';
+
+      if (!clinic) {
+        console.warn(`[GoogleAds] No clinic found for customerId ${customerId} during sync - campaigns will have empty clinicId`);
+      }
 
       const campaigns = googleCampaigns.map(gc => ({
         campaignId: `${customerId}-${gc.campaign.id}`,
+        clinicId, // FIX: Now includes clinicId for consistency
         customerId,
         googleCampaignId: gc.campaign.id.toString(),
         name: gc.campaign.name,
@@ -265,10 +301,11 @@ async function listCampaigns(
         clicks: gc.metrics?.clicks || 0,
         ctr: gc.metrics?.impressions ? (gc.metrics.clicks / gc.metrics.impressions) * 100 : 0,
         conversions: gc.metrics?.conversions || 0,
-        costPerConversion: gc.metrics?.conversions 
-          ? microsToDollars(gc.metrics.cost_micros || 0) / gc.metrics.conversions 
+        costPerConversion: gc.metrics?.conversions
+          ? microsToDollars(gc.metrics.cost_micros || 0) / gc.metrics.conversions
           : 0,
-        syncedAt: new Date().toISOString(),
+        syncedAt: now,
+        ttl, // FIX: Now includes TTL for consistency
       }));
 
       // Store in DynamoDB for caching
@@ -277,7 +314,7 @@ async function listCampaigns(
           TableName: GOOGLE_ADS_CAMPAIGNS_TABLE,
           Item: {
             ...campaign,
-            updatedAt: new Date().toISOString(),
+            updatedAt: now,
           },
         }));
       }
@@ -290,6 +327,8 @@ async function listCampaigns(
           campaigns,
           total: campaigns.length,
           syncedFromGoogle: true,
+          lastSyncedAt: now,
+          isStale: false,
         }),
       };
     }
@@ -307,14 +346,38 @@ async function listCampaigns(
       },
     }));
 
+    const campaigns = response.Items || [];
+
+    // Calculate staleness based on most recent syncedAt
+    let lastSyncedAt: string | null = null;
+    let isStale = true;
+
+    if (campaigns.length > 0) {
+      const syncTimes = campaigns
+        .map((c: any) => c.syncedAt)
+        .filter(Boolean)
+        .sort()
+        .reverse();
+
+      if (syncTimes.length > 0) {
+        lastSyncedAt = syncTimes[0];
+        const syncTime = new Date(lastSyncedAt as string).getTime();
+        const now = Date.now();
+        isStale = (now - syncTime) > CACHE_STALENESS_THRESHOLD_MS;
+      }
+    }
+
     return {
       statusCode: 200,
       headers: corsHeaders,
       body: JSON.stringify({
         success: true,
-        campaigns: response.Items || [],
-        total: response.Items?.length || 0,
+        campaigns,
+        total: campaigns.length,
         syncedFromGoogle: false,
+        lastSyncedAt,
+        isStale,
+        stalenessThresholdMinutes: CACHE_STALENESS_THRESHOLD_MS / 60000,
       }),
     };
   } catch (error: any) {
@@ -322,7 +385,7 @@ async function listCampaigns(
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ error: error.message }),
+      body: JSON.stringify({ success: false, error: error.message }),
     };
   }
 }
@@ -332,11 +395,11 @@ async function createCampaign(
   corsHeaders: Record<string, string>
 ): Promise<APIGatewayProxyResult> {
   const body: CreateCampaignRequest = JSON.parse(event.body || '{}');
-  const { 
-    customerId, 
-    name, 
-    type, 
-    dailyBudget, 
+  const {
+    customerId,
+    name,
+    type,
+    dailyBudget,
     status = 'PAUSED',
     biddingStrategy = 'MANUAL_CPC',
     targetCpa,
@@ -351,6 +414,17 @@ async function createCampaign(
       headers: corsHeaders,
       body: JSON.stringify({
         error: 'Missing required fields: customerId, name, type, dailyBudget',
+      }),
+    };
+  }
+
+  // Validate campaign type
+  if (!VALID_CAMPAIGN_TYPES.includes(type as CampaignType)) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        error: `Invalid campaign type: ${type}. Valid types are: ${VALID_CAMPAIGN_TYPES.join(', ')}`,
       }),
     };
   }
@@ -376,8 +450,47 @@ async function createCampaign(
     };
   }
 
+  // Validate targetRoas range (Google Ads API requires >= 0.01 and <= 100)
+  if (biddingStrategy === 'TARGET_ROAS' && targetRoas) {
+    const roasValidation = validateTargetRoas(targetRoas);
+    if (!roasValidation.isValid) {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          error: roasValidation.error,
+        }),
+      };
+    }
+  }
+
+  // Track created resources for cleanup on failure
+  let budgetResourceName: string | undefined;
+  let campaignResourceName: string | undefined;
+  let client: any;
+
   try {
-    const client = await getGoogleAdsClient(customerId);
+    // VALIDATION: Check for duplicate campaign name before creation
+    client = await getGoogleAdsClient(customerId);
+    // FIX: Use sanitizeGaqlValue() for proper GAQL injection prevention
+    const sanitizedName = sanitizeGaqlValue(name);
+    const existingCampaignsQuery = `
+      SELECT campaign.name
+      FROM campaign
+      WHERE campaign.name = '${sanitizedName}'
+        AND campaign.status != 'REMOVED'
+    `;
+    const existingCampaigns = await (client as any).query(existingCampaignsQuery);
+    if (existingCampaigns && existingCampaigns.length > 0) {
+      return {
+        statusCode: 409, // Conflict
+        headers: corsHeaders,
+        body: JSON.stringify({
+          success: false,
+          error: `A campaign with the name "${name}" already exists. Please use a unique name.`,
+        }),
+      };
+    }
 
     // Create budget first
     const budgetOperation = {
@@ -389,7 +502,7 @@ async function createCampaign(
     };
 
     const budgetResponse = await (client as any).campaignBudgets.create([budgetOperation]);
-    const budgetResourceName = budgetResponse.results[0].resource_name;
+    budgetResourceName = budgetResponse.results[0].resource_name;
 
     // Build bidding strategy configuration
     const biddingConfig: any = {};
@@ -411,6 +524,14 @@ async function createCampaign(
         break;
     }
 
+    // Build network settings based on campaign type
+    const networkSettings = type === 'SEARCH' ? {
+      target_google_search: true,
+      target_search_network: true,
+    } : type === 'VIDEO' ? {
+      target_youtube: true,
+    } : undefined;
+
     // Create campaign
     const campaignOperation = {
       create: {
@@ -419,56 +540,85 @@ async function createCampaign(
         advertising_channel_type: type,
         campaign_budget: budgetResourceName,
         ...biddingConfig,
-        network_settings: type === 'SEARCH' ? {
-          target_google_search: true,
-          target_search_network: true,
-        } : undefined,
+        network_settings: networkSettings,
       },
     };
 
     const campaignResponse = await (client as any).campaigns.create([campaignOperation]);
-    const campaignResourceName = campaignResponse.results[0].resource_name;
-    const googleCampaignId = campaignResourceName.split('/').pop();
+    campaignResourceName = campaignResponse.results[0].resource_name;
+    const googleCampaignId = campaignResourceName!.split('/').pop()!;
 
     let adGroupResourceName: string | undefined;
     let adResourceName: string | undefined;
+    let adValidationWarnings: string[] = [];
+    let adSkipped = false;
+    let adSkipReason: string | undefined;
 
     // Create Ad Group if provided
     if (adGroup) {
+      // VALIDATION: CPC bid is now required (removed default $2 CPC)
+      if (!adGroup.cpcBidMicros) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: false,
+            error: 'adGroup.cpcBidMicros is required when creating an ad group. Specify the CPC bid in micros (e.g., 2000000 for $2)',
+          }),
+        };
+      }
+
+      // Get proper ad group type based on campaign type
+      const adGroupType = CAMPAIGN_TYPE_TO_AD_GROUP_TYPE[type] || 'SEARCH_STANDARD';
+
       const adGroupOperation = {
         create: {
           name: adGroup.name || `${name} - Ad Group`,
-          campaign: campaignResourceName,
+          campaign: campaignResourceName!,
           status: 'ENABLED',
-          type: type === 'SEARCH' ? 'SEARCH_STANDARD' : 'DISPLAY_STANDARD',
-          cpc_bid_micros: adGroup.cpcBidMicros || dollarsToMicros(2), // Default $2 CPC
+          type: adGroupType,
+          cpc_bid_micros: adGroup.cpcBidMicros,
         },
       };
-
       const adGroupResponse = await (client as any).adGroups.create([adGroupOperation]);
       adGroupResourceName = adGroupResponse.results[0].resource_name;
       console.log(`[GoogleAds] Created ad group: ${adGroupResourceName}`);
 
-      // Create Responsive Search Ad if provided
+      // Create Responsive Search Ad if provided (only for SEARCH campaigns)
+      // NOTE: VIDEO campaigns require VIDEO_IN_STREAM_AD or similar - RSA is not supported
       if (ad && type === 'SEARCH') {
         if (!ad.headlines || ad.headlines.length < 3) {
+          adSkipped = true;
+          adSkipReason = 'At least 3 headlines required for RSA';
           console.warn('[GoogleAds] At least 3 headlines required for RSA, skipping ad creation');
         } else if (!ad.descriptions || ad.descriptions.length < 2) {
+          adSkipped = true;
+          adSkipReason = 'At least 2 descriptions required for RSA';
           console.warn('[GoogleAds] At least 2 descriptions required for RSA, skipping ad creation');
         } else if (!ad.finalUrl) {
+          adSkipped = true;
+          adSkipReason = 'finalUrl is required for RSA';
           console.warn('[GoogleAds] finalUrl required for RSA, skipping ad creation');
         } else {
+          // Validate and truncate to fit Google Ads character limits
+          const { validHeadlines, validDescriptions, warnings } = validateAdText(
+            ad.headlines,
+            ad.descriptions
+          );
+          adValidationWarnings = warnings;
+
+          if (warnings.length > 0) {
+            console.warn(`[GoogleAds] Ad text validation warnings: ${warnings.join('; ')}`);
+          }
+
           const adOperation = {
             create: {
               ad_group: adGroupResourceName,
               status: 'ENABLED',
               ad: {
                 responsive_search_ad: {
-                  headlines: ad.headlines.slice(0, 15).map((text, index) => ({
-                    text,
-                    pinned_field: index < 3 ? undefined : undefined, // Optional: pin first 3
-                  })),
-                  descriptions: ad.descriptions.slice(0, 4).map(text => ({ text })),
+                  headlines: validHeadlines.slice(0, 15).map((text) => ({ text })),
+                  descriptions: validDescriptions.slice(0, 4).map(text => ({ text })),
                   path1: ad.path1,
                   path2: ad.path2,
                 },
@@ -481,6 +631,81 @@ async function createCampaign(
           adResourceName = adResponse.results[0].resource_name;
           console.log(`[GoogleAds] Created responsive search ad: ${adResourceName}`);
         }
+      } else if (ad && type === 'VIDEO') {
+        // VIDEO campaigns don't support RSA - log informational message
+        console.info(`[GoogleAds] Skipping RSA for VIDEO campaign: VIDEO campaigns require manual ad creation (VIDEO_IN_STREAM_AD, etc.)`);
+        adSkipped = true;
+        adSkipReason = 'VIDEO campaigns require VIDEO_IN_STREAM_AD or similar - RSA not supported. Create ads manually in Google Ads UI.';
+      }
+    }
+
+    // VALIDATION: Look up clinicId from customerId - fail if clinic not found
+    const clinics = await getAllClinicsWithGoogleAdsStatus();
+    const clinic = clinics.find(c => c.customerId === customerId);
+    if (!clinic) {
+      // Previously this would silently proceed with empty clinicId, creating orphaned records
+      // Now we fail explicitly to prevent data integrity issues
+      console.error(`[GoogleAds] No clinic found for customerId: ${customerId}`);
+
+      // Cleanup the campaign we just created since we can't associate it with a clinic
+      if (campaignResourceName && client) {
+        try {
+          const removeOperation = {
+            update: { resource_name: campaignResourceName, status: 'REMOVED' },
+            update_mask: { paths: ['status'] },
+          };
+          await (client as any).campaigns.update([removeOperation]);
+          console.log(`[GoogleAds] Cleaned up campaign due to missing clinic: ${campaignResourceName}`);
+        } catch (cleanupError: any) {
+          // ORPHAN TRACKING: Log cleanup failure for manual remediation
+          console.error(`[GoogleAds] ORPHAN_RESOURCE: Failed to cleanup campaign ${campaignResourceName}: ${cleanupError.message}`);
+        }
+      }
+
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          success: false,
+          error: `No clinic configuration found for Google Ads customer ID: ${customerId}. Please configure the clinic's Google Ads mapping first.`,
+        }),
+      };
+    }
+    const clinicId = clinic.clinicId;
+
+    // PERMISSION CROSS-VALIDATION: Verify user has access to this clinic
+    const userPerms = getUserPermissions(event);
+    if (userPerms) {
+      const allowedClinics = getAllowedClinicIds(
+        userPerms.clinicRoles,
+        userPerms.isSuperAdmin,
+        userPerms.isGlobalSuperAdmin
+      );
+      if (!hasClinicAccess(allowedClinics, clinicId)) {
+        console.warn(`[GoogleAds] User ${userPerms.email} attempted to create campaign for unauthorized clinic: ${clinicId}`);
+
+        // Cleanup the campaign since user doesn't have permission
+        if (campaignResourceName && client) {
+          try {
+            const removeOperation = {
+              update: { resource_name: campaignResourceName, status: 'REMOVED' },
+              update_mask: { paths: ['status'] },
+            };
+            await (client as any).campaigns.update([removeOperation]);
+            console.log(`[GoogleAds] Cleaned up campaign due to permission denial: ${campaignResourceName}`);
+          } catch (cleanupError: any) {
+            console.error(`[GoogleAds] ORPHAN_RESOURCE: Failed to cleanup campaign ${campaignResourceName}: ${cleanupError.message}`);
+          }
+        }
+
+        return {
+          statusCode: 403,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: false,
+            error: `Access denied: You do not have permission to create campaigns for clinic ${clinic.clinicName}`,
+          }),
+        };
       }
     }
 
@@ -489,8 +714,9 @@ async function createCampaign(
     const now = new Date().toISOString();
     const ttl = Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60); // 90 days from now
 
-    const campaign: Campaign & { biddingStrategy?: string; ttl?: number; adGroupResourceName?: string } = {
+    const campaign: Campaign & { clinicId?: string; biddingStrategy?: string; ttl?: number; adGroupResourceName?: string } = {
       campaignId,
+      clinicId, // Now storing clinicId for easier querying
       customerId,
       googleCampaignId,
       name,
@@ -516,6 +742,11 @@ async function createCampaign(
       Item: campaign,
     }));
 
+    // Build accurate success message
+    const createdComponents: string[] = ['Campaign'];
+    if (adGroupResourceName) createdComponents.push('ad group');
+    if (adResourceName) createdComponents.push('ad');
+
     return {
       statusCode: 201,
       headers: corsHeaders,
@@ -524,17 +755,50 @@ async function createCampaign(
         campaign,
         adGroupCreated: !!adGroupResourceName,
         adCreated: !!adResourceName,
-        message: adGroupResourceName 
-          ? 'Campaign, ad group, and ad created successfully' 
-          : 'Campaign created successfully',
+        adSkipped: adSkipped || undefined,
+        adSkipReason: adSkipReason || undefined,
+        warnings: adValidationWarnings.length > 0 ? adValidationWarnings : undefined,
+        message: `${createdComponents.join(', ')} created successfully`,
       }),
     };
   } catch (error: any) {
     console.error('[GoogleAds] Error creating campaign:', error);
+
+    // CLEANUP: Remove orphaned budget if campaign creation failed
+    if (budgetResourceName && !campaignResourceName && client) {
+      console.warn(`[GoogleAds] Cleaning up orphaned budget ${budgetResourceName} due to campaign creation failure`);
+      try {
+        await (client as any).campaignBudgets.remove([budgetResourceName]);
+        console.log(`[GoogleAds] Successfully cleaned up orphaned budget: ${budgetResourceName}`);
+      } catch (cleanupError: any) {
+        // ORPHAN TRACKING: Log for manual remediation via CloudWatch alerts/metrics
+        console.error(`[GoogleAds] ORPHAN_RESOURCE: Budget cleanup failed - ${budgetResourceName} may need manual removal. Error: ${cleanupError.message}`);
+      }
+    }
+
+    // CLEANUP: Mark orphaned campaign as REMOVED if ad group/ad creation failed
+    if (campaignResourceName && client) {
+      console.warn(`[GoogleAds] Cleaning up orphaned campaign ${campaignResourceName} due to subsequent failure`);
+      try {
+        const removeOperation = {
+          update: {
+            resource_name: campaignResourceName,
+            status: 'REMOVED',
+          },
+          update_mask: { paths: ['status'] },
+        };
+        await (client as any).campaigns.update([removeOperation]);
+        console.log(`[GoogleAds] Successfully cleaned up orphaned campaign: ${campaignResourceName}`);
+      } catch (cleanupError: any) {
+        // ORPHAN TRACKING: Log for manual remediation via CloudWatch alerts/metrics
+        console.error(`[GoogleAds] ORPHAN_RESOURCE: Campaign cleanup failed - ${campaignResourceName} may need manual removal. Error: ${cleanupError.message}`);
+      }
+    }
+
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ error: error.message }),
+      body: JSON.stringify({ success: false, error: error.message }),
     };
   }
 }
@@ -596,7 +860,7 @@ async function updateCampaign(
     return {
       statusCode: 400,
       headers: corsHeaders,
-      body: JSON.stringify({ error: 'Campaign ID is required' }),
+      body: JSON.stringify({ success: false, error: 'Campaign ID is required' }),
     };
   }
 
@@ -611,15 +875,16 @@ async function updateCampaign(
       return {
         statusCode: 404,
         headers: corsHeaders,
-        body: JSON.stringify({ error: 'Campaign not found' }),
+        body: JSON.stringify({ success: false, error: 'Campaign not found' }),
       };
     }
 
-    const campaign = existing.Item as Campaign;
+    const campaign = existing.Item as Campaign & { budgetResourceName?: string };
     const client = await getGoogleAdsClient(campaign.customerId);
+    const updatesMade: string[] = [];
 
-    // Update in Google Ads
-    const updateOperation: any = {
+    // Update campaign properties in Google Ads
+    const campaignUpdateOperation: any = {
       update: {
         resource_name: `customers/${campaign.customerId}/campaigns/${campaign.googleCampaignId}`,
       },
@@ -627,17 +892,51 @@ async function updateCampaign(
     };
 
     if (body.status) {
-      updateOperation.update.status = body.status;
-      updateOperation.update_mask.paths.push('status');
+      campaignUpdateOperation.update.status = body.status;
+      campaignUpdateOperation.update_mask.paths.push('status');
+      updatesMade.push(`status: ${body.status}`);
     }
 
     if (body.name) {
-      updateOperation.update.name = body.name;
-      updateOperation.update_mask.paths.push('name');
+      campaignUpdateOperation.update.name = body.name;
+      campaignUpdateOperation.update_mask.paths.push('name');
+      updatesMade.push(`name: ${body.name}`);
     }
 
-    if (updateOperation.update_mask.paths.length > 0) {
-      await (client as any).campaigns.update([updateOperation]);
+    if (campaignUpdateOperation.update_mask.paths.length > 0) {
+      await (client as any).campaigns.update([campaignUpdateOperation]);
+    }
+
+    // UPDATE BUDGET IN GOOGLE ADS (FIX: This was previously missing!)
+    let newBudget = campaign.budget;
+    if (body.dailyBudget && body.dailyBudget !== campaign.budget) {
+      // First, get the campaign's budget resource name from Google Ads
+      const campaignQuery = `
+        SELECT campaign.campaign_budget
+        FROM campaign
+        WHERE campaign.resource_name = 'customers/${campaign.customerId}/campaigns/${campaign.googleCampaignId}'
+      `;
+      const campaignData = await (client as any).query(campaignQuery);
+
+      if (campaignData && campaignData.length > 0 && campaignData[0].campaign?.campaign_budget) {
+        const budgetResourceName = campaignData[0].campaign.campaign_budget;
+
+        // Update the budget
+        const budgetUpdateOperation = {
+          update: {
+            resource_name: budgetResourceName,
+            amount_micros: dollarsToMicros(body.dailyBudget),
+          },
+          update_mask: { paths: ['amount_micros'] },
+        };
+
+        await (client as any).campaignBudgets.update([budgetUpdateOperation]);
+        newBudget = body.dailyBudget;
+        updatesMade.push(`dailyBudget: $${body.dailyBudget}`);
+        console.log(`[GoogleAds] Updated budget for campaign ${campaignId} to $${body.dailyBudget}`);
+      } else {
+        console.warn(`[GoogleAds] Could not find budget resource for campaign ${campaignId}`);
+      }
     }
 
     // Update in DynamoDB
@@ -645,7 +944,7 @@ async function updateCampaign(
     await ddb.send(new UpdateCommand({
       TableName: GOOGLE_ADS_CAMPAIGNS_TABLE,
       Key: { campaignId },
-      UpdateExpression: 'SET #status = :status, #name = :name, updatedAt = :updatedAt',
+      UpdateExpression: 'SET #status = :status, #name = :name, budget = :budget, updatedAt = :updatedAt',
       ExpressionAttributeNames: {
         '#status': 'status',
         '#name': 'name',
@@ -653,6 +952,7 @@ async function updateCampaign(
       ExpressionAttributeValues: {
         ':status': body.status || campaign.status,
         ':name': body.name || campaign.name,
+        ':budget': newBudget,
         ':updatedAt': now,
       },
     }));
@@ -662,7 +962,10 @@ async function updateCampaign(
       headers: corsHeaders,
       body: JSON.stringify({
         success: true,
-        message: 'Campaign updated successfully',
+        message: updatesMade.length > 0
+          ? `Campaign updated: ${updatesMade.join(', ')}`
+          : 'No changes made',
+        updatedFields: updatesMade,
       }),
     };
   } catch (error: any) {
@@ -670,7 +973,7 @@ async function updateCampaign(
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ error: error.message }),
+      body: JSON.stringify({ success: false, error: error.message }),
     };
   }
 }
@@ -685,7 +988,7 @@ async function deleteCampaign(
     return {
       statusCode: 400,
       headers: corsHeaders,
-      body: JSON.stringify({ error: 'Campaign ID is required' }),
+      body: JSON.stringify({ success: false, error: 'Campaign ID is required' }),
     };
   }
 
@@ -700,44 +1003,78 @@ async function deleteCampaign(
       return {
         statusCode: 404,
         headers: corsHeaders,
-        body: JSON.stringify({ error: 'Campaign not found' }),
+        body: JSON.stringify({ success: false, error: 'Campaign not found' }),
       };
     }
 
     const campaign = existing.Item as Campaign;
-    const client = await getGoogleAdsClient(campaign.customerId);
+    const originalStatus = campaign.status;
 
-    // Remove (set status to REMOVED) in Google Ads
-    const removeOperation = {
-      update: {
-        resource_name: `customers/${campaign.customerId}/campaigns/${campaign.googleCampaignId}`,
-        status: 'REMOVED',
-      },
-      update_mask: { paths: ['status'] },
-    };
-
-    await (client as any).campaigns.update([removeOperation]);
-
-    // Delete from DynamoDB
-    await ddb.send(new DeleteCommand({
+    // Step 1: Soft delete in DynamoDB first (mark as REMOVED)
+    // This prevents orphaned records if Google Ads update fails
+    const now = new Date().toISOString();
+    await ddb.send(new UpdateCommand({
       TableName: GOOGLE_ADS_CAMPAIGNS_TABLE,
       Key: { campaignId },
+      UpdateExpression: 'SET #status = :status, deletedAt = :deletedAt, updatedAt = :updatedAt',
+      ExpressionAttributeNames: { '#status': 'status' },
+      ExpressionAttributeValues: {
+        ':status': 'REMOVED',
+        ':deletedAt': now,
+        ':updatedAt': now,
+      },
     }));
 
-    return {
-      statusCode: 200,
-      headers: corsHeaders,
-      body: JSON.stringify({
-        success: true,
-        message: 'Campaign deleted successfully',
-      }),
-    };
+    try {
+      // Step 2: Remove (set status to REMOVED) in Google Ads
+      const client = await getGoogleAdsClient(campaign.customerId);
+      const removeOperation = {
+        update: {
+          resource_name: `customers/${campaign.customerId}/campaigns/${campaign.googleCampaignId}`,
+          status: 'REMOVED',
+        },
+        update_mask: { paths: ['status'] },
+      };
+
+      await (client as any).campaigns.update([removeOperation]);
+
+      // Step 3: Now fully delete from DynamoDB since Google Ads succeeded
+      await ddb.send(new DeleteCommand({
+        TableName: GOOGLE_ADS_CAMPAIGNS_TABLE,
+        Key: { campaignId },
+      }));
+
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          success: true,
+          message: 'Campaign deleted successfully',
+        }),
+      };
+    } catch (googleAdsError: any) {
+      // COMPENSATION: Google Ads failed, revert DynamoDB soft delete
+      console.error('[GoogleAds] Google Ads update failed, reverting DynamoDB:', googleAdsError.message);
+
+      await ddb.send(new UpdateCommand({
+        TableName: GOOGLE_ADS_CAMPAIGNS_TABLE,
+        Key: { campaignId },
+        UpdateExpression: 'SET #status = :status, updatedAt = :updatedAt REMOVE deletedAt',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':status': originalStatus,
+          ':updatedAt': new Date().toISOString(),
+        },
+      }));
+
+      throw googleAdsError; // Re-throw to be caught by outer handler
+    }
   } catch (error: any) {
     console.error('[GoogleAds] Error deleting campaign:', error);
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ error: error.message }),
+      body: JSON.stringify({ success: false, error: error.message }),
     };
   }
 }
@@ -825,6 +1162,18 @@ async function createAdGroup(
     };
   }
 
+  // FIX: Require cpcBidMicros explicitly (no default) for consistency with createCampaign
+  // This prevents unexpected billing charges from silent $2 defaults
+  if (!cpcBidMicros) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        error: 'cpcBidMicros is required. Specify the CPC bid in micros (e.g., 2000000 for $2)',
+      }),
+    };
+  }
+
   try {
     const client = await getGoogleAdsClient(customerId);
 
@@ -834,7 +1183,7 @@ async function createAdGroup(
         campaign: campaignResourceName,
         status,
         type,
-        cpc_bid_micros: cpcBidMicros || dollarsToMicros(2), // Default $2 CPC
+        cpc_bid_micros: cpcBidMicros, // FIX: No longer has default fallback
       },
     };
 
@@ -855,7 +1204,7 @@ async function createAdGroup(
           name,
           status,
           type,
-          cpcBidMicros: cpcBidMicros || dollarsToMicros(2),
+          cpcBidMicros,
         },
         message: 'Ad group created successfully',
       }),
@@ -1159,28 +1508,29 @@ async function getDashboard(
 
     // Performance alerts
     const alerts: Array<{ type: 'warning' | 'error' | 'info'; message: string; campaignId?: string }> = [];
-    
-    // Check for low-performing campaigns
+
+    // Check for low-performing campaigns using configurable thresholds
     campaigns.forEach(campaign => {
       if (campaign.status === 'ENABLED') {
-        // Low CTR warning (below 2%)
-        if (campaign.impressions > 1000 && campaign.ctr < 2) {
+        // Low CTR warning (configurable threshold)
+        if (campaign.impressions > PERFORMANCE_THRESHOLDS.minImpressionsForCtrAlert &&
+          campaign.ctr < PERFORMANCE_THRESHOLDS.lowCtrPercent) {
           alerts.push({
             type: 'warning',
             message: `"${campaign.name}" has low CTR (${campaign.ctr.toFixed(2)}%). Consider improving ad copy.`,
             campaignId: campaign.campaignId,
           });
         }
-        // High cost per conversion warning
-        if (campaign.conversions > 0 && campaign.costPerConversion > 100) {
+        // High cost per conversion warning (configurable threshold)
+        if (campaign.conversions > 0 && campaign.costPerConversion > PERFORMANCE_THRESHOLDS.highCpaDollars) {
           alerts.push({
             type: 'warning',
             message: `"${campaign.name}" has high CPA ($${campaign.costPerConversion.toFixed(2)}). Review targeting.`,
             campaignId: campaign.campaignId,
           });
         }
-        // No conversions warning
-        if (campaign.clicks > 100 && campaign.conversions === 0) {
+        // No conversions warning (configurable threshold)
+        if (campaign.clicks > PERFORMANCE_THRESHOLDS.minClicksForConversionAlert && campaign.conversions === 0) {
           alerts.push({
             type: 'error',
             message: `"${campaign.name}" has no conversions with ${campaign.clicks} clicks. Check conversion tracking.`,

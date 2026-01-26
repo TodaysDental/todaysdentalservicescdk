@@ -51,6 +51,13 @@ export class GoogleAdsStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // GSI: ByClinic - Query campaigns by clinicId for easier lookup
+    this.campaignsTable.addGlobalSecondaryIndex({
+      indexName: 'ByClinic',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // Table: GoogleAdsKeywords
     this.keywordsTable = new dynamodb.Table(this, 'GoogleAdsKeywordsTable', {
       tableName: `${this.stackName}-Keywords`,
@@ -398,6 +405,9 @@ export class GoogleAdsStack extends Stack {
 
     const bulkKeywordsRes = bulkRes.addResource('keywords');
     bulkKeywordsRes.addMethod('POST', new apigw.LambdaIntegration(bulkFn), { authorizer });
+
+    const bulkRateLimitRes = bulkRes.addResource('rate-limit');
+    bulkRateLimitRes.addMethod('GET', new apigw.LambdaIntegration(bulkFn), { authorizer });
 
     // --- AI Suggestions Routes ---
     const aiRes = root.addResource('ai');
