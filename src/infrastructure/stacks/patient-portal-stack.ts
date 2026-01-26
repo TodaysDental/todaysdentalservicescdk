@@ -29,6 +29,13 @@ export interface PatientPortalStackProps extends StackProps {
   clinicConfigTableName?: string;
   /** KMS key ARN for decrypting secrets */
   secretsEncryptionKeyArn?: string;
+  // ========================================
+  // AI AGENTS INTEGRATION (from AiAgentsStack)
+  // ========================================
+  /** AI Agents Metrics table name for tracking billsPaid through AI agent flow */
+  aiAgentsMetricsTableName?: string;
+  /** AI Agents Metrics table ARN for IAM permissions */
+  aiAgentsMetricsTableArn?: string;
 }
 
 export class PatientPortalStack extends Stack {
@@ -97,7 +104,7 @@ export class PatientPortalStack extends Stack {
     // ===========================================
     // PATIENT PORTAL DYNAMODB TABLES (CLINIC-SPECIFIC)
     // ===========================================
-    
+
     const sessionTablePrefix = 'todaysdentalinsights-patient-sessions-';
     const smsLogTablePrefix = 'todaysdentalinsights-sms-logs-';
 
@@ -144,19 +151,19 @@ export class PatientPortalStack extends Stack {
     // ===========================================
     // SNS TOPICS AND PERMISSIONS
     // ===========================================
-    
+
     // ===========================================
     // PATIENT PORTAL LAMBDA FUNCTION
     // ===========================================
-    
+
     const patientPortalLambda = new lambdaNode.NodejsFunction(this, 'PatientPortalLambda', {
       entry: path.join(__dirname, '..', '..', 'services', 'patient-portal', 'patientPortal.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 1024,
       timeout: Duration.seconds(30),
-      bundling: { 
-        format: lambdaNode.OutputFormat.CJS, 
+      bundling: {
+        format: lambdaNode.OutputFormat.CJS,
         target: 'node22',
         externalModules: ['ssh2', 'cpu-features'],  // Native .node binaries can't be bundled
         nodeModules: ['ssh2'],  // Include ssh2 in node_modules for Lambda
@@ -174,6 +181,8 @@ export class PatientPortalStack extends Stack {
         GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
         CLINIC_SECRETS_TABLE: props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets',
         CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
+        // AI Agents Metrics table for tracking billsPaid (payments processed via AI agent)
+        AI_AGENTS_METRICS_TABLE: props.aiAgentsMetricsTableName || '',
       },
     });
     applyTags(patientPortalLambda, { Function: 'patient-portal' });
@@ -183,7 +192,7 @@ export class PatientPortalStack extends Stack {
     patientPortalLambda.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'dynamodb:PutItem',
-        'dynamodb:UpdateItem', 
+        'dynamodb:UpdateItem',
         'dynamodb:GetItem',
         'dynamodb:Scan',
         'dynamodb:Query',
@@ -221,6 +230,16 @@ export class PatientPortalStack extends Stack {
       patientPortalLambda.addToRolePolicy(new iam.PolicyStatement({
         actions: ['kms:Decrypt', 'kms:DescribeKey'],
         resources: [props.secretsEncryptionKeyArn],
+      }));
+    }
+
+    // Grant write access to AI Agents Metrics table for tracking billsPaid
+    // This enables the patient portal to update the billsPaid metric when
+    // a payment is processed through the AI agent-assisted flow
+    if (props.aiAgentsMetricsTableArn) {
+      patientPortalLambda.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:UpdateItem'],
+        resources: [props.aiAgentsMetricsTableArn],
       }));
     }
 
@@ -272,19 +291,19 @@ export class PatientPortalStack extends Stack {
     });
 
     const corsErrorHeaders = getCorsErrorHeaders();
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
       restApi: patientPortalApi,
       type: apigw.ResponseType.DEFAULT_4XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault5XX', {
       restApi: patientPortalApi,
       type: apigw.ResponseType.DEFAULT_5XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseUnauthorized', {
       restApi: patientPortalApi,
       type: apigw.ResponseType.UNAUTHORIZED,
@@ -387,9 +406,9 @@ export class PatientPortalStack extends Stack {
         { statusCode: '404' }, { statusCode: '500' }
       ],
     });
-    
+
     // --- NEWLY ADDED CODE ---
-    
+
     // 7. Add the new route: /{clinicId}/appttypes/{label}
     const singleApptTypeResourceOnRoot = apptTypesResourceOnRoot.addResource('{label}');
     singleApptTypeResourceOnRoot.addMethod('GET', publicApptTypesIntegration, {
@@ -409,7 +428,7 @@ export class PatientPortalStack extends Stack {
         { statusCode: '404' }, { statusCode: '500' }
       ],
     });
-    
+
     // --- END OF NEWLY ADDED CODE ---
 
     // ===========================================

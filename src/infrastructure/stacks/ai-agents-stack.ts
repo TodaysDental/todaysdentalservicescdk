@@ -267,6 +267,13 @@ export class AiAgentsStack extends Stack {
   public readonly outboundCallQueue: sqs.Queue;
   public readonly circuitBreakerTable: dynamodb.Table;
   /**
+   * AI Agents Metrics table - aggregated daily metrics for AI agent performance.
+   * Tracks: appointmentsBooked, appointmentsUsed, appointmentsCancelled, appointmentsRescheduled, billsPaid.
+   * Schema: PK=clinicId, SK=metricDate (YYYY-MM-DD format, UTC).
+   * Used for ROI analysis of AI agent scheduling efficiency and billing conversion.
+   */
+  public readonly aiAgentsMetricsTable: dynamodb.Table;
+  /**
    * Reference to the shared CallAnalytics table from AnalyticsStack.
    * This avoids data fragmentation between AI-written records and Chime stream records.
    * Will be undefined if callAnalyticsTableName was not provided.
@@ -615,6 +622,28 @@ export class AiAgentsStack extends Stack {
     });
 
     // ========================================
+    // AI AGENTS METRICS TABLE (Performance Tracking)
+    // ========================================
+    // Aggregated daily metrics for AI agent performance tracking.
+    // Enables ROI analysis for AI agent scheduling efficiency and billing conversion.
+    // Metrics are updated via atomic ADD operations in DynamoDB.
+    // Attributes:
+    //   - appointmentsBooked: Appointments successfully scheduled by the agent
+    //   - appointmentsUsed: Appointments that were kept/attended (confirmed via sync)
+    //   - appointmentsCancelled: Appointments cancelled by the user or agent
+    //   - appointmentsRescheduled: Appointments moved to a different slot
+    //   - billsPaid: Count of bill payments successfully processed (Patient Portal integration)
+    this.aiAgentsMetricsTable = new dynamodb.Table(this, 'AiAgentsMetricsTable', {
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'metricDate', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN, // Keep metrics data for analytics
+      tableName: `${this.stackName}-AiAgentsMetrics`,
+      pointInTimeRecovery: true,
+    });
+    applyTags(this.aiAgentsMetricsTable, { Table: 'ai-agents-metrics' });
+
+    // ========================================
     // OUTBOUND CALL QUEUE (async batch processing)
     // ========================================
     // SQS queue for processing large batches of scheduled calls asynchronously.
@@ -898,12 +927,16 @@ export class AiAgentsStack extends Stack {
         FEE_SCHEDULES_TABLE: 'TodaysDentalInsightsFeeScheduleSyncN1-FeeSchedules',
         // Appointment types table for booking appointments (from PatientPortalApptTypesStack)
         APPT_TYPES_TABLE: props.apptTypesTableName || 'TodaysDentalInsightsPatientPortalApptTypesN1-ApptTypes',
+        // AI Agents Metrics table for tracking scheduling outcomes (booked, used, cancelled, rescheduled)
+        AI_AGENTS_METRICS_TABLE: this.aiAgentsMetricsTable.tableName,
       },
     });
     applyTags(this.actionGroupFn, { Function: 'action-group' });
 
     this.agentsTable.grantReadData(this.actionGroupFn);
     this.circuitBreakerTable.grantReadWriteData(this.actionGroupFn);
+    // Grant write access to metrics table for tracking scheduling outcomes
+    this.aiAgentsMetricsTable.grantReadWriteData(this.actionGroupFn);
 
     // Grant read access to Clinics table for clinic metadata
     // Use explicit ARN from props if available, otherwise construct from table name
@@ -2204,6 +2237,12 @@ export class AiAgentsStack extends Stack {
       exportName: `${Stack.of(this).stackName}-BulkOutboundJobsTableName`,
     });
 
+    new CfnOutput(this, 'AiAgentsMetricsTableName', {
+      value: this.aiAgentsMetricsTable.tableName,
+      description: 'AI Agents metrics table for tracking appointments booked/used/cancelled/rescheduled and bills paid',
+      exportName: `${Stack.of(this).stackName}-AiAgentsMetricsTableName`,
+    });
+
     new CfnOutput(this, 'OutboundCallQueueUrl', {
       value: this.outboundCallQueue.queueUrl,
       description: 'SQS queue URL for async bulk call processing',
@@ -2284,6 +2323,7 @@ export class AiAgentsStack extends Stack {
     createDynamoThrottleAlarm(this.clinicHoursTable.tableName, 'ClinicHoursTable');
     createDynamoThrottleAlarm(this.voiceConfigTable.tableName, 'VoiceConfigTable');
     createDynamoThrottleAlarm(this.scheduledCallsTable.tableName, 'ScheduledCallsTable');
+    createDynamoThrottleAlarm(this.aiAgentsMetricsTable.tableName, 'AiAgentsMetricsTable');
     // NOTE: CallAnalytics table throttle alarm is in AnalyticsStack (shared table)
   }
 }

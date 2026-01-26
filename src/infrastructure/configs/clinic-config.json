@@ -1,6 +1,8 @@
 [
   {
     "clinicId": "dentistinnewbritain",
+    "microsoftClarityProjectId": "prdkd0ahi0",
+    "ga4PropertyId": "460776013",
     "odooCompanyId": 22,
     "clinicAddress": "446 S Main St, New Britain CT 06051-3516, USA",
     "clinicCity": "New Britain",
@@ -44,7 +46,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "749712698232047",
@@ -58,6 +62,8 @@
   },
   {
     "clinicId": "dentistingreenville",
+    "microsoftClarityProjectId": "prcd3zvx6c",
+    "ga4PropertyId": "437418111",
     "odooCompanyId": 14,
     "clinicAddress": "4 Market Point Drive Suite E, Greenville SC 29607",
     "clinicCity": "Greenville",
@@ -101,7 +107,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "749186571616901",
@@ -115,6 +123,8 @@
   },
   {
     "clinicId": "todaysdentalcayce",
+    "microsoftClarityProjectId": "pqbgmaxpjv",
+    "ga4PropertyId": "397796880",
     "odooCompanyId": 4,
     "clinicAddress": "1305 Knox Abbott Dr suite 101, Cayce, SC 29033, United States",
     "clinicCity": "Cayce",
@@ -158,7 +168,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "860746843779381",
@@ -172,6 +184,8 @@
   },
   {
     "clinicId": "creekcrossingdentalcare",
+    "microsoftClarityProjectId": "q5nwcwxs47",
+    "ga4PropertyId": "473416830",
     "odooCompanyId": 33,
     "clinicAddress": "1927 FAITHON P LUCAS SR BLVD Ste 120 MESQUITE TX 75181-1698",
     "clinicCity": "Mesquite",
@@ -215,7 +229,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "802545442940105",
@@ -229,6 +245,8 @@
   },
   {
     "clinicId": "dentistinwinston-salem",
+    "microsoftClarityProjectId": "pvgkbe95f9",
+    "ga4PropertyId": "476844030",
     "odooCompanyId": 35,
     "clinicAddress": "3210 Silas Creek Pkwy, Suite-4 Winston salem, NC, 27103",
     "clinicCity": "Winston-Salem",
@@ -272,7 +290,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "798270746700728",
@@ -286,6 +306,8 @@
   },
   {
     "clinicId": "dentistincentennial",
+    "microsoftClarityProjectId": "qxtfof6tvo",
+    "ga4PropertyId": "479242236",
     "odooCompanyId": 37,
     "clinicAddress": "20269 E Smoky Hill Rd, Centennial, CO 80015, USA",
     "clinicCity": "Centennial",
@@ -329,7 +351,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "804637432728253",
@@ -343,6 +367,8 @@
   },
   {
     "clinicId": "renodentalcareandorthodontics",
+    "microsoftClarityProjectId": "tetwfq1mjm",
+    "ga4PropertyId": "479275245",
     "odooCompanyId": 38,
     "clinicAddress": "8040 S VIRGINIA ST STE 4 RENO NV 89511-8939",
     "clinicCity": "Reno",
@@ -386,7 +412,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "780646868466800",
@@ -400,6 +428,8 @@
   },
   {
     "clinicId": "todaysdentalalexandria",
+    "microsoftClarityProjectId": "prcjdqxsau",
+    "ga4PropertyId": "323970788",
     "odooCompanyId": 8,
     "clinicAddress": "4601 Pinecrest Office Park Dr D, Alexandria, VA 22312, United States",
     "clinicCity": "Alexandria",
@@ -443,7 +473,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "854025807784463",
@@ -457,6 +489,8 @@
   },
   {
     "clinicId": "todaysdentalgreenville",
+    "microsoftClarityProjectId": "prc4w966rh",
+    "ga4PropertyId": "329785564",
     "odooCompanyId": 5,
     "clinicAddress": "1530 Poinsett Hwy Greenville, SC 29609, USA",
     "clinicCity": "Greenville",
@@ -500,7 +534,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "785393261324026",
@@ -514,6 +550,8 @@
   },
   {
     "clinicId": "todaysdentalwestcolumbia",
+    "microsoftClarityProjectId": "prcle83ice",
+    "ga4PropertyId": "256860978",
     "odooCompanyId": 6,
     "clinicAddress": "115 Medical Cir West Columbia, SC 29169, USA",
     "clinicCity": "West Columbia",
@@ -557,7 +595,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "780972621763947",
@@ -571,6 +611,8 @@
   },
   {
     "clinicId": "dentistinconcord",
+    "microsoftClarityProjectId": "prd9vboz9f",
+    "ga4PropertyId": "436453348",
     "odooCompanyId": 20,
     "clinicAddress": "2460 Wonder DR STE C, Kannapolis, NC 28083",
     "clinicCity": "Concord",
@@ -614,7 +656,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "818707804648788",
@@ -628,6 +672,8 @@
   },
   {
     "clinicId": "dentistinedgewater",
+    "microsoftClarityProjectId": "prd2n502ae",
+    "ga4PropertyId": "454102815",
     "odooCompanyId": 15,
     "clinicAddress": "15 Lee Airpark Dr, Suite 100, Edgewater MD 21037",
     "clinicCity": "Edgewater",
@@ -671,7 +717,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "815231321665315",
@@ -685,6 +733,8 @@
   },
   {
     "clinicId": "lawrencevilledentistry",
+    "microsoftClarityProjectId": "prcvlw68k2",
+    "ga4PropertyId": "320151183",
     "odooCompanyId": 11,
     "clinicAddress": "1455 Pleasant Hill Road, Lawrenceville, Suite 807A, georgia 30044, USA",
     "clinicCity": "Lawrenceville",
@@ -728,7 +778,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "764215823445811",
@@ -742,6 +794,8 @@
   },
   {
     "clinicId": "dentistinlouisville",
+    "microsoftClarityProjectId": "prdfvmoubk",
+    "ga4PropertyId": "457162663",
     "odooCompanyId": 21,
     "clinicAddress": "6826 Bardstown Road, Louisville Kentucky 40291, USA",
     "clinicCity": "Louisville",
@@ -785,7 +839,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "830585603464796",
@@ -799,6 +855,8 @@
   },
   {
     "clinicId": "dentistatsaludapointe",
+    "microsoftClarityProjectId": "prcqs5tiew",
+    "ga4PropertyId": "308606507",
     "odooCompanyId": 7,
     "clinicAddress": "105 Saluda Pointe Ct Suite C, Lexington, SC 29072, USA",
     "clinicCity": "SaludaPointe",
@@ -842,7 +900,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "830923773419024",
@@ -856,6 +916,8 @@
   },
   {
     "clinicId": "dentistinoregonoh",
+    "microsoftClarityProjectId": "prdbm63nqu",
+    "ga4PropertyId": "435942957",
     "odooCompanyId": 25,
     "clinicAddress": "3555 Navarre Ave Stre 12, Oregon OH 43616",
     "clinicCity": "Oregon",
@@ -899,7 +961,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "761336133733464",
@@ -913,6 +977,8 @@
   },
   {
     "clinicId": "todaysdentallexington",
+    "microsoftClarityProjectId": "prcooafwqn",
+    "ga4PropertyId": "322576361",
     "odooCompanyId": 2,
     "clinicAddress": "458 Old Cherokee Rd Suite 100, Lexington, SC 29072, USA",
     "clinicCity": "Lexington",
@@ -956,7 +1022,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "739288799274944",
@@ -970,6 +1038,8 @@
   },
   {
     "clinicId": "dentistinbowie",
+    "microsoftClarityProjectId": "prctr500z6",
+    "ga4PropertyId": "317138480",
     "odooCompanyId": 9,
     "clinicAddress": "14999 Health Center Dr #110 Bowie, MD 20716, USA",
     "clinicCity": "Bowie",
@@ -1013,7 +1083,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "786812141180019",
@@ -1027,6 +1099,8 @@
   },
   {
     "clinicId": "dentistinpowellohio",
+    "microsoftClarityProjectId": "prdd94j7x5",
+    "ga4PropertyId": "441589993",
     "odooCompanyId": 16,
     "clinicAddress": "4091 W Powell Rd#1, Powell, OH 43065",
     "clinicCity": "Powell",
@@ -1070,7 +1144,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "779484698582071",
@@ -1084,6 +1160,8 @@
   },
   {
     "clinicId": "dentistinperrysburg",
+    "microsoftClarityProjectId": "prcxhz2cnj",
+    "ga4PropertyId": "375431202",
     "odooCompanyId": 10,
     "clinicAddress": "110 E South Boundary St, Perrysburg, OH 43551, USA",
     "clinicCity": "Perrysburg",
@@ -1127,7 +1205,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "743300888873794",
@@ -1141,6 +1221,8 @@
   },
   {
     "clinicId": "dentistinaustin",
+    "microsoftClarityProjectId": "q5ntnauzgw",
+    "ga4PropertyId": "473412339",
     "odooCompanyId": 34,
     "clinicAddress": "2110 W Slaughter Ln Ste 190 Austin, TX 78748",
     "clinicCity": "Austin",
@@ -1184,7 +1266,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "787337507798286",
@@ -1198,6 +1282,8 @@
   },
   {
     "clinicId": "therimdentalcare",
+    "microsoftClarityProjectId": "prdn6xu3rx",
+    "ga4PropertyId": "475875370",
     "odooCompanyId": 29,
     "clinicAddress": "6028 WORTH PKWY STE 101, SAN ANTONIO, TX 78257-5071",
     "clinicCity": "SAN ANTONIO",
@@ -1241,7 +1327,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "737273779478519",
@@ -1255,6 +1343,8 @@
   },
   {
     "clinicId": "dentistinbloomingdale",
+    "microsoftClarityProjectId": "prdid5gc91",
+    "ga4PropertyId": "470493714",
     "odooCompanyId": 27,
     "clinicAddress": "366 W Army Trail Rd #310a, Bloomingdale, IL 60108, USA",
     "clinicCity": "Bloomingdale",
@@ -1298,7 +1388,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "795753343619807",
@@ -1312,6 +1404,8 @@
   },
   {
     "clinicId": "dentistinvernonhills",
+    "microsoftClarityProjectId": "prdmxxnpab",
+    "ga4PropertyId": "470562527",
     "odooCompanyId": 32,
     "clinicAddress": "6826 Bardstown Road, VernonHills, Illinois, 40291, USA",
     "clinicCity": "VernonHills",
@@ -1355,7 +1449,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "817804011415991",
@@ -1369,6 +1465,8 @@
   },
   {
     "clinicId": "meadowsdentalcare",
+    "microsoftClarityProjectId": "q5nl2vx1uk",
+    "ga4PropertyId": "472533442",
     "odooCompanyId": 36,
     "clinicAddress": "9600 S I-35 Frontage Rd Bldg S #275, Austin, TX 78748, United States",
     "clinicCity": "Austin",
@@ -1412,7 +1510,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "761234307081671",
@@ -1426,6 +1526,8 @@
   },
   {
     "clinicId": "dentistinstillwater",
+    "microsoftClarityProjectId": "qxvqxbsvlr",
+    "ga4PropertyId": "489087064",
     "odooCompanyId": 39,
     "clinicAddress": "5619 W. Loop, 1604 N Ste 112, San Antonio, TX 78253-5795",
     "clinicCity": "San Antonio",
@@ -1469,7 +1571,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "717972378076257",
@@ -1483,6 +1587,8 @@
   },
   {
     "clinicId": "pearlanddentalcare",
+    "microsoftClarityProjectId": "sff0eb093t",
+    "ga4PropertyId": "501638627",
     "odooCompanyId": 40,
     "clinicAddress": "1921 N Main St Ste 115, Pearland TX 77581",
     "clinicCity": "Pearland",
@@ -1526,7 +1632,9 @@
     },
     "ayrshare": {
       "enabled": true,
-      "connectedPlatforms": ["facebook"],
+      "connectedPlatforms": [
+        "facebook"
+      ],
       "facebook": {
         "connected": true,
         "pageId": "764480776752152",

@@ -6,13 +6,13 @@ import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, UpdateCo
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { APIContracts, APIControllers, Constants } from 'authorizenet';
-import { 
-  getClinicConfig as getClinicConfigFromDb, 
-  getClinicSecrets, 
-  getAllClinicConfigs,
-  getGlobalSecret,
-  ClinicConfig as DbClinicConfig, 
-  ClinicSecrets 
+import {
+    getClinicConfig as getClinicConfigFromDb,
+    getClinicSecrets,
+    getAllClinicConfigs,
+    getGlobalSecret,
+    ClinicConfig as DbClinicConfig,
+    ClinicSecrets
 } from '../../shared/utils/secrets-helper';
 import { buildCorsHeaders, ALLOWED_ORIGINS_LIST } from '../../shared/utils/cors';
 
@@ -35,11 +35,11 @@ let allowedOriginsCache: string[] | null = null;
 // Combines DynamoDB data with static list from cors.ts for reliability
 async function initAllowedOrigins(): Promise<void> {
     if (allowedOriginsCache) return;
-    
+
     try {
         const configs = await getAllClinicConfigs();
         const dynamoOrigins = configs.map(c => c.websiteLink).filter(Boolean);
-        
+
         // Combine DynamoDB origins with static list for reliability
         // Use Set to avoid duplicates
         allowedOriginsCache = [...new Set([
@@ -47,7 +47,7 @@ async function initAllowedOrigins(): Promise<void> {
             ...dynamoOrigins,
             ...ALLOWED_ORIGINS_LIST
         ])];
-        
+
         console.log('[CORS] Loaded allowed origins:', allowedOriginsCache.length, 'origins');
     } catch (error) {
         console.warn('[CORS] Failed to load clinic configs from DynamoDB, using static list:', error);
@@ -86,11 +86,11 @@ async function getClinicConfig(clinicId: string): Promise<ClinicConfig> {
         getClinicConfigFromDb(clinicId),
         getClinicSecrets(clinicId)
     ]);
-    
+
     if (!config || !secrets) {
         throw new Error(`Clinic configuration not found for clinicId: ${clinicId}`);
     }
-    
+
     return {
         clinicId: config.clinicId,
         developerKey: secrets.openDentalDeveloperKey,
@@ -108,15 +108,15 @@ function getCorsHeaders(origin?: string) {
     const allowedOrigins = getAllowedOrigins();
     const isOriginAllowed = origin && allowedOrigins.includes(origin);
     const allowOrigin = isOriginAllowed ? origin : 'https://todaysdentalinsights.com';
-    
+
     if (origin && !isOriginAllowed) {
-        console.warn('[CORS] Origin not in allowed list:', { 
-            requestOrigin: origin, 
+        console.warn('[CORS] Origin not in allowed list:', {
+            requestOrigin: origin,
             allowedCount: allowedOrigins.length,
             sampleAllowed: allowedOrigins.slice(0, 5)
         });
     }
-    
+
     return buildCorsHeaders({ allowOrigin, allowMethods: ['OPTIONS', 'GET', 'POST', 'PUT', 'DELETE'] });
 }
 
@@ -409,7 +409,7 @@ async function chargeCreditCard(cardDetails: CardDetails, amount: number, clinic
         });
 
         const response = new APIContracts.CreateTransactionResponse(apiResponse);
-        
+
         if (response.getMessages().getResultCode() !== APIContracts.MessageTypeEnum.OK) {
             const error = response.getMessages().getMessage()[0];
             throw new Error(`Transaction failed: ${error.getCode()} - ${error.getText()}`);
@@ -548,7 +548,7 @@ async function breakAppointment(aptNum: number, body: any, patient: Patient, cli
         };
 
         console.log(`Sending PUT request to ${url} with payload:`, JSON.stringify(payload, null, 2));
-        
+
         const response = await axios.put(url, payload, {
             headers: {
                 'Authorization': AUTH_HEADER,
@@ -570,7 +570,7 @@ async function breakAppointment(aptNum: number, body: any, patient: Patient, cli
                     appointment: { aptNum, status: 'canceled' },
                     expires: Math.floor(Date.now() / 1000) + 86400
                 };
-                
+
                 try {
                     const command = new PutCommand({
                         TableName: sessionTableName,
@@ -653,7 +653,7 @@ async function updateAppointment(aptNum: number, body: any, patient: Patient, cl
                     appointment: { aptNum, aptDateTime, patNum: patient.PatNum, status: 'rescheduled' },
                     expires: Math.floor(Date.now() / 1000) + 86400
                 };
-                
+
                 try {
                     const command = new PutCommand({
                         TableName: sessionTableName,
@@ -756,7 +756,7 @@ async function createAppointment(body: any, patient: Patient, clinicConfig: Clin
                     appointment: { aptNum, aptDateTime, patNum: patient.PatNum, status: 'confirmed' },
                     expires: Math.floor(Date.now() / 1000) + 86400
                 };
-                
+
                 try {
                     const command = new PutCommand({
                         TableName: sessionTableName,
@@ -844,42 +844,42 @@ async function getProcedureLogs(patNum: number, clinicConfig: ClinicConfig) {
     }
 }
 async function getTreatmentPlans(
-  patNum: number,
-  clinicConfig: ClinicConfig,
-  tpStatus?: string // e.g. "Saved", "Active", "Inactive" (whatever your OD allows)
+    patNum: number,
+    clinicConfig: ClinicConfig,
+    tpStatus?: string // e.g. "Saved", "Active", "Inactive" (whatever your OD allows)
 ) {
-  const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
-  // Build the exact OD URL you shared
-  const url =
-    `${API_BASE_URL}/treatplans?PatNum=${encodeURIComponent(String(patNum))}` +
-    (tpStatus ? `&TPStatus=${encodeURIComponent(tpStatus)}` : '');
+    const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
+    // Build the exact OD URL you shared
+    const url =
+        `${API_BASE_URL}/treatplans?PatNum=${encodeURIComponent(String(patNum))}` +
+        (tpStatus ? `&TPStatus=${encodeURIComponent(tpStatus)}` : '');
 
-  try {
-    const resp = await axios.get(url, {
-      headers: {
-        Authorization: AUTH_HEADER,
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-    });
+    try {
+        const resp = await axios.get(url, {
+            headers: {
+                Authorization: AUTH_HEADER,
+                Accept: 'application/json',
+                'Content-Type': 'application/json',
+            },
+        });
 
-    const data = resp.data;
-    if (Array.isArray(data)) return data;
-    if (data && typeof data === 'object') return [data];
-    return [];
-  } catch (err: any) {
-    // OD commonly returns 404 when there are no plans (or for an unknown status) – return empty list
-    if (err?.response?.status === 404) return [];
-    if (err?.response?.status === 401)
-      throw { status: 401, message: 'Unauthorized. Please verify Open Dental API credentials.' };
-    if (err?.response?.status === 400)
-      throw { status: 400, message: err?.response?.data?.message || 'Invalid request for treatment plans.' };
+        const data = resp.data;
+        if (Array.isArray(data)) return data;
+        if (data && typeof data === 'object') return [data];
+        return [];
+    } catch (err: any) {
+        // OD commonly returns 404 when there are no plans (or for an unknown status) – return empty list
+        if (err?.response?.status === 404) return [];
+        if (err?.response?.status === 401)
+            throw { status: 401, message: 'Unauthorized. Please verify Open Dental API credentials.' };
+        if (err?.response?.status === 400)
+            throw { status: 400, message: err?.response?.data?.message || 'Invalid request for treatment plans.' };
 
-    throw {
-      status: err?.response?.status || 500,
-      message: err?.response?.data?.message || 'Error fetching treatment plans',
-    };
-  }
+        throw {
+            status: err?.response?.status || 500,
+            message: err?.response?.data?.message || 'Error fetching treatment plans',
+        };
+    }
 }
 
 
@@ -928,12 +928,12 @@ async function getAppointmentSlots(queryParams: any, clinicConfig: ClinicConfig)
     if (!Date) {
         throw { status: 400, message: 'Date parameter is required for appointment slots' };
     }
-    
+
     const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
     let url = `${API_BASE_URL}/appointments/slots?Date=${encodeURIComponent(Date)}`;
     if (ProvNum) url += `&ProvNum=${encodeURIComponent(ProvNum)}`;
     if (OpNum) url += `&OpNum=${encodeURIComponent(OpNum)}`;
-    
+
     try {
         const response = await axios.get(url, {
             headers: {
@@ -1051,7 +1051,7 @@ async function getAccountModuleData(patNum: number, moduleType: string, queryPar
 
     const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
     let url = `${API_BASE_URL}/accountmodules/${patNum}/${mappedModuleType}`;
-    
+
     if (moduleType.toLowerCase() === 'servicedateview' && queryParams.isFamily) {
         url += `?isFamily=${encodeURIComponent(queryParams.isFamily)}`;
     }
@@ -1098,28 +1098,28 @@ async function getAccountModuleData(patNum: number, moduleType: string, queryPar
             moduleType,
             clinicId: clinicConfig.clinicId
         });
-        
+
         if (error.response?.status === 400 && error.response?.data?.includes('not a valid method')) {
             throw {
                 status: 400,
                 message: `The ${moduleType} module is not accessible with the current API configuration. Please verify API permissions or contact Open Dental support.`
             };
         }
-        
+
         if (error.response?.status === 401) {
             throw {
                 status: 401,
                 message: `Unauthorized access to Open Dental API. Please verify API credentials for clinic ${clinicConfig.clinicId}`
             };
         }
-        
+
         if (error.response?.status === 404) {
             throw {
                 status: 404,
                 message: `Patient ${patNum} not found or ${moduleType} data not available`
             };
         }
-        
+
         throw {
             status: error.response?.status || 500,
             message: error.response?.data?.message || error.message || `Error fetching account module data for ${moduleType}`
@@ -1145,7 +1145,7 @@ async function findPatient(params: any, clinicConfig: ClinicConfig) {
     // The API search uses LName to get a list of potential candidates.
     // We can't always trust its date filter, so we filter manually.
     const url = `${API_BASE_URL}/patients?LName=${encodeURIComponent(LName)}&Birthdate=${encodeURIComponent(Birthdate)}`;
-    
+
     try {
         const response = await axios.get(url, { headers: { 'Authorization': AUTH_HEADER } });
         const patientsFromApi = response.data;
@@ -1153,7 +1153,7 @@ async function findPatient(params: any, clinicConfig: ClinicConfig) {
         // --- CRITICAL FIX: Manually filter the results for an EXACT date match ---
         // The API might return patients with the same last name but different birthdays.
         // We ensure we only work with patients who match both criteria.
-        const strictlyMatchedPatients = patientsFromApi.filter((patient: any) => 
+        const strictlyMatchedPatients = patientsFromApi.filter((patient: any) =>
             patient.Birthdate.startsWith(Birthdate)
         );
         // Using .startsWith() is robust for dates, as the API might return 'YYYY-MM-DDTHH:MM:SS'.
@@ -1177,7 +1177,7 @@ async function findPatient(params: any, clinicConfig: ClinicConfig) {
                 return { ambiguous: true, message: "Multiple records found. Please provide a first name to continue." };
             }
         }
-        
+
         // If we reach here with no patientToLogin, it means either 0 records were found,
         // or multiple were found but the provided FName didn't match any of them.
         if (!patientToLogin) {
@@ -1204,9 +1204,9 @@ async function findPatient(params: any, clinicConfig: ClinicConfig) {
 
     } catch (error: any) {
         if (error.response?.status === 404) {
-             // A 404 from Open Dental also means no patient was found.
-             console.log('Received 404 from Open Dental, indicating no patient found.');
-             return null;
+            // A 404 from Open Dental also means no patient was found.
+            console.log('Received 404 from Open Dental, indicating no patient found.');
+            return null;
         }
         console.error('Unhandled error in findPatient:', error);
         throw {
@@ -1263,7 +1263,7 @@ async function createPatient(body: any, clinicConfig: ClinicConfig) {
 
 function getImageTypeFromExtension(extension: string): string {
     const ext = extension.toLowerCase();
-    
+
     // Map file extensions to Open Dental image types
     const imageTypes: { [key: string]: string } = {
         '.jpg': 'Photo',
@@ -1279,7 +1279,7 @@ function getImageTypeFromExtension(extension: string): string {
         '.txt': 'Document',
         '.rtf': 'Document'
     };
-    
+
     return imageTypes[ext] || 'Document';
 }
 
@@ -1287,7 +1287,7 @@ function getImageTypeFromExtension(extension: string): string {
 
 async function downloadDocumentFromSftp(docNum: number, clinicConfig: ClinicConfig): Promise<{ fileBuffer: Buffer; fileName: string; mimeType: string }> {
     const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
-    
+
     // First get document details
     try {
         const docResponse = await axios.get(`${API_BASE_URL}/documents/${docNum}`, {
@@ -1295,36 +1295,36 @@ async function downloadDocumentFromSftp(docNum: number, clinicConfig: ClinicConf
                 'Authorization': AUTH_HEADER
             }
         });
-        
+
         const document = docResponse.data;
-        
+
         // Validate document exists and has a file
         if (!document || !document.FileName) {
             throw new Error('Document not found or has no associated file');
         }
-        
+
         // Check if this is a mount (mounts have MountNum instead of DocNum)
         if (document.MountNum && !document.DocNum) {
             throw new Error('Mount downloads are not supported through this endpoint. Please contact support for mount access.');
         }
-        
+
         const fileName = document.FileName;
-        
+
         // Use consolidated SFTP configuration for all clinics
         // Host from environment, password from GlobalSecrets table
         const sftpPassword = await getGlobalSecret('consolidated_sftp', 'password');
         if (!TF_SFTP_HOST || !sftpPassword) {
             throw new Error('SFTP configuration not available');
         }
-        
+
         const sftpHost = TF_SFTP_HOST;
         const sftpPort = 22;
         const sftpUsername = 'sftpuser';
-        
+
         // According to our Transfer Family config, place files at the root of the SFTP home
         // Use format: hostname/filename (no subdirectory)
         const sftpAddress = `${sftpHost}/${fileName}`;
-        
+
         console.log('Using SFTP configuration:', {
             sftpHost,
             sftpPort,
@@ -1333,7 +1333,7 @@ async function downloadDocumentFromSftp(docNum: number, clinicConfig: ClinicConf
             fileName,
             clinicId: clinicConfig.clinicId
         });
-        
+
         // Call Open Dental DownloadSftp API
         const downloadResponse = await axios.post(`${API_BASE_URL}/documents/DownloadSftp`, {
             DocNum: docNum,
@@ -1346,52 +1346,52 @@ async function downloadDocumentFromSftp(docNum: number, clinicConfig: ClinicConf
                 'Content-Type': 'application/json'
             }
         });
-        
+
         console.log('Document downloaded to SFTP:', downloadResponse.data);
-        
+
         // Now retrieve the file from S3 (since SFTP is backed by S3)
         // Use the Transfer Family bucket - should be consistent with consolidatedTransferAuth.ts
         const bucketName = process.env.TF_BUCKET || 'todaysdentalinsights-sftp';
         // The S3 key maps to the user's logical home directory: sftp-home/sftpuser/filename
         const s3Key = `sftp-home/sftpuser/${fileName}`;
-        
+
         // Add a small delay to ensure the file is available in S3
         await new Promise(resolve => setTimeout(resolve, 1000));
-        
+
         try {
             const s3Response = await s3Client.send(new GetObjectCommand({
                 Bucket: bucketName,
                 Key: s3Key
             }));
-            
+
             if (!s3Response.Body) {
                 throw new Error('Empty file received from S3');
             }
-            
+
             // Convert stream to buffer
             const chunks: Uint8Array[] = [];
             const stream = s3Response.Body as any;
-            
+
             for await (const chunk of stream) {
                 chunks.push(chunk);
             }
-            
+
             const fileBuffer = Buffer.concat(chunks);
-            
+
             // Validate file size
             if (fileBuffer.length === 0) {
                 throw new Error('Downloaded file is empty');
             }
-            
+
             // Determine MIME type based on file extension
             const mimeType = getMimeType(fileName);
-            
+
             return {
                 fileBuffer,
                 fileName,
                 mimeType
             };
-            
+
         } catch (s3Error: any) {
             console.error('Error retrieving file from S3:', s3Error);
             if (s3Error.name === 'NoSuchKey') {
@@ -1399,7 +1399,7 @@ async function downloadDocumentFromSftp(docNum: number, clinicConfig: ClinicConf
             }
             throw new Error(`Failed to retrieve document file: ${s3Error.message}`);
         }
-        
+
     } catch (axiosError: any) {
         console.error('Error in document download process:', axiosError);
         if (axiosError.response?.status === 404) {
@@ -1417,7 +1417,7 @@ async function downloadDocumentFromSftp(docNum: number, clinicConfig: ClinicConf
 
 function getMimeType(fileName: string): string {
     const extension = fileName.toLowerCase().split('.').pop();
-    
+
     const mimeTypes: { [key: string]: string } = {
         'pdf': 'application/pdf',
         'jpg': 'image/jpeg',
@@ -1435,7 +1435,7 @@ function getMimeType(fileName: string): string {
         'rtf': 'application/rtf',
         'dcm': 'application/dicom'
     };
-    
+
     return mimeTypes[extension || ''] || 'application/octet-stream';
 }
 
@@ -1484,17 +1484,17 @@ async function getChartModuleData(patNum: number, moduleType: string, clinicConf
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
     // Initialize allowed origins on first request
     await initAllowedOrigins();
-    
+
     // Always set CORS headers first, even for early errors
     const origin = event.headers?.origin || event.headers?.Origin;
     const corsHeaders = getCorsHeaders(origin);
-    
+
     console.log('Received event:', JSON.stringify(event, null, 2));
     console.log('Request origin:', origin);
     console.log('CORS headers being set:', corsHeaders);
 
     const incomingMethod = event.httpMethod;
-    
+
     // Declare variables at function scope for error handling
     let httpMethod = incomingMethod || 'GET';
     let normalizedResource = '/';
@@ -1511,13 +1511,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // Extract clinic ID from path parameters or path for custom domain
         const pathParams = event.pathParameters || {};
         clinicId = pathParams['clinicId'] || '';
-        
+
         // If no clinicId from path parameters (custom domain case), extract from path
         if (!clinicId) {
             const pathSegments = (event.path || '').split('/').filter(Boolean);
             clinicId = pathSegments[0]; // First segment after domain should be clinicId
         }
-        
+
         if (!clinicId) {
             return {
                 statusCode: 400,
@@ -1544,7 +1544,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const resourceRaw = event.resource || '/';
         const pathRaw = event.path || resourceRaw;
         const resource = resourceRaw.includes('{proxy+') ? pathRaw : resourceRaw;
-        
+
         // Handle both direct API Gateway and custom domain paths
         // Direct API Gateway: /patientportal/{clinicId}/patients/simple
         // Custom domain: /{clinicId}/patients/simple (base path already removed)
@@ -1556,10 +1556,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             normalizedResource = resource.replace(/^\/[^\/]+/, '').toLowerCase();
         }
         if (!normalizedResource) normalizedResource = '/';
-        
+
         // Clean up any double slashes
         normalizedResource = normalizedResource.replace(/\/+/g, '/');
-        
+
         httpMethod = incomingMethod || 'GET';
 
         let queryParams = event.queryStringParameters || {};
@@ -1598,31 +1598,31 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     throw err;
                 }
                 break;
-	    // GET /treatmentplans  (PatNum from query or session)
-case normalizedResource === '/treatmentplans' && httpMethod === 'GET': {
-  const patient = await validateSession(event, clinicId);
-  const patNum = queryParams.PatNum ? Number(queryParams.PatNum) : Number(patient.PatNum);
-  if (!patNum || Number.isNaN(patNum)) {
-    throw { status: 400, message: 'PatNum must be provided as a query parameter or be present in session.' };
-  }
+            // GET /treatmentplans  (PatNum from query or session)
+            case normalizedResource === '/treatmentplans' && httpMethod === 'GET': {
+                const patient = await validateSession(event, clinicId);
+                const patNum = queryParams.PatNum ? Number(queryParams.PatNum) : Number(patient.PatNum);
+                if (!patNum || Number.isNaN(patNum)) {
+                    throw { status: 400, message: 'PatNum must be provided as a query parameter or be present in session.' };
+                }
 
-  // NEW: normalize TPStatus from query
-  const tpStatus: string | undefined =
-    (queryParams as any)?.TPStatus ??
-    (queryParams as any)?.tpStatus ??
-    (queryParams as any)?.tpstatus ??
-    undefined;
+                // NEW: normalize TPStatus from query
+                const tpStatus: string | undefined =
+                    (queryParams as any)?.TPStatus ??
+                    (queryParams as any)?.tpStatus ??
+                    (queryParams as any)?.tpstatus ??
+                    undefined;
 
-  response = await getTreatmentPlans(patNum, clinicConfig, tpStatus);
-  break;
-}
+                response = await getTreatmentPlans(patNum, clinicConfig, tpStatus);
+                break;
+            }
 
             case routeKey === 'POST /logout':
                 const authHeader = event.headers?.Authorization || event.headers?.authorization;
                 if (authHeader && authHeader.startsWith('Bearer ')) {
                     const SessionId = authHeader.split(' ')[1];
                     const sessionTableName = getSessionTableName(clinicId);
-                    
+
                     try {
                         const command = new DeleteCommand({
                             TableName: sessionTableName,
@@ -1741,18 +1741,18 @@ case normalizedResource === '/treatmentplans' && httpMethod === 'GET': {
                 if (!patNum || Number.isNaN(Number(patNum))) {
                     throw { status: 400, message: 'Valid PatNum must be provided in path.' };
                 }
-                
+
                 // Ensure patient can only access their own data
                 if (Number(patNum) !== Number(patient.PatNum)) {
-                    console.error('PatNum mismatch:', { 
-                        requestedPatNum: patNum, 
+                    console.error('PatNum mismatch:', {
+                        requestedPatNum: patNum,
                         sessionPatNum: patient.PatNum,
                         moduleType,
-                        clinicId 
+                        clinicId
                     });
                     throw { status: 403, message: 'Access denied. PatNum in path does not match authenticated patient.' };
                 }
-                
+
                 console.log(`Fetching ${moduleType} data for PatNum ${patNum}, clinic ${clinicId}`);
                 response = await getAccountModuleData(Number(patNum), moduleType, queryParams, clinicConfig);
                 break;
@@ -1871,10 +1871,10 @@ case normalizedResource === '/treatmentplans' && httpMethod === 'GET': {
                 if (!docNum || Number.isNaN(docNum)) {
                     throw { status: 400, message: 'Valid DocNum must be provided in path.' };
                 }
-                
+
                 try {
                     const { fileBuffer, fileName, mimeType } = await downloadDocumentFromSftp(docNum, clinicConfig);
-                    
+
                     return {
                         statusCode: 200,
                         headers: {
@@ -1900,10 +1900,10 @@ case normalizedResource === '/treatmentplans' && httpMethod === 'GET': {
                 if (!docNum || Number.isNaN(docNum)) {
                     throw { status: 400, message: 'Valid DocNum must be provided in path.' };
                 }
-                
+
                 try {
                     const { fileBuffer, fileName, mimeType } = await downloadDocumentFromSftp(docNum, clinicConfig);
-                    
+
                     return {
                         statusCode: 200,
                         headers: {
@@ -1925,17 +1925,17 @@ case normalizedResource === '/treatmentplans' && httpMethod === 'GET': {
             }
             case normalizedResource === '/documents/upload' && httpMethod === 'POST': {
                 patient = await validateSession(event, clinicId);
-                
+
                 if (!body.rawBase64 || !body.extension) {
                     throw { status: 400, message: 'rawBase64 and extension are required for document upload.' };
                 }
-                
+
                 // Validate file extension
                 const allowedExtensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.doc', '.docx', '.txt', '.rtf'];
                 if (!allowedExtensions.includes(body.extension.toLowerCase())) {
                     throw { status: 400, message: `File type ${body.extension} is not allowed. Allowed types: ${allowedExtensions.join(', ')}` };
                 }
-                
+
                 // Validate base64 data
                 try {
                     // Check if base64 is valid and not too large (10MB limit)
@@ -1947,9 +1947,9 @@ case normalizedResource === '/treatmentplans' && httpMethod === 'GET': {
                 } catch (err) {
                     throw { status: 400, message: 'Invalid base64 file data.' };
                 }
-                
+
                 const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
-                
+
                 // Prepare upload payload
                 const uploadPayload: any = {
                     PatNum: patient.PatNum,
@@ -1959,13 +1959,13 @@ case normalizedResource === '/treatmentplans' && httpMethod === 'GET': {
                     ImgType: getImageTypeFromExtension(body.extension),
                     DateCreated: new Date().toISOString().replace('T', ' ').substring(0, 19)
                 };
-                
+
                 // Add optional fields if provided
                 if (body.docCategory) uploadPayload.DocCategory = body.docCategory;
                 if (body.toothNumbers) uploadPayload.ToothNumbers = body.toothNumbers;
                 if (body.provNum) uploadPayload.ProvNum = body.provNum;
                 if (body.printHeading) uploadPayload.PrintHeading = body.printHeading;
-                
+
                 try {
                     const uploadResponse = await axios.post(`${API_BASE_URL}/documents/Upload`, uploadPayload, {
                         headers: {
@@ -1973,7 +1973,7 @@ case normalizedResource === '/treatmentplans' && httpMethod === 'GET': {
                             'Content-Type': 'application/json'
                         }
                     });
-                    
+
                     console.log('Document uploaded successfully:', uploadResponse.data);
                     response = uploadResponse.data;
                     await recordPortalMetric(clinicId, 'documentUploads');
@@ -2005,7 +2005,7 @@ case normalizedResource === '/treatmentplans' && httpMethod === 'GET': {
             headers: corsHeaders,
             body: JSON.stringify(response),
         };
-        
+
     } catch (error: any) {
         console.error('Error processing request:', error);
         console.error('Request details:', {
@@ -2017,7 +2017,7 @@ case normalizedResource === '/treatmentplans' && httpMethod === 'GET': {
             queryStringParameters: event.queryStringParameters
         });
         console.error('Error stack:', error.stack);
-        
+
         const status = error.status || error.response?.status || 500;
         const detail = error.message || error.response?.data?.message || 'Internal server error';
         console.error(`Responding with status ${status}:`, detail);

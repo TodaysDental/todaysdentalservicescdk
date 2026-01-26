@@ -238,7 +238,7 @@ export class OpenDentalStack extends Stack {
     // ========================================
 
     const corsConfig = getCdkCorsConfig();
-    
+
     this.api = new apigw.RestApi(this, 'OpenDentalApi', {
       restApiName: 'OpenDentalApi',
       description: 'OpenDental service API',
@@ -256,19 +256,19 @@ export class OpenDentalStack extends Stack {
     });
 
     const corsErrorHeaders = getCorsErrorHeaders();
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
       restApi: this.api,
       type: apigw.ResponseType.DEFAULT_4XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault5XX', {
       restApi: this.api,
       type: apigw.ResponseType.DEFAULT_5XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseUnauthorized', {
       restApi: this.api,
       type: apigw.ResponseType.UNAUTHORIZED,
@@ -283,7 +283,7 @@ export class OpenDentalStack extends Stack {
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
     const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
-    
+
     // Create authorizer for this stack's API
     this.authorizer = new apigw.RequestAuthorizer(this, 'OpenDentalAuthorizer', {
       handler: authorizerFn,
@@ -315,8 +315,8 @@ export class OpenDentalStack extends Stack {
       memorySize: 1024,  // Increased memory for better performance
       timeout: Duration.seconds(120),  // Increased timeout for SFTP operations
       reservedConcurrentExecutions: 30, // Allow all 30 clinics to process in parallel
-      bundling: { 
-        format: lambdaNode.OutputFormat.CJS, 
+      bundling: {
+        format: lambdaNode.OutputFormat.CJS,
         target: 'node22',
         externalModules: ['ssh2', 'cpu-features'],  // Native .node binaries can't be bundled
         minify: true,
@@ -370,14 +370,14 @@ export class OpenDentalStack extends Stack {
     const clinicBase = apiBase.addResource('clinic');
     const clinicRes = clinicBase.addResource('{clinicId}');
     const clinicProxy = clinicRes.addResource('{proxy+}');
-    
+
     // Configure integration with proper error templates
     const errorResponses = [
       {
         selectionPattern: '.*"status":400.*',
         statusCode: '400',
         responseTemplates: {
-          'application/json': JSON.stringify({ 
+          'application/json': JSON.stringify({
             message: "$util.escapeJavaScript($input.path('$.errorMessage'))"
           })
         }
@@ -416,31 +416,31 @@ export class OpenDentalStack extends Stack {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [
-        { 
+        {
           statusCode: '200',
           responseParameters: {
             'method.response.header.Access-Control-Allow-Origin': true
           }
         },
-        { 
+        {
           statusCode: '400',
           responseParameters: {
             'method.response.header.Access-Control-Allow-Origin': true
           }
         },
-        { 
+        {
           statusCode: '401',
           responseParameters: {
             'method.response.header.Access-Control-Allow-Origin': true
           }
         },
-        { 
+        {
           statusCode: '403',
           responseParameters: {
             'method.response.header.Access-Control-Allow-Origin': true
           }
         },
-        { 
+        {
           statusCode: '500',
           responseParameters: {
             'method.response.header.Access-Control-Allow-Origin': true
