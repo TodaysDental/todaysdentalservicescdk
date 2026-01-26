@@ -467,6 +467,8 @@ export class GoogleAdsStack extends Stack {
     const targetingAudiencesRes = targetingRes.addResource('audiences');
     targetingAudiencesRes.addMethod('GET', new apigw.LambdaIntegration(targetingFn), { authorizer });
     targetingAudiencesRes.addMethod('POST', new apigw.LambdaIntegration(targetingFn), { authorizer });
+    const targetingAudienceByIdRes = targetingAudiencesRes.addResource('{id}');
+    targetingAudienceByIdRes.addMethod('DELETE', new apigw.LambdaIntegration(targetingFn), { authorizer });
 
     const targetingDemographicsRes = targetingRes.addResource('demographics');
     targetingDemographicsRes.addMethod('GET', new apigw.LambdaIntegration(targetingFn), { authorizer });
@@ -536,7 +538,10 @@ export class GoogleAdsStack extends Stack {
     pmaxAssetGroupsRes.addMethod('GET', new apigw.LambdaIntegration(pmaxFn), { authorizer });
     pmaxAssetGroupsRes.addMethod('POST', new apigw.LambdaIntegration(pmaxFn), { authorizer });
     const pmaxAssetGroupByIdRes = pmaxAssetGroupsRes.addResource('{id}');
+    pmaxAssetGroupByIdRes.addMethod('GET', new apigw.LambdaIntegration(pmaxFn), { authorizer });
     pmaxAssetGroupByIdRes.addMethod('PUT', new apigw.LambdaIntegration(pmaxFn), { authorizer });
+    pmaxAssetGroupByIdRes.addMethod('DELETE', new apigw.LambdaIntegration(pmaxFn), { authorizer });
+
 
     const pmaxAssetsRes = pmaxRes.addResource('assets');
     pmaxAssetsRes.addMethod('GET', new apigw.LambdaIntegration(pmaxFn), { authorizer });
