@@ -436,21 +436,31 @@ export type CampaignType = typeof VALID_CAMPAIGN_TYPES[number];
  * @param query - GAQL query string
  * @param options - Query options including pagination
  * @returns Query results
+ * 
+ * NOTE: Google Ads API v22+ has fixed page size of 10,000 rows.
+ * Setting page_size is no longer supported.
  */
 export async function executeGoogleAdsQuery(
   customerId: string,
   query: string,
-  options: { pageSize?: number; maxResults?: number } = {}
+  options: { maxResults?: number } = {}
 ): Promise<any[]> {
   const client = await getGoogleAdsClient(customerId);
-  const { pageSize = 10000, maxResults = 100000 } = options;
+  const { maxResults = 100000 } = options;
 
   try {
     const allResults: any[] = [];
     let pageToken: string | undefined;
 
     do {
-      const response: any = await client.query(query, { page_size: pageSize, page_token: pageToken } as any);
+      // NOTE: Google Ads API v22+ does not support page_size parameter
+      // Fixed page size of 10,000 rows is used automatically
+      const queryOptions: any = {};
+      if (pageToken) {
+        queryOptions.page_token = pageToken;
+      }
+
+      const response: any = await client.query(query, Object.keys(queryOptions).length > 0 ? queryOptions : undefined);
 
       if (Array.isArray(response)) {
         allResults.push(...response);
