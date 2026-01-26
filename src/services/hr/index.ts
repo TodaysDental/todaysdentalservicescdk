@@ -1573,7 +1573,11 @@ async function sendShiftNotificationEmail(recipientEmail: string, shiftDetails: 
         month: 'long', 
         day: 'numeric' 
     });
-    
+    // --- START UPDATE HERE ---
+    // Ensure estimated pay and hourly rate are formatted safely
+    const hourlyRate = typeof shiftDetails.hourlyRate === 'number' ? shiftDetails.hourlyRate : 0;
+    const estimatedPay = typeof shiftDetails.pay === 'number' ? shiftDetails.pay : 0;
+    // --- END UPDATE HERE ---
     const subject = `New Shift Scheduled at ${shiftDetails.clinicId} for ${shiftDate}`;
     
     const bodyHtml = `
@@ -1604,8 +1608,8 @@ async function sendShiftNotificationEmail(recipientEmail: string, shiftDetails: 
                     <div class="detail-row"><span class="label">End Time:</span> ${endTimeLocal}</div>
                     <div class="detail-row"><span class="label">Role:</span> ${shiftDetails.role || 'N/A'}</div>
                     <div class="detail-row"><span class="label">Hours:</span> ${shiftDetails.totalHours}</div>
-                    <div class="detail-row"><span class="label">Hourly Rate:</span> $${shiftDetails.hourlyRate.toFixed(2)}</div>
-                    <div class="detail-row"><span class="label">Estimated Pay:</span> $${shiftDetails.pay.toFixed(2)}</div>
+<div class="detail-row"><span class="label">Hourly Rate:</span> $${hourlyRate.toFixed(2)}</div>
+                    <div class="detail-row"><span class="label">Estimated Pay:</span> $${estimatedPay.toFixed(2)}</div>
                 </div>
 
                 <p>You can view and manage your shifts in the ${APP_NAME} portal.</p>
@@ -2013,6 +2017,20 @@ async function createShift(body: any, allowedClinics: Set<string>, userPerms?: U
     return httpErr(404, "Staff email not found, cannot determine pay");
   }
 
+  // let hourlyRate = 0;
+  // try {
+  //   const { Item: staffInfo } = await ddb.send(new GetCommand({
+  //     TableName: STAFF_INFO_TABLE,
+  //     Key: { email: email, clinicId },
+  //   }));
+    
+  //   if (staffInfo) {
+  //     hourlyRate = staffInfo.hourlyRate || 0;
+  //   }
+  // } catch (err) {
+  //   console.error("StaffClinicInfo lookup failed for hourlyRate:", err);
+  // }
+  // --- START UPDATE HERE ---
   let hourlyRate = 0;
   try {
     const { Item: staffInfo } = await ddb.send(new GetCommand({
@@ -2021,7 +2039,8 @@ async function createShift(body: any, allowedClinics: Set<string>, userPerms?: U
     }));
     
     if (staffInfo) {
-      hourlyRate = staffInfo.hourlyRate || 0;
+      // FIX: Check 'hourlyPay' (correct schema) first, then 'hourlyRate' (legacy)
+      hourlyRate = parseFloat(String(staffInfo.hourlyPay || staffInfo.hourlyRate || 0));
     }
   } catch (err) {
     console.error("StaffClinicInfo lookup failed for hourlyRate:", err);
@@ -2101,6 +2120,21 @@ async function updateShift(shiftId: string, body: any, allowedClinics: Set<strin
   const endMs = new Date(endTime).getTime();
   const totalHours = parseFloat(((endMs - startMs) / (1000 * 60 * 60)).toFixed(2));
 
+  // let hourlyRate = existingShift.hourlyRate || 0;
+  // if (!hourlyRate) {
+  //   try {
+  //     const { Item: staffInfo } = await ddb.send(new GetCommand({
+  //       TableName: STAFF_INFO_TABLE,
+  //       Key: { email: existingShift.staffId, clinicId: existingShift.clinicId },
+  //     }));
+  //     if (staffInfo) {
+  //       hourlyRate = staffInfo.hourlyRate || 0;
+  //     }
+  //   } catch (err) {
+  //     console.error("StaffClinicInfo lookup failed:", err);
+  //   }
+  // }
+// --- START UPDATE HERE ---
   let hourlyRate = existingShift.hourlyRate || 0;
   if (!hourlyRate) {
     try {
@@ -2109,13 +2143,13 @@ async function updateShift(shiftId: string, body: any, allowedClinics: Set<strin
         Key: { email: existingShift.staffId, clinicId: existingShift.clinicId },
       }));
       if (staffInfo) {
-        hourlyRate = staffInfo.hourlyRate || 0;
+        // FIX: Check 'hourlyPay' first
+        hourlyRate = parseFloat(String(staffInfo.hourlyPay || staffInfo.hourlyRate || 0));
       }
     } catch (err) {
       console.error("StaffClinicInfo lookup failed:", err);
     }
   }
-
   const pay = parseFloat((totalHours * hourlyRate).toFixed(2));
 
   const updatedShift = {
