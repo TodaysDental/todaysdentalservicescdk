@@ -2243,6 +2243,12 @@ export class AiAgentsStack extends Stack {
       exportName: `${Stack.of(this).stackName}-AiAgentsMetricsTableName`,
     });
 
+    new CfnOutput(this, 'AiAgentsMetricsTableArn', {
+      value: this.aiAgentsMetricsTable.tableArn,
+      description: 'AI Agents metrics table ARN for cross-stack IAM policies',
+      exportName: `${Stack.of(this).stackName}-AiAgentsMetricsTableArn`,
+    });
+
     new CfnOutput(this, 'OutboundCallQueueUrl', {
       value: this.outboundCallQueue.queueUrl,
       description: 'SQS queue URL for async bulk call processing',
