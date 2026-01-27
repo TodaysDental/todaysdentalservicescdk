@@ -493,7 +493,7 @@ async function fetchClinicAnalytics(
     const openDentalWithTimeout = Promise.race([
         fetchOpenDentalProduction(clinicId, date),
         new Promise<OpenDentalProductionData>((_, reject) =>
-            setTimeout(() => reject(new Error('Open Dental timeout')), 12000) // 12s timeout per clinic
+            setTimeout(() => reject(new Error('Open Dental timeout')), 50000) // 50s timeout per clinic
         )
     ]).catch((error): OpenDentalProductionData => {
         console.warn(`[OpenDental] Timeout/error for ${clinicId}: ${error.message}`);
@@ -666,11 +666,18 @@ async function fetchGA4Data(propertyId: string | undefined, date: string): Promi
         const errorMessage = error.message || String(error);
         console.error(`[GA4] Error fetching data for property ${propertyId}:`, errorMessage);
 
+        // Clear cached auth on authentication errors to allow retry with fresh credentials
+        if (errorMessage.includes('invalid_grant') || errorMessage.includes('Invalid JWT')) {
+            cachedGA4AuthClient = null;
+        }
+
         // Provide specific error messages for common issues
         let status: GA4Data['status'] = 'error';
         let errorDetail = errorMessage;
 
-        if (errorMessage.includes('403') || errorMessage.includes('Forbidden')) {
+        if (errorMessage.includes('invalid_grant') || errorMessage.includes('Invalid JWT')) {
+            errorDetail = 'GA4 service account private key is invalid or does not match. Please update the private_key in GlobalSecrets.';
+        } else if (errorMessage.includes('403') || errorMessage.includes('Forbidden')) {
             errorDetail = 'Service account missing permission on GA4 property. Grant Viewer access in GA4 Admin.';
         } else if (errorMessage.includes('404') || errorMessage.includes('Not Found')) {
             errorDetail = 'Invalid GA4 property ID';
