@@ -202,8 +202,8 @@ export class AnalyticsDashboardStack extends Stack {
             entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'analytics-dashboard.ts'),
             handler: 'handler',
             runtime: lambda.Runtime.NODEJS_20_X,
-            timeout: Duration.seconds(120), // Extended timeout for SFTP operations and aggregating from multiple sources
-            memorySize: 1024, // Higher memory for parallel fetches and SFTP operations
+            timeout: Duration.seconds(180), // Extended timeout for SFTP operations and aggregating from multiple sources
+            memorySize: 3008, // 3GB memory for googleapis, parallel fetches and SFTP operations (27 clinics at once)
             bundling: {
                 // SSH2 requires native bindings so we need special handling
                 externalModules: ['ssh2', 'cpu-features'],

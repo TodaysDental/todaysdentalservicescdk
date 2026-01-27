@@ -440,7 +440,7 @@ async function getAllClinicsAnalytics(
     );
 
     // Fetch analytics for ALL clinics with staggered starts to avoid API rate limiting
-    // Per-clinic timeout (8s) protects against slow clinics blocking others
+    // Per-clinic timeout (12s) protects against slow clinics blocking others
     // Stagger: 50ms between each clinic start = ~1.3s total spread for 27 clinics
     console.log(`[AnalyticsDashboard] Fetching analytics for ${clinicsToFetch.length} clinics with staggered parallel requests`);
 
