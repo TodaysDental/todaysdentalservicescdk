@@ -90,7 +90,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
 
       // Handle known object fields (merge with existing)
-      // Support field deletion: if a field's value is explicitly null, remove it from the merged result
+      // Support field deletion: if a field's value is explicitly null, undefined, or '__DELETE__', remove it from the merged result
       if (MERGE_OBJECT_FIELDS.includes(field) && typeof value === 'object' && !Array.isArray(value)) {
         updateExpressions.push(`#${field} = :${field}`);
         expressionAttributeNames[`#${field}`] = field;
@@ -99,11 +99,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const existingData = existing.Item![field] || {};
         const mergedData = { ...existingData };
         
-        // Process updates: set new values, delete nulls
+        // Process updates: set new values, delete nulls/undefined
         for (const [key, val] of Object.entries(value as Record<string, any>)) {
-          if (val === null) {
-            // Explicit null means "delete this field"
+          if (val === null || val === undefined || val === '__DELETE__') {
+            // Explicit null/undefined means "delete this field"
             delete mergedData[key];
+            console.log(`Deleting field ${field}.${key}`);
           } else {
             // Set/update the field
             mergedData[key] = val;
