@@ -106,6 +106,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       leaseType: lease.leaseTerms?.leaseType || '',
       securityDeposit: lease.financialDetails?.securityDeposit || 0,
       
+      renewalRequestStartDate: lease.leaseTerms?.renewalRequestStartDate || '',
+      renewalRequestEndDate: lease.leaseTerms?.renewalRequestEndDate || '',
+      renewalTerms: lease.leaseTerms?.renewalTerms || '',
+      
       // Counts for quick reference
       documentsCount: lease.documents?.length || 0,
       assetsCount: lease.assets?.length || 0,
