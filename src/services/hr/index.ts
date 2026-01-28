@@ -1836,6 +1836,29 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return markAdvancePayAsPaid(advanceId, userPerms, allowedClinics, event, parsedBody?.paymentReference);
     }
 
+    // Admin initiates advance pay request for staff (staff must approve)
+    if (method === 'POST' && path === '/advance-pay/admin-initiate') {
+      if (!isAdmin) {
+        return httpErr(403, "Admin access required to initiate advance pay for staff");
+      }
+      const parsedBody = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+      return adminInitiateAdvancePayForStaff(userPerms, parsedBody, allowedClinics, event);
+    }
+
+    // Staff approves admin-initiated advance pay request
+    if (method === 'PUT' && path.startsWith('/advance-pay/') && path.endsWith('/staff-approve')) {
+      const advanceId = path.split('/')[2];
+      const parsedBody = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+      return staffApproveAdvancePay(advanceId, userPerms, event, parsedBody?.notes);
+    }
+
+    // Staff rejects admin-initiated advance pay request
+    if (method === 'PUT' && path.startsWith('/advance-pay/') && path.endsWith('/staff-reject')) {
+      const advanceId = path.split('/')[2];
+      const parsedBody = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+      return staffRejectAdvancePay(advanceId, userPerms, event, parsedBody?.reason);
+    }
+
     // --- ADMIN CALENDAR EVENTS (Tasks, Meetings, To-Dos) ---
     if (method === 'GET' && path === '/admin-calendar/events') {
       if (!isAdmin) {
@@ -3146,15 +3169,24 @@ interface AdvancePayRequest {
   clinicId: string;
   amount: number;
   reason?: string;
-  status: 'pending' | 'approved' | 'denied' | 'paid';
+  // Extended status to support admin-initiated workflow
+  status: 'pending' | 'approved' | 'denied' | 'paid' | 'pending_staff_approval';
   createdAt: string;
   updatedAt?: string;
+  // Request type and initiator tracking
+  requestType?: 'staff_initiated' | 'admin_initiated';
+  requestedBy?: string; // Email of who created the request
+  // Admin approval fields (for staff-initiated requests)
   approvedBy?: string;
   approvedAt?: string;
   deniedBy?: string;
   deniedAt?: string;
   denialReason?: string;
   approvalNotes?: string;
+  // Staff approval fields (for admin-initiated requests)
+  staffApprovedAt?: string;
+  staffApprovalNotes?: string;
+  // Payment fields
   paymentDate?: string;
   paymentReference?: string;
   paidBy?: string;
@@ -3859,6 +3891,389 @@ async function markAdvancePayAsPaid(
   } catch (error: any) {
     console.error('Error marking advance pay as paid:', error);
     return httpErr(500, `Failed to mark advance pay as paid: ${error.message}`);
+  }
+}
+
+/**
+ * Admin initiates advance pay request for a staff member
+ * 
+ * This creates a request with status 'pending_staff_approval'
+ * The staff member must approve before admin can mark as paid
+ * 
+ * Business Rules (same as staff-initiated):
+ * 1. Maximum single request: $500
+ * 2. Staff must have 90+ days tenure
+ * 3. 30+ days since last approved/paid request
+ * 4. Max 3 pending requests at a time
+ * 5. Total outstanding cannot exceed $1000
+ */
+async function adminInitiateAdvancePayForStaff(
+  userPerms: UserPermissions,
+  body: any,
+  allowedClinics: Set<string>,
+  event?: APIGatewayProxyEvent
+) {
+  const { staffId, amount, reason, clinicId } = body;
+
+  // Basic validation
+  if (!staffId || typeof staffId !== 'string') {
+    return httpErr(400, "Staff ID (email) is required");
+  }
+
+  if (!amount || typeof amount !== 'number' || amount <= 0) {
+    return httpErr(400, "Valid amount (positive number) is required");
+  }
+
+  // Maximum amount validation
+  if (amount > MAX_ADVANCE_PAY_AMOUNT) {
+    return httpErr(400, `Advance pay amount cannot exceed $${MAX_ADVANCE_PAY_AMOUNT}`);
+  }
+
+  if (!clinicId) {
+    return httpErr(400, "Clinic ID is required");
+  }
+
+  // Verify admin has access to this clinic
+  if (!hasClinicAccess(allowedClinics, clinicId)) {
+    return httpErr(403, "Forbidden: no access to this clinic");
+  }
+
+  try {
+    // Lookup staff member
+    const { Item: staffUser } = await ddb.send(new GetCommand({
+      TableName: STAFF_USER_TABLE,
+      Key: { email: staffId.toLowerCase() },
+    }));
+
+    if (!staffUser) {
+      return httpErr(404, "Staff member not found. Please verify the email address.");
+    }
+
+    // BUSINESS RULE 1: TENURE CHECK
+    if (staffUser.createdAt) {
+      const hireDate = new Date(staffUser.createdAt);
+      const now = new Date();
+      const daysEmployed = Math.floor((now.getTime() - hireDate.getTime()) / (1000 * 60 * 60 * 24));
+
+      if (daysEmployed < MIN_TENURE_DAYS) {
+        const daysRemaining = MIN_TENURE_DAYS - daysEmployed;
+        return httpErr(400, `Staff member is not eligible for advance pay. They have been employed for ${daysEmployed} day(s). Minimum required: ${MIN_TENURE_DAYS} days. (${daysRemaining} more days needed)`);
+      }
+    }
+
+    // Check existing requests for the staff member
+    const { Items: existingRequests } = await ddb.send(new QueryCommand({
+      TableName: ADVANCE_PAY_TABLE,
+      IndexName: 'byStaff',
+      KeyConditionExpression: 'staffId = :staffId',
+      FilterExpression: 'attribute_not_exists(isDeleted) OR isDeleted = :false',
+      ExpressionAttributeValues: { ':staffId': staffId.toLowerCase(), ':false': false },
+    }));
+
+    if (existingRequests && existingRequests.length > 0) {
+      // BUSINESS RULE 2: FREQUENCY CHECK
+      const recentApprovedOrPaid = existingRequests
+        .filter((r: any) => (r.status === 'approved' || r.status === 'paid') && !r.isDeleted)
+        .sort((a: any, b: any) => new Date(b.approvedAt || b.createdAt).getTime() - new Date(a.approvedAt || a.createdAt).getTime());
+
+      if (recentApprovedOrPaid.length > 0) {
+        const mostRecent = recentApprovedOrPaid[0];
+        const lastApprovedDate = new Date(mostRecent.approvedAt || mostRecent.createdAt);
+        const now = new Date();
+        const daysSinceLastApproval = Math.floor((now.getTime() - lastApprovedDate.getTime()) / (1000 * 60 * 60 * 24));
+
+        if (daysSinceLastApproval < MIN_DAYS_BETWEEN_REQUESTS) {
+          const daysRemaining = MIN_DAYS_BETWEEN_REQUESTS - daysSinceLastApproval;
+          return httpErr(400, `Staff must wait ${MIN_DAYS_BETWEEN_REQUESTS} days between advance pay requests. Last request was approved ${daysSinceLastApproval} day(s) ago. (${daysRemaining} more days needed)`);
+        }
+      }
+
+      // BUSINESS RULE 3: PENDING COUNT CHECK (include pending_staff_approval)
+      const pendingRequests = existingRequests.filter((r: any) =>
+        (r.status === 'pending' || r.status === 'pending_staff_approval') && !r.isDeleted
+      );
+      if (pendingRequests.length >= MAX_PENDING_REQUESTS) {
+        return httpErr(400, `Staff already has ${pendingRequests.length} pending advance pay requests. Maximum allowed is ${MAX_PENDING_REQUESTS}.`);
+      }
+
+      // BUSINESS RULE 4: OUTSTANDING AMOUNT CHECK
+      const totalOutstanding = existingRequests
+        .filter((r: any) => (r.status === 'pending' || r.status === 'approved' || r.status === 'pending_staff_approval') && !r.isDeleted)
+        .reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
+
+      if (totalOutstanding + amount > MAX_TOTAL_OUTSTANDING_ADVANCES) {
+        const remaining = MAX_TOTAL_OUTSTANDING_ADVANCES - totalOutstanding;
+        return httpErr(400, `Total outstanding advances cannot exceed $${MAX_TOTAL_OUTSTANDING_ADVANCES}. Staff currently has $${totalOutstanding.toFixed(2)} outstanding. Maximum additional: $${Math.max(0, remaining).toFixed(2)}`);
+      }
+    }
+
+    const staffName = `${staffUser.givenName || ''} ${staffUser.familyName || ''}`.trim() || staffId;
+    const adminName = `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email;
+
+    const advanceId = `adv_${uuidv4()}`;
+    const now = new Date().toISOString();
+
+    const advancePayRequest: AdvancePayRequest = {
+      advanceId,
+      staffId: staffId.toLowerCase(),
+      staffName,
+      clinicId,
+      amount,
+      reason: reason || undefined,
+      status: 'pending_staff_approval', // Staff must approve
+      requestType: 'admin_initiated',
+      requestedBy: userPerms.email,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await ddb.send(new PutCommand({
+      TableName: ADVANCE_PAY_TABLE,
+      Item: advancePayRequest,
+    }));
+
+    // Audit log
+    await auditLogger.log({
+      userId: userPerms.email,
+      userName: adminName,
+      userRole: AuditLogger.getUserRole(userPerms),
+      action: 'CREATE',
+      resource: 'ADVANCE_PAY' as AuditResource,
+      resourceId: advanceId,
+      clinicId,
+      after: {
+        amount,
+        status: 'pending_staff_approval',
+        staffId: staffId.toLowerCase(),
+        staffName,
+        requestType: 'admin_initiated',
+        reason: reason || undefined,
+      },
+      ...AuditLogger.extractRequestContext(event),
+    });
+
+    // TODO: Send email notification to staff member about pending approval request
+    // await sendAdvancePayStatusEmail({ ... });
+
+    return httpOk({
+      success: true,
+      advancePayRequest,
+      message: `Advance pay request initiated for ${staffName}. Waiting for staff approval.`,
+    });
+  } catch (error: any) {
+    console.error('Error initiating admin advance pay for staff:', error);
+    return httpErr(500, `Failed to initiate advance pay: ${error.message}`);
+  }
+}
+
+/**
+ * Staff approves an admin-initiated advance pay request
+ * 
+ * This changes status from 'pending_staff_approval' to 'approved'
+ * The admin can then mark it as paid
+ */
+async function staffApproveAdvancePay(
+  advanceId: string,
+  userPerms: UserPermissions,
+  event?: APIGatewayProxyEvent,
+  notes?: string
+) {
+  try {
+    const { Item } = await ddb.send(new GetCommand({
+      TableName: ADVANCE_PAY_TABLE,
+      Key: { advanceId },
+    }));
+
+    if (!Item) {
+      return httpErr(404, "Advance pay request not found");
+    }
+
+    const request = Item as AdvancePayRequest;
+
+    // Check soft delete
+    if ((request as any).isDeleted) {
+      return httpErr(404, "Advance pay request not found");
+    }
+
+    // Verify this is an admin-initiated request
+    if (request.requestType !== 'admin_initiated') {
+      return httpErr(400, "This request cannot be approved by staff. It was not initiated by an admin.");
+    }
+
+    // Verify the staff member is the target of this request
+    if (request.staffId !== userPerms.email) {
+      return httpErr(403, "Forbidden: you can only approve requests for yourself");
+    }
+
+    // Verify status is pending_staff_approval
+    if (request.status !== 'pending_staff_approval') {
+      return httpErr(400, `Cannot approve: request status is '${request.status}' (must be 'pending_staff_approval')`);
+    }
+
+    const now = new Date().toISOString();
+    const staffName = `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email;
+
+    try {
+      // Use conditional update for safety
+      await ddb.send(new UpdateCommand({
+        TableName: ADVANCE_PAY_TABLE,
+        Key: { advanceId },
+        UpdateExpression: 'SET #status = :newStatus, staffApprovedAt = :staffApprovedAt, staffApprovalNotes = :notes, updatedAt = :updatedAt',
+        ConditionExpression: '#status = :currentStatus AND (attribute_not_exists(isDeleted) OR isDeleted = :false)',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':newStatus': 'approved',
+          ':currentStatus': 'pending_staff_approval',
+          ':staffApprovedAt': now,
+          ':notes': notes || null,
+          ':updatedAt': now,
+          ':false': false,
+        },
+      }));
+    } catch (conditionError: any) {
+      if (conditionError.name === 'ConditionalCheckFailedException') {
+        return httpErr(409, "Request status has changed. Please refresh and try again.");
+      }
+      throw conditionError;
+    }
+
+    // Audit log
+    await auditLogger.log({
+      userId: userPerms.email,
+      userName: staffName,
+      userRole: AuditLogger.getUserRole(userPerms),
+      action: 'APPROVE',
+      resource: 'ADVANCE_PAY' as AuditResource,
+      resourceId: advanceId,
+      clinicId: request.clinicId,
+      before: { status: 'pending_staff_approval', staffId: request.staffId, amount: request.amount },
+      after: { status: 'approved', staffApprovalNotes: notes || null },
+      metadata: { approvalType: 'STAFF_APPROVAL', requestType: 'admin_initiated' },
+      ...AuditLogger.extractRequestContext(event),
+    });
+
+    // TODO: Send email notification to admin about staff approval
+    // await sendAdvancePayStatusEmail({ ... });
+
+    return httpOk({
+      success: true,
+      message: "You have approved the advance pay request. Admin will process payment.",
+      advancePayRequest: {
+        ...request,
+        status: 'approved',
+        staffApprovedAt: now,
+        staffApprovalNotes: notes || null,
+      },
+    });
+  } catch (error: any) {
+    console.error('Error in staff approve advance pay:', error);
+    return httpErr(500, `Failed to approve advance pay: ${error.message}`);
+  }
+}
+
+/**
+ * Staff rejects an admin-initiated advance pay request
+ * 
+ * This changes status from 'pending_staff_approval' to 'denied'
+ */
+async function staffRejectAdvancePay(
+  advanceId: string,
+  userPerms: UserPermissions,
+  event?: APIGatewayProxyEvent,
+  reason?: string
+) {
+  try {
+    const { Item } = await ddb.send(new GetCommand({
+      TableName: ADVANCE_PAY_TABLE,
+      Key: { advanceId },
+    }));
+
+    if (!Item) {
+      return httpErr(404, "Advance pay request not found");
+    }
+
+    const request = Item as AdvancePayRequest;
+
+    // Check soft delete
+    if ((request as any).isDeleted) {
+      return httpErr(404, "Advance pay request not found");
+    }
+
+    // Verify this is an admin-initiated request
+    if (request.requestType !== 'admin_initiated') {
+      return httpErr(400, "This request cannot be rejected by staff. It was not initiated by an admin.");
+    }
+
+    // Verify the staff member is the target of this request
+    if (request.staffId !== userPerms.email) {
+      return httpErr(403, "Forbidden: you can only reject requests for yourself");
+    }
+
+    // Verify status is pending_staff_approval
+    if (request.status !== 'pending_staff_approval') {
+      return httpErr(400, `Cannot reject: request status is '${request.status}' (must be 'pending_staff_approval')`);
+    }
+
+    const now = new Date().toISOString();
+    const staffName = `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email;
+
+    try {
+      // Use conditional update for safety
+      await ddb.send(new UpdateCommand({
+        TableName: ADVANCE_PAY_TABLE,
+        Key: { advanceId },
+        UpdateExpression: 'SET #status = :newStatus, deniedBy = :deniedBy, deniedAt = :deniedAt, denialReason = :reason, updatedAt = :updatedAt',
+        ConditionExpression: '#status = :currentStatus AND (attribute_not_exists(isDeleted) OR isDeleted = :false)',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':newStatus': 'denied',
+          ':currentStatus': 'pending_staff_approval',
+          ':deniedBy': staffName,
+          ':deniedAt': now,
+          ':reason': reason || 'Staff declined the advance pay offer',
+          ':updatedAt': now,
+          ':false': false,
+        },
+      }));
+    } catch (conditionError: any) {
+      if (conditionError.name === 'ConditionalCheckFailedException') {
+        return httpErr(409, "Request status has changed. Please refresh and try again.");
+      }
+      throw conditionError;
+    }
+
+    // Audit log
+    await auditLogger.log({
+      userId: userPerms.email,
+      userName: staffName,
+      userRole: AuditLogger.getUserRole(userPerms),
+      action: 'DENY',
+      resource: 'ADVANCE_PAY' as AuditResource,
+      resourceId: advanceId,
+      clinicId: request.clinicId,
+      before: { status: 'pending_staff_approval', staffId: request.staffId, amount: request.amount },
+      after: { status: 'denied', deniedBy: staffName, denialReason: reason || 'Staff declined the advance pay offer' },
+      metadata: { rejectionType: 'STAFF_REJECTION', requestType: 'admin_initiated' },
+      ...AuditLogger.extractRequestContext(event),
+    });
+
+    // TODO: Send email notification to admin about staff rejection
+    // await sendAdvancePayStatusEmail({ ... });
+
+    return httpOk({
+      success: true,
+      message: "You have rejected the advance pay offer.",
+      advancePayRequest: {
+        ...request,
+        status: 'denied',
+        deniedBy: staffName,
+        deniedAt: now,
+        denialReason: reason || 'Staff declined the advance pay offer',
+      },
+    });
+  } catch (error: any) {
+    console.error('Error in staff reject advance pay:', error);
+    return httpErr(500, `Failed to reject advance pay: ${error.message}`);
   }
 }
 
