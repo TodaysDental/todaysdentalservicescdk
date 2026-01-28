@@ -4150,19 +4150,10 @@ async function deleteAdminCalendarEvent(eventId: string, allowedClinics: Set<str
 }
 
 async function getAssignableAdmins(queryParams: any, allowedClinics: Set<string>) {
-  const { clinicId } = queryParams || {};
-
-  if (!clinicId) {
-    return httpErr(400, "clinicId is required");
-  }
-
-  if (!hasClinicAccess(allowedClinics, clinicId)) {
-    return httpErr(403, "Forbidden: no access to this clinic");
-  }
+  // No clinicId required - fetch ALL admins globally (Global Super Admin, SuperAdmin, Admin)
 
   try {
-    // Query staff users who have admin roles for this clinic
-    // We look for GlobalSuperAdmin, SuperAdmin, or Admin roles
+    // Scan all active users and filter by admin roles
     const { Items: staffUsers } = await ddb.send(new ScanCommand({
       TableName: STAFF_USER_TABLE,
       FilterExpression: 'isActive = :active',
@@ -4170,27 +4161,52 @@ async function getAssignableAdmins(queryParams: any, allowedClinics: Set<string>
     }));
 
     const admins: any[] = [];
+    const seenEmails = new Set<string>(); // Avoid duplicates
 
     for (const user of staffUsers || []) {
       // Check if user has admin role (GlobalSuperAdmin, SuperAdmin, or Admin)
-      const isGlobalAdmin = user.role === 'GlobalSuperAdmin' || user.isSuperAdmin === true || user.isGlobalSuperAdmin === true;
-      const hasAdminRole = user.role === 'SuperAdmin' || user.role === 'Admin' || isGlobalAdmin;
+      const isGlobalAdmin = user.role === 'GlobalSuperAdmin' || user.role === 'Global Super Admin' ||
+        user.isSuperAdmin === true || user.isGlobalSuperAdmin === true;
+      const isSuperAdmin = user.role === 'SuperAdmin' || user.role === 'Super Admin';
+      const isAdmin = user.role === 'Admin';
 
-      // Also check clinicRoles for specific clinic access
+      // Also check clinicRoles for any admin roles in any clinic
       const clinicRoles = user.clinicRoles || [];
       const hasClinicAdminRole = clinicRoles.some((cr: any) =>
-        cr.clinicId === clinicId && (cr.role === 'SuperAdmin' || cr.role === 'Admin')
+        cr.role === 'SuperAdmin' || cr.role === 'Admin' || cr.role === 'Global Super Admin'
       );
 
-      if (hasAdminRole || hasClinicAdminRole || isGlobalAdmin) {
-        admins.push({
-          username: user.email,
-          email: user.email,
-          name: `${user.givenName || ''} ${user.familyName || ''}`.trim() || user.email,
-          role: user.role || (isGlobalAdmin ? 'GlobalSuperAdmin' : 'Admin'),
-        });
+      if (isGlobalAdmin || isSuperAdmin || isAdmin || hasClinicAdminRole) {
+        // Avoid duplicates by email
+        if (!seenEmails.has(user.email)) {
+          seenEmails.add(user.email);
+
+          // Determine the highest role
+          let displayRole = 'Admin';
+          if (isGlobalAdmin) displayRole = 'Global Super Admin';
+          else if (isSuperAdmin) displayRole = 'Super Admin';
+
+          admins.push({
+            username: user.email,
+            email: user.email,
+            name: `${user.givenName || ''} ${user.familyName || ''}`.trim() || user.email,
+            role: displayRole,
+          });
+        }
       }
     }
+
+    // Sort by role priority (Global Super Admin > Super Admin > Admin) then by name
+    const rolePriority: Record<string, number> = {
+      'Global Super Admin': 1,
+      'Super Admin': 2,
+      'Admin': 3,
+    };
+    admins.sort((a, b) => {
+      const priorityDiff = (rolePriority[a.role] || 4) - (rolePriority[b.role] || 4);
+      if (priorityDiff !== 0) return priorityDiff;
+      return a.name.localeCompare(b.name);
+    });
 
     return httpOk({ admins });
   } catch (error: any) {
