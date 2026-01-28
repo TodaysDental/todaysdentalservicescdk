@@ -80,19 +80,19 @@ const CIRCUIT_BREAKER_TABLE = process.env.CIRCUIT_BREAKER_TABLE || 'AiAgents-Cir
  */
 async function getCircuitState(clinicId: string): Promise<CircuitState> {
   const now = Date.now();
-  
+
   // Check local cache first
   const cached = circuitCache.get(clinicId);
   if (cached && now - cached.timestamp < CIRCUIT_CACHE_TTL_MS) {
     return cached.state;
   }
-  
+
   try {
     const response = await docClient.send(new GetCommand({
       TableName: CIRCUIT_BREAKER_TABLE,
       Key: { clinicId },
     }));
-    
+
     if (response.Item) {
       const state = response.Item as CircuitState;
       circuitCache.set(clinicId, { state, timestamp: now });
@@ -101,7 +101,7 @@ async function getCircuitState(clinicId: string): Promise<CircuitState> {
   } catch (error) {
     console.warn(`[CircuitBreaker] Failed to get state for ${clinicId}:`, error);
   }
-  
+
   // Return default state
   const defaultState: CircuitState = {
     clinicId,
@@ -112,7 +112,7 @@ async function getCircuitState(clinicId: string): Promise<CircuitState> {
     requestCount: 0,
     ttl: Math.floor(now / 1000) + 3600, // 1 hour TTL
   };
-  
+
   return defaultState;
 }
 
@@ -132,36 +132,36 @@ const FALLBACK_WINDOW_MS = 1000;
 
 async function checkCircuitBreaker(clinicId: string): Promise<{ allowed: boolean; reason?: string }> {
   const now = Date.now();
-  
+
   let state: CircuitState;
   let usingFallback = false;
-  
+
   try {
     state = await getCircuitState(clinicId);
   } catch (error) {
     // FIX: DynamoDB is unavailable - use in-memory fallback rate limiter
     console.warn(`[CircuitBreaker] DynamoDB unavailable, using fallback rate limiter for ${clinicId}:`, error);
     usingFallback = true;
-    
+
     // Get or create fallback state
     let fallback = fallbackRateLimiter.get(clinicId);
     if (!fallback || now - fallback.windowStart > FALLBACK_WINDOW_MS) {
       fallback = { count: 0, windowStart: now };
     }
-    
+
     fallback.count++;
     fallbackRateLimiter.set(clinicId, fallback);
-    
+
     if (fallback.count > FALLBACK_MAX_REQUESTS_PER_WINDOW) {
-      return { 
-        allowed: false, 
-        reason: 'Rate limit exceeded (fallback mode). Please try again in a moment.' 
+      return {
+        allowed: false,
+        reason: 'Rate limit exceeded (fallback mode). Please try again in a moment.'
       };
     }
-    
+
     return { allowed: true };
   }
-  
+
   // Check if circuit is open
   if (state.isOpen) {
     // Check if reset timeout has passed
@@ -184,11 +184,11 @@ async function checkCircuitBreaker(clinicId: string): Promise<{ allowed: boolean
       return { allowed: false, reason: 'Circuit breaker is open due to repeated failures. Try again later.' };
     }
   }
-  
+
   // Rate limiting with atomic counter
   const windowStart = state.windowStart;
   const isNewWindow = now - windowStart > 1000;
-  
+
   if (isNewWindow) {
     // New window - reset counter
     try {
@@ -215,19 +215,19 @@ async function checkCircuitBreaker(clinicId: string): Promise<{ allowed: boolean
         fallback.count++;
       }
       fallbackRateLimiter.set(clinicId, fallback);
-      
+
       if (fallback.count > FALLBACK_MAX_REQUESTS_PER_WINDOW) {
         return { allowed: false, reason: 'Rate limit exceeded (fallback mode). Please try again.' };
       }
     }
     return { allowed: true };
   }
-  
+
   // Same window - increment counter atomically
   if (state.requestCount >= CONFIG.RATE_LIMIT_REQUESTS_PER_SEC) {
     return { allowed: false, reason: 'Rate limit exceeded. Please slow down requests.' };
   }
-  
+
   try {
     await docClient.send(new UpdateCommand({
       TableName: CIRCUIT_BREAKER_TABLE,
@@ -247,13 +247,13 @@ async function checkCircuitBreaker(clinicId: string): Promise<{ allowed: boolean
       fallback.count++;
     }
     fallbackRateLimiter.set(clinicId, fallback);
-    
+
     // Still allow this request (we've tracked it in memory), but future ones may be blocked
     if (fallback.count > FALLBACK_MAX_REQUESTS_PER_WINDOW) {
       return { allowed: false, reason: 'Rate limit exceeded (fallback mode). Please try again.' };
     }
   }
-  
+
   return { allowed: true };
 }
 
@@ -268,7 +268,7 @@ async function recordSuccess(clinicId: string): Promise<void> {
       UpdateExpression: 'SET failures = :zero, isOpen = :false',
       ExpressionAttributeValues: { ':zero': 0, ':false': false },
     }));
-    
+
     // Invalidate cache
     circuitCache.delete(clinicId);
   } catch (error) {
@@ -281,7 +281,7 @@ async function recordSuccess(clinicId: string): Promise<void> {
  */
 async function recordFailure(clinicId: string): Promise<void> {
   const now = Date.now();
-  
+
   try {
     const result = await docClient.send(new UpdateCommand({
       TableName: CIRCUIT_BREAKER_TABLE,
@@ -296,9 +296,9 @@ async function recordFailure(clinicId: string): Promise<void> {
       },
       ReturnValues: 'UPDATED_NEW',
     }));
-    
+
     const newFailures = result.Attributes?.failures || 1;
-    
+
     // Open circuit if threshold exceeded
     if (newFailures >= CONFIG.CIRCUIT_BREAKER_THRESHOLD) {
       await docClient.send(new UpdateCommand({
@@ -309,7 +309,7 @@ async function recordFailure(clinicId: string): Promise<void> {
       }));
       console.warn(`[CircuitBreaker] Circuit OPEN for clinic ${clinicId} after ${newFailures} failures`);
     }
-    
+
     // Invalidate cache
     circuitCache.delete(clinicId);
   } catch (error) {
@@ -390,7 +390,7 @@ async function getClinicConfigSecure(clinicId: string): Promise<ClinicConfig | u
     // If credentials not found in Clinics table, try ClinicSecrets table
     if (!developerKey || !customerKey) {
       console.log(`[getClinicConfig] Credentials not in Clinics table for ${clinicId}, checking ClinicSecrets table...`);
-      
+
       const secretsResponse = await docClient.send(new GetCommand({
         TableName: CLINIC_SECRETS_TABLE,
         Key: { clinicId },
@@ -527,38 +527,38 @@ class OpenDentalClient {
           );
         if (data) config.data = data;
         const response = await this.client.request(config);
-        
+
         // Success - record it for circuit breaker
         // FIX: Await the async operation to ensure state is persisted before Lambda terminates
         await recordSuccess(this.clinicId);
-        
+
         return response.data || { status: 'success', statusCode: response.status };
       } catch (error: any) {
         const status = error.response?.status;
-        
+
         // Check for rate limit response with Retry-After header
         if (status === 429) {
           const retryAfter = error.response?.headers?.['retry-after'];
-          const waitTime = retryAfter 
-            ? parseInt(retryAfter, 10) * 1000 
+          const waitTime = retryAfter
+            ? parseInt(retryAfter, 10) * 1000
             : 1000 * Math.pow(2, attempt);
-          
+
           console.warn(`[OpenDental] Rate limited for clinic ${this.clinicId}, waiting ${waitTime}ms`);
-          
+
           if (attempt < CONFIG.MAX_API_RETRIES) {
             await new Promise((resolve) => setTimeout(resolve, waitTime));
             continue;
           }
         }
-        
+
         const isRetryable =
           status >= 500 || status === 429 || ['ECONNABORTED', 'ETIMEDOUT'].includes(error.code);
-        
+
         if (!isRetryable || attempt === CONFIG.MAX_API_RETRIES) {
           // Record failure for circuit breaker
           // FIX: Await the async operation to ensure state is persisted before Lambda terminates
           await recordFailure(this.clinicId);
-          
+
           // Log useful debugging info WITHOUT leaking keys or PII (only field names + response body)
           try {
             const responseData = error.response?.data;
@@ -608,7 +608,7 @@ class OpenDentalClient {
               : `OpenDental API call failed: ${error.message}`
           );
         }
-        
+
         await new Promise((resolve) => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
       }
     }
@@ -657,15 +657,15 @@ function parseParameters(event: ActionGroupEvent): Record<string, any> {
  */
 function normalizeDateFormat(dateStr: string): string {
   if (!dateStr) return dateStr;
-  
+
   // Already in YYYY-MM-DD format
   if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
     return dateStr;
   }
-  
+
   // Try to parse and normalize
   let normalized = dateStr.trim();
-  
+
   // Handle numeric date formats: MM/DD/YYYY, DD/MM/YYYY, MM-DD-YYYY, DD-MM-YYYY
   // Detect format by checking if first number > 12 (must be day, so it's DD/MM/YYYY)
   const numericFormat = normalized.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
@@ -673,9 +673,9 @@ function normalizeDateFormat(dateStr: string): string {
     const [, first, second, year] = numericFormat;
     const firstNum = parseInt(first, 10);
     const secondNum = parseInt(second, 10);
-    
+
     let month: string, day: string;
-    
+
     if (firstNum > 12) {
       // First number > 12, so it must be day (DD/MM/YYYY - European format)
       day = first;
@@ -692,17 +692,17 @@ function normalizeDateFormat(dateStr: string): string {
       day = second;
       console.log(`[normalizeDateFormat] Ambiguous format, assuming US (MM/DD/YYYY): ${dateStr}`);
     }
-    
+
     return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
   }
-  
+
   // Handle YYYY/MM/DD format
   const isoSlash = normalized.match(/^(\d{4})[\/](\d{1,2})[\/](\d{1,2})$/);
   if (isoSlash) {
     const [, year, month, day] = isoSlash;
     return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
   }
-  
+
   // Handle written dates like "July 11, 1984", "11 July 1984", "4th Oct 1975", "Nov 21st 1999"
   const monthNames: Record<string, string> = {
     'january': '01', 'jan': '01',
@@ -718,12 +718,12 @@ function normalizeDateFormat(dateStr: string): string {
     'november': '11', 'nov': '11',
     'december': '12', 'dec': '12',
   };
-  
+
   // Helper to strip ordinal suffix from day (1st, 2nd, 3rd, 4th, 21st, 22nd, 23rd, etc.)
   const stripOrdinal = (dayStr: string): string => {
     return dayStr.replace(/(st|nd|rd|th)$/i, '');
   };
-  
+
   // "July 11, 1984" or "Jul 11 1984" or "Nov 21st 1999" or "July 4th, 1976"
   const writtenFormat1 = normalized.match(/^([a-zA-Z]+)\s+(\d{1,2}(?:st|nd|rd|th)?),?\s+(\d{4})$/i);
   if (writtenFormat1) {
@@ -735,7 +735,7 @@ function normalizeDateFormat(dateStr: string): string {
       return `${year}-${month}-${day.padStart(2, '0')}`;
     }
   }
-  
+
   // "11 July 1984" or "4th Oct 1975" or "21st November 1999"
   const writtenFormat2 = normalized.match(/^(\d{1,2}(?:st|nd|rd|th)?)\s+([a-zA-Z]+)\s+(\d{4})$/i);
   if (writtenFormat2) {
@@ -747,7 +747,7 @@ function normalizeDateFormat(dateStr: string): string {
       return `${year}-${month}-${day.padStart(2, '0')}`;
     }
   }
-  
+
   // "4th of October 1975" or "21st of Nov 1999"
   const writtenFormat3 = normalized.match(/^(\d{1,2}(?:st|nd|rd|th)?)\s+of\s+([a-zA-Z]+)\s+(\d{4})$/i);
   if (writtenFormat3) {
@@ -759,7 +759,7 @@ function normalizeDateFormat(dateStr: string): string {
       return `${year}-${month}-${day.padStart(2, '0')}`;
     }
   }
-  
+
   // Try native Date parsing as fallback
   try {
     const date = new Date(dateStr);
@@ -775,7 +775,7 @@ function normalizeDateFormat(dateStr: string): string {
   } catch {
     // Ignore parsing errors
   }
-  
+
   console.warn(`[normalizeDateFormat] Could not normalize date: ${dateStr}`);
   return dateStr; // Return as-is if we can't parse
 }
@@ -860,7 +860,7 @@ async function handleTool(
         // Get clinic information from DynamoDB Clinics table
         // This tool is used for answering general questions about the clinic
         const clinicId = sessionAttributes.clinicId || params.clinicId;
-        
+
         if (!clinicId) {
           return {
             statusCode: 400,
@@ -870,13 +870,13 @@ async function handleTool(
             },
           };
         }
-        
+
         try {
           const clinicResponse = await docClient.send(new GetCommand({
             TableName: CLINICS_TABLE,
             Key: { clinicId },
           }));
-          
+
           if (!clinicResponse.Item) {
             return {
               statusCode: 404,
@@ -886,41 +886,41 @@ async function handleTool(
               },
             };
           }
-          
+
           const clinic = clinicResponse.Item;
-          
+
           // Build a comprehensive clinic info response for the AI
           // EXCLUDE sensitive fields like API keys, passwords, etc.
           const clinicInfo = {
             // Basic Information
             clinicId: clinic.clinicId,
             clinicName: clinic.clinicName || clinic.name,
-            
+
             // Location & Address
             clinicAddress: clinic.clinicAddress || clinic.address,
             clinicCity: clinic.clinicCity || clinic.city,
             clinicState: clinic.clinicState || clinic.state,
             clinicZipCode: clinic.clinicZipCode || clinic.CliniczipCode || clinic.zipCode,
-            
+
             // Contact Information
             clinicPhone: clinic.clinicPhone || clinic.phoneNumber,
             clinicEmail: clinic.clinicEmail || clinic.email,
             clinicFax: clinic.clinicFax || clinic.fax,
-            
+
             // Online Presence
             websiteLink: clinic.websiteLink || clinic.wwwUrl,
             mapsUrl: clinic.mapsUrl,
             scheduleUrl: clinic.scheduleUrl,
             logoUrl: clinic.logoUrl,
-            
+
             // Timezone
             timezone: clinic.timezone,
           };
-          
+
           // Create a natural language response for the AI
           let directAnswer = `=== CLINIC INFORMATION ===\n\n`;
           directAnswer += `📍 CLINIC NAME: ${clinicInfo.clinicName}\n\n`;
-          
+
           directAnswer += `📍 LOCATION:\n`;
           directAnswer += `• Address: ${clinicInfo.clinicAddress}\n`;
           directAnswer += `• City: ${clinicInfo.clinicCity}\n`;
@@ -928,18 +928,18 @@ async function handleTool(
           if (clinicInfo.clinicZipCode) directAnswer += `• Zip Code: ${clinicInfo.clinicZipCode}\n`;
           if (clinicInfo.mapsUrl) directAnswer += `• Google Maps: ${clinicInfo.mapsUrl}\n`;
           directAnswer += `\n`;
-          
+
           directAnswer += `📞 CONTACT:\n`;
           directAnswer += `• Phone: ${clinicInfo.clinicPhone}\n`;
           if (clinicInfo.clinicEmail) directAnswer += `• Email: ${clinicInfo.clinicEmail}\n`;
           if (clinicInfo.clinicFax) directAnswer += `• Fax: ${clinicInfo.clinicFax}\n`;
           directAnswer += `\n`;
-          
+
           directAnswer += `🌐 ONLINE:\n`;
           if (clinicInfo.websiteLink) directAnswer += `• Website: ${clinicInfo.websiteLink}\n`;
           if (clinicInfo.scheduleUrl) directAnswer += `• Online Scheduling: ${clinicInfo.scheduleUrl}\n`;
           directAnswer += `\n`;
-          
+
           directAnswer += `ℹ️ GENERAL INFO:\n`;
           directAnswer += `• This is a standalone professional dental office\n`;
           directAnswer += `• The clinic is wheelchair accessible with free parking\n`;
@@ -948,7 +948,7 @@ async function handleTool(
           directAnswer += `• All dentists are licensed in ${clinicInfo.clinicState}\n`;
           directAnswer += `• We welcome patients of all ages including children\n`;
           directAnswer += `• Staff speak English; Spanish may be available - call to confirm\n`;
-          
+
           return {
             statusCode: 200,
             body: {
@@ -1182,10 +1182,10 @@ async function handleTool(
             phoneNumber = parsedPhone.formatNational();
           }
         }
-        
+
         // Normalize birthdate to YYYY-MM-DD format
         const normalizedBirthdate = params.Birthdate ? normalizeDateFormat(params.Birthdate) : undefined;
-        
+
         // NOTE: OpenDental returns 400 if TxtMsgOk='Yes' but WirelessPhone is empty.
         // Only set TxtMsgOk when we have a valid wireless phone number.
         const createData: any = {
@@ -1223,7 +1223,7 @@ async function handleTool(
         // This prevents returning thousands of completed procedures
         const filterStatus = params.ProcStatus || 'TP';
         const procedures = allProcedures.filter((p: any) => p.ProcStatus === filterStatus);
-        
+
         // OPTIMIZATION: Return only essential fields to reduce payload size for Bedrock
         const minimalProcedures = procedures.slice(0, 50).map((p: any) => ({
           ProcNum: p.ProcNum,
@@ -1263,8 +1263,8 @@ async function handleTool(
             directAnswer,
             data: minimalProcedures,
             totalCount: procedures.length,
-            message: procedures.length > 0 
-              ? `Found ${procedures.length} ${filterStatus} procedure(s)` 
+            message: procedures.length > 0
+              ? `Found ${procedures.length} ${filterStatus} procedure(s)`
               : `No ${filterStatus} procedures found`,
           },
           updatedSessionAttributes,
@@ -3696,7 +3696,7 @@ async function handleTool(
         // then pass the appropriate Op, ProvNum, AppointmentTypeNum based on patient needs.
         const isNewPatient = sessionAttributes.IsNewPatient === 'true' || params.IsNewPatient === true || params.IsNewPatient === 'true';
         const reason = params.Reason || params.reason || 'Appointment';
-        
+
         // Get operatory number - agent should pass this from getClinicAppointmentTypes result
         let opNum = getOperatoryNumber(params.Op || params.OpName || params.opNum);
         if (!opNum) {
@@ -3736,7 +3736,7 @@ async function handleTool(
         }
 
         const newAppt = await odClient.request('POST', 'appointments', { data: appointmentData });
-        
+
         return {
           statusCode: 201,
           body: {
@@ -3751,7 +3751,7 @@ async function handleTool(
         const resp = await odClient.request('GET', 'appointments', { params: { PatNum: params.PatNum } });
         const apts = Array.isArray(resp) ? resp : resp?.items ?? [];
         const futureApts = apts.filter((apt: any) => new Date(apt.AptDateTime) >= new Date());
-        
+
         // OPTIMIZATION: Return only essential fields to reduce payload size for Bedrock
         const minimalApts = futureApts.slice(0, 20).map((apt: any) => ({
           AptNum: apt.AptNum,
@@ -4163,7 +4163,7 @@ async function handleTool(
         // The AI agent should call getClinicAppointmentTypes first to get available types,
         // then pass the appropriate Op, ProvNum, AppointmentTypeNum based on patient needs.
         const isNewPatient = params.IsNewPatient === true || params.IsNewPatient === 'true' || sessionAttributes.IsNewPatient === 'true';
-        
+
         // Get operatory number - agent should pass this from getClinicAppointmentTypes result
         let opNum = getOperatoryNumber(params.Op || params.opNum);
         if (!opNum) {
@@ -4175,7 +4175,7 @@ async function handleTool(
           Op: opNum,
           AptDateTime: params.AptDateTime,
         };
-        
+
         if (params.Note) aptData.Note = params.Note;
         if (isNewPatient) aptData.IsNewPatient = 'true';
         if (params.ProvNum || params.provNum || params.defaultProvNum) {
@@ -4219,7 +4219,7 @@ async function handleTool(
       case 'getAppointmentSlots': {
         // IMPORTANT (TodaysDental): We do NOT use OpenDental appointments/Slots for web/voice booking.
         // It has proven unreliable and often fails with "date is invalid".
-        // Instead, return the office schedule using OpenDental /schedules.
+        // Instead, query Provider/Practice schedules and generate available time slots.
 
         const normalizeIsoDate = (value: any): string | undefined => {
           if (!value || typeof value !== 'string') return undefined;
@@ -4243,23 +4243,94 @@ async function handleTool(
         const dateStart = requestedStart && requestedStart >= addDays(todayIso, -7) ? requestedStart : todayIso;
         const dateEnd = requestedEnd && requestedEnd >= dateStart ? requestedEnd : addDays(dateStart, 14);
 
-        const queryParams: any = {
-          dateStart,
-          dateEnd,
-          SchedType: 'Practice',
-        };
+        // Query Provider schedules (dentist availability) - this is what determines when appointments can be booked
+        // Also query Practice schedules as a fallback (clinic-wide hours)
+        const [providerSchedules, practiceSchedules] = await Promise.all([
+          odClient.request('GET', 'schedules', { params: { dateStart, dateEnd, SchedType: 'Provider' } }).catch(() => []),
+          odClient.request('GET', 'schedules', { params: { dateStart, dateEnd, SchedType: 'Practice' } }).catch(() => []),
+        ]);
 
-        const schedules = await odClient.request('GET', 'schedules', { params: queryParams });
-        const schedulesArray = Array.isArray(schedules) ? schedules : [];
+        const providerArray = Array.isArray(providerSchedules) ? providerSchedules : [];
+        const practiceArray = Array.isArray(practiceSchedules) ? practiceSchedules : [];
+
+        // Use provider schedules if available, otherwise fall back to practice schedules
+        const schedulesArray = providerArray.length > 0 ? providerArray : practiceArray;
+
+        // Generate time slots from schedule entries
+        const slotDuration = parseInt(params.duration || params.lengthMinutes || '30', 10);
+        const generatedSlots: any[] = [];
+
+        for (const schedule of schedulesArray.slice(0, 100)) {
+          const schedDate = schedule.SchedDate || schedule.schedDate;
+          const startTime = schedule.StartTime || schedule.startTime || '08:00:00';
+          const stopTime = schedule.StopTime || schedule.stopTime || '17:00:00';
+          const provNum = schedule.ProvNum || schedule.provNum;
+          const opNum = schedule.Op || schedule.opNum;
+
+          if (!schedDate) continue;
+
+          // Parse start and stop times
+          const [startH, startM] = startTime.split(':').map(Number);
+          const [stopH, stopM] = stopTime.split(':').map(Number);
+          const startMinutes = startH * 60 + (startM || 0);
+          const stopMinutes = stopH * 60 + (stopM || 0);
+
+          // Generate slots at slotDuration intervals
+          for (let mins = startMinutes; mins + slotDuration <= stopMinutes; mins += slotDuration) {
+            const hour = Math.floor(mins / 60);
+            const minute = mins % 60;
+            const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}:00`;
+            const dateTimeStr = `${schedDate} ${timeStr}`;
+
+            generatedSlots.push({
+              DateTimeStart: dateTimeStr,
+              DateTimeEnd: `${schedDate} ${Math.floor((mins + slotDuration) / 60).toString().padStart(2, '0')}:${((mins + slotDuration) % 60).toString().padStart(2, '0')}:00`,
+              ProvNum: provNum,
+              OpNum: opNum,
+              SchedDate: schedDate,
+            });
+          }
+        }
+
+        // Build a direct answer for the AI
+        let directAnswer = '';
+        if (generatedSlots.length > 0) {
+          directAnswer = `=== AVAILABLE APPOINTMENT SLOTS ===\n`;
+          directAnswer += `Date range: ${dateStart} to ${dateEnd}\n`;
+          directAnswer += `Slot duration: ${slotDuration} minutes\n\n`;
+
+          // Group by date
+          const byDate: { [key: string]: any[] } = {};
+          generatedSlots.forEach(slot => {
+            const date = slot.SchedDate;
+            if (!byDate[date]) byDate[date] = [];
+            byDate[date].push(slot);
+          });
+
+          Object.keys(byDate).slice(0, 7).forEach(date => {
+            const slots = byDate[date];
+            directAnswer += `📅 ${date}: ${slots.length} slot(s) available\n`;
+            directAnswer += `   First: ${slots[0].DateTimeStart.split(' ')[1].slice(0, 5)}, Last: ${slots[slots.length - 1].DateTimeStart.split(' ')[1].slice(0, 5)}\n`;
+          });
+
+          if (Object.keys(byDate).length > 7) {
+            directAnswer += `... and ${Object.keys(byDate).length - 7} more days\n`;
+          }
+        }
 
         return {
-          statusCode: schedulesArray.length > 0 ? 200 : 404,
+          statusCode: generatedSlots.length > 0 ? 200 : 404,
           body: {
-            status: schedulesArray.length > 0 ? 'SUCCESS' : 'FAILURE',
-            data: { items: schedulesArray.slice(0, 200) },
-            message: schedulesArray.length > 0
-              ? `Found ${schedulesArray.length} schedule entry(ies) from ${dateStart} to ${dateEnd}`
-              : 'No schedule entries found',
+            status: generatedSlots.length > 0 ? 'SUCCESS' : 'FAILURE',
+            directAnswer,
+            data: {
+              items: generatedSlots.slice(0, 200),
+              scheduleSource: providerArray.length > 0 ? 'Provider' : 'Practice',
+              scheduleCount: schedulesArray.length,
+            },
+            message: generatedSlots.length > 0
+              ? `Found ${generatedSlots.length} available slot(s) from ${dateStart} to ${dateEnd}`
+              : 'No schedule entries found. The clinic may not have provider schedules set up for this date range.',
           },
         };
       }
@@ -4384,12 +4455,35 @@ async function handleTool(
       }
 
       case 'Appointments GET Slots': {
-        const queryParams: any = {};
+        // FIXED: Normalize dates and fallback to schedule-based slots when OpenDental API fails
+        const normalizeIsoDate = (value: any): string | undefined => {
+          if (!value || typeof value !== 'string') return undefined;
+          const normalized = normalizeDateFormat(value);
+          return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : undefined;
+        };
 
-        // Optional filters
-        if (params.date) queryParams.date = params.date;
-        if (params.dateStart) queryParams.dateStart = params.dateStart;
-        if (params.dateEnd) queryParams.dateEnd = params.dateEnd;
+        const addDays = (isoDate: string, days: number): string => {
+          const d = new Date(`${isoDate}T12:00:00Z`);
+          d.setUTCDate(d.getUTCDate() + days);
+          return d.toISOString().slice(0, 10);
+        };
+
+        const todayIso = normalizeIsoDate(sessionAttributes?.todayDate) || new Date().toISOString().slice(0, 10);
+
+        // Normalize date parameters - use sessionAttributes.todayDate as reference
+        const requestedDate = normalizeIsoDate(params.date);
+        const requestedStart = normalizeIsoDate(params.dateStart || params.DateStart);
+        const requestedEnd = normalizeIsoDate(params.dateEnd || params.DateEnd);
+
+        // Ensure dates are not in the past (relative to today from session attributes)
+        const dateStart = requestedStart && requestedStart >= todayIso ? requestedStart :
+          requestedDate && requestedDate >= todayIso ? requestedDate : todayIso;
+        const dateEnd = requestedEnd && requestedEnd >= dateStart ? requestedEnd : addDays(dateStart, 7);
+
+        const queryParams: any = {
+          dateStart,
+          dateEnd,
+        };
         if (params.lengthMinutes) queryParams.lengthMinutes = params.lengthMinutes;
         if (params.ProvNum) queryParams.ProvNum = params.ProvNum;
         if (params.OpNum) queryParams.OpNum = params.OpNum;
@@ -4411,13 +4505,63 @@ async function handleTool(
             },
           };
         } catch (error: any) {
-          if (error.response?.status === 400) {
-            return {
-              statusCode: 400,
-              body: { status: 'FAILURE', message: error.response?.data?.message || 'Bad request' },
-            };
+          // Fallback to schedule-based slot generation when OpenDental Slots API fails
+          console.log('[ActionGroup] OpenDental Slots API failed, falling back to schedule-based slots:', error?.response?.data || error?.message);
+
+          // Query Provider schedules and generate slots
+          const [providerSchedules, practiceSchedules] = await Promise.all([
+            odClient.request('GET', 'schedules', { params: { dateStart, dateEnd, SchedType: 'Provider' } }).catch(() => []),
+            odClient.request('GET', 'schedules', { params: { dateStart, dateEnd, SchedType: 'Practice' } }).catch(() => []),
+          ]);
+
+          const providerArray = Array.isArray(providerSchedules) ? providerSchedules : [];
+          const practiceArray = Array.isArray(practiceSchedules) ? practiceSchedules : [];
+          const schedulesArray = providerArray.length > 0 ? providerArray : practiceArray;
+
+          // Generate slots from schedules
+          const slotDuration = parseInt(params.lengthMinutes || '30', 10);
+          const generatedSlots: any[] = [];
+
+          for (const schedule of schedulesArray.slice(0, 100)) {
+            const schedDate = schedule.SchedDate || schedule.schedDate;
+            const startTime = schedule.StartTime || schedule.startTime || '08:00:00';
+            const stopTime = schedule.StopTime || schedule.stopTime || '17:00:00';
+            const provNum = schedule.ProvNum || schedule.provNum || params.ProvNum;
+            const opNum = schedule.Op || schedule.opNum || params.OpNum;
+
+            if (!schedDate) continue;
+
+            const [startH, startM] = startTime.split(':').map(Number);
+            const [stopH, stopM] = stopTime.split(':').map(Number);
+            const startMinutes = startH * 60 + (startM || 0);
+            const stopMinutes = stopH * 60 + (stopM || 0);
+
+            for (let mins = startMinutes; mins + slotDuration <= stopMinutes; mins += slotDuration) {
+              const hour = Math.floor(mins / 60);
+              const minute = mins % 60;
+              const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}:00`;
+
+              generatedSlots.push({
+                DateTimeStart: `${schedDate} ${timeStr}`,
+                DateTimeEnd: `${schedDate} ${Math.floor((mins + slotDuration) / 60).toString().padStart(2, '0')}:${((mins + slotDuration) % 60).toString().padStart(2, '0')}:00`,
+                ProvNum: provNum,
+                OpNum: opNum,
+                SchedDate: schedDate,
+              });
+            }
           }
-          throw error;
+
+          return {
+            statusCode: generatedSlots.length > 0 ? 200 : 404,
+            body: {
+              status: generatedSlots.length > 0 ? 'SUCCESS' : 'FAILURE',
+              data: generatedSlots.slice(0, 200),
+              message: generatedSlots.length > 0
+                ? `Generated ${generatedSlots.length} slot(s) from schedules (${dateStart} to ${dateEnd})`
+                : 'No schedules found for the requested date range.',
+              fallback: true,
+            },
+          };
         }
       }
 
@@ -4661,8 +4805,8 @@ async function handleTool(
 
       case 'Appointments POST WebSched': {
         // Required fields
-        if (!params.PatNum || !params.DateTimeStart || !params.DateTimeEnd || 
-            !params.ProvNum || !params.OpNum || !params.defNumApptType) {
+        if (!params.PatNum || !params.DateTimeStart || !params.DateTimeEnd ||
+          !params.ProvNum || !params.OpNum || !params.defNumApptType) {
           return {
             statusCode: 400,
             body: { status: 'FAILURE', message: 'PatNum, DateTimeStart, DateTimeEnd, ProvNum, OpNum, and defNumApptType are required' },
@@ -5011,7 +5155,7 @@ async function handleTool(
       case 'getAccountAging': {
         // Gets aging breakdown: Bal_0_30, Bal_31_60, Bal_61_90, BalOver90, Total, InsEst, EstBal, PatEstBal, Unearned
         const aging = await odClient.request('GET', `accountmodules/${params.PatNum}/Aging`);
-        
+
         // Format a helpful response
         let directAnswer = `=== ACCOUNT AGING ===\n`;
         if (aging) {
@@ -5027,42 +5171,42 @@ async function handleTool(
             directAnswer += `Prepayment/Credit: $${(aging.Unearned || 0).toFixed(2)}\n`;
           }
         }
-        
-        return { 
-          statusCode: 200, 
-          body: { 
-            status: 'SUCCESS', 
+
+        return {
+          statusCode: 200,
+          body: {
+            status: 'SUCCESS',
             directAnswer,
-            data: aging 
-          } 
+            data: aging
+          }
         };
       }
 
       case 'getPatientBalances': {
         // Gets individual balances for each family member
         const balances = await odClient.request('GET', `accountmodules/${params.PatNum}/PatientBalances`);
-        
+
         let directAnswer = `=== PATIENT BALANCES ===\n`;
         if (Array.isArray(balances)) {
           for (const member of balances) {
             directAnswer += `${member.Name}: $${(member.Balance || 0).toFixed(2)}\n`;
           }
         }
-        
-        return { 
-          statusCode: 200, 
-          body: { 
-            status: 'SUCCESS', 
+
+        return {
+          statusCode: 200,
+          body: {
+            status: 'SUCCESS',
             directAnswer,
-            data: balances 
-          } 
+            data: balances
+          }
         };
       }
 
       case 'getServiceDateView': {
         // Gets detailed transaction history
-        const serviceData = await odClient.request('GET', `accountmodules/${params.PatNum}/ServiceDateView`, { 
-          params: { isFamily: params.isFamily?.toString() || 'false' } 
+        const serviceData = await odClient.request('GET', `accountmodules/${params.PatNum}/ServiceDateView`, {
+          params: { isFamily: params.isFamily?.toString() || 'false' }
         });
         return { statusCode: 200, body: { status: 'SUCCESS', data: serviceData } };
       }
@@ -5711,7 +5855,7 @@ async function handleTool(
       case 'suggestInsuranceCoverage': {
         // This is a higher-level tool that looks up insurance and formats coverage suggestions
         const lookupResult = await lookupInsurancePlanBenefits(params, sessionAttributes.clinicId || params.clinicId);
-        
+
         if (lookupResult.statusCode !== 200 || !lookupResult.body.data?.plans?.length) {
           return {
             statusCode: 404,
@@ -5733,7 +5877,7 @@ async function handleTool(
 
         // Build a clear, direct answer about what was found - ALL benefits
         const mainPlan = plans[0];
-        
+
         // Helper to format percentage
         // Data can be stored as decimal (0.8) or whole number (80)
         const fmtPct = (pct: number | null | undefined): string => {
@@ -5743,14 +5887,14 @@ async function handleTool(
           const percentage = pct > 1 ? Math.round(pct) : Math.round(pct * 100);
           return `${percentage}%`;
         };
-        
+
         // Helper to format money
         const fmtMoney = (amt: number | null | undefined): string => {
           if (amt === null || amt === undefined) return 'Not recorded';
           if (amt === 0) return '$0';
           return `$${amt.toLocaleString()}`;
         };
-        
+
         // Build a comprehensive direct answer string
         let directAnswer = '';
         if (plans.length === 1) {
@@ -5758,7 +5902,7 @@ async function handleTool(
           directAnswer += `PLAN: ${mainPlan.insuranceName || 'Unknown'} - ${mainPlan.groupName || 'Unknown Group'}\n`;
           if (mainPlan.groupNumber) directAnswer += `GROUP #: ${mainPlan.groupNumber}\n`;
           directAnswer += `\n`;
-          
+
           // Maximums and Deductibles
           directAnswer += `=== MAXIMUMS & DEDUCTIBLES ===\n`;
           directAnswer += `Annual Maximum (Individual): ${fmtMoney(mainPlan.annualMaxIndividual)}\n`;
@@ -5766,14 +5910,14 @@ async function handleTool(
           directAnswer += `Deductible (Individual): ${fmtMoney(mainPlan.deductibleIndividual)}\n`;
           if (mainPlan.deductibleFamily) directAnswer += `Deductible (Family): ${fmtMoney(mainPlan.deductibleFamily)}\n`;
           directAnswer += `\n`;
-          
+
           // Preventive Coverage
           directAnswer += `=== PREVENTIVE SERVICES ===\n`;
           directAnswer += `Exams & Diagnostics: ${fmtPct(mainPlan.preventiveDiagnosticsPct)}\n`;
           directAnswer += `X-Rays: ${fmtPct(mainPlan.preventiveXRaysPct)}\n`;
           directAnswer += `Cleanings & Preventive: ${fmtPct(mainPlan.preventiveRoutinePreventivePct)}\n`;
           directAnswer += `\n`;
-          
+
           // Basic Coverage
           directAnswer += `=== BASIC SERVICES ===\n`;
           directAnswer += `Fillings (Restorative): ${fmtPct(mainPlan.basicRestorativePct)}\n`;
@@ -5781,7 +5925,7 @@ async function handleTool(
           directAnswer += `Gum Treatment (Periodontics): ${fmtPct(mainPlan.basicPerioPct)}\n`;
           directAnswer += `Extractions (Oral Surgery): ${fmtPct(mainPlan.basicOralSurgeryPct)}\n`;
           directAnswer += `\n`;
-          
+
           // Major Coverage
           directAnswer += `=== MAJOR SERVICES ===\n`;
           directAnswer += `Crowns: ${fmtPct(mainPlan.majorCrownsPct)}\n`;
@@ -5794,7 +5938,7 @@ async function handleTool(
           }
           directAnswer += `Bridges/Dentures (Prosthodontics): ${fmtPct(mainPlan.majorProsthodonticsPct)}\n`;
           directAnswer += `\n`;
-          
+
           // Orthodontics
           if (mainPlan.orthoPct !== null || mainPlan.orthoLifetimeMax !== null) {
             directAnswer += `=== ORTHODONTICS ===\n`;
@@ -5802,7 +5946,7 @@ async function handleTool(
             if (mainPlan.orthoLifetimeMax) directAnswer += `Ortho Lifetime Max: ${fmtMoney(mainPlan.orthoLifetimeMax)}\n`;
             directAnswer += `\n`;
           }
-          
+
           // Limitations
           if (mainPlan.waitingPeriods || mainPlan.frequencyLimits || mainPlan.ageLimits) {
             directAnswer += `=== LIMITATIONS ===\n`;
@@ -5902,9 +6046,9 @@ async function handleTool(
           // Fluoride-specific hint (often requested; stored in limitations rather than a dedicated % field)
           const fluorideFreq = mainPlan.frequencyLimits
             ? mainPlan.frequencyLimits
-                .split('|')
-                .map((s) => s.trim())
-                .find((s) => /^fluoride\s*:/i.test(s))
+              .split('|')
+              .map((s) => s.trim())
+              .find((s) => /^fluoride\s*:/i.test(s))
             : null;
           const fluorideAge = mainPlan.ageLimits && /fluoride/i.test(mainPlan.ageLimits) ? mainPlan.ageLimits : null;
           if (fluorideFreq || fluorideAge) {
@@ -5915,41 +6059,41 @@ async function handleTool(
             if (fluorideAge) directAnswer += `${fluorideAge}\n`;
             directAnswer += `\n`;
           }
-          
+
           // Notes
           if (mainPlan.planNote) {
             directAnswer += `=== NOTES ===\n${mainPlan.planNote}\n`;
           }
-          
+
           // Downgrades
           if (mainPlan.downgrades) {
             directAnswer += `\n⚠️ DOWNGRADES: ${mainPlan.downgrades}\n`;
           }
-          
+
         } else {
           // MULTIPLE PLANS FOUND - Format for easy user selection
           directAnswer = `=== MULTIPLE ${mainPlan.insuranceName?.toUpperCase() || 'INSURANCE'} PLANS FOUND ===\n\n`;
           directAnswer += `I found ${plans.length} plan(s) matching that insurance. Please select your plan:\n\n`;
-          
+
           plans.slice(0, 10).forEach((p, i) => {
             directAnswer += `${i + 1}. ${p.insuranceName || 'Unknown'} - ${p.groupName || 'Unknown Group'}\n`;
             if (p.groupNumber) {
               directAnswer += `   Group #: ${p.groupNumber}\n`;
             }
           });
-          
+
           if (plans.length > 10) {
             directAnswer += `\n... and ${plans.length - 10} more plans\n`;
           }
-          
+
           directAnswer += `\n📋 Please tell me your plan number (1-${Math.min(plans.length, 10)}) or provide your group number from your insurance card.\n`;
         }
-        
+
         // Determine lookup status
         const crownCoverageFound = mainPlan.majorCrownsPct !== null && mainPlan.majorCrownsPct !== undefined;
-        const hasAnyCoverage = mainPlan.preventiveDiagnosticsPct !== null || 
-                               mainPlan.basicRestorativePct !== null || 
-                               mainPlan.majorCrownsPct !== null;
+        const hasAnyCoverage = mainPlan.preventiveDiagnosticsPct !== null ||
+          mainPlan.basicRestorativePct !== null ||
+          mainPlan.majorCrownsPct !== null;
 
         // OPTIMIZATION: Include a simple plan selection list for multiple plans
         // This helps the bot reference specific plans when user selects
@@ -5964,10 +6108,10 @@ async function handleTool(
           statusCode: 200,
           body: {
             status: 'SUCCESS',
-            lookupStatus: plans.length > 1 
-              ? 'MULTIPLE_PLANS_FOUND' 
+            lookupStatus: plans.length > 1
+              ? 'MULTIPLE_PLANS_FOUND'
               : (hasAnyCoverage ? 'COVERAGE_DETAILS_FOUND' : 'PLAN_FOUND_BUT_COVERAGE_NOT_RECORDED'),
-            message: plans.length > 1 
+            message: plans.length > 1
               ? `Found ${plans.length} matching plans. Ask user to select their plan.`
               : `Successfully found insurance plan details. Use the directAnswer field to respond to the user.`,
             directAnswer: directAnswer,
@@ -8820,16 +8964,16 @@ const INSURANCE_NAME_ALIASES: Record<string, string[]> = {
  */
 function normalizeInsuranceName(name: string): string {
   if (!name) return '';
-  
+
   // Lowercase and trim
   let normalized = name.toLowerCase().trim();
-  
+
   // Remove extra whitespace
   normalized = normalized.replace(/\s+/g, ' ');
-  
+
   // Remove common suffixes
   normalized = normalized.replace(/\s*(insurance|ins|dental|health|group|inc|llc|corp|company|co)\s*/gi, ' ').trim();
-  
+
   return normalized;
 }
 
@@ -8839,16 +8983,16 @@ function normalizeInsuranceName(name: string): string {
 function getInsuranceSearchVariations(insuranceName: string): string[] {
   const normalized = normalizeInsuranceName(insuranceName);
   const variations: Set<string> = new Set();
-  
+
   // Add the original and normalized versions
   variations.add(insuranceName);
   variations.add(normalized);
   variations.add(insuranceName.toUpperCase());
   variations.add(insuranceName.toLowerCase());
-  
+
   // Title case
   variations.add(insuranceName.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' '));
-  
+
   // Check against known aliases
   for (const [canonical, aliases] of Object.entries(INSURANCE_NAME_ALIASES)) {
     if (aliases.some(alias => normalized.includes(alias) || alias.includes(normalized))) {
@@ -8864,7 +9008,7 @@ function getInsuranceSearchVariations(insuranceName: string): string[] {
       variations.add(canonical.toUpperCase());
     }
   }
-  
+
   return Array.from(variations).filter(v => v.length > 0);
 }
 
@@ -9029,15 +9173,15 @@ async function lookupAppointmentTypes(
           ExpressionAttributeValues: { ':clinicId': searchClinicId },
         }));
         const allTypes = (allResult.Items || []) as AppointmentTypeRecord[];
-        
+
         // Fuzzy match on label
         const searchLower = searchLabel.toLowerCase();
-        const fuzzyMatch = allTypes.find(t => 
-          t.label.toLowerCase().includes(searchLower) || 
+        const fuzzyMatch = allTypes.find(t =>
+          t.label.toLowerCase().includes(searchLower) ||
           searchLower.includes(t.label.toLowerCase()) ||
           (t.apptTypeName && t.apptTypeName.toLowerCase().includes(searchLower))
         );
-        
+
         if (fuzzyMatch) {
           appointmentTypes = [fuzzyMatch];
           console.log(`[AppointmentTypeLookup] Fuzzy matched "${searchLabel}" to "${fuzzyMatch.label}"`);
@@ -9094,11 +9238,11 @@ async function lookupAppointmentTypes(
     } else {
       directAnswer = `=== AVAILABLE APPOINTMENT TYPES FOR CLINIC ===\n\n`;
       directAnswer += `Choose the best appointment type based on the patient's needs:\n\n`;
-      
+
       // Group by new patient vs existing patient for easier selection
       const newPatientTypes = appointmentTypes.filter(t => t.label.toLowerCase().includes('new patient'));
       const existingPatientTypes = appointmentTypes.filter(t => !t.label.toLowerCase().includes('new patient'));
-      
+
       if (newPatientTypes.length > 0) {
         directAnswer += `--- NEW PATIENT TYPES ---\n`;
         for (const apptType of newPatientTypes) {
@@ -9110,7 +9254,7 @@ async function lookupAppointmentTypes(
         }
         directAnswer += `\n`;
       }
-      
+
       if (existingPatientTypes.length > 0) {
         directAnswer += `--- EXISTING PATIENT TYPES ---\n`;
         for (const apptType of existingPatientTypes) {
@@ -9121,7 +9265,7 @@ async function lookupAppointmentTypes(
           directAnswer += `\n`;
         }
       }
-      
+
       directAnswer += `\n=== HOW TO CHOOSE ===\n`;
       directAnswer += `• For emergencies/pain → Choose "emergency" type\n`;
       directAnswer += `• For treatment plan follow-up → Choose "treatment plan" type\n`;
@@ -9202,21 +9346,21 @@ async function lookupInsurancePlanBenefits(
         const matchingPlans = plans.filter(p => {
           if (!p.insuranceName) return false;
           const normalizedPlan = normalizeInsuranceName(p.insuranceName);
-          
+
           // Direct match (normalized)
           if (normalizedPlan.includes(normalizedSearch) || normalizedSearch.includes(normalizedPlan)) {
             return true;
           }
-          
+
           // Check against any variation
           return insuranceVariations.some(variation => {
             const normalizedVariation = normalizeInsuranceName(variation);
-            return normalizedPlan.includes(normalizedVariation) || 
-                   p.insuranceName!.toLowerCase().includes(variation.toLowerCase()) ||
-                   (p.sk && p.sk.toLowerCase().includes(variation.toLowerCase()));
+            return normalizedPlan.includes(normalizedVariation) ||
+              p.insuranceName!.toLowerCase().includes(variation.toLowerCase()) ||
+              (p.sk && p.sk.toLowerCase().includes(variation.toLowerCase()));
           });
         });
-        
+
         if (matchingPlans.length > 0) {
           plans = matchingPlans;
           console.log(`[InsurancePlanLookup] After insurance name filter: ${plans.length} plans`);
@@ -9233,9 +9377,9 @@ async function lookupInsurancePlanBenefits(
           .replace(/['"]/g, '') // Remove quotes
           .replace(/\s+/g, ' ') // Normalize whitespace
           .trim();
-        
+
         console.log(`[InsurancePlanLookup] Filtering by groupName: "${normalizedSearch}"`);
-        
+
         // Try exact match first
         let filtered = plans.filter(p => {
           if (!p.groupName) return false;
@@ -9245,7 +9389,7 @@ async function lookupInsurancePlanBenefits(
             .trim();
           return normalizedPlan === normalizedSearch;
         });
-        
+
         // If no exact match, try partial/contains match
         if (filtered.length === 0) {
           filtered = plans.filter(p => {
@@ -9257,7 +9401,7 @@ async function lookupInsurancePlanBenefits(
             return normalizedPlan.includes(normalizedSearch) || normalizedSearch.includes(normalizedPlan);
           });
         }
-        
+
         // If still no match, try word-by-word matching (for cases like "RFS TECHNOLOGIES" vs "RFS TECHNOLOGIES INC.")
         if (filtered.length === 0) {
           const searchWords = normalizedSearch.split(' ').filter((w: string) => w.length > 2);
@@ -9269,7 +9413,7 @@ async function lookupInsurancePlanBenefits(
             return matchCount >= Math.ceil(searchWords.length * 0.7); // 70% word match
           });
         }
-        
+
         if (filtered.length > 0) {
           plans = filtered;
           console.log(`[InsurancePlanLookup] After groupName filter: ${plans.length} plans`);
@@ -9285,8 +9429,8 @@ async function lookupInsurancePlanBenefits(
           if (!p.groupNumber) return false;
           const normalizedPlan = normalizeGroupNumber(p.groupNumber);
           return normalizedPlan === normalizedSearch ||
-                 normalizedPlan.includes(normalizedSearch) ||
-                 normalizedSearch.includes(normalizedPlan);
+            normalizedPlan.includes(normalizedSearch) ||
+            normalizedSearch.includes(normalizedPlan);
         });
         if (filtered.length > 0) {
           plans = filtered;
@@ -9305,7 +9449,7 @@ async function lookupInsurancePlanBenefits(
           ExpressionAttributeValues: { ':insuranceName': variation },
           Limit: 50,
         }));
-        
+
         if (result.Items && result.Items.length > 0) {
           plans = [...plans, ...(result.Items as InsurancePlanRecord[])];
         }
@@ -9314,7 +9458,7 @@ async function lookupInsurancePlanBenefits(
       // If still no results, try partial match with scan
       if (plans.length === 0) {
         console.log(`[InsurancePlanLookup] No GSI match for "${insuranceName}", trying partial scan...`);
-        
+
         // Try multiple case variations
         for (const searchTerm of [insuranceName.toLowerCase(), insuranceName.toUpperCase(), insuranceName]) {
           const scanResult = await docClient.send(new ScanCommand({
@@ -9324,12 +9468,12 @@ async function lookupInsurancePlanBenefits(
               '#insuranceName': 'insuranceName',
               '#sk': 'sk',
             },
-            ExpressionAttributeValues: { 
+            ExpressionAttributeValues: {
               ':searchTerm': searchTerm,
             },
             Limit: 50,
           }));
-          
+
           if (scanResult.Items && scanResult.Items.length > 0) {
             plans = scanResult.Items as InsurancePlanRecord[];
             console.log(`[InsurancePlanLookup] Partial scan matched ${plans.length} plans with "${searchTerm}"`);
@@ -9359,16 +9503,16 @@ async function lookupInsurancePlanBenefits(
     // Strategy 3: Only groupNumber provided - scan for it
     else if (groupNumber) {
       console.log(`[InsurancePlanLookup] Searching by group number only: ${groupNumber}`);
-      
+
       const result = await docClient.send(new ScanCommand({
         TableName: INSURANCE_PLANS_TABLE,
         FilterExpression: 'groupNumber = :groupNumber OR contains(pk, :groupNumber)',
-        ExpressionAttributeValues: { 
+        ExpressionAttributeValues: {
           ':groupNumber': groupNumber,
         },
         Limit: 50,
       }));
-      
+
       plans = (result.Items || []) as InsurancePlanRecord[];
     }
     // Strategy 4: Scan with groupName filter (fallback)
@@ -9398,7 +9542,7 @@ async function lookupInsurancePlanBenefits(
 
     if (plans.length === 0) {
       console.log(`[InsurancePlanLookup] No plans found for: insuranceName=${insuranceName}, groupNumber=${groupNumber}, clinicId=${searchClinicId}`);
-      
+
       // Provide more specific suggestions based on what was searched
       const suggestions: string[] = [];
       if (insuranceName && !groupNumber) {
@@ -9409,7 +9553,7 @@ async function lookupInsurancePlanBenefits(
       }
       suggestions.push('Verify the insurance carrier name spelling');
       suggestions.push('Contact the dental office directly for coverage details');
-      
+
       return {
         statusCode: 404,
         body: {
@@ -9459,7 +9603,7 @@ function formatCoverageSuggestion(plan: InsurancePlanRecord): any {
     // If value > 1, it's already a percentage (80), otherwise it's decimal (0.8)
     return pct > 1 ? pct : pct * 100;
   };
-  
+
   const formatPercent = (pct: number | null, procedureType?: string): string => {
     if (pct === null || pct === undefined) {
       return 'Coverage not recorded in our system - please call the office for verification';
@@ -9513,7 +9657,7 @@ function formatCoverageSuggestion(plan: InsurancePlanRecord): any {
       annualMaxFamily: formatMoney(plan.annualMaxFamily),
       deductibleIndividual: formatMoney(plan.deductibleIndividual),
       deductibleFamily: formatMoney(plan.deductibleFamily),
-      deductibleOnPreventive: plan.deductibleOnPreventiveOverride !== null 
+      deductibleOnPreventive: plan.deductibleOnPreventiveOverride !== null
         ? formatMoney(plan.deductibleOnPreventiveOverride)
         : 'Standard deductible applies',
     },
@@ -9581,7 +9725,7 @@ function formatCoverageSuggestion(plan: InsurancePlanRecord): any {
 function calculateCategoryAverage(percentages: (number | null)[]): string {
   const validPcts = percentages.filter((p): p is number => p !== null && p !== undefined);
   if (validPcts.length === 0) return 'Not specified';
-  
+
   // Normalize all values to percentage (handle both decimal and whole number)
   const normalizedPcts = validPcts.map(p => p > 1 ? p : p * 100);
   const avg = normalizedPcts.reduce((a, b) => a + b, 0) / normalizedPcts.length;
@@ -9643,7 +9787,7 @@ function determinePlanType(plan: InsurancePlanRecord): string {
     if (pct === null || pct === undefined) return 0;
     return pct > 1 ? pct : pct * 100;
   };
-  
+
   const preventive = norm(plan.preventiveRoutinePreventivePct ?? plan.preventiveDiagnosticsPct);
   const basic = norm(plan.basicRestorativePct);
   const major = norm(plan.majorCrownsPct);
@@ -9661,7 +9805,7 @@ function determinePlanType(plan: InsurancePlanRecord): string {
  */
 function generateRecommendations(plan: InsurancePlanRecord): string[] {
   const recommendations: string[] = [];
-  
+
   // Helper to normalize percentage
   const norm = (pct: number | null | undefined): number => {
     if (pct === null || pct === undefined) return 0;
@@ -9804,7 +9948,7 @@ async function lookupFeeSchedules(
       // Filter by fee schedule name if provided
       if (searchFeeSchedule && fees.length > 0) {
         const normalizedSearch = searchFeeSchedule.toLowerCase().trim();
-        fees = fees.filter(f => 
+        fees = fees.filter(f =>
           f.feeSchedule?.toLowerCase().includes(normalizedSearch) ||
           normalizedSearch.includes(f.feeSchedule?.toLowerCase() || '')
         );
@@ -9888,7 +10032,7 @@ async function lookupFeeSchedules(
     // Build a concise summary for the AI
     let directAnswer = `=== FEE SCHEDULE LOOKUP ===\n`;
     directAnswer += `Found ${fees.length} fee entries across ${uniqueSchedules.length} schedule(s):\n\n`;
-    
+
     // Group and summarize
     const bySchedule: Record<string, { count: number; sample: any[] }> = {};
     for (const fee of fees.slice(0, 30)) {
@@ -10002,7 +10146,7 @@ async function getFeeForProcedure(
   } else {
     directAnswer = `=== FEES FOR ${searchProcCode} ===\n`;
     directAnswer += `Procedure: ${firstFee.description || firstFee.abbrDesc || searchProcCode}\n\n`;
-    
+
     // Group by fee schedule
     const bySchedule = fees.reduce((acc, fee) => {
       if (!acc[fee.feeSchedule]) acc[fee.feeSchedule] = [];
@@ -10101,13 +10245,13 @@ async function listFeeSchedules(
       }
     }
 
-    const schedules = Array.from(scheduleMap.values()).sort((a, b) => 
+    const schedules = Array.from(scheduleMap.values()).sort((a, b) =>
       a.feeSchedule.localeCompare(b.feeSchedule)
     );
 
     let directAnswer = `=== FEE SCHEDULES FOR CLINIC ===\n`;
     directAnswer += `Found ${schedules.length} fee schedule(s):\n\n`;
-    
+
     // OPTIMIZATION: Limit output to prevent large responses
     const displaySchedules = schedules.slice(0, 15);
     for (const schedule of displaySchedules) {
@@ -10152,7 +10296,7 @@ async function compareProcedureFees(
 ): Promise<{ statusCode: number; body: any }> {
   const { procCode, procedureCode, procCodes, procedureCodes } = params;
   const searchClinicId = clinicId || params.clinicId;
-  
+
   // Support single or multiple procedure codes
   let searchProcCodes: string[] = [];
   if (procCodes) {
@@ -10192,7 +10336,7 @@ async function compareProcedureFees(
       }));
 
       let fees = (result.Items || []) as FeeScheduleRecord[];
-      
+
       // Filter by clinic if provided
       if (searchClinicId) {
         fees = fees.filter(f => f.clinicId === searchClinicId);
@@ -10213,7 +10357,7 @@ async function compareProcedureFees(
 
     // OPTIMIZATION: Group by procedure code, return minimal data
     const byProcCode: Record<string, { description: string; fees: { schedule: string; amount: number | null }[] }> = {};
-    
+
     for (const fee of allFees) {
       if (!byProcCode[fee.procCode]) {
         byProcCode[fee.procCode] = {
@@ -10303,13 +10447,13 @@ async function getPatientAccountSummary(
   // Get aging information
   try {
     aging = await odClient.request('GET', `accountmodules/${PatNum}/Aging`);
-    
+
     if (aging) {
       directAnswer += `ACCOUNT AGING:\n`;
       directAnswer += `───────────────────────────\n`;
-      
+
       const hasOverdue = (aging.Bal_31_60 || 0) > 0 || (aging.Bal_61_90 || 0) > 0 || (aging.BalOver90 || 0) > 0;
-      
+
       if ((aging.Bal_0_30 || 0) > 0) {
         directAnswer += `  Current (0-30 days): $${aging.Bal_0_30.toFixed(2)}\n`;
       }
@@ -10322,23 +10466,23 @@ async function getPatientAccountSummary(
       if ((aging.BalOver90 || 0) > 0) {
         directAnswer += `  🔴 Over 90 days past due: $${aging.BalOver90.toFixed(2)}\n`;
       }
-      
+
       directAnswer += `\n`;
       directAnswer += `BALANCE SUMMARY:\n`;
       directAnswer += `───────────────────────────\n`;
       directAnswer += `  Total Balance: $${(aging.Total || 0).toFixed(2)}\n`;
-      
+
       if ((aging.InsEst || 0) > 0) {
         directAnswer += `  Pending Insurance: -$${(aging.InsEst || 0).toFixed(2)}\n`;
       }
-      
+
       directAnswer += `  Patient Responsibility: $${(aging.EstBal || 0).toFixed(2)}\n`;
       directAnswer += `  This Patient's Portion: $${(aging.PatEstBal || 0).toFixed(2)}\n`;
-      
+
       if ((aging.Unearned || 0) > 0) {
         directAnswer += `  💰 Credit/Prepayment: $${(aging.Unearned || 0).toFixed(2)}\n`;
       }
-      
+
       directAnswer += `\n`;
     }
   } catch (e: any) {
@@ -10348,11 +10492,11 @@ async function getPatientAccountSummary(
   // Get individual family member balances
   try {
     balances = await odClient.request('GET', `accountmodules/${PatNum}/PatientBalances`);
-    
+
     if (Array.isArray(balances) && balances.length > 0) {
       directAnswer += `FAMILY MEMBER BALANCES:\n`;
       directAnswer += `───────────────────────────\n`;
-      
+
       for (const member of balances) {
         const balance = member.Balance || 0;
         if (member.Name === 'Entire Family') {
@@ -10370,14 +10514,14 @@ async function getPatientAccountSummary(
   // Add helpful summary
   const patientBalance = aging?.PatEstBal || 0;
   const totalBalance = aging?.EstBal || 0;
-  
+
   directAnswer += `───────────────────────────\n`;
   if (patientBalance === 0) {
     directAnswer += `✅ This patient has no outstanding balance.\n`;
   } else if (patientBalance > 0) {
     directAnswer += `💳 Amount due: $${patientBalance.toFixed(2)}\n`;
   }
-  
+
   if ((aging?.Unearned || 0) > 0) {
     directAnswer += `💰 Credit available: $${aging.Unearned.toFixed(2)}\n`;
   }
@@ -10461,7 +10605,7 @@ async function getInsuranceDetails(
   if (plan.deductibleOnPreventiveOverride !== null) {
     directAnswer += `Preventive Services: ${plan.deductibleOnPreventiveOverride === 0 ? 'No deductible (waived)' : `$${plan.deductibleOnPreventiveOverride}`}\n`;
   }
-  
+
   // Try to get current account status if PatNum provided
   if (PatNum && odClient) {
     try {
@@ -10494,14 +10638,14 @@ async function getInsuranceDetails(
   if (plan.annualMaxFamily !== null) {
     directAnswer += `Family Annual Max: $${plan.annualMaxFamily.toLocaleString()}\n`;
   }
-  
+
   // Note: Real-time annual max remaining requires checking claims data
   // The Aging API doesn't provide this directly - it requires claim analysis
   directAnswer += `\n  (To check remaining annual max, please verify with the office)\n\n`;
 
   // === COVERAGE PERCENTAGES (CO-INSURANCE) ===
   directAnswer += `=== COVERAGE PERCENTAGES ===\n`;
-  
+
   const formatPct = (pct: number | null): string => {
     if (pct === null || pct === undefined) return 'Not specified';
     const val = pct > 1 ? pct : pct * 100;
@@ -10512,17 +10656,17 @@ async function getInsuranceDetails(
   directAnswer += `  • Exams/Diagnostics: ${formatPct(plan.preventiveDiagnosticsPct)}\n`;
   directAnswer += `  • X-Rays: ${formatPct(plan.preventiveXRaysPct)}\n`;
   directAnswer += `  • Cleanings: ${formatPct(plan.preventiveRoutinePreventivePct)}\n`;
-  
+
   directAnswer += `\nBASIC SERVICES:\n`;
   directAnswer += `  • Fillings: ${formatPct(plan.basicRestorativePct)}\n`;
   directAnswer += `  • Root Canals: ${formatPct(plan.basicEndoPct)}\n`;
   directAnswer += `  • Gum Treatment: ${formatPct(plan.basicPerioPct)}\n`;
   directAnswer += `  • Extractions: ${formatPct(plan.basicOralSurgeryPct)}\n`;
-  
+
   directAnswer += `\nMAJOR SERVICES:\n`;
   directAnswer += `  • Crowns: ${formatPct(plan.majorCrownsPct)}\n`;
   directAnswer += `  • Bridges/Dentures: ${formatPct(plan.majorProsthodonticsPct)}\n`;
-  
+
   if (plan.orthoPct !== null || plan.orthoLifetimeMax !== null) {
     directAnswer += `\nORTHODONTICS:\n`;
     directAnswer += `  • Coverage: ${formatPct(plan.orthoPct)}\n`;
@@ -10583,11 +10727,11 @@ async function getInsuranceDetails(
   } else {
     directAnswer += `  No exclusions specified\n`;
   }
-  
+
   // Check for cosmetic coverage specifically
   const cosmeticExcluded = plan.exclusions?.toLowerCase().includes('cosmetic') ||
-                          plan.exclusions?.toLowerCase().includes('whitening') ||
-                          plan.exclusions?.toLowerCase().includes('veneer');
+    plan.exclusions?.toLowerCase().includes('whitening') ||
+    plan.exclusions?.toLowerCase().includes('veneer');
   if (cosmeticExcluded) {
     directAnswer += `\n⚠️ COSMETIC SERVICES: Appear to be excluded from this plan\n`;
   }
@@ -10729,7 +10873,7 @@ async function calculateOutOfPocket(
   // Get fee
   let fee: number | null = null;
   let feeScheduleName: string | null = null;
-  
+
   for (const code of procedureMapping.codes) {
     const feeResult = await lookupFeeSchedules({ procCode: code, clinicId: searchClinicId }, searchClinicId);
     if (feeResult.statusCode === 200 && feeResult.body.data?.fees?.length > 0) {
@@ -10805,12 +10949,12 @@ async function calculateOutOfPocket(
 
   // Calculate out-of-pocket
   directAnswer += `\n=== COST BREAKDOWN ===\n`;
-  
+
   if (fee !== null) {
     if (coveragePercent !== null) {
       const insurancePays = fee * (coveragePercent / 100);
       const patientPays = fee - insurancePays;
-      
+
       directAnswer += `Total Fee: $${fee.toFixed(2)}\n`;
       directAnswer += `Insurance Pays (${Math.round(coveragePercent)}%): $${insurancePays.toFixed(2)}\n`;
       directAnswer += `Your Cost (${Math.round(100 - coveragePercent)}%): $${patientPays.toFixed(2)}\n`;
@@ -10818,7 +10962,7 @@ async function calculateOutOfPocket(
       // Deductible consideration
       if (deductible !== null && deductible > 0) {
         const isDeductibleMet = deductibleMet === true || deductibleMet === 'true' || deductibleMet === 'yes';
-        
+
         if (isDeductibleMet) {
           directAnswer += `\n✓ Deductible already met - estimate above is accurate\n`;
         } else {
@@ -10918,11 +11062,11 @@ async function getAnnualMaxInfo(
   // === ANNUAL MAXIMUM AMOUNTS ===
   directAnswer += `💰 ANNUAL MAXIMUM AMOUNTS\n`;
   directAnswer += `───────────────────────────\n`;
-  
+
   if (plan.annualMaxIndividual !== null) {
     directAnswer += `Individual Annual Max: $${plan.annualMaxIndividual.toLocaleString()}\n`;
     directAnswer += `  → Maximum the plan pays per person per year\n`;
-    
+
     // Provide context on typical maximums
     if (plan.annualMaxIndividual >= 2000) {
       directAnswer += `  ✓ This is a good annual maximum\n`;
@@ -10934,7 +11078,7 @@ async function getAnnualMaxInfo(
   } else {
     directAnswer += `Individual Annual Max: Not specified\n`;
   }
-  
+
   if (plan.annualMaxFamily !== null) {
     directAnswer += `\nFamily Annual Max: $${plan.annualMaxFamily.toLocaleString()}\n`;
     directAnswer += `  → Maximum the plan pays for entire family per year\n`;
@@ -10944,15 +11088,15 @@ async function getAnnualMaxInfo(
   // === REMAINING BALANCE ===
   directAnswer += `📊 HOW MUCH IS REMAINING?\n`;
   directAnswer += `───────────────────────────\n`;
-  
+
   let benefitsUsed: number | null = null;
   let benefitsRemaining: number | null = null;
-  
+
   if (PatNum && odClient) {
     try {
       // Try to get insurance info which may include benefits used
       const familyInsurance = await odClient.request('GET', `familymodules/${PatNum}/Insurance`);
-      
+
       if (familyInsurance && Array.isArray(familyInsurance)) {
         for (const ins of familyInsurance) {
           // Look for benefit/max used fields
@@ -10963,7 +11107,7 @@ async function getAnnualMaxInfo(
               benefitsRemaining = Math.max(0, plan.annualMaxIndividual - usedAmount);
               directAnswer += `Benefits Used This Year: $${usedAmount.toFixed(2)}\n`;
               directAnswer += `Benefits Remaining: $${benefitsRemaining.toFixed(2)}\n`;
-              
+
               // Usage percentage
               const usagePercent = (usedAmount / plan.annualMaxIndividual) * 100;
               if (usagePercent < 25) {
@@ -10978,7 +11122,7 @@ async function getAnnualMaxInfo(
           }
         }
       }
-      
+
       if (benefitsUsed === null) {
         directAnswer += `To check your remaining benefits:\n`;
         directAnswer += `  • Ask the front desk to verify benefits\n`;
@@ -11002,9 +11146,9 @@ async function getAnnualMaxInfo(
   // === SEPARATE MAXIMUMS ===
   directAnswer += `🎯 SEPARATE MAXIMUMS BY SERVICE\n`;
   directAnswer += `───────────────────────────\n`;
-  
+
   let hasSeparateMax = false;
-  
+
   // Orthodontics lifetime max
   if (plan.orthoLifetimeMax !== null) {
     hasSeparateMax = true;
@@ -11014,16 +11158,16 @@ async function getAnnualMaxInfo(
     directAnswer += `  → It's a one-time lifetime amount for ortho treatment\n`;
     directAnswer += `  → Does NOT reset each year\n\n`;
   }
-  
+
   // Check for other limitations that might indicate separate maximums
   if (plan.otherLimitations) {
     const limitations = plan.otherLimitations.split('|').map(s => s.trim()).filter(Boolean);
-    const maxLimits = limitations.filter(l => 
-      l.toLowerCase().includes('max') || 
+    const maxLimits = limitations.filter(l =>
+      l.toLowerCase().includes('max') ||
       l.toLowerCase().includes('limit') ||
       l.toLowerCase().includes('$')
     );
-    
+
     if (maxLimits.length > 0) {
       hasSeparateMax = true;
       directAnswer += `OTHER LIMITATIONS:\n`;
@@ -11033,7 +11177,7 @@ async function getAnnualMaxInfo(
       directAnswer += `\n`;
     }
   }
-  
+
   if (!hasSeparateMax) {
     directAnswer += `No separate maximums found for this plan.\n`;
     directAnswer += `All covered services share the same annual maximum.\n\n`;
@@ -11043,19 +11187,19 @@ async function getAnnualMaxInfo(
   directAnswer += `📅 WHEN DOES THE ANNUAL MAX RESET?\n`;
   directAnswer += `───────────────────────────\n`;
   directAnswer += `Most dental plans use one of two reset schedules:\n\n`;
-  
+
   directAnswer += `CALENDAR YEAR (Most Common):\n`;
   directAnswer += `  • Resets January 1st each year\n`;
   directAnswer += `  • Most employer-sponsored plans use this\n\n`;
-  
+
   directAnswer += `PLAN YEAR / BENEFIT YEAR:\n`;
   directAnswer += `  • Resets on your plan anniversary date\n`;
   directAnswer += `  • Common with individual plans\n`;
   directAnswer += `  • Check your enrollment date or policy documents\n\n`;
-  
+
   directAnswer += `💡 TIP: Your insurance card or plan documents will show\n`;
   directAnswer += `   whether it's a calendar year or plan year schedule.\n\n`;
-  
+
   // Note about unused benefits
   directAnswer += `⚠️ IMPORTANT: Unused benefits do NOT roll over!\n`;
   directAnswer += `   Any unused portion of your annual max is lost at reset.\n`;
@@ -11066,12 +11210,12 @@ async function getAnnualMaxInfo(
   directAnswer += `───────────────────────────\n`;
   directAnswer += `YES - Benefits used at any dental office count against\n`;
   directAnswer += `your annual maximum. Here's how it works:\n\n`;
-  
+
   directAnswer += `• Your insurance tracks ALL claims for the year\n`;
   directAnswer += `• Doesn't matter which dentist or location\n`;
   directAnswer += `• All claims reduce your remaining annual max\n`;
   directAnswer += `• This includes specialists (orthodontist, oral surgeon)\n\n`;
-  
+
   directAnswer += `To get accurate remaining benefits:\n`;
   directAnswer += `  1. Call your insurance company, or\n`;
   directAnswer += `  2. Ask this office to run a benefits verification\n`;
@@ -11080,35 +11224,35 @@ async function getAnnualMaxInfo(
   // === COVERAGE PERCENTAGES ===
   directAnswer += `📊 COVERAGE % (CO-INSURANCE) BY CATEGORY\n`;
   directAnswer += `───────────────────────────\n`;
-  
+
   const formatPct = (pct: number | null): string => {
     if (pct === null || pct === undefined) return 'Not specified';
     const val = pct > 1 ? pct : pct * 100;
     return `${Math.round(val)}%`;
   };
-  
+
   const formatRow = (name: string, pct: number | null, examples: string): string => {
     const coverage = formatPct(pct);
     const youPay = pct !== null ? `${Math.round(100 - (pct > 1 ? pct : pct * 100))}%` : '?';
     return `${name.padEnd(20)} ${coverage.padEnd(8)} You pay ${youPay}\n    Examples: ${examples}\n`;
   };
-  
+
   directAnswer += `\nPREVENTIVE (usually 100%):\n`;
   directAnswer += `  Exams:         ${formatPct(plan.preventiveDiagnosticsPct)}\n`;
   directAnswer += `  X-Rays:        ${formatPct(plan.preventiveXRaysPct)}\n`;
   directAnswer += `  Cleanings:     ${formatPct(plan.preventiveRoutinePreventivePct)}\n`;
-  
+
   directAnswer += `\nBASIC (usually 80%):\n`;
   directAnswer += `  Fillings:      ${formatPct(plan.basicRestorativePct)}\n`;
   directAnswer += `  Root Canals:   ${formatPct(plan.basicEndoPct)}\n`;
   directAnswer += `  Extractions:   ${formatPct(plan.basicOralSurgeryPct)}\n`;
   directAnswer += `  Gum Treatment: ${formatPct(plan.basicPerioPct)}\n`;
-  
+
   directAnswer += `\nMAJOR (usually 50%):\n`;
   directAnswer += `  Crowns:        ${formatPct(plan.majorCrownsPct)}\n`;
   directAnswer += `  Bridges:       ${formatPct(plan.majorProsthodonticsPct)}\n`;
   directAnswer += `  Dentures:      ${formatPct(plan.majorProsthodonticsPct)}\n`;
-  
+
   if (plan.orthoPct !== null) {
     directAnswer += `\nORTHODONTICS:\n`;
     directAnswer += `  Coverage:      ${formatPct(plan.orthoPct)}\n`;
@@ -11116,9 +11260,9 @@ async function getAnnualMaxInfo(
       directAnswer += `  Lifetime Max:  $${plan.orthoLifetimeMax.toLocaleString()}\n`;
     }
   }
-  
+
   directAnswer += `\n`;
-  
+
   // Summary
   directAnswer += `───────────────────────────\n`;
   directAnswer += `QUICK SUMMARY:\n`;
@@ -11233,18 +11377,18 @@ async function getDeductibleInfo(
   // === INDIVIDUAL VS FAMILY DEDUCTIBLE ===
   directAnswer += `📋 DEDUCTIBLE AMOUNTS\n`;
   directAnswer += `───────────────────────────\n`;
-  
+
   if (plan.deductibleIndividual !== null) {
     directAnswer += `Individual Deductible: $${plan.deductibleIndividual}\n`;
     directAnswer += `  → Each person must meet this amount before insurance pays\n`;
   } else {
     directAnswer += `Individual Deductible: Not specified in plan\n`;
   }
-  
+
   if (plan.deductibleFamily !== null) {
     directAnswer += `\nFamily Deductible: $${plan.deductibleFamily}\n`;
     directAnswer += `  → Once the family total reaches this, deductible is met for everyone\n`;
-    
+
     // Explain how family deductible works
     if (plan.deductibleIndividual && plan.deductibleFamily) {
       const membersNeeded = Math.ceil(plan.deductibleFamily / plan.deductibleIndividual);
@@ -11256,12 +11400,12 @@ async function getDeductibleInfo(
   // === DEDUCTIBLE MET STATUS ===
   directAnswer += `📊 DEDUCTIBLE STATUS\n`;
   directAnswer += `───────────────────────────\n`;
-  
+
   if (PatNum && odClient) {
     try {
       // Try to get family insurance info which may have deductible usage
       const familyInsurance = await odClient.request('GET', `familymodules/${PatNum}/Insurance`);
-      
+
       if (familyInsurance && Array.isArray(familyInsurance)) {
         // Look for deductible information in the response
         for (const ins of familyInsurance) {
@@ -11270,7 +11414,7 @@ async function getDeductibleInfo(
             const remaining = Math.max(0, (plan.deductibleIndividual || 0) - used);
             directAnswer += `Deductible Used: $${used.toFixed(2)}\n`;
             directAnswer += `Deductible Remaining: $${remaining.toFixed(2)}\n`;
-            
+
             if (remaining === 0) {
               directAnswer += `✅ Your deductible has been MET!\n`;
             } else {
@@ -11298,7 +11442,7 @@ async function getDeductibleInfo(
   // === WHAT DOES DEDUCTIBLE APPLY TO? ===
   directAnswer += `🔍 WHAT DOES THE DEDUCTIBLE APPLY TO?\n`;
   directAnswer += `───────────────────────────\n`;
-  
+
   // Preventive care
   if (plan.deductibleOnPreventiveOverride === 0) {
     directAnswer += `✅ PREVENTIVE CARE: NO deductible (waived)\n`;
@@ -11308,7 +11452,7 @@ async function getDeductibleInfo(
   } else {
     // Check if preventive has a category override
     const preventiveOverride = plan.deductibleOverridesByCategory?.toLowerCase().includes('preventive') ||
-                               plan.deductibleOverridesByCategory?.toLowerCase().includes('diagnostic');
+      plan.deductibleOverridesByCategory?.toLowerCase().includes('diagnostic');
     if (preventiveOverride) {
       directAnswer += `PREVENTIVE CARE: Special deductible - see overrides below\n`;
     } else {
@@ -11316,7 +11460,7 @@ async function getDeductibleInfo(
       directAnswer += `   Most plans waive deductible for preventive - verify with office\n`;
     }
   }
-  
+
   // X-rays and exams
   directAnswer += `\n📷 X-RAYS & EXAMS:\n`;
   if (plan.deductibleOnPreventiveOverride === 0) {
@@ -11325,11 +11469,11 @@ async function getDeductibleInfo(
     directAnswer += `   May be subject to deductible depending on plan classification\n`;
     directAnswer += `   Routine x-rays often waived, but FMX/pano may apply\n`;
   }
-  
+
   // Basic and Major
   directAnswer += `\n🔧 BASIC SERVICES (fillings, root canals, extractions):\n`;
   directAnswer += `   Standard deductible applies: $${plan.deductibleIndividual || 'N/A'}\n`;
-  
+
   directAnswer += `\n👑 MAJOR SERVICES (crowns, bridges, dentures):\n`;
   directAnswer += `   Standard deductible applies: $${plan.deductibleIndividual || 'N/A'}\n`;
   directAnswer += `\n`;
@@ -11399,11 +11543,11 @@ async function getDeductibleInfo(
           categoryOverrides: plan.deductibleOverridesByCategory,
         },
         explanations: {
-          preventive: plan.deductibleOnPreventiveOverride === 0 
-            ? 'No deductible for preventive services' 
+          preventive: plan.deductibleOnPreventiveOverride === 0
+            ? 'No deductible for preventive services'
             : 'Deductible may apply',
-          xraysExams: plan.deductibleOnPreventiveOverride === 0 
-            ? 'Usually no deductible (preventive/diagnostic)' 
+          xraysExams: plan.deductibleOnPreventiveOverride === 0
+            ? 'Usually no deductible (preventive/diagnostic)'
             : 'Check plan details',
           basic: 'Standard deductible applies',
           major: 'Standard deductible applies',
@@ -12040,12 +12184,12 @@ async function getEstimateExplanation(
   directAnswer += `  → Benefits used at another office\n`;
   directAnswer += `• Downgrades applied\n`;
   directAnswer += `  → Insurance pays for cheaper alternative\n`;
-  
+
   if (plan?.downgrades) {
     directAnswer += `\n  YOUR PLAN'S DOWNGRADE POLICY:\n`;
     directAnswer += `  ${plan.downgrades}\n`;
   }
-  
+
   directAnswer += `\n`;
   directAnswer += `• Coordination of benefits (COB)\n`;
   directAnswer += `  → Secondary insurance calculates differently\n`;
@@ -12137,7 +12281,7 @@ async function getEstimateExplanation(
   // Check if plan excludes anesthesia
   const excludesAnesthesia = plan?.exclusions?.toLowerCase().includes('anesthesia') ||
     plan?.exclusions?.toLowerCase().includes('sedation');
-  
+
   if (excludesAnesthesia) {
     directAnswer += `⚠️ YOUR PLAN MAY EXCLUDE ANESTHESIA/SEDATION\n`;
     directAnswer += `   Check with office for out-of-pocket cost\n\n`;
@@ -12264,20 +12408,20 @@ async function getCopayAndFrequencyInfo(
     directAnswer += `─────────────────────────────\n`;
     directAnswer += `This appears to be a COINSURANCE-based plan:\n`;
     if (plan.preventiveRoutinePreventivePct !== null) {
-      const prevPct = plan.preventiveRoutinePreventivePct > 1 
-        ? plan.preventiveRoutinePreventivePct 
+      const prevPct = plan.preventiveRoutinePreventivePct > 1
+        ? plan.preventiveRoutinePreventivePct
         : plan.preventiveRoutinePreventivePct * 100;
       directAnswer += `  • Preventive: Insurance pays ${prevPct}%, you pay ${100 - prevPct}%\n`;
     }
     if (plan.basicRestorativePct !== null) {
-      const basicPct = plan.basicRestorativePct > 1 
-        ? plan.basicRestorativePct 
+      const basicPct = plan.basicRestorativePct > 1
+        ? plan.basicRestorativePct
         : plan.basicRestorativePct * 100;
       directAnswer += `  • Basic: Insurance pays ${basicPct}%, you pay ${100 - basicPct}%\n`;
     }
     if (plan.majorCrownsPct !== null) {
-      const majorPct = plan.majorCrownsPct > 1 
-        ? plan.majorCrownsPct 
+      const majorPct = plan.majorCrownsPct > 1
+        ? plan.majorCrownsPct
         : plan.majorCrownsPct * 100;
       directAnswer += `  • Major: Insurance pays ${majorPct}%, you pay ${100 - majorPct}%\n`;
     }
@@ -12375,7 +12519,7 @@ async function getCopayAndFrequencyInfo(
   directAnswer += `  • Some plans: 1 every 3-5 years\n`;
   directAnswer += `  • Often have lifetime limit or dollar cap\n`;
   directAnswer += `  • May require diagnosis of bruxism\n`;
-  
+
   // Check if there are other limitations
   if (plan.otherLimitations) {
     directAnswer += `\n`;
@@ -12490,7 +12634,7 @@ async function getCoverageBreakdown(
   const prevXray = getPctValue(plan.preventiveXRaysPct);
   const prevClean = getPctValue(plan.preventiveRoutinePreventivePct);
   const prevAvg = [prevExam, prevXray, prevClean].filter(p => p !== null);
-  
+
   directAnswer += `🦷 PREVENTIVE SERVICES\n`;
   directAnswer += `───────────────────────────\n`;
   directAnswer += `  Exams/Evaluations:    ${formatPct(plan.preventiveDiagnosticsPct)}\n`;
@@ -12511,14 +12655,14 @@ async function getCoverageBreakdown(
   const basicEndo = getPctValue(plan.basicEndoPct);
   const basicPerio = getPctValue(plan.basicPerioPct);
   const basicSurgery = getPctValue(plan.basicOralSurgeryPct);
-  
+
   directAnswer += `🔧 BASIC SERVICES\n`;
   directAnswer += `───────────────────────────\n`;
   directAnswer += `  Fillings:             ${formatPct(plan.basicRestorativePct)}\n`;
   directAnswer += `  Root Canals:          ${formatPct(plan.basicEndoPct)}\n`;
   directAnswer += `  Periodontal (SRP):    ${formatPct(plan.basicPerioPct)}\n`;
   directAnswer += `  Extractions:          ${formatPct(plan.basicOralSurgeryPct)}\n`;
-  
+
   // Highlight if basic coverage varies
   const basicValues = [basicFilling, basicEndo, basicPerio, basicSurgery].filter(p => p !== null);
   const basicMin = basicValues.length > 0 ? Math.min(...basicValues as number[]) : null;
@@ -12531,7 +12675,7 @@ async function getCoverageBreakdown(
   // MAJOR
   const majorCrowns = getPctValue(plan.majorCrownsPct);
   const majorProsth = getPctValue(plan.majorProsthodonticsPct);
-  
+
   directAnswer += `👑 MAJOR SERVICES\n`;
   directAnswer += `───────────────────────────\n`;
   directAnswer += `  Crowns:               ${formatPct(plan.majorCrownsPct)}\n`;
@@ -12554,10 +12698,10 @@ async function getCoverageBreakdown(
   // === DOWNGRADES ===
   directAnswer += `📉 DOWNGRADE POLICY (Important for Crowns!)\n`;
   directAnswer += `═══════════════════════════════════════\n`;
-  
+
   if (plan.downgrades) {
     directAnswer += `${plan.downgrades}\n\n`;
-    
+
     if (plan.downgrades.toLowerCase().includes('yes') || plan.downgrades.toLowerCase().includes('allowed')) {
       directAnswer += `What this means:\n`;
       directAnswer += `• Insurance may pay for less expensive alternative\n`;
@@ -12580,10 +12724,10 @@ async function getCoverageBreakdown(
   // === IMPLANTS ===
   directAnswer += `🔩 IMPLANT COVERAGE\n`;
   directAnswer += `═══════════════════════════════════════\n`;
-  
+
   // Check if implants are in exclusions
   const implantsExcluded = plan.exclusions?.toLowerCase().includes('implant');
-  
+
   if (implantsExcluded) {
     directAnswer += `❌ IMPLANTS EXCLUDED from this plan\n\n`;
     directAnswer += `However, related services MAY be covered:\n`;
@@ -12600,7 +12744,7 @@ async function getCoverageBreakdown(
     directAnswer += `⚠️ IMPORTANT: Many plans cover the crown on top of an implant\n`;
     directAnswer += `   but NOT the implant fixture itself. Verify with office.\n`;
   }
-  
+
   // Check for implant-specific limitations
   if (plan.otherLimitations?.toLowerCase().includes('implant')) {
     directAnswer += `\nImplant limitations: ${plan.otherLimitations}\n`;
@@ -12610,28 +12754,28 @@ async function getCoverageBreakdown(
   // === PERIODONTAL VS CLEANING ===
   directAnswer += `🦠 PERIODONTAL vs ROUTINE CLEANING\n`;
   directAnswer += `═══════════════════════════════════════\n`;
-  
+
   const prophyCoverage = getPctValue(plan.preventiveRoutinePreventivePct);
   const perioCoverage = getPctValue(plan.basicPerioPct);
-  
+
   directAnswer += `ROUTINE CLEANING (Prophylaxis D1110/D1120):\n`;
   directAnswer += `  Coverage: ${formatPct(plan.preventiveRoutinePreventivePct)}\n`;
   directAnswer += `  Category: PREVENTIVE\n`;
   directAnswer += `  Deductible: Usually waived\n`;
   directAnswer += `  For: Patients with healthy gums\n\n`;
-  
+
   directAnswer += `PERIODONTAL SERVICES:\n`;
   directAnswer += `  Scaling & Root Planing (D4341/D4342):\n`;
   directAnswer += `    Coverage: ${formatPct(plan.basicPerioPct)}\n`;
   directAnswer += `    Category: BASIC (sometimes Major)\n`;
   directAnswer += `    Deductible: Usually applies\n`;
   directAnswer += `    For: Patients with gum disease\n\n`;
-  
+
   directAnswer += `  Periodontal Maintenance (D4910):\n`;
   directAnswer += `    Coverage: ${formatPct(plan.basicPerioPct)}\n`;
   directAnswer += `    Category: BASIC or PREVENTIVE (varies)\n`;
   directAnswer += `    For: After gum disease treatment\n\n`;
-  
+
   if (prophyCoverage !== null && perioCoverage !== null && prophyCoverage !== perioCoverage) {
     directAnswer += `⚠️ YES - Your plan covers perio differently!\n`;
     directAnswer += `   Routine cleaning: ${prophyCoverage}%\n`;
@@ -12645,13 +12789,13 @@ async function getCoverageBreakdown(
   // === IN-NETWORK VS OUT-OF-NETWORK ===
   directAnswer += `🏥 IN-NETWORK vs OUT-OF-NETWORK\n`;
   directAnswer += `═══════════════════════════════════════\n`;
-  
+
   // Check plan type based on name
   const planNameLower = (plan.insuranceName || '').toLowerCase();
   const isPPO = planNameLower.includes('ppo') || planNameLower.includes('preferred');
   const isHMO = planNameLower.includes('hmo') || planNameLower.includes('dhmo');
   const isIndemnity = planNameLower.includes('indemnity') || planNameLower.includes('traditional');
-  
+
   if (isHMO) {
     directAnswer += `Plan Type: HMO/DHMO\n\n`;
     directAnswer += `❌ OUT-OF-NETWORK: Generally NOT covered\n`;
@@ -12689,7 +12833,7 @@ async function getCoverageBreakdown(
     directAnswer += `  • Balance billing may apply\n\n`;
     directAnswer += `💡 Verify your plan type with your insurance card or HR.\n`;
   }
-  
+
   // Check if this office is in-network
   if (plan.feeSchedule) {
     directAnswer += `\nFee Schedule: ${plan.feeSchedule}\n`;
@@ -12848,32 +12992,32 @@ async function checkProcedureCoverage(
         additionalInfo.push('✓ No deductible for preventive services');
       }
       break;
-      
+
     case 'diagnostic':
       coveragePercent = plan.preventiveDiagnosticsPct ?? plan.preventiveXRaysPct;
       categoryName = 'Diagnostic/X-Rays';
       break;
-      
+
     case 'basic':
       coveragePercent = plan.basicRestorativePct;
       categoryName = 'Basic';
       break;
-      
+
     case 'endo':
       coveragePercent = plan.basicEndoPct ?? plan.basicRestorativePct;
       categoryName = 'Endodontics (Root Canals)';
       break;
-      
+
     case 'perio':
       coveragePercent = plan.basicPerioPct ?? plan.basicRestorativePct;
       categoryName = 'Periodontics';
       break;
-      
+
     case 'surgery':
       coveragePercent = plan.basicOralSurgeryPct ?? plan.basicRestorativePct;
       categoryName = 'Oral Surgery';
       break;
-      
+
     case 'major':
       coveragePercent = plan.majorCrownsPct ?? plan.majorProsthodonticsPct;
       categoryName = 'Major';
@@ -12882,7 +13026,7 @@ async function checkProcedureCoverage(
         additionalInfo.push(`⚠️ Waiting period may apply: ${plan.waitingPeriods}`);
       }
       break;
-      
+
     case 'ortho':
       coveragePercent = plan.orthoPct;
       categoryName = 'Orthodontics';
@@ -12896,35 +13040,35 @@ async function checkProcedureCoverage(
         additionalInfo.push(`⚠️ Waiting period: ${plan.waitingPeriods}`);
       }
       break;
-      
+
     case 'anesthesia':
       // Anesthesia coverage varies - check if it's in exclusions or limitations
       categoryName = 'Anesthesia/Sedation';
-      if (plan.exclusions?.toLowerCase().includes('anesthesia') || 
-          plan.exclusions?.toLowerCase().includes('sedation')) {
+      if (plan.exclusions?.toLowerCase().includes('anesthesia') ||
+        plan.exclusions?.toLowerCase().includes('sedation')) {
         additionalInfo.push('❌ May be excluded - check with office');
       } else {
         additionalInfo.push('Coverage varies - often covered when medically necessary');
       }
       break;
-      
+
     case 'cosmetic':
       // Cosmetic is usually excluded
       categoryName = 'Cosmetic';
       if (plan.exclusions?.toLowerCase().includes('cosmetic') ||
-          plan.exclusions?.toLowerCase().includes('whitening')) {
+        plan.exclusions?.toLowerCase().includes('whitening')) {
         additionalInfo.push('❌ Typically NOT covered (cosmetic)');
         coveragePercent = 0;
       } else {
         additionalInfo.push('⚠️ Cosmetic services are often excluded - verify with office');
       }
       break;
-      
+
     case 'adjunctive':
       categoryName = 'Adjunctive Services';
       additionalInfo.push('Coverage varies by plan - verify with office');
       break;
-      
+
     default:
       categoryName = procedureMapping.category || 'Unknown';
   }
@@ -12936,16 +13080,16 @@ async function checkProcedureCoverage(
 
   // Check for exclusions specific to this procedure
   const procedureExcluded = plan.exclusions?.toLowerCase().includes(treatmentName.toLowerCase()) ||
-                           plan.exclusions?.toLowerCase().includes(procedureMapping.description.toLowerCase());
-  
+    plan.exclusions?.toLowerCase().includes(procedureMapping.description.toLowerCase());
+
   // Check frequency limits
   const frequencyMatch = plan.frequencyLimits?.split('|')
     .map(s => s.trim())
-    .find(s => 
+    .find(s =>
       s.toLowerCase().includes(treatmentName.toLowerCase()) ||
       procedureMapping.codes.some(code => s.toUpperCase().includes(code))
     );
-  
+
   if (frequencyMatch) {
     additionalInfo.push(`📋 Frequency limit: ${frequencyMatch}`);
   }
@@ -12953,11 +13097,11 @@ async function checkProcedureCoverage(
   // Check age limits
   const ageMatch = plan.ageLimits?.split('|')
     .map(s => s.trim())
-    .find(s => 
+    .find(s =>
       s.toLowerCase().includes(treatmentName.toLowerCase()) ||
       procedureMapping.codes.some(code => s.toUpperCase().includes(code))
     );
-  
+
   if (ageMatch) {
     additionalInfo.push(`👤 Age limit: ${ageMatch}`);
   }
@@ -12978,7 +13122,7 @@ async function checkProcedureCoverage(
     directAnswer += `✅ YES - ${procedureMapping.description} is COVERED!\n\n`;
     directAnswer += `Coverage: ${Math.round(coveragePercent)}%\n`;
     directAnswer += `You pay: ${Math.round(100 - coveragePercent)}%\n`;
-    
+
     if (plan.deductibleIndividual && plan.deductibleIndividual > 0) {
       if (categoryName === 'Preventive' && plan.deductibleOnPreventiveOverride === 0) {
         directAnswer += `Deductible: Waived for preventive\n`;
@@ -12999,7 +13143,7 @@ async function checkProcedureCoverage(
   let officeFee: number | null = null;
   let estimatedInsurancePays: number | null = null;
   let estimatedPatientCost: number | null = null;
-  
+
   try {
     // Get fee for the first procedure code
     const primaryCode = procedureMapping.codes[0];
@@ -13007,20 +13151,20 @@ async function checkProcedureCoverage(
       { procCode: primaryCode, clinicId: searchClinicId },
       searchClinicId
     );
-    
+
     if (feeResult.statusCode === 200 && feeResult.body.data?.fees?.length > 0) {
       const fees = feeResult.body.data.fees;
       // Get the fee (prefer UCR or first available)
       const feeRecord = fees.find((f: any) => f.feeSchedule?.toLowerCase().includes('ucr')) || fees[0];
       officeFee = feeRecord.amount;
-      
+
       if (officeFee && coveragePercent !== null && coveragePercent > 0 && !procedureExcluded) {
         estimatedInsurancePays = Math.round(officeFee * (coveragePercent / 100));
         estimatedPatientCost = Math.round(officeFee - estimatedInsurancePays);
-        
+
         // Account for deductible if applicable
-        if (plan.deductibleIndividual && plan.deductibleIndividual > 0 && 
-            !(categoryName === 'Preventive' && plan.deductibleOnPreventiveOverride === 0)) {
+        if (plan.deductibleIndividual && plan.deductibleIndividual > 0 &&
+          !(categoryName === 'Preventive' && plan.deductibleOnPreventiveOverride === 0)) {
           directAnswer += `\n=== COST ESTIMATE ===\n`;
           directAnswer += `Office Fee: $${officeFee.toLocaleString()}\n`;
           directAnswer += `Your Coverage: ${Math.round(coveragePercent)}%\n`;
@@ -13088,10 +13232,10 @@ async function getFeeScheduleAmounts(
   clinicId?: string
 ): Promise<{ statusCode: number; body: any }> {
   const searchClinicId = clinicId || params.clinicId;
-  
+
   // Extract procedure names from various parameter formats
   const procedures: string[] = [];
-  
+
   if (params.procedures) {
     if (Array.isArray(params.procedures)) {
       procedures.push(...params.procedures);
@@ -13109,7 +13253,7 @@ async function getFeeScheduleAmounts(
       procedures.push(params.procCodes);
     }
   }
-  
+
   // OPTIMIZATION: Limit to specific procedures to reduce API calls and data
   // If no specific procedures provided, return just the most common ones
   if (procedures.length === 0) {
@@ -13127,16 +13271,16 @@ async function getFeeScheduleAmounts(
   for (const procedureName of limitedProcedures) {
     // Map procedure name to CDT codes
     const mapping = mapProcedureToCode(procedureName);
-    
+
     if (!mapping) {
       directAnswer += `⚠️ "${procedureName}": Could not identify procedure code\n`;
       continue;
     }
 
     directAnswer += `${mapping.description.toUpperCase()}\n`;
-    
+
     const procedureFees: any[] = [];
-    
+
     for (const code of mapping.codes) {
       const feeResult = await lookupFeeSchedules(
         { procCode: code, clinicId: searchClinicId },
@@ -13147,7 +13291,7 @@ async function getFeeScheduleAmounts(
         const fees = feeResult.body.data.fees as FeeScheduleRecord[];
         // Get the first fee (typically UCR or standard fee schedule)
         const primaryFee = fees[0];
-        
+
         if (primaryFee.amount !== null) {
           directAnswer += `  ${code} (${primaryFee.description || primaryFee.abbrDesc}): $${primaryFee.amount.toFixed(2)}\n`;
           procedureFees.push({
@@ -13163,9 +13307,9 @@ async function getFeeScheduleAmounts(
     if (procedureFees.length === 0) {
       directAnswer += `  No fees found for ${mapping.codes.join(', ')}\n`;
     }
-    
+
     directAnswer += `\n`;
-    
+
     allFees.push({
       procedure: procedureName,
       codes: mapping.codes,
@@ -13216,7 +13360,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'nutritional counseling': { codes: ['D1310'], category: 'preventive', description: 'Nutritional counseling' },
   'tobacco counseling': { codes: ['D1320'], category: 'preventive', description: 'Tobacco counseling' },
   'oral hygiene instructions': { codes: ['D1330'], category: 'preventive', description: 'Oral hygiene instructions' },
-  
+
   // Diagnostic - Exams
   'exam': { codes: ['D0120', 'D0150', 'D0140'], category: 'diagnostic', description: 'Oral examination' },
   'periodic exam': { codes: ['D0120'], category: 'diagnostic', description: 'Periodic oral evaluation' },
@@ -13231,7 +13375,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'perio charting': { codes: ['D0183'], category: 'diagnostic', description: 'Periodontal charting' },
   'screening': { codes: ['D0190'], category: 'diagnostic', description: 'Screening of a patient' },
   'assessment': { codes: ['D0191'], category: 'diagnostic', description: 'Assessment of a patient' },
-  
+
   // Diagnostic - X-rays
   'xray': { codes: ['D0210', 'D0220', 'D0270', 'D0274'], category: 'diagnostic', description: 'Radiographs/X-rays' },
   'x-ray': { codes: ['D0210', 'D0220', 'D0270', 'D0274'], category: 'diagnostic', description: 'Radiographs/X-rays' },
@@ -13253,7 +13397,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'cone beam': { codes: ['D0364', 'D0365', 'D0366', 'D0367'], category: 'diagnostic', description: 'Cone beam CT' },
   '3d xray': { codes: ['D0364', 'D0365', 'D0366', 'D0367'], category: 'diagnostic', description: 'Cone beam CT' },
   'tmj xray': { codes: ['D0368'], category: 'diagnostic', description: 'TMJ series' },
-  
+
   // Diagnostic - Tests
   'pulp test': { codes: ['D0460'], category: 'diagnostic', description: 'Pulp vitality tests' },
   'vitality test': { codes: ['D0460'], category: 'diagnostic', description: 'Pulp vitality tests' },
@@ -13266,7 +13410,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'oral pathology': { codes: ['D0502'], category: 'diagnostic', description: 'Oral pathology procedures' },
   'blood glucose': { codes: ['D0412'], category: 'diagnostic', description: 'Blood glucose test' },
   'hba1c': { codes: ['D0411'], category: 'diagnostic', description: 'HbA1c test' },
-  
+
   // Restorative - Fillings
   'filling': { codes: ['D2140', 'D2150', 'D2160', 'D2161', 'D2330', 'D2331', 'D2332', 'D2391', 'D2392', 'D2393', 'D2394'], category: 'basic', description: 'Filling/Restoration' },
   'fillings': { codes: ['D2140', 'D2150', 'D2160', 'D2161', 'D2330', 'D2331', 'D2332', 'D2391', 'D2392', 'D2393', 'D2394'], category: 'basic', description: 'Filling/Restoration' },
@@ -13278,7 +13422,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'anterior filling': { codes: ['D2330', 'D2331', 'D2332', 'D2335'], category: 'basic', description: 'Anterior composite filling' },
   'posterior filling': { codes: ['D2391', 'D2392', 'D2393', 'D2394'], category: 'basic', description: 'Posterior composite filling' },
   'gold foil': { codes: ['D2410', 'D2420', 'D2430'], category: 'basic', description: 'Gold foil restoration' },
-  
+
   // Restorative - Inlays/Onlays
   'inlay': { codes: ['D2510', 'D2520', 'D2530', 'D2610', 'D2620', 'D2630', 'D2650', 'D2651', 'D2652'], category: 'major', description: 'Inlay' },
   'onlay': { codes: ['D2542', 'D2543', 'D2544', 'D2642', 'D2643', 'D2644', 'D2662', 'D2663', 'D2664'], category: 'major', description: 'Onlay' },
@@ -13288,7 +13432,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'metal onlay': { codes: ['D2542', 'D2543', 'D2544'], category: 'major', description: 'Metal onlay' },
   'composite inlay': { codes: ['D2650', 'D2651', 'D2652'], category: 'major', description: 'Composite inlay' },
   'composite onlay': { codes: ['D2662', 'D2663', 'D2664'], category: 'major', description: 'Composite onlay' },
-  
+
   // Restorative - Core/Posts
   'core buildup': { codes: ['D2950'], category: 'basic', description: 'Core buildup' },
   'buildup': { codes: ['D2950'], category: 'basic', description: 'Core buildup' },
@@ -13298,7 +13442,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'custom post': { codes: ['D2952'], category: 'basic', description: 'Indirectly fabricated post and core' },
   'pin retention': { codes: ['D2951'], category: 'basic', description: 'Pin retention' },
   'post removal': { codes: ['D2955'], category: 'basic', description: 'Post removal' },
-  
+
   // Restorative - Other
   'protective restoration': { codes: ['D2940'], category: 'basic', description: 'Protective restoration' },
   'interim restoration': { codes: ['D2941'], category: 'basic', description: 'Interim therapeutic restoration' },
@@ -13309,7 +13453,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'prefab crown': { codes: ['D2932', 'D2933', 'D2934'], category: 'basic', description: 'Prefabricated crown' },
   'recement crown': { codes: ['D2920'], category: 'basic', description: 'Re-cement crown' },
   'recement inlay': { codes: ['D2910'], category: 'basic', description: 'Re-cement inlay/onlay' },
-  
+
   // Endodontics
   'root canal': { codes: ['D3310', 'D3320', 'D3330'], category: 'endo', description: 'Root canal treatment' },
   'rct': { codes: ['D3310', 'D3320', 'D3330'], category: 'endo', description: 'Root canal treatment' },
@@ -13331,7 +13475,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'endo surgery': { codes: ['D3410', 'D3421', 'D3425', 'D3426', 'D3427'], category: 'endo', description: 'Periradicular surgery' },
   'retrograde filling': { codes: ['D3430'], category: 'endo', description: 'Retrograde filling' },
   'intentional reimplant': { codes: ['D3470'], category: 'endo', description: 'Intentional reimplantation' },
-  
+
   // Periodontics
   'deep cleaning': { codes: ['D4341', 'D4342'], category: 'perio', description: 'Scaling and root planing' },
   'scaling': { codes: ['D4341', 'D4342'], category: 'perio', description: 'Scaling and root planing' },
@@ -13357,7 +13501,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'frenulectomy': { codes: ['D7960'], category: 'perio', description: 'Frenectomy' },
   'frenuloplasty': { codes: ['D7963'], category: 'perio', description: 'Frenuloplasty' },
   'antibiotic therapy': { codes: ['D4381'], category: 'perio', description: 'Localized antimicrobial delivery' },
-  
+
   // Oral Surgery - Extractions
   'extraction': { codes: ['D7140', 'D7210'], category: 'surgery', description: 'Tooth extraction' },
   'simple extraction': { codes: ['D7140'], category: 'surgery', description: 'Simple extraction' },
@@ -13374,7 +13518,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'root tip removal': { codes: ['D7250'], category: 'surgery', description: 'Residual root removal' },
   'coronectomy': { codes: ['D7251'], category: 'surgery', description: 'Coronectomy' },
   'primary tooth extraction': { codes: ['D7111'], category: 'surgery', description: 'Primary tooth extraction' },
-  
+
   // Oral Surgery - Other
   'alveoloplasty': { codes: ['D7310', 'D7311', 'D7320', 'D7321'], category: 'surgery', description: 'Alveoloplasty' },
   'bone recontouring': { codes: ['D7310', 'D7311', 'D7320', 'D7321'], category: 'surgery', description: 'Alveoloplasty' },
@@ -13397,7 +13541,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'ridge preservation': { codes: ['D7953'], category: 'surgery', description: 'Ridge preservation graft' },
   'socket preservation': { codes: ['D7953'], category: 'surgery', description: 'Ridge preservation graft' },
   'bone graft surgery': { codes: ['D7950', 'D7953'], category: 'surgery', description: 'Bone graft' },
-  
+
   // TMJ
   'tmj': { codes: ['D7880', 'D7899'], category: 'surgery', description: 'TMJ treatment' },
   'tmj appliance': { codes: ['D7880'], category: 'surgery', description: 'TMJ occlusal orthotic' },
@@ -13405,7 +13549,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'arthrocentesis': { codes: ['D7870'], category: 'surgery', description: 'Arthrocentesis' },
   'arthroscopy': { codes: ['D7872', 'D7873', 'D7874', 'D7875', 'D7876', 'D7877'], category: 'surgery', description: 'Arthroscopy' },
   'condylectomy': { codes: ['D7840'], category: 'surgery', description: 'Condylectomy' },
-  
+
   // Major - Crowns
   'crown': { codes: ['D2740', 'D2750', 'D2751', 'D2752', 'D2790', 'D2791', 'D2792', 'D2794'], category: 'major', description: 'Crown' },
   'crowns': { codes: ['D2740', 'D2750', 'D2751', 'D2752', 'D2790', 'D2791', 'D2792', 'D2794'], category: 'major', description: 'Crown' },
@@ -13423,7 +13567,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'three quarter crown': { codes: ['D2780', 'D2781', 'D2782', 'D2783'], category: 'major', description: 'Three-quarter crown' },
   'resin crown': { codes: ['D2710', 'D2720', 'D2721', 'D2722'], category: 'major', description: 'Resin crown' },
   'composite crown': { codes: ['D2710', 'D2390'], category: 'major', description: 'Resin-based composite crown' },
-  
+
   // Major - Prosthodontics
   'bridge': { codes: ['D6210', 'D6240', 'D6245', 'D6750'], category: 'major', description: 'Bridge' },
   'fpd': { codes: ['D6210', 'D6240', 'D6245', 'D6750'], category: 'major', description: 'Fixed partial denture' },
@@ -13432,7 +13576,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'retainer crown': { codes: ['D6710', 'D6720', 'D6740', 'D6750', 'D6790'], category: 'major', description: 'Retainer crown for bridge' },
   'maryland bridge': { codes: ['D6545', 'D6548', 'D6549'], category: 'major', description: 'Resin bonded bridge' },
   'resin bonded bridge': { codes: ['D6545', 'D6548', 'D6549'], category: 'major', description: 'Resin bonded bridge' },
-  
+
   'denture': { codes: ['D5110', 'D5120', 'D5130', 'D5140'], category: 'major', description: 'Denture' },
   'dentures': { codes: ['D5110', 'D5120', 'D5130', 'D5140'], category: 'major', description: 'Dentures' },
   'complete denture': { codes: ['D5110', 'D5120'], category: 'major', description: 'Complete denture' },
@@ -13451,13 +13595,13 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'flipper': { codes: ['D5820', 'D5821'], category: 'major', description: 'Interim partial denture' },
   'interim denture': { codes: ['D5810', 'D5811', 'D5820', 'D5821'], category: 'major', description: 'Interim denture' },
   'overdenture': { codes: ['D5863', 'D5864', 'D5865', 'D5866'], category: 'major', description: 'Overdenture' },
-  
+
   'denture adjustment': { codes: ['D5410', 'D5411', 'D5421', 'D5422'], category: 'major', description: 'Denture adjustment' },
   'denture repair': { codes: ['D5510', 'D5520', 'D5610', 'D5620', 'D5630', 'D5640'], category: 'major', description: 'Denture repair' },
   'reline denture': { codes: ['D5730', 'D5731', 'D5740', 'D5741', 'D5750', 'D5751', 'D5760', 'D5761'], category: 'major', description: 'Denture reline' },
   'rebase denture': { codes: ['D5710', 'D5711', 'D5720', 'D5721'], category: 'major', description: 'Denture rebase' },
   'tissue conditioning': { codes: ['D5850', 'D5851'], category: 'major', description: 'Tissue conditioning' },
-  
+
   // Implants
   'implant': { codes: ['D6010'], category: 'major', description: 'Dental implant' },
   'implants': { codes: ['D6010'], category: 'major', description: 'Dental implant' },
@@ -13479,7 +13623,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'implant debridement': { codes: ['D6081', 'D6101', 'D6102'], category: 'major', description: 'Implant debridement' },
   'peri-implantitis': { codes: ['D6101', 'D6102', 'D6103'], category: 'major', description: 'Peri-implantitis treatment' },
   'implant removal': { codes: ['D6100'], category: 'major', description: 'Implant removal' },
-  
+
   // Orthodontics
   'braces': { codes: ['D8080', 'D8090'], category: 'ortho', description: 'Orthodontic treatment' },
   'orthodontics': { codes: ['D8080', 'D8090'], category: 'ortho', description: 'Orthodontic treatment' },
@@ -13501,7 +13645,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'recement orthodontic': { codes: ['D8693', 'D8698', 'D8699'], category: 'ortho', description: 'Re-cement fixed retainer' },
   'removable appliance': { codes: ['D8210'], category: 'ortho', description: 'Removable appliance therapy' },
   'fixed appliance': { codes: ['D8220'], category: 'ortho', description: 'Fixed appliance therapy' },
-  
+
   // Anesthesia/Sedation
   'anesthesia': { codes: ['D9210', 'D9211', 'D9212', 'D9215'], category: 'anesthesia', description: 'Anesthesia' },
   'local anesthesia': { codes: ['D9215'], category: 'anesthesia', description: 'Local anesthesia' },
@@ -13517,7 +13661,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'general anesthesia': { codes: ['D9222', 'D9223'], category: 'anesthesia', description: 'General anesthesia' },
   'ga': { codes: ['D9222', 'D9223'], category: 'anesthesia', description: 'General anesthesia' },
   'sedation evaluation': { codes: ['D9219'], category: 'anesthesia', description: 'Sedation evaluation' },
-  
+
   // Night guards / Appliances
   'night guard': { codes: ['D9940', 'D9944', 'D9945', 'D9946'], category: 'adjunctive', description: 'Night guard/Occlusal guard' },
   'occlusal guard': { codes: ['D9940', 'D9944', 'D9945', 'D9946'], category: 'adjunctive', description: 'Occlusal guard' },
@@ -13530,7 +13674,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'sports guard': { codes: ['D9941'], category: 'adjunctive', description: 'Athletic mouthguard' },
   'athletic mouthguard': { codes: ['D9941'], category: 'adjunctive', description: 'Athletic mouthguard' },
   'mouthguard': { codes: ['D9941'], category: 'adjunctive', description: 'Athletic mouthguard' },
-  
+
   // Space Maintainers
   'space maintainer': { codes: ['D1510', 'D1515', 'D1520', 'D1525'], category: 'preventive', description: 'Space maintainer' },
   'fixed space maintainer': { codes: ['D1510', 'D1515', 'D1516', 'D1517'], category: 'preventive', description: 'Fixed space maintainer' },
@@ -13538,7 +13682,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'distal shoe': { codes: ['D1575'], category: 'preventive', description: 'Distal shoe space maintainer' },
   'recement space maintainer': { codes: ['D1550', 'D1551', 'D1552', 'D1553'], category: 'preventive', description: 'Re-cement space maintainer' },
   'remove space maintainer': { codes: ['D1555', 'D1556', 'D1557', 'D1558'], category: 'preventive', description: 'Remove space maintainer' },
-  
+
   // Whitening/Cosmetic
   'whitening': { codes: ['D9972', 'D9973', 'D9974', 'D9975'], category: 'cosmetic', description: 'Teeth whitening' },
   'bleaching': { codes: ['D9972', 'D9973', 'D9974', 'D9975'], category: 'cosmetic', description: 'Teeth bleaching' },
@@ -13554,7 +13698,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'bonding': { codes: ['D2330', 'D2331', 'D2332', 'D9997'], category: 'cosmetic', description: 'Cosmetic bonding' },
   'enamel microabrasion': { codes: ['D9970'], category: 'cosmetic', description: 'Enamel microabrasion' },
   'odontoplasty': { codes: ['D9971'], category: 'cosmetic', description: 'Odontoplasty' },
-  
+
   // Adjunctive/Other Services
   'consultation': { codes: ['D9310', 'D9311'], category: 'adjunctive', description: 'Consultation' },
   'emergency': { codes: ['D9110'], category: 'adjunctive', description: 'Emergency treatment' },
@@ -13576,7 +13720,7 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'prf': { codes: ['D7921'], category: 'adjunctive', description: 'Platelet rich fibrin' },
   'blood concentrate': { codes: ['D7921'], category: 'adjunctive', description: 'Autologous blood concentrate' },
   'gelfoam': { codes: ['D7922'], category: 'adjunctive', description: 'Intra-socket biological dressing' },
-  
+
   // Maxillofacial Prosthetics
   'obturator': { codes: ['D5931', 'D5932', 'D5936'], category: 'maxillofacial', description: 'Obturator prosthesis' },
   'surgical obturator': { codes: ['D5931'], category: 'maxillofacial', description: 'Surgical obturator' },
@@ -13586,29 +13730,29 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
   'palatal lift': { codes: ['D5955', 'D5958'], category: 'maxillofacial', description: 'Palatal lift prosthesis' },
   'radiation carrier': { codes: ['D5983'], category: 'maxillofacial', description: 'Radiation carrier' },
   'fluoride carrier': { codes: ['D5986'], category: 'maxillofacial', description: 'Fluoride gel carrier' },
-  
+
   // Fractures
   'fracture treatment': { codes: ['D7610', 'D7620', 'D7630', 'D7640', 'D7650', 'D7660', 'D7670', 'D7671', 'D7680'], category: 'surgery', description: 'Fracture treatment' },
   'mandible fracture': { codes: ['D7630', 'D7640'], category: 'surgery', description: 'Mandible fracture treatment' },
   'maxilla fracture': { codes: ['D7610', 'D7620'], category: 'surgery', description: 'Maxilla fracture treatment' },
   'jaw fracture': { codes: ['D7610', 'D7620', 'D7630', 'D7640'], category: 'surgery', description: 'Jaw fracture treatment' },
-  
+
   // Orthognathic Surgery
   'orthognathic surgery': { codes: ['D7940', 'D7941', 'D7944', 'D7945', 'D7946', 'D7947'], category: 'surgery', description: 'Orthognathic surgery' },
   'lefort': { codes: ['D7946', 'D7947', 'D7948', 'D7949'], category: 'surgery', description: 'LeFort osteotomy' },
   'jaw surgery': { codes: ['D7940', 'D7941', 'D7944', 'D7945', 'D7946'], category: 'surgery', description: 'Jaw surgery' },
   'bsso': { codes: ['D7941'], category: 'surgery', description: 'Bilateral sagittal split osteotomy' },
   'mandibular osteotomy': { codes: ['D7941', 'D7945'], category: 'surgery', description: 'Mandibular osteotomy' },
-  
+
   // Teledentistry
   'teledentistry': { codes: ['D9995', 'D9996'], category: 'adjunctive', description: 'Teledentistry' },
   'virtual visit': { codes: ['D9995', 'D9996'], category: 'adjunctive', description: 'Teledentistry' },
-  
+
   // Case Management
   'case management': { codes: ['D9991', 'D9992', 'D9993', 'D9994', 'D9997'], category: 'adjunctive', description: 'Dental case management' },
   'patient education': { codes: ['D9994'], category: 'adjunctive', description: 'Patient education' },
   'motivational interviewing': { codes: ['D9993'], category: 'adjunctive', description: 'Motivational interviewing' },
-  
+
   // Administrative
   'missed appointment': { codes: ['D9986'], category: 'administrative', description: 'Missed appointment' },
   'cancelled appointment': { codes: ['D9987'], category: 'administrative', description: 'Cancelled appointment' },
@@ -14424,24 +14568,24 @@ const PROCEDURE_NAME_TO_CODES: Record<string, { codes: string[]; category: strin
  */
 function mapProcedureToCode(procedureName: string): { codes: string[]; category: string; description: string } | null {
   const normalized = procedureName.toLowerCase().trim();
-  
+
   // Direct match
   if (PROCEDURE_NAME_TO_CODES[normalized]) {
     return PROCEDURE_NAME_TO_CODES[normalized];
   }
-  
+
   // Partial match
   for (const [key, value] of Object.entries(PROCEDURE_NAME_TO_CODES)) {
     if (normalized.includes(key) || key.includes(normalized)) {
       return value;
     }
   }
-  
+
   // Check if it's already a CDT code (starts with D followed by digits)
   if (/^[dD]\d{4}$/.test(normalized)) {
     return { codes: [normalized.toUpperCase()], category: 'unknown', description: normalized.toUpperCase() };
   }
-  
+
   return null;
 }
 
@@ -14520,14 +14664,14 @@ async function estimateTreatmentCost(
 
     if (insuranceResult.statusCode === 200 && insuranceResult.body.data?.plans?.length > 0) {
       insurancePlan = insuranceResult.body.data.plans[0] as InsurancePlanRecord;
-      
+
       // Get coverage percentage based on category
       switch (procedureMapping.category) {
         case 'preventive':
         case 'diagnostic':
-          coveragePercent = insurancePlan.preventiveRoutinePreventivePct ?? 
-                           insurancePlan.preventiveDiagnosticsPct ?? 
-                           insurancePlan.preventiveXRaysPct;
+          coveragePercent = insurancePlan.preventiveRoutinePreventivePct ??
+            insurancePlan.preventiveDiagnosticsPct ??
+            insurancePlan.preventiveXRaysPct;
           break;
         case 'basic':
           coveragePercent = insurancePlan.basicRestorativePct;
@@ -14548,7 +14692,7 @@ async function estimateTreatmentCost(
           coveragePercent = insurancePlan.orthoPct;
           break;
       }
-      
+
       // Normalize coverage percent (handle both 0.8 and 80 formats)
       if (coveragePercent !== null && coveragePercent !== undefined) {
         coveragePercent = coveragePercent > 1 ? coveragePercent : coveragePercent * 100;
@@ -14557,14 +14701,14 @@ async function estimateTreatmentCost(
       directAnswer += `=== INSURANCE COVERAGE ===\n`;
       directAnswer += `Plan: ${insurancePlan.insuranceName} - ${insurancePlan.groupName || 'Unknown Group'}\n`;
       if (insurancePlan.groupNumber) directAnswer += `Group #: ${insurancePlan.groupNumber}\n`;
-      
+
       if (coveragePercent !== null) {
         directAnswer += `Coverage for ${procedureMapping.category}: ${Math.round(coveragePercent)}%\n`;
         directAnswer += `You pay: ${Math.round(100 - coveragePercent)}%\n`;
       } else {
         directAnswer += `Coverage for ${procedureMapping.category}: Not specifically recorded\n`;
       }
-      
+
       if (insurancePlan.deductibleIndividual) {
         directAnswer += `Deductible: $${insurancePlan.deductibleIndividual} (may apply)\n`;
       }
@@ -14583,14 +14727,14 @@ async function estimateTreatmentCost(
       }
 
       // Check for frequency limits (especially for fluoride, cleanings)
-      if (insurancePlan.frequencyLimits && 
-          (procedureMapping.category === 'preventive' || treatmentName.toLowerCase().includes('fluoride'))) {
+      if (insurancePlan.frequencyLimits &&
+        (procedureMapping.category === 'preventive' || treatmentName.toLowerCase().includes('fluoride'))) {
         directAnswer += `📋 Frequency Limits: ${insurancePlan.frequencyLimits}\n`;
       }
 
       // Check for age limits (especially for fluoride, sealants)
-      if (insurancePlan.ageLimits && 
-          (treatmentName.toLowerCase().includes('fluoride') || treatmentName.toLowerCase().includes('sealant'))) {
+      if (insurancePlan.ageLimits &&
+        (treatmentName.toLowerCase().includes('fluoride') || treatmentName.toLowerCase().includes('sealant'))) {
         directAnswer += `👤 Age Limits: ${insurancePlan.ageLimits}\n`;
       }
 
@@ -14604,17 +14748,17 @@ async function estimateTreatmentCost(
 
   // Step 2: Look up fees for the procedure codes
   directAnswer += `=== FEE SCHEDULE ===\n`;
-  
+
   const feesByCode: Record<string, number | null> = {};
   let primaryFee: number | null = null;
   let usedFeeSchedule: string | null = null;
 
   for (const code of procedureMapping.codes) {
     const feeResult = await lookupFeeSchedules(
-      { 
-        procCode: code, 
+      {
+        procCode: code,
         feeSchedule: feeSchedule || insurancePlan?.feeSchedule,
-        clinicId: searchClinicId 
+        clinicId: searchClinicId
       },
       searchClinicId
     );
@@ -14622,16 +14766,16 @@ async function estimateTreatmentCost(
     if (feeResult.statusCode === 200 && feeResult.body.data?.fees?.length > 0) {
       const fees = feeResult.body.data.fees as FeeScheduleRecord[];
       // Use the first matching fee (preferring the insurance fee schedule if available)
-      const matchingFee = insurancePlan?.feeSchedule 
+      const matchingFee = insurancePlan?.feeSchedule
         ? fees.find(f => f.feeSchedule === insurancePlan.feeSchedule) || fees[0]
         : fees[0];
-      
+
       feesByCode[code] = matchingFee.amount;
       if (primaryFee === null && matchingFee.amount !== null) {
         primaryFee = matchingFee.amount;
         usedFeeSchedule = matchingFee.feeSchedule;
       }
-      
+
       directAnswer += `${code} (${matchingFee.description || matchingFee.abbrDesc}): `;
       directAnswer += matchingFee.amount !== null ? `$${matchingFee.amount.toFixed(2)}` : 'Not set';
       directAnswer += ` [${matchingFee.feeSchedule}]\n`;
@@ -14653,7 +14797,7 @@ async function estimateTreatmentCost(
     directAnswer += `Total Fee: $${primaryFee.toFixed(2)}\n`;
     directAnswer += `Insurance Pays (${Math.round(coveragePercent)}%): $${insurancePays.toFixed(2)}\n`;
     directAnswer += `Your Estimated Cost: $${patientPays.toFixed(2)}\n`;
-    
+
     if (deductible > 0) {
       directAnswer += `\n⚠️ Note: If deductible ($${deductible}) hasn't been met, add that to your cost.\n`;
       directAnswer += `Maximum out-of-pocket with deductible: $${(patientPays + deductible).toFixed(2)}\n`;
@@ -14711,7 +14855,7 @@ async function estimateTreatmentCost(
         fees: feesByCode,
         primaryFee,
         feeSchedule: usedFeeSchedule,
-        estimatedPatientCost: primaryFee && coveragePercent 
+        estimatedPatientCost: primaryFee && coveragePercent
           ? primaryFee * ((100 - coveragePercent) / 100)
           : primaryFee,
         patientBalance,
@@ -14730,473 +14874,473 @@ export const handler = async (event: ActionGroupEvent): Promise<ActionGroupRespo
   // Global try-catch to ensure we always return a valid ActionGroupResponse
   // Bedrock throws DependencyFailedException if the Lambda throws an unhandled exception
   try {
-  // Extract tool name from apiPath or parameters
-  // The apiPath may contain a template like "/open-dental/{toolName}" 
-  // In that case, the actual tool name is in the parameters array
-  let toolName = event.apiPath.replace(/^\//, '');
-  
-  // Handle proxy pattern: /open-dental/{toolName} or /open-dental/searchPatients
-  if (toolName.startsWith('open-dental/')) {
-    toolName = toolName.replace('open-dental/', '');
-  }
-  
-  // If toolName is still a template placeholder like "{toolName}", extract from parameters
-  if (toolName === '{toolName}' || toolName.includes('{')) {
-    const toolNameParam = event.parameters?.find((p: { name: string; value: string }) => p.name === 'toolName');
-    if (toolNameParam?.value) {
-      toolName = toolNameParam.value;
+    // Extract tool name from apiPath or parameters
+    // The apiPath may contain a template like "/open-dental/{toolName}" 
+    // In that case, the actual tool name is in the parameters array
+    let toolName = event.apiPath.replace(/^\//, '');
+
+    // Handle proxy pattern: /open-dental/{toolName} or /open-dental/searchPatients
+    if (toolName.startsWith('open-dental/')) {
+      toolName = toolName.replace('open-dental/', '');
     }
-  }
 
-  // Parse request parameters/body
-  const params = parseParameters(event);
+    // If toolName is still a template placeholder like "{toolName}", extract from parameters
+    if (toolName === '{toolName}' || toolName.includes('{')) {
+      const toolNameParam = event.parameters?.find((p: { name: string; value: string }) => p.name === 'toolName');
+      if (toolNameParam?.value) {
+        toolName = toolNameParam.value;
+      }
+    }
 
-  // Robust fallback: Bedrock sometimes calls "/open-dental/{toolName}" without providing the
-  // required toolName parameter. In that case, infer the intended tool from the request body.
-  const ALLOWED_TOOL_NAMES = new Set<string>([
-    'searchPatients',
-    'createPatient',
-    'getPatientByPatNum',
-    'getProcedureLogs',
-    'getTreatmentPlans',
-    // TreatPlans Tools
-    'TreatPlans GET',
-    'TreatPlans POST (create)',
-    'TreatPlans POST Saved',
-    'TreatPlans PUT (update)',
-    'TreatPlans DELETE',
-    // TreatPlanAttaches Tools
-    'getTreatPlanAttaches',
-    'createTreatPlanAttach',
-    'updateTreatPlanAttach',
-    // PatPlans Tools
-    'getPatPlans',
-    'createPatPlan',
-    'updatePatPlan',
-    'deletePatPlan',
-    // Payments Tools
-    'getPayments',
-    'createPayment',
-    'createPaymentRefund',
-    'updatePayment',
-    'updatePaymentPartial',
-    // PayPlanCharges Tools
-    'getPayPlanCharges',
-    // PayPlans Tools
-    'getPayPlan',
-    'getPayPlans',
-    'createPayPlanDynamic',
-    'createPayPlan',
-    'closePayPlan',
-    'updatePayPlanDynamic',
-    // PaySplits Tools
-    'getPaySplits',
-    'updatePaySplit',
-    // PerioExams Tools
-    'getPerioExam',
-    'getPerioExams',
-    'createPerioExam',
-    'updatePerioExam',
-    'deletePerioExam',
-    // Pharmacies Tools
-    'getPharmacy',
-    'getPharmacies',
-    // PerioMeasures Tools
-    'getPerioMeasures',
-    'createPerioMeasure',
-    'updatePerioMeasure',
-    'deletePerioMeasure',
-    // Popups Tools
-    'getPopups',
-    'createPopup',
-    'updatePopup',
-    // Preferences Tools
-    'getPreferences',
-    // ProcedureCodes Tools
-    'getProcedureCode',
-    'getProcedureCodes',
-    'createProcedureCode',
-    'updateProcedureCode',
-    // ProcedureLogs Tools
-    'getProcedureLog',
-    'getProcedureLogs',
-    'getProcedureLogsInsuranceHistory',
-    'getProcedureLogsGroupNotes',
-    'createProcedureLog',
-    'createProcedureLogGroupNote',
-    'createProcedureLogInsuranceHistory',
-    'updateProcedureLog',
-    'updateProcedureLogGroupNote',
-    'deleteProcedureLog',
-    'deleteProcedureLogGroupNote',
-    // Providers Tools
-    'Providers GET (single)',
-    'Providers GET (multiple)',
-    'Providers POST (create)',
-    'Providers PUT (update)',
-    // Recalls Tools
-    'Recalls GET',
-    'Recalls GET List',
-    'Recalls POST (create)',
-    'Recalls PUT (update)',
-    'Recalls PUT Status',
-    'Recalls PUT SwitchType',
-    // RxPats Tools
-    'RxPats GET (single)',
-    'RxPats GET (multiple)',
-    // Referrals Tools
-    'Referrals GET (single)',
-    'Referrals GET (multiple)',
-    'Referrals POST (create)',
-    'Referrals PUT (update)',
-    // RecallTypes Tools
-    'RecallTypes GET (single)',
-    'RecallTypes GET (multiple)',
-    // QuickPasteNotes Tools
-    'QuickPasteNotes GET (single)',
-    'QuickPasteNotes GET (multiple)',
-    // ProcNotes Tools
-    'getProcNotes',
-    'createProcNote',
-    // ProcTPs Tools
-    'getProcTPs',
-    'updateProcTP',
-    'deleteProcTP',
-    'scheduleAppointment',
-    'getUpcomingAppointments',
-    'rescheduleAppointment',
-    'cancelAppointment',
-    // Appointments Tools (API-named)
-    'Appointments GET (single)',
-    'Appointments GET (multiple)',
-    'Appointments GET ASAP',
-    'Appointments GET Slots',
-    'Appointments GET SlotsWebSched',
-    'Appointments GET WebSched',
-    'Appointments POST (create)',
-    'Appointments POST Planned',
-    'Appointments POST SchedulePlanned',
-    'Appointments POST WebSched',
-    'Appointments PUT (update)',
-    'Appointments PUT Break',
-    'Appointments PUT Note',
-    'Appointments PUT Confirm',
-    // ScheduleOps Tools
-    'ScheduleOps GET',
-    // Schedules Tools
-    'Schedules GET (single)',
-    'Schedules GET (multiple)',
-    // SecurityLogs Tools
-    'SecurityLogs GET',
-    // SheetDefs Tools
-    'SheetDefs GET (single)',
-    'SheetDefs GET (multiple)',
-    'getAccountAging',
-    'getPatientBalances',
-    'getServiceDateView',
-    'getPatientAccountSummary', // Comprehensive account summary
-    'getAllergies',
-    'getPatientInfo',
-    'getPatientRaces',
-    'getBenefits',
-    'getCarriers',
-    'getClaims',
-    'getFamilyInsurance',
-    'getInsurancePlanBenefits',
-    'suggestInsuranceCoverage',
-    // InsPlans Tools
-    'getInsPlan',
-    'getInsPlans',
-    'createInsPlan',
-    'updateInsPlan',
-    // SubstitutionLinks Tools
-    'getSubstitutionLinks',
-    'createSubstitutionLink',
-    'updateSubstitutionLink',
-    'deleteSubstitutionLink',
-    // InsSubs Tools
-    'getInsSub',
-    'getInsSubs',
-    'createInsSub',
-    'updateInsSub',
-    'deleteInsSub',
-    // InsVerifies Tools
-    'getInsVerify',
-    'getInsVerifies',
-    'updateInsVerify',
-    // Fee Schedule Tools
-    'getFeeSchedules',
-    'getFeeForProcedure',
-    'getFeeScheduleAmounts', // Alias for getFeeForProcedure
-    'listFeeSchedules',
-    'compareProcedureFees',
-    // Insurance Details & Cost Estimation
-    'getInsuranceDetails', // Comprehensive: deductibles, maximums, waiting periods, limits, exclusions
-    'getDeductibleInfo', // Detailed deductible questions
-    'checkDeductible', // Alias
-    'deductibleStatus', // Alias
-    'getAnnualMaxInfo', // Annual max and remaining benefits
-    'checkAnnualMax', // Alias
-    'getRemainingBenefits', // Alias
-    'annualMaximum', // Alias
-    'checkProcedureCoverage', // Is X covered? Direct answer
-    'isProcedureCovered', // Alias
-    'getCoverageBreakdown', // Percentages, downgrades, implants, perio vs cleaning, in/out network
-    'coverageDetails', // Alias
-    'getCopayAndFrequencyInfo', // Copays, coinsurance, frequency limits
-    'getFrequencyLimits', // Alias - how many cleanings/x-rays per year
-    'copayInfo', // Alias
-    'getWaitingPeriodInfo', // Waiting periods, exclusions, missing tooth clause
-    'waitingPeriods', // Alias
-    'getExclusions', // Alias
-    'getEstimateExplanation', // Why estimates change, balance billing, sedation
-    'estimateAccuracy', // Alias
-    'whyPriceChanges', // Alias
-    'getCoordinationOfBenefits', // Dual insurance, primary/secondary, COB
-    'dualInsurance', // Alias
-    'secondaryInsurance', // Alias
-    // Statements Tools
-    'getStatement',
-    'getStatements',
-    'createStatement',
-    'whichInsuranceIsPrimary', // Alias
-    'getPaymentInfo', // Payment timing, plans, financing, HSA/FSA
-    'paymentOptions', // Alias
-    'paymentPlans', // Alias
-    'financing', // Alias
-    'checkCoverage', // Alias
-    'calculateOutOfPocket', // What will I pay for this procedure?
-    'estimateTreatmentCost', // Combines insurance + fees
-    'getHistAppointments', // Historical appointment changes
-    // LabCases Tools
-    'getLabCase',
-    'getLabCases',
-    'createLabCase',
-    'updateLabCase',
-    'deleteLabCase',
-    // Laboratories Tools
-    'getLaboratory',
-    'getLaboratories',
-    'createLaboratory',
-    'updateLaboratory',
-    // MedicationPats Tools
-    'getMedicationPat',
-    'getMedicationPats',
-    'createMedicationPat',
-    'updateMedicationPat',
-    'deleteMedicationPat',
-    // Medications Tools
-    'getMedications',
-    'createMedication',
-    // LabTurnarounds Tools
-    'getLabTurnaround',
-    'getLabTurnarounds',
-    'createLabTurnaround',
-    'updateLabTurnaround',
-    // Operatories Tools
-    'getOperatory',
-    'getOperatories',
-    // PatFieldDefs Tools
-    'getPatFieldDefs',
-    'createPatFieldDef',
-    'updatePatFieldDef',
-    'deletePatFieldDef',
-    // PatFields Tools
-    'getPatField',
-    'getPatFields',
-    'createPatField',
-    'updatePatField',
-    'deletePatField',
-    // PatientNotes Tools
-    'getPatientNote',
-    'getPatientNotes',
-    'updatePatientNote',
-    // Sheets Tools
-    'getSheets',
-    'createSheet',
-    'downloadSheetSftp',
-    // SheetFields Tools
-    'getSheetField',
-    'getSheetFields',
-    'updateSheetField',
-    // Signalods Tools
-    'getSignalods',
-    // Subscriptions Tools
-    'createSubscription',
-    'getSubscriptions',
-    'updateSubscription',
-    'deleteSubscription',
-    // TaskLists Tools
-    'TaskLists GET',
-    // TaskNotes Tools
-    'TaskNotes GET (single)',
-    'TaskNotes GET (multiple)',
-    'TaskNotes POST (create)',
-    'TaskNotes PUT (update)',
-    // Tasks Tools
-    'Tasks GET (single)',
-    'Tasks GET (multiple)',
-    'Tasks POST (create)',
-    'Tasks PUT (update)',
-    // UserGroups Tools
-    'UserGroups GET',
-    // UserGroupAttaches Tools
-    'UserGroupAttaches GET',
-    // Userods Tools
-    'Userods GET',
-    'Userods POST (create)',
-    'Userods PUT (update)',
-    // ToothInitials Tools
-    'ToothInitials GET',
-    'ToothInitials POST (create)',
-    'ToothInitials DELETE',
-    // RefAttaches Tools
-    'RefAttaches GET',
-    'RefAttaches POST (create)',
-    'RefAttaches PUT (update)',
-    'RefAttaches DELETE',
-    // Reports Tools
-    'Reports GET Aging',
-    'Reports GET FinanceCharges',
-  ]);
+    // Parse request parameters/body
+    const params = parseParameters(event);
 
-  if (!ALLOWED_TOOL_NAMES.has(toolName)) {
-    let inferredToolName: string | null = null;
+    // Robust fallback: Bedrock sometimes calls "/open-dental/{toolName}" without providing the
+    // required toolName parameter. In that case, infer the intended tool from the request body.
+    const ALLOWED_TOOL_NAMES = new Set<string>([
+      'searchPatients',
+      'createPatient',
+      'getPatientByPatNum',
+      'getProcedureLogs',
+      'getTreatmentPlans',
+      // TreatPlans Tools
+      'TreatPlans GET',
+      'TreatPlans POST (create)',
+      'TreatPlans POST Saved',
+      'TreatPlans PUT (update)',
+      'TreatPlans DELETE',
+      // TreatPlanAttaches Tools
+      'getTreatPlanAttaches',
+      'createTreatPlanAttach',
+      'updateTreatPlanAttach',
+      // PatPlans Tools
+      'getPatPlans',
+      'createPatPlan',
+      'updatePatPlan',
+      'deletePatPlan',
+      // Payments Tools
+      'getPayments',
+      'createPayment',
+      'createPaymentRefund',
+      'updatePayment',
+      'updatePaymentPartial',
+      // PayPlanCharges Tools
+      'getPayPlanCharges',
+      // PayPlans Tools
+      'getPayPlan',
+      'getPayPlans',
+      'createPayPlanDynamic',
+      'createPayPlan',
+      'closePayPlan',
+      'updatePayPlanDynamic',
+      // PaySplits Tools
+      'getPaySplits',
+      'updatePaySplit',
+      // PerioExams Tools
+      'getPerioExam',
+      'getPerioExams',
+      'createPerioExam',
+      'updatePerioExam',
+      'deletePerioExam',
+      // Pharmacies Tools
+      'getPharmacy',
+      'getPharmacies',
+      // PerioMeasures Tools
+      'getPerioMeasures',
+      'createPerioMeasure',
+      'updatePerioMeasure',
+      'deletePerioMeasure',
+      // Popups Tools
+      'getPopups',
+      'createPopup',
+      'updatePopup',
+      // Preferences Tools
+      'getPreferences',
+      // ProcedureCodes Tools
+      'getProcedureCode',
+      'getProcedureCodes',
+      'createProcedureCode',
+      'updateProcedureCode',
+      // ProcedureLogs Tools
+      'getProcedureLog',
+      'getProcedureLogs',
+      'getProcedureLogsInsuranceHistory',
+      'getProcedureLogsGroupNotes',
+      'createProcedureLog',
+      'createProcedureLogGroupNote',
+      'createProcedureLogInsuranceHistory',
+      'updateProcedureLog',
+      'updateProcedureLogGroupNote',
+      'deleteProcedureLog',
+      'deleteProcedureLogGroupNote',
+      // Providers Tools
+      'Providers GET (single)',
+      'Providers GET (multiple)',
+      'Providers POST (create)',
+      'Providers PUT (update)',
+      // Recalls Tools
+      'Recalls GET',
+      'Recalls GET List',
+      'Recalls POST (create)',
+      'Recalls PUT (update)',
+      'Recalls PUT Status',
+      'Recalls PUT SwitchType',
+      // RxPats Tools
+      'RxPats GET (single)',
+      'RxPats GET (multiple)',
+      // Referrals Tools
+      'Referrals GET (single)',
+      'Referrals GET (multiple)',
+      'Referrals POST (create)',
+      'Referrals PUT (update)',
+      // RecallTypes Tools
+      'RecallTypes GET (single)',
+      'RecallTypes GET (multiple)',
+      // QuickPasteNotes Tools
+      'QuickPasteNotes GET (single)',
+      'QuickPasteNotes GET (multiple)',
+      // ProcNotes Tools
+      'getProcNotes',
+      'createProcNote',
+      // ProcTPs Tools
+      'getProcTPs',
+      'updateProcTP',
+      'deleteProcTP',
+      'scheduleAppointment',
+      'getUpcomingAppointments',
+      'rescheduleAppointment',
+      'cancelAppointment',
+      // Appointments Tools (API-named)
+      'Appointments GET (single)',
+      'Appointments GET (multiple)',
+      'Appointments GET ASAP',
+      'Appointments GET Slots',
+      'Appointments GET SlotsWebSched',
+      'Appointments GET WebSched',
+      'Appointments POST (create)',
+      'Appointments POST Planned',
+      'Appointments POST SchedulePlanned',
+      'Appointments POST WebSched',
+      'Appointments PUT (update)',
+      'Appointments PUT Break',
+      'Appointments PUT Note',
+      'Appointments PUT Confirm',
+      // ScheduleOps Tools
+      'ScheduleOps GET',
+      // Schedules Tools
+      'Schedules GET (single)',
+      'Schedules GET (multiple)',
+      // SecurityLogs Tools
+      'SecurityLogs GET',
+      // SheetDefs Tools
+      'SheetDefs GET (single)',
+      'SheetDefs GET (multiple)',
+      'getAccountAging',
+      'getPatientBalances',
+      'getServiceDateView',
+      'getPatientAccountSummary', // Comprehensive account summary
+      'getAllergies',
+      'getPatientInfo',
+      'getPatientRaces',
+      'getBenefits',
+      'getCarriers',
+      'getClaims',
+      'getFamilyInsurance',
+      'getInsurancePlanBenefits',
+      'suggestInsuranceCoverage',
+      // InsPlans Tools
+      'getInsPlan',
+      'getInsPlans',
+      'createInsPlan',
+      'updateInsPlan',
+      // SubstitutionLinks Tools
+      'getSubstitutionLinks',
+      'createSubstitutionLink',
+      'updateSubstitutionLink',
+      'deleteSubstitutionLink',
+      // InsSubs Tools
+      'getInsSub',
+      'getInsSubs',
+      'createInsSub',
+      'updateInsSub',
+      'deleteInsSub',
+      // InsVerifies Tools
+      'getInsVerify',
+      'getInsVerifies',
+      'updateInsVerify',
+      // Fee Schedule Tools
+      'getFeeSchedules',
+      'getFeeForProcedure',
+      'getFeeScheduleAmounts', // Alias for getFeeForProcedure
+      'listFeeSchedules',
+      'compareProcedureFees',
+      // Insurance Details & Cost Estimation
+      'getInsuranceDetails', // Comprehensive: deductibles, maximums, waiting periods, limits, exclusions
+      'getDeductibleInfo', // Detailed deductible questions
+      'checkDeductible', // Alias
+      'deductibleStatus', // Alias
+      'getAnnualMaxInfo', // Annual max and remaining benefits
+      'checkAnnualMax', // Alias
+      'getRemainingBenefits', // Alias
+      'annualMaximum', // Alias
+      'checkProcedureCoverage', // Is X covered? Direct answer
+      'isProcedureCovered', // Alias
+      'getCoverageBreakdown', // Percentages, downgrades, implants, perio vs cleaning, in/out network
+      'coverageDetails', // Alias
+      'getCopayAndFrequencyInfo', // Copays, coinsurance, frequency limits
+      'getFrequencyLimits', // Alias - how many cleanings/x-rays per year
+      'copayInfo', // Alias
+      'getWaitingPeriodInfo', // Waiting periods, exclusions, missing tooth clause
+      'waitingPeriods', // Alias
+      'getExclusions', // Alias
+      'getEstimateExplanation', // Why estimates change, balance billing, sedation
+      'estimateAccuracy', // Alias
+      'whyPriceChanges', // Alias
+      'getCoordinationOfBenefits', // Dual insurance, primary/secondary, COB
+      'dualInsurance', // Alias
+      'secondaryInsurance', // Alias
+      // Statements Tools
+      'getStatement',
+      'getStatements',
+      'createStatement',
+      'whichInsuranceIsPrimary', // Alias
+      'getPaymentInfo', // Payment timing, plans, financing, HSA/FSA
+      'paymentOptions', // Alias
+      'paymentPlans', // Alias
+      'financing', // Alias
+      'checkCoverage', // Alias
+      'calculateOutOfPocket', // What will I pay for this procedure?
+      'estimateTreatmentCost', // Combines insurance + fees
+      'getHistAppointments', // Historical appointment changes
+      // LabCases Tools
+      'getLabCase',
+      'getLabCases',
+      'createLabCase',
+      'updateLabCase',
+      'deleteLabCase',
+      // Laboratories Tools
+      'getLaboratory',
+      'getLaboratories',
+      'createLaboratory',
+      'updateLaboratory',
+      // MedicationPats Tools
+      'getMedicationPat',
+      'getMedicationPats',
+      'createMedicationPat',
+      'updateMedicationPat',
+      'deleteMedicationPat',
+      // Medications Tools
+      'getMedications',
+      'createMedication',
+      // LabTurnarounds Tools
+      'getLabTurnaround',
+      'getLabTurnarounds',
+      'createLabTurnaround',
+      'updateLabTurnaround',
+      // Operatories Tools
+      'getOperatory',
+      'getOperatories',
+      // PatFieldDefs Tools
+      'getPatFieldDefs',
+      'createPatFieldDef',
+      'updatePatFieldDef',
+      'deletePatFieldDef',
+      // PatFields Tools
+      'getPatField',
+      'getPatFields',
+      'createPatField',
+      'updatePatField',
+      'deletePatField',
+      // PatientNotes Tools
+      'getPatientNote',
+      'getPatientNotes',
+      'updatePatientNote',
+      // Sheets Tools
+      'getSheets',
+      'createSheet',
+      'downloadSheetSftp',
+      // SheetFields Tools
+      'getSheetField',
+      'getSheetFields',
+      'updateSheetField',
+      // Signalods Tools
+      'getSignalods',
+      // Subscriptions Tools
+      'createSubscription',
+      'getSubscriptions',
+      'updateSubscription',
+      'deleteSubscription',
+      // TaskLists Tools
+      'TaskLists GET',
+      // TaskNotes Tools
+      'TaskNotes GET (single)',
+      'TaskNotes GET (multiple)',
+      'TaskNotes POST (create)',
+      'TaskNotes PUT (update)',
+      // Tasks Tools
+      'Tasks GET (single)',
+      'Tasks GET (multiple)',
+      'Tasks POST (create)',
+      'Tasks PUT (update)',
+      // UserGroups Tools
+      'UserGroups GET',
+      // UserGroupAttaches Tools
+      'UserGroupAttaches GET',
+      // Userods Tools
+      'Userods GET',
+      'Userods POST (create)',
+      'Userods PUT (update)',
+      // ToothInitials Tools
+      'ToothInitials GET',
+      'ToothInitials POST (create)',
+      'ToothInitials DELETE',
+      // RefAttaches Tools
+      'RefAttaches GET',
+      'RefAttaches POST (create)',
+      'RefAttaches PUT (update)',
+      'RefAttaches DELETE',
+      // Reports Tools
+      'Reports GET Aging',
+      'Reports GET FinanceCharges',
+    ]);
 
-    // Treatment cost estimate (combines insurance + fees + optional patient lookup)
-    // Detected when: procedure/treatment name + insurance info
-    if ((params.procedure || params.procedureName) && 
+    if (!ALLOWED_TOOL_NAMES.has(toolName)) {
+      let inferredToolName: string | null = null;
+
+      // Treatment cost estimate (combines insurance + fees + optional patient lookup)
+      // Detected when: procedure/treatment name + insurance info
+      if ((params.procedure || params.procedureName) &&
         (params.insuranceName || params.groupNumber || params.groupName)) {
-      inferredToolName = 'estimateTreatmentCost';
-    }
+        inferredToolName = 'estimateTreatmentCost';
+      }
 
-    // Insurance coverage questions (NO PatNum needed)
-    if (!inferredToolName && (params.insuranceName || params.groupNumber || params.groupName)) {
-      inferredToolName = 'suggestInsuranceCoverage';
-    }
+      // Insurance coverage questions (NO PatNum needed)
+      if (!inferredToolName && (params.insuranceName || params.groupNumber || params.groupName)) {
+        inferredToolName = 'suggestInsuranceCoverage';
+      }
 
-    // Fee schedule questions
-    if (!inferredToolName && (params.procCode || params.procedureCode)) {
-      // If asking about a specific procedure fee
-      inferredToolName = 'getFeeForProcedure';
-    } else if (!inferredToolName && (params.feeSchedule || params.feeScheduleName || params.feeSchedNum)) {
-      // If asking about fee schedules
-      inferredToolName = 'getFeeSchedules';
-    }
+      // Fee schedule questions
+      if (!inferredToolName && (params.procCode || params.procedureCode)) {
+        // If asking about a specific procedure fee
+        inferredToolName = 'getFeeForProcedure';
+      } else if (!inferredToolName && (params.feeSchedule || params.feeScheduleName || params.feeSchedNum)) {
+        // If asking about fee schedules
+        inferredToolName = 'getFeeSchedules';
+      }
 
-    // Patient lookup (best-effort)
-    if (!inferredToolName && params.LName && params.FName && params.Birthdate) {
-      inferredToolName = 'searchPatients';
-    }
+      // Patient lookup (best-effort)
+      if (!inferredToolName && params.LName && params.FName && params.Birthdate) {
+        inferredToolName = 'searchPatients';
+      }
 
-    if (inferredToolName) {
-      console.warn(
-        `[ActionGroup] toolName missing/invalid ("${toolName}") for apiPath "${event.apiPath}". ` +
+      if (inferredToolName) {
+        console.warn(
+          `[ActionGroup] toolName missing/invalid ("${toolName}") for apiPath "${event.apiPath}". ` +
           `Inferred tool "${inferredToolName}" from request parameters.`
-      );
-      toolName = inferredToolName;
+        );
+        toolName = inferredToolName;
+      }
     }
-  }
 
-  console.log(`[ActionGroup] Executing tool: ${toolName}`);
+    console.log(`[ActionGroup] Executing tool: ${toolName}`);
 
-  // Get clinic ID from session attributes
-  const clinicId = event.sessionAttributes?.clinicId || event.promptSessionAttributes?.clinicId;
-  if (!clinicId) {
-    return {
-      messageVersion: '1.0',
-      response: {
-        actionGroup: event.actionGroup,
-        apiPath: event.apiPath,
-        httpMethod: event.httpMethod,
-        // IMPORTANT: Always return 200 to Bedrock. Non-2xx here can surface as DependencyFailedException.
-        httpStatusCode: 200,
-        responseBody: {
-          'application/json': {
-            body: JSON.stringify({
-              status: 'FAILURE',
-              message: 'clinicId is required in session attributes',
-              httpStatusCode: 400,
-            }),
+    // Get clinic ID from session attributes
+    const clinicId = event.sessionAttributes?.clinicId || event.promptSessionAttributes?.clinicId;
+    if (!clinicId) {
+      return {
+        messageVersion: '1.0',
+        response: {
+          actionGroup: event.actionGroup,
+          apiPath: event.apiPath,
+          httpMethod: event.httpMethod,
+          // IMPORTANT: Always return 200 to Bedrock. Non-2xx here can surface as DependencyFailedException.
+          httpStatusCode: 200,
+          responseBody: {
+            'application/json': {
+              body: JSON.stringify({
+                status: 'FAILURE',
+                message: 'clinicId is required in session attributes',
+                httpStatusCode: 400,
+              }),
+            },
           },
         },
-      },
-    };
-  }
+      };
+    }
 
-  // Get clinic config securely from SSM/DynamoDB (not bundled JSON)
-  const clinicConfig = await getClinicConfigSecure(clinicId);
-  if (!clinicConfig) {
-    return {
-      messageVersion: '1.0',
-      response: {
-        actionGroup: event.actionGroup,
-        apiPath: event.apiPath,
-        httpMethod: event.httpMethod,
-        // IMPORTANT: Always return 200 to Bedrock. Non-2xx here can surface as DependencyFailedException.
-        httpStatusCode: 200,
-        responseBody: {
-          'application/json': {
-            body: JSON.stringify({ 
-              status: 'FAILURE', 
-              message: `Clinic configuration not found: ${clinicId}. Ensure clinic credentials are configured in the Clinics or ClinicSecrets DynamoDB table.`,
-              httpStatusCode: 400,
-            }),
+    // Get clinic config securely from SSM/DynamoDB (not bundled JSON)
+    const clinicConfig = await getClinicConfigSecure(clinicId);
+    if (!clinicConfig) {
+      return {
+        messageVersion: '1.0',
+        response: {
+          actionGroup: event.actionGroup,
+          apiPath: event.apiPath,
+          httpMethod: event.httpMethod,
+          // IMPORTANT: Always return 200 to Bedrock. Non-2xx here can surface as DependencyFailedException.
+          httpStatusCode: 200,
+          responseBody: {
+            'application/json': {
+              body: JSON.stringify({
+                status: 'FAILURE',
+                message: `Clinic configuration not found: ${clinicId}. Ensure clinic credentials are configured in the Clinics or ClinicSecrets DynamoDB table.`,
+                httpStatusCode: 400,
+              }),
+            },
           },
         },
-      },
-    };
-  }
+      };
+    }
 
-  // Create OpenDental client with circuit breaker
-  const odClient = new OpenDentalClient(clinicId, clinicConfig.developerKey, clinicConfig.customerKey);
+    // Create OpenDental client with circuit breaker
+    const odClient = new OpenDentalClient(clinicId, clinicConfig.developerKey, clinicConfig.customerKey);
 
-  // Execute the tool
-  const result = await handleTool(toolName, params, odClient, event.sessionAttributes);
+    // Execute the tool
+    const result = await handleTool(toolName, params, odClient, event.sessionAttributes);
 
-  // IMPORTANT: Bedrock treats non-2xx action group responses as API execution failures
-  // and can surface them as DependencyFailedException to the caller. We always return 200
-  // and embed the tool-level status code in the JSON body.
-  const safeBody =
-    result.body && typeof result.body === 'object'
-      ? { ...(result.body as any), httpStatusCode: result.statusCode }
-      : {
+    // IMPORTANT: Bedrock treats non-2xx action group responses as API execution failures
+    // and can surface them as DependencyFailedException to the caller. We always return 200
+    // and embed the tool-level status code in the JSON body.
+    const safeBody =
+      result.body && typeof result.body === 'object'
+        ? { ...(result.body as any), httpStatusCode: result.statusCode }
+        : {
           status: result.statusCode >= 200 && result.statusCode < 300 ? 'SUCCESS' : 'FAILURE',
           message: String(result.body ?? ''),
           httpStatusCode: result.statusCode,
         };
 
-  // Build response
-  const response: ActionGroupResponse = {
-    messageVersion: '1.0',
-    response: {
-      actionGroup: event.actionGroup,
-      apiPath: event.apiPath,
-      httpMethod: event.httpMethod,
-      // IMPORTANT: Always return 200 to Bedrock to avoid DependencyFailedException.
-      httpStatusCode: 200,
-      responseBody: {
-        'application/json': {
-          body: JSON.stringify(safeBody),
+    // Build response
+    const response: ActionGroupResponse = {
+      messageVersion: '1.0',
+      response: {
+        actionGroup: event.actionGroup,
+        apiPath: event.apiPath,
+        httpMethod: event.httpMethod,
+        // IMPORTANT: Always return 200 to Bedrock to avoid DependencyFailedException.
+        httpStatusCode: 200,
+        responseBody: {
+          'application/json': {
+            body: JSON.stringify(safeBody),
+          },
         },
       },
-    },
-  };
+    };
 
-  // Update session attributes if needed
-  if (result.updatedSessionAttributes) {
-    response.response.sessionAttributes = result.updatedSessionAttributes;
-  }
+    // Update session attributes if needed
+    if (result.updatedSessionAttributes) {
+      response.response.sessionAttributes = result.updatedSessionAttributes;
+    }
 
-  console.log('Action Group Response:', JSON.stringify(response, null, 2));
-  return response;
+    console.log('Action Group Response:', JSON.stringify(response, null, 2));
+    return response;
   } catch (error: any) {
     // CRITICAL: Always return a valid ActionGroupResponse to prevent DependencyFailedException
     // If we throw an unhandled exception, Bedrock receives DependencyFailedException and the user
     // gets a cryptic error message instead of a helpful response
     console.error('[ActionGroup] UNHANDLED ERROR:', error);
     console.error('[ActionGroup] Event that caused error:', JSON.stringify(event, null, 2));
-    
+
     return {
       messageVersion: '1.0',
       response: {
