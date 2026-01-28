@@ -133,305 +133,62 @@ RESPOND WITH ONLY a JSON object in this exact format:
 
   HTML_TEMPLATE: `You are a World-Class Email Marketing Architect.
 
-## REFERENCE HTML TEMPLATE (VISUAL SOURCE OF TRUTH)
-\`\`\`html
-<meta charset="UTF-8">
-<meta name="viewport" c="">
-<title>New Year. New You. A Healthier Smile.</title>
+## VISUAL DESIGN SYSTEM (STRICT RULES - DO NOT INVENT)
+You must generate a PRODUCTION-READY HTML email from scratch.
+Do NOT use a pre-existing template. Build it using these layout & styling rules:
 
-<table width="100%" cellpadding="0" cellspacing="0" bgcolor="#f0f0f0">
-<tbody><tr>
-<td align="center" style="padding:20px;">
+### 1. LAYOUT & CONTAINER
+- **Max Width**: \`650px\` (Centered).
+- **Container Radius**: \`20px\` (Rounded corners on main wrapper).
+- **Container Shadow**: \`0 20px 60px rgba(0,0,0,0.15)\` (Deep, premium shadow).
+- **Page Background**: \`#f0f0f0\` (Light grays).
+- **Content Background**: \`#ffffff\` (White).
+- **Spacing**: Use \`padding\` for all spacing (No margin hacks).
 
-<!-- MAIN CONTAINER -->
-<table width="650" cellpadding="0" cellspacing="0" bgcolor="#ffffff" style="border-radius:20px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.15);">
+### 2. COLOR PALETTE
+- **Header Background**: \`#404041\` (Dark Graphite) or \`#232323\` (Near Black).
+- **Header Text**: \`#ffffff\` (White).
+- **Body Text**: \`#6e6e73\` (Muted Gray).
+- **Headlines**: \`#232323\` (Dark Gray/Black).
+- **Accent/Link**: \`#232323\` (Monochrome branding).
 
-<!-- HEADER -->
-<tbody><tr>
-<td align="center" bgcolor="#232323" style="padding:50px 40px;background:#404041;color:#ffffff;">
+### 3. TYPOGRAPHY
+- **Font Stack**: \`Arial, Helvetica, sans-serif\` (System safe).
+- **H1 Headline**: \`32px\`, Weight \`700\`, Color \`#ffffff\` (if in header) or \`#232323\`.
+- **H2 Section**: \`26px\`, Weight \`600\`, Margin bottom \`10px\`.
+- **Body**: \`16px\`, Line-height \`1.6\`.
+- **Labels/Badges**: \`13px\`, Uppercase, Letter-spacing \`1px\`.
 
-<span style="display:inline-block;padding:10px 20px;border-radius:30px;
-             background:#555555;
-             font-size:13px;font-weight:600;
-             border:1px solid #777777;">
-NEW YEAR • NEW YOU
-</span>
+### 4. BUTTONS & COMPONENTS
+- **Primary CTA**:
+  - Shape: **Pill** (\`border-radius: 35px\`).
+  - Size: Large (\`padding: 18px 50px\`).
+  - Style: White background, Dark text (\`#232323\`), Bold.
+- **Financing/Secondary Buttons**:
+  - Shape: **Pill** (\`border-radius: 999px\`).
+  - Size: Compact (\`padding: 8px 22px\`).
+  - Style: Dark background (\`#232323\`), White text, Font size \`13px\`.
+- **Financing Cards**:
+  - Border: \`1px solid #e5e5e7\`.
+  - Radius: \`14px\`.
+  - Layout: 3-Column fluid.
 
-<h1 style="margin:18px 0 12px;font-size:32px;font-weight:700;color:#ffffff;">
-A Fresh Start for Your Smile
-</h1>
-
-<p style="margin:0;font-size:18px;color:#eeeeee;">
-Make the most of your dental benefits this year
-</p>
-
-</td>
-</tr>
-
-<!-- IMAGE BELOW HEADER -->
-<tr>
-<td align="center" style="padding:20px 40px;background:#f9f9f9;">
-<img src="https://todaysdentalpartners.com/assets/newmefamily.jpg" width="100%" alt="Healthy smile" style="max-width:570px;border-radius:12px;">
-</td>
-</tr>
-
-<!-- CONTENT -->
-<tr>
-<td style="padding:40px 40px;">
-
-<p style="font-size:16px;margin:0 0 16px;">
-Dear {{patient_name}},
-</p>
-
-<p style="font-size:16px;margin:0 0 16px;line-height:1.6;">
-A new year is the perfect time for new beginnings — especially when it comes to your smile.
-</p>
-
-<p style="font-size:16px;margin:0 0 24px;line-height:1.6;">
-You currently have dental benefits available that can help you stay proactive about your oral health.
-</p>
-
-<p style="font-size:16px;margin:0 0 32px;line-height:1.6;">
-Many dental insurance plans do not carry unused benefits forward.
-Using them now can help prevent future issues and reduce out-of-pocket costs.
-</p>
-
-</td>
-</tr>
-
-<!-- FINANCING SECTION -->
-<tr>
-<td style="padding:0 40px 40px;">
-
-<h2 style="text-align:center;font-size:26px;margin-bottom:10px;">
-💰 Flexible Financing Options
-</h2>
-
-<p style="text-align:center;font-size:16px;color:#6e6e73;margin-bottom:10px;">
-Don't stress — we've got you covered.
-</p>
-
-<p style="text-align:center;font-size:16px;color:#6e6e73;margin-bottom:30px;">
-Pre-qualify with a soft credit check.
-</p>
-
-<table width="100%" cellpadding="0" cellspacing="0">
-<tbody><tr>
-
-<!-- SUNBIT BOX -->
-<td width="33%" align="center" style="padding:10px;">
-<table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e5e7;border-radius:14px;">
-<tbody><tr>
-<td align="center" style="padding:25px;">
-<img src="https://image2url.com/images/1764588068012-9d6eefb9-49ac-40f6-b35e-3c6315978a8d.jpg" width="90" alt="Sunbit" style="display:block;margin:0 auto 12px auto;"><br>
-<strong>Sunbit</strong><br>
-<span style="font-size:14px;color:#6e6e73;">
-Flexible monthly payment plans
-</span><br><br>
-<a href="{{sunbit_link}}" style="display:inline-block;background:#232323;color:#ffffff;
-          padding:8px 22px;border-radius:999px;
-          font-size:13px;font-weight:600;
-          text-decoration:none;">
-Apply
-</a>
-</td>
-</tr>
-</tbody></table>
-</td>
-
-<!-- CARECREDIT BOX -->
-<td width="33%" align="center" style="padding:10px;">
-<table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e5e7;border-radius:14px;">
-<tbody><tr>
-<td align="center" style="padding:25px;">
-<img src="https://image2url.com/images/1764588048486-6240d5b5-1f96-4e12-a532-44fdf43081cd.jpg" width="90" alt="CareCredit" style="display:block;margin:0 auto 12px auto;"><br>
-<strong>CareCredit</strong><br>
-<span style="font-size:14px;color:#6e6e73;">
-Trusted healthcare financing
-</span><br><br>
-<a href="{{clinic_url}}/book-appointment" style="display:inline-block;background:#232323;color:#ffffff;
-          padding:8px 22px;border-radius:999px;
-          font-size:13px;font-weight:600;
-          text-decoration:none;">
-Apply
-</a>
-</td>
-</tr>
-</tbody></table>
-</td>
-
-<!-- CHERRY BOX -->
-<td width="33%" align="center" style="padding:10px;">
-<table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e5e7;border-radius:14px;">
-<tbody><tr>
-<td align="center" style="padding:25px;">
-<img src="https://image2url.com/images/1764588097175-b5354e57-dd46-434f-94bc-c925ee153630.jpg" width="90" alt="Cherry" style="display:block;margin:0 auto 12px auto;"><br>
-<strong>Cherry</strong><br>
-<span style="font-size:14px;color:#6e6e73;">
-Fast decisions &amp; easy approval
-</span><br><br>
-<a href="{{cherry_link}}" style="display:inline-block;background:#232323;color:#ffffff;
-          padding:8px 22px;border-radius:999px;
-          font-size:13px;font-weight:600;
-          text-decoration:none;">
-Apply
-</a>
-</td>
-</tr>
-</tbody></table>
-</td>
-
-</tr>
-</tbody></table>
-
-</td>
-</tr>
-
-<!-- CTA -->
-<tr>
-<td align="center" bgcolor="#232323" style="padding:45px 40px;
-           background:#404041;
-           color:#ffffff;">
-<h2 style="font-size:26px;margin-bottom:25px;color:#ffffff;">
-📅 Ready to Get Started?
-</h2>
-<a href="{{clinic_url}}/book-appointment" style="display:inline-block;background:#ffffff;color:#232323;
-          padding:18px 50px;border-radius:35px;
-          font-size:18px;font-weight:700;
-          text-decoration:none;">
-Book Your Appointment
-</a>
-</td>
-</tr>
-
-</tbody></table>
-<!-- END MAIN -->
-
-</td>
-</tr>
-</tbody></table>
-\`\`\`
-
-You are given a REFERENCE HTML EMAIL TEMPLATE (above) whose:
-- Color palette
-- Typography scale
-- Visual tone
-- Button styles
-- Border radius
-- Shadow depth
-are already APPROVED and MUST be preserved.
+### 5. DYNAMIC LAYOUT LOGIC
+- **Promotion**: Hero Image (top) + Header + Content + Financing Cards + CTA.
+- **Appointment**: Logo Header + Personalized Text + One Strong CTA + Footer.
+- **Welcome**: warm Header + Intro Text + "Book Now" CTA.
 
 YOUR TASK:
-Generate a COMPLETE, PRODUCTION-READY HTML EMAIL TEMPLATE
-that keeps the SAME VISUAL STYLING as the reference template,
-while improving and standardizing:
-- Content quality
-- Structural consistency
-- Accessibility
-- Email-client safety
-- Maintainability
+Generate the complete HTML string based on the \`emailType\` requested, applying the above VISUAL DESIGN SYSTEM STRICTLY.
 
 ==================================================
-STYLE LOCK (NON-NEGOTIABLE)
+TECHNICAL CONSTRAINTS
 ==================================================
-You MUST follow the SAME styling decisions as the reference HTML:
-
-COLOR PALETTE (DO NOT CHANGE):
-- Header & CTA background: #404041 / #232323
-- Page background: #f0f0f0
-- Content background: #ffffff
-- Muted text: #6e6e73
-- White text on dark backgrounds
-
-TYPOGRAPHY:
-- Font family: inherit (Arial / Helvetica / system-safe)
-- Headline size: ~32px, font-weight: 700
-- Section headings: ~26px
-- Body text: ~16px, line-height: 1.6
-- Small UI text: ~13–14px
-
-VISUAL STYLE:
-- Rounded corners: large (12–20px)
-- Soft premium shadows (no harsh borders)
-- Centered, balanced layout
-- Clean healthcare look
-- No gradients except subtle background tones
-
-BUTTON STYLES (LOCKED):
-- Primary CTA:
-  background: #ffffff
-  text color: #232323
-  padding: 18px 50px
-  border-radius: 35px
-  font-size: 16–18px
-  font-weight: 700
-
-- Secondary / pill buttons:
-  background: #232323
-  text color: #ffffff
-  padding: 8px 22px
-  border-radius: 999px
-  font-size: 13px
-  font-weight: 600
-
-DO NOT introduce new colors, button styles, or typography systems.
-
-==================================================
-TECHNICAL EMAIL REQUIREMENTS
-==================================================
-- TABLE-BASED layout ONLY
-- INLINE STYLES ONLY
-- Full HTML document structure:
-  <!DOCTYPE html>
-  <html>
-  <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Email</title>
-  </head>
-  <body>
-- Max width: 650px, centered
-- Assume Outlook 2016 as worst-case client
-- No flexbox, grid, position, float, JS, SVG
-- Use padding (not margin) for spacing
-
-==================================================
-CONTENT STRUCTURE (KEEP SAME FLOW)
-==================================================
-The overall section order MUST remain the same:
-
-1. Header with badge + main headline
-2. Hero image below header
-3. Personalized greeting ({{patient_name}})
-4. Benefit-focused body paragraphs
-5. Financing section (Sunbit, CareCredit, Cherry)
-6. Strong CTA section
-7. Footer with clinic details
-
-You MAY improve:
-- Wording clarity
-- Sentence flow
-- Consistency
-- Tone polish
-
-You MUST NOT:
-- Change the intent
-- Add hype
-- Remove key messages
-
-==================================================
-FINANCING SECTION (STYLE-PRESERVED)
-==================================================
-- 3-column layout
-- Rounded bordered boxes
-- Logos centered
-- Short descriptions
-- Pill-style “Apply” buttons
-
-Providers & links:
-- Sunbit → {{sunbit_link}}
-- CareCredit → {{clinic_url}}/book-appointment
-- Cherry → {{cherry_link}}
+- TABLE-BASED layout ONLY.
+- INLINE STYLES ONLY.
+- NO external CSS.
+- NO flexbox (use tables for columns).
+- Images must have \`display:block\`.
 
 ==================================================
 CONTENT & TONE RULES (STRICT UPGRADE)
@@ -447,6 +204,8 @@ CONTENT & TONE RULES (STRICT UPGRADE)
 - **Length**: MAX 3 paragraphs. MAX 2-3 sentences per paragraph.
 - **Forbidden**: "Hurry", "Act Now", "Best in town", "State of the art".
 - **Allowed**: "Help", "Care", "Health", "Comfort", "Simple".
+
+
 
 ==================================================
 ACCESSIBILITY & SAFETY
