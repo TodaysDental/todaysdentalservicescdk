@@ -3949,72 +3949,39 @@ async function queryAuditLogs(
 // ========================================
 
 async function getAdminCalendarEvents(queryParams: any, allowedClinics: Set<string>) {
-  const { clinicId, startDate, endDate } = queryParams || {};
+  const { startDate, endDate } = queryParams || {};
 
   if (!startDate || !endDate) {
     return httpErr(400, "startDate and endDate are required");
   }
 
   try {
-    // If clinicId is provided, query just that clinic
-    if (clinicId) {
-      if (!hasClinicAccess(allowedClinics, clinicId)) {
-        return httpErr(403, "Forbidden: no access to this clinic");
-      }
-
-      // Add time components for proper ISO datetime comparison
-      const startDateISO = startDate.includes('T') ? startDate : `${startDate}T00:00:00`;
-      const endDateISO = endDate.includes('T') ? endDate : `${endDate}T23:59:59.999Z`;
-
-      const { Items } = await ddb.send(new QueryCommand({
-        TableName: ADMIN_CALENDAR_TABLE,
-        IndexName: 'byClinicAndDate',
-        KeyConditionExpression: 'clinicId = :clinicId AND startDateTime BETWEEN :startDate AND :endDate',
-        ExpressionAttributeValues: {
-          ':clinicId': clinicId,
-          ':startDate': startDateISO,
-          ':endDate': endDateISO,
-        },
-      }));
-
-      return httpOk({ events: Items || [] });
-    }
-
-    // If no clinicId, query across all allowed clinics
-    const clinicIds = Array.from(allowedClinics);
-    const allEvents: any[] = [];
-
     // Add time components for proper ISO datetime comparison
     const startDateISO = startDate.includes('T') ? startDate : `${startDate}T00:00:00`;
     const endDateISO = endDate.includes('T') ? endDate : `${endDate}T23:59:59.999Z`;
 
-    // Query each allowed clinic in parallel
-    const queries = clinicIds.map(async (cId) => {
-      try {
-        const { Items } = await ddb.send(new QueryCommand({
-          TableName: ADMIN_CALENDAR_TABLE,
-          IndexName: 'byClinicAndDate',
-          KeyConditionExpression: 'clinicId = :clinicId AND startDateTime BETWEEN :startDate AND :endDate',
-          ExpressionAttributeValues: {
-            ':clinicId': cId,
-            ':startDate': startDateISO,
-            ':endDate': endDateISO,
-          },
-        }));
-        return Items || [];
-      } catch (err) {
-        console.error(`Error querying clinic ${cId}:`, err);
-        return [];
-      }
+    // Query GLOBAL events (all admin calendar events are global)
+    const { Items } = await ddb.send(new QueryCommand({
+      TableName: ADMIN_CALENDAR_TABLE,
+      IndexName: 'byClinicAndDate',
+      KeyConditionExpression: 'clinicId = :clinicId AND startDateTime BETWEEN :startDate AND :endDate',
+      ExpressionAttributeValues: {
+        ':clinicId': 'GLOBAL',
+        ':startDate': startDateISO,
+        ':endDate': endDateISO,
+      },
+    }));
+
+    // Remove clinicId from events in response
+    const events = (Items || []).map((event: any) => {
+      const { clinicId, ...eventWithoutClinicId } = event;
+      return eventWithoutClinicId;
     });
 
-    const results = await Promise.all(queries);
-    results.forEach(items => allEvents.push(...items));
-
     // Sort by startDateTime
-    allEvents.sort((a, b) => a.startDateTime.localeCompare(b.startDateTime));
+    events.sort((a: any, b: any) => a.startDateTime.localeCompare(b.startDateTime));
 
-    return httpOk({ events: allEvents });
+    return httpOk({ events });
   } catch (error: any) {
     console.error('Error fetching admin calendar events:', error);
     return httpErr(500, `Failed to fetch calendar events: ${error.message}`);
@@ -4022,14 +3989,10 @@ async function getAdminCalendarEvents(queryParams: any, allowedClinics: Set<stri
 }
 
 async function createAdminCalendarEvent(body: any, userPerms: UserPermissions, allowedClinics: Set<string>) {
-  const { clinicId, eventType, title, description, startDateTime, endDateTime, allDay, assignedTo, meetingLink, priority, dueDate } = body;
+  const { eventType, title, description, startDateTime, endDateTime, allDay, assignedTo, meetingLink, priority, dueDate } = body;
 
-  if (!clinicId || !eventType || !title || !startDateTime) {
-    return httpErr(400, "clinicId, eventType, title, and startDateTime are required");
-  }
-
-  if (!hasClinicAccess(allowedClinics, clinicId)) {
-    return httpErr(403, "Forbidden: no access to this clinic");
+  if (!eventType || !title || !startDateTime) {
+    return httpErr(400, "eventType, title, and startDateTime are required");
   }
 
   const validEventTypes = ['task', 'meeting', 'todo'];
@@ -4045,9 +4008,10 @@ async function createAdminCalendarEvent(body: any, userPerms: UserPermissions, a
   const eventId = uuidv4();
   const now = new Date().toISOString();
 
+  // Use GLOBAL as clinicId for database indexing - events are not clinic-specific
   const event = {
     eventId,
-    clinicId,
+    clinicId: 'GLOBAL', // Internal use only for DB indexing
     eventType,
     title: title.trim(),
     description: description?.trim() || null,
@@ -4071,7 +4035,9 @@ async function createAdminCalendarEvent(body: any, userPerms: UserPermissions, a
       Item: event,
     }));
 
-    return httpOk(event);
+    // Return event without clinicId in response
+    const { clinicId: _, ...responseEvent } = event;
+    return httpOk({ success: true, ...responseEvent });
   } catch (error: any) {
     console.error('Error creating admin calendar event:', error);
     return httpErr(500, `Failed to create calendar event: ${error.message}`);
