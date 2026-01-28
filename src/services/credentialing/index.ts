@@ -508,7 +508,7 @@ async function listProviders(queryParams: any, allowedClinics: Set<string>) {
 }
 
 async function createProvider(body: any, userPerms: UserPermissions, allowedClinics: Set<string>) {
-  const { name, npi, specialty, clinicIds, email } = body;
+  const { name, npi, specialty, clinicIds, email, tempProviderId } = body;
 
   if (!name || !npi || !specialty) {
     return httpErr(400, 'name, npi, and specialty are required');
@@ -555,7 +555,46 @@ async function createProvider(body: any, userPerms: UserPermissions, allowedClin
 
   await ddb.send(new PutCommand({ TableName: PROVIDERS_TABLE, Item: provider }));
 
-  return httpCreated({ providerId, message: 'Provider created successfully', provider });
+  // If a tempProviderId was provided, link any documents uploaded during wizard flow
+  let linkedDocuments = 0;
+  if (tempProviderId && tempProviderId.startsWith('temp-')) {
+    try {
+      // Find all documents with this tempProviderId
+      const { Items: tempDocs } = await ddb.send(new QueryCommand({
+        TableName: DOCUMENTS_TABLE,
+        IndexName: 'byProvider',
+        KeyConditionExpression: 'providerId = :tempId',
+        ExpressionAttributeValues: { ':tempId': tempProviderId },
+      }));
+
+      // Update each document to use the real providerId
+      for (const doc of tempDocs || []) {
+        await ddb.send(new UpdateCommand({
+          TableName: DOCUMENTS_TABLE,
+          Key: { documentId: doc.documentId },
+          UpdateExpression: 'SET providerId = :newId, #status = :status, linkedAt = :linkedAt',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':newId': providerId,
+            ':status': 'pending',  // Change from pending-provider to pending
+            ':linkedAt': now,
+          },
+        }));
+        linkedDocuments++;
+      }
+      console.log(`Linked ${linkedDocuments} documents from temp provider ${tempProviderId} to ${providerId}`);
+    } catch (err) {
+      console.error('Error linking temp documents:', err);
+      // Don't fail provider creation if document linking fails
+    }
+  }
+
+  return httpCreated({ 
+    providerId, 
+    message: 'Provider created successfully', 
+    provider,
+    linkedDocuments,
+  });
 }
 
 async function getProvider(providerId: string, allowedClinics: Set<string>) {
@@ -1398,20 +1437,25 @@ async function getProviderDocuments(providerId: string, allowedClinics: Set<stri
 }
 
 async function getDocumentUploadUrl(providerId: string, body: any, userPerms: UserPermissions, allowedClinics: Set<string>) {
-  // Verify provider access
-  const { Item: provider } = await ddb.send(new GetCommand({
-    TableName: PROVIDERS_TABLE,
-    Key: { providerId },
-  }));
+  // Check if this is a temporary provider ID (for new provider wizard flow)
+  const isTempProvider = providerId.startsWith('temp-');
 
-  if (!provider) {
-    return httpErr(404, 'Provider not found');
-  }
+  // For real providers, verify provider exists and user has access
+  if (!isTempProvider) {
+    const { Item: provider } = await ddb.send(new GetCommand({
+      TableName: PROVIDERS_TABLE,
+      Key: { providerId },
+    }));
 
-  if (!allowedClinics.has('*')) {
-    const hasAccess = provider.clinicIds?.some((cid: string) => allowedClinics.has(cid));
-    if (!hasAccess) {
-      return httpErr(403, 'No access to this provider');
+    if (!provider) {
+      return httpErr(404, 'Provider not found');
+    }
+
+    if (!allowedClinics.has('*')) {
+      const hasAccess = provider.clinicIds?.some((cid: string) => allowedClinics.has(cid));
+      if (!hasAccess) {
+        return httpErr(403, 'No access to this provider');
+      }
     }
   }
 
@@ -1428,7 +1472,10 @@ async function getDocumentUploadUrl(providerId: string, body: any, userPerms: Us
   }
 
   const documentId = uuidv4();
-  const s3Key = `providers/${providerId}/${validatedType}/${documentId}-${fileName}`;
+  // For temp providers, store in staging folder; for real providers, use regular path
+  const s3Key = isTempProvider
+    ? `staging/${providerId}/${validatedType}/${documentId}-${fileName}`
+    : `providers/${providerId}/${validatedType}/${documentId}-${fileName}`;
   const now = new Date().toISOString();
 
   // Create presigned URL for upload
@@ -1443,12 +1490,13 @@ async function getDocumentUploadUrl(providerId: string, body: any, userPerms: Us
   // Save document metadata
   const document = {
     documentId,
-    providerId,
+    providerId,  // Store temp ID - will be updated when provider is created
+    tempProviderId: isTempProvider ? providerId : undefined,  // Track temp ID for later linking
     documentType,
     fileName,
     s3Key,
     contentType: contentType || 'application/octet-stream',
-    status: 'pending', // Will be updated to 'uploaded' after successful upload
+    status: isTempProvider ? 'pending-provider' : 'pending',  // Different status for temp uploads
     uploadedAt: now,
     uploadedBy: userPerms.email,
   };
