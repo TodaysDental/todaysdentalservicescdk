@@ -7,6 +7,8 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
 import { Construct } from 'constructs';
 import * as path from 'path';
 
@@ -148,6 +150,56 @@ export class LeaseManagementStack extends cdk.Stack {
       timeout: cdk.Duration.minutes(2),  // 2 minutes for PDF processing
       memorySize: 1024,
     });
+
+    // ========================================
+    // LEASE ALERT SCHEDULED LAMBDA
+    // ========================================
+    // Lambda for sending daily lease alerts (lease end dates, renewal windows, events)
+    const leaseAlertLambda = new lambdaNode.NodejsFunction(this, 'LeaseAlertLambda', {
+      entry: path.join(__dirname, '../../services/lease-management/leaseAlertHandler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_18_X,
+      environment: {
+        LEASE_TABLE_NAME: this.leaseTable.tableName,
+        STAFF_USER_TABLE: 'StaffUser',
+        APP_NAME: 'TodaysDentalInsights',
+        FROM_EMAIL: 'no-reply@todaysdentalinsights.com',  // Same as HR module
+        SES_REGION: 'us-east-1',
+      },
+      timeout: cdk.Duration.minutes(5),  // 5 minutes for scanning all leases and sending emails
+      memorySize: 512,
+    });
+
+    // Grant LeaseAlertLambda permissions to read leases and users tables
+    this.leaseTable.grantReadWriteData(leaseAlertLambda);  // Read leases, write alert logs
+
+    // Grant permission to read StaffUser table (cross-stack reference to CoreStack)
+    const staffUserTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/StaffUser`;
+    leaseAlertLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:Scan'],
+      resources: [staffUserTableArn],
+    }));
+
+    // Grant SES permissions to send emails
+    leaseAlertLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:SendEmail', 'ses:SendRawEmail'],
+      resources: ['*'],  // You can restrict this to specific SES identities if needed
+    }));
+
+    // EventBridge Rule to trigger daily at 8:00 AM EST (13:00 UTC)
+    const dailyAlertRule = new events.Rule(this, 'DailyLeaseAlertRule', {
+      ruleName: 'DailyLeaseAlertSchedule',
+      description: 'Triggers daily lease alert scan for lease end dates, renewal windows, and events',
+      schedule: events.Schedule.cron({
+        minute: '0',
+        hour: '13',  // 8:00 AM EST = 13:00 UTC
+        day: '*',
+        month: '*',
+        year: '*',
+      }),
+    });
+
+    dailyAlertRule.addTarget(new eventsTargets.LambdaFunction(leaseAlertLambda));
 
     // Grant DynamoDB permissions
     this.leaseTable.grantReadWriteData(createLeaseLambda);

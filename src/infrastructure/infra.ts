@@ -48,6 +48,7 @@ import { InsuranceAutomationStack } from './stacks/insurance-automation-stack';
 import { SecretsStack } from './stacks/secrets-stack';
 import { PushNotificationsStack } from './stacks/push-notifications-stack';
 import { ConnectLexAiStack } from './stacks/connect-lex-ai-stack';
+import { AnalyticsDashboardStack } from './stacks/analytics-dashboard-stack';
 // import { DentalSoftwareStack } from './stacks/dental-software-stack';
 
 // Import clinic config for AI phone number mapping (used by Connect/Lex stack)
@@ -313,6 +314,7 @@ const CHATBOT_CONVERSATIONS_TABLE_NAME = `${CHATBOT_STACK_NAME}-ConversationN1`;
 // CRITICAL FIX: Using constant names prevents CloudFormation from creating implicit exports
 // which cause UPDATE_ROLLBACK failures when the table needs replacement
 const ANALYTICS_STACK_NAME = 'TodaysDentalInsightsAnalyticsN1';
+const ANALYTICS_DASHBOARD_STACK_NAME = 'TodaysDentalInsightsAnalyticsDashboardN1';
 // Table names follow the pattern: ${stackName}-TableNameSuffix
 const ANALYTICS_TABLE_NAME = `${ANALYTICS_STACK_NAME}-CallAnalyticsN1`;
 const ANALYTICS_DEDUP_TABLE_NAME = `${ANALYTICS_STACK_NAME}-CallAnalytics-dedupV2`;
@@ -924,6 +926,54 @@ insuranceAutomationStack.addDependency(secretsStack); // Explicit - uses secrets
 
 // Push Notifications Stack is instantiated earlier in the file (before ChimeStack and CommStack)
 // See the PUSH NOTIFICATIONS STACK section above
+
+// ========================================
+// ANALYTICS DASHBOARD STACK
+// ========================================
+// Comprehensive daily analytics endpoint that aggregates data from:
+// - GA4 (Google Analytics 4) - Website traffic and behavior
+// - Google Ads - Campaign performance and conversions
+// - Microsoft Clarity - Session recordings and heatmaps
+// - Calls - Inbound, outbound, missed from Chime/Analytics
+// - Patient Portal - Appointment bookings and engagement
+// - AI Agents - Voice AI call handling metrics
+// - Open Dental Production - Revenue and appointment data
+const analyticsDashboardStack = new AnalyticsDashboardStack(app, ANALYTICS_DASHBOARD_STACK_NAME, {
+  env,
+  jwtSecret: coreStack.jwtSecretValue,
+  authorizerFunctionArn: coreStack.authorizerFunction.functionArn,
+  // SFTP server for Open Dental query results delivery
+  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
+  // Call Analytics table from AnalyticsStack
+  callAnalyticsTableName: ANALYTICS_TABLE_NAME,
+  callAnalyticsTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/${ANALYTICS_TABLE_NAME}`,
+  // AI Agents Metrics table from AiAgentsStack (if available)
+  aiAgentsMetricsTableName: ENABLE_VOICE_AI_ANALYTICS
+    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsMetricsTableName`)
+    : undefined,
+  aiAgentsMetricsTableArn: ENABLE_VOICE_AI_ANALYTICS
+    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsMetricsTableArn`)
+    : undefined,
+  // Patient Portal Metrics table from PatientPortalStack
+  patientPortalMetricsTableName: patientPortalStack.portalMetricsTableName,
+  patientPortalMetricsTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/${patientPortalStack.portalMetricsTableName}`,
+  // Clinic Config table for clinic metadata
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  clinicConfigTableArn: secretsStack.clinicConfigTable.tableArn,
+  // Clinic Secrets table for per-clinic API tokens (e.g., Clarity)
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
+  clinicSecretsTableArn: secretsStack.clinicSecretsTable.tableArn,
+  // Global Secrets table for API credentials (GA4, Google Ads)
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  globalSecretsTableArn: secretsStack.globalSecretsTable.tableArn,
+  // Secrets encryption key for decrypting credentials
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+});
+analyticsDashboardStack.addDependency(coreStack); // Explicit - uses JWT secret
+analyticsDashboardStack.addDependency(analyticsStack); // Explicit - uses CallAnalytics table
+analyticsDashboardStack.addDependency(patientPortalStack); // Explicit - uses PatientPortalMetrics table
+analyticsDashboardStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets table
+analyticsDashboardStack.addDependency(openDentalStack); // Explicit - uses consolidated SFTP transfer server
 
 // CRITICAL FIX: Remove commented-out code that could lead to circular dependencies
 // Note: The proper dependencies are already set above:

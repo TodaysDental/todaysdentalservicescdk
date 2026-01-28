@@ -81,48 +81,146 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Sort by creation date (newest first)
     leases.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-    // Transform to table-friendly format
-    const tableData = leases.map((lease: any) => ({
-      // Keys for operations
-      clinicId: lease.propertyInformation?.clinicId || lease.PK?.replace('CLINIC#', ''),
-      leaseId: lease.SK?.replace('LEASE#', ''),
+    // Completely flatten all lease data for easy frontend access
+    const flattenedData = leases.map((lease: any) => {
+      // Extract IDs from keys
+      const clinicId = lease.propertyInformation?.clinicId || lease.PK?.replace('CLINIC#', '');
+      const leaseId = lease.SK?.replace('LEASE#', '');
       
-      // Table columns
-      clinicName: lease.propertyInformation?.clinicName || '',
-      city: lease.propertyInformation?.city || '',
-      state: lease.propertyInformation?.state || '',
-      landlord: lease.propertyInformation?.landlord || '',
-      rent: lease.financialDetails?.currentRentInclCAM || lease.financialDetails?.baseRent || 0,
-      baseRent: lease.financialDetails?.baseRent || 0,
-      startDate: lease.leaseTerms?.startDate || '',
-      endDate: lease.leaseTerms?.endDate || '',
-      sqft: lease.leaseTerms?.sqft || 0,
-      termLength: lease.leaseTerms?.termLength || '',
-      status: lease.leaseTerms?.status || lease.status || '',
-      
-      // Additional useful fields
-      address: lease.propertyInformation?.address || '',
-      propertyType: lease.propertyInformation?.propertyType || '',
-      leaseType: lease.leaseTerms?.leaseType || '',
-      securityDeposit: lease.financialDetails?.securityDeposit || 0,
-      
-      // Counts for quick reference
-      documentsCount: lease.documents?.length || 0,
-      assetsCount: lease.assets?.length || 0,
-      eventsCount: lease.events?.length || 0,
-      contactsCount: lease.contacts?.length || 0,
-      
-      // Timestamps and audit info
-      createdAt: lease.createdAt,
-      updatedAt: lease.updatedAt,
-      createdBy: lease.createdBy || '',
-      lastModifiedBy: lease.lastModifiedBy || ''
-    }));
+      return {
+        // Primary keys
+        clinicId,
+        leaseId,
+        PK: lease.PK,
+        SK: lease.SK,
+        entityType: lease.entityType,
+        
+        // Property Information (flattened)
+        clinicName: lease.propertyInformation?.clinicName || '',
+        practiceId: lease.propertyInformation?.practiceId || '',
+        propertyId: lease.propertyInformation?.propertyId || '',
+        address: lease.propertyInformation?.address || '',
+        addressLine2: lease.propertyInformation?.addressLine2 || '',
+        city: lease.propertyInformation?.city || '',
+        state: lease.propertyInformation?.state || '',
+        zip: lease.propertyInformation?.zip || '',
+        propertyType: lease.propertyInformation?.propertyType || '',
+        landlord: lease.propertyInformation?.landlord || '',
+        propertyManager: lease.propertyInformation?.propertyManager || '',
+        parkingSpaces: lease.propertyInformation?.parkingSpaces || '',
+        
+        // Financial Details (flattened)
+        currentRentInclCAM: lease.financialDetails?.currentRentInclCAM || 0,
+        baseRent: lease.financialDetails?.baseRent || 0,
+        baseRentPerSqFt: lease.financialDetails?.baseRentPerSqFt || 0,
+        camCharges: lease.financialDetails?.camCharges || 0,
+        maintenanceCharges: lease.financialDetails?.maintenanceCharges || 0,
+        realEstateTaxes: lease.financialDetails?.realEstateTaxes || 0,
+        utilities: lease.financialDetails?.utilities || 0,
+        insurance: lease.financialDetails?.insurance || 0,
+        totalLeaseLiability: lease.financialDetails?.totalLeaseLiability || 0,
+        securityDeposit: lease.financialDetails?.securityDeposit || 0,
+        depositRefundable: lease.financialDetails?.depositRefundable || false,
+        
+        // Lease Terms (flattened)
+        originalLeaseDate: lease.leaseTerms?.originalLeaseDate || '',
+        startDate: lease.leaseTerms?.startDate || '',
+        endDate: lease.leaseTerms?.endDate || '',
+        termLength: lease.leaseTerms?.termLength || '',
+        leaseType: lease.leaseTerms?.leaseType || '',
+        status: lease.leaseTerms?.status || lease.status || '',
+        sqft: lease.leaseTerms?.sqft || 0,
+        totalSqft: lease.leaseTerms?.totalSqft || 0,
+        renewalRequestStartDate: lease.leaseTerms?.renewalRequestStartDate || '',
+        renewalRequestEndDate: lease.leaseTerms?.renewalRequestEndDate || '',
+        renewalTerms: lease.leaseTerms?.renewalTerms || '',
+        
+        // Renewal Information (flattened)
+        renewalRequestStart: lease.renewalInformation?.requestStartDate || '',
+        renewalFinalDate: lease.renewalInformation?.finalDate || '',
+        renewalSubmissionDate: lease.renewalInformation?.submissionDate || '',
+        
+        // Payment Terms (flattened)
+        rentDueDate: lease.paymentTerms?.rentDueDate || '',
+        lateCharges: lease.paymentTerms?.lateCharges || '',
+        interestRate: lease.paymentTerms?.interestRate || '',
+        failedCheckFee: lease.paymentTerms?.failedCheckFee || '',
+        
+        // Clauses (flattened)
+        exclusiveUse: lease.clauses?.exclusiveUse || '',
+        daysOfOperation: lease.clauses?.daysOfOperation || '',
+        assignmentFee: lease.clauses?.assignmentFee || 0,
+        guaranteeType: lease.clauses?.guaranteeType || '',
+        
+        // Hidden Charges (flattened)
+        signageFee: lease.hiddenCharges?.signageFee || 0,
+        trashPickup: lease.hiddenCharges?.trashPickup || 0,
+        marketingFund: lease.hiddenCharges?.marketingFund || 0,
+        snowRemoval: lease.hiddenCharges?.snowRemoval || 0,
+        merchantAssociationFee: lease.hiddenCharges?.merchantAssociationFee || 0,
+        
+        // Notes and Remarks (flattened)
+        notes: lease.notesAndRemarks?.notes || '',
+        remarks: lease.notesAndRemarks?.remarks || '',
+        
+        // Convenience: rent alias for table display
+        rent: lease.financialDetails?.currentRentInclCAM || lease.financialDetails?.baseRent || 0,
+        
+        // Counts for quick reference
+        documentsCount: lease.documents?.length || 0,
+        assetsCount: lease.assets?.length || 0,
+        eventsCount: lease.events?.length || 0,
+        contactsCount: lease.contacts?.length || 0,
+        
+        // Arrays (keep as arrays - can't flatten)
+        documents: lease.documents || [],
+        assets: lease.assets || [],
+        events: lease.events || [],
+        contacts: lease.contacts || [],
+        
+        // Custom fields (spread at top level)
+        ...lease.customFields,
+        
+        // Also spread any custom fields from nested objects
+        ...(lease.propertyInformation ? 
+          Object.fromEntries(
+            Object.entries(lease.propertyInformation).filter(([key]) => 
+              !['clinicId', 'clinicName', 'practiceId', 'propertyId', 'address', 'addressLine2', 
+               'city', 'state', 'zip', 'propertyType', 'landlord', 'propertyManager', 'parkingSpaces'].includes(key)
+            )
+          ) : {}
+        ),
+        ...(lease.financialDetails ? 
+          Object.fromEntries(
+            Object.entries(lease.financialDetails).filter(([key]) => 
+              !['currentRentInclCAM', 'baseRent', 'baseRentPerSqFt', 'camCharges', 'maintenanceCharges',
+               'realEstateTaxes', 'utilities', 'insurance', 'totalLeaseLiability', 'securityDeposit', 'depositRefundable'].includes(key)
+            )
+          ) : {}
+        ),
+        ...(lease.leaseTerms ? 
+          Object.fromEntries(
+            Object.entries(lease.leaseTerms).filter(([key]) => 
+              !['originalLeaseDate', 'startDate', 'endDate', 'termLength', 'leaseType', 'status', 
+               'sqft', 'totalSqft', 'renewalRequestStartDate', 'renewalRequestEndDate', 'renewalTerms'].includes(key)
+            )
+          ) : {}
+        ),
+        
+        // Timestamps and audit info
+        createdAt: lease.createdAt,
+        updatedAt: lease.updatedAt,
+        createdBy: lease.createdBy || '',
+        lastModifiedBy: lease.lastModifiedBy || '',
+        deletedBy: lease.deletedBy,
+        deletedAt: lease.deletedAt,
+      };
+    });
 
     return createResponse(200, {
       success: true,
-      data: tableData,
-      count: tableData.length,
+      data: flattenedData,
+      count: flattenedData.length,
       hasMore: !!result.LastEvaluatedKey,
       lastEvaluatedKey: result.LastEvaluatedKey ? JSON.stringify(result.LastEvaluatedKey) : null
     });

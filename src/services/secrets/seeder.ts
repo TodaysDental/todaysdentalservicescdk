@@ -36,6 +36,8 @@ interface ClinicSecret {
   domainSmtpPassword: string;
   ayrshareProfileKey: string;
   ayrshareRefId: string;
+  // Microsoft Clarity API token for analytics
+  microsoftClarityApiToken?: string;
   // RCS messaging configuration
   rcsSenderId?: string;
   messagingServiceSid?: string;
@@ -59,10 +61,10 @@ interface ClinicConfig {
  */
 async function batchWriteItems(tableName: string, items: Record<string, any>[]): Promise<void> {
   const BATCH_SIZE = 25;
-  
+
   for (let i = 0; i < items.length; i += BATCH_SIZE) {
     const batch = items.slice(i, i + BATCH_SIZE);
-    
+
     const writeRequests = batch.map(item => ({
       PutRequest: {
         Item: marshall(item, { removeUndefinedValues: true }),
@@ -90,7 +92,7 @@ async function batchWriteItems(tableName: string, items: Record<string, any>[]):
  */
 async function seedClinicSecrets(): Promise<number> {
   console.log(`[Seeder] Seeding ${clinicSecretsData.length} clinic secrets...`);
-  
+
   const items = (clinicSecretsData as ClinicSecret[]).map(secret => ({
     clinicId: secret.clinicId,
     openDentalDeveloperKey: secret.openDentalDeveloperKey,
@@ -101,6 +103,8 @@ async function seedClinicSecrets(): Promise<number> {
     domainSmtpPassword: secret.domainSmtpPassword,
     ayrshareProfileKey: secret.ayrshareProfileKey,
     ayrshareRefId: secret.ayrshareRefId,
+    // Microsoft Clarity API token for analytics
+    microsoftClarityApiToken: secret.microsoftClarityApiToken,
     // RCS messaging configuration
     rcsSenderId: secret.rcsSenderId,
     messagingServiceSid: secret.messagingServiceSid,
@@ -116,7 +120,7 @@ async function seedClinicSecrets(): Promise<number> {
  */
 async function seedGlobalSecrets(): Promise<number> {
   console.log(`[Seeder] Seeding ${globalSecretsData.length} global secrets...`);
-  
+
   const items = (globalSecretsData as GlobalSecret[]).map(secret => ({
     secretId: secret.secretId,
     secretType: secret.secretType,
@@ -134,7 +138,7 @@ async function seedGlobalSecrets(): Promise<number> {
  */
 async function seedClinicConfig(): Promise<number> {
   console.log(`[Seeder] Seeding ${clinicConfigData.length} clinic configs...`);
-  
+
   const items = (clinicConfigData as ClinicConfig[]).map(config => ({
     ...config,
     updatedAt: new Date().toISOString(),
