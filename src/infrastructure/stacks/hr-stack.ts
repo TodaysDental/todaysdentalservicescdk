@@ -410,6 +410,25 @@ export class HrStack extends Stack {
     });
 
     // ========================================
+    // ADMIN CALENDAR EVENTS TABLE - Tasks, Meetings, To-Dos
+    // ========================================
+    const adminCalendarTable = new dynamodb.Table(this, 'AdminCalendarEventsTable', {
+      tableName: `${this.stackName}-AdminCalendarEvents`,
+      partitionKey: { name: 'eventId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      pointInTimeRecovery: true,
+    });
+    applyTags(adminCalendarTable, { Table: 'admin-calendar-events' });
+
+    // GSI for querying events by clinic and date range
+    adminCalendarTable.addGlobalSecondaryIndex({
+      indexName: 'byClinicAndDate',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'startDateTime', type: dynamodb.AttributeType.STRING },
+    });
+
+    // ========================================
     // API GATEWAY
     // ========================================
 
@@ -484,6 +503,7 @@ export class HrStack extends Stack {
         SHIFTS_TABLE: this.shiftsTable.tableName,
         LEAVE_TABLE: this.leaveTable.tableName,
         ADVANCE_PAY_TABLE: advancePayTable.tableName, // For advance pay requests
+        ADMIN_CALENDAR_TABLE: adminCalendarTable.tableName, // For admin calendar events
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName, // From CoreStack
         STAFF_USER_TABLE: staffUserTableName, // For user lookups (replaces Cognito)
         CLINICS_TABLE: props.clinicsTableName, // From ChimeStack - for timezone lookup
@@ -502,6 +522,7 @@ export class HrStack extends Stack {
     this.shiftsTable.grantReadWriteData(this.hrFn);
     this.leaveTable.grantReadWriteData(this.hrFn);
     advancePayTable.grantReadWriteData(this.hrFn); // For advance pay requests
+    adminCalendarTable.grantReadWriteData(this.hrFn); // For admin calendar events
 
     // Grant WRITE permission to Audit table (for logging)
     // Grant READ permission for audit query endpoints (admin only)
