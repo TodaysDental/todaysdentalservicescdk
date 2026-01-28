@@ -1,20 +1,17 @@
-import { DynamoDBDocumentClient, QueryCommand, TransactWriteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { ChimeSDKMeetingsClient, CreateAttendeeCommand, DeleteAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
-import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
-import { getSmaIdForClinic } from './sma-map';
+import { DynamoDBDocumentClient, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { ChimeSDKMeetingsClient } from '@aws-sdk/client-chime-sdk-meetings';
+import { ChimeSDKVoiceClient } from '@aws-sdk/client-chime-sdk-voice';
+import { selectBestAgents, type AgentInfo as SelectionAgentInfo, type CallContext } from './agent-selection';
+import { isPushNotificationsEnabled, sendIncomingCallToAgents } from './push-notifications';
+import { defaultRejectionTracker } from './rejection-tracker';
+import { DistributedLock } from './distributed-lock';
 
 interface CheckQueueForWorkDeps {
     ddb: DynamoDBDocumentClient;
     callQueueTableName?: string;
     agentPresenceTableName?: string;
-    chime: ChimeSDKMeetingsClient;
-    chimeVoiceClient: ChimeSDKVoiceClient;
-}
-
-interface AgentCapabilities {
-    skills?: string[];
-    languages?: string[];
-    canHandleVip?: boolean;
+    chime?: ChimeSDKMeetingsClient;
+    chimeVoiceClient?: ChimeSDKVoiceClient;
 }
 
 interface QueuedCall {
@@ -41,6 +38,40 @@ interface AgentInfo extends Record<string, any> {
     skills?: string[];
     languages?: string[];
     canHandleVip?: boolean;
+}
+
+const MAX_RING_AGENTS = Math.max(1, Number.parseInt(process.env.MAX_RING_AGENTS || '25', 10));
+const MAX_SIMUL_RING_CALLS = Math.max(1, Number.parseInt(process.env.MAX_SIMUL_RING_CALLS || '10', 10));
+const LOCKS_TABLE_NAME = process.env.LOCKS_TABLE_NAME;
+
+/**
+ * Determine if an agent is eligible for a call (skills/language/VIP).
+ * This is used to pre-filter agent pools before scoring.
+ */
+function agentEligibleForCall(agent: SelectionAgentInfo, call: QueuedCall): boolean {
+    const requiredSkills = Array.isArray(call.requiredSkills) ? call.requiredSkills.filter((s) => typeof s === 'string') : [];
+    if (requiredSkills.length > 0) {
+        const agentSkills = Array.isArray(agent.skills) ? agent.skills : [];
+        const hasAllRequired = requiredSkills.every((skill) => agentSkills.includes(skill));
+        if (!hasAllRequired) {
+            return false;
+        }
+    }
+
+    const language = typeof call.language === 'string' ? call.language : undefined;
+    if (language) {
+        const agentLanguages = Array.isArray(agent.languages) && agent.languages.length > 0 ? agent.languages : ['en'];
+        if (!agentLanguages.includes(language)) {
+            return false;
+        }
+    }
+
+    const isVip = call.isVip === true;
+    if (isVip && agent.canHandleVip !== true) {
+        return false;
+    }
+
+    return true;
 }
 
 /**
@@ -114,78 +145,35 @@ function calculatePriorityScore(entry: QueuedCall, nowSeconds: number): number {
 }
 
 export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
-    const { ddb, callQueueTableName, agentPresenceTableName, chime, chimeVoiceClient } = deps;
+    const { ddb, callQueueTableName, agentPresenceTableName } = deps;
 
     if (!callQueueTableName || !agentPresenceTableName) {
         throw new Error('[checkQueueForWork] Table names are required to process the queue.');
     }
 
-    async function getNextCallFromQueue(
-        clinicId: string,
-        agentId: string,
-        agentCapabilities: AgentCapabilities
-    ): Promise<QueuedCall | null> {
+    async function getRankedQueuedCalls(clinicId: string): Promise<QueuedCall[]> {
         const { Items: queuedCalls } = await ddb.send(new QueryCommand({
             TableName: callQueueTableName,
             KeyConditionExpression: 'clinicId = :clinicId',
-            FilterExpression: '#status = :status AND (attribute_not_exists(rejectedAgentIds) OR NOT contains(rejectedAgentIds, :agentId))',
+            FilterExpression: '#status = :status',
             ExpressionAttributeNames: { '#status': 'status' },
             ExpressionAttributeValues: {
                 ':clinicId': clinicId,
                 ':status': 'queued',
-                ':agentId': agentId
             },
             ScanIndexForward: true
         }));
 
         if (!queuedCalls || queuedCalls.length === 0) {
-            return null;
+            return [];
         }
 
         const nowSeconds = Math.floor(Date.now() / 1000);
-
-        const matchingCalls = queuedCalls.filter((call: any) => {
-            // CRITICAL FIX #7: Validate skills array contents before type cast
-            const requiredSkills = Array.isArray(call.requiredSkills) && 
-                                  call.requiredSkills.every((s: any) => typeof s === 'string')
-                ? call.requiredSkills as string[] 
-                : undefined;
-            if (requiredSkills && requiredSkills.length > 0) {
-                const agentSkills = agentCapabilities.skills || [];
-                const hasAllSkills = requiredSkills.every((skill) => agentSkills.includes(skill));
-                if (!hasAllSkills) {
-                    return false;
-                }
-            }
-
-            const language = typeof call.language === 'string' ? call.language : undefined;
-            if (language) {
-                const agentLanguages = agentCapabilities.languages && agentCapabilities.languages.length > 0
-                    ? agentCapabilities.languages
-                    : ['en'];
-                if (!agentLanguages.includes(language)) {
-                    return false;
-                }
-            }
-
-            const isVip = call.isVip === true;
-            if (isVip && !agentCapabilities.canHandleVip) {
-                return false;
-            }
-
-            return true;
-        }) as QueuedCall[];
-
-        if (matchingCalls.length === 0) {
-            return null;
-        }
-
-        const scoredCalls = matchingCalls.map((call) => {
+        const scoredCalls = (queuedCalls as any[]).map((call) => {
             let priorityScore: number;
-            
+
             if (typeof call.priorityScore === 'number') {
-                // FIX #13: Validate priorityScore is within reasonable bounds
-                // Clamp to [0, 1000] to prevent malformed records from breaking sorting
+                // Validate priorityScore is within reasonable bounds
                 priorityScore = Math.max(0, Math.min(call.priorityScore, 1000));
                 if (call.priorityScore !== priorityScore) {
                     console.warn(`[checkQueueForWork] Clamped out-of-bounds priorityScore for call ${call.callId}`, {
@@ -194,17 +182,15 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
                     });
                 }
             } else {
-                priorityScore = calculatePriorityScore(call, nowSeconds);
+                priorityScore = calculatePriorityScore(call as QueuedCall, nowSeconds);
             }
 
-            return { ...call, priorityScore };
-        });
+            return { ...(call as QueuedCall), priorityScore };
+        }) as QueuedCall[];
 
         scoredCalls.sort((a, b) => {
             const scoreDiff = (b.priorityScore || 0) - (a.priorityScore || 0);
-            if (scoreDiff !== 0) {
-                return scoreDiff;
-            }
+            if (scoreDiff !== 0) return scoreDiff;
 
             const aQueueTime = a.queueEntryTime ?? nowSeconds;
             const bQueueTime = b.queueEntryTime ?? nowSeconds;
@@ -218,7 +204,321 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
             waitMinutes: c.queueEntryTime ? Math.floor((nowSeconds - c.queueEntryTime) / 60) : 0
         })));
 
-        return scoredCalls[0];
+        return scoredCalls;
+    }
+
+    async function fetchIdleAgentsForClinic(clinicId: string, maxAgentsToFetch: number): Promise<SelectionAgentInfo[]> {
+        const collected: SelectionAgentInfo[] = [];
+        let lastEvaluatedKey: Record<string, any> | undefined = undefined;
+
+        // NOTE: This uses status-index + FilterExpression because agent presence records store activeClinicIds as a list.
+        // If this becomes a hotspot at scale, consider adding a composite index keyed by clinicId+status.
+        do {
+            const result: any = await ddb.send(new QueryCommand({
+                TableName: agentPresenceTableName,
+                IndexName: 'status-index',
+                KeyConditionExpression: '#status = :status',
+                FilterExpression: 'contains(activeClinicIds, :clinicId) AND attribute_exists(meetingInfo) AND attribute_not_exists(currentCallId) AND attribute_not_exists(ringingCallId)',
+                ExpressionAttributeNames: {
+                    '#status': 'status'
+                },
+                ExpressionAttributeValues: {
+                    ':status': 'Online',
+                    ':clinicId': clinicId
+                },
+                ProjectionExpression: 'agentId, skills, languages, canHandleVip, lastActivityAt, recentCallCount, completedCallsToday, lastCallCustomerPhone',
+                Limit: 100,
+                ExclusiveStartKey: lastEvaluatedKey
+            }));
+
+            if (result.Items && result.Items.length > 0) {
+                collected.push(...(result.Items as SelectionAgentInfo[]));
+            }
+
+            lastEvaluatedKey = result.LastEvaluatedKey;
+            if (collected.length >= maxAgentsToFetch) {
+                break;
+            }
+        } while (lastEvaluatedKey);
+
+        return collected.slice(0, maxAgentsToFetch);
+    }
+
+    async function ringCallToAgents(call: QueuedCall, agentIds: string[]): Promise<void> {
+        const ringAttemptTimestamp = new Date().toISOString();
+        const uniqueAgentIds = Array.from(new Set(agentIds)).slice(0, MAX_RING_AGENTS);
+
+        if (uniqueAgentIds.length === 0) return;
+
+        // 1) Transition call queued -> ringing (first answer wins; do NOT set assignedAgentId)
+        try {
+            await ddb.send(new UpdateCommand({
+                TableName: callQueueTableName,
+                Key: { clinicId: call.clinicId, queuePosition: call.queuePosition },
+                UpdateExpression: 'SET #status = :ringing, agentIds = :agentIds, ringStartTimeIso = :ts, ringStartTime = :now, lastStateChange = :ts, updatedAt = :ts',
+                ConditionExpression: '#status = :queued',
+                ExpressionAttributeNames: { '#status': 'status' },
+                ExpressionAttributeValues: {
+                    ':ringing': 'ringing',
+                    ':queued': 'queued',
+                    ':agentIds': uniqueAgentIds,
+                    ':ts': ringAttemptTimestamp,
+                    ':now': Date.now(),
+                }
+            }));
+        } catch (err: any) {
+            if (err?.name === 'ConditionalCheckFailedException') {
+                return; // Call already transitioned by another process
+            }
+            throw err;
+        }
+
+        // 2) Mark agents as Ringing (best-effort)
+        const callPhone = typeof call.phoneNumber === 'string' && call.phoneNumber.length > 0 ? call.phoneNumber : 'Unknown';
+        const ringPriority = call.priority || 'normal';
+
+        const ringResults = await Promise.allSettled(
+            uniqueAgentIds.map(async (agentId) => {
+                await ddb.send(new UpdateCommand({
+                    TableName: agentPresenceTableName,
+                    Key: { agentId },
+                    UpdateExpression:
+                        'SET #status = :ringing, ringingCallId = :callId, ringingCallTime = :time, ringingCallFrom = :from, ringingCallPriority = :priority, ringingCallClinicId = :clinicId, lastActivityAt = :time',
+                    ConditionExpression: '#status = :online AND attribute_exists(meetingInfo) AND attribute_not_exists(currentCallId) AND attribute_not_exists(ringingCallId)',
+                    ExpressionAttributeNames: { '#status': 'status' },
+                    ExpressionAttributeValues: {
+                        ':ringing': 'Ringing',
+                        ':online': 'Online',
+                        ':callId': call.callId,
+                        ':time': ringAttemptTimestamp,
+                        ':from': callPhone,
+                        ':priority': ringPriority,
+                        ':clinicId': call.clinicId,
+                    }
+                }));
+                return agentId;
+            })
+        );
+
+        const ringingAgentIds: string[] = [];
+        for (const r of ringResults) {
+            if (r.status === 'fulfilled') {
+                ringingAgentIds.push(r.value);
+            }
+        }
+
+        if (ringingAgentIds.length === 0) {
+            // Nobody actually rang; revert the call back to queued.
+            try {
+                await ddb.send(new UpdateCommand({
+                    TableName: callQueueTableName,
+                    Key: { clinicId: call.clinicId, queuePosition: call.queuePosition },
+                    UpdateExpression: 'SET #status = :queued, updatedAt = :ts REMOVE agentIds, ringStartTimeIso, ringStartTime, lastStateChange',
+                    ConditionExpression: '#status = :ringing',
+                    ExpressionAttributeNames: { '#status': 'status' },
+                    ExpressionAttributeValues: {
+                        ':queued': 'queued',
+                        ':ringing': 'ringing',
+                        ':ts': new Date().toISOString(),
+                    }
+                }));
+            } catch (revertErr: any) {
+                if (revertErr?.name !== 'ConditionalCheckFailedException') {
+                    console.warn('[checkQueueForWork] Failed to revert call after no agents rang:', revertErr);
+                }
+            }
+            return;
+        }
+
+        // Narrow the call's ring list to only agents actually ringing
+        try {
+            await ddb.send(new UpdateCommand({
+                TableName: callQueueTableName,
+                Key: { clinicId: call.clinicId, queuePosition: call.queuePosition },
+                UpdateExpression: 'SET agentIds = :agentIds, updatedAt = :ts',
+                ConditionExpression: '#status = :ringing',
+                ExpressionAttributeNames: { '#status': 'status' },
+                ExpressionAttributeValues: {
+                    ':agentIds': ringingAgentIds,
+                    ':ringing': 'ringing',
+                    ':ts': new Date().toISOString(),
+                }
+            }));
+        } catch (narrowErr: any) {
+            if (narrowErr?.name !== 'ConditionalCheckFailedException') {
+                console.warn('[checkQueueForWork] Failed to narrow ring list (non-fatal):', narrowErr);
+            }
+        }
+
+        if (isPushNotificationsEnabled()) {
+            try {
+                await sendIncomingCallToAgents(ringingAgentIds, {
+                    callId: call.callId,
+                    clinicId: call.clinicId,
+                    clinicName: call.clinicId,
+                    callerPhoneNumber: callPhone,
+                    timestamp: new Date().toISOString(),
+                });
+            } catch (pushErr) {
+                console.warn('[checkQueueForWork] Failed to send push notification (non-fatal):', pushErr);
+            }
+        }
+
+        console.log(`[checkQueueForWork] Ringing started for queued call ${call.callId}`, {
+            clinicId: call.clinicId,
+            ringingAgents: ringingAgentIds.length,
+        });
+    }
+
+    /**
+     * FAIR-SHARE DISPATCHER:
+     * Split available idle agents across multiple queued calls so multiple calls can ring simultaneously.
+     * This prevents one call from monopolizing all agents when several calls are waiting.
+     */
+    async function dispatchForClinic(clinicId: string): Promise<void> {
+        if (!LOCKS_TABLE_NAME) {
+            console.warn('[checkQueueForWork] LOCKS_TABLE_NAME not configured - dispatch will run without a lock (may race)');
+        }
+
+        const lock = LOCKS_TABLE_NAME ? new DistributedLock(ddb, {
+            tableName: LOCKS_TABLE_NAME,
+            lockKey: `clinic-dispatch-${clinicId}`,
+            ttlSeconds: 10,
+            maxRetries: 3,
+            retryDelayMs: 100
+        }) : null;
+
+        const lockAcquired = lock ? await lock.acquire() : true;
+        if (!lockAcquired) {
+            return;
+        }
+
+        try {
+            const rankedCalls = await getRankedQueuedCalls(clinicId);
+            if (rankedCalls.length === 0) {
+                return;
+            }
+
+            // Fetch idle agents for this clinic (Online, has meetingInfo, not ringing, not on call)
+            const targetAgentCount = Math.min(MAX_RING_AGENTS * MAX_SIMUL_RING_CALLS, 250);
+            const idleAgents = await fetchIdleAgentsForClinic(clinicId, targetAgentCount);
+            if (idleAgents.length === 0) {
+                return;
+            }
+
+            // Sort agents by idle time (oldest activity first) for fairness
+            const sortedAgents = idleAgents.slice().sort((a, b) => {
+                const aTs = a.lastActivityAt ? Date.parse(a.lastActivityAt) : 0;
+                const bTs = b.lastActivityAt ? Date.parse(b.lastActivityAt) : 0;
+                return aTs - bTs;
+            });
+
+            const callsToRingCount = Math.min(rankedCalls.length, sortedAgents.length, MAX_SIMUL_RING_CALLS);
+            const callsToRing = rankedCalls.slice(0, callsToRingCount);
+
+            // Compute fair per-call target counts (at least 1 agent/call when possible)
+            const totalAgents = sortedAgents.length;
+            const basePerCall = Math.max(1, Math.floor(totalAgents / callsToRing.length));
+            let remainder = totalAgents % callsToRing.length;
+
+            const allocations: Map<string, { call: QueuedCall; agentIds: string[] }> = new Map();
+            let remainingPool: SelectionAgentInfo[] = sortedAgents;
+
+            for (let i = 0; i < callsToRing.length; i++) {
+                const call = callsToRing[i];
+                let desired = basePerCall + (remainder > 0 ? 1 : 0);
+                if (remainder > 0) remainder--;
+                desired = Math.min(MAX_RING_AGENTS, desired);
+
+                const callPhone = typeof call.phoneNumber === 'string' && call.phoneNumber.length > 0 ? call.phoneNumber : 'Unknown';
+                const callContext: CallContext = {
+                    callId: call.callId,
+                    clinicId: call.clinicId,
+                    phoneNumber: callPhone,
+                    priority: call.priority || 'normal',
+                    isVip: !!call.isVip,
+                    requiredSkills: Array.isArray(call.requiredSkills) ? call.requiredSkills : undefined,
+                    preferredSkills: Array.isArray(call.preferredSkills) ? call.preferredSkills : undefined,
+                    language: typeof call.language === 'string' ? call.language : undefined,
+                    isCallback: !!call.isCallback,
+                    previousCallCount: typeof call.previousCallCount === 'number' ? call.previousCallCount : 0,
+                    previousAgentId: typeof (call as any).previousAgentId === 'string' ? (call as any).previousAgentId : undefined,
+                };
+
+                // Pre-filter remaining agents for eligibility + recent rejection
+                const eligiblePool = remainingPool.filter((agent) =>
+                    agentEligibleForCall(agent, call) &&
+                    !defaultRejectionTracker.hasRecentlyRejected(call, agent.agentId)
+                );
+
+                if (eligiblePool.length === 0) {
+                    allocations.set(call.callId, { call, agentIds: [] });
+                    continue;
+                }
+
+                const rankedAgentsForCall = selectBestAgents(
+                    eligiblePool,
+                    callContext,
+                    {
+                        maxAgents: desired,
+                        considerIdleTime: true,
+                        considerWorkload: true,
+                        prioritizeContinuity: !!callContext.isCallback,
+                    }
+                );
+
+                const chosen = rankedAgentsForCall.slice(0, desired);
+                const chosenIds = chosen.map((a) => a.agentId);
+                allocations.set(call.callId, { call, agentIds: chosenIds });
+
+                const chosenSet = new Set(chosenIds);
+                remainingPool = remainingPool.filter((a) => !chosenSet.has(a.agentId));
+            }
+
+            // Distribute any leftover agents to calls that still have capacity (best-effort)
+            if (remainingPool.length > 0) {
+                const callList = callsToRing.slice();
+                for (const agent of remainingPool) {
+                    // Find the call with the fewest assigned agents that this agent can handle
+                    let bestCall: QueuedCall | null = null;
+                    let bestCount = Number.MAX_SAFE_INTEGER;
+
+                    for (const call of callList) {
+                        const allocation = allocations.get(call.callId);
+                        const currentCount = allocation?.agentIds.length || 0;
+                        if (currentCount >= MAX_RING_AGENTS) continue;
+                        if (!agentEligibleForCall(agent, call)) continue;
+                        if (defaultRejectionTracker.hasRecentlyRejected(call, agent.agentId)) continue;
+
+                        if (currentCount < bestCount) {
+                            bestCount = currentCount;
+                            bestCall = call;
+                        }
+                    }
+
+                    if (!bestCall) {
+                        continue;
+                    }
+
+                    const allocation = allocations.get(bestCall.callId);
+                    if (allocation) {
+                        allocation.agentIds.push(agent.agentId);
+                    } else {
+                        allocations.set(bestCall.callId, { call: bestCall, agentIds: [agent.agentId] });
+                    }
+                }
+            }
+
+            // Ring each call with its allocated agent set (sequential to avoid bursty write spikes)
+            for (const { call, agentIds } of allocations.values()) {
+                if (agentIds.length === 0) continue;
+                await ringCallToAgents(call, agentIds);
+            }
+        } finally {
+            if (lock) {
+                await lock.release();
+            }
+        }
     }
 
     return async function checkQueueForWork(agentId: string, agentInfo: AgentInfo): Promise<void> {
@@ -227,240 +527,15 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
             return;
         }
 
-        const agentMeeting = agentInfo.meetingInfo;
-        if (!agentMeeting?.MeetingId) {
-            console.warn(`[checkQueueForWork] Agent ${agentId} has no session meeting. Cannot accept queued calls.`);
-            return;
-        }
-
         const activeClinicIds: string[] = agentInfo.activeClinicIds;
-
-        const agentCapabilities: AgentCapabilities = {
-            skills: Array.isArray(agentInfo.skills) ? agentInfo.skills : undefined,
-            languages: Array.isArray(agentInfo.languages) && agentInfo.languages.length > 0 ? agentInfo.languages : ['en'],
-            canHandleVip: agentInfo.canHandleVip === true
-        };
-
-        console.log(`[checkQueueForWork] Agent ${agentId} checking for queued calls in:`, activeClinicIds, 'capabilities:', agentCapabilities);
+        console.log(`[checkQueueForWork] Agent ${agentId} triggering fair-share dispatch for:`, activeClinicIds);
 
         for (const clinicId of activeClinicIds) {
-            let callToAssign: QueuedCall | null = null;
             try {
-                callToAssign = await getNextCallFromQueue(clinicId, agentId, agentCapabilities);
-
-                if (!callToAssign) {
-                    continue;
-                }
-
-                console.log(`[checkQueueForWork] Selected queued call ${callToAssign.callId} for clinic ${clinicId} (priority=${callToAssign.priority || 'normal'}, score=${callToAssign.priorityScore})`);
-
-                const smaId = getSmaIdForClinic(clinicId);
-                if (!smaId) {
-                    console.error(`[checkQueueForWork] No SMA mapping for clinic ${clinicId}. Skipping call.`);
-                    continue;
-                }
-
-                const assignmentTimestamp = new Date().toISOString();
-
-                // CRITICAL FIX #1: Win transaction FIRST, THEN create attendee to prevent resource leak
-                await ddb.send(new TransactWriteCommand({
-                    TransactItems: [
-                        {
-                            Update: {
-                                TableName: callQueueTableName,
-                                Key: { clinicId: callToAssign.clinicId, queuePosition: callToAssign.queuePosition },
-                                UpdateExpression: 'SET #status = :ringing, agentIds = :agentIds, assignedAgentId = :agentId, meetingInfo = :meeting, assignedAt = :timestamp',
-                                ConditionExpression: '#status = :queued AND (attribute_not_exists(rejectedAgentIds) OR NOT contains(rejectedAgentIds, :agentId))',
-                                ExpressionAttributeNames: { '#status': 'status' },
-                                ExpressionAttributeValues: {
-                                    ':ringing': 'ringing',
-                                    ':agentIds': [agentId],
-                                    ':agentId': agentId,
-                                    ':meeting': agentMeeting,
-                                    ':queued': 'queued',
-                                    ':timestamp': assignmentTimestamp
-                                }
-                            }
-                        },
-                        {
-                            Update: {
-                                TableName: agentPresenceTableName,
-                                Key: { agentId },
-                                // FIX #2: Use 'Ringing' (capitalized) consistent with agent state machine
-                                UpdateExpression: 'SET #status = :ringing, ringingCallId = :callId, ringingCallTime = :time, ringingCallFrom = :from, ringingCallPriority = :priority, lastActivityAt = :time',
-                                ConditionExpression: '#status = :online',
-                                ExpressionAttributeNames: { '#status': 'status' },
-                                ExpressionAttributeValues: {
-                                    ':ringing': 'Ringing',
-                                    ':callId': callToAssign.callId,
-                                    ':time': assignmentTimestamp,
-                                    ':from': callToAssign.phoneNumber || 'Unknown',
-                                    ':priority': callToAssign.priority || 'normal',
-                                    ':online': 'Online'
-                                }
-                            }
-                        }
-                    ]
-                }));
-
-                console.log(`[checkQueueForWork] Transaction succeeded - call ${callToAssign.callId} reserved`);
-
-                // CRITICAL FIX #1: Create attendee AFTER winning the transaction
-                let customerAttendee;
-                try {
-                    const customerAttendeeResponse = await chime.send(new CreateAttendeeCommand({
-                        MeetingId: agentMeeting.MeetingId,
-                        ExternalUserId: `customer-${callToAssign.callId}`
-                    }));
-
-                    customerAttendee = customerAttendeeResponse.Attendee;
-                    if (!customerAttendee?.AttendeeId || !customerAttendee.JoinToken) {
-                        throw new Error('Failed to create customer attendee');
-                    }
-
-                    // Update call record with attendee info
-                    // FIX #6: Wrap in try-catch to cleanup attendee if update fails
-                    try {
-                        await ddb.send(new UpdateCommand({
-                            TableName: callQueueTableName,
-                            Key: { clinicId: callToAssign.clinicId, queuePosition: callToAssign.queuePosition },
-                            UpdateExpression: 'SET customerAttendeeInfo = :attendee',
-                            ConditionExpression: '#status = :ringing AND assignedAgentId = :agentId',
-                            ExpressionAttributeNames: { '#status': 'status' },
-                            ExpressionAttributeValues: {
-                                ':attendee': customerAttendee,
-                                ':ringing': 'ringing',
-                                ':agentId': agentId
-                            }
-                        }));
-                    } catch (updateErr: any) {
-                        // FIX #6: Cleanup the orphaned attendee if update fails
-                        console.error(`[checkQueueForWork] Failed to update call record with attendee, cleaning up:`, updateErr);
-                        try {
-                            // FIX: Use static import instead of dynamic import for better latency
-                            await chime.send(new DeleteAttendeeCommand({
-                                MeetingId: agentMeeting.MeetingId,
-                                AttendeeId: customerAttendee.AttendeeId!
-                            }));
-                            console.log(`[checkQueueForWork] Cleaned up orphaned attendee ${customerAttendee.AttendeeId}`);
-                        } catch (cleanupErr) {
-                            console.error(`[checkQueueForWork] Failed to cleanup orphaned attendee:`, cleanupErr);
-                        }
-                        throw updateErr; // Re-throw to trigger rollback
-                    }
-
-                    console.log(`[checkQueueForWork] Created customer attendee ${customerAttendee.AttendeeId}`);
-                } catch (attendeeErr) {
-                    console.error(`[checkQueueForWork] Failed to create attendee, rolling back:`, attendeeErr);
-                    // Rollback: reset call to queued
-                    await ddb.send(new TransactWriteCommand({
-                        TransactItems: [
-                            {
-                                Update: {
-                                    TableName: callQueueTableName,
-                                    Key: { clinicId: callToAssign.clinicId, queuePosition: callToAssign.queuePosition },
-                                    UpdateExpression: 'SET #status = :queued REMOVE agentIds, assignedAgentId, meetingInfo, assignedAt, customerAttendeeInfo',
-                                    ConditionExpression: '#status = :ringing AND assignedAgentId = :agentId',
-                                    ExpressionAttributeNames: { '#status': 'status' },
-                                    ExpressionAttributeValues: {
-                                        ':queued': 'queued',
-                                        ':ringing': 'ringing',
-                                        ':agentId': agentId
-                                    }
-                                }
-                            },
-                            {
-                                Update: {
-                                    TableName: agentPresenceTableName,
-                                    Key: { agentId },
-                                    UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallPriority',
-                                    ExpressionAttributeNames: { '#status': 'status' },
-                                    ExpressionAttributeValues: {
-                                        ':online': 'Online'
-                                    }
-                                }
-                            }
-                        ]
-                    })).catch(rollbackErr => console.error('[checkQueueForWork] Rollback failed:', rollbackErr));
-                    
-                    continue; // Skip to next clinic
-                }
-
-                // FIX: Add error handling for SMA bridge failure
-                try {
-                    await chimeVoiceClient.send(new UpdateSipMediaApplicationCallCommand({
-                        SipMediaApplicationId: smaId,
-                        TransactionId: callToAssign.callId,
-                        Arguments: {
-                            action: 'BRIDGE_CUSTOMER_INBOUND',
-                            meetingId: agentMeeting.MeetingId,
-                            customerAttendeeId: customerAttendee.AttendeeId!,
-                            customerAttendeeJoinToken: customerAttendee.JoinToken!
-                        }
-                    }));
-
-                    console.log(`[checkQueueForWork] Successfully assigned call ${callToAssign.callId} to agent ${agentId} and triggered bridge.`);
-                } catch (smaBridgeErr: any) {
-                    console.error(`[checkQueueForWork] SMA bridge failed for call ${callToAssign.callId}:`, smaBridgeErr);
-                    
-                    // Rollback: Delete orphaned attendee and reset states
-                    try {
-                        // Delete the orphaned customer attendee
-                        // FIX: Use static import instead of dynamic import for better latency
-                        await chime.send(new DeleteAttendeeCommand({
-                            MeetingId: agentMeeting.MeetingId,
-                            AttendeeId: customerAttendee.AttendeeId!
-                        }));
-                        console.log(`[checkQueueForWork] Cleaned up orphaned attendee ${customerAttendee.AttendeeId}`);
-                    } catch (cleanupErr) {
-                        console.error(`[checkQueueForWork] Failed to cleanup orphaned attendee:`, cleanupErr);
-                    }
-                    
-                    // Rollback database state
-                    await ddb.send(new TransactWriteCommand({
-                        TransactItems: [
-                            {
-                                Update: {
-                                    TableName: callQueueTableName,
-                                    Key: { clinicId: callToAssign.clinicId, queuePosition: callToAssign.queuePosition },
-                                    UpdateExpression: 'SET #status = :queued, smaBridgeError = :error REMOVE agentIds, assignedAgentId, meetingInfo, assignedAt, customerAttendeeInfo',
-                                    ConditionExpression: '#status = :ringing AND assignedAgentId = :agentId',
-                                    ExpressionAttributeNames: { '#status': 'status' },
-                                    ExpressionAttributeValues: {
-                                        ':queued': 'queued',
-                                        ':ringing': 'ringing',
-                                        ':agentId': agentId,
-                                        ':error': smaBridgeErr.message || 'SMA bridge failed'
-                                    }
-                                }
-                            },
-                            {
-                                Update: {
-                                    TableName: agentPresenceTableName,
-                                    Key: { agentId },
-                                    UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallPriority',
-                                    ExpressionAttributeNames: { '#status': 'status' },
-                                    ExpressionAttributeValues: {
-                                        ':online': 'Online'
-                                    }
-                                }
-                            }
-                        ]
-                    })).catch(rollbackErr => console.error('[checkQueueForWork] SMA bridge rollback failed:', rollbackErr));
-                    
-                    continue; // Try next clinic
-                }
-                return;
+                await dispatchForClinic(clinicId);
             } catch (err: any) {
-                if (err?.name === 'TransactionCanceledException') {
-                    console.warn(`[checkQueueForWork] Race condition assigning call for clinic ${clinicId}. Agent or call state changed.`);
-                    // CRITICAL FIX #1: No orphaned attendees possible - created after transaction
-                } else {
-                    console.error(`[checkQueueForWork] Error processing queue for clinic ${clinicId}:`, err);
-                }
+                console.error(`[checkQueueForWork] Error dispatching for clinic ${clinicId}:`, err);
             }
         }
-
-        console.log(`[checkQueueForWork] No queued calls found for agent ${agentId}.`);
     };
 }
