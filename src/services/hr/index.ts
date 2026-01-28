@@ -3951,27 +3951,62 @@ async function queryAuditLogs(
 async function getAdminCalendarEvents(queryParams: any, allowedClinics: Set<string>) {
   const { clinicId, startDate, endDate } = queryParams || {};
 
-  if (!clinicId || !startDate || !endDate) {
-    return httpErr(400, "clinicId, startDate, and endDate are required");
-  }
-
-  if (!hasClinicAccess(allowedClinics, clinicId)) {
-    return httpErr(403, "Forbidden: no access to this clinic");
+  if (!startDate || !endDate) {
+    return httpErr(400, "startDate and endDate are required");
   }
 
   try {
-    const { Items } = await ddb.send(new QueryCommand({
-      TableName: ADMIN_CALENDAR_TABLE,
-      IndexName: 'byClinicAndDate',
-      KeyConditionExpression: 'clinicId = :clinicId AND startDateTime BETWEEN :startDate AND :endDate',
-      ExpressionAttributeValues: {
-        ':clinicId': clinicId,
-        ':startDate': startDate,
-        ':endDate': endDate + 'T23:59:59.999Z',
-      },
-    }));
+    // If clinicId is provided, query just that clinic
+    if (clinicId) {
+      if (!hasClinicAccess(allowedClinics, clinicId)) {
+        return httpErr(403, "Forbidden: no access to this clinic");
+      }
 
-    return httpOk({ events: Items || [] });
+      const { Items } = await ddb.send(new QueryCommand({
+        TableName: ADMIN_CALENDAR_TABLE,
+        IndexName: 'byClinicAndDate',
+        KeyConditionExpression: 'clinicId = :clinicId AND startDateTime BETWEEN :startDate AND :endDate',
+        ExpressionAttributeValues: {
+          ':clinicId': clinicId,
+          ':startDate': startDate,
+          ':endDate': endDate + 'T23:59:59.999Z',
+        },
+      }));
+
+      return httpOk({ events: Items || [] });
+    }
+
+    // If no clinicId, query across all allowed clinics
+    const clinicIds = Array.from(allowedClinics);
+    const allEvents: any[] = [];
+
+    // Query each allowed clinic in parallel
+    const queries = clinicIds.map(async (cId) => {
+      try {
+        const { Items } = await ddb.send(new QueryCommand({
+          TableName: ADMIN_CALENDAR_TABLE,
+          IndexName: 'byClinicAndDate',
+          KeyConditionExpression: 'clinicId = :clinicId AND startDateTime BETWEEN :startDate AND :endDate',
+          ExpressionAttributeValues: {
+            ':clinicId': cId,
+            ':startDate': startDate,
+            ':endDate': endDate + 'T23:59:59.999Z',
+          },
+        }));
+        return Items || [];
+      } catch (err) {
+        console.error(`Error querying clinic ${cId}:`, err);
+        return [];
+      }
+    });
+
+    const results = await Promise.all(queries);
+    results.forEach(items => allEvents.push(...items));
+
+    // Sort by startDateTime
+    allEvents.sort((a, b) => a.startDateTime.localeCompare(b.startDateTime));
+
+    return httpOk({ events: allEvents });
   } catch (error: any) {
     console.error('Error fetching admin calendar events:', error);
     return httpErr(500, `Failed to fetch calendar events: ${error.message}`);
