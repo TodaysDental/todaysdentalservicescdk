@@ -1,13 +1,14 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBDocumentClient, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { ChimeSDKMeetingsClient, CreateMeetingCommand, CreateAttendeeCommand, DeleteAttendeeCommand, GetMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
+import { PutCommand } from '@aws-sdk/lib-dynamodb';
+import { ChimeSDKMeetingsClient, CreateMeetingCommand, CreateAttendeeCommand } from '@aws-sdk/client-chime-sdk-meetings';
+import { ChimeSDKVoiceClient } from '@aws-sdk/client-chime-sdk-voice';
 import { randomUUID } from 'crypto';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { verifyIdToken } from '../../shared/utils/auth-helper';
 import { getUserIdFromJwt, isSuperAdminFromJwt } from '../../shared/utils/permissions-helper';
-import { TTL_POLICY, calculateSessionExpiry } from './config/ttl-policy';
-import { DistributedLock } from './utils/distributed-lock';
+import { calculateSessionExpiry } from './config/ttl-policy';
+import { createCheckQueueForWork } from './utils/check-queue-for-work';
 
 const ddb = getDynamoDBClient();
 
@@ -247,185 +248,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       meetingId: meetingResponse.Meeting.MeetingId
     });
     
-    // Check for queued calls that could be assigned to this agent
+    // Proactively check for queued calls and broadcast-ring eligible agents.
+    // This avoids the "agents idle but calls stuck in queue" failure mode.
     try {
-      // Get the clinics this agent is authorized for
-      const activeClinicIds = body.activeClinicIds;
-      if (!activeClinicIds || activeClinicIds.length === 0) {
-        console.log('[start-session] No active clinics to check for queued calls');
-        // Skip queue processing if no active clinics
-      } else {
-        console.log('[start-session] Checking for queued calls in clinics:', activeClinicIds);
-        
-        // For each clinic, look for the oldest queued call
-        for (const clinicId of activeClinicIds) {
-          const { Items: queuedCalls } = await ddb.send(new QueryCommand({
-            TableName: CALL_QUEUE_TABLE_NAME,
-            KeyConditionExpression: 'clinicId = :clinicId',
-            FilterExpression: '#status = :status',
-            ExpressionAttributeNames: { '#status': 'status' },
-            ExpressionAttributeValues: {
-              ':clinicId': clinicId,
-              ':status': 'queued'
-            },
-            // Sort by queuePosition (which is timestamp-based) to get oldest first
-            ScanIndexForward: true,
-            Limit: 1 // Just get the oldest call
-          }));
-          
-          if (queuedCalls && queuedCalls.length > 0) {
-            const oldestCall = queuedCalls[0];
-            console.log(`[start-session] Found queued call for clinic ${clinicId}:`, {
-              callId: oldestCall.callId,
-              queuedSince: oldestCall.queueEntryTime,
-              hasMeeting: !!oldestCall.meetingInfo?.MeetingId
-            });
-            
-            // FIX: Acquire lock BEFORE checking meeting info to prevent TOCTOU race
-            // The meeting could be deleted between the check and attendee creation
-            const lock = new DistributedLock(ddb, {
-              tableName: LOCKS_TABLE_NAME,
-              lockKey: `queue-assignment-${oldestCall.callId}`,
-              ttlSeconds: 10, // Longer TTL for session start which may be slower
-              maxRetries: 3,
-              retryDelayMs: 100
-            });
+      const chimeVoiceClient = new ChimeSDKVoiceClient({ region: CHIME_MEDIA_REGION });
+      const checkQueueForWork = createCheckQueueForWork({
+        ddb,
+        callQueueTableName: CALL_QUEUE_TABLE_NAME,
+        agentPresenceTableName: AGENT_PRESENCE_TABLE_NAME,
+        chime: chimeClient,
+        chimeVoiceClient,
+      });
 
-            const lockAcquired = await lock.acquire();
-            if (!lockAcquired) {
-              console.warn(`[start-session] Failed to acquire lock for call ${oldestCall.callId} - another agent may be claiming it`);
-              continue; // Try next queued call
-            }
-
-            let attendeeCreated: any = null;
-            try {
-              // FIX: Re-fetch call record AFTER acquiring lock for fresh data
-              const { Items: freshCallRecords } = await ddb.send(new QueryCommand({
-                TableName: CALL_QUEUE_TABLE_NAME,
-                KeyConditionExpression: 'clinicId = :clinicId AND queuePosition = :queuePosition',
-                ExpressionAttributeValues: {
-                  ':clinicId': oldestCall.clinicId,
-                  ':queuePosition': oldestCall.queuePosition
-                }
-              }));
-              
-              const freshCall = freshCallRecords && freshCallRecords.length > 0 ? freshCallRecords[0] : null;
-              
-              // FIX: Validate fresh data - call may have changed since initial query
-              if (!freshCall) {
-                console.warn(`[start-session] Call ${oldestCall.callId} no longer exists`);
-                continue;
-              }
-              
-              if (freshCall.status !== 'queued') {
-                console.warn(`[start-session] Call ${oldestCall.callId} is no longer queued (status: ${freshCall.status})`);
-                continue;
-              }
-              
-              // FIX: Check meeting info from FRESH data
-              if (!freshCall.meetingInfo?.MeetingId) {
-                console.error('[start-session] Queued call has no valid meeting info:', { callId: freshCall.callId });
-                continue;
-              }
-              
-              const meetingId = freshCall.meetingInfo.MeetingId;
-              
-              // FIX: Validate meeting exists in Chime before creating attendee
-              try {
-                await chimeClient.send(new GetMeetingCommand({ MeetingId: meetingId }));
-                console.log(`[start-session] Meeting ${meetingId} validated - exists`);
-              } catch (meetingErr: any) {
-                if (meetingErr.name === 'NotFoundException') {
-                  console.error(`[start-session] Meeting ${meetingId} no longer exists`);
-                  // Clean up stale meeting reference
-                  await ddb.send(new UpdateCommand({
-                    TableName: CALL_QUEUE_TABLE_NAME,
-                    Key: { clinicId: freshCall.clinicId, queuePosition: freshCall.queuePosition },
-                    UpdateExpression: 'REMOVE meetingInfo SET meetingError = :error',
-                    ExpressionAttributeValues: { ':error': 'Meeting not found in Chime SDK' }
-                  })).catch(cleanupErr => console.warn('[start-session] Failed to cleanup stale meeting ref:', cleanupErr));
-                  continue;
-                }
-                throw meetingErr;
-              }
-              
-              // Create an attendee for this agent in the call's meeting (using validated meeting ID)
-              const attendeeResponse = await chimeClient.send(new CreateAttendeeCommand({
-                MeetingId: meetingId,
-                ExternalUserId: agentId
-              }));
-              
-              if (!attendeeResponse.Attendee) {
-                console.error('[start-session] Failed to create attendee for queued call');
-                continue;
-              }
-              attendeeCreated = attendeeResponse.Attendee;
-              
-              // CRITICAL FIX: Atomic claim operation - only assign if still queued and not already assigned
-              try {
-                await ddb.send(new UpdateCommand({
-                  TableName: CALL_QUEUE_TABLE_NAME,
-                  Key: { 
-                    clinicId: freshCall.clinicId, 
-                    queuePosition: freshCall.queuePosition 
-                  },
-                  UpdateExpression: 'SET #status = :status, agentIds = :agentIds, claimedAt = :timestamp',
-                  ConditionExpression: '#status = :queuedStatus AND (attribute_not_exists(agentIds) OR size(agentIds) = :emptyArray)',
-                  ExpressionAttributeNames: { '#status': 'status' },
-                  ExpressionAttributeValues: {
-                    ':status': 'ringing',
-                    ':agentIds': [agentId],
-                    ':queuedStatus': 'queued',
-                    ':timestamp': new Date().toISOString(),
-                    ':emptyArray': 0
-                  }
-                }));
-              } catch (claimErr: any) {
-                if (claimErr.name === 'ConditionalCheckFailedException') {
-                  console.warn(`[start-session] Race condition - queued call ${freshCall.callId} already claimed by another agent`);
-                  // Clean up the orphaned attendee we created
-                  if (attendeeCreated?.AttendeeId) {
-                    await chimeClient.send(new DeleteAttendeeCommand({
-                      MeetingId: meetingId,
-                      AttendeeId: attendeeCreated.AttendeeId
-                    })).catch(err => console.warn('[start-session] Failed to cleanup orphaned attendee:', err.message));
-                  }
-                  continue; // Try next queued call
-                }
-                throw claimErr;
-              }
-              
-              // Update agent's presence to show the ringing call (using fresh data)
-              await ddb.send(new UpdateCommand({
-                TableName: AGENT_PRESENCE_TABLE_NAME,
-                Key: { agentId },
-                UpdateExpression: 'SET ringingCallId = :callId, callStatus = :status, ' + 
-                                 'inboundMeetingInfo = :meeting, inboundAttendeeInfo = :attendee, ' +
-                                 'ringingCallTime = :time',
-                ExpressionAttributeValues: {
-                  ':callId': freshCall.callId,
-                  ':status': 'ringing',
-                  ':meeting': freshCall.meetingInfo,
-                  ':attendee': attendeeCreated,
-                  ':time': new Date().toISOString()
-                }
-              }));
-              
-              console.log(`[start-session] Assigned queued call ${freshCall.callId} to agent ${agentId}`);
-              
-              // Only assign one call, even if there are multiple queued calls
-              break;
-            } finally {
-              await lock.release();
-            }
-          } else {
-            console.log(`[start-session] No queued calls found for clinic ${clinicId}`);
-          }
-        }
-      }
+      await checkQueueForWork(agentId, presenceItem as any);
     } catch (queueError) {
-      // Non-fatal error - log but continue
-      console.error('[start-session] Error processing call queue:', queueError);
+      // Non-fatal
+      console.error('[start-session] Error checking queue for work (non-fatal):', queueError);
     }
 
     // Return meeting details to the frontend softphone

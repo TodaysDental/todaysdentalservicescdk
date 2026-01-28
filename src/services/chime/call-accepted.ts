@@ -359,6 +359,36 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 throw err;
             }
 
+            // EARLY RING STOP: clear ringing state for other agents ASAP.
+            // This makes "first answer wins" feel immediate (others stop ringing as soon as someone accepts),
+            // without putting the updates into the transaction (which would be brittle for large agent sets).
+            try {
+                const ringList: string[] = Array.isArray(freshCallRecord.agentIds) ? freshCallRecord.agentIds : [];
+                const otherAgentIds = ringList.filter((id: string) => id !== agentId);
+                if (otherAgentIds.length > 0) {
+                    console.log('[call-accepted] Early cleanup of other ringing agents', { count: otherAgentIds.length, callId });
+                    
+                    // Best-effort: run in parallel; ignore conditional failures.
+                    Promise.allSettled(otherAgentIds.map(async (otherId: string) => {
+                        await ddb.send(new UpdateCommand({
+                            TableName: AGENT_PRESENCE_TABLE_NAME,
+                            Key: { agentId: otherId },
+                            UpdateExpression: 'SET #status = :online, lastActivityAt = :now REMOVE ringingCallId, ringingCallTime, ringingCallFrom, ringingCallClinicId, ringingCallNotes, ringingCallTransferAgentId, ringingCallTransferMode',
+                            ConditionExpression: 'ringingCallId = :callId',
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: { 
+                                ':online': 'Online', 
+                                ':callId': callId,
+                                ':now': new Date().toISOString()
+                            }
+                        }));
+                    })).catch(() => {});
+                }
+            } catch (cleanupErr) {
+                // Non-fatal; later cleanup + monitors will reconcile.
+                console.warn('[call-accepted] Early cleanup failed (non-fatal):', cleanupErr);
+            }
+
             // FIX #6: Move attendee creation and SMA bridging INSIDE the lock scope
             // This prevents race conditions during the critical bridging operation
 

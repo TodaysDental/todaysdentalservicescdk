@@ -13,8 +13,8 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { PollyClient, SynthesizeSpeechCommand, Engine, OutputFormat, VoiceId } from '@aws-sdk/client-polly';
 import { randomUUID } from 'crypto';
 import { Readable } from 'stream';
-import { enrichCallContext, selectAgentsForCall } from './utils/agent-selection';
-import { buildBaseQueueItem, smartAssignCall } from './utils/parallel-assignment';
+import { enrichCallContext } from './utils/agent-selection';
+import { createCheckQueueForWork } from './utils/check-queue-for-work';
 import { generateUniqueCallPosition } from '../shared/utils/unique-id';
 import { startMediaPipeline, stopMediaPipeline, isRealTimeTranscriptionEnabled } from './utils/media-pipeline-manager';
 import { 
@@ -49,10 +49,7 @@ const HOLD_MUSIC_BUCKET = process.env.HOLD_MUSIC_BUCKET;
 const POLLY_VOICE_ID = (process.env.POLLY_VOICE_ID || 'Joanna') as VoiceId;
 const POLLY_ENGINE = (process.env.POLLY_ENGINE || 'standard') as Engine;
 const TTS_SAMPLE_RATE = 8000;
-const MAX_RING_AGENTS = Math.max(1, Number.parseInt(process.env.MAX_RING_AGENTS || '25', 10));
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const ENABLE_PARALLEL_ASSIGNMENT = process.env.ENABLE_PARALLEL_ASSIGNMENT !== 'false';
-const PARALLEL_AGENT_COUNT = Math.max(1, Number.parseInt(process.env.PARALLEL_AGENT_COUNT || '3', 10));
 
 // Voice AI configuration
 const VOICE_AI_LAMBDA_ARN = process.env.VOICE_AI_LAMBDA_ARN;
@@ -1695,73 +1692,91 @@ export const handler = async (event: any): Promise<any> => {
                         getVipPhoneNumbers()
                     );
 
-                    // 3. Select best agents for this call
-                    const selectedAgents = await selectAgentsForCall(
-                        ddb,
-                        callContext,
-                        AGENT_PRESENCE_TABLE_NAME,
-                        {
-                            maxAgents: MAX_RING_AGENTS,
-                            considerIdleTime: true,
-                            considerWorkload: true,
-                            prioritizeContinuity: callContext.isCallback || false
+                    // Always ensure a queue record exists for this call so we can:
+                    // - fairly distribute idle agents across multiple waiting calls
+                    // - fall back to queued state if no one can be rung
+                    // - support consistent call lookups via callId-index
+                    const queueEntry = await addToQueue(clinicId, callId, fromPhoneNumber);
+
+                    // Persist enriched routing metadata so queued calls retain correct priority
+                    try {
+                        const routingUpdateParts: string[] = [
+                            'priority = :priority',
+                            'isVip = :isVip',
+                            'isCallback = :isCallback',
+                            'previousCallCount = :previousCallCount',
+                            'updatedAt = :updatedAt'
+                        ];
+                        const routingValues: Record<string, any> = {
+                            ':priority': callContext.priority || 'normal',
+                            ':isVip': !!callContext.isVip,
+                            ':isCallback': !!callContext.isCallback,
+                            ':previousCallCount': typeof callContext.previousCallCount === 'number' ? callContext.previousCallCount : 0,
+                            ':updatedAt': new Date().toISOString(),
+                        };
+
+                        // Only set previousAgentId if known (avoid writing undefined)
+                        if (typeof callContext.previousAgentId === 'string' && callContext.previousAgentId.length > 0) {
+                            routingUpdateParts.push('previousAgentId = :previousAgentId');
+                            routingValues[':previousAgentId'] = callContext.previousAgentId;
                         }
-                    );
+                        if (Array.isArray(callContext.requiredSkills) && callContext.requiredSkills.length > 0) {
+                            routingUpdateParts.push('requiredSkills = :requiredSkills');
+                            routingValues[':requiredSkills'] = callContext.requiredSkills;
+                        }
+                        if (Array.isArray(callContext.preferredSkills) && callContext.preferredSkills.length > 0) {
+                            routingUpdateParts.push('preferredSkills = :preferredSkills');
+                            routingValues[':preferredSkills'] = callContext.preferredSkills;
+                        }
+                        if (typeof callContext.language === 'string' && callContext.language.length > 0) {
+                            routingUpdateParts.push('#language = :language');
+                            routingValues[':language'] = callContext.language;
+                        }
+
+                        await ddb.send(new UpdateCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            Key: { clinicId, queuePosition: queueEntry.queuePosition },
+                            UpdateExpression: `SET ${routingUpdateParts.join(', ')}`,
+                            ExpressionAttributeNames: {
+                                ...(typeof callContext.language === 'string' && callContext.language.length > 0 ? { '#language': 'language' } : {}),
+                            },
+                            ExpressionAttributeValues: routingValues,
+                        }));
+                    } catch (metaErr) {
+                        console.warn('[NEW_INBOUND_CALL] Failed to persist routing metadata (non-fatal):', metaErr);
+                    }
 
                     let assignmentSucceeded = false;
 
-                    if (selectedAgents.length > 0) {
-                        const baseQueueItem = buildBaseQueueItem(
-                            clinicId,
-                            callId,
-                            fromPhoneNumber,
-                            QUEUE_TIMEOUT
-                        );
-
-                        const assignmentResult = await smartAssignCall(
+                    // FAIR-SHARE RINGING:
+                    // Trigger clinic-level dispatcher which splits idle agents across multiple waiting calls.
+                    // If this is the only waiting call, it will still ring all available idle agents (up to MAX_RING_AGENTS).
+                    try {
+                        const checkQueueForWork = createCheckQueueForWork({
                             ddb,
-                            selectedAgents,
-                            callContext,
-                            baseQueueItem,
-                            AGENT_PRESENCE_TABLE_NAME,
-                            CALL_QUEUE_TABLE_NAME,
-                            LOCKS_TABLE_NAME,
-                            ENABLE_PARALLEL_ASSIGNMENT,
-                            {
-                                parallelCount: PARALLEL_AGENT_COUNT
-                            }
+                            callQueueTableName: CALL_QUEUE_TABLE_NAME,
+                            agentPresenceTableName: AGENT_PRESENCE_TABLE_NAME,
+                        });
+                        await checkQueueForWork('SYSTEM', { activeClinicIds: [clinicId] } as any);
+                    } catch (dispatchErr) {
+                        console.warn('[NEW_INBOUND_CALL] Fair-share dispatch failed (non-fatal):', dispatchErr);
+                    }
+
+                    // Determine whether THIS call is currently ringing after dispatch.
+                    try {
+                        const { Item: refreshedCall } = await ddb.send(new GetCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            Key: { clinicId, queuePosition: queueEntry.queuePosition },
+                            ConsistentRead: true
+                        }));
+                        assignmentSucceeded = !!(
+                            refreshedCall &&
+                            refreshedCall.status === 'ringing' &&
+                            Array.isArray(refreshedCall.agentIds) &&
+                            refreshedCall.agentIds.length > 0
                         );
-
-                        if (assignmentResult.success && assignmentResult.agentId) {
-                            assignmentSucceeded = true;
-                            console.log('[NEW_INBOUND_CALL] Call assigned to agent', {
-                                callId,
-                                agentId: assignmentResult.agentId,
-                                durationMs: assignmentResult.duration,
-                                attemptedAgents: assignmentResult.attemptedAgents.length
-                            });
-
-                            // Send push notification to assigned agents
-                            if (isPushNotificationsEnabled()) {
-                                try {
-                                    // attemptedAgents is already an array of agent IDs (strings)
-                                    await sendIncomingCallToAgents(assignmentResult.attemptedAgents, {
-                                        callId,
-                                        clinicId,
-                                        clinicName: clinicId, // Use clinicId as clinicName fallback
-                                        callerPhoneNumber: fromPhoneNumber,
-                                        timestamp: new Date().toISOString(),
-                                    });
-                                } catch (pushErr) {
-                                    console.warn('[NEW_INBOUND_CALL] Failed to send push notification:', pushErr);
-                                }
-                            }
-                        } else {
-                            console.log('[NEW_INBOUND_CALL] Assignment failed, will queue call', {
-                                callId,
-                                error: assignmentResult.error
-                            });
-                        }
+                    } catch (refreshErr) {
+                        console.warn('[NEW_INBOUND_CALL] Failed to read call state after dispatch (non-fatal):', refreshErr);
                     }
 
                     if (assignmentSucceeded) {
@@ -1868,8 +1883,8 @@ export const handler = async (event: any): Promise<any> => {
                     // Standard queue handling
                     console.log(`[NEW_INBOUND_CALL] Adding call to queue.`);
                     try {
-                        const queueEntry = await addToQueue(clinicId, callId, fromPhoneNumber);
-                        console.log('[NEW_INBOUND_CALL] Call added to queue', { clinicId, callId, queueEntry });
+                        // Queue entry was already created above; keep existing behavior/log shape.
+                        console.log('[NEW_INBOUND_CALL] Call is queued', { clinicId, callId, queueEntry });
 
                         const queueInfo = await getQueuePosition(clinicId, callId);
                         const waitMinutes = Math.ceil((queueInfo?.estimatedWaitTime || 120) / 60);
