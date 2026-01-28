@@ -33,47 +33,43 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (!canRead) {
       return createResponse(403, { success: false, error: 'Permission denied. Legal module access required.' });
     }
-    const status = event.queryStringParameters?.status;
-    const limit = event.queryStringParameters?.limit ? parseInt(event.queryStringParameters.limit) : 100;
-    const lastKey = event.queryStringParameters?.lastEvaluatedKey;
+    // No pagination - fetch ALL leases
     const includeDeleted = event.queryStringParameters?.includeDeleted === 'true';
 
-    let result;
+    let allLeases: any[] = [];
+    let lastEvaluatedKey: any = undefined;
 
-    if (clinicId) {
-      // Query by specific clinic
-      result = await docClient.send(new QueryCommand({
-        TableName: LEASE_TABLE_NAME,
-        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
-        ExpressionAttributeValues: { ':pk': `CLINIC#${clinicId}`, ':sk': 'LEASE#' },
-        Limit: limit,
-        ExclusiveStartKey: lastKey ? JSON.parse(lastKey) : undefined
-      }));
-    } else if (status) {
-      // Query by status using GSI
-      result = await docClient.send(new QueryCommand({
-        TableName: LEASE_TABLE_NAME,
-        IndexName: 'StatusIndex',
-        KeyConditionExpression: '#status = :status',
-        ExpressionAttributeNames: { '#status': 'status' },
-        ExpressionAttributeValues: { ':status': status },
-        Limit: limit,
-        ExclusiveStartKey: lastKey ? JSON.parse(lastKey) : undefined
-      }));
-    } else {
-      // Scan all leases (for admin view across all clinics)
-      result = await docClient.send(new ScanCommand({
-        TableName: LEASE_TABLE_NAME,
-        FilterExpression: 'begins_with(SK, :sk)',
-        ExpressionAttributeValues: { ':sk': 'LEASE#' },
-        Limit: limit,
-        ExclusiveStartKey: lastKey ? JSON.parse(lastKey) : undefined
-      }));
-    }
+    // Keep scanning until we get all items (handle DynamoDB's 1MB limit per scan)
+    do {
+      let result;
 
-    let leases = result.Items || [];
+      if (clinicId) {
+        // Query by specific clinic - no limit
+        result = await docClient.send(new QueryCommand({
+          TableName: LEASE_TABLE_NAME,
+          KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+          ExpressionAttributeValues: { ':pk': `CLINIC#${clinicId}`, ':sk': 'LEASE#' },
+          ExclusiveStartKey: lastEvaluatedKey
+        }));
+      } else {
+        // Scan all leases across all clinics - no limit
+        result = await docClient.send(new ScanCommand({
+          TableName: LEASE_TABLE_NAME,
+          FilterExpression: 'begins_with(SK, :sk)',
+          ExpressionAttributeValues: { ':sk': 'LEASE#' },
+          ExclusiveStartKey: lastEvaluatedKey
+        }));
+      }
 
-    // Filter out deleted unless requested
+      if (result.Items) {
+        allLeases = allLeases.concat(result.Items);
+      }
+      lastEvaluatedKey = result.LastEvaluatedKey;
+    } while (lastEvaluatedKey);
+
+    let leases = allLeases;
+
+    // Filter out deleted leases (always exclude deleted unless explicitly requested)
     if (!includeDeleted) {
       leases = leases.filter((lease: any) => lease.status !== 'Deleted');
     }
@@ -220,9 +216,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return createResponse(200, {
       success: true,
       data: flattenedData,
-      count: flattenedData.length,
-      hasMore: !!result.LastEvaluatedKey,
-      lastEvaluatedKey: result.LastEvaluatedKey ? JSON.stringify(result.LastEvaluatedKey) : null
+      count: flattenedData.length
     });
 
   } catch (error: any) {
