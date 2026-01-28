@@ -442,14 +442,18 @@ async function updateResult(
     UpdateExpression: [
       'SET #status = :status',
       '#response = :response',
-      'completedAt = :completedAt',
-      'ttl = :ttl',
-      'errorMessage = :errorMessage',
-      'toolsUsed = :toolsUsed',
+      '#completedAt = :completedAt',
+      '#ttl = :ttl',
+      '#errorMessage = :errorMessage',
+      '#toolsUsed = :toolsUsed',
     ].join(', '),
     ExpressionAttributeNames: {
       '#status': 'status',
       '#response': 'response',
+      '#completedAt': 'completedAt',
+      '#ttl': 'ttl',
+      '#errorMessage': 'errorMessage',
+      '#toolsUsed': 'toolsUsed',
     },
     ExpressionAttributeValues: {
       ':status': result.status,
@@ -506,7 +510,7 @@ async function checkResult(event: any): Promise<{
       docClient.send(new DeleteCommand({
         TableName: ASYNC_RESULTS_TABLE,
         Key: { requestId },
-      })).catch(() => {});
+      })).catch(() => { });
 
       return {
         status: 'completed',
@@ -586,7 +590,7 @@ async function pollResult(event: any): Promise<{
     docClient.send(new DeleteCommand({
       TableName: ASYNC_RESULTS_TABLE,
       Key: { requestId },
-    })).catch(() => {});
+    })).catch(() => { });
 
     const aiResponse = item.response || '';
     return {
@@ -601,7 +605,7 @@ async function pollResult(event: any): Promise<{
     docClient.send(new DeleteCommand({
       TableName: ASYNC_RESULTS_TABLE,
       Key: { requestId },
-    })).catch(() => {});
+    })).catch(() => { });
 
     const aiResponse = item.response || "I'm sorry, I had trouble processing that. Could you please try again?";
     return {
@@ -649,7 +653,7 @@ async function pollResult(event: any): Promise<{
         docClient.send(new DeleteCommand({
           TableName: ASYNC_RESULTS_TABLE,
           Key: { requestId },
-        })).catch(() => {});
+        })).catch(() => { });
         return {
           status: 'completed',
           aiResponse,
@@ -661,7 +665,7 @@ async function pollResult(event: any): Promise<{
         docClient.send(new DeleteCommand({
           TableName: ASYNC_RESULTS_TABLE,
           Key: { requestId },
-        })).catch(() => {});
+        })).catch(() => { });
         return {
           status: 'completed',
           aiResponse,
@@ -682,7 +686,7 @@ async function pollResult(event: any): Promise<{
     docClient.send(new DeleteCommand({
       TableName: ASYNC_RESULTS_TABLE,
       Key: { requestId },
-    })).catch(() => {});
+    })).catch(() => { });
 
     return {
       status: 'completed',
@@ -720,7 +724,7 @@ export const handler = async (event: any): Promise<any> => {
     case 'check':
       // Quick check - used by flows with their own looping logic
       return checkResult(event);
-    
+
     case 'poll':
       // Fast poll - Connect flow loops while playing typing prompt
       return pollResult(event);
@@ -746,7 +750,7 @@ export const handler = async (event: any): Promise<any> => {
       });
       return { status: 'processing_complete' };
     }
-    
+
     case 'start':
     default:
       // Start async processing, return immediately with requestId
