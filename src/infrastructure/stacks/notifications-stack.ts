@@ -824,7 +824,10 @@ export class NotificationsStack extends Stack {
     // EMAIL AI API ROUTES (Bedrock)
     // ========================================
 
-    const emailAiIntegration = new apigw.LambdaIntegration(this.emailAiFn);
+    const emailAiIntegration = new apigw.LambdaIntegration(this.emailAiFn, {
+      timeout: Duration.seconds(29), // Maximum API Gateway integration timeout for AI calls
+      proxy: true,
+    });
 
     // /email/ai resource
     const emailResource = this.notificationsApi.root.addResource('email');
