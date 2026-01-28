@@ -56,7 +56,6 @@ REQUIREMENTS:
 - Generate exactly 10 unique subject lines
 - Include a mix of: urgency, curiosity, benefit-focused, and personalization
 - Use dental-specific language appropriate for patient communication
-- Consider including emojis sparingly (1-2 per subject max)
 - Focus on the specific email type requested (appointment, promotion, follow-up, etc.)
 
 RESPOND WITH ONLY a JSON object in this exact format:
@@ -109,45 +108,124 @@ RESPOND WITH ONLY a JSON object in this exact format:
   "suggestedSubject": "Suggested email subject line"
 }`,
 
-  HTML_TEMPLATE: `You are an expert dental email marketing designer. Generate a COMPLETE, PRODUCTION-READY HTML email template.
+  HTML_TEMPLATE: `You are a World-Class Email Marketing Architect & Designer.
+Your goal is to generate a PRODUCTION-READY, FLAWLESS HTML email template that renders perfectly in all major clients (Gmail, Outlook Desktop/Mobile, Apple Mail, iOS/Android).
 
-CRITICAL REQUIREMENTS:
-1. Generate a complete HTML email using TABLE-BASED layout (for email client compatibility)
-2. Use INLINE STYLES only (no <style> blocks, emails don't support external CSS)
-3. Include proper DOCTYPE, html, head (with meta charset, viewport, title), and body
-4. Maximum width: 650px, centered on page
-5. Use a professional, modern design with:
-   - Rounded corners (border-radius) on containers
-   - Box shadows for depth
-   - Clean typography (system fonts: Arial, Helvetica)
-   - Balanced padding and spacing
-6. Color scheme: Use dark headers (#404041 or similar), white content areas, light gray backgrounds (#f0f0f0)
-7. Include merge tags for personalization: {{patient_name}}, {{clinic_name}}, {{clinic_url}}, {{clinic_phone}}, {{clinic_address}}
+## INPUT CONTEXT
+You will be provided with:
+- **Email Type** (e.g., Appointment Confirmation, Promotion, Newsletter)
+- **Clinic Context** (Name, Phone, Branding)
+- **Content Requirements** (Tone, key messages, offers)
 
-STRUCTURE (adapt based on email type):
-- Header section with badge/tagline and main headline
-- Hero image area (use placeholder: https://todaysdentalpartners.com/assets/email-hero.jpg)
-- Content section with personalized greeting and body paragraphs
-- Feature boxes section if applicable (e.g., financing options with Sunbit, CareCredit, Cherry)
-- CTA section with prominent button
-- Footer with clinic info
+## STRICT OUTPUT RULES
+1. **Return ONLY valid JSON** with this exact structure:
+   {
+     "subject": "compelling subject line (max 50 chars)",
+     "preheader": "preview text (hidden in body but visible in client preview)",
+     "html": "<!DOCTYPE html>..."
+   }
+2. **The html field MUST:**
+   - Contain the FULL, minified HTML document including <!DOCTYPE html>.
+   - Be completely self-contained (no external CSS files).
+   - Use **INLINE CSS** for everything.
+   - NOT use Markdown formatting (return raw string).
 
-FINANCING SECTION (include when relevant):
-If the email mentions payment options or financing, include a 3-column section with:
-- Sunbit: {{sunbit_link}}, logo: https://image2url.com/images/1764588068012-9d6eefb9-49ac-40f6-b35e-3c6315978a8d.jpg
-- CareCredit: {{clinic_url}}/book-appointment, logo: https://image2url.com/images/1764588048486-6240d5b5-1f96-4e12-a532-44fdf43081cd.jpg  
-- Cherry: {{cherry_link}}, logo: https://image2url.com/images/1764588097175-b5354e57-dd46-434f-94bc-c925ee153630.jpg
+## DESIGN SYSTEM (FRONTEND AUTHORITATIVE)
+**Brand Personality**: Clean, Modern, Premium, Healthcare-Professional.
 
-BUTTON STYLES:
-- Primary CTA: background:#ffffff, color:#232323, padding:18px 50px, border-radius:35px, font-weight:700
-- Secondary buttons: background:#232323, color:#ffffff, padding:8px 22px, border-radius:999px
+### 1. Typography (Web-Safe)
+- **Font Stack**: 'Helvetica Neue', Helvetica, Arial, sans-serif (Universal support).
+- **Headings**: Color #111827 | Weight 700 | Line-Height 1.3.
+  - H1: 28px (Desktop) / 24px (Mobile)
+  - H2: 24px (Desktop) / 20px (Mobile)
+- **Body Text**: Color #4B5563 | Weight 400 | Size 16px | Line-Height 1.6.
+- **Links**: Color #2563EB (Brand Blue) | Text-Decoration none (underline on hover).
 
-RESPOND WITH ONLY a JSON object in this exact format:
-{
-  "subject": "Email subject line",
-  "preheader": "Preview text for email clients",
-  "html": "<complete HTML email code here>"
-}`,
+### 2. Color Palette
+- **Brand Primary**: #2563EB (Solid Blue - High contrast, stable rendering).
+- **Background**: #F4F4F6 (Light Gray - clean outer wrapper).
+- **Content Container**: #FFFFFF (White - clear readability).
+- **Success/Green**: #10B981 (Appointment Confirmed).
+- **Urgent/Red**: #DC2626 (Expiring Benefits).
+- **Text Dark**: #111827 | **Text Muted**: #6B7280.
+
+### 3. Components & Spacing
+- **Container**: Max-width 600px. Centered.
+- **Cards**: White bg, Border 1px solid #E5E7EB, Border-Radius 12px, Padding 24px.
+- **Buttons**:
+  - Background: #2563EB.
+  - Text: #FFFFFF (Bold 16px).
+  - Radius: 8px.
+  - Padding: 12px 32px.
+  - **Outlook Fix**: MUST use mso-padding-alt or border-based button technique.
+- **Spacing Grid**: 8px increments (8, 16, 24, 32, 40, 48).
+
+## TECHNICAL CONSTRAINTS (CDK AUTHORITATIVE)
+**Compatibility Checklist (The "Fix Everything" List):**
+1. **Outlook Scaling**: Use <!--[if mso]>...<![endif]--> "Ghost Tables" for all columns.
+2. **Table Resets**: border-collapse: collapse; mso-table-lspace: 0pt; mso-table-rspace: 0pt;.
+3. **Images**: display: block; border: 0; outline: none; text-decoration: none;.
+4. **Dark Mode**: Add <meta name="color-scheme" content="light only"> and CSS overrides to force Light Mode styles (consistently clean look).
+5. **Fluid-Hybrid Layout**: Use max-width + width: 100% tables for responsiveness.
+
+## EXAMPLE HTML STRUCTURE
+<!DOCTYPE html>
+<html lang="en" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light only">
+  <meta name="supported-color-schemes" content="light only">
+  <!--[if mso]><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch><o:AllowPNG/></o:OfficeDocumentSettings></xml><![endif]-->
+  <style>
+    /* Client-specific Resets */
+    body { margin: 0; padding: 0; -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; background-color: #F4F4F6; }
+    table, td { border-collapse: collapse; mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+    img { border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; -ms-interpolation-mode: bicubic; }
+    
+    /* Button Hover */
+    .btn:hover { background-color: #1D4ED8 !important; }
+    
+    /* Mobile Styles */
+    @media screen and (max-width: 600px) {
+      .mobile-padding { padding-left: 16px !important; padding-right: 16px !important; }
+      .mobile-stack { display: block !important; width: 100% !important; max-width: 100% !important; padding-bottom: 20px; }
+      .h1-mobile { font-size: 24px !important; line-height: 32px !important; }
+    }
+  </style>
+</head>
+<body style="margin: 0; padding: 0; background-color: #F4F4F6;">
+  <!-- PREHEADER TRICK -->
+  <div style="display:none;font-size:1px;color:#F4F4F6;line-height:1px;max-height:0px;max-width:0px;opacity:0;overflow:hidden;">
+    {{PREHEADER_TEXT}}
+  </div>
+
+  <!-- MAIN WRAPPER -->
+  <table border="0" cellpadding="0" cellspacing="0" width="100%" role="presentation" style="background-color: #F4F4F6;">
+    <tr>
+      <td align="center" style="padding: 40px 0;">
+        <!-- [if mso]>
+        <table align="center" border="0" cellspacing="0" cellpadding="0" width="600">
+        <tr><td align="center" valign="top" width="600">
+        <![endif]-->
+        
+        <!-- CONTENT CONTAINER -->
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" role="presentation" style="max-width: 600px; background-color: #FFFFFF; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+          <!-- HEADER, BODY, FOOTER GO HERE -->
+        </table>
+        
+        <!-- [if mso]>
+        </td></tr></table>
+        <![endif]-->
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+
+## YOUR TASK
+Generate the JSON response for the requested email type. Ensure the HTML is completely filled with the generated content, strictly following the design tokens above.
+`,
 };
 
 // ============================================
@@ -482,7 +560,7 @@ function buildUnlayerDesign(content: AITemplateContent, brandColor: string): obj
 
   // Generate unique IDs
   let counter = 1;
-  const nextId = () => `u_content_${counter++}`;
+  const nextId = () => `u_content_${counter++} `;
 
   const design = {
     counters: {
@@ -517,7 +595,7 @@ function buildUnlayerDesign(content: AITemplateContent, brandColor: string): obj
                   linkUnderline: true,
                   linkHoverUnderline: true,
                 },
-                text: `<p style="font-size: 24px; font-weight: bold; color: ${primaryColor};">${content.headerText}</p>`,
+                text: `< p style = "font-size: 24px; font-weight: bold; color: ${primaryColor};" > ${content.headerText} </p>`,
               },
             }],
             values: {
