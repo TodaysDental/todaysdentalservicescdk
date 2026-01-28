@@ -57,11 +57,16 @@ type PutUserBody = {
   openDentalPerClinic?: StaffClinicDetail[];
 };
 
+// Module-level variable to hold request origin for response helpers
+let requestOrigin: string | undefined;
+
 /**
  * Main handler for user management
  */
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'GET', 'PUT', 'DELETE'] });
+  // Capture the request origin for use in response helpers
+  requestOrigin = event.headers?.origin || event.headers?.Origin;
+  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'GET', 'PUT', 'DELETE'] }, requestOrigin);
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: true }) };
@@ -78,7 +83,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const callerClinicRoles = userPerms.clinicRoles;
     const callerIsSuperAdmin = userPerms.isSuperAdmin;
     const callerIsGlobalSuperAdmin = userPerms.isGlobalSuperAdmin;
-    
+
     // Get allowed clinics using shared helper
     const allowedClinics = getAllowedClinicIds(callerClinicRoles, callerIsSuperAdmin, callerIsGlobalSuperAdmin);
 
@@ -89,9 +94,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // 1. GET /users/self - Get current user info (any authenticated user)
     // ==================================================================
     const isSelfRequest = (
-      String(event.path || '').endsWith('/users/self') || 
+      String(event.path || '').endsWith('/users/self') ||
       String(event.resource || '').endsWith('/users/self') ||
-      pathUsername === 'self' 
+      pathUsername === 'self'
     );
 
     if (event.httpMethod === 'GET' && isSelfRequest) {
@@ -188,11 +193,27 @@ async function handleListUsers(
   // Check if caller has access to all clinics (super admins)
   const hasAllAccess = allowedClinics.has('*');
 
+  // PERFORMANCE FIX: Fetch all staff details in parallel instead of sequentially
+  // This reduces latency from O(N * query_time) to O(1 * query_time)
+  const staffDetailsMap = new Map<string, StaffClinicDetail[]>();
+
+  if (STAFF_INFO_TABLE && users.length > 0) {
+    const staffDetailPromises = users.map(async (user) => {
+      const details = await getStaffInfoFromDynamoDB(user.email);
+      return { email: user.email, details };
+    });
+
+    const allStaffDetails = await Promise.all(staffDetailPromises);
+    for (const { email, details } of allStaffDetails) {
+      staffDetailsMap.set(email, details);
+    }
+  }
+
   const items: Array<Record<string, any>> = [];
 
   for (const user of users) {
-    // Get staff clinic info
-    const staffDetails = STAFF_INFO_TABLE ? await getStaffInfoFromDynamoDB(user.email) : [];
+    // Get staff clinic info from pre-fetched map
+    const staffDetails = staffDetailsMap.get(user.email) || [];
 
     // Filter based on clinic access
     if (hasAllAccess) {
@@ -326,7 +347,7 @@ async function handleUpdateUser(
     ...(body.familyName !== undefined && { familyName: body.familyName }),
     ...(body.clinicRoles !== undefined && { clinicRoles: body.clinicRoles }),
     ...(body.isActive !== undefined && { isActive: body.isActive }),
-    ...(body.makeGlobalSuperAdmin !== undefined && { 
+    ...(body.makeGlobalSuperAdmin !== undefined && {
       isGlobalSuperAdmin: body.makeGlobalSuperAdmin,
       isSuperAdmin: body.makeGlobalSuperAdmin || existingUser.isSuperAdmin,
     }),
@@ -343,10 +364,10 @@ async function handleUpdateUser(
   // Update staff clinic info if provided
   if (STAFF_INFO_TABLE && (body.staffDetails || body.openDentalPerClinic)) {
     const detailsToSave = body.openDentalPerClinic || body.staffDetails || [];
-    
+
     // First, delete existing staff info
     await deleteStaffInfoFromDynamoDB(username);
-    
+
     // Then save new staff info
     await saveStaffInfoToDynamoDB(username, detailsToSave);
   }
@@ -567,7 +588,7 @@ function parseBody(body: any): Record<string, any> {
 function httpOk(data: Record<string, any>) {
   return {
     statusCode: 200,
-    headers: buildCorsHeaders({ allowMethods: ['OPTIONS', 'GET', 'PUT', 'DELETE'] }),
+    headers: buildCorsHeaders({ allowMethods: ['OPTIONS', 'GET', 'PUT', 'DELETE'] }, requestOrigin),
     body: JSON.stringify({ success: true, ...data }),
   };
 }
@@ -578,7 +599,7 @@ function httpOk(data: Record<string, any>) {
 function httpErr(code: number, message: string) {
   return {
     statusCode: code,
-    headers: buildCorsHeaders({ allowMethods: ['OPTIONS', 'GET', 'PUT', 'DELETE'] }),
+    headers: buildCorsHeaders({ allowMethods: ['OPTIONS', 'GET', 'PUT', 'DELETE'] }, requestOrigin),
     body: JSON.stringify({ success: false, message }),
   };
 }

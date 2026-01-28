@@ -1307,6 +1307,7 @@ import { AuditLogger, AuditResource } from '../shared/audit-logger';
 // Environment Variables
 const SHIFTS_TABLE = process.env.SHIFTS_TABLE!;
 const LEAVE_TABLE = process.env.LEAVE_TABLE!;
+const ADVANCE_PAY_TABLE = process.env.ADVANCE_PAY_TABLE!;
 const STAFF_INFO_TABLE = process.env.STAFF_CLINIC_INFO_TABLE!;
 const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE!;
 const CLINICS_TABLE = process.env.CLINICS_TABLE || 'Clinics';
@@ -1374,18 +1375,9 @@ async function isDateBlocked(staffId: string, date: Date): Promise<boolean> {
 }
 
 // Get all shifts that overlap with a date range
-// FIXED: Properly finds shifts that fall within leave dates
-async function getOverlappingShifts(staffId: string, startDate: string, endDate: string): Promise<any[]> {
+// FIXED: Uses clinic-timezone-aware date comparison to avoid off-by-one errors
+async function getOverlappingShifts(staffId: string, startDate: string, endDate: string, clinicIdForTz?: string): Promise<any[]> {
   console.log(`🔍 getOverlappingShifts: Looking for shifts for staffId=${staffId} between ${startDate} and ${endDate}`);
-
-  // Parse dates - leave dates are in YYYY-MM-DD format
-  // We need to find shifts where the shift date falls within the leave period
-  const leaveStart = new Date(startDate);
-  leaveStart.setHours(0, 0, 0, 0);
-  const leaveEnd = new Date(endDate);
-  leaveEnd.setHours(23, 59, 59, 999);
-
-  console.log(`🔍 Date range: ${leaveStart.toISOString()} to ${leaveEnd.toISOString()}`);
 
   // Get ALL scheduled shifts for this staff member (no date filter in query)
   const { Items } = await ddb.send(new QueryCommand({
@@ -1400,25 +1392,53 @@ async function getOverlappingShifts(staffId: string, startDate: string, endDate:
     }
   }));
 
-  // Filter in code to find shifts that fall within the leave period
-  // A shift overlaps if its START TIME falls within the leave date range
-  const overlappingShifts = (Items || []).filter((shift: any) => {
-    const shiftStart = new Date(shift.startTime);
-    const shiftDateOnly = new Date(shiftStart.getFullYear(), shiftStart.getMonth(), shiftStart.getDate());
-    const leaveDateOnlyStart = new Date(leaveStart.getFullYear(), leaveStart.getMonth(), leaveStart.getDate());
-    const leaveDateOnlyEnd = new Date(leaveEnd.getFullYear(), leaveEnd.getMonth(), leaveEnd.getDate());
+  if (!Items || Items.length === 0) {
+    console.log('🔍 No scheduled shifts found for this staff member');
+    return [];
+  }
 
-    // Check if shift date is within leave date range (inclusive)
-    const overlaps = shiftDateOnly >= leaveDateOnlyStart && shiftDateOnly <= leaveDateOnlyEnd;
+  // Leave dates are in YYYY-MM-DD format (wall-clock dates, not UTC)
+  // Parse as integers for safe comparison
+  const [leaveStartYear, leaveStartMonth, leaveStartDay] = startDate.split('-').map(Number);
+  const [leaveEndYear, leaveEndMonth, leaveEndDay] = endDate.split('-').map(Number);
+
+  // Helper to convert YYYY-MM-DD to a comparable integer (YYYYMMDD)
+  const toDateInt = (y: number, m: number, d: number) => y * 10000 + m * 100 + d;
+  const leaveStartInt = toDateInt(leaveStartYear, leaveStartMonth, leaveStartDay);
+  const leaveEndInt = toDateInt(leaveEndYear, leaveEndMonth, leaveEndDay);
+
+  console.log(`🔍 Leave date range (as integers): ${leaveStartInt} to ${leaveEndInt}`);
+
+  // Filter shifts that fall within the leave period using proper timezone conversion
+  const overlappingShifts: any[] = [];
+
+  for (const shift of Items) {
+    // Get the clinic's timezone for this specific shift
+    const shiftClinicTz = await getClinicTimezone(shift.clinicId || clinicIdForTz || '');
+    const safeTz = normalizeTimeZoneOrUtc(shiftClinicTz);
+
+    // Convert the shift's UTC start time to clinic-local wall clock date
+    const shiftStartUtc = new Date(shift.startTime);
+    const dtf = new Intl.DateTimeFormat('en-CA', { // en-CA gives YYYY-MM-DD format
+      timeZone: safeTz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const shiftLocalDateStr = dtf.format(shiftStartUtc); // e.g., "2026-01-28"
+    const [shiftYear, shiftMonth, shiftDay] = shiftLocalDateStr.split('-').map(Number);
+    const shiftDateInt = toDateInt(shiftYear, shiftMonth, shiftDay);
+
+    // Check if shift date (in clinic local time) is within leave date range (inclusive)
+    const overlaps = shiftDateInt >= leaveStartInt && shiftDateInt <= leaveEndInt;
 
     if (overlaps) {
-      console.log(`✅ OVERLAP FOUND: Shift ${shift.shiftId} on ${shift.startTime} falls within leave ${startDate} to ${endDate}`);
+      console.log(`✅ OVERLAP FOUND: Shift ${shift.shiftId} on ${shift.startTime} (local: ${shiftLocalDateStr}) falls within leave ${startDate} to ${endDate}`);
+      overlappingShifts.push(shift);
     }
+  }
 
-    return overlaps;
-  });
-
-  console.log(`🔍 Found ${overlappingShifts.length} overlapping shifts out of ${Items?.length || 0} total scheduled shifts`);
+  console.log(`🔍 Found ${overlappingShifts.length} overlapping shifts out of ${Items.length} total scheduled shifts`);
   console.log(`📋 Overlapping shifts:`, overlappingShifts.map((s: any) => ({
     shiftId: s.shiftId,
     startTime: s.startTime,
@@ -1716,6 +1736,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return copyWeekSchedule(parsedBody, allowedClinics, userPerms, event);
     }
 
+    // --- ADMIN CALENDAR (All Clinics View) ---
+    if (method === 'GET' && path === '/admin-calendar') {
+      if (!isAdmin) {
+        return httpErr(403, "Admin access required for calendar view");
+      }
+      return getAdminCalendarShifts(userPerms, event.queryStringParameters, allowedClinics);
+    }
+
     // --- LEAVE REQUESTS ---
     if (method === 'GET' && path === '/leave') {
       return getLeave(userPerms, isAdmin);
@@ -1749,6 +1777,62 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (method === 'POST' && path.startsWith('/shifts/') && path.endsWith('/reject')) {
       const shiftId = path.split('/')[2];
       return rejectShift(shiftId, userPerms, event);
+    }
+
+    // --- HR CONFIG (For frontend to consume business rule constants) ---
+    if (method === 'GET' && path === '/config') {
+      return getHrConfig();
+    }
+
+    // --- ADVANCE PAY REQUESTS ---
+    if (method === 'GET' && path === '/advance-pay') {
+      return getAdvancePayRequests(userPerms, isAdmin, allowedClinics);
+    }
+
+    if (method === 'POST' && path === '/advance-pay') {
+      const parsedBody = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+      return createAdvancePayRequest(userPerms, parsedBody, allowedClinics, event);
+    }
+
+    // Admin-only route to record advance pays that were already given to staff
+    if (method === 'POST' && path === '/advance-pay/admin-record') {
+      if (!isAdmin) {
+        return httpErr(403, "Admin access required to record advance pay");
+      }
+      const parsedBody = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+      return adminCreateAdvancePayRecord(userPerms, parsedBody, allowedClinics, event);
+    }
+
+    if (method === 'DELETE' && path.startsWith('/advance-pay/')) {
+      const advanceId = path.split('/')[2];
+      return deleteAdvancePayRequest(advanceId, userPerms, isAdmin, allowedClinics, event);
+    }
+
+    if (method === 'PUT' && path.startsWith('/advance-pay/') && path.endsWith('/approve')) {
+      const advanceId = path.split('/')[2];
+      if (!isAdmin) {
+        return httpErr(403, "Admin access required to approve advance pay requests");
+      }
+      const parsedBody = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+      return approveAdvancePay(advanceId, userPerms, allowedClinics, event, parsedBody?.notes);
+    }
+
+    if (method === 'PUT' && path.startsWith('/advance-pay/') && path.endsWith('/deny')) {
+      const advanceId = path.split('/')[2];
+      if (!isAdmin) {
+        return httpErr(403, "Admin access required to deny advance pay requests");
+      }
+      const parsedBody = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+      return denyAdvancePay(advanceId, userPerms, allowedClinics, event, parsedBody?.reason);
+    }
+
+    if (method === 'PUT' && path.startsWith('/advance-pay/') && path.endsWith('/mark-paid')) {
+      const advanceId = path.split('/')[2];
+      if (!isAdmin) {
+        return httpErr(403, "Admin access required to mark advance pay as paid");
+      }
+      const parsedBody = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+      return markAdvancePayAsPaid(advanceId, userPerms, allowedClinics, event, parsedBody?.paymentReference);
     }
 
     // --- AUDIT TRAIL ---
@@ -1983,6 +2067,144 @@ async function getShifts(userPerms: UserPermissions, isAdmin: boolean, queryPara
     })
   );
   return httpOk({ shifts: normalized });
+}
+
+// ========================================
+// ADMIN CALENDAR - ALL CLINICS VIEW
+// ========================================
+
+/**
+ * Get shifts across all accessible clinics for admin calendar view
+ * Supports optional clinicIds filter to show specific clinics
+ */
+async function getAdminCalendarShifts(
+  userPerms: UserPermissions,
+  queryParams: any,
+  allowedClinics: Set<string>
+) {
+  const { startDate, endDate, clinicIds: clinicIdsParam } = queryParams || {};
+
+  if (!startDate || !endDate) {
+    return httpErr(400, "startDate and endDate are required");
+  }
+
+  // Parse clinicIds if provided (comma-separated string)
+  let selectedClinics: string[] = [];
+  if (clinicIdsParam) {
+    selectedClinics = clinicIdsParam.split(',').filter((id: string) => id.trim());
+  }
+
+  // Determine which clinics to query
+  const clinicsToQuery: string[] = selectedClinics.length > 0
+    ? selectedClinics.filter(id => hasClinicAccess(allowedClinics, id))
+    : Array.from(allowedClinics);
+
+  if (clinicsToQuery.length === 0) {
+    return httpOk({ shifts: [], clinics: [], leave: [] });
+  }
+
+  // Fetch shifts from all selected clinics in parallel
+  const shiftPromises = clinicsToQuery.map(async (clinicId) => {
+    try {
+      const { Items } = await ddb.send(new QueryCommand({
+        TableName: SHIFTS_TABLE,
+        IndexName: 'byClinicAndDate',
+        KeyConditionExpression: 'clinicId = :clinicId AND startTime BETWEEN :startDate AND :endDate',
+        ExpressionAttributeValues: {
+          ':clinicId': clinicId,
+          ':startDate': startDate,
+          ':endDate': endDate,
+        }
+      }));
+
+      const tz = await getClinicTimezone(clinicId);
+      const shifts = (Items || []).map((s: any) => ({
+        ...s,
+        startTime: normalizeToUtcIso(s.startTime, tz),
+        endTime: normalizeToUtcIso(s.endTime, tz),
+      }));
+
+      return shifts;
+    } catch (error) {
+      console.error(`Error fetching shifts for clinic ${clinicId}:`, error);
+      return [];
+    }
+  });
+
+  // Fetch leave requests for the date range
+  const leavePromise = ddb.send(new ScanCommand({
+    TableName: LEAVE_TABLE,
+    FilterExpression: '(#status = :pending OR #status = :approved) AND ' +
+      '((startDate BETWEEN :startDate AND :endDate) OR (endDate BETWEEN :startDate AND :endDate) OR (startDate <= :startDate AND endDate >= :endDate))',
+    ExpressionAttributeNames: { '#status': 'status' },
+    ExpressionAttributeValues: {
+      ':pending': 'pending',
+      ':approved': 'approved',
+      ':startDate': startDate,
+      ':endDate': endDate,
+    }
+  }));
+
+  // Wait for all queries
+  const [shiftResults, leaveResults] = await Promise.all([
+    Promise.all(shiftPromises),
+    leavePromise
+  ]);
+
+  // Flatten shifts and filter out cancelled
+  const allShifts = shiftResults.flat().filter((s: any) => s.status !== 'cancelled');
+
+  // Build clinic name map (for display)
+  const clinicNameMap: Record<string, string> = {};
+  for (const clinicId of clinicsToQuery) {
+    // Try to get clinic name from user's clinic roles
+    const clinicRole = userPerms.clinicRoles?.find((cr: any) => cr.clinicId === clinicId);
+    clinicNameMap[clinicId] = (clinicRole as any)?.clinicName || clinicId;
+  }
+
+  // Build staff name map from shift data
+  const staffIds = [...new Set(allShifts.map((s: any) => s.staffId))];
+  const staffNameMap: Record<string, string> = {};
+
+  // Try to get staff names from staff info table
+  for (const staffId of staffIds) {
+    try {
+      const { Items } = await ddb.send(new QueryCommand({
+        TableName: STAFF_INFO_TABLE,
+        IndexName: 'byEmail',
+        KeyConditionExpression: 'email = :email',
+        ExpressionAttributeValues: { ':email': staffId },
+        Limit: 1
+      }));
+      if (Items && Items.length > 0) {
+        const staff = Items[0];
+        staffNameMap[staffId] = staff.name || staff.givenName + ' ' + staff.familyName || staffId;
+      } else {
+        staffNameMap[staffId] = staffId;
+      }
+    } catch {
+      staffNameMap[staffId] = staffId;
+    }
+  }
+
+  // Format leave requests
+  const leaveRequests = (leaveResults.Items || []).map((leave: any) => ({
+    leaveId: leave.leaveId,
+    staffId: leave.staffId,
+    staffName: staffNameMap[leave.staffId] || leave.staffId,
+    startDate: leave.startDate,
+    endDate: leave.endDate,
+    status: leave.status,
+    clinicIds: leave.clinicIds || [],
+  }));
+
+  return httpOk({
+    shifts: allShifts,
+    clinics: clinicsToQuery.map(id => ({ clinicId: id, clinicName: clinicNameMap[id] })),
+    leave: leaveRequests,
+    staffNames: staffNameMap,
+    dateRange: { startDate, endDate },
+  });
 }
 
 async function createShift(body: any, allowedClinics: Set<string>, userPerms?: UserPermissions, event?: APIGatewayProxyEvent) {
@@ -2450,6 +2672,29 @@ async function createLeave(staffId: string, body: any, userPerms?: UserPermissio
   if (!startDate || !endDate) {
     return httpErr(400, "startDate and endDate are required");
   }
+
+  // FIXED: Look up all clinics where this staff member works
+  let staffClinicIds: string[] = [];
+  try {
+    const { Items: staffInfoRecords } = await ddb.send(new QueryCommand({
+      TableName: STAFF_INFO_TABLE,
+      IndexName: 'byEmail',
+      KeyConditionExpression: 'email = :email',
+      ExpressionAttributeValues: { ':email': staffId }
+    }));
+
+    if (staffInfoRecords && staffInfoRecords.length > 0) {
+      staffClinicIds = staffInfoRecords.map((record: any) => record.clinicId).filter(Boolean);
+    }
+  } catch (lookupError) {
+    console.warn('Could not look up staff clinics for leave request:', lookupError);
+  }
+
+  // Fall back to userPerms clinics if lookup fails
+  if (staffClinicIds.length === 0 && userPerms?.clinicRoles) {
+    staffClinicIds = userPerms.clinicRoles.map((cr: any) => cr.clinicId).filter(Boolean);
+  }
+
   const leaveId = uuidv4();
   const leaveRequest = {
     leaveId,
@@ -2457,31 +2702,40 @@ async function createLeave(staffId: string, body: any, userPerms?: UserPermissio
     startDate,
     endDate,
     reason,
-    status: 'pending'
+    status: 'pending',
+    // FIXED: Store clinicIds in leave record for clinic-wise queries
+    clinicIds: staffClinicIds,
+    createdAt: new Date().toISOString(),
   };
   await ddb.send(new PutCommand({ TableName: LEAVE_TABLE, Item: leaveRequest }));
 
+  // FIXED: Log audit entry to each clinic where staff works
   if (userPerms) {
-    const userClinicId = userPerms.clinicRoles?.[0]?.clinicId;
+    const clinicsToLog = staffClinicIds.length > 0
+      ? staffClinicIds
+      : [userPerms.clinicRoles?.[0]?.clinicId].filter(Boolean);
 
-    await auditLogger.log({
-      userId: userPerms.email,
-      userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
-      userRole: AuditLogger.getUserRole(userPerms),
-      action: 'CREATE',
-      resource: 'LEAVE',
-      resourceId: leaveId,
-      clinicId: userClinicId,
-      after: AuditLogger.sanitizeForAudit(leaveRequest),
-      metadata: {
-        ...AuditLogger.createLeaveMetadata(leaveRequest),
-        actionType: 'Leave Request Created',
-      },
-      ...AuditLogger.extractRequestContext(event),
-    });
+    for (const clinicIdForAudit of clinicsToLog) {
+      await auditLogger.log({
+        userId: userPerms.email,
+        userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+        userRole: AuditLogger.getUserRole(userPerms),
+        action: 'CREATE',
+        resource: 'LEAVE',
+        resourceId: leaveId,
+        clinicId: clinicIdForAudit,
+        after: AuditLogger.sanitizeForAudit(leaveRequest),
+        metadata: {
+          ...AuditLogger.createLeaveMetadata(leaveRequest),
+          actionType: 'Leave Request Created',
+          affectedClinics: staffClinicIds,
+        },
+        ...AuditLogger.extractRequestContext(event),
+      });
+    }
   }
 
-  return httpOk({ leaveId, message: "Leave request submitted" });
+  return httpOk({ leaveId, message: "Leave request submitted", clinicIds: staffClinicIds });
 }
 
 async function deleteLeave(leaveId: string, userPerms: UserPermissions, isAdmin: boolean, event?: APIGatewayProxyEvent) {
@@ -2494,23 +2748,52 @@ async function deleteLeave(leaveId: string, userPerms: UserPermissions, isAdmin:
 
   await ddb.send(new DeleteCommand({ TableName: LEAVE_TABLE, Key: { leaveId } }));
 
-  const userClinicId = userPerms.clinicRoles?.[0]?.clinicId;
+  // FIXED: Determine clinics to log to - use stored clinicIds, or lookup from StaffClinicInfo
+  let clinicsToLog: string[] = Array.isArray(Item.clinicIds) ? Item.clinicIds : [];
 
-  await auditLogger.log({
-    userId: userPerms.email,
-    userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
-    userRole: AuditLogger.getUserRole(userPerms),
-    action: 'DELETE',
-    resource: 'LEAVE',
-    resourceId: leaveId,
-    clinicId: userClinicId,
-    before: AuditLogger.sanitizeForAudit(Item),
-    metadata: {
-      ...AuditLogger.createLeaveMetadata(Item),
-      actionType: 'Leave Request Deleted',
-    },
-    ...AuditLogger.extractRequestContext(event),
-  });
+  if (clinicsToLog.length === 0) {
+    // Fall back to lookup from StaffClinicInfo
+    try {
+      const { Items: staffInfoRecords } = await ddb.send(new QueryCommand({
+        TableName: STAFF_INFO_TABLE,
+        IndexName: 'byEmail',
+        KeyConditionExpression: 'email = :email',
+        ExpressionAttributeValues: { ':email': Item.staffId }
+      }));
+
+      if (staffInfoRecords && staffInfoRecords.length > 0) {
+        clinicsToLog = staffInfoRecords.map((record: any) => record.clinicId).filter(Boolean);
+      }
+    } catch (lookupError) {
+      console.warn('Could not look up staff clinics for delete audit:', lookupError);
+    }
+  }
+
+  // Final fallback to actor's clinic
+  if (clinicsToLog.length === 0) {
+    const actorClinicId = userPerms.clinicRoles?.[0]?.clinicId;
+    if (actorClinicId) clinicsToLog = [actorClinicId];
+  }
+
+  // Log audit to each clinic
+  for (const clinicIdForAudit of clinicsToLog) {
+    await auditLogger.log({
+      userId: userPerms.email,
+      userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+      userRole: AuditLogger.getUserRole(userPerms),
+      action: 'DELETE',
+      resource: 'LEAVE',
+      resourceId: leaveId,
+      clinicId: clinicIdForAudit,
+      before: AuditLogger.sanitizeForAudit(Item),
+      metadata: {
+        ...AuditLogger.createLeaveMetadata(Item),
+        actionType: 'Leave Request Deleted',
+        affectedClinics: clinicsToLog,
+      },
+      ...AuditLogger.extractRequestContext(event),
+    });
+  }
 
   return httpOk({ message: "Leave request deleted" });
 }
@@ -2626,9 +2909,34 @@ async function approveLeave(leaveId: string, userPerms?: UserPermissions, event?
 
     // Audit log for leave approval
     if (userPerms) {
-      const affectedClinicIds = [...new Set(overlappingShifts.map(s => s.clinicId).filter(Boolean))];
-      const primaryClinicId = affectedClinicIds[0] || userPerms.clinicRoles?.[0]?.clinicId;
-      const clinicsToLog = affectedClinicIds.length > 0 ? affectedClinicIds : [primaryClinicId];
+      // FIXED: Combine shift clinics + stored leave clinicIds for comprehensive audit logging
+      const shiftClinicIds = overlappingShifts.map(s => s.clinicId).filter(Boolean);
+      const storedClinicIds = Array.isArray(leave.clinicIds) ? leave.clinicIds : [];
+      const allClinicIds = [...new Set([...shiftClinicIds, ...storedClinicIds])];
+
+      // Fall back to looking up from StaffClinicInfo if no clinics found
+      let clinicsToLog = allClinicIds.length > 0 ? allClinicIds : [];
+      if (clinicsToLog.length === 0) {
+        try {
+          const { Items: staffInfoRecords } = await ddb.send(new QueryCommand({
+            TableName: STAFF_INFO_TABLE,
+            IndexName: 'byEmail',
+            KeyConditionExpression: 'email = :email',
+            ExpressionAttributeValues: { ':email': leave.staffId }
+          }));
+          if (staffInfoRecords && staffInfoRecords.length > 0) {
+            clinicsToLog = staffInfoRecords.map((record: any) => record.clinicId).filter(Boolean);
+          }
+        } catch (lookupError) {
+          console.warn('Could not look up staff clinics for approve audit:', lookupError);
+        }
+      }
+
+      // Final fallback to actor's clinic
+      if (clinicsToLog.length === 0) {
+        const actorClinicId = userPerms.clinicRoles?.[0]?.clinicId;
+        if (actorClinicId) clinicsToLog = [actorClinicId];
+      }
 
       for (const clinicIdForAudit of clinicsToLog) {
         await auditLogger.log({
@@ -2648,7 +2956,7 @@ async function approveLeave(leaveId: string, userPerms?: UserPermissions, event?
             actionByName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim(),
             actionType: 'Leave Approved',
             requestedBy: leave.staffId,
-            affectedClinics: affectedClinicIds,
+            affectedClinics: clinicsToLog,
             deletedShiftCount: overlappingShifts.length,
           },
           ...AuditLogger.extractRequestContext(event),
@@ -2691,27 +2999,32 @@ async function updateLeaveStatus(leaveId: string, status: 'approved' | 'denied',
   }));
 
   if (userPerms) {
-    // FIXED: Look up the staff's clinics from StaffClinicInfo to log audit to correct clinic
-    let staffClinicIds: string[] = [];
-    try {
-      const { Items: staffInfoRecords } = await ddb.send(new QueryCommand({
-        TableName: STAFF_INFO_TABLE,
-        IndexName: 'byEmail',
-        KeyConditionExpression: 'email = :email',
-        ExpressionAttributeValues: { ':email': leave.staffId }
-      }));
+    // FIXED: Use stored clinicIds from leave record first, then fall back to StaffClinicInfo lookup
+    let clinicsToLog: string[] = Array.isArray(leave.clinicIds) ? leave.clinicIds : [];
 
-      if (staffInfoRecords && staffInfoRecords.length > 0) {
-        staffClinicIds = staffInfoRecords.map((record: any) => record.clinicId).filter(Boolean);
+    // If no stored clinicIds, look up from StaffClinicInfo
+    if (clinicsToLog.length === 0) {
+      try {
+        const { Items: staffInfoRecords } = await ddb.send(new QueryCommand({
+          TableName: STAFF_INFO_TABLE,
+          IndexName: 'byEmail',
+          KeyConditionExpression: 'email = :email',
+          ExpressionAttributeValues: { ':email': leave.staffId }
+        }));
+
+        if (staffInfoRecords && staffInfoRecords.length > 0) {
+          clinicsToLog = staffInfoRecords.map((record: any) => record.clinicId).filter(Boolean);
+        }
+      } catch (lookupError) {
+        console.warn('Could not look up staff clinics for audit:', lookupError);
       }
-    } catch (lookupError) {
-      console.warn('Could not look up staff clinics for audit:', lookupError);
     }
 
-    // Use staff's clinics, or fall back to approver's first clinic
-    const clinicsToLog = staffClinicIds.length > 0
-      ? staffClinicIds
-      : [userPerms.clinicRoles?.[0]?.clinicId].filter(Boolean);
+    // Final fallback to actor's clinic
+    if (clinicsToLog.length === 0) {
+      const actorClinicId = userPerms.clinicRoles?.[0]?.clinicId;
+      if (actorClinicId) clinicsToLog = [actorClinicId];
+    }
 
     // Log to each relevant clinic
     for (const clinicIdForAudit of clinicsToLog) {
@@ -2733,7 +3046,7 @@ async function updateLeaveStatus(leaveId: string, status: 'approved' | 'denied',
           actionBy: userPerms.email,
           actionByName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim(),
           requestedBy: leave.staffId,
-          affectedClinics: staffClinicIds,
+          affectedClinics: clinicsToLog,
         },
         ...AuditLogger.extractRequestContext(event),
       });
@@ -2746,6 +3059,765 @@ async function updateLeaveStatus(leaveId: string, status: 'approved' | 'denied',
 // ========================================
 // AUDIT TRAIL QUERY
 // ========================================
+
+// =====================================================
+// HR CONFIG ENDPOINT
+// =====================================================
+
+// Business rule constants for Advance Pay (exported via /hr/config endpoint)
+const MAX_ADVANCE_PAY_AMOUNT = 500; // Maximum amount per request
+const MAX_TOTAL_OUTSTANDING_ADVANCES = 1000; // Maximum total outstanding (pending + approved but not paid)
+const MAX_PENDING_REQUESTS = 3; // Maximum number of pending requests per staff member
+const MIN_TENURE_DAYS = 90; // Staff must be employed for at least 90 days
+const MIN_DAYS_BETWEEN_REQUESTS = 30; // Minimum days between approved advance pay requests
+
+
+/**
+ * Get HR module configuration
+ * Returns business rule constants for the frontend to consume
+ * This is the single source of truth - frontend should fetch these values
+ */
+function getHrConfig() {
+  return httpOk({
+    advancePay: {
+      maxAmountPerRequest: MAX_ADVANCE_PAY_AMOUNT,
+      maxTotalOutstanding: MAX_TOTAL_OUTSTANDING_ADVANCES,
+      maxPendingRequests: MAX_PENDING_REQUESTS,
+      minTenureDays: MIN_TENURE_DAYS,
+      minDaysBetweenRequests: MIN_DAYS_BETWEEN_REQUESTS,
+    },
+    // Future: Add other module configs here
+    // leave: { ... },
+    // shifts: { ... },
+  });
+}
+
+// =====================================================
+// ADVANCE PAY FUNCTIONS
+// =====================================================
+
+interface AdvancePayRequest {
+  advanceId: string;
+  staffId: string;
+  staffName?: string;
+  clinicId: string;
+  amount: number;
+  reason?: string;
+  status: 'pending' | 'approved' | 'denied' | 'paid';
+  createdAt: string;
+  updatedAt?: string;
+  approvedBy?: string;
+  approvedAt?: string;
+  deniedBy?: string;
+  deniedAt?: string;
+  denialReason?: string;
+  approvalNotes?: string;
+  paymentDate?: string;
+  paymentReference?: string;
+  paidBy?: string;
+  // Soft delete fields
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
+}
+
+/**
+ * Get advance pay requests
+ * - Admin: Gets all requests for their clinics (optionally filtered by status)
+ * - Staff: Gets only their own requests
+ * 
+ * Note: Filters out soft-deleted records
+ */
+async function getAdvancePayRequests(
+  userPerms: UserPermissions,
+  isAdmin: boolean,
+  allowedClinics: Set<string>
+) {
+  try {
+    if (isAdmin) {
+      // Admin: Fetch requests for all allowed clinics IN PARALLEL for performance
+      const clinicIds = Array.from(allowedClinics);
+
+      // Execute all clinic queries in parallel using Promise.allSettled for resilience
+      const queryPromises = clinicIds.map(clinicId =>
+        ddb.send(new QueryCommand({
+          TableName: ADVANCE_PAY_TABLE,
+          IndexName: 'byClinic',
+          KeyConditionExpression: 'clinicId = :clinicId',
+          FilterExpression: 'attribute_not_exists(isDeleted) OR isDeleted = :false',
+          ExpressionAttributeValues: { ':clinicId': clinicId, ':false': false },
+          ScanIndexForward: false, // Most recent first
+        })).then(result => ({ clinicId, items: result.Items || [] }))
+          .catch(error => {
+            console.error(`Error fetching advance pay for clinic ${clinicId}:`, error);
+            return { clinicId, items: [] };
+          })
+      );
+
+      const results = await Promise.all(queryPromises);
+
+      // Flatten all results
+      const allRequests: AdvancePayRequest[] = results.flatMap(r => r.items as AdvancePayRequest[]);
+
+      // Sort by createdAt descending
+      allRequests.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      return httpOk({ advancePayRequests: allRequests });
+    } else {
+      // Staff: Only their own requests
+      const { Items } = await ddb.send(new QueryCommand({
+        TableName: ADVANCE_PAY_TABLE,
+        IndexName: 'byStaff',
+        KeyConditionExpression: 'staffId = :staffId',
+        FilterExpression: 'attribute_not_exists(isDeleted) OR isDeleted = :false',
+        ExpressionAttributeValues: { ':staffId': userPerms.email, ':false': false },
+        ScanIndexForward: false,
+      }));
+
+      return httpOk({ advancePayRequests: Items || [] });
+    }
+  } catch (error: any) {
+    console.error('Error fetching advance pay requests:', error);
+    return httpErr(500, `Failed to fetch advance pay requests: ${error.message}`);
+  }
+}
+
+
+
+/**
+ * Create a new advance pay request (Staff only)
+ * 
+ * Business Rules:
+ * 1. Maximum single request: $500
+ * 2. Maximum 3 pending requests at a time
+ * 3. Total outstanding advances (pending + approved) cannot exceed $1000
+ */
+async function createAdvancePayRequest(
+  userPerms: UserPermissions,
+  body: any,
+  allowedClinics: Set<string>,
+  event?: APIGatewayProxyEvent
+) {
+  const { amount, reason, clinicId } = body;
+
+  // Basic validation
+  if (!amount || typeof amount !== 'number' || amount <= 0) {
+    return httpErr(400, "Valid amount (positive number) is required");
+  }
+
+  // Maximum amount validation
+  if (amount > MAX_ADVANCE_PAY_AMOUNT) {
+    return httpErr(400, `Advance pay amount cannot exceed $${MAX_ADVANCE_PAY_AMOUNT}`);
+  }
+
+  if (!clinicId) {
+    return httpErr(400, "Clinic ID is required");
+  }
+
+  // Verify user has access to this clinic
+  if (!hasClinicAccess(allowedClinics, clinicId)) {
+    return httpErr(403, "Forbidden: no access to this clinic");
+  }
+
+  try {
+    // ==============================
+    // BUSINESS RULE 1: TENURE CHECK
+    // ==============================
+    // Staff must be employed for at least MIN_TENURE_DAYS (90 days) before requesting an advance
+    const { Item: staffUser } = await ddb.send(new GetCommand({
+      TableName: STAFF_USER_TABLE,
+      Key: { email: userPerms.email.toLowerCase() },
+    }));
+
+    if (staffUser?.createdAt) {
+      const hireDate = new Date(staffUser.createdAt);
+      const now = new Date();
+      const daysEmployed = Math.floor((now.getTime() - hireDate.getTime()) / (1000 * 60 * 60 * 24));
+
+      if (daysEmployed < MIN_TENURE_DAYS) {
+        const daysRemaining = MIN_TENURE_DAYS - daysEmployed;
+        return httpErr(400, `Advance pay is only available after ${MIN_TENURE_DAYS} days of employment. You have been employed for ${daysEmployed} day(s). Please wait ${daysRemaining} more day(s).`);
+      }
+    }
+
+    // Check for existing requests and calculate total outstanding (excluding soft-deleted)
+    const { Items: existingRequests } = await ddb.send(new QueryCommand({
+      TableName: ADVANCE_PAY_TABLE,
+      IndexName: 'byStaff',
+      KeyConditionExpression: 'staffId = :staffId',
+      FilterExpression: 'attribute_not_exists(isDeleted) OR isDeleted = :false',
+      ExpressionAttributeValues: { ':staffId': userPerms.email, ':false': false },
+    }));
+
+    if (existingRequests && existingRequests.length > 0) {
+      // ==============================
+      // BUSINESS RULE 2: FREQUENCY CHECK
+      // ==============================
+      // Must wait MIN_DAYS_BETWEEN_REQUESTS (30 days) after last approved/paid request
+      const recentApprovedOrPaid = existingRequests
+        .filter((r: any) => (r.status === 'approved' || r.status === 'paid') && !r.isDeleted)
+        .sort((a: any, b: any) => new Date(b.approvedAt || b.createdAt).getTime() - new Date(a.approvedAt || a.createdAt).getTime());
+
+      if (recentApprovedOrPaid.length > 0) {
+        const mostRecent = recentApprovedOrPaid[0];
+        const lastApprovedDate = new Date(mostRecent.approvedAt || mostRecent.createdAt);
+        const now = new Date();
+        const daysSinceLastApproval = Math.floor((now.getTime() - lastApprovedDate.getTime()) / (1000 * 60 * 60 * 24));
+
+        if (daysSinceLastApproval < MIN_DAYS_BETWEEN_REQUESTS) {
+          const daysRemaining = MIN_DAYS_BETWEEN_REQUESTS - daysSinceLastApproval;
+          return httpErr(400, `You must wait ${MIN_DAYS_BETWEEN_REQUESTS} days between advance pay requests. Your last request was approved ${daysSinceLastApproval} day(s) ago. Please wait ${daysRemaining} more day(s).`);
+        }
+      }
+
+      // ==============================
+      // BUSINESS RULE 3: PENDING COUNT CHECK
+      // ==============================
+      const pendingRequests = existingRequests.filter((r: any) => r.status === 'pending' && !r.isDeleted);
+      if (pendingRequests.length >= MAX_PENDING_REQUESTS) {
+        return httpErr(400, `You already have ${pendingRequests.length} pending advance pay requests. Maximum allowed is ${MAX_PENDING_REQUESTS}. Please wait for them to be processed or cancel some first.`);
+      }
+
+      // ==============================
+      // BUSINESS RULE 4: OUTSTANDING AMOUNT CHECK
+      // ==============================
+      // Calculate total outstanding (pending + approved but not paid, excluding deleted)
+      const totalOutstanding = existingRequests
+        .filter((r: any) => (r.status === 'pending' || r.status === 'approved') && !r.isDeleted)
+        .reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
+
+      if (totalOutstanding + amount > MAX_TOTAL_OUTSTANDING_ADVANCES) {
+        const remaining = MAX_TOTAL_OUTSTANDING_ADVANCES - totalOutstanding;
+        return httpErr(400, `Total outstanding advances cannot exceed $${MAX_TOTAL_OUTSTANDING_ADVANCES}. You currently have $${totalOutstanding.toFixed(2)} outstanding. Maximum you can request: $${Math.max(0, remaining).toFixed(2)}`);
+      }
+    }
+
+    const advanceId = `adv_${uuidv4()}`;
+    const now = new Date().toISOString();
+    const staffName = `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email;
+
+    const advancePayRequest: AdvancePayRequest = {
+      advanceId,
+      staffId: userPerms.email,
+      staffName,
+      clinicId,
+      amount,
+      reason: reason || undefined, // Store undefined instead of empty string for cleaner data
+      status: 'pending',
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await ddb.send(new PutCommand({
+      TableName: ADVANCE_PAY_TABLE,
+      Item: advancePayRequest,
+    }));
+
+    // Audit log
+    await auditLogger.log({
+      userId: userPerms.email,
+      userName: staffName,
+      userRole: AuditLogger.getUserRole(userPerms),
+      action: 'CREATE',
+      resource: 'ADVANCE_PAY' as AuditResource,
+      resourceId: advanceId,
+      clinicId,
+      after: { amount, status: 'pending', reason: reason || undefined },
+      ...AuditLogger.extractRequestContext(event),
+    });
+
+    return httpOk({ success: true, advancePayRequest });
+  } catch (error: any) {
+    console.error('Error creating advance pay request:', error);
+    return httpErr(500, `Failed to create advance pay request: ${error.message}`);
+  }
+}
+
+/**
+ * Admin-only: Create a record for an advance pay that was already given to a staff member
+ * 
+ * This is different from createAdvancePayRequest (staff self-service):
+ * - Admin specifies the staff member (staffId)
+ * - No tenure/frequency/pending limits enforced (already given, just recording)
+ * - Record is created directly as 'paid' status
+ * - paymentDate and paymentReference are recorded
+ * 
+ * Use case: Admin gave a cash advance to staff outside the system, now recording it
+ */
+async function adminCreateAdvancePayRecord(
+  userPerms: UserPermissions,
+  body: any,
+  allowedClinics: Set<string>,
+  event?: APIGatewayProxyEvent
+) {
+  const { staffId, amount, reason, clinicId, paymentDate, paymentReference } = body;
+
+  // Basic validation
+  if (!staffId || typeof staffId !== 'string') {
+    return httpErr(400, "Staff ID is required");
+  }
+
+  if (!amount || typeof amount !== 'number' || amount <= 0) {
+    return httpErr(400, "Valid amount (positive number) is required");
+  }
+
+  // Maximum amount validation - still enforce for consistency
+  if (amount > MAX_ADVANCE_PAY_AMOUNT) {
+    return httpErr(400, `Advance pay amount cannot exceed $${MAX_ADVANCE_PAY_AMOUNT}`);
+  }
+
+  if (!clinicId) {
+    return httpErr(400, "Clinic ID is required");
+  }
+
+  // Verify admin has access to this clinic
+  if (!hasClinicAccess(allowedClinics, clinicId)) {
+    return httpErr(403, "Forbidden: no access to this clinic");
+  }
+
+  try {
+    // Lookup staff name for display purposes
+    const { Item: staffUser } = await ddb.send(new GetCommand({
+      TableName: STAFF_USER_TABLE,
+      Key: { email: staffId.toLowerCase() },
+    }));
+
+    if (!staffUser) {
+      return httpErr(404, "Staff member not found. Please verify the email address.");
+    }
+
+    const staffName = `${staffUser.givenName || ''} ${staffUser.familyName || ''}`.trim() || staffId;
+    const adminName = `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email;
+
+    const advanceId = `adv_${uuidv4()}`;
+    const now = new Date().toISOString();
+
+    // Use provided payment date or default to now
+    const effectivePaymentDate = paymentDate || now;
+
+    const advancePayRequest: AdvancePayRequest = {
+      advanceId,
+      staffId: staffId.toLowerCase(),
+      staffName,
+      clinicId,
+      amount,
+      reason: reason || undefined,
+      status: 'paid', // Already given, so mark as paid directly
+      createdAt: now,
+      updatedAt: now,
+      // Approval chain: record admin as both approver and payer since it's an immediate record
+      approvedBy: adminName,
+      approvedAt: now,
+      paidBy: adminName,
+      paymentDate: effectivePaymentDate,
+      paymentReference: paymentReference || `Admin record by ${adminName}`,
+    };
+
+    await ddb.send(new PutCommand({
+      TableName: ADVANCE_PAY_TABLE,
+      Item: advancePayRequest,
+    }));
+
+    // Audit log - Record this as an admin-created entry
+    await auditLogger.log({
+      userId: userPerms.email,
+      userName: adminName,
+      userRole: AuditLogger.getUserRole(userPerms),
+      action: 'CREATE',
+      resource: 'ADVANCE_PAY' as AuditResource,
+      resourceId: advanceId,
+      clinicId,
+      after: {
+        amount,
+        status: 'paid',
+        staffId: staffId.toLowerCase(),
+        staffName,
+        reason: reason || undefined,
+        adminRecorded: true, // Flag to indicate this was admin-recorded, not staff-requested
+        paymentDate: effectivePaymentDate,
+        paymentReference: paymentReference || undefined,
+      },
+      ...AuditLogger.extractRequestContext(event),
+    });
+
+    return httpOk({
+      success: true,
+      advancePayRequest,
+      message: `Advance pay record created for ${staffName}`,
+    });
+  } catch (error: any) {
+    console.error('Error creating admin advance pay record:', error);
+    return httpErr(500, `Failed to create advance pay record: ${error.message}`);
+  }
+}
+
+/**
+ * Delete/cancel an advance pay request
+ * - Staff can delete their own pending requests only
+ * - Admin can delete requests only for clinics they have access to
+ * 
+ * Note: Uses soft delete pattern - sets isDeleted flag instead of removing record
+ */
+async function deleteAdvancePayRequest(
+  advanceId: string,
+  userPerms: UserPermissions,
+  isAdmin: boolean,
+  allowedClinics: Set<string>,
+  event?: APIGatewayProxyEvent
+) {
+  try {
+    const { Item } = await ddb.send(new GetCommand({
+      TableName: ADVANCE_PAY_TABLE,
+      Key: { advanceId },
+    }));
+
+    if (!Item) {
+      return httpErr(404, "Advance pay request not found");
+    }
+
+    const request = Item as AdvancePayRequest;
+
+    // Check if already deleted (soft delete)
+    if ((request as any).isDeleted) {
+      return httpErr(404, "Advance pay request not found");
+    }
+
+    // Staff can only delete their own pending requests
+    if (!isAdmin) {
+      if (request.staffId !== userPerms.email) {
+        return httpErr(403, "Forbidden: can only delete your own requests");
+      }
+      if (request.status !== 'pending') {
+        return httpErr(400, "Can only cancel pending requests");
+      }
+    } else {
+      // Admin must have access to the clinic this request belongs to
+      if (!hasClinicAccess(allowedClinics, request.clinicId)) {
+        return httpErr(403, "Forbidden: no access to this clinic's requests");
+      }
+    }
+
+    const now = new Date().toISOString();
+    const userName = `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email;
+
+    // Soft delete - update instead of delete
+    await ddb.send(new UpdateCommand({
+      TableName: ADVANCE_PAY_TABLE,
+      Key: { advanceId },
+      UpdateExpression: 'SET isDeleted = :isDeleted, deletedAt = :deletedAt, deletedBy = :deletedBy, updatedAt = :updatedAt',
+      ExpressionAttributeValues: {
+        ':isDeleted': true,
+        ':deletedAt': now,
+        ':deletedBy': userName,
+        ':updatedAt': now,
+      },
+    }));
+
+    // Audit log
+    await auditLogger.log({
+      userId: userPerms.email,
+      userName,
+      userRole: AuditLogger.getUserRole(userPerms),
+      action: 'DELETE',
+      resource: 'ADVANCE_PAY' as AuditResource,
+      resourceId: advanceId,
+      clinicId: request.clinicId,
+      before: { amount: request.amount, status: request.status, staffId: request.staffId },
+      after: { isDeleted: true, deletedBy: userName },
+      ...AuditLogger.extractRequestContext(event),
+    });
+
+    return httpOk({ success: true, message: "Advance pay request deleted" });
+  } catch (error: any) {
+    console.error('Error deleting advance pay request:', error);
+    return httpErr(500, `Failed to delete advance pay request: ${error.message}`);
+  }
+}
+
+/**
+ * Approve an advance pay request (Admin only)
+ * 
+ * Uses conditional update to prevent race conditions (two admins approving simultaneously)
+ */
+async function approveAdvancePay(
+  advanceId: string,
+  userPerms: UserPermissions,
+  allowedClinics: Set<string>,
+  event?: APIGatewayProxyEvent,
+  notes?: string
+) {
+  try {
+    const { Item } = await ddb.send(new GetCommand({
+      TableName: ADVANCE_PAY_TABLE,
+      Key: { advanceId },
+    }));
+
+    if (!Item) {
+      return httpErr(404, "Advance pay request not found");
+    }
+
+    const request = Item as AdvancePayRequest;
+
+    // Check soft delete
+    if ((request as any).isDeleted) {
+      return httpErr(404, "Advance pay request not found");
+    }
+
+    // Verify admin has access to this clinic
+    if (!hasClinicAccess(allowedClinics, request.clinicId)) {
+      return httpErr(403, "Forbidden: no access to this clinic's requests");
+    }
+
+    // Early status check for better error messages
+    if (request.status !== 'pending') {
+      return httpErr(400, `Cannot approve request with status: ${request.status}`);
+    }
+
+    const now = new Date().toISOString();
+    const approvedBy = `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email;
+
+    try {
+      // Use conditional update to prevent race conditions
+      await ddb.send(new UpdateCommand({
+        TableName: ADVANCE_PAY_TABLE,
+        Key: { advanceId },
+        UpdateExpression: 'SET #status = :newStatus, approvedBy = :approvedBy, approvedAt = :approvedAt, approvalNotes = :notes, updatedAt = :updatedAt',
+        ConditionExpression: '#status = :pendingStatus AND (attribute_not_exists(isDeleted) OR isDeleted = :false)',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':newStatus': 'approved',
+          ':pendingStatus': 'pending',
+          ':approvedBy': approvedBy,
+          ':approvedAt': now,
+          ':notes': notes || undefined,
+          ':updatedAt': now,
+          ':false': false,
+        },
+      }));
+    } catch (conditionError: any) {
+      if (conditionError.name === 'ConditionalCheckFailedException') {
+        return httpErr(409, "Request has already been processed by another admin. Please refresh and try again.");
+      }
+      throw conditionError;
+    }
+
+    // Audit log
+    await auditLogger.log({
+      userId: userPerms.email,
+      userName: approvedBy,
+      userRole: AuditLogger.getUserRole(userPerms),
+      action: 'APPROVE',
+      resource: 'ADVANCE_PAY' as AuditResource,
+      resourceId: advanceId,
+      clinicId: request.clinicId,
+      before: { status: 'pending', staffId: request.staffId, amount: request.amount },
+      after: { status: 'approved', approvedBy },
+      reason: notes,
+      ...AuditLogger.extractRequestContext(event),
+    });
+
+    return httpOk({
+      success: true,
+      message: "Advance pay request approved",
+      advancePayRequest: { ...request, status: 'approved', approvedBy, approvedAt: now, approvalNotes: notes },
+    });
+  } catch (error: any) {
+    console.error('Error approving advance pay request:', error);
+    return httpErr(500, `Failed to approve advance pay request: ${error.message}`);
+  }
+}
+
+/**
+ * Deny an advance pay request (Admin only)
+ * 
+ * Uses conditional update to prevent race conditions
+ */
+async function denyAdvancePay(
+  advanceId: string,
+  userPerms: UserPermissions,
+  allowedClinics: Set<string>,
+  event?: APIGatewayProxyEvent,
+  reason?: string
+) {
+  try {
+    const { Item } = await ddb.send(new GetCommand({
+      TableName: ADVANCE_PAY_TABLE,
+      Key: { advanceId },
+    }));
+
+    if (!Item) {
+      return httpErr(404, "Advance pay request not found");
+    }
+
+    const request = Item as AdvancePayRequest;
+
+    // Check soft delete
+    if ((request as any).isDeleted) {
+      return httpErr(404, "Advance pay request not found");
+    }
+
+    // Verify admin has access to this clinic
+    if (!hasClinicAccess(allowedClinics, request.clinicId)) {
+      return httpErr(403, "Forbidden: no access to this clinic's requests");
+    }
+
+    // Early status check for better error messages
+    if (request.status !== 'pending') {
+      return httpErr(400, `Cannot deny request with status: ${request.status}`);
+    }
+
+    const now = new Date().toISOString();
+    const deniedBy = `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email;
+
+    try {
+      // Use conditional update to prevent race conditions
+      await ddb.send(new UpdateCommand({
+        TableName: ADVANCE_PAY_TABLE,
+        Key: { advanceId },
+        UpdateExpression: 'SET #status = :newStatus, deniedBy = :deniedBy, deniedAt = :deniedAt, denialReason = :reason, updatedAt = :updatedAt',
+        ConditionExpression: '#status = :pendingStatus AND (attribute_not_exists(isDeleted) OR isDeleted = :false)',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':newStatus': 'denied',
+          ':pendingStatus': 'pending',
+          ':deniedBy': deniedBy,
+          ':deniedAt': now,
+          ':reason': reason || undefined,
+          ':updatedAt': now,
+          ':false': false,
+        },
+      }));
+    } catch (conditionError: any) {
+      if (conditionError.name === 'ConditionalCheckFailedException') {
+        return httpErr(409, "Request has already been processed by another admin. Please refresh and try again.");
+      }
+      throw conditionError;
+    }
+
+    // Audit log
+    await auditLogger.log({
+      userId: userPerms.email,
+      userName: deniedBy,
+      userRole: AuditLogger.getUserRole(userPerms),
+      action: 'DENY',
+      resource: 'ADVANCE_PAY' as AuditResource,
+      resourceId: advanceId,
+      clinicId: request.clinicId,
+      before: { status: 'pending', staffId: request.staffId, amount: request.amount },
+      after: { status: 'denied', deniedBy },
+      reason,
+      ...AuditLogger.extractRequestContext(event),
+    });
+
+    return httpOk({
+      success: true,
+      message: "Advance pay request denied",
+      advancePayRequest: { ...request, status: 'denied', deniedBy, deniedAt: now, denialReason: reason },
+    });
+  } catch (error: any) {
+    console.error('Error denying advance pay request:', error);
+    return httpErr(500, `Failed to deny advance pay request: ${error.message}`);
+  }
+}
+
+/**
+ * Mark an approved advance pay request as paid (Admin only)
+ * 
+ * This tracks actual payroll deduction and prevents double-payment scenarios
+ */
+async function markAdvancePayAsPaid(
+  advanceId: string,
+  userPerms: UserPermissions,
+  allowedClinics: Set<string>,
+  event?: APIGatewayProxyEvent,
+  paymentReference?: string
+) {
+  try {
+    const { Item } = await ddb.send(new GetCommand({
+      TableName: ADVANCE_PAY_TABLE,
+      Key: { advanceId },
+    }));
+
+    if (!Item) {
+      return httpErr(404, "Advance pay request not found");
+    }
+
+    const request = Item as AdvancePayRequest;
+
+    // Check soft delete
+    if ((request as any).isDeleted) {
+      return httpErr(404, "Advance pay request not found");
+    }
+
+    // Verify admin has access to this clinic
+    if (!hasClinicAccess(allowedClinics, request.clinicId)) {
+      return httpErr(403, "Forbidden: no access to this clinic's requests");
+    }
+
+    // Can only mark approved requests as paid
+    if (request.status !== 'approved') {
+      return httpErr(400, `Cannot mark as paid: request status is '${request.status}' (must be 'approved')`);
+    }
+
+    const now = new Date().toISOString();
+    const paidBy = `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email;
+
+    try {
+      // Use conditional update to prevent race conditions
+      await ddb.send(new UpdateCommand({
+        TableName: ADVANCE_PAY_TABLE,
+        Key: { advanceId },
+        UpdateExpression: 'SET #status = :newStatus, paymentDate = :paymentDate, paymentReference = :paymentReference, paidBy = :paidBy, updatedAt = :updatedAt',
+        ConditionExpression: '#status = :approvedStatus AND (attribute_not_exists(isDeleted) OR isDeleted = :false)',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':newStatus': 'paid',
+          ':approvedStatus': 'approved',
+          ':paymentDate': now,
+          ':paymentReference': paymentReference || `PAY-${Date.now()}`,
+          ':paidBy': paidBy,
+          ':updatedAt': now,
+          ':false': false,
+        },
+      }));
+    } catch (conditionError: any) {
+      if (conditionError.name === 'ConditionalCheckFailedException') {
+        return httpErr(409, "Request status has changed. Please refresh and try again.");
+      }
+      throw conditionError;
+    }
+
+    // Audit log
+    await auditLogger.log({
+      userId: userPerms.email,
+      userName: paidBy,
+      userRole: AuditLogger.getUserRole(userPerms),
+      action: 'UPDATE',
+      resource: 'ADVANCE_PAY' as AuditResource,
+      resourceId: advanceId,
+      clinicId: request.clinicId,
+      before: { status: 'approved', staffId: request.staffId, amount: request.amount },
+      after: { status: 'paid', paidBy, paymentReference: paymentReference || `PAY-${Date.now()}` },
+      metadata: { paymentAction: 'MARK_AS_PAID' },
+      ...AuditLogger.extractRequestContext(event),
+    });
+
+    return httpOk({
+      success: true,
+      message: "Advance pay marked as paid",
+      advancePayRequest: {
+        ...request,
+        status: 'paid',
+        paymentDate: now,
+        paymentReference: paymentReference || `PAY-${Date.now()}`,
+        paidBy,
+      },
+    });
+  } catch (error: any) {
+    console.error('Error marking advance pay as paid:', error);
+    return httpErr(500, `Failed to mark advance pay as paid: ${error.message}`);
+  }
+}
 
 async function queryAuditLogs(
   queryParams: any,

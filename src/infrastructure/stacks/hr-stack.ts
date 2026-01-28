@@ -83,7 +83,7 @@
 //         dataTraceEnabled: false,
 //       },
 //     });
-    
+
 //     // Add Gateway responses for errors (like in your admin-stack.ts)
 //     const corsErrorHeaders = getCorsErrorHeaders();
 //     new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
@@ -188,7 +188,7 @@
 //     // /leave/{leaveId}/approve
 //     const leaveApproveRes = leaveIdRes.addResource('approve');
 //     leaveApproveRes.addMethod('PUT', lambdaIntegration, authOptions); // Approve leave (Admin only)
-    
+
 //     // /leave/{leaveId}/deny
 //     const leaveDenyRes = leaveIdRes.addResource('deny');
 //     leaveDenyRes.addMethod('PUT', lambdaIntegration, authOptions); // Deny leave (Admin only)
@@ -339,6 +339,39 @@ export class HrStack extends Stack {
     });
 
     // ========================================
+    // ADVANCE PAY TABLE - Staff Advance Pay Requests
+    // ========================================
+    const advancePayTable = new dynamodb.Table(this, 'AdvancePayTable', {
+      tableName: `${this.stackName}-AdvancePay`,
+      partitionKey: { name: 'advanceId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      pointInTimeRecovery: true,
+    });
+    applyTags(advancePayTable, { Table: 'advance-pay' });
+
+    // GSI for Staff to get their own advance pay requests
+    advancePayTable.addGlobalSecondaryIndex({
+      indexName: 'byStaff',
+      partitionKey: { name: 'staffId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+    });
+
+    // GSI for Admins to query by clinic
+    advancePayTable.addGlobalSecondaryIndex({
+      indexName: 'byClinic',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+    });
+
+    // GSI for status-based queries
+    advancePayTable.addGlobalSecondaryIndex({
+      indexName: 'byStatus',
+      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+    });
+
+    // ========================================
     // AUDIT TABLE - Complete Audit Trail
     // ========================================
     this.auditTable = new dynamodb.Table(this, 'AuditTable', {
@@ -396,7 +429,7 @@ export class HrStack extends Stack {
         dataTraceEnabled: false,
       },
     });
-    
+
     // Add Gateway responses for errors (like in your admin-stack.ts)
     const corsErrorHeaders = getCorsErrorHeaders();
     new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
@@ -415,7 +448,7 @@ export class HrStack extends Stack {
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
     const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
-    
+
     // Create authorizer for this stack's API
     this.authorizer = new apigw.RequestAuthorizer(this, 'HrAuthorizer', {
       handler: authorizerFn,
@@ -450,6 +483,7 @@ export class HrStack extends Stack {
       environment: {
         SHIFTS_TABLE: this.shiftsTable.tableName,
         LEAVE_TABLE: this.leaveTable.tableName,
+        ADVANCE_PAY_TABLE: advancePayTable.tableName, // For advance pay requests
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName, // From CoreStack
         STAFF_USER_TABLE: staffUserTableName, // For user lookups (replaces Cognito)
         CLINICS_TABLE: props.clinicsTableName, // From ChimeStack - for timezone lookup
@@ -467,7 +501,8 @@ export class HrStack extends Stack {
     // Grant Lambda permissions
     this.shiftsTable.grantReadWriteData(this.hrFn);
     this.leaveTable.grantReadWriteData(this.hrFn);
-    
+    advancePayTable.grantReadWriteData(this.hrFn); // For advance pay requests
+
     // Grant WRITE permission to Audit table (for logging)
     // Grant READ permission for audit query endpoints (admin only)
     this.auditTable.grantReadWriteData(this.hrFn);
@@ -503,83 +538,50 @@ export class HrStack extends Stack {
       actions: [
         'ses:SendEmail', // This is the required SESv2 send action
       ],
-      resources: ['*'], 
+      resources: ['*'],
     }));
     // --- END UPDATED ---
 
     // ========================================
-    // API ROUTES
+    // API ROUTES - Using Proxy Integration
     // ========================================
+    // 
+    // We use a {proxy+} pattern with a single ANY method to route all requests
+    // to the Lambda function. This approach:
+    // 1. Creates only 1 Lambda permission instead of 25+ (avoids 20KB policy limit)
+    // 2. Simplifies the CDK stack
+    // 3. The Lambda handler already routes requests based on path and method
+    //
 
-    const lambdaIntegration = new apigw.LambdaIntegration(this.hrFn);
+    const lambdaIntegration = new apigw.LambdaIntegration(this.hrFn, {
+      allowTestInvoke: false,
+    });
+
     const authOptions = {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
     };
-    const defaultMethodResponses = [
-      { statusCode: '200' },
-      { statusCode: '201' },
-      { statusCode: '204' },
-      { statusCode: '400' },
-      { statusCode: '401' },
-      { statusCode: '403' },
-      { statusCode: '404' },
-      { statusCode: '500' },
-    ];
 
-    // /dashboard
-    const dashboardRes = this.api.root.addResource('dashboard');
-    dashboardRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
+    // Use {proxy+} to route all requests to a single Lambda function
+    // This matches paths like /dashboard, /shifts, /leave/{leaveId}/approve, etc.
+    const proxyResource = this.api.root.addResource('{proxy+}');
 
-    // /clinics (utility endpoint to get clinic list)
-    const clinicsRes = this.api.root.addResource('clinics');
-    clinicsRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
-
-    // /shifts
-    const shiftsRes = this.api.root.addResource('shifts');
-    shiftsRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });  // Get shifts (for Admin or Staff)
-    shiftsRes.addMethod('POST', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Create shift (Admin only)
-
-    // /shifts/{shiftId}
-    const shiftIdRes = shiftsRes.addResource('{shiftId}');
-    shiftIdRes.addMethod('PUT', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });    // Update shift (Admin only)
-    shiftIdRes.addMethod('DELETE', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Delete shift (Admin only)
-
-    // /shifts/{shiftId}/reject
-    const shiftRejectRes = shiftIdRes.addResource('reject');
-    shiftRejectRes.addMethod('PUT', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Reject shift (Staff only)
-// /shifts/copy-week - NEW ROUTE
-const shiftsCopyWeekRes = shiftsRes.addResource('copy-week');
-shiftsCopyWeekRes.addMethod('POST', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Copy week schedule (Admin only)
-    // /leave
-    const leaveRes = this.api.root.addResource('leave');
-    leaveRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });  // Get leave requests (Admin or Staff)
-    leaveRes.addMethod('POST', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Create leave request (Staff)
-
-    // /leave/{leaveId}
-    const leaveIdRes = leaveRes.addResource('{leaveId}');
-    leaveIdRes.addMethod('DELETE', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Delete leave request (Staff or Admin)
-
-    // /leave/{leaveId}/approve
-    const leaveApproveRes = leaveIdRes.addResource('approve');
-    leaveApproveRes.addMethod('PUT', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Approve leave (Admin only)
-    
-    // /leave/{leaveId}/deny
-    const leaveDenyRes = leaveIdRes.addResource('deny');
-    leaveDenyRes.addMethod('PUT', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Deny leave (Admin only)
-
-    // ========================================
-    // AUDIT TRAIL ROUTES (Admin only)
-    // ========================================
-    
-    // /audit - Query audit logs with filters
-    const auditRes = this.api.root.addResource('audit');
-    auditRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
-
-    // /audit/{resourceType}/{resourceId} - Get audit trail for specific resource
-    const auditResourceTypeRes = auditRes.addResource('{resourceType}');
-    const auditResourceIdRes = auditResourceTypeRes.addResource('{resourceId}');
-    auditResourceIdRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
+    proxyResource.addMethod('ANY', lambdaIntegration, {
+      ...authOptions,
+      requestParameters: {
+        'method.request.path.proxy': true,
+      },
+      methodResponses: [
+        { statusCode: '200' },
+        { statusCode: '201' },
+        { statusCode: '204' },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' },
+        { statusCode: '404' },
+        { statusCode: '500' },
+      ],
+    });
 
     // ========================================
     // CloudWatch Alarms
