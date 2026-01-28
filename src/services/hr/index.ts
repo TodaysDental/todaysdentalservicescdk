@@ -3962,14 +3962,18 @@ async function getAdminCalendarEvents(queryParams: any, allowedClinics: Set<stri
         return httpErr(403, "Forbidden: no access to this clinic");
       }
 
+      // Add time components for proper ISO datetime comparison
+      const startDateISO = startDate.includes('T') ? startDate : `${startDate}T00:00:00`;
+      const endDateISO = endDate.includes('T') ? endDate : `${endDate}T23:59:59.999Z`;
+
       const { Items } = await ddb.send(new QueryCommand({
         TableName: ADMIN_CALENDAR_TABLE,
         IndexName: 'byClinicAndDate',
         KeyConditionExpression: 'clinicId = :clinicId AND startDateTime BETWEEN :startDate AND :endDate',
         ExpressionAttributeValues: {
           ':clinicId': clinicId,
-          ':startDate': startDate,
-          ':endDate': endDate + 'T23:59:59.999Z',
+          ':startDate': startDateISO,
+          ':endDate': endDateISO,
         },
       }));
 
@@ -3980,6 +3984,10 @@ async function getAdminCalendarEvents(queryParams: any, allowedClinics: Set<stri
     const clinicIds = Array.from(allowedClinics);
     const allEvents: any[] = [];
 
+    // Add time components for proper ISO datetime comparison
+    const startDateISO = startDate.includes('T') ? startDate : `${startDate}T00:00:00`;
+    const endDateISO = endDate.includes('T') ? endDate : `${endDate}T23:59:59.999Z`;
+
     // Query each allowed clinic in parallel
     const queries = clinicIds.map(async (cId) => {
       try {
@@ -3989,8 +3997,8 @@ async function getAdminCalendarEvents(queryParams: any, allowedClinics: Set<stri
           KeyConditionExpression: 'clinicId = :clinicId AND startDateTime BETWEEN :startDate AND :endDate',
           ExpressionAttributeValues: {
             ':clinicId': cId,
-            ':startDate': startDate,
-            ':endDate': endDate + 'T23:59:59.999Z',
+            ':startDate': startDateISO,
+            ':endDate': endDateISO,
           },
         }));
         return Items || [];
