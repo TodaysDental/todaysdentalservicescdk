@@ -2071,6 +2071,7 @@ async function createShift(body: any, allowedClinics: Set<string>, userPerms?: U
     clinicId,
     startTime,
     endTime,
+    timezone: clinicTimezone, // Store clinic timezone for display and payroll context
     totalHours,
     pay,
     hourlyRate,
@@ -2170,6 +2171,7 @@ async function updateShift(shiftId: string, body: any, allowedClinics: Set<strin
     ...body,
     startTime,
     endTime,
+    timezone: clinicTimezone, // Ensure timezone is stored/updated
     totalHours,
     pay,
     hourlyRate
