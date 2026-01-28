@@ -60,7 +60,7 @@ interface ClassifiedDocument {
 /**
  * Classify document type from filename and path patterns
  */
-function classifyDocumentFromPath(s3Key: string): ClassifiedDocument {
+export function classifyDocumentFromPath(s3Key: string): ClassifiedDocument {
     const keyLower = s3Key.toLowerCase();
     const filename = s3Key.split('/').pop() || '';
     const filenameLower = filename.toLowerCase();
@@ -108,14 +108,14 @@ function classifyDocumentFromPath(s3Key: string): ClassifiedDocument {
 // TEXTRACT PROCESSING
 // ========================================
 
-interface ExtractedText {
+export interface ExtractedText {
     fullText: string;
     lines: string[];
     keyValuePairs: Record<string, string>;
     tables: string[][];
 }
 
-async function extractTextFromDocument(bucket: string, key: string): Promise<ExtractedText> {
+export async function extractTextFromDocument(bucket: string, key: string): Promise<ExtractedText> {
     console.log(`Extracting text from s3://${bucket}/${key}`);
 
     // For images, use sync AnalyzeDocument. For PDFs, use async StartDocumentAnalysis.
@@ -252,7 +252,7 @@ function parseTextractBlocks(blocks: any[]): ExtractedText {
 // BEDROCK FIELD EXTRACTION
 // ========================================
 
-interface ExtractedCredentialFields {
+export interface ExtractedCredentialFields {
     [key: string]: {
         value: string | number | boolean | null;
         confidence: number;
@@ -260,7 +260,7 @@ interface ExtractedCredentialFields {
     };
 }
 
-async function extractFieldsWithBedrock(
+export async function extractFieldsWithBedrock(
     documentType: DocumentType,
     extractedText: ExtractedText
 ): Promise<ExtractedCredentialFields> {

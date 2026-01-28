@@ -11,7 +11,7 @@
  * Chime Voice Connector (which requires an SBC for direct inbound calls).
  */
 
-import { Duration, Stack, StackProps, CfnOutput, Tags, CustomResource, RemovalPolicy } from 'aws-cdk-lib';
+import { ArnFormat, Duration, Stack, StackProps, CfnOutput, Tags, CustomResource, RemovalPolicy } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
@@ -342,6 +342,8 @@ export class ConnectLexAiStack extends Stack {
         service: 'lambda',
         resource: 'function',
         resourceName: asyncBedrockFunctionName,
+        // Lambda ARNs are `...:function:NAME` (colon), not `...:function/NAME` (slash).
+        arnFormat: ArnFormat.COLON_RESOURCE_NAME,
       });
       asyncBedrockLambda.addToRolePolicy(new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,

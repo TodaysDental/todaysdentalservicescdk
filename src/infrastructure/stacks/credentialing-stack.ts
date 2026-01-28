@@ -861,6 +861,7 @@ export class CredentialingStack extends Stack {
         TASKS_TABLE: this.credentialingTasksTable.tableName,
         DOCUMENTS_TABLE: this.credentialingDocumentsTable.tableName,
         DOCUMENTS_BUCKET: this.documentsBucket.bucketName,
+        EXTRACTED_DATA_TABLE: this.extractedDataTable.tableName,  // For document processing
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName,
         STAFF_USER_TABLE: staffUserTableName,
         // SES for notifications
@@ -877,6 +878,7 @@ export class CredentialingStack extends Stack {
     this.payerEnrollmentsTable.grantReadWriteData(this.credentialingFn);
     this.credentialingTasksTable.grantReadWriteData(this.credentialingFn);
     this.credentialingDocumentsTable.grantReadWriteData(this.credentialingFn);
+    this.extractedDataTable.grantReadWriteData(this.credentialingFn);  // For document processing
 
     // Grant Lambda permissions to S3 bucket
     this.documentsBucket.grantReadWrite(this.credentialingFn);
@@ -897,6 +899,23 @@ export class CredentialingStack extends Stack {
     this.credentialingFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ses:SendEmail'],
       resources: ['*'],
+    }));
+
+    // Grant Textract permissions for document processing
+    this.credentialingFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'textract:AnalyzeDocument',
+        'textract:DetectDocumentText',
+        'textract:StartDocumentAnalysis',
+        'textract:GetDocumentAnalysis',
+      ],
+      resources: ['*'],
+    }));
+
+    // Grant Bedrock permissions for AI field extraction
+    this.credentialingFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['bedrock:InvokeModel'],
+      resources: ['arn:aws:bedrock:*::foundation-model/anthropic.claude-3-haiku-20240307-v1:0'],
     }));
 
     // ========================================
@@ -1168,11 +1187,21 @@ export class CredentialingStack extends Stack {
     addCorsOptions(documentsRes);
     documentsRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // List all documents
 
+    // /documents/process - Document extraction/processing
+    const documentsProcessRes = documentsRes.addResource('process');
+    addCorsOptions(documentsProcessRes);
+    documentsProcessRes.addMethod('POST', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Process document with AI
+
     // /documents/{documentId}
     const documentIdRes = documentsRes.addResource('{documentId}');
     addCorsOptions(documentIdRes);
     documentIdRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });    // Get document (download URL)
     documentIdRes.addMethod('DELETE', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Delete document
+
+    // /documents/{documentId}/extracted - Get extracted data from document
+    const documentExtractedRes = documentIdRes.addResource('extracted');
+    addCorsOptions(documentExtractedRes);
+    documentExtractedRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses }); // Get extracted fields
 
     // /payers - Available payers list
     const payersRes = this.api.root.addResource('payers');
