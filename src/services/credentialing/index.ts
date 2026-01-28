@@ -34,7 +34,15 @@ import {
   validateDocumentType,
   findUploadSection,
   SubmissionMode,
+  DocumentType,
 } from './credentialing-schema';
+import {
+  classifyDocumentFromPath,
+  extractTextFromDocument,
+  extractFieldsWithBedrock,
+  ExtractedText,
+  ExtractedCredentialFields,
+} from './credentialing-doc-processor';
 
 // Environment Variables
 const PROVIDERS_TABLE = process.env.PROVIDERS_TABLE!;
@@ -1647,129 +1655,62 @@ async function processDocumentExtraction(body: any, allowedClinics: Set<string>)
     });
   }
 
-  // Perform classification based on document type from metadata or filename
-  const documentType = document.documentType || classifyDocumentFromName(document.fileName || document.s3Key);
+  // Perform classification based on document type from metadata or S3 key path
+  const documentType = document.documentType || classifyDocumentFromPath(document.s3Key).documentType;
 
-  // For now, we return a simulated extraction result
-  // In production, this would call the document processor Lambda
-  // The S3 upload trigger will automatically process new documents
+  try {
+    // Use shared extraction functions from credentialing-doc-processor
+    console.log(`Processing document: ${document.s3Key}`);
+    const extractedText = await extractTextFromDocument(DOCUMENTS_BUCKET, document.s3Key);
+    console.log(`Extracted ${extractedText.lines.length} lines, ${Object.keys(extractedText.keyValuePairs).length} key-value pairs`);
 
-  // Generate extraction based on document type
-  const extractedFields = generateMockExtraction(documentType);
+    // Extract fields using Bedrock
+    const extractedFields = await extractFieldsWithBedrock(documentType as DocumentType, extractedText);
+    console.log(`Extracted ${Object.keys(extractedFields).length} fields with Bedrock`);
 
-  // Store extraction result
-  const extractionId = uuidv4();
-  const now = new Date().toISOString();
+    // Store extraction result
+    const extractionId = uuidv4();
+    const now = new Date().toISOString();
 
-  await ddb.send(new PutCommand({
-    TableName: EXTRACTED_DATA_TABLE,
-    Item: {
-      extractionId,
-      documentId,
-      providerId,
+    await ddb.send(new PutCommand({
+      TableName: EXTRACTED_DATA_TABLE,
+      Item: {
+        extractionId,
+        documentId,
+        providerId,
+        documentType,
+        extractedFields,
+        rawTextPreview: extractedText.fullText.substring(0, 500),
+        status: 'extracted',
+        classificationConfidence: 0.85,
+        createdAt: now,
+      },
+    }));
+
+    // Update document with extraction status
+    await ddb.send(new UpdateCommand({
+      TableName: DOCUMENTS_TABLE,
+      Key: { documentId },
+      UpdateExpression: 'SET extractionId = :extractionId, extractionStatus = :status, extractedAt = :now',
+      ExpressionAttributeValues: {
+        ':extractionId': extractionId,
+        ':status': 'extracted',
+        ':now': now,
+      },
+    }));
+
+    return httpOk({
       documentType,
-      extractedFields,
-      status: 'extracted',
       classificationConfidence: 0.85,
-      createdAt: now,
-    },
-  }));
-
-  // Update document with extraction status
-  await ddb.send(new UpdateCommand({
-    TableName: DOCUMENTS_TABLE,
-    Key: { documentId },
-    UpdateExpression: 'SET extractionId = :extractionId, extractionStatus = :status',
-    ExpressionAttributeValues: {
-      ':extractionId': extractionId,
-      ':status': 'extracted',
-    },
-  }));
-
-  return httpOk({
-    documentType,
-    classificationConfidence: 0.85,
-    fieldsExtracted: Object.keys(extractedFields).length,
-    fields: extractedFields,
-    status: 'extracted',
-    extractionId,
-  });
-}
-
-/**
- * Classify document type from filename
- */
-function classifyDocumentFromName(filename: string): string {
-  const nameLower = filename.toLowerCase();
-
-  if (nameLower.includes('license')) return 'stateLicense';
-  if (nameLower.includes('dea')) return 'deaCertificate';
-  if (nameLower.includes('cds')) return 'cdsCertificate';
-  if (nameLower.includes('npi')) return 'npiConfirmation';
-  if (nameLower.includes('diploma') || nameLower.includes('degree')) return 'diploma';
-  if (nameLower.includes('board') || nameLower.includes('cert')) return 'boardCertification';
-  if (nameLower.includes('cpr') || nameLower.includes('bls')) return 'cprCertification';
-  if (nameLower.includes('malpractice') || nameLower.includes('insurance') || nameLower.includes('coi')) return 'malpracticeInsurance';
-  if (nameLower.includes('w9') || nameLower.includes('w-9')) return 'w9';
-  if (nameLower.includes('cv') || nameLower.includes('resume')) return 'cv';
-  if (nameLower.includes('id') || nameLower.includes('passport') || nameLower.includes('driver')) return 'photoId';
-
-  return 'other';
-}
-
-/**
- * Generate mock extraction fields based on document type
- * In production, this is handled by the credentialing-doc-processor Lambda
- */
-function generateMockExtraction(documentType: string): Record<string, { value: any; confidence: number; source: string }> {
-  const baseFields: Record<string, { value: any; confidence: number; source: string }> = {};
-
-  switch (documentType) {
-    case 'stateLicense':
-      return {
-        stateLicenseNumber: { value: null, confidence: 0.0, source: 'pending' },
-        stateLicenseState: { value: null, confidence: 0.0, source: 'pending' },
-        stateLicenseIssueDate: { value: null, confidence: 0.0, source: 'pending' },
-        stateLicenseExpiry: { value: null, confidence: 0.0, source: 'pending' },
-        firstName: { value: null, confidence: 0.0, source: 'pending' },
-        lastName: { value: null, confidence: 0.0, source: 'pending' },
-      };
-    case 'deaCertificate':
-      return {
-        deaNumber: { value: null, confidence: 0.0, source: 'pending' },
-        deaState: { value: null, confidence: 0.0, source: 'pending' },
-        deaExpiry: { value: null, confidence: 0.0, source: 'pending' },
-        firstName: { value: null, confidence: 0.0, source: 'pending' },
-        lastName: { value: null, confidence: 0.0, source: 'pending' },
-      };
-    case 'npiConfirmation':
-      return {
-        npi: { value: null, confidence: 0.0, source: 'pending' },
-        firstName: { value: null, confidence: 0.0, source: 'pending' },
-        lastName: { value: null, confidence: 0.0, source: 'pending' },
-        practiceName: { value: null, confidence: 0.0, source: 'pending' },
-        practiceAddress1: { value: null, confidence: 0.0, source: 'pending' },
-      };
-    case 'malpracticeInsurance':
-      return {
-        malpracticeInsurer: { value: null, confidence: 0.0, source: 'pending' },
-        malpracticePolicyNumber: { value: null, confidence: 0.0, source: 'pending' },
-        malpracticeEffectiveDate: { value: null, confidence: 0.0, source: 'pending' },
-        malpracticeExpiry: { value: null, confidence: 0.0, source: 'pending' },
-        malpracticeLimitPerClaim: { value: null, confidence: 0.0, source: 'pending' },
-        malpracticeLimitAggregate: { value: null, confidence: 0.0, source: 'pending' },
-      };
-    case 'diploma':
-      return {
-        dentalSchoolName: { value: null, confidence: 0.0, source: 'pending' },
-        degreeType: { value: null, confidence: 0.0, source: 'pending' },
-        graduationDate: { value: null, confidence: 0.0, source: 'pending' },
-        graduationYear: { value: null, confidence: 0.0, source: 'pending' },
-        firstName: { value: null, confidence: 0.0, source: 'pending' },
-        lastName: { value: null, confidence: 0.0, source: 'pending' },
-      };
-    default:
-      return baseFields;
+      fieldsExtracted: Object.keys(extractedFields).length,
+      fields: extractedFields,
+      status: 'extracted',
+      extractionId,
+    });
+  } catch (error: any) {
+    console.error('Error during document extraction:', error);
+    // Return error response with partial info
+    return httpErr(500, `Document extraction failed: ${error.message}`);
   }
 }
 
