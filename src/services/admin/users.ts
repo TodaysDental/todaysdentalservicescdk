@@ -114,9 +114,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // ==================================================================
     // 3. GET /users - List all users (admin only)
+    // Supports optional ?clinicId=X query param for filtered/minimal response
     // ==================================================================
     if (event.httpMethod === 'GET' && !pathUsername) {
-      return await handleListUsers(callerIsGlobalSuperAdmin, callerIsSuperAdmin, allowedClinics);
+      const filterClinicId = event.queryStringParameters?.clinicId;
+      return await handleListUsers(callerIsGlobalSuperAdmin, callerIsSuperAdmin, allowedClinics, filterClinicId);
     }
 
     // ==================================================================
@@ -177,11 +179,13 @@ async function handleGetSelf(email: string): Promise<APIGatewayProxyResult> {
 
 /**
  * Handle GET /users - List all users
+ * Supports optional query param ?clinicId=X to filter and return minimal payload
  */
 async function handleListUsers(
   isGlobalSuperAdmin: boolean,
   isSuperAdmin: boolean,
-  allowedClinics: Set<string>
+  allowedClinics: Set<string>,
+  filterClinicId?: string
 ): Promise<APIGatewayProxyResult> {
   // Scan all users
   const result = await ddb.send(new ScanCommand({
@@ -193,8 +197,50 @@ async function handleListUsers(
   // Check if caller has access to all clinics (super admins)
   const hasAllAccess = allowedClinics.has('*');
 
+  // If filtering by clinic, we return a minimal payload (no staffDetails fetch needed for list view)
+  if (filterClinicId) {
+    // Verify caller has access to this clinic
+    if (!hasAllAccess && !hasClinicAccess(allowedClinics, filterClinicId)) {
+      return httpErr(403, 'no access to this clinic');
+    }
+
+    const items: Array<Record<string, any>> = [];
+
+    for (const user of users) {
+      // Find if user has assignment for this clinic
+      const clinicRole = user.clinicRoles?.find(cr => cr.clinicId === filterClinicId);
+      if (!clinicRole) {
+        continue; // User doesn't belong to this clinic
+      }
+
+      // Return minimal payload for list view - no staffDetails needed
+      items.push({
+        email: user.email,
+        givenName: user.givenName,
+        familyName: user.familyName,
+        isActive: user.isActive,
+        // Include only the relevant clinic role info
+        clinicRole: {
+          clinicId: clinicRole.clinicId,
+          role: clinicRole.role,
+          hourlyPay: clinicRole.hourlyPay,
+          basePay: clinicRole.basePay,
+          workLocation: clinicRole.workLocation,
+          UserNum: clinicRole.UserNum,
+          UserName: clinicRole.UserName,
+          EmployeeNum: clinicRole.EmployeeNum,
+          employeeName: clinicRole.employeeName,
+          ProviderNum: clinicRole.ProviderNum,
+          providerName: clinicRole.providerName,
+        },
+      });
+    }
+
+    return httpOk({ users: items, filtered: true, clinicId: filterClinicId });
+  }
+
+  // FULL PAYLOAD PATH: When no clinicId filter, return full details (for user edit modal, etc.)
   // PERFORMANCE FIX: Fetch all staff details in parallel instead of sequentially
-  // This reduces latency from O(N * query_time) to O(1 * query_time)
   const staffDetailsMap = new Map<string, StaffClinicDetail[]>();
 
   if (STAFF_INFO_TABLE && users.length > 0) {

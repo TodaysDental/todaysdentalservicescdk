@@ -1863,16 +1863,18 @@ async function getDashboard(userPerms: any, isAdmin: boolean) {
 
     const adminClinics = userPerms.clinicRoles.map((cr: any) => cr.clinicId);
 
-    // FIXED: Get staff count from StaffUser table
+    // OPTIMIZED: Only fetch the count, not full records
     const staffUsersPromise = ddb.send(new ScanCommand({
       TableName: STAFF_USER_TABLE,
       FilterExpression: 'isActive = :active',
       ExpressionAttributeValues: { ':active': true },
+      Select: 'COUNT',
     }));
 
-    // FIXED: Get ALL StaffClinicInfo records to calculate on-premise/remote counts
+    // OPTIMIZED: Only fetch required fields (email, clinicId, workLocation)
     const staffClinicInfoPromise = ddb.send(new ScanCommand({
       TableName: STAFF_INFO_TABLE,
+      ProjectionExpression: 'email, clinicId, workLocation',
     }));
 
     const shiftQueryPromises = adminClinics.map((clinicId: string) =>
@@ -1884,7 +1886,9 @@ async function getDashboard(userPerms: any, isAdmin: boolean) {
           ':clinicId': clinicId,
           ':start': weekStart,
           ':end': weekEnd,
-        }
+        },
+        // OPTIMIZED: Only fetch required fields for shift calculations
+        ProjectionExpression: 'totalHours, pay',
       }))
     );
 
@@ -1894,20 +1898,19 @@ async function getDashboard(userPerms: any, isAdmin: boolean) {
       ...shiftQueryPromises
     ]);
 
-    const staffUsers = staffUsersResponse.Items || [];
-    const totalStaff = staffUsers.length;
+    // Use count from scan result
+    const totalStaff = staffUsersResponse.Count || 0;
     const staffClinicInfoRecords = staffClinicInfoResponse.Items || [];
 
-    // FIXED: Create a set of admin's clinics for fast lookup
+    // Create a set of admin's clinics for fast lookup
     const adminClinicSet = new Set(adminClinics);
 
-    // FIXED: Calculate on-premise and remote staff counts using StaffClinicInfo data
-    // Only count staff from the admin's accessible clinics
+    // Calculate on-premise and remote staff counts using StaffClinicInfo data
     let onPremiseStaff = 0;
     let remoteStaff = 0;
-    const processedStaff = new Set<string>(); // Track processed staff to avoid duplicates
+    const processedStaff = new Set<string>();
 
-    // First, filter records to only include staff in admin's clinics
+    // Filter records to only include staff in admin's clinics
     const relevantStaffRecords = staffClinicInfoRecords.filter((staffInfo: any) =>
       adminClinicSet.has(staffInfo.clinicId)
     );
@@ -1915,37 +1918,25 @@ async function getDashboard(userPerms: any, isAdmin: boolean) {
     relevantStaffRecords.forEach((staffInfo: any) => {
       const staffId = staffInfo.email || staffInfo.staffId;
 
-      // Skip if already processed (staff can appear in multiple clinics)
       if (processedStaff.has(staffId)) {
         return;
       }
       processedStaff.add(staffId);
 
-      // Check work location - matches frontend logic exactly
       if (staffInfo.workLocation) {
-        // If explicitly marked as remote, count as remote
         if (staffInfo.workLocation.isRemote && !staffInfo.workLocation.isOnPremise) {
           remoteStaff++;
-        }
-        // If explicitly marked as on-premise, count as on-premise
-        else if (staffInfo.workLocation.isOnPremise) {
+        } else if (staffInfo.workLocation.isOnPremise) {
           onPremiseStaff++;
-        }
-        // If both are true or only remote is marked, default to on-premise
-        else if (staffInfo.workLocation.isRemote) {
+        } else if (staffInfo.workLocation.isRemote) {
           remoteStaff++;
-        }
-        else {
-          // Default to on-premise if no flags are true
+        } else {
           onPremiseStaff++;
         }
       } else {
-        // If no work location info, default to on-premise
         onPremiseStaff++;
       }
     });
-
-    console.log(`📊 Staff counts calculated: Total=${totalStaff}, OnPremise=${onPremiseStaff}, Remote=${remoteStaff}, RelevantRecords=${relevantStaffRecords.length}`);
 
     const allShifts = shiftResponses.flatMap(res => res.Items || []);
 
@@ -1969,6 +1960,7 @@ async function getDashboard(userPerms: any, isAdmin: boolean) {
         estimatedCost: parseFloat(estimatedCost.toFixed(2)),
       }
     });
+
 
   } else {
     const { Items: shifts } = await ddb.send(new QueryCommand({
