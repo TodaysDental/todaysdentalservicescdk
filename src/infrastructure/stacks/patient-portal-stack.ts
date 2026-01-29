@@ -243,6 +243,18 @@ export class PatientPortalStack extends Stack {
       }));
     }
 
+    // Grant write access to Callback tables for saving failed appointment bookings as callbacks
+    // This enables clinic staff to follow up with patients when patient portal booking fails
+    patientPortalLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:PutItem'],
+      resources: [
+        // Clinic-specific callback tables
+        `arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/todaysdentalinsights-callback-*`,
+        // Default callback table as fallback
+        `arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/TodaysDentalInsightsCallbackN1-CallbackRequests`,
+      ],
+    }));
+
     patientPortalLambda.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'sns:Publish',

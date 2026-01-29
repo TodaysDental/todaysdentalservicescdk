@@ -23,7 +23,10 @@ const {
     DEFAULT_SMS_LOG_TABLE,
     TF_SFTP_HOST,
     // SFTP password now fetched from GlobalSecrets table dynamically
-    PATIENT_PORTAL_METRICS_TABLE
+    PATIENT_PORTAL_METRICS_TABLE,
+    // Callback tables for failed appointment bookings
+    CALLBACK_TABLE_PREFIX = 'todaysdentalinsights-callback-',
+    DEFAULT_CALLBACK_TABLE = 'TodaysDentalInsightsCallbackN1-CallbackRequests'
 } = process.env;
 
 const API_BASE_URL = 'https://api.opendental.com/api/v1';
@@ -158,6 +161,62 @@ async function recordPortalMetric(clinicId: string, metric: PortalMetricKey, inc
         }));
     } catch (err) {
         console.error('Failed to record portal metric', { clinicId, metric, error: err });
+    }
+}
+
+/**
+ * Save a failed appointment booking as a callback request
+ * This allows clinic staff to follow up with patients when portal booking fails
+ */
+async function saveAppointmentFailureAsCallback(
+    clinicId: string,
+    patient: Patient,
+    appointmentDetails: any,
+    errorMessage: string
+): Promise<void> {
+    const tableName = `${CALLBACK_TABLE_PREFIX}${clinicId}`;
+    const now = new Date().toISOString();
+    const requestId = uuidv4();
+
+    const callbackItem = {
+        RequestID: requestId,
+        name: `${patient.FName || ''} ${patient.LName || ''}`.trim() || `Patient ${patient.PatNum}`,
+        phone: patient.WirelessPhone || patient.HmPhone || 'Not provided',
+        email: patient.Email || undefined,
+        message: `Appointment booking failed. Requested: ${appointmentDetails.AptDateTime || 'Not specified'}. Error: ${errorMessage}`,
+        module: 'Operations',
+        clinicId: clinicId,
+        calledBack: 'NO',
+        notes: 'Auto-created from failed patient portal appointment booking',
+        createdAt: now,
+        updatedAt: now,
+        source: 'patient-portal',
+        patNum: patient.PatNum,
+        appointmentDetails: JSON.stringify(appointmentDetails),
+    };
+
+    try {
+        // Try clinic-specific table first
+        await docClient.send(new PutCommand({
+            TableName: tableName,
+            Item: callbackItem,
+        }));
+        console.log(`[Callback] Saved failed appointment as callback ${requestId} for clinic ${clinicId}`);
+    } catch (error: any) {
+        // Fallback to default table if clinic-specific table doesn't exist
+        if (error?.name === 'ResourceNotFoundException' && DEFAULT_CALLBACK_TABLE) {
+            try {
+                await docClient.send(new PutCommand({
+                    TableName: DEFAULT_CALLBACK_TABLE,
+                    Item: callbackItem,
+                }));
+                console.log(`[Callback] Saved failed appointment as callback ${requestId} to default table`);
+            } catch (fallbackError) {
+                console.error('[Callback] Failed to save to default callback table:', fallbackError);
+            }
+        } else {
+            console.error('[Callback] Failed to save appointment failure as callback:', error);
+        }
     }
 }
 
@@ -785,21 +844,32 @@ async function createAppointment(body: any, patient: Patient, clinicConfig: Clin
         return response.data;
     } catch (error: any) {
         console.error('Error creating appointment:', error);
+
+        // Determine the error message for callback and response
+        let errorMessage: string;
+        let statusCode: number;
+
         if (error.response?.status === 400) {
-            throw {
-                status: 400,
-                message: error.response?.data?.message || 'Invalid appointment data. Please check PatNum, AptDateTime, ProvNum, and other required fields.'
-            };
+            statusCode = 400;
+            errorMessage = error.response?.data?.message || 'Invalid appointment data. Please check PatNum, AptDateTime, ProvNum, and other required fields.';
+        } else if (error.response?.status === 401) {
+            statusCode = 401;
+            errorMessage = 'Unauthorized. Please verify API keys or contact Open Dental support.';
+        } else {
+            statusCode = error.response?.status || 500;
+            errorMessage = error.response?.data?.message || 'Error creating appointment';
         }
-        if (error.response?.status === 401) {
-            throw {
-                status: 401,
-                message: 'Unauthorized. Please verify API keys or contact Open Dental support.'
-            };
+
+        // Save failed appointment as a callback for clinic follow-up
+        try {
+            await saveAppointmentFailureAsCallback(clinicConfig.clinicId, patient, body, errorMessage);
+        } catch (callbackError) {
+            console.error('Failed to save appointment callback:', callbackError);
         }
+
         throw {
-            status: error.response?.status || 500,
-            message: error.response?.data?.message || 'Error creating appointment'
+            status: statusCode,
+            message: errorMessage
         };
     }
 }

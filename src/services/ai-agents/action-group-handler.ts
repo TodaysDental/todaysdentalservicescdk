@@ -11,7 +11,8 @@
 import axios from 'axios';
 import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, UpdateCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand, QueryCommand, ScanCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { v4 as uuidv4 } from 'uuid';
 
 // ========================================================================
 // CONFIGURATION
@@ -43,6 +44,10 @@ const CLINIC_SECRETS_TABLE = process.env.CLINIC_SECRETS_TABLE || 'ClinicSecrets'
 const INSURANCE_PLANS_TABLE = process.env.INSURANCE_PLANS_TABLE || 'TodaysDentalInsightsInsurancePlanSyncN1-InsurancePlans';
 const FEE_SCHEDULES_TABLE = process.env.FEE_SCHEDULES_TABLE || 'TodaysDentalInsightsFeeScheduleSyncN1-FeeSchedules';
 const APPT_TYPES_TABLE = process.env.APPT_TYPES_TABLE || 'TodaysDentalInsightsPatientPortalApptTypesN1-ApptTypes';
+
+// Callback table configuration for failed appointment bookings and patient searches
+const CALLBACK_TABLE_PREFIX = process.env.CALLBACK_TABLE_PREFIX || 'todaysdentalinsights-callback-';
+const DEFAULT_CALLBACK_TABLE = process.env.DEFAULT_CALLBACK_TABLE || 'todaysdentalinsights-callback-default';
 
 // ========================================================================
 // CIRCUIT BREAKER & RATE LIMITING (DynamoDB-backed for distributed state)
@@ -315,6 +320,137 @@ async function recordFailure(clinicId: string): Promise<void> {
   } catch (error) {
     console.warn(`[CircuitBreaker] Failed to record failure for ${clinicId}:`, error);
   }
+}
+
+// ========================================================================
+// CALLBACK HELPERS (Saves to Callback Table on various failures)
+// ========================================================================
+
+interface CallbackRecordDetails {
+  clinicId: string;
+  patientName?: string;
+  patientPhone?: string;
+  patientEmail?: string;
+  patNum?: number;
+  message: string;
+  module: string;
+  notes: string;
+  source: 'ai-agent' | 'patient-portal';
+  searchCriteria?: any;
+}
+
+/**
+ * Save a callback record for clinic staff follow-up
+ * This is used when AI operations fail (appointment booking or patient search)
+ */
+async function saveCallbackRecord(details: CallbackRecordDetails): Promise<void> {
+  const tableName = `${CALLBACK_TABLE_PREFIX}${details.clinicId}`;
+  const now = new Date().toISOString();
+  const requestId = uuidv4();
+
+  const callbackItem: Record<string, any> = {
+    RequestID: requestId,
+    name: details.patientName || `Patient ${details.patNum || 'Unknown'}`,
+    phone: details.patientPhone || 'Not provided',
+    email: details.patientEmail || undefined,
+    message: details.message,
+    module: details.module,
+    clinicId: details.clinicId,
+    calledBack: 'NO',
+    notes: details.notes,
+    createdAt: now,
+    updatedAt: now,
+    source: details.source,
+  };
+
+  // Add optional fields if provided
+  if (details.patNum) {
+    callbackItem.patNum = details.patNum;
+  }
+  if (details.searchCriteria) {
+    callbackItem.searchCriteria = JSON.stringify(details.searchCriteria);
+  }
+
+  try {
+    // Try clinic-specific table first
+    await docClient.send(new PutCommand({
+      TableName: tableName,
+      Item: callbackItem,
+    }));
+    console.log(`[Callback] Saved callback ${requestId} for clinic ${details.clinicId}`);
+  } catch (error: any) {
+    // Fallback to default table if clinic-specific table doesn't exist
+    if (error?.name === 'ResourceNotFoundException') {
+      try {
+        await docClient.send(new PutCommand({
+          TableName: DEFAULT_CALLBACK_TABLE,
+          Item: callbackItem,
+        }));
+        console.log(`[Callback] Saved callback ${requestId} to default table`);
+      } catch (fallbackError) {
+        console.error('[Callback] Failed to save to default callback table:', fallbackError);
+      }
+    } else {
+      console.error('[Callback] Failed to save callback record:', error);
+    }
+  }
+}
+
+interface AppointmentFailureDetails {
+  clinicId: string;
+  patientName?: string;
+  patientPhone?: string;
+  patientEmail?: string;
+  patNum?: number;
+  requestedDate?: string;
+  reason?: string;
+  errorMessage: string;
+  source: 'ai-agent' | 'patient-portal';
+}
+
+/**
+ * Save a failed appointment booking as a callback request
+ * This allows clinic staff to follow up with patients when AI scheduling fails
+ */
+async function saveAppointmentFailureAsCallback(details: AppointmentFailureDetails): Promise<void> {
+  await saveCallbackRecord({
+    clinicId: details.clinicId,
+    patientName: details.patientName,
+    patientPhone: details.patientPhone,
+    patientEmail: details.patientEmail,
+    patNum: details.patNum,
+    message: `Appointment booking failed. Requested: ${details.requestedDate || 'Not specified'}. Reason: ${details.reason || 'General appointment'}. Error: ${details.errorMessage}`,
+    module: 'Operations',
+    notes: `Auto-created from failed ${details.source} appointment booking`,
+    source: details.source,
+  });
+}
+
+interface PatientSearchFailureDetails {
+  clinicId: string;
+  searchName?: string;
+  searchPhone?: string;
+  searchBirthdate?: string;
+  searchCriteria: any;
+  failureReason: string;
+  source: 'ai-agent' | 'patient-portal';
+}
+
+/**
+ * Save a failed patient search as a callback request
+ * This allows clinic staff to follow up with callers when patient lookup fails
+ */
+async function savePatientSearchFailureAsCallback(details: PatientSearchFailureDetails): Promise<void> {
+  await saveCallbackRecord({
+    clinicId: details.clinicId,
+    patientName: details.searchName || 'Unknown',
+    patientPhone: details.searchPhone || 'Not provided',
+    message: `Patient search failed. ${details.failureReason}. Search criteria: Name: ${details.searchName || 'N/A'}, DOB: ${details.searchBirthdate || 'N/A'}`,
+    module: 'Operations',
+    notes: `Auto-created from failed ${details.source} patient search - needs manual lookup`,
+    source: details.source,
+    searchCriteria: details.searchCriteria,
+  });
 }
 
 // Default operatory mapping
@@ -1202,10 +1338,40 @@ async function handleTool(
 
         let patients: any[] = [];
         let usedAttempt = 'exact';
-        for (const a of attempts) {
-          patients = await doSearch(a.label, a.p);
-          usedAttempt = a.label;
-          if (patients.length > 0) break;
+
+        try {
+          for (const a of attempts) {
+            patients = await doSearch(a.label, a.p);
+            usedAttempt = a.label;
+            if (patients.length > 0) break;
+          }
+        } catch (searchError: any) {
+          // OpenDental API failure - save callback for staff follow-up
+          console.error(`[searchPatients] OpenDental API failed:`, searchError);
+
+          const clinicId = sessionAttributes.clinicId || odClient.getClinicId();
+          const searchName = `${providedFName} ${providedLName}`.trim();
+          const callerPhone = sessionAttributes.callerPhone || sessionAttributes.PatientPhone || params.WirelessPhone;
+
+          await savePatientSearchFailureAsCallback({
+            clinicId,
+            searchName: searchName || undefined,
+            searchPhone: callerPhone,
+            searchBirthdate: normalizedBirthdate,
+            searchCriteria: { FName: providedFName, LName: providedLName, Birthdate: normalizedBirthdate },
+            failureReason: `OpenDental API error: ${searchError?.message || 'Unknown error'}`,
+            source: 'ai-agent',
+          });
+
+          return {
+            statusCode: searchError?.response?.status || 500,
+            body: {
+              status: 'FAILURE',
+              message: 'Unable to search patients - please try again or call the office',
+              callbackCreated: true,
+            },
+            updatedSessionAttributes,
+          };
         }
 
         if (patients.length === 0) {
@@ -1260,7 +1426,7 @@ async function handleTool(
               status: 'FAILURE',
               data: { items: isPublicRequest ? [] : patients.slice(0, 5).map(toSafePatient) },
               message: isPublicRequest
-                ? 'I found more than one possible match. Please double-check the spelling of your name, or call the office and we’ll help you.'
+                ? 'I found more than one possible match. Please double-check the spelling of your name, or call the office and we\'ll help you.'
                 : `Multiple matches found (${patients.length}). Refine search.`,
             },
             updatedSessionAttributes,
@@ -3861,16 +4027,46 @@ async function handleTool(
           appointmentData.Pattern = params.Pattern;
         }
 
-        const newAppt = await odClient.request('POST', 'appointments', { data: appointmentData });
+        try {
+          const newAppt = await odClient.request('POST', 'appointments', { data: appointmentData });
 
-        return {
-          statusCode: 201,
-          body: {
-            status: 'SUCCESS',
-            data: newAppt,
-            message: `Appointment scheduled successfully for ${params.Date}`,
-          },
-        };
+          return {
+            statusCode: 201,
+            body: {
+              status: 'SUCCESS',
+              data: newAppt,
+              message: `Appointment scheduled successfully for ${params.Date}`,
+            },
+          };
+        } catch (scheduleError: any) {
+          console.error(`[scheduleAppointment] Failed to schedule appointment:`, scheduleError);
+
+          // Save callback for failed appointment booking
+          const patientName = sessionAttributes.FName && sessionAttributes.LName
+            ? `${sessionAttributes.FName} ${sessionAttributes.LName}`
+            : `Patient ${params.PatNum}`;
+          const patientPhone = sessionAttributes.callerPhone || sessionAttributes.PatientPhone;
+
+          await saveAppointmentFailureAsCallback({
+            clinicId: clinicId || odClient.getClinicId(),
+            patientName,
+            patientPhone,
+            patNum: parseInt(params.PatNum.toString()),
+            requestedDate: params.Date,
+            reason,
+            errorMessage: scheduleError?.message || 'Unknown scheduling error',
+            source: 'ai-agent',
+          });
+
+          return {
+            statusCode: scheduleError?.response?.status || 500,
+            body: {
+              status: 'FAILURE',
+              message: scheduleError?.message || 'Failed to schedule appointment',
+              callbackCreated: true,
+            },
+          };
+        }
       }
 
       case 'getUpcomingAppointments': {
@@ -3921,15 +4117,47 @@ async function handleTool(
           AptDateTime: params.NewDateTime,
           Note: params.Note ? `Rescheduled: ${params.Note}` : 'Rescheduled by AI Agent',
         };
-        const rescheduled = await odClient.request('PUT', `appointments/${params.AptNum}`, { data: rescheduleData });
-        return {
-          statusCode: 200,
-          body: {
-            status: 'SUCCESS',
-            data: rescheduled,
-            message: `Appointment rescheduled to ${params.NewDateTime}`,
-          },
-        };
+
+        try {
+          const rescheduled = await odClient.request('PUT', `appointments/${params.AptNum}`, { data: rescheduleData });
+          return {
+            statusCode: 200,
+            body: {
+              status: 'SUCCESS',
+              data: rescheduled,
+              message: `Appointment rescheduled to ${params.NewDateTime}`,
+            },
+          };
+        } catch (rescheduleError: any) {
+          console.error(`[rescheduleAppointment] Failed to reschedule appointment:`, rescheduleError);
+
+          // Save callback for failed appointment rescheduling
+          const patientName = sessionAttributes.FName && sessionAttributes.LName
+            ? `${sessionAttributes.FName} ${sessionAttributes.LName}`
+            : sessionAttributes.PatNum ? `Patient ${sessionAttributes.PatNum}` : 'Unknown Patient';
+          const patientPhone = sessionAttributes.callerPhone || sessionAttributes.PatientPhone;
+          const clinicId = sessionAttributes.clinicId || odClient.getClinicId();
+
+          await saveAppointmentFailureAsCallback({
+            clinicId,
+            patientName,
+            patientPhone,
+            patNum: sessionAttributes.PatNum ? parseInt(sessionAttributes.PatNum) : undefined,
+            requestedDate: params.NewDateTime,
+            reason: `Reschedule appointment ${params.AptNum}`,
+            errorMessage: rescheduleError?.message || 'Unknown rescheduling error',
+            source: 'ai-agent',
+          });
+
+          return {
+            statusCode: rescheduleError?.response?.status || 500,
+            body: {
+              status: 'FAILURE',
+              message: rescheduleError?.message || 'Failed to reschedule appointment',
+              callbackCreated: true,
+            },
+          };
+        }
       }
 
       case 'cancelAppointment': {
