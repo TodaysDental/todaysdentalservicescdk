@@ -161,7 +161,7 @@ export class AdminStack extends Stack {
     // ========================================
 
     const corsConfig = getCdkCorsConfig();
-    
+
     this.api = new apigw.RestApi(this, 'AdminApi', {
       restApiName: 'AdminApi',
       description: 'Admin service API',
@@ -179,19 +179,19 @@ export class AdminStack extends Stack {
     });
 
     const corsErrorHeaders = getCorsErrorHeaders();
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
       restApi: this.api,
       type: apigw.ResponseType.DEFAULT_4XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault5XX', {
       restApi: this.api,
       type: apigw.ResponseType.DEFAULT_5XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseUnauthorized', {
       restApi: this.api,
       type: apigw.ResponseType.UNAUTHORIZED,
@@ -201,7 +201,7 @@ export class AdminStack extends Stack {
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
     const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
-    
+
     // Create authorizer for this stack's API
     this.authorizer = new apigw.RequestAuthorizer(this, 'AdminAuthorizer', {
       handler: authorizerFn,
@@ -247,7 +247,7 @@ export class AdminStack extends Stack {
     const staffUserTable = dynamodb.Table.fromTableName(this, 'StaffUserTable', props.staffUserTableName);
     applyTags(staffUserTable, { Table: 'staff-user' });
     staffUserTable.grantReadWriteData(this.registerFnV3);
-    
+
     if (props.staffClinicInfoTableName) {
       const staffClinicInfoTable = dynamodb.Table.fromTableName(this, 'StaffClinicInfoTableImport', props.staffClinicInfoTableName);
       applyTags(staffClinicInfoTable, { Table: 'staff-clinic-info' });
@@ -275,7 +275,7 @@ export class AdminStack extends Stack {
 
     // Grant permissions to DynamoDB tables
     staffUserTable.grantReadWriteData(this.usersFn);
-    
+
     if (props.staffClinicInfoTableName) {
       const staffClinicInfoTable2 = dynamodb.Table.fromTableName(this, 'StaffClinicInfoTableImport2', props.staffClinicInfoTableName);
       applyTags(staffClinicInfoTable2, { Table: 'staff-clinic-info' });
@@ -290,7 +290,7 @@ export class AdminStack extends Stack {
         resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${props.staffClinicInfoTableName}`],
       }));
     }
-    
+
     // *** Directory Lookup Lambda for general user selection ***
     this.directoryLookupFn = new lambdaNode.NodejsFunction(this, 'DirectoryLookupFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'admin', 'directory-lookup.ts'),
@@ -307,44 +307,44 @@ export class AdminStack extends Stack {
 
     // Grant read permissions to StaffUser table for directory lookup
     staffUserTable.grantReadData(this.directoryLookupFn);
-    
+
     // ** NEW: List Active Requests Lambda Deployment **
     this.listRequestsFn = new lambdaNode.NodejsFunction(this, 'ListRequestsFn', {
-        entry: path.join(__dirname, '..', '..', 'services', 'admin', 'list-requests.ts'),
-        handler: 'handler',
-        runtime: lambda.Runtime.NODEJS_20_X,
-        memorySize: 128,
-        timeout: Duration.seconds(15), // Increased timeout for group request lookups
-        bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
-        environment: {
-            // USER_POOL_ID removed - using JWT-based authentication now
-            FAVORS_TABLE_NAME: props.favorsTableName, // Pass the table name
-            TEAMS_TABLE_NAME: props.teamsTableName || '', // Pass the teams table name for group requests
-        },
+      entry: path.join(__dirname, '..', '..', 'services', 'admin', 'list-requests.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      memorySize: 128,
+      timeout: Duration.seconds(15), // Increased timeout for group request lookups
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      environment: {
+        // USER_POOL_ID removed - using JWT-based authentication now
+        FAVORS_TABLE_NAME: props.favorsTableName, // Pass the table name
+        TEAMS_TABLE_NAME: props.teamsTableName || '', // Pass the teams table name for group requests
+      },
     });
     applyTags(this.listRequestsFn, { Function: 'list-requests' });
-    
+
     // Grant permission to query the Favors Table via GSIs for sent/received/team lookups
     this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
-        actions: ['dynamodb:Query'],
-        resources: [
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}`,
-            // GSIs used by list-requests.ts
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/UserIndex`,
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/SenderIndex`,
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/ReceiverIndex`,
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/TeamIndex`,
-        ],
+      actions: ['dynamodb:Query'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}`,
+        // GSIs used by list-requests.ts
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/UserIndex`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/SenderIndex`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/ReceiverIndex`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.favorsTableName}/index/TeamIndex`,
+      ],
     }));
 
     // Grant permission to scan the Teams Table for member lookups (if configured)
     if (props.teamsTableName) {
-        this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
-            actions: ['dynamodb:Scan'],
-            resources: [
-                `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.teamsTableName}`,
-            ],
-        }));
+      this.listRequestsFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:Scan'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.teamsTableName}`,
+        ],
+      }));
     }
 
 
@@ -358,7 +358,7 @@ export class AdminStack extends Stack {
           'dynamodb:GetItem',
           'dynamodb:Query',
           'dynamodb:Scan',
-          'dynamodb:Query',       
+          'dynamodb:Query',
           'dynamodb:BatchWriteItem'
         ],
         resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${props.staffClinicInfoTableName}`],
@@ -390,10 +390,10 @@ export class AdminStack extends Stack {
       },
     });
     applyTags(this.meFn, { Function: 'me' });
-    
+
     // Grant read permissions to StaffUser table for me API
     staffUserTable.grantReadData(this.meFn);
-    
+
     // Grant read permissions to StaffClinicInfo table if configured
     if (props.staffClinicInfoTableName) {
       const staffClinicInfoTableMe = dynamodb.Table.fromTableName(this, 'StaffClinicInfoTableMe', props.staffClinicInfoTableName);
@@ -531,6 +531,8 @@ export class AdminStack extends Stack {
           CHAT_HISTORY_TABLE_NAME: props.chatHistoryTableName || '',
           CLINICS_TABLE_NAME: props.clinicsTableName || '',
           RECORDINGS_BUCKET_NAME: props.recordingsBucketName || '',
+          // CRITICAL: Pass CallAnalytics table for LexAI/Voice AI call lookup
+          CALL_ANALYTICS_TABLE_NAME: props.analyticsTableName || '',
           AWS_REGION_OVERRIDE: Stack.of(this).region,
         },
       });
@@ -554,6 +556,14 @@ export class AdminStack extends Stack {
       if (props.clinicsTableName) {
         tableResources.push(
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicsTableName}`
+        );
+      }
+
+      // CRITICAL: Add CallAnalytics table for LexAI/Voice AI call lookup
+      if (props.analyticsTableName) {
+        tableResources.push(
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsTableName}/index/*`
         );
       }
 
@@ -706,13 +716,13 @@ export class AdminStack extends Stack {
       authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }],
     });
-    
+
     // ** NEW: List Requests Route (For the "Mini-Slack" sidebar) **
     const requestsRes = this.api.root.addResource('requests');
     requestsRes.addMethod('GET', new apigw.LambdaIntegration(this.listRequestsFn), {
-        authorizer: this.authorizer,
-        authorizationType: apigw.AuthorizationType.CUSTOM,
-        methodResponses: [{ statusCode: '200' }],
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }],
     });
 
     // Me API routes
@@ -737,7 +747,7 @@ export class AdminStack extends Stack {
     // ** NEW: Analytics Routes **
     if (this.getAnalyticsFn) {
       const analyticsRes = this.api.root.addResource('analytics');
-      
+
       // GET /analytics/call/{callId}
       const callRes = analyticsRes.addResource('call');
       const callIdRes = callRes.addResource('{callId}');
@@ -746,7 +756,7 @@ export class AdminStack extends Stack {
         authorizationType: apigw.AuthorizationType.CUSTOM,
         methodResponses: [{ statusCode: '200' }],
       });
-      
+
       // GET /analytics/clinic/{clinicId}
       const clinicRes = analyticsRes.addResource('clinic');
       const clinicIdRes = clinicRes.addResource('{clinicId}');
@@ -755,7 +765,7 @@ export class AdminStack extends Stack {
         authorizationType: apigw.AuthorizationType.CUSTOM,
         methodResponses: [{ statusCode: '200' }],
       });
-      
+
       // GET /analytics/agent/{agentId}
       const agentRes = analyticsRes.addResource('agent');
       const agentIdRes = agentRes.addResource('{agentId}');
@@ -764,7 +774,7 @@ export class AdminStack extends Stack {
         authorizationType: apigw.AuthorizationType.CUSTOM,
         methodResponses: [{ statusCode: '200' }],
       });
-      
+
       // GET /analytics/summary
       const summaryRes = analyticsRes.addResource('summary');
       summaryRes.addMethod('GET', new apigw.LambdaIntegration(this.getAnalyticsFn), {
@@ -823,21 +833,21 @@ export class AdminStack extends Stack {
     // them here and wire API Gateway routes to the imported functions. This
     // avoids passing the Admin API object into the Chime stack which would
     // create a circular dependency.
-    if (props.startSessionFnArn || props.stopSessionFnArn || props.outboundCallFnArn || props.transferCallFnArn || 
-        props.callAcceptedFnArn || props.callRejectedFnArn || props.callHungupFnArn || props.leaveCallFnArn || 
-        props.heartbeatFnArn || props.holdCallFnArn || props.resumeCallFnArn ||
-        props.addCallFnArn || props.sendDtmfFnArn || props.callNotesFnArn || props.conferenceCallFnArn) {
+    if (props.startSessionFnArn || props.stopSessionFnArn || props.outboundCallFnArn || props.transferCallFnArn ||
+      props.callAcceptedFnArn || props.callRejectedFnArn || props.callHungupFnArn || props.leaveCallFnArn ||
+      props.heartbeatFnArn || props.holdCallFnArn || props.resumeCallFnArn ||
+      props.addCallFnArn || props.sendDtmfFnArn || props.callNotesFnArn || props.conferenceCallFnArn) {
       const chimeApiRoot = this.api.root.getResource('chime') ?? this.api.root.addResource('chime');
 
       if (props.startSessionFnArn) {
         const importedStart = lambda.Function.fromFunctionArn(this, 'ImportedStartSessionFn', props.startSessionFnArn);
-        
+
         // Add API Gateway permission - use wildcard to account for base path mapping
         importedStart.addPermission('ApiGatewayInvokeStartSession', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/chime/start-session', '*')
         });
-        
+
         const startSessionRes = chimeApiRoot.addResource('start-session');
         startSessionRes.addMethod('POST', new apigw.LambdaIntegration(importedStart, { proxy: true }), {
           authorizer: this.authorizer,
@@ -847,13 +857,13 @@ export class AdminStack extends Stack {
 
       if (props.stopSessionFnArn) {
         const importedStop = lambda.Function.fromFunctionArn(this, 'ImportedStopSessionFn', props.stopSessionFnArn);
-        
+
         // Add API Gateway permission - use wildcard to account for base path mapping
         importedStop.addPermission('ApiGatewayInvokeStopSession', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/chime/stop-session', '*')
         });
-        
+
         const stopSessionRes = chimeApiRoot.addResource('stop-session');
         stopSessionRes.addMethod('POST', new apigw.LambdaIntegration(importedStop, { proxy: true }), {
           authorizer: this.authorizer,
@@ -863,13 +873,13 @@ export class AdminStack extends Stack {
 
       if (props.outboundCallFnArn) {
         const importedOutbound = lambda.Function.fromFunctionArn(this, 'ImportedOutboundCallFn', props.outboundCallFnArn);
-        
+
         // Add API Gateway permission - use wildcard to account for base path mapping
         importedOutbound.addPermission('ApiGatewayInvokeOutboundCall', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/chime/outbound-call', '*')
         });
-        
+
         const outboundCallRes = chimeApiRoot.addResource('outbound-call');
         outboundCallRes.addMethod('POST', new apigw.LambdaIntegration(importedOutbound, { proxy: true }), {
           authorizer: this.authorizer,
@@ -879,13 +889,13 @@ export class AdminStack extends Stack {
 
       if (props.transferCallFnArn) {
         const importedTransfer = lambda.Function.fromFunctionArn(this, 'ImportedTransferCallFn', props.transferCallFnArn);
-        
+
         // Add API Gateway permission - use wildcard to account for base path mapping
         importedTransfer.addPermission('ApiGatewayInvokeTransferCall', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/chime/transfer-call', '*')
         });
-        
+
         const transferCallRes = chimeApiRoot.addResource('transfer-call');
         transferCallRes.addMethod('POST', new apigw.LambdaIntegration(importedTransfer, { proxy: true }), {
           authorizer: this.authorizer,
@@ -895,13 +905,13 @@ export class AdminStack extends Stack {
 
       if (props.callAcceptedFnArn) {
         const importedCallAccepted = lambda.Function.fromFunctionArn(this, 'ImportedCallAcceptedFn', props.callAcceptedFnArn);
-        
+
         // Add API Gateway permission - use wildcard to account for base path mapping
         importedCallAccepted.addPermission('ApiGatewayInvokeCallAccepted', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/chime/call-accepted', '*')
         });
-        
+
         const callAcceptedRes = chimeApiRoot.addResource('call-accepted');
         callAcceptedRes.addMethod('POST', new apigw.LambdaIntegration(importedCallAccepted, { proxy: true }), {
           authorizer: this.authorizer,
@@ -911,13 +921,13 @@ export class AdminStack extends Stack {
 
       if (props.callRejectedFnArn) {
         const importedCallRejected = lambda.Function.fromFunctionArn(this, 'ImportedCallRejectedFn', props.callRejectedFnArn);
-        
+
         // Add API Gateway permission - use wildcard to account for base path mapping
         importedCallRejected.addPermission('ApiGatewayInvokeCallRejected', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/chime/call-rejected', '*')
         });
-        
+
         const callRejectedRes = chimeApiRoot.addResource('call-rejected');
         callRejectedRes.addMethod('POST', new apigw.LambdaIntegration(importedCallRejected, { proxy: true }), {
           authorizer: this.authorizer,
@@ -927,13 +937,13 @@ export class AdminStack extends Stack {
 
       if (props.callHungupFnArn) {
         const importedCallHungup = lambda.Function.fromFunctionArn(this, 'ImportedCallHungupFn', props.callHungupFnArn);
-        
+
         // Add API Gateway permission - use wildcard to account for base path mapping
         importedCallHungup.addPermission('ApiGatewayInvokeCallHungup', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/chime/call-hungup', '*')
         });
-        
+
         const callHungupRes = chimeApiRoot.addResource('call-hungup');
         callHungupRes.addMethod('POST', new apigw.LambdaIntegration(importedCallHungup, { proxy: true }), {
           authorizer: this.authorizer,
@@ -943,13 +953,13 @@ export class AdminStack extends Stack {
 
       if (props.leaveCallFnArn) {
         const importedLeaveCall = lambda.Function.fromFunctionArn(this, 'ImportedLeaveCallFn', props.leaveCallFnArn);
-        
+
         // Add API Gateway permission - use wildcard to account for base path mapping
         importedLeaveCall.addPermission('ApiGatewayInvokeLeaveCall', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/chime/leave-call', '*')
         });
-        
+
         const leaveCallRes = chimeApiRoot.addResource('leave-call');
         leaveCallRes.addMethod('POST', new apigw.LambdaIntegration(importedLeaveCall, { proxy: true }), {
           authorizer: this.authorizer,
@@ -959,13 +969,13 @@ export class AdminStack extends Stack {
 
       if (props.heartbeatFnArn) {
         const importedHeartbeat = lambda.Function.fromFunctionArn(this, 'ImportedHeartbeatFn', props.heartbeatFnArn);
-        
+
         // Add API Gateway permission - use wildcard to account for base path mapping
         importedHeartbeat.addPermission('ApiGatewayInvokeHeartbeat', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/chime/heartbeat', '*')
         });
-        
+
         const heartbeatRes = chimeApiRoot.addResource('heartbeat');
         heartbeatRes.addMethod('POST', new apigw.LambdaIntegration(importedHeartbeat, { proxy: true }), {
           authorizer: this.authorizer,
@@ -975,13 +985,13 @@ export class AdminStack extends Stack {
 
       if (props.holdCallFnArn) {
         const importedHoldCall = lambda.Function.fromFunctionArn(this, 'ImportedHoldCallFn', props.holdCallFnArn);
-        
+
         // Add API Gateway permission - use wildcard to account for base path mapping
         importedHoldCall.addPermission('ApiGatewayInvokeHoldCall', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/chime/hold-call', '*')
         });
-        
+
         const holdCallRes = chimeApiRoot.addResource('hold-call');
         holdCallRes.addMethod('POST', new apigw.LambdaIntegration(importedHoldCall, { proxy: true }), {
           authorizer: this.authorizer,
@@ -991,13 +1001,13 @@ export class AdminStack extends Stack {
 
       if (props.resumeCallFnArn) {
         const importedResumeCall = lambda.Function.fromFunctionArn(this, 'ImportedResumeCallFn', props.resumeCallFnArn);
-        
+
         // Add API Gateway permission - use wildcard to account for base path mapping
         importedResumeCall.addPermission('ApiGatewayInvokeResumeCall', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/chime/resume-call', '*')
         });
-        
+
         const resumeCallRes = chimeApiRoot.addResource('resume-call');
         resumeCallRes.addMethod('POST', new apigw.LambdaIntegration(importedResumeCall, { proxy: true }), {
           authorizer: this.authorizer,
@@ -1012,12 +1022,12 @@ export class AdminStack extends Stack {
           'ImportedAddCallFn',
           props.addCallFnArn
         );
-        
+
         importedAddCall.addPermission('ApiGatewayInvokeAddCall', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/chime/add-call', '*')
         });
-        
+
         const addCallRes = chimeApiRoot.addResource('add-call');
         addCallRes.addMethod('POST', new apigw.LambdaIntegration(importedAddCall, { proxy: true }), {
           authorizer: this.authorizer,
@@ -1032,12 +1042,12 @@ export class AdminStack extends Stack {
           'ImportedSendDtmfFn',
           props.sendDtmfFnArn
         );
-        
+
         importedSendDtmf.addPermission('ApiGatewayInvokeSendDtmf', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/chime/send-dtmf', '*')
         });
-        
+
         const sendDtmfRes = chimeApiRoot.addResource('send-dtmf');
         sendDtmfRes.addMethod('POST', new apigw.LambdaIntegration(importedSendDtmf, { proxy: true }), {
           authorizer: this.authorizer,
@@ -1052,7 +1062,7 @@ export class AdminStack extends Stack {
           'ImportedCallNotesFn',
           props.callNotesFnArn
         );
-        
+
         importedCallNotes.addPermission('ApiGatewayInvokeCallNotes', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/chime/call-notes', '*')
@@ -1061,7 +1071,7 @@ export class AdminStack extends Stack {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/chime/call-notes/*', '*')
         });
-        
+
         const callNotesRes = chimeApiRoot.addResource('call-notes');
         // GET all notes for current call
         callNotesRes.addMethod('GET', new apigw.LambdaIntegration(importedCallNotes, { proxy: true }), {
@@ -1083,7 +1093,7 @@ export class AdminStack extends Stack {
           authorizer: this.authorizer,
           authorizationType: apigw.AuthorizationType.CUSTOM,
         });
-        
+
         // Notes with call ID path parameter
         const callNotesWithIdRes = callNotesRes.addResource('{callId}');
         callNotesWithIdRes.addMethod('GET', new apigw.LambdaIntegration(importedCallNotes, { proxy: true }), {
@@ -1099,12 +1109,12 @@ export class AdminStack extends Stack {
           'ImportedConferenceCallFn',
           props.conferenceCallFnArn
         );
-        
+
         importedConferenceCall.addPermission('ApiGatewayInvokeConferenceCall', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/chime/conference-call', '*')
         });
-        
+
         const conferenceCallRes = chimeApiRoot.addResource('conference-call');
         conferenceCallRes.addMethod('POST', new apigw.LambdaIntegration(importedConferenceCall, { proxy: true }), {
           authorizer: this.authorizer,
@@ -1126,12 +1136,12 @@ export class AdminStack extends Stack {
           'ImportedJoinQueuedCallFn',
           props.joinQueuedCallFnArn
         );
-        
+
         importedJoinQueued.addPermission('ApiGatewayInvokeJoinQueuedCall', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/call-center/join-queued-call', '*')
         });
-        
+
         const joinQueuedRes = callCenterRoot.addResource('join-queued-call');
         joinQueuedRes.addMethod('POST', new apigw.LambdaIntegration(importedJoinQueued, { proxy: true }), {
           authorizer: this.authorizer,
@@ -1146,12 +1156,12 @@ export class AdminStack extends Stack {
           'ImportedJoinActiveCallFn',
           props.joinActiveCallFnArn
         );
-        
+
         importedJoinActive.addPermission('ApiGatewayInvokeJoinActiveCall', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/call-center/join-active-call', '*')
         });
-        
+
         const joinActiveRes = callCenterRoot.addResource('join-active-call');
         joinActiveRes.addMethod('POST', new apigw.LambdaIntegration(importedJoinActive, { proxy: true }), {
           authorizer: this.authorizer,
@@ -1166,12 +1176,12 @@ export class AdminStack extends Stack {
           'ImportedGetJoinableCallsFn',
           props.getJoinableCallsFnArn
         );
-        
+
         importedGetJoinable.addPermission('ApiGatewayInvokeGetJoinableCalls', {
           principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
           sourceArn: this.api.arnForExecuteApi('*', '/call-center/get-joinable-calls', '*')
         });
-        
+
         const getJoinableRes = callCenterRoot.addResource('get-joinable-calls');
         getJoinableRes.addMethod('GET', new apigw.LambdaIntegration(importedGetJoinable, { proxy: true }), {
           authorizer: this.authorizer,
@@ -1247,17 +1257,17 @@ export class AdminStack extends Stack {
       description: 'Admin API Gateway ID',
       exportName: `${Stack.of(this).stackName}-AdminApiId`,
     });
-    
+
     new CfnOutput(this, 'DirectoryApiUrl', {
-        value: 'https://apig.todaysdentalinsights.com/admin/directory',
-        description: 'User Directory Lookup API URL',
-        exportName: `${Stack.of(this).stackName}-DirectoryApiUrl`,
+      value: 'https://apig.todaysdentalinsights.com/admin/directory',
+      description: 'User Directory Lookup API URL',
+      exportName: `${Stack.of(this).stackName}-DirectoryApiUrl`,
     });
-    
+
     new CfnOutput(this, 'RequestsApiUrl', {
-        value: 'https://apig.todaysdentalinsights.com/admin/requests',
-        description: 'Active Favor Requests List API URL',
-        exportName: `${Stack.of(this).stackName}-RequestsApiUrl`,
+      value: 'https://apig.todaysdentalinsights.com/admin/requests',
+      description: 'Active Favor Requests List API URL',
+      exportName: `${Stack.of(this).stackName}-RequestsApiUrl`,
     });
   }
 }
