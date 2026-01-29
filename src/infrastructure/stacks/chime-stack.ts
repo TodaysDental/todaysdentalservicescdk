@@ -2571,6 +2571,14 @@ export class ChimeStack extends Stack {
       },
     });
 
+    // CRITICAL: Allow API Gateway to invoke GetRecording.
+    // Without this, /admin/recordings/* returns 500 "Invalid permissions on Lambda function".
+    // Use the same broad pattern as other Admin-invoked Chime lambdas (auth is enforced by the Authorizer).
+    getRecordingFn.addPermission('AdminApiInvokeGetRecording', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`,
+    });
+
     // Always export the ARN to prevent CloudFormation import failures
     new CfnOutput(this, 'GetRecordingFnArn', {
       value: getRecordingFn.functionArn,
@@ -2766,6 +2774,15 @@ export class ChimeStack extends Stack {
       recordingMetadataTable.addGlobalSecondaryIndex({
         indexName: 'callId-index',
         partitionKey: { name: 'callId', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
+        projectionType: dynamodb.ProjectionType.ALL,
+      });
+
+      // GSI: Query by transactionId/segmentId (allows lookups when CallAnalytics uses transactionId
+      // but RecordingMetadata `callId` is the PSTN leg call ID).
+      recordingMetadataTable.addGlobalSecondaryIndex({
+        indexName: 'segmentId-index',
+        partitionKey: { name: 'segmentId', type: dynamodb.AttributeType.STRING },
         sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
         projectionType: dynamodb.ProjectionType.ALL,
       });

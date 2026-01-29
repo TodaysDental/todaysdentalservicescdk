@@ -70,6 +70,35 @@ async function scanRecordingsByCallId(callId: string, maxItems: number = 50): Pr
   return found.slice(0, maxItems);
 }
 
+async function scanRecordingsBySegmentId(segmentId: string, maxItems: number = 50): Promise<any[]> {
+  const found: any[] = [];
+  let lastEvaluatedKey: any = undefined;
+  let page = 0;
+  const MAX_PAGES = 10;
+
+  // NOTE: Fallback for deployments missing the `segmentId-index` GSI.
+  // Intentionally bounded to avoid long scans/timeouts.
+  while (page < MAX_PAGES && found.length < maxItems) {
+    const res = await ddb.send(new ScanCommand({
+      TableName: RECORDING_METADATA_TABLE,
+      FilterExpression: 'segmentId = :segmentId',
+      ExpressionAttributeValues: { ':segmentId': segmentId },
+      ExclusiveStartKey: lastEvaluatedKey,
+      Limit: 200
+    }));
+
+    if (res.Items && res.Items.length > 0) {
+      found.push(...res.Items);
+    }
+
+    lastEvaluatedKey = res.LastEvaluatedKey;
+    if (!lastEvaluatedKey) break;
+    page++;
+  }
+
+  return found.slice(0, maxItems);
+}
+
 function safeAttachmentFilename(s3Key: string, fallback: string): string {
   const raw = (s3Key.split('/').pop() || fallback).toString();
   const cleaned = raw.replace(/[\r\n"]/g, '').trim();
@@ -100,6 +129,35 @@ async function queryRecordingsByCallId(callId: string, maxItems: number = 50): P
     if (isMissingIndex) {
       console.warn('[GetRecording] Falling back to Scan (callId-index missing)', { callId });
       return await scanRecordingsByCallId(callId, maxItems);
+    }
+    throw err;
+  }
+}
+
+async function queryRecordingsBySegmentId(segmentId: string, maxItems: number = 50): Promise<any[]> {
+  try {
+    const res = await ddb.send(new QueryCommand({
+      TableName: RECORDING_METADATA_TABLE,
+      IndexName: 'segmentId-index',
+      KeyConditionExpression: 'segmentId = :segmentId',
+      ExpressionAttributeValues: { ':segmentId': segmentId }
+    }));
+    return (res.Items || []).slice(0, maxItems);
+  } catch (err: any) {
+    const msg = String(err?.message || '');
+    const isMissingIndex =
+      err?.name === 'ValidationException' &&
+      /specified index/i.test(msg);
+
+    console.error('[GetRecording] Query by segmentId-index failed', {
+      segmentId,
+      errorName: err?.name,
+      errorMessage: err?.message
+    });
+
+    if (isMissingIndex) {
+      console.warn('[GetRecording] Falling back to Scan (segmentId-index missing)', { segmentId });
+      return await scanRecordingsBySegmentId(segmentId, maxItems);
     }
     throw err;
   }
@@ -328,6 +386,13 @@ async function getRecordingsForCall(
       });
       recordings = await queryRecordingsByCallId(pstnCallId);
     }
+  }
+
+  // 3) Backward compatibility: for older records, RecordingMetadata.callId is the PSTN leg ID,
+  // but the *transactionId* is stored as `segmentId` (from the filename: timestamp_transactionId_callId.wav).
+  // This lets us look up recordings by the analytics callId even after the CallQueue item has been removed.
+  if (!recordings || recordings.length === 0) {
+    recordings = await queryRecordingsBySegmentId(callId);
   }
 
   if (!recordings || recordings.length === 0) {
