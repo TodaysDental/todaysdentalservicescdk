@@ -106,7 +106,7 @@ PATIENT:
 • getPatientByPatNum(PatNum), getPatientInfo(PatNum)
 
 APPOINTMENTS:
-• getAppointmentSlots(date?, dateStart?, dateEnd?, lengthMinutes?, ProvNum?, OpNum?) - get clinic schedule
+• getAppointmentSlots(date?, dateStart?, dateEnd?, lengthMinutes?, ProvNum?, OpNum?) - get available slots from OpenDental
 • getClinicAppointmentTypes() - Get appointment types: label, duration, opNum, defaultProvNum, AppointmentTypeNum
 • scheduleAppointment(PatNum, Reason, Date, Op, ProvNum?, AppointmentTypeNum?, duration?)
 • getUpcomingAppointments(PatNum), getHistAppointments(PatNum)

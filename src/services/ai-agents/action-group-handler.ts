@@ -4583,122 +4583,54 @@ async function handleTool(
       }
 
       case 'getAppointmentSlots': {
-        // IMPORTANT (TodaysDental): We do NOT use OpenDental appointments/Slots for web/voice booking.
-        // It has proven unreliable and often fails with "date is invalid".
-        // Instead, query Provider/Practice schedules and generate available time slots.
+        // Use the same direct OpenDental appointments/Slots API as the chat implementation
+        // for consistency across voice and chat channels
+        const slotParams: any = {};
 
-        const normalizeIsoDate = (value: any): string | undefined => {
-          if (!value || typeof value !== 'string') return undefined;
-          const normalized = normalizeDateFormat(value);
-          return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : undefined;
-        };
-
-        const addDays = (isoDate: string, days: number): string => {
-          const d = new Date(`${isoDate}T12:00:00Z`);
-          d.setUTCDate(d.getUTCDate() + days);
-          return d.toISOString().slice(0, 10);
-        };
-
-        const todayIso = normalizeIsoDate(sessionAttributes?.todayDate) || new Date().toISOString().slice(0, 10);
-
-        // Accept caller-provided date range, but guard against obviously stale/invalid dates
-        const requestedStart = normalizeIsoDate(params.dateStart || params.DateStart || params.date || params.Date);
-        const requestedEnd = normalizeIsoDate(params.dateEnd || params.DateEnd);
-
-        // If the model sends very old dates (e.g., 2023), ignore and use today+14d
-        const dateStart = requestedStart && requestedStart >= addDays(todayIso, -7) ? requestedStart : todayIso;
-        const dateEnd = requestedEnd && requestedEnd >= dateStart ? requestedEnd : addDays(dateStart, 14);
-
-        // Query Provider schedules (dentist availability) - this is what determines when appointments can be booked
-        // Also query Practice schedules as a fallback (clinic-wide hours)
-        const [providerSchedules, practiceSchedules] = await Promise.all([
-          odClient.request('GET', 'schedules', { params: { dateStart, dateEnd, SchedType: 'Provider' } }).catch(() => []),
-          odClient.request('GET', 'schedules', { params: { dateStart, dateEnd, SchedType: 'Practice' } }).catch(() => []),
-        ]);
-
-        const providerArray = Array.isArray(providerSchedules) ? providerSchedules : [];
-        const practiceArray = Array.isArray(practiceSchedules) ? practiceSchedules : [];
-
-        // Use provider schedules if available, otherwise fall back to practice schedules
-        const schedulesArray = providerArray.length > 0 ? providerArray : practiceArray;
-
-        // Generate time slots from schedule entries
-        const slotDuration = parseInt(params.duration || params.lengthMinutes || '30', 10);
-        const generatedSlots: any[] = [];
-
-        for (const schedule of schedulesArray.slice(0, 100)) {
-          const schedDate = schedule.SchedDate || schedule.schedDate;
-          const startTime = schedule.StartTime || schedule.startTime || '08:00:00';
-          const stopTime = schedule.StopTime || schedule.stopTime || '17:00:00';
-          const provNum = schedule.ProvNum || schedule.provNum;
-          const opNum = schedule.Op || schedule.opNum;
-
-          if (!schedDate) continue;
-
-          // Parse start and stop times
-          const [startH, startM] = startTime.split(':').map(Number);
-          const [stopH, stopM] = stopTime.split(':').map(Number);
-          const startMinutes = startH * 60 + (startM || 0);
-          const stopMinutes = stopH * 60 + (stopM || 0);
-
-          // Generate slots at slotDuration intervals
-          for (let mins = startMinutes; mins + slotDuration <= stopMinutes; mins += slotDuration) {
-            const hour = Math.floor(mins / 60);
-            const minute = mins % 60;
-            const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}:00`;
-            const dateTimeStr = `${schedDate} ${timeStr}`;
-
-            generatedSlots.push({
-              DateTimeStart: dateTimeStr,
-              DateTimeEnd: `${schedDate} ${Math.floor((mins + slotDuration) / 60).toString().padStart(2, '0')}:${((mins + slotDuration) % 60).toString().padStart(2, '0')}:00`,
-              ProvNum: provNum,
-              OpNum: opNum,
-              SchedDate: schedDate,
-            });
-          }
+        // Support date or dateStart/dateEnd
+        if (params.date || params.Date) {
+          slotParams.date = params.date || params.Date;
+        }
+        if (params.dateStart || params.DateStart) {
+          slotParams.dateStart = params.dateStart || params.DateStart;
+        }
+        if (params.dateEnd || params.DateEnd) {
+          slotParams.dateEnd = params.dateEnd || params.DateEnd;
+        }
+        if (params.lengthMinutes || params.duration) {
+          slotParams.lengthMinutes = params.lengthMinutes || params.duration || 30;
+        }
+        if (params.ProvNum) {
+          slotParams.ProvNum = params.ProvNum;
+        }
+        if (params.OpNum) {
+          slotParams.OpNum = params.OpNum;
         }
 
-        // Build a direct answer for the AI
-        let directAnswer = '';
-        if (generatedSlots.length > 0) {
-          directAnswer = `=== AVAILABLE APPOINTMENT SLOTS ===\n`;
-          directAnswer += `Date range: ${dateStart} to ${dateEnd}\n`;
-          directAnswer += `Slot duration: ${slotDuration} minutes\n\n`;
+        try {
+          const slots = await odClient.request('GET', 'appointments/Slots', { params: slotParams });
+          const availableSlots = Array.isArray(slots) ? slots : (slots?.items ?? []);
 
-          // Group by date
-          const byDate: { [key: string]: any[] } = {};
-          generatedSlots.forEach(slot => {
-            const date = slot.SchedDate;
-            if (!byDate[date]) byDate[date] = [];
-            byDate[date].push(slot);
-          });
-
-          Object.keys(byDate).slice(0, 7).forEach(date => {
-            const slots = byDate[date];
-            directAnswer += `📅 ${date}: ${slots.length} slot(s) available\n`;
-            directAnswer += `   First: ${slots[0].DateTimeStart.split(' ')[1].slice(0, 5)}, Last: ${slots[slots.length - 1].DateTimeStart.split(' ')[1].slice(0, 5)}\n`;
-          });
-
-          if (Object.keys(byDate).length > 7) {
-            directAnswer += `... and ${Object.keys(byDate).length - 7} more days\n`;
-          }
-        }
-
-        return {
-          statusCode: generatedSlots.length > 0 ? 200 : 404,
-          body: {
-            status: generatedSlots.length > 0 ? 'SUCCESS' : 'FAILURE',
-            directAnswer,
-            data: {
-              items: generatedSlots.slice(0, 200),
-              scheduleSource: providerArray.length > 0 ? 'Provider' : 'Practice',
-              scheduleCount: schedulesArray.length,
+          return {
+            statusCode: availableSlots.length > 0 ? 200 : 404,
+            body: {
+              status: availableSlots.length > 0 ? 'SUCCESS' : 'FAILURE',
+              data: availableSlots,
+              message: availableSlots.length > 0
+                ? `Found ${availableSlots.length} available slot(s)`
+                : 'No available slots found',
             },
-            message: generatedSlots.length > 0
-              ? `Found ${generatedSlots.length} available slot(s) from ${dateStart} to ${dateEnd}`
-              : 'No schedule entries found. The clinic may not have provider schedules set up for this date range.',
-          },
-        };
+          };
+        } catch (error: any) {
+          // Return error details for debugging
+          return {
+            statusCode: error.response?.status || 500,
+            body: {
+              status: 'FAILURE',
+              message: error.response?.data?.message || error.message || 'Failed to get appointment slots',
+            },
+          };
+        }
       }
 
       // ===== APPOINTMENTS API-NAMED TOOLS =====
@@ -4821,111 +4753,44 @@ async function handleTool(
       }
 
       case 'Appointments GET Slots': {
-        // FIXED: Normalize dates and fallback to schedule-based slots when OpenDental API fails
-        const normalizeIsoDate = (value: any): string | undefined => {
-          if (!value || typeof value !== 'string') return undefined;
-          const normalized = normalizeDateFormat(value);
-          return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : undefined;
-        };
+        // Use the same direct OpenDental appointments/Slots API as chat implementation
+        const queryParams: any = {};
 
-        const addDays = (isoDate: string, days: number): string => {
-          const d = new Date(`${isoDate}T12:00:00Z`);
-          d.setUTCDate(d.getUTCDate() + days);
-          return d.toISOString().slice(0, 10);
-        };
-
-        const todayIso = normalizeIsoDate(sessionAttributes?.todayDate) || new Date().toISOString().slice(0, 10);
-
-        // Normalize date parameters - use sessionAttributes.todayDate as reference
-        const requestedDate = normalizeIsoDate(params.date);
-        const requestedStart = normalizeIsoDate(params.dateStart || params.DateStart);
-        const requestedEnd = normalizeIsoDate(params.dateEnd || params.DateEnd);
-
-        // Ensure dates are not in the past (relative to today from session attributes)
-        const dateStart = requestedStart && requestedStart >= todayIso ? requestedStart :
-          requestedDate && requestedDate >= todayIso ? requestedDate : todayIso;
-        const dateEnd = requestedEnd && requestedEnd >= dateStart ? requestedEnd : addDays(dateStart, 7);
-
-        const queryParams: any = {
-          dateStart,
-          dateEnd,
-        };
+        // Support date or dateStart/dateEnd
+        if (params.date) queryParams.date = params.date;
+        if (params.dateStart || params.DateStart) {
+          queryParams.dateStart = params.dateStart || params.DateStart;
+        }
+        if (params.dateEnd || params.DateEnd) {
+          queryParams.dateEnd = params.dateEnd || params.DateEnd;
+        }
         if (params.lengthMinutes) queryParams.lengthMinutes = params.lengthMinutes;
         if (params.ProvNum) queryParams.ProvNum = params.ProvNum;
         if (params.OpNum) queryParams.OpNum = params.OpNum;
 
         try {
           const slots = await odClient.request('GET', 'appointments/Slots', { params: queryParams });
-          const slotsArray = Array.isArray(slots) ? slots : [];
+          const slotsArray = Array.isArray(slots) ? slots : (slots?.items ?? []);
 
           let message = `Found ${slotsArray.length} available slot(s)`;
           if (params.ProvNum) message += ` for ProvNum ${params.ProvNum}`;
           if (params.OpNum) message += ` in OpNum ${params.OpNum}`;
 
           return {
-            statusCode: 200,
+            statusCode: slotsArray.length > 0 ? 200 : 404,
             body: {
-              status: 'SUCCESS',
+              status: slotsArray.length > 0 ? 'SUCCESS' : 'FAILURE',
               data: slotsArray,
               message,
             },
           };
         } catch (error: any) {
-          // Fallback to schedule-based slot generation when OpenDental Slots API fails
-          console.log('[ActionGroup] OpenDental Slots API failed, falling back to schedule-based slots:', error?.response?.data || error?.message);
-
-          // Query Provider schedules and generate slots
-          const [providerSchedules, practiceSchedules] = await Promise.all([
-            odClient.request('GET', 'schedules', { params: { dateStart, dateEnd, SchedType: 'Provider' } }).catch(() => []),
-            odClient.request('GET', 'schedules', { params: { dateStart, dateEnd, SchedType: 'Practice' } }).catch(() => []),
-          ]);
-
-          const providerArray = Array.isArray(providerSchedules) ? providerSchedules : [];
-          const practiceArray = Array.isArray(practiceSchedules) ? practiceSchedules : [];
-          const schedulesArray = providerArray.length > 0 ? providerArray : practiceArray;
-
-          // Generate slots from schedules
-          const slotDuration = parseInt(params.lengthMinutes || '30', 10);
-          const generatedSlots: any[] = [];
-
-          for (const schedule of schedulesArray.slice(0, 100)) {
-            const schedDate = schedule.SchedDate || schedule.schedDate;
-            const startTime = schedule.StartTime || schedule.startTime || '08:00:00';
-            const stopTime = schedule.StopTime || schedule.stopTime || '17:00:00';
-            const provNum = schedule.ProvNum || schedule.provNum || params.ProvNum;
-            const opNum = schedule.Op || schedule.opNum || params.OpNum;
-
-            if (!schedDate) continue;
-
-            const [startH, startM] = startTime.split(':').map(Number);
-            const [stopH, stopM] = stopTime.split(':').map(Number);
-            const startMinutes = startH * 60 + (startM || 0);
-            const stopMinutes = stopH * 60 + (stopM || 0);
-
-            for (let mins = startMinutes; mins + slotDuration <= stopMinutes; mins += slotDuration) {
-              const hour = Math.floor(mins / 60);
-              const minute = mins % 60;
-              const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}:00`;
-
-              generatedSlots.push({
-                DateTimeStart: `${schedDate} ${timeStr}`,
-                DateTimeEnd: `${schedDate} ${Math.floor((mins + slotDuration) / 60).toString().padStart(2, '0')}:${((mins + slotDuration) % 60).toString().padStart(2, '0')}:00`,
-                ProvNum: provNum,
-                OpNum: opNum,
-                SchedDate: schedDate,
-              });
-            }
-          }
-
+          // Return error details for debugging
           return {
-            statusCode: generatedSlots.length > 0 ? 200 : 404,
+            statusCode: error.response?.status || 500,
             body: {
-              status: generatedSlots.length > 0 ? 'SUCCESS' : 'FAILURE',
-              data: generatedSlots.slice(0, 200),
-              message: generatedSlots.length > 0
-                ? `Generated ${generatedSlots.length} slot(s) from schedules (${dateStart} to ${dateEnd})`
-                : 'No schedules found for the requested date range.',
-              fallback: true,
+              status: 'FAILURE',
+              message: error.response?.data?.message || error.message || 'Failed to get appointment slots',
             },
           };
         }
