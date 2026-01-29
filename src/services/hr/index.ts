@@ -3653,21 +3653,30 @@ async function approveAdvancePay(
 
     try {
       // Use conditional update to prevent race conditions
+      // Build update expression dynamically - only include approvalNotes if notes is provided
+      let updateExpression = 'SET #status = :newStatus, approvedBy = :approvedBy, approvedAt = :approvedAt, updatedAt = :updatedAt';
+      const expressionAttributeValues: Record<string, any> = {
+        ':newStatus': 'approved',
+        ':pendingStatus': 'pending',
+        ':approvedBy': approvedBy,
+        ':approvedAt': now,
+        ':updatedAt': now,
+        ':false': false,
+      };
+
+      // Only add approvalNotes if notes is provided
+      if (notes) {
+        updateExpression += ', approvalNotes = :notes';
+        expressionAttributeValues[':notes'] = notes;
+      }
+
       await ddb.send(new UpdateCommand({
         TableName: ADVANCE_PAY_TABLE,
         Key: { advanceId },
-        UpdateExpression: 'SET #status = :newStatus, approvedBy = :approvedBy, approvedAt = :approvedAt, approvalNotes = :notes, updatedAt = :updatedAt',
+        UpdateExpression: updateExpression,
         ConditionExpression: '#status = :pendingStatus AND (attribute_not_exists(isDeleted) OR isDeleted = :false)',
         ExpressionAttributeNames: { '#status': 'status' },
-        ExpressionAttributeValues: {
-          ':newStatus': 'approved',
-          ':pendingStatus': 'pending',
-          ':approvedBy': approvedBy,
-          ':approvedAt': now,
-          ':notes': notes || undefined,
-          ':updatedAt': now,
-          ':false': false,
-        },
+        ExpressionAttributeValues: expressionAttributeValues,
       }));
     } catch (conditionError: any) {
       if (conditionError.name === 'ConditionalCheckFailedException') {
