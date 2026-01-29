@@ -2239,6 +2239,34 @@ export const handler = async (event: any): Promise<any> => {
                     const meetingId = meetingInfo.MeetingId;
                     console.log(`[CALL_ANSWERED] Customer answered outbound call ${callId}. Bridging to meeting ${meetingId}.`);
 
+                    // Start call recording for OUTBOUND calls (previously only inbound calls were recorded).
+                    // This must target the PSTN leg CallId for the answered outbound call.
+                    const enableRecording = process.env.ENABLE_CALL_RECORDING === 'true';
+                    const recordingsBucket = process.env.RECORDINGS_BUCKET;
+                    const preBridgeActions: any[] = [];
+
+                    if (enableRecording && recordingsBucket && pstnLegCallId && !callRecord.recordingStarted) {
+                        console.log(`[CALL_ANSWERED] Starting recording for outbound call ${callId}`);
+                        preBridgeActions.push(buildStartCallRecordingAction(pstnLegCallId, recordingsBucket));
+
+                        // Best-effort: persist pstnCallId + recording flags so the RecordingProcessor can map recordings
+                        try {
+                            await ddb.send(new UpdateCommand({
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                Key: { clinicId: callRecord.clinicId, queuePosition: callRecord.queuePosition },
+                                UpdateExpression: 'SET recordingStarted = :true, recordingStartTime = :now, pstnCallId = :pstnCallId',
+                                ExpressionAttributeValues: {
+                                    ':true': true,
+                                    ':now': new Date().toISOString(),
+                                    ':pstnCallId': pstnLegCallId
+                                }
+                            }));
+                            console.log('[CALL_ANSWERED] Updated outbound call record with pstnCallId:', pstnLegCallId);
+                        } catch (recordErr) {
+                            console.warn('[CALL_ANSWERED] Error updating outbound recording metadata (non-fatal):', recordErr);
+                        }
+                    }
+
                     try {
                         // 1. Create a customer attendee for the agent's meeting
                         const customerAttendeeResponse = await chime.send(new CreateAttendeeCommand({
@@ -2337,6 +2365,7 @@ export const handler = async (event: any): Promise<any> => {
                         }
 
                         return buildActions([
+                            ...preBridgeActions,
                             buildJoinChimeMeetingAction(pstnLegCallId, { MeetingId: meetingId }, customerAttendee)
                         ]);
 

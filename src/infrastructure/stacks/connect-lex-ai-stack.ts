@@ -989,7 +989,8 @@ export class ConnectLexAiStack extends Stack {
         // Used by UpdateContactEventHooks (CustomerRemaining) to run a disconnect flow for finalization
         DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
         // Force update ONLY when dependencies actually change
-        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v7`,
+        // Bump version when contact flow logic changes (forces custom resource update)
+        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v8`,
       },
     });
     inboundFlow.node.addDependency(disconnectFlow);
@@ -1050,7 +1051,8 @@ export class ConnectLexAiStack extends Stack {
           KeyboardPromptId: keyboardPromptId,
           DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
           MaxPollLoops: String(props.asyncMaxPollLoops || 20),
-          UpdateTrigger: `${lexBotAliasArn}|${asyncBedrockLambda.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|${props.asyncMaxPollLoops || 20}|v2`,
+          // Bump version when contact flow logic changes (forces custom resource update)
+          UpdateTrigger: `${lexBotAliasArn}|${asyncBedrockLambda.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|${props.asyncMaxPollLoops || 20}|v3`,
         },
       });
       asyncInboundFlow.node.addDependency(disconnectFlow);

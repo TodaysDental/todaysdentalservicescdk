@@ -78,6 +78,22 @@ export interface ChimeStackProps extends StackProps {
    */
   enableCallRecording?: boolean;
   /**
+   * Optional Amazon Connect call recordings bucket (Connect/Lex AI calls).
+   * When set, the /admin/recordings/call/{callId} endpoint can also serve Connect recordings
+   * for callIds in the form `connect-{ContactId}`.
+   */
+  connectCallRecordingsBucketName?: string;
+  /**
+   * Optional prefix inside the Connect call recordings bucket.
+   * Example: "connect/todaysdentalcommunications/CallRecordings"
+   */
+  connectCallRecordingsPrefix?: string;
+  /**
+   * Optional KMS key ARN used to encrypt Connect call recordings in S3.
+   * If provided, GetRecording will be granted kms:Decrypt on this key.
+   */
+  connectCallRecordingsKmsKeyArn?: string;
+  /**
    * Recording retention period in days (default: 2555 days / ~7 years)
    */
   recordingRetentionDays?: number;
@@ -2584,6 +2600,47 @@ export class ChimeStack extends Stack {
       value: getRecordingFn.functionArn,
       exportName: `${this.stackName}-GetRecordingFnArn`,
     });
+
+    // ========================================
+    // Optional: CONNECT CALL RECORDINGS (Connect/Lex AI)
+    // ========================================
+    // Allows the same /admin/recordings/call/{callId} endpoint to serve Connect recordings
+    // for callIds like `connect-{ContactId}` by letting GetRecording:
+    // - Query the unified CallAnalytics table for clinicId/timestamp
+    // - List/presign the recording object in the Connect recordings bucket
+    if (props.analyticsTableName) {
+      getRecordingFn.addEnvironment('CALL_ANALYTICS_TABLE_NAME', props.analyticsTableName);
+      getRecordingFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:Query', 'dynamodb:GetItem'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsTableName}/index/*`,
+        ],
+      }));
+    }
+
+    if (props.connectCallRecordingsBucketName) {
+      getRecordingFn.addEnvironment('CONNECT_RECORDINGS_BUCKET', props.connectCallRecordingsBucketName);
+      getRecordingFn.addEnvironment('CONNECT_RECORDINGS_PREFIX', props.connectCallRecordingsPrefix || '');
+
+      // S3 read/list for Connect recordings bucket
+      getRecordingFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['s3:ListBucket'],
+        resources: [`arn:aws:s3:::${props.connectCallRecordingsBucketName}`],
+      }));
+      getRecordingFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['s3:GetObject'],
+        resources: [`arn:aws:s3:::${props.connectCallRecordingsBucketName}/*`],
+      }));
+
+      // KMS decrypt if Connect recordings are encrypted with a customer-managed key
+      if (props.connectCallRecordingsKmsKeyArn) {
+        getRecordingFn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['kms:Decrypt', 'kms:DescribeKey'],
+          resources: [props.connectCallRecordingsKmsKeyArn],
+        }));
+      }
+    }
 
     if (recordingEnabled) { // Default to enabled
       console.log('[ChimeStack] Setting up call recording infrastructure');

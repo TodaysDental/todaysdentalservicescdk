@@ -10,7 +10,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBDocumentClient, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
   getUserPermissions,
@@ -28,9 +28,40 @@ const RECORDING_METADATA_TABLE = process.env.RECORDING_METADATA_TABLE || '';
 // Optional: used to map analytics callId/transactionId -> pstnCallId for older recording metadata schemas
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME || '';
 
+// Optional: used to locate Connect call recordings (Connect/Lex AI calls use callId like "connect-{ContactId}")
+const CALL_ANALYTICS_TABLE_NAME = process.env.CALL_ANALYTICS_TABLE_NAME || '';
+const CONNECT_RECORDINGS_BUCKET = process.env.CONNECT_RECORDINGS_BUCKET || '';
+const CONNECT_RECORDINGS_PREFIX = process.env.CONNECT_RECORDINGS_PREFIX || '';
+
 // CRITICAL FIX: Check if recording is enabled via environment variable
 // This allows the Lambda to be deployed even when recording is disabled
 const RECORDING_ENABLED = process.env.RECORDING_ENABLED !== 'false';
+
+const CONNECT_CALL_ID_PREFIX = 'connect-';
+
+function normalizeS3Prefix(prefix: string): string {
+  return String(prefix || '').replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
+function joinS3Prefix(...parts: Array<string | undefined | null>): string {
+  const cleaned = parts
+    .map((p) => normalizeS3Prefix(String(p || '')))
+    .filter(Boolean);
+  return cleaned.join('/');
+}
+
+function isConnectCallId(callId: string): boolean {
+  return typeof callId === 'string' && callId.startsWith(CONNECT_CALL_ID_PREFIX);
+}
+
+function extractConnectContactId(callId: string): string | null {
+  if (!isConnectCallId(callId)) return null;
+  const contactId = callId.slice(CONNECT_CALL_ID_PREFIX.length).trim();
+  if (!contactId) return null;
+  // ContactId is UUID-ish; keep permissive (Connect may use other formats in future).
+  if (!/^[0-9a-fA-F-]{16,}$/.test(contactId)) return null;
+  return contactId;
+}
 
 function getS3Location(recording: any): { bucket: string; key: string } | null {
   // Prefer persisted metadata; fallback to env bucket for older schemas that omitted s3Bucket.
@@ -103,6 +134,200 @@ function safeAttachmentFilename(s3Key: string, fallback: string): string {
   const raw = (s3Key.split('/').pop() || fallback).toString();
   const cleaned = raw.replace(/[\r\n"]/g, '').trim();
   return cleaned || fallback;
+}
+
+async function getConnectCallInfo(callId: string): Promise<{ clinicId: string; timestampMs: number; contactId: string } | null> {
+  if (!CALL_ANALYTICS_TABLE_NAME) return null;
+
+  const contactId = extractConnectContactId(callId);
+  if (!contactId) return null;
+
+  try {
+    const res = await ddb.send(new QueryCommand({
+      TableName: CALL_ANALYTICS_TABLE_NAME,
+      KeyConditionExpression: 'callId = :callId',
+      ExpressionAttributeValues: { ':callId': callId },
+      Limit: 1,
+      ScanIndexForward: false,
+    }));
+
+    const item: any = res.Items?.[0];
+    if (!item) return null;
+
+    const clinicId = String(item.clinicId || '').trim();
+    const ts = item.timestamp;
+
+    // Connect/Lex analytics stores timestamp in ms (SK). Guard if seconds slip in.
+    const timestampMs =
+      typeof ts === 'number' && Number.isFinite(ts)
+        ? (ts > 2_000_000_000_000 ? ts : ts * 1000)
+        : Date.now();
+
+    if (!clinicId) {
+      // Without clinicId we can't authorize safely.
+      return null;
+    }
+
+    return {
+      clinicId,
+      timestampMs,
+      contactId: String(item.contactId || contactId).trim() || contactId,
+    };
+  } catch (err: any) {
+    console.warn('[GetRecording] Failed to query CallAnalytics for Connect call', {
+      callId,
+      errorName: err?.name,
+      errorMessage: err?.message,
+    });
+    return null;
+  }
+}
+
+async function findConnectRecordingObject(params: {
+  contactId: string;
+  timestampMs: number;
+}): Promise<{ bucket: string; key: string; size?: number; lastModified?: string } | null> {
+  if (!CONNECT_RECORDINGS_BUCKET || !CONNECT_RECORDINGS_PREFIX) return null;
+
+  const { contactId, timestampMs } = params;
+  const basePrefix = normalizeS3Prefix(CONNECT_RECORDINGS_PREFIX);
+
+  // Try a small window around the call date to handle timezone boundaries.
+  const base = new Date(timestampMs);
+  const dayOffsets = [-1, 0, 1];
+
+  for (const delta of dayOffsets) {
+    const d = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate() + delta));
+    const yyyy = String(d.getUTCFullYear());
+    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(d.getUTCDate()).padStart(2, '0');
+
+    const candidatePrefixes = [
+      `${joinS3Prefix(basePrefix, yyyy, mm, dd)}/`,
+      `${joinS3Prefix(basePrefix, `${yyyy}-${mm}-${dd}`)}/`,
+    ];
+
+    for (const prefix of candidatePrefixes) {
+      let continuationToken: string | undefined = undefined;
+      let page = 0;
+      const MAX_PAGES = 5;
+
+      const matches: Array<{ key: string; size?: number; lastModified?: string }> = [];
+
+      while (page < MAX_PAGES) {
+        const resp = await s3.send(new ListObjectsV2Command({
+          Bucket: CONNECT_RECORDINGS_BUCKET,
+          Prefix: prefix,
+          ContinuationToken: continuationToken,
+          MaxKeys: 1000,
+        }));
+
+        const contents = resp.Contents || [];
+        for (const obj of contents) {
+          const key = obj.Key || '';
+          if (!key) continue;
+          if (!key.includes(contactId)) continue;
+          if (!/\.(wav|mp3)$/i.test(key)) continue;
+
+          matches.push({
+            key,
+            size: typeof obj.Size === 'number' ? obj.Size : undefined,
+            lastModified: obj.LastModified ? obj.LastModified.toISOString() : undefined,
+          });
+        }
+
+        continuationToken = resp.NextContinuationToken;
+        if (!continuationToken) break;
+        page++;
+      }
+
+      if (matches.length > 0) {
+        // Prefer the largest file (most complete), then newest.
+        matches.sort((a, b) => {
+          const as = typeof a.size === 'number' ? a.size : 0;
+          const bs = typeof b.size === 'number' ? b.size : 0;
+          if (as !== bs) return bs - as;
+
+          const at = Date.parse(a.lastModified || '') || 0;
+          const bt = Date.parse(b.lastModified || '') || 0;
+          return bt - at;
+        });
+
+        const best = matches[0];
+        return {
+          bucket: CONNECT_RECORDINGS_BUCKET,
+          key: best.key,
+          size: best.size,
+          lastModified: best.lastModified,
+        };
+      }
+    }
+  }
+
+  // Fallback (bounded): if the bucket layout differs from the expected date partitioning,
+  // try a few pages under the base prefix and look for the contactId.
+  try {
+    const baseListPrefix = `${basePrefix}/`;
+    let continuationToken: string | undefined = undefined;
+    let page = 0;
+    const MAX_PAGES = 5;
+    const matches: Array<{ key: string; size?: number; lastModified?: string }> = [];
+
+    while (page < MAX_PAGES) {
+      const resp = await s3.send(new ListObjectsV2Command({
+        Bucket: CONNECT_RECORDINGS_BUCKET,
+        Prefix: baseListPrefix,
+        ContinuationToken: continuationToken,
+        MaxKeys: 1000,
+      }));
+
+      const contents = resp.Contents || [];
+      for (const obj of contents) {
+        const key = obj.Key || '';
+        if (!key) continue;
+        if (!key.includes(contactId)) continue;
+        if (!/\.(wav|mp3)$/i.test(key)) continue;
+
+        matches.push({
+          key,
+          size: typeof obj.Size === 'number' ? obj.Size : undefined,
+          lastModified: obj.LastModified ? obj.LastModified.toISOString() : undefined,
+        });
+      }
+
+      continuationToken = resp.NextContinuationToken;
+      if (!continuationToken) break;
+      page++;
+    }
+
+    if (matches.length > 0) {
+      matches.sort((a, b) => {
+        const as = typeof a.size === 'number' ? a.size : 0;
+        const bs = typeof b.size === 'number' ? b.size : 0;
+        if (as !== bs) return bs - as;
+
+        const at = Date.parse(a.lastModified || '') || 0;
+        const bt = Date.parse(b.lastModified || '') || 0;
+        return bt - at;
+      });
+
+      const best = matches[0];
+      return {
+        bucket: CONNECT_RECORDINGS_BUCKET,
+        key: best.key,
+        size: best.size,
+        lastModified: best.lastModified,
+      };
+    }
+  } catch (err: any) {
+    console.warn('[GetRecording] Connect recordings fallback list failed (non-fatal)', {
+      contactId,
+      errorName: err?.name,
+      errorMessage: err?.message,
+    });
+  }
+
+  return null;
 }
 
 async function queryRecordingsByCallId(callId: string, maxItems: number = 50): Promise<any[]> {
@@ -199,20 +424,32 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     recordingEnabled: RECORDING_ENABLED
   });
 
-  const corsHeaders = buildCorsHeaders({ allowMethods: ['GET', 'OPTIONS'] });
+  // Use request origin to support www/local origins (keeps behavior aligned with other Admin APIs)
+  const requestOrigin = event.headers?.origin || event.headers?.Origin;
+  const corsHeaders = buildCorsHeaders(
+    {
+      allowMethods: ['GET', 'OPTIONS'],
+      allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Referer', 'X-Clinic-Id'],
+    },
+    requestOrigin
+  );
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
   }
 
-  // CRITICAL FIX: Return appropriate error if recording is disabled or not configured
-  if (!RECORDING_ENABLED || !RECORDINGS_BUCKET || !RECORDING_METADATA_TABLE) {
+  const hasChimeRecordingConfig = RECORDING_ENABLED && Boolean(RECORDINGS_BUCKET) && Boolean(RECORDING_METADATA_TABLE);
+  const hasConnectRecordingConfig = Boolean(CALL_ANALYTICS_TABLE_NAME) && Boolean(CONNECT_RECORDINGS_BUCKET) && Boolean(CONNECT_RECORDINGS_PREFIX);
+
+  // Return an error only if *no* recording mechanism is configured.
+  if (!hasChimeRecordingConfig && !hasConnectRecordingConfig) {
     console.log('[GetRecording] Recording is disabled or not configured', {
       recordingEnabled: RECORDING_ENABLED,
       hasBucket: !!RECORDINGS_BUCKET,
-      hasTable: !!RECORDING_METADATA_TABLE
+      hasTable: !!RECORDING_METADATA_TABLE,
+      hasConnectConfig: hasConnectRecordingConfig,
     });
-    
+
     return {
       statusCode: 503,
       headers: corsHeaders,
@@ -281,6 +518,14 @@ async function getRecording(
       statusCode: 400,
       headers: corsHeaders,
       body: JSON.stringify({ message: 'Missing recordingId' })
+    };
+  }
+
+  if (!RECORDING_METADATA_TABLE) {
+    return {
+      statusCode: 503,
+      headers: corsHeaders,
+      body: JSON.stringify({ message: 'Recording metadata store is not configured' })
     };
   }
 
@@ -357,6 +602,70 @@ async function getRecording(
   };
 }
 
+async function getConnectRecordingForCall(
+  callId: string,
+  allowedClinics: Set<string>,
+  corsHeaders: any
+): Promise<APIGatewayProxyResult | null> {
+  if (!isConnectCallId(callId)) return null;
+
+  const info = await getConnectCallInfo(callId);
+  if (!info) return null;
+
+  // Authorization via clinicId on the analytics record
+  if (!hasClinicAccess(allowedClinics, info.clinicId)) {
+    return {
+      statusCode: 403,
+      headers: corsHeaders,
+      body: JSON.stringify({ message: 'Unauthorized' })
+    };
+  }
+
+  const obj = await findConnectRecordingObject({
+    contactId: info.contactId,
+    timestampMs: info.timestampMs,
+  });
+
+  if (!obj) {
+    // Recording not available yet (or recording disabled in the flow)
+    return null;
+  }
+
+  const fileName = safeAttachmentFilename(
+    obj.key,
+    `connect-recording-${callId}.wav`
+  );
+
+  const presignedUrl = await getSignedUrl(
+    s3,
+    new GetObjectCommand({
+      Bucket: obj.bucket,
+      Key: obj.key,
+      ResponseContentDisposition: `attachment; filename="${fileName}"`
+    }),
+    { expiresIn: 3600 }
+  );
+
+  return {
+    statusCode: 200,
+    headers: corsHeaders,
+    body: JSON.stringify({
+      callId,
+      recordings: [
+        {
+          recordingId: `connect-${info.contactId}`,
+          callId,
+          uploadedAt: obj.lastModified,
+          fileSize: obj.size,
+          transcriptionStatus: undefined,
+          downloadUrl: presignedUrl
+        }
+      ],
+      downloadUrlExpiresAt: new Date(Date.now() + 3600000).toISOString()
+    })
+  };
+}
+
 async function getRecordingsForCall(
   event: APIGatewayProxyEvent,
   allowedClinics: Set<string>,
@@ -372,8 +681,16 @@ async function getRecordingsForCall(
     };
   }
 
+  // Connect/Lex AI calls use callId like "connect-{ContactId}". If recordings exist for these calls,
+  // they are stored in the Connect call recordings bucket (not the Chime recordings bucket).
+  const connectResp = await getConnectRecordingForCall(callId, allowedClinics, corsHeaders);
+  if (connectResp) return connectResp;
+
   // 1) Primary: callId-index lookup using the callId provided by the client (usually analytics callId/transactionId)
-  let recordings: any[] = await queryRecordingsByCallId(callId);
+  let recordings: any[] = [];
+  if (RECORDING_METADATA_TABLE) {
+    recordings = await queryRecordingsByCallId(callId);
+  }
 
   // 2) Backward compatibility: older RecordingMetadata rows stored `callId` as pstnCallId (from the S3 key path).
   // If we didn't find recordings, try to map callId -> pstnCallId via CallQueue and query again.
@@ -384,7 +701,9 @@ async function getRecordingsForCall(
         callId,
         pstnCallId
       });
-      recordings = await queryRecordingsByCallId(pstnCallId);
+      if (RECORDING_METADATA_TABLE) {
+        recordings = await queryRecordingsByCallId(pstnCallId);
+      }
     }
   }
 
@@ -392,7 +711,9 @@ async function getRecordingsForCall(
   // but the *transactionId* is stored as `segmentId` (from the filename: timestamp_transactionId_callId.wav).
   // This lets us look up recordings by the analytics callId even after the CallQueue item has been removed.
   if (!recordings || recordings.length === 0) {
-    recordings = await queryRecordingsBySegmentId(callId);
+    if (RECORDING_METADATA_TABLE) {
+      recordings = await queryRecordingsBySegmentId(callId);
+    }
   }
 
   if (!recordings || recordings.length === 0) {
@@ -510,6 +831,14 @@ async function listRecordingsForClinic(
       statusCode: 400,
       headers: corsHeaders,
       body: JSON.stringify({ message: 'Missing clinicId' })
+    };
+  }
+
+  if (!RECORDING_METADATA_TABLE) {
+    return {
+      statusCode: 503,
+      headers: corsHeaders,
+      body: JSON.stringify({ message: 'Recording metadata store is not configured' })
     };
   }
 

@@ -398,6 +398,21 @@ const ENABLE_AFTER_HOURS_AI = process.env.ENABLE_AFTER_HOURS_AI !== 'false';
 const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
 
 // ========================================
+// AMAZON CONNECT (LEX AI) RECORDINGS (OPTIONAL)
+// ========================================
+// Connect recordings are stored in the Connect-managed S3 bucket configured on the instance.
+// We pass these values to ChimeStack's GetRecording Lambda so /admin/recordings/call/{callId}
+// can also serve recordings for Connect/Lex calls (callId = connect-{ContactId}).
+//
+// NOTE: Override via environment variables if the Connect instance storage config changes.
+const CONNECT_CALL_RECORDINGS_BUCKET_NAME =
+  process.env.CONNECT_CALL_RECORDINGS_BUCKET_NAME || 'amazon-connect-c827a75574aa';
+const CONNECT_CALL_RECORDINGS_PREFIX =
+  process.env.CONNECT_CALL_RECORDINGS_PREFIX || 'connect/todaysdentalcommunications/CallRecordings';
+const CONNECT_CALL_RECORDINGS_KMS_KEY_ARN =
+  process.env.CONNECT_CALL_RECORDINGS_KMS_KEY_ARN || 'arn:aws:kms:us-east-1:851620242036:key/5dae5a1c-2e8f-4157-a04c-20e3293d01a7';
+
+// ========================================
 // PUSH NOTIFICATIONS STACK (must be defined before ChimeStack and CommStack)
 // ========================================
 // Mobile push notifications via SNS (iOS APNs + Android FCM)
@@ -429,6 +444,10 @@ const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
   medicalVocabularyName: analyticsStack.medicalVocabularyName,
   // Chime Media Region - passed to all Lambda functions for consistent region usage
   chimeMediaRegion: CHIME_MEDIA_REGION,
+  // Connect/Lex recordings support (used by GetRecording fallback for connect-{ContactId})
+  connectCallRecordingsBucketName: CONNECT_CALL_RECORDINGS_BUCKET_NAME,
+  connectCallRecordingsPrefix: CONNECT_CALL_RECORDINGS_PREFIX,
+  connectCallRecordingsKmsKeyArn: CONNECT_CALL_RECORDINGS_KMS_KEY_ARN,
   // Voice AI integration (from AiAgentsStack)
   // NOTE: Set ENABLE_AFTER_HOURS_AI=true after AiAgentsStack is deployed
   enableAfterHoursAi: ENABLE_AFTER_HOURS_AI,
