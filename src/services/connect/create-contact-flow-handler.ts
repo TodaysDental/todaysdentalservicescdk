@@ -233,7 +233,9 @@ function buildContactFlowContent(params: {
         },
         Transitions: {
           NextAction: 'welcome-message',
-          Errors: [{ NextAction: 'welcome-message', ErrorType: 'NoMatchingError' }], // fail open
+          // This action does not define error branches in flow language; keep empty arrays (matches Connect sample flows).
+          Errors: [],
+          Conditions: [],
         },
       },
 

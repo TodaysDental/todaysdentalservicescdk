@@ -10,7 +10,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBDocumentClient, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { S3Client, GetObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, ListObjectsV2Command, ListObjectsV2CommandOutput } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
   getUserPermissions,
@@ -215,7 +215,7 @@ async function findConnectRecordingObject(params: {
       const matches: Array<{ key: string; size?: number; lastModified?: string }> = [];
 
       while (page < MAX_PAGES) {
-        const resp = await s3.send(new ListObjectsV2Command({
+        const resp: ListObjectsV2CommandOutput = await s3.send(new ListObjectsV2Command({
           Bucket: CONNECT_RECORDINGS_BUCKET,
           Prefix: prefix,
           ContinuationToken: continuationToken,
@@ -274,7 +274,7 @@ async function findConnectRecordingObject(params: {
     const matches: Array<{ key: string; size?: number; lastModified?: string }> = [];
 
     while (page < MAX_PAGES) {
-      const resp = await s3.send(new ListObjectsV2Command({
+      const resp: ListObjectsV2CommandOutput = await s3.send(new ListObjectsV2Command({
         Bucket: CONNECT_RECORDINGS_BUCKET,
         Prefix: baseListPrefix,
         ContinuationToken: continuationToken,
