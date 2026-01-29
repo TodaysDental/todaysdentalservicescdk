@@ -28,6 +28,9 @@ import { getSmaIdForClinicSSM } from './utils/sma-map-ssm';
 import { bargeInDetector, emitBargeInMetrics } from './utils/barge-in-detector';
 // FIX: Import call state machine for coordinated state management
 import { callStateMachine, CallState, CallEvent } from './utils/call-state-machine';
+// Real-time sentiment analysis for transcription segments
+import { processTranscriptionSegment, analyzeSentiment, publishSentimentMetrics } from './utils/sentiment-analyzer';
+import { CHIME_CONFIG } from './config';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const lambdaClient = new LambdaClient({});
@@ -153,7 +156,7 @@ const pendingUtterances: Map<string, {
  */
 function cleanupStaleEntries(): void {
   const now = Date.now();
-  
+
   // Cleanup stale pending utterances
   for (const [callId, entry] of pendingUtterances.entries()) {
     if (now - entry.createdAt > PENDING_UTTERANCE_MAX_AGE_MS) {
@@ -164,14 +167,14 @@ function cleanupStaleEntries(): void {
       pendingUtterances.delete(callId);
     }
   }
-  
+
   // Cleanup expired call record cache entries
   for (const [callId, entry] of callRecordCache.entries()) {
     if (now > entry.expiresAt) {
       callRecordCache.delete(callId);
     }
   }
-  
+
   // FIX: Enforce max cache sizes with LRU-like eviction
   if (callRecordCache.size > MAX_CALL_RECORD_CACHE_SIZE) {
     const entriesToRemove = callRecordCache.size - MAX_CALL_RECORD_CACHE_SIZE + 50;
@@ -183,7 +186,7 @@ function cleanupStaleEntries(): void {
     }
     console.log(`[AITranscriptBridge] Evicted ${entries.length} call record cache entries`);
   }
-  
+
   if (pendingUtterances.size > MAX_PENDING_UTTERANCES_SIZE) {
     const entriesToRemove = pendingUtterances.size - MAX_PENDING_UTTERANCES_SIZE + 20;
     const entries = Array.from(pendingUtterances.entries())
@@ -197,7 +200,7 @@ function cleanupStaleEntries(): void {
     }
     console.log(`[AITranscriptBridge] Evicted ${entries.length} stale pending utterances`);
   }
-  
+
   // Note: Action queue cleanup removed since action queue was removed
 }
 
@@ -213,12 +216,12 @@ function cleanupCallUtterance(callId: string): void {
     }
     pendingUtterances.delete(callId);
   }
-  
+
   // Note: Action queue cleanup removed since action queue was removed
-  
+
   // Clean up barge-in state
   bargeInDetector.cleanup(callId);
-  
+
   // FIX: Clean up call state machine
   callStateMachine.cleanup(callId);
 }
@@ -235,7 +238,7 @@ function cleanupPendingUtteranceOnly(callId: string): void {
     pendingUtterances.delete(callId);
     console.log(`[AITranscriptBridge] Cleaned up pending utterance for ended call ${callId}`);
   }
-  
+
   // Also clean up call record cache
   callRecordCache.delete(callId);
 }
@@ -246,7 +249,7 @@ function cleanupPendingUtteranceOnly(callId: string): void {
 interface TranscriptEvent {
   // Event metadata
   EventType: 'TranscriptEvent' | 'TranscribeCallAnalyticsEvent';
-  
+
   // Transcript data
   Transcript?: {
     Results?: Array<{
@@ -267,7 +270,7 @@ interface TranscriptEvent {
       ChannelId?: string; // 'ch_0' = agent/AI, 'ch_1' = customer/caller
     }>;
   };
-  
+
   // Call Analytics data (if using Call Analytics)
   CallAnalyticsTranscriptResultStream?: {
     UtteranceEvent?: {
@@ -281,7 +284,7 @@ interface TranscriptEvent {
       Items?: Array<any>;
     };
   };
-  
+
   // Runtime metadata (passed when creating pipeline)
   MediaInsightsRuntimeMetadata?: {
     callId?: string;
@@ -349,7 +352,7 @@ export const handler = async (event: KinesisStreamEvent): Promise<void> => {
 async function processKinesisRecord(record: KinesisStreamRecord): Promise<boolean> {
   // Decode base64 payload
   const payload = Buffer.from(record.kinesis.data, 'base64').toString('utf-8');
-  
+
   let transcriptEvent: TranscriptEvent;
   try {
     transcriptEvent = JSON.parse(payload);
@@ -392,7 +395,7 @@ async function processKinesisRecord(record: KinesisStreamRecord): Promise<boolea
 
   // Extract transcript text and metadata
   const { transcript, isPartial, channelId } = extractTranscript(transcriptEvent);
-  
+
   if (!transcript || transcript.length < MIN_TRANSCRIPT_LENGTH) {
     return false; // Skip empty or very short transcripts
   }
@@ -469,30 +472,30 @@ function extractTranscript(event: TranscriptEvent): {
 async function accumulateUtterance(callId: string, clinicId: string, sessionId: string, transcript: string): Promise<void> {
   const existing = pendingUtterances.get(callId);
   const now = Date.now();
-  
+
   // Check for barge-in if AI is speaking
   if (bargeInDetector.isAiSpeaking(callId)) {
     const bargeInResult = await bargeInDetector.onCallerSpeech(callId, clinicId, transcript);
     emitBargeInMetrics(callId, bargeInResult);
-    
+
     if (bargeInResult.shouldInterrupt) {
       console.log('[AITranscriptBridge] Barge-in triggered - interrupting AI speech:', {
         callId,
         transcript: transcript.substring(0, 50)
       });
-      
+
       // Clear any existing timeout
       if (existing?.timeoutId) {
         clearTimeout(existing.timeoutId);
       }
-      
+
       // Don't process through normal flow - the barge-in detector
       // already sent the interrupt and the new transcript
       pendingUtterances.delete(callId);
       return;
     }
   }
-  
+
   if (existing?.timeoutId) {
     clearTimeout(existing.timeoutId);
   }
@@ -511,14 +514,14 @@ async function accumulateUtterance(callId: string, clinicId: string, sessionId: 
           transcriptLength: pending.text.length,
           ageMs: Date.now() - pending.createdAt
         });
-        
+
         // Process the accumulated transcript
         try {
           await processCompleteUtterance(callId, clinicId, sessionId, pending.text);
         } catch (error) {
           console.error('[AITranscriptBridge] Error processing timeout utterance:', error);
         }
-        
+
         pendingUtterances.delete(callId);
       }
     }, UTTERANCE_COMPLETE_TIMEOUT_MS)
@@ -550,7 +553,7 @@ async function processCompleteUtterance(
     console.warn('[AITranscriptBridge] Call record not found:', callId);
     return false;
   }
-  
+
   if (!callRecord.isAiCall) {
     console.log('[AITranscriptBridge] Not an AI call, skipping:', callId);
     return false;
@@ -574,7 +577,7 @@ async function processCompleteUtterance(
     callStateMachine.setMetadata(callId, { lastSpeakText: transcript });
     return false;
   }
-  
+
   // FIX: Transition to PROCESSING state
   callStateMachine.transition(callId, CallEvent.TRANSCRIPT_RECEIVED);
 
@@ -585,6 +588,43 @@ async function processCompleteUtterance(
     transcript: transcript.substring(0, 50) + '...',
     state: callStateMachine.getState(callId),
   });
+
+  // ========== REAL-TIME SENTIMENT ANALYSIS ==========
+  // Analyze customer sentiment to detect negative emotions and trigger alerts
+  if (CHIME_CONFIG.SENTIMENT.ENABLE_REALTIME) {
+    try {
+      const sentimentResult = await processTranscriptionSegment(
+        ddb,
+        callId,
+        {
+          text: transcript,
+          speaker: 'caller',
+          timestamp: new Date().toISOString(),
+        },
+        finalClinicId,
+        callRecord.queuePosition || 0,
+        CALL_QUEUE_TABLE
+      );
+
+      if (sentimentResult.alertTriggered) {
+        console.warn('[AITranscriptBridge] Negative sentiment alert triggered:', {
+          callId,
+          clinicId: finalClinicId,
+          sentiment: sentimentResult.sentiment?.sentiment,
+          score: sentimentResult.sentiment?.score?.negative,
+        });
+        // Supervisor notification could be added here
+      } else if (sentimentResult.sentiment) {
+        console.log('[AITranscriptBridge] Sentiment analyzed:', {
+          callId,
+          sentiment: sentimentResult.sentiment.sentiment,
+        });
+      }
+    } catch (sentimentErr) {
+      // Non-fatal - don't block AI processing if sentiment fails
+      console.warn('[AITranscriptBridge] Sentiment analysis failed (non-fatal):', sentimentErr);
+    }
+  }
 
   // FIX: Play thinking audio in meeting-kvs mode to eliminate awkward silence
   // This is equivalent to what RecordAudio mode does after recording completes
@@ -728,7 +768,7 @@ async function playThinkingAudio(transactionId: string, clinicId: string): Promi
         isThinkingAudio: 'true',
       },
     }));
-    
+
     console.log('[AITranscriptBridge] Playing thinking audio for call:', transactionId);
   } catch (error: any) {
     // Non-fatal - don't block AI processing if thinking audio fails
@@ -755,7 +795,7 @@ async function sendResponseToCall(
 
   // Use shared SMA map utility (no duplication)
   const smaId = await getSmaIdForClinicSSM(clinicId);
-  
+
   if (!smaId) {
     console.error('[AITranscriptBridge] No SMA ID found for clinic:', clinicId);
     return;
@@ -783,7 +823,7 @@ async function sendResponseToCall(
           });
         }
         break;
-      
+
       case 'HANG_UP':
         actions.push({
           Type: 'Hangup',
@@ -792,7 +832,7 @@ async function sendResponseToCall(
           }
         });
         break;
-      
+
       case 'TRANSFER':
         actions.push({
           Type: 'Speak',
@@ -805,7 +845,7 @@ async function sendResponseToCall(
           }
         });
         break;
-      
+
       case 'CONTINUE':
         // Add a pause and continue listening
         actions.push({
@@ -844,7 +884,7 @@ async function sendResponseToCall(
     }));
 
     console.log('[AITranscriptBridge] Successfully sent update to SMA');
-    
+
     // Mark AI as speaking if we're sending a SPEAK action
     const hasSpeakAction = actions.some((a: any) => a.Type === 'Speak' || a.Type === 'PlayAudio');
     if (hasSpeakAction) {
@@ -873,9 +913,9 @@ async function storePendingResponseForCallRecord(callRecord: any, responses: Voi
 
     await ddb.send(new UpdateCommand({
       TableName: CALL_QUEUE_TABLE,
-      Key: { 
-        clinicId: callRecord.clinicId, 
-        queuePosition: callRecord.queuePosition 
+      Key: {
+        clinicId: callRecord.clinicId,
+        queuePosition: callRecord.queuePosition
       },
       UpdateExpression: 'SET pendingAiResponse = :response, pendingAiResponseTime = :time',
       ExpressionAttributeValues: {

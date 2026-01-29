@@ -3207,8 +3207,28 @@ async function getAdvancePayRequests(
 ) {
   try {
     if (isAdmin) {
-      // Admin: Fetch requests for all allowed clinics IN PARALLEL for performance
+      // Check if super admin (has access to all clinics - indicated by '*' in allowedClinics)
+      if (allowedClinics.has('*')) {
+        // Super Admin: Scan ALL advance pay requests
+        console.log('🔑 Super Admin detected - scanning all advance pay requests');
+        const { Items } = await ddb.send(new ScanCommand({
+          TableName: ADVANCE_PAY_TABLE,
+          FilterExpression: 'attribute_not_exists(isDeleted) OR isDeleted = :false',
+          ExpressionAttributeValues: { ':false': false },
+        }));
+
+        const allRequests = (Items || []) as AdvancePayRequest[];
+
+        // Sort by createdAt descending
+        allRequests.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+        console.log(`📋 Found ${allRequests.length} advance pay requests for super admin`);
+        return httpOk({ advancePayRequests: allRequests });
+      }
+
+      // Regular Admin: Fetch requests for specific allowed clinics IN PARALLEL for performance
       const clinicIds = Array.from(allowedClinics);
+      console.log(`👤 Admin - querying advance pay for clinics: ${clinicIds.join(', ')}`);
 
       // Execute all clinic queries in parallel using Promise.allSettled for resilience
       const queryPromises = clinicIds.map(clinicId =>
@@ -3234,6 +3254,7 @@ async function getAdvancePayRequests(
       // Sort by createdAt descending
       allRequests.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
+      console.log(`📋 Found ${allRequests.length} advance pay requests for admin`);
       return httpOk({ advancePayRequests: allRequests });
     } else {
       // Staff: Only their own requests
