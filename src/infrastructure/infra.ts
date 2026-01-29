@@ -509,6 +509,8 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
   chatHistoryTableName: CHATBOT_CONVERSATIONS_TABLE_NAME,
   clinicsTableName: chimeStack.clinicsTable.tableName,
   recordingsBucketName: chimeStack.recordingsBucket?.bucketName,
+  // CRITICAL: Add TranscriptBuffers table for LexAI/Voice AI transcript lookup
+  transcriptBufferTableName: analyticsStack.transcriptBufferTable.tableName,
   // Import ARNs exported by the Chime stack
   startSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StartSessionArn`),
   stopSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StopSessionArn`),

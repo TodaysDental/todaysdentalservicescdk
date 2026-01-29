@@ -33,6 +33,8 @@ export interface AdminStackProps extends StackProps {
   chatHistoryTableName?: string;
   clinicsTableName?: string;
   recordingsBucketName?: string;
+  // ** NEW: TranscriptBuffers table for LexAI/Voice AI transcripts **
+  transcriptBufferTableName?: string;
   // Optional ARNs for Chime lambdas (imported from Chime stack to avoid
   // two-way construct references). When provided, Admin stack will add API
   // routes that integrate with these functions.
@@ -533,6 +535,8 @@ export class AdminStack extends Stack {
           RECORDINGS_BUCKET_NAME: props.recordingsBucketName || '',
           // CRITICAL: Pass CallAnalytics table for LexAI/Voice AI call lookup
           CALL_ANALYTICS_TABLE_NAME: props.analyticsTableName || '',
+          // CRITICAL: Pass TranscriptBuffers table for LexAI/Voice AI transcripts
+          TRANSCRIPT_BUFFER_TABLE_NAME: props.transcriptBufferTableName || '',
           AWS_REGION_OVERRIDE: Stack.of(this).region,
         },
       });
@@ -564,6 +568,13 @@ export class AdminStack extends Stack {
         tableResources.push(
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsTableName}`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsTableName}/index/*`
+        );
+      }
+
+      // CRITICAL: Add TranscriptBuffers table for LexAI/Voice AI transcripts
+      if (props.transcriptBufferTableName) {
+        tableResources.push(
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.transcriptBufferTableName}`
         );
       }
 
