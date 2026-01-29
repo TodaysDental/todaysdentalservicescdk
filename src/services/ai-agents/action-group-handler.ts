@@ -631,6 +631,117 @@ function getOperatoryNumber(opInput: any): number | null {
   return null;
 }
 
+/**
+ * Resolve operatory number from clinic-specific appointment types.
+ * This function first tries to parse as a number, then looks up the OpName
+ * in the clinic's ApptTypes DynamoDB table to get the actual operatory number.
+ * 
+ * This fixes the "Op is invalid" error that occurs when the agent passes
+ * OpName like "ONLINE_BOOKING_MINOR" which maps to hardcoded values that
+ * don't exist for specific clinics.
+ * 
+ * @param opInput - The operatory input (number, numeric string, or OpName)
+ * @param clinicId - The clinic ID to look up appointment types
+ * @param isNewPatient - Whether this is a new patient (affects which operatory to use)
+ * @returns The resolved operatory number, or null if not found
+ */
+async function resolveOperatoryNumber(
+  opInput: any,
+  clinicId: string,
+  isNewPatient: boolean = false
+): Promise<number | null> {
+  // First try direct number parsing
+  if (opInput != null) {
+    if (typeof opInput === 'number' && !Number.isNaN(opInput)) return opInput;
+    if (typeof opInput === 'string') {
+      const n = parseInt(opInput, 10);
+      if (!Number.isNaN(n)) return n;
+    }
+  }
+
+  // If we have a string OpName, try to look up the actual operatory from clinic's appointment types
+  if (typeof opInput === 'string' && clinicId) {
+    const opName = opInput.trim().toUpperCase();
+    console.log(`[resolveOperatoryNumber] Looking up OpName "${opName}" for clinic ${clinicId}`);
+
+    try {
+      // Query all appointment types for this clinic
+      const result = await docClient.send(new QueryCommand({
+        TableName: APPT_TYPES_TABLE,
+        KeyConditionExpression: 'clinicId = :clinicId',
+        ExpressionAttributeValues: { ':clinicId': clinicId },
+      }));
+
+      const appointmentTypes = result.Items || [];
+
+      if (appointmentTypes.length === 0) {
+        console.warn(`[resolveOperatoryNumber] No appointment types found for clinic ${clinicId}, falling back to defaults`);
+        return DEFAULT_OPERATORY_MAP[opName] || null;
+      }
+
+      // Try to find a matching appointment type by OpName
+      const matchingType = appointmentTypes.find((apt: any) => {
+        const aptOpName = (apt.opName || '').toUpperCase();
+        const aptLabel = (apt.label || '').toUpperCase();
+
+        // Match by opName (e.g., "ONLINE_BOOKING_MINOR")
+        if (aptOpName === opName || aptOpName.includes(opName) || opName.includes(aptOpName)) {
+          return true;
+        }
+
+        // Match by common keywords in the OpName
+        if (opName.includes('MINOR') && aptLabel.includes('EMERGENCY') || aptLabel.includes('OTHER')) {
+          return true;
+        }
+        if (opName.includes('EXAM') && (aptLabel.includes('NEW PATIENT') || aptLabel.includes('EXAM'))) {
+          return true;
+        }
+        if (opName.includes('MAJOR') && aptLabel.includes('TREATMENT')) {
+          return true;
+        }
+
+        return false;
+      });
+
+      if (matchingType && matchingType.opNum) {
+        console.log(`[resolveOperatoryNumber] Found matching OpNum ${matchingType.opNum} for OpName "${opName}" (label: ${matchingType.label})`);
+        return matchingType.opNum;
+      }
+
+      // If no exact match, try to select based on new patient status
+      const newPatientType = appointmentTypes.find((apt: any) =>
+        (apt.label || '').toLowerCase().includes('new patient')
+      );
+      const existingPatientType = appointmentTypes.find((apt: any) =>
+        (apt.label || '').toLowerCase().includes('existing patient') ||
+        (apt.label || '').toLowerCase().includes('emergency') ||
+        (apt.label || '').toLowerCase().includes('other')
+      );
+
+      const selectedType = isNewPatient ? newPatientType : existingPatientType;
+      if (selectedType && selectedType.opNum) {
+        console.log(`[resolveOperatoryNumber] Selected OpNum ${selectedType.opNum} based on ${isNewPatient ? 'new' : 'existing'} patient status (label: ${selectedType.label})`);
+        return selectedType.opNum;
+      }
+
+      // Last resort: use the first available appointment type
+      if (appointmentTypes.length > 0 && appointmentTypes[0].opNum) {
+        console.log(`[resolveOperatoryNumber] Using first available OpNum ${appointmentTypes[0].opNum} (label: ${appointmentTypes[0].label})`);
+        return appointmentTypes[0].opNum;
+      }
+
+      console.warn(`[resolveOperatoryNumber] Could not find matching operatory for OpName "${opName}" in clinic ${clinicId}`);
+    } catch (error: any) {
+      console.error(`[resolveOperatoryNumber] Error looking up appointment types: ${error.message}`);
+    }
+
+    // Fall back to default mapping only if DynamoDB lookup fails
+    return DEFAULT_OPERATORY_MAP[opName] || null;
+  }
+
+  return null;
+}
+
 function parseParameters(event: ActionGroupEvent): Record<string, any> {
   const params: Record<string, any> = {};
 
@@ -3696,13 +3807,28 @@ async function handleTool(
         // then pass the appropriate Op, ProvNum, AppointmentTypeNum based on patient needs.
         const isNewPatient = sessionAttributes.IsNewPatient === 'true' || params.IsNewPatient === true || params.IsNewPatient === 'true';
         const reason = params.Reason || params.reason || 'Appointment';
+        const clinicId = sessionAttributes.clinicId || params.clinicId;
 
-        // Get operatory number - agent should pass this from getClinicAppointmentTypes result
-        let opNum = getOperatoryNumber(params.Op || params.OpName || params.opNum);
+        // Get operatory number - use clinic-specific lookup when OpName is provided
+        // This resolves the "Op is invalid" error when hardcoded defaults don't match clinic operatories
+        let opNum: number | null = null;
+        const opInput = params.Op || params.OpName || params.opNum;
+
+        if (opInput && clinicId) {
+          // Use async clinic-specific lookup
+          opNum = await resolveOperatoryNumber(opInput, clinicId, isNewPatient);
+          if (opNum) {
+            console.log(`[scheduleAppointment] Resolved Op ${opNum} from input "${opInput}" for clinic ${clinicId}`);
+          }
+        } else {
+          // Fallback to synchronous lookup (backwards compatibility)
+          opNum = getOperatoryNumber(opInput);
+        }
+
         if (!opNum) {
-          // Fallback to default if agent didn't specify
+          // Fallback to default if nothing resolved
           opNum = isNewPatient ? DEFAULT_OPERATORY_MAP.EXAM : DEFAULT_OPERATORY_MAP.MINOR;
-          console.log(`[scheduleAppointment] No Op provided, using default: ${opNum}`);
+          console.log(`[scheduleAppointment] No Op resolved, using default: ${opNum}`);
         }
 
         // Build appointment data using values provided by the AI agent
@@ -4163,9 +4289,21 @@ async function handleTool(
         // The AI agent should call getClinicAppointmentTypes first to get available types,
         // then pass the appropriate Op, ProvNum, AppointmentTypeNum based on patient needs.
         const isNewPatient = params.IsNewPatient === true || params.IsNewPatient === 'true' || sessionAttributes.IsNewPatient === 'true';
+        const clinicId = sessionAttributes.clinicId || params.clinicId;
 
-        // Get operatory number - agent should pass this from getClinicAppointmentTypes result
-        let opNum = getOperatoryNumber(params.Op || params.opNum);
+        // Get operatory number - use clinic-specific lookup when OpName is provided
+        let opNum: number | null = null;
+        const opInput = params.Op || params.OpName || params.opNum;
+
+        if (opInput && clinicId) {
+          opNum = await resolveOperatoryNumber(opInput, clinicId, isNewPatient);
+          if (opNum) {
+            console.log(`[createAppointment] Resolved Op ${opNum} from input "${opInput}" for clinic ${clinicId}`);
+          }
+        } else {
+          opNum = getOperatoryNumber(opInput);
+        }
+
         if (!opNum) {
           opNum = isNewPatient ? DEFAULT_OPERATORY_MAP.EXAM : DEFAULT_OPERATORY_MAP.MINOR;
         }
