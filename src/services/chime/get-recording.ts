@@ -8,7 +8,7 @@
  */
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -29,6 +29,44 @@ const RECORDING_METADATA_TABLE = process.env.RECORDING_METADATA_TABLE || '';
 // CRITICAL FIX: Check if recording is enabled via environment variable
 // This allows the Lambda to be deployed even when recording is disabled
 const RECORDING_ENABLED = process.env.RECORDING_ENABLED !== 'false';
+
+function getS3Location(recording: any): { bucket: string; key: string } | null {
+  // Prefer persisted metadata; fallback to env bucket for older schemas that omitted s3Bucket.
+  const bucket = recording?.s3Bucket || recording?.bucket || RECORDINGS_BUCKET;
+  const key = recording?.s3Key || recording?.key || recording?.objectKey;
+
+  if (!bucket || !key) return null;
+  return { bucket, key };
+}
+
+async function scanRecordingsByCallId(callId: string, maxItems: number = 50): Promise<any[]> {
+  const found: any[] = [];
+  let lastEvaluatedKey: any = undefined;
+  let page = 0;
+  const MAX_PAGES = 10;
+
+  // NOTE: This is a fallback for deployments missing the `callId-index` GSI.
+  // It is intentionally bounded to avoid long scans / timeouts.
+  while (page < MAX_PAGES && found.length < maxItems) {
+    const res = await ddb.send(new ScanCommand({
+      TableName: RECORDING_METADATA_TABLE,
+      FilterExpression: 'callId = :callId',
+      ExpressionAttributeValues: { ':callId': callId },
+      ExclusiveStartKey: lastEvaluatedKey,
+      Limit: 200
+    }));
+
+    if (res.Items && res.Items.length > 0) {
+      found.push(...res.Items);
+    }
+
+    lastEvaluatedKey = res.LastEvaluatedKey;
+    if (!lastEvaluatedKey) break;
+    page++;
+  }
+
+  return found.slice(0, maxItems);
+}
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   console.log('[GetRecording] Function invoked', {
@@ -100,7 +138,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       headers: corsHeaders,
       body: JSON.stringify({ 
         message: 'Internal server error',
-        error: err?.message 
+        error: typeof err?.message === 'string' && err.message.trim()
+          ? err.message
+          : (typeof err === 'string' ? err : JSON.stringify(err))
       })
     };
   }
@@ -149,11 +189,23 @@ async function getRecording(
   }
 
   // Generate presigned URL (valid for 1 hour)
+  const loc = getS3Location(recording);
+  if (!loc) {
+    return {
+      statusCode: 500,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        message: 'Recording metadata is missing S3 location',
+        recordingId: recording.recordingId
+      })
+    };
+  }
+
   const presignedUrl = await getSignedUrl(
     s3,
     new GetObjectCommand({
-      Bucket: recording.s3Bucket,
-      Key: recording.s3Key
+      Bucket: loc.bucket,
+      Key: loc.key
     }),
     { expiresIn: 3600 } // 1 hour
   );
@@ -191,12 +243,34 @@ async function getRecordingsForCall(
     };
   }
 
-  const { Items: recordings } = await ddb.send(new QueryCommand({
-    TableName: RECORDING_METADATA_TABLE,
-    IndexName: 'callId-index',
-    KeyConditionExpression: 'callId = :callId',
-    ExpressionAttributeValues: { ':callId': callId }
-  }));
+  let recordings: any[] | undefined;
+  try {
+    const res = await ddb.send(new QueryCommand({
+      TableName: RECORDING_METADATA_TABLE,
+      IndexName: 'callId-index',
+      KeyConditionExpression: 'callId = :callId',
+      ExpressionAttributeValues: { ':callId': callId }
+    }));
+    recordings = res.Items;
+  } catch (err: any) {
+    const msg = String(err?.message || '');
+    const isMissingIndex =
+      err?.name === 'ValidationException' &&
+      /specified index/i.test(msg);
+
+    console.error('[GetRecording] Query by callId-index failed', {
+      callId,
+      errorName: err?.name,
+      errorMessage: err?.message
+    });
+
+    if (isMissingIndex) {
+      console.warn('[GetRecording] Falling back to Scan (callId-index missing)', { callId });
+      recordings = await scanRecordingsByCallId(callId);
+    } else {
+      throw err;
+    }
+  }
 
   if (!recordings || recordings.length === 0) {
     return {
@@ -207,8 +281,16 @@ async function getRecordingsForCall(
   }
 
   // Check authorization (use first recording's clinic)
-  const clinicId = recordings[0].clinicId;
-  if (!hasClinicAccess(allowedClinics, clinicId)) {
+  const clinicId = recordings.find(r => r?.clinicId)?.clinicId;
+  if (clinicId && !hasClinicAccess(allowedClinics, clinicId)) {
+    return {
+      statusCode: 403,
+      headers: corsHeaders,
+      body: JSON.stringify({ message: 'Unauthorized' })
+    };
+  }
+  // If clinicId is missing entirely, only allow access for super admins (allowedClinics contains '*')
+  if (!clinicId && !allowedClinics.has('*')) {
     return {
       statusCode: 403,
       headers: corsHeaders,
@@ -217,28 +299,63 @@ async function getRecordingsForCall(
   }
 
   // Generate presigned URLs for all recordings
-  const recordingsWithUrls = await Promise.all(
+  const recordingsWithUrls = (await Promise.all(
     recordings.map(async (recording) => {
-      const presignedUrl = await getSignedUrl(
-        s3,
-        new GetObjectCommand({
-          Bucket: recording.s3Bucket,
-          Key: recording.s3Key
-        }),
-        { expiresIn: 3600 }
-      );
+      const loc = getS3Location(recording);
+      if (!loc) {
+        console.warn('[GetRecording] Skipping recording with missing S3 location', {
+          callId,
+          recordingId: recording?.recordingId
+        });
+        return null;
+      }
 
-      return {
-        recordingId: recording.recordingId,
-        callId: recording.callId,
-        duration: recording.duration,
-        uploadedAt: recording.uploadedAt,
-        fileSize: recording.fileSize,
-        transcriptionStatus: recording.transcriptionStatus,
-        downloadUrl: presignedUrl
-      };
+      try {
+        const presignedUrl = await getSignedUrl(
+          s3,
+          new GetObjectCommand({
+            Bucket: loc.bucket,
+            Key: loc.key
+          }),
+          { expiresIn: 3600 }
+        );
+
+        return {
+          recordingId: recording.recordingId,
+          callId: recording.callId,
+          duration: recording.duration,
+          uploadedAt: recording.uploadedAt,
+          fileSize: recording.fileSize,
+          transcriptionStatus: recording.transcriptionStatus,
+          downloadUrl: presignedUrl
+        };
+      } catch (err: any) {
+        console.warn('[GetRecording] Failed to presign recording', {
+          callId,
+          recordingId: recording?.recordingId,
+          errorName: err?.name,
+          errorMessage: err?.message
+        });
+        return null;
+      }
     })
-  );
+  )).filter(Boolean) as Array<{
+    recordingId: string;
+    callId: string;
+    duration?: number;
+    uploadedAt?: string;
+    fileSize?: number;
+    transcriptionStatus?: string;
+    downloadUrl: string;
+  }>;
+
+  if (recordingsWithUrls.length === 0) {
+    return {
+      statusCode: 404,
+      headers: corsHeaders,
+      body: JSON.stringify({ message: 'No downloadable recordings found for this call' })
+    };
+  }
 
   return {
     statusCode: 200,
