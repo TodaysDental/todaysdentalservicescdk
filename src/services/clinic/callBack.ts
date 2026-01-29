@@ -37,6 +37,9 @@ interface CallbackRequest {
   updatedAt: string;
   updatedBy?: string;
   source: string;
+  patNum?: number; // Patient number for failed appointment/search callbacks
+  searchCriteria?: string; // JSON string of search criteria for failed patient searches
+  callbackCreated?: boolean; // Flag to indicate this was auto-created from a failure
 }
 
 function getCorsHeaders(origin?: string) {
@@ -73,7 +76,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
   // POST (create) doesn't require authentication - public endpoint for website forms
   const requiresAuth = method !== 'POST';
-  
+
   let userPerms: UserPermissions | null = null;
   if (requiresAuth) {
     userPerms = getUserPermissions(event);
@@ -89,9 +92,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     );
 
     if (!hasClinicAccess(allowedClinics, clinicId)) {
-      return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ 
-        error: 'Forbidden: no access to this clinic',
-      }) };
+      return {
+        statusCode: 403, headers: corsHeaders, body: JSON.stringify({
+          error: 'Forbidden: no access to this clinic',
+        })
+      };
     }
 
     // For GET and PUT, we'll check permissions when we know the callback's module
@@ -121,7 +126,7 @@ async function handleGet(tableName: string, headers: Record<string, string>, cli
   try {
     const result = await dynamo.send(new ScanCommand({ TableName: tableName }));
     const allContacts = (result.Items || []).map((item) => unmarshall(item as any));
-    
+
     // Filter callbacks based on user's module permissions
     const filteredContacts = filterByModuleAccess(
       allContacts,
@@ -131,13 +136,13 @@ async function handleGet(tableName: string, headers: Record<string, string>, cli
       userPerms.isGlobalSuperAdmin,
       'Operations' // Default module for legacy callbacks
     );
-    
+
     // Group by module
     const callbacksByModule = groupCallbacksByModule(filteredContacts);
-    
-    return { 
-      statusCode: 200, 
-      headers, 
+
+    return {
+      statusCode: 200,
+      headers,
       body: JSON.stringify({
         callbacks: filteredContacts,
         callbacksByModule,
@@ -154,7 +159,7 @@ async function handleGet(tableName: string, headers: Record<string, string>, cli
           ExpressionAttributeValues: { ':clinicId': { S: clinicId } }
         }));
         const allContacts = (result.Items || []).map((item) => unmarshall(item as any));
-        
+
         const filteredContacts = filterByModuleAccess(
           allContacts,
           userPerms.clinicRoles,
@@ -163,12 +168,12 @@ async function handleGet(tableName: string, headers: Record<string, string>, cli
           userPerms.isGlobalSuperAdmin,
           'Operations'
         );
-        
+
         const callbacksByModule = groupCallbacksByModule(filteredContacts);
-        
-        return { 
-          statusCode: 200, 
-          headers, 
+
+        return {
+          statusCode: 200,
+          headers,
           body: JSON.stringify({
             callbacks: filteredContacts,
             callbacksByModule,
@@ -177,9 +182,9 @@ async function handleGet(tableName: string, headers: Record<string, string>, cli
         };
       } catch (innerErr) {
         console.error('Error accessing default table:', innerErr);
-        return { 
-          statusCode: 200, 
-          headers, 
+        return {
+          statusCode: 200,
+          headers,
           body: JSON.stringify({
             callbacks: [],
             callbacksByModule: {},
@@ -198,32 +203,36 @@ async function handlePut(event: APIGatewayProxyEvent, tableName: string, headers
   if (!id) {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'RequestID is required for updates.' }) };
   }
-  
+
   // Validate module if provided in update
   const module = body?.module;
   if (module && !SYSTEM_MODULES.includes(module as any)) {
-    return { statusCode: 400, headers, body: JSON.stringify({ 
-      error: `Invalid module: ${module}`,
-      availableModules: Array.from(SYSTEM_MODULES),
-    }) };
+    return {
+      statusCode: 400, headers, body: JSON.stringify({
+        error: `Invalid module: ${module}`,
+        availableModules: Array.from(SYSTEM_MODULES),
+      })
+    };
   }
-  
+
   const name = body?.name;
   const phone = body?.phone;
   const email = typeof body?.email === 'string' ? body.email : undefined;
   const message = typeof body?.message === 'string' ? body.message : undefined;
   const notes = typeof body?.notes === 'string' ? body.notes : undefined;
   const calledBackRaw = body?.calledBack ?? body?.called_back ?? body?.callback ?? body?.called;
-  
+
   // Get user display name for audit trail
   const updatedBy = getUserDisplayName(userPerms);
-  
+
   // Check if user has permission to update callbacks in the specified module
   if (module) {
     if (!hasModulePermission(userPerms.clinicRoles, module, 'put', userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin, clinicId)) {
-      return { statusCode: 403, headers, body: JSON.stringify({ 
-        error: `You do not have permission to update callbacks in the ${module} module`,
-      }) };
+      return {
+        statusCode: 403, headers, body: JSON.stringify({
+          error: `You do not have permission to update callbacks in the ${module} module`,
+        })
+      };
     }
   }
 
@@ -299,10 +308,12 @@ async function handlePost(event: APIGatewayProxyEvent, tableName: string, clinic
 
   // Validate module if provided
   if (module && !SYSTEM_MODULES.includes(module as any)) {
-    return { statusCode: 400, headers, body: JSON.stringify({ 
-      error: `Invalid module: ${module}`,
-      availableModules: Array.from(SYSTEM_MODULES),
-    }) };
+    return {
+      statusCode: 400, headers, body: JSON.stringify({
+        error: `Invalid module: ${module}`,
+        availableModules: Array.from(SYSTEM_MODULES),
+      })
+    };
   }
 
   // Validate phone number (basic validation)
@@ -398,9 +409,11 @@ async function handleAdminEndpoints(event: APIGatewayProxyEvent, headers: Record
   );
 
   if (!isAdmin) {
-    return { statusCode: 403, headers, body: JSON.stringify({ 
-      error: 'Admin access required',
-    }) };
+    return {
+      statusCode: 403, headers, body: JSON.stringify({
+        error: 'Admin access required',
+      })
+    };
   }
 
   try {
@@ -455,13 +468,15 @@ async function handleAdminList(event: APIGatewayProxyEvent, headers: Record<stri
   }
 
   // TODO: Implement cross-clinic aggregation if needed
-  return { statusCode: 200, headers, body: JSON.stringify({
-    message: 'Use ?clinicId=<id> parameter to list callbacks for a specific clinic',
-    availableEndpoints: [
-      'GET /admin/callbacks?clinicId=<id>',
-      'POST /admin/callbacks/bulk'
-    ]
-  }) };
+  return {
+    statusCode: 200, headers, body: JSON.stringify({
+      message: 'Use ?clinicId=<id> parameter to list callbacks for a specific clinic',
+      availableEndpoints: [
+        'GET /admin/callbacks?clinicId=<id>',
+        'POST /admin/callbacks/bulk'
+      ]
+    })
+  };
 }
 
 async function handleBulkOperations(event: APIGatewayProxyEvent, headers: Record<string, string>, userPerms: UserPermissions): Promise<APIGatewayProxyResult> {
@@ -562,7 +577,7 @@ async function bulkDelete(tableName: string, requestIds: string[], headers: Reco
  */
 function groupCallbacksByModule(callbacks: any[]): Record<string, any[]> {
   const grouped: Record<string, any[]> = {};
-  
+
   for (const callback of callbacks) {
     const module = callback.module || 'Operations'; // Default to Operations for legacy
     if (!grouped[module]) {
@@ -570,6 +585,6 @@ function groupCallbacksByModule(callbacks: any[]): Record<string, any[]> {
     }
     grouped[module].push(callback);
   }
-  
+
   return grouped;
 }

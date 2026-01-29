@@ -11,7 +11,8 @@
 import axios from 'axios';
 import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, UpdateCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand, QueryCommand, ScanCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { v4 as uuidv4 } from 'uuid';
 
 // ========================================================================
 // CONFIGURATION
@@ -43,6 +44,10 @@ const CLINIC_SECRETS_TABLE = process.env.CLINIC_SECRETS_TABLE || 'ClinicSecrets'
 const INSURANCE_PLANS_TABLE = process.env.INSURANCE_PLANS_TABLE || 'TodaysDentalInsightsInsurancePlanSyncN1-InsurancePlans';
 const FEE_SCHEDULES_TABLE = process.env.FEE_SCHEDULES_TABLE || 'TodaysDentalInsightsFeeScheduleSyncN1-FeeSchedules';
 const APPT_TYPES_TABLE = process.env.APPT_TYPES_TABLE || 'TodaysDentalInsightsPatientPortalApptTypesN1-ApptTypes';
+
+// Callback table configuration for failed appointment bookings and patient searches
+const CALLBACK_TABLE_PREFIX = process.env.CALLBACK_TABLE_PREFIX || 'todaysdentalinsights-callback-';
+const DEFAULT_CALLBACK_TABLE = process.env.DEFAULT_CALLBACK_TABLE || 'todaysdentalinsights-callback-default';
 
 // ========================================================================
 // CIRCUIT BREAKER & RATE LIMITING (DynamoDB-backed for distributed state)
@@ -315,6 +320,137 @@ async function recordFailure(clinicId: string): Promise<void> {
   } catch (error) {
     console.warn(`[CircuitBreaker] Failed to record failure for ${clinicId}:`, error);
   }
+}
+
+// ========================================================================
+// CALLBACK HELPERS (Saves to Callback Table on various failures)
+// ========================================================================
+
+interface CallbackRecordDetails {
+  clinicId: string;
+  patientName?: string;
+  patientPhone?: string;
+  patientEmail?: string;
+  patNum?: number;
+  message: string;
+  module: string;
+  notes: string;
+  source: 'ai-agent' | 'patient-portal';
+  searchCriteria?: any;
+}
+
+/**
+ * Save a callback record for clinic staff follow-up
+ * This is used when AI operations fail (appointment booking or patient search)
+ */
+async function saveCallbackRecord(details: CallbackRecordDetails): Promise<void> {
+  const tableName = `${CALLBACK_TABLE_PREFIX}${details.clinicId}`;
+  const now = new Date().toISOString();
+  const requestId = uuidv4();
+
+  const callbackItem: Record<string, any> = {
+    RequestID: requestId,
+    name: details.patientName || `Patient ${details.patNum || 'Unknown'}`,
+    phone: details.patientPhone || 'Not provided',
+    email: details.patientEmail || undefined,
+    message: details.message,
+    module: details.module,
+    clinicId: details.clinicId,
+    calledBack: 'NO',
+    notes: details.notes,
+    createdAt: now,
+    updatedAt: now,
+    source: details.source,
+  };
+
+  // Add optional fields if provided
+  if (details.patNum) {
+    callbackItem.patNum = details.patNum;
+  }
+  if (details.searchCriteria) {
+    callbackItem.searchCriteria = JSON.stringify(details.searchCriteria);
+  }
+
+  try {
+    // Try clinic-specific table first
+    await docClient.send(new PutCommand({
+      TableName: tableName,
+      Item: callbackItem,
+    }));
+    console.log(`[Callback] Saved callback ${requestId} for clinic ${details.clinicId}`);
+  } catch (error: any) {
+    // Fallback to default table if clinic-specific table doesn't exist
+    if (error?.name === 'ResourceNotFoundException') {
+      try {
+        await docClient.send(new PutCommand({
+          TableName: DEFAULT_CALLBACK_TABLE,
+          Item: callbackItem,
+        }));
+        console.log(`[Callback] Saved callback ${requestId} to default table`);
+      } catch (fallbackError) {
+        console.error('[Callback] Failed to save to default callback table:', fallbackError);
+      }
+    } else {
+      console.error('[Callback] Failed to save callback record:', error);
+    }
+  }
+}
+
+interface AppointmentFailureDetails {
+  clinicId: string;
+  patientName?: string;
+  patientPhone?: string;
+  patientEmail?: string;
+  patNum?: number;
+  requestedDate?: string;
+  reason?: string;
+  errorMessage: string;
+  source: 'ai-agent' | 'patient-portal';
+}
+
+/**
+ * Save a failed appointment booking as a callback request
+ * This allows clinic staff to follow up with patients when AI scheduling fails
+ */
+async function saveAppointmentFailureAsCallback(details: AppointmentFailureDetails): Promise<void> {
+  await saveCallbackRecord({
+    clinicId: details.clinicId,
+    patientName: details.patientName,
+    patientPhone: details.patientPhone,
+    patientEmail: details.patientEmail,
+    patNum: details.patNum,
+    message: `Appointment booking failed. Requested: ${details.requestedDate || 'Not specified'}. Reason: ${details.reason || 'General appointment'}. Error: ${details.errorMessage}`,
+    module: 'Operations',
+    notes: `Auto-created from failed ${details.source} appointment booking`,
+    source: details.source,
+  });
+}
+
+interface PatientSearchFailureDetails {
+  clinicId: string;
+  searchName?: string;
+  searchPhone?: string;
+  searchBirthdate?: string;
+  searchCriteria: any;
+  failureReason: string;
+  source: 'ai-agent' | 'patient-portal';
+}
+
+/**
+ * Save a failed patient search as a callback request
+ * This allows clinic staff to follow up with callers when patient lookup fails
+ */
+async function savePatientSearchFailureAsCallback(details: PatientSearchFailureDetails): Promise<void> {
+  await saveCallbackRecord({
+    clinicId: details.clinicId,
+    patientName: details.searchName || 'Unknown',
+    patientPhone: details.searchPhone || 'Not provided',
+    message: `Patient search failed. ${details.failureReason}. Search criteria: Name: ${details.searchName || 'N/A'}, DOB: ${details.searchBirthdate || 'N/A'}`,
+    module: 'Operations',
+    notes: `Auto-created from failed ${details.source} patient search - needs manual lookup`,
+    source: details.source,
+    searchCriteria: details.searchCriteria,
+  });
 }
 
 // Default operatory mapping
@@ -628,6 +764,117 @@ function getOperatoryNumber(opInput: any): number | null {
     const key = opInput.trim().toUpperCase();
     if (DEFAULT_OPERATORY_MAP[key]) return DEFAULT_OPERATORY_MAP[key];
   }
+  return null;
+}
+
+/**
+ * Resolve operatory number from clinic-specific appointment types.
+ * This function first tries to parse as a number, then looks up the OpName
+ * in the clinic's ApptTypes DynamoDB table to get the actual operatory number.
+ * 
+ * This fixes the "Op is invalid" error that occurs when the agent passes
+ * OpName like "ONLINE_BOOKING_MINOR" which maps to hardcoded values that
+ * don't exist for specific clinics.
+ * 
+ * @param opInput - The operatory input (number, numeric string, or OpName)
+ * @param clinicId - The clinic ID to look up appointment types
+ * @param isNewPatient - Whether this is a new patient (affects which operatory to use)
+ * @returns The resolved operatory number, or null if not found
+ */
+async function resolveOperatoryNumber(
+  opInput: any,
+  clinicId: string,
+  isNewPatient: boolean = false
+): Promise<number | null> {
+  // First try direct number parsing
+  if (opInput != null) {
+    if (typeof opInput === 'number' && !Number.isNaN(opInput)) return opInput;
+    if (typeof opInput === 'string') {
+      const n = parseInt(opInput, 10);
+      if (!Number.isNaN(n)) return n;
+    }
+  }
+
+  // If we have a string OpName, try to look up the actual operatory from clinic's appointment types
+  if (typeof opInput === 'string' && clinicId) {
+    const opName = opInput.trim().toUpperCase();
+    console.log(`[resolveOperatoryNumber] Looking up OpName "${opName}" for clinic ${clinicId}`);
+
+    try {
+      // Query all appointment types for this clinic
+      const result = await docClient.send(new QueryCommand({
+        TableName: APPT_TYPES_TABLE,
+        KeyConditionExpression: 'clinicId = :clinicId',
+        ExpressionAttributeValues: { ':clinicId': clinicId },
+      }));
+
+      const appointmentTypes = result.Items || [];
+
+      if (appointmentTypes.length === 0) {
+        console.warn(`[resolveOperatoryNumber] No appointment types found for clinic ${clinicId}, falling back to defaults`);
+        return DEFAULT_OPERATORY_MAP[opName] || null;
+      }
+
+      // Try to find a matching appointment type by OpName
+      const matchingType = appointmentTypes.find((apt: any) => {
+        const aptOpName = (apt.opName || '').toUpperCase();
+        const aptLabel = (apt.label || '').toUpperCase();
+
+        // Match by opName (e.g., "ONLINE_BOOKING_MINOR")
+        if (aptOpName === opName || aptOpName.includes(opName) || opName.includes(aptOpName)) {
+          return true;
+        }
+
+        // Match by common keywords in the OpName
+        if (opName.includes('MINOR') && aptLabel.includes('EMERGENCY') || aptLabel.includes('OTHER')) {
+          return true;
+        }
+        if (opName.includes('EXAM') && (aptLabel.includes('NEW PATIENT') || aptLabel.includes('EXAM'))) {
+          return true;
+        }
+        if (opName.includes('MAJOR') && aptLabel.includes('TREATMENT')) {
+          return true;
+        }
+
+        return false;
+      });
+
+      if (matchingType && matchingType.opNum) {
+        console.log(`[resolveOperatoryNumber] Found matching OpNum ${matchingType.opNum} for OpName "${opName}" (label: ${matchingType.label})`);
+        return matchingType.opNum;
+      }
+
+      // If no exact match, try to select based on new patient status
+      const newPatientType = appointmentTypes.find((apt: any) =>
+        (apt.label || '').toLowerCase().includes('new patient')
+      );
+      const existingPatientType = appointmentTypes.find((apt: any) =>
+        (apt.label || '').toLowerCase().includes('existing patient') ||
+        (apt.label || '').toLowerCase().includes('emergency') ||
+        (apt.label || '').toLowerCase().includes('other')
+      );
+
+      const selectedType = isNewPatient ? newPatientType : existingPatientType;
+      if (selectedType && selectedType.opNum) {
+        console.log(`[resolveOperatoryNumber] Selected OpNum ${selectedType.opNum} based on ${isNewPatient ? 'new' : 'existing'} patient status (label: ${selectedType.label})`);
+        return selectedType.opNum;
+      }
+
+      // Last resort: use the first available appointment type
+      if (appointmentTypes.length > 0 && appointmentTypes[0].opNum) {
+        console.log(`[resolveOperatoryNumber] Using first available OpNum ${appointmentTypes[0].opNum} (label: ${appointmentTypes[0].label})`);
+        return appointmentTypes[0].opNum;
+      }
+
+      console.warn(`[resolveOperatoryNumber] Could not find matching operatory for OpName "${opName}" in clinic ${clinicId}`);
+    } catch (error: any) {
+      console.error(`[resolveOperatoryNumber] Error looking up appointment types: ${error.message}`);
+    }
+
+    // Fall back to default mapping only if DynamoDB lookup fails
+    return DEFAULT_OPERATORY_MAP[opName] || null;
+  }
+
   return null;
 }
 
@@ -1091,10 +1338,40 @@ async function handleTool(
 
         let patients: any[] = [];
         let usedAttempt = 'exact';
-        for (const a of attempts) {
-          patients = await doSearch(a.label, a.p);
-          usedAttempt = a.label;
-          if (patients.length > 0) break;
+
+        try {
+          for (const a of attempts) {
+            patients = await doSearch(a.label, a.p);
+            usedAttempt = a.label;
+            if (patients.length > 0) break;
+          }
+        } catch (searchError: any) {
+          // OpenDental API failure - save callback for staff follow-up
+          console.error(`[searchPatients] OpenDental API failed:`, searchError);
+
+          const clinicId = sessionAttributes.clinicId || odClient.getClinicId();
+          const searchName = `${providedFName} ${providedLName}`.trim();
+          const callerPhone = sessionAttributes.callerPhone || sessionAttributes.PatientPhone || params.WirelessPhone;
+
+          await savePatientSearchFailureAsCallback({
+            clinicId,
+            searchName: searchName || undefined,
+            searchPhone: callerPhone,
+            searchBirthdate: normalizedBirthdate,
+            searchCriteria: { FName: providedFName, LName: providedLName, Birthdate: normalizedBirthdate },
+            failureReason: `OpenDental API error: ${searchError?.message || 'Unknown error'}`,
+            source: 'ai-agent',
+          });
+
+          return {
+            statusCode: searchError?.response?.status || 500,
+            body: {
+              status: 'FAILURE',
+              message: 'Unable to search patients - please try again or call the office',
+              callbackCreated: true,
+            },
+            updatedSessionAttributes,
+          };
         }
 
         if (patients.length === 0) {
@@ -1149,7 +1426,7 @@ async function handleTool(
               status: 'FAILURE',
               data: { items: isPublicRequest ? [] : patients.slice(0, 5).map(toSafePatient) },
               message: isPublicRequest
-                ? 'I found more than one possible match. Please double-check the spelling of your name, or call the office and we’ll help you.'
+                ? 'I found more than one possible match. Please double-check the spelling of your name, or call the office and we\'ll help you.'
                 : `Multiple matches found (${patients.length}). Refine search.`,
             },
             updatedSessionAttributes,
@@ -3696,13 +3973,28 @@ async function handleTool(
         // then pass the appropriate Op, ProvNum, AppointmentTypeNum based on patient needs.
         const isNewPatient = sessionAttributes.IsNewPatient === 'true' || params.IsNewPatient === true || params.IsNewPatient === 'true';
         const reason = params.Reason || params.reason || 'Appointment';
+        const clinicId = sessionAttributes.clinicId || params.clinicId;
 
-        // Get operatory number - agent should pass this from getClinicAppointmentTypes result
-        let opNum = getOperatoryNumber(params.Op || params.OpName || params.opNum);
+        // Get operatory number - use clinic-specific lookup when OpName is provided
+        // This resolves the "Op is invalid" error when hardcoded defaults don't match clinic operatories
+        let opNum: number | null = null;
+        const opInput = params.Op || params.OpName || params.opNum;
+
+        if (opInput && clinicId) {
+          // Use async clinic-specific lookup
+          opNum = await resolveOperatoryNumber(opInput, clinicId, isNewPatient);
+          if (opNum) {
+            console.log(`[scheduleAppointment] Resolved Op ${opNum} from input "${opInput}" for clinic ${clinicId}`);
+          }
+        } else {
+          // Fallback to synchronous lookup (backwards compatibility)
+          opNum = getOperatoryNumber(opInput);
+        }
+
         if (!opNum) {
-          // Fallback to default if agent didn't specify
+          // Fallback to default if nothing resolved
           opNum = isNewPatient ? DEFAULT_OPERATORY_MAP.EXAM : DEFAULT_OPERATORY_MAP.MINOR;
-          console.log(`[scheduleAppointment] No Op provided, using default: ${opNum}`);
+          console.log(`[scheduleAppointment] No Op resolved, using default: ${opNum}`);
         }
 
         // Build appointment data using values provided by the AI agent
@@ -3735,16 +4027,46 @@ async function handleTool(
           appointmentData.Pattern = params.Pattern;
         }
 
-        const newAppt = await odClient.request('POST', 'appointments', { data: appointmentData });
+        try {
+          const newAppt = await odClient.request('POST', 'appointments', { data: appointmentData });
 
-        return {
-          statusCode: 201,
-          body: {
-            status: 'SUCCESS',
-            data: newAppt,
-            message: `Appointment scheduled successfully for ${params.Date}`,
-          },
-        };
+          return {
+            statusCode: 201,
+            body: {
+              status: 'SUCCESS',
+              data: newAppt,
+              message: `Appointment scheduled successfully for ${params.Date}`,
+            },
+          };
+        } catch (scheduleError: any) {
+          console.error(`[scheduleAppointment] Failed to schedule appointment:`, scheduleError);
+
+          // Save callback for failed appointment booking
+          const patientName = sessionAttributes.FName && sessionAttributes.LName
+            ? `${sessionAttributes.FName} ${sessionAttributes.LName}`
+            : `Patient ${params.PatNum}`;
+          const patientPhone = sessionAttributes.callerPhone || sessionAttributes.PatientPhone;
+
+          await saveAppointmentFailureAsCallback({
+            clinicId: clinicId || odClient.getClinicId(),
+            patientName,
+            patientPhone,
+            patNum: parseInt(params.PatNum.toString()),
+            requestedDate: params.Date,
+            reason,
+            errorMessage: scheduleError?.message || 'Unknown scheduling error',
+            source: 'ai-agent',
+          });
+
+          return {
+            statusCode: scheduleError?.response?.status || 500,
+            body: {
+              status: 'FAILURE',
+              message: scheduleError?.message || 'Failed to schedule appointment',
+              callbackCreated: true,
+            },
+          };
+        }
       }
 
       case 'getUpcomingAppointments': {
@@ -3795,15 +4117,47 @@ async function handleTool(
           AptDateTime: params.NewDateTime,
           Note: params.Note ? `Rescheduled: ${params.Note}` : 'Rescheduled by AI Agent',
         };
-        const rescheduled = await odClient.request('PUT', `appointments/${params.AptNum}`, { data: rescheduleData });
-        return {
-          statusCode: 200,
-          body: {
-            status: 'SUCCESS',
-            data: rescheduled,
-            message: `Appointment rescheduled to ${params.NewDateTime}`,
-          },
-        };
+
+        try {
+          const rescheduled = await odClient.request('PUT', `appointments/${params.AptNum}`, { data: rescheduleData });
+          return {
+            statusCode: 200,
+            body: {
+              status: 'SUCCESS',
+              data: rescheduled,
+              message: `Appointment rescheduled to ${params.NewDateTime}`,
+            },
+          };
+        } catch (rescheduleError: any) {
+          console.error(`[rescheduleAppointment] Failed to reschedule appointment:`, rescheduleError);
+
+          // Save callback for failed appointment rescheduling
+          const patientName = sessionAttributes.FName && sessionAttributes.LName
+            ? `${sessionAttributes.FName} ${sessionAttributes.LName}`
+            : sessionAttributes.PatNum ? `Patient ${sessionAttributes.PatNum}` : 'Unknown Patient';
+          const patientPhone = sessionAttributes.callerPhone || sessionAttributes.PatientPhone;
+          const clinicId = sessionAttributes.clinicId || odClient.getClinicId();
+
+          await saveAppointmentFailureAsCallback({
+            clinicId,
+            patientName,
+            patientPhone,
+            patNum: sessionAttributes.PatNum ? parseInt(sessionAttributes.PatNum) : undefined,
+            requestedDate: params.NewDateTime,
+            reason: `Reschedule appointment ${params.AptNum}`,
+            errorMessage: rescheduleError?.message || 'Unknown rescheduling error',
+            source: 'ai-agent',
+          });
+
+          return {
+            statusCode: rescheduleError?.response?.status || 500,
+            body: {
+              status: 'FAILURE',
+              message: rescheduleError?.message || 'Failed to reschedule appointment',
+              callbackCreated: true,
+            },
+          };
+        }
       }
 
       case 'cancelAppointment': {
@@ -4163,9 +4517,21 @@ async function handleTool(
         // The AI agent should call getClinicAppointmentTypes first to get available types,
         // then pass the appropriate Op, ProvNum, AppointmentTypeNum based on patient needs.
         const isNewPatient = params.IsNewPatient === true || params.IsNewPatient === 'true' || sessionAttributes.IsNewPatient === 'true';
+        const clinicId = sessionAttributes.clinicId || params.clinicId;
 
-        // Get operatory number - agent should pass this from getClinicAppointmentTypes result
-        let opNum = getOperatoryNumber(params.Op || params.opNum);
+        // Get operatory number - use clinic-specific lookup when OpName is provided
+        let opNum: number | null = null;
+        const opInput = params.Op || params.OpName || params.opNum;
+
+        if (opInput && clinicId) {
+          opNum = await resolveOperatoryNumber(opInput, clinicId, isNewPatient);
+          if (opNum) {
+            console.log(`[createAppointment] Resolved Op ${opNum} from input "${opInput}" for clinic ${clinicId}`);
+          }
+        } else {
+          opNum = getOperatoryNumber(opInput);
+        }
+
         if (!opNum) {
           opNum = isNewPatient ? DEFAULT_OPERATORY_MAP.EXAM : DEFAULT_OPERATORY_MAP.MINOR;
         }

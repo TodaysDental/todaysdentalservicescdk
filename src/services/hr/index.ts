@@ -3130,12 +3130,8 @@ async function updateLeaveStatus(leaveId: string, status: 'approved' | 'denied',
 // HR CONFIG ENDPOINT
 // =====================================================
 
-// Business rule constants for Advance Pay (exported via /hr/config endpoint)
-const MAX_ADVANCE_PAY_AMOUNT = 500; // Maximum amount per request
-const MAX_TOTAL_OUTSTANDING_ADVANCES = 1000; // Maximum total outstanding (pending + approved but not paid)
-const MAX_PENDING_REQUESTS = 3; // Maximum number of pending requests per staff member
-const MIN_TENURE_DAYS = 90; // Staff must be employed for at least 90 days
-const MIN_DAYS_BETWEEN_REQUESTS = 30; // Minimum days between approved advance pay requests
+// Advance Pay - No business rule restrictions (all limits removed)
+// Previously enforced limits have been disabled
 
 
 /**
@@ -3146,11 +3142,12 @@ const MIN_DAYS_BETWEEN_REQUESTS = 30; // Minimum days between approved advance p
 function getHrConfig() {
   return httpOk({
     advancePay: {
-      maxAmountPerRequest: MAX_ADVANCE_PAY_AMOUNT,
-      maxTotalOutstanding: MAX_TOTAL_OUTSTANDING_ADVANCES,
-      maxPendingRequests: MAX_PENDING_REQUESTS,
-      minTenureDays: MIN_TENURE_DAYS,
-      minDaysBetweenRequests: MIN_DAYS_BETWEEN_REQUESTS,
+      // No restrictions - all limits removed
+      maxAmountPerRequest: null,
+      maxTotalOutstanding: null,
+      maxPendingRequests: null,
+      minTenureDays: 0,
+      minDaysBetweenRequests: 0,
     },
     // Future: Add other module configs here
     // leave: { ... },
@@ -3210,8 +3207,28 @@ async function getAdvancePayRequests(
 ) {
   try {
     if (isAdmin) {
-      // Admin: Fetch requests for all allowed clinics IN PARALLEL for performance
+      // Check if super admin (has access to all clinics - indicated by '*' in allowedClinics)
+      if (allowedClinics.has('*')) {
+        // Super Admin: Scan ALL advance pay requests
+        console.log('🔑 Super Admin detected - scanning all advance pay requests');
+        const { Items } = await ddb.send(new ScanCommand({
+          TableName: ADVANCE_PAY_TABLE,
+          FilterExpression: 'attribute_not_exists(isDeleted) OR isDeleted = :false',
+          ExpressionAttributeValues: { ':false': false },
+        }));
+
+        const allRequests = (Items || []) as AdvancePayRequest[];
+
+        // Sort by createdAt descending
+        allRequests.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+        console.log(`📋 Found ${allRequests.length} advance pay requests for super admin`);
+        return httpOk({ advancePayRequests: allRequests });
+      }
+
+      // Regular Admin: Fetch requests for specific allowed clinics IN PARALLEL for performance
       const clinicIds = Array.from(allowedClinics);
+      console.log(`👤 Admin - querying advance pay for clinics: ${clinicIds.join(', ')}`);
 
       // Execute all clinic queries in parallel using Promise.allSettled for resilience
       const queryPromises = clinicIds.map(clinicId =>
@@ -3237,6 +3254,7 @@ async function getAdvancePayRequests(
       // Sort by createdAt descending
       allRequests.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
+      console.log(`📋 Found ${allRequests.length} advance pay requests for admin`);
       return httpOk({ advancePayRequests: allRequests });
     } else {
       // Staff: Only their own requests
@@ -3262,10 +3280,8 @@ async function getAdvancePayRequests(
 /**
  * Create a new advance pay request (Staff only)
  * 
- * Business Rules:
- * 1. Maximum single request: $500
- * 2. Maximum 3 pending requests at a time
- * 3. Total outstanding advances (pending + approved) cannot exceed $1000
+ * Note: All business rule restrictions have been removed.
+ * Only basic validation (positive amount, clinic access) is enforced.
  */
 async function createAdvancePayRequest(
   userPerms: UserPermissions,
@@ -3275,14 +3291,9 @@ async function createAdvancePayRequest(
 ) {
   const { amount, reason, clinicId } = body;
 
-  // Basic validation
+  // Basic validation - only require positive amount
   if (!amount || typeof amount !== 'number' || amount <= 0) {
     return httpErr(400, "Valid amount (positive number) is required");
-  }
-
-  // Maximum amount validation
-  if (amount > MAX_ADVANCE_PAY_AMOUNT) {
-    return httpErr(400, `Advance pay amount cannot exceed $${MAX_ADVANCE_PAY_AMOUNT}`);
   }
 
   if (!clinicId) {
@@ -3295,77 +3306,6 @@ async function createAdvancePayRequest(
   }
 
   try {
-    // ==============================
-    // BUSINESS RULE 1: TENURE CHECK
-    // ==============================
-    // Staff must be employed for at least MIN_TENURE_DAYS (90 days) before requesting an advance
-    const { Item: staffUser } = await ddb.send(new GetCommand({
-      TableName: STAFF_USER_TABLE,
-      Key: { email: userPerms.email.toLowerCase() },
-    }));
-
-    if (staffUser?.createdAt) {
-      const hireDate = new Date(staffUser.createdAt);
-      const now = new Date();
-      const daysEmployed = Math.floor((now.getTime() - hireDate.getTime()) / (1000 * 60 * 60 * 24));
-
-      if (daysEmployed < MIN_TENURE_DAYS) {
-        const daysRemaining = MIN_TENURE_DAYS - daysEmployed;
-        return httpErr(400, `Advance pay is only available after ${MIN_TENURE_DAYS} days of employment. You have been employed for ${daysEmployed} day(s). Please wait ${daysRemaining} more day(s).`);
-      }
-    }
-
-    // Check for existing requests and calculate total outstanding (excluding soft-deleted)
-    const { Items: existingRequests } = await ddb.send(new QueryCommand({
-      TableName: ADVANCE_PAY_TABLE,
-      IndexName: 'byStaff',
-      KeyConditionExpression: 'staffId = :staffId',
-      FilterExpression: 'attribute_not_exists(isDeleted) OR isDeleted = :false',
-      ExpressionAttributeValues: { ':staffId': userPerms.email, ':false': false },
-    }));
-
-    if (existingRequests && existingRequests.length > 0) {
-      // ==============================
-      // BUSINESS RULE 2: FREQUENCY CHECK
-      // ==============================
-      // Must wait MIN_DAYS_BETWEEN_REQUESTS (30 days) after last approved/paid request
-      const recentApprovedOrPaid = existingRequests
-        .filter((r: any) => (r.status === 'approved' || r.status === 'paid') && !r.isDeleted)
-        .sort((a: any, b: any) => new Date(b.approvedAt || b.createdAt).getTime() - new Date(a.approvedAt || a.createdAt).getTime());
-
-      if (recentApprovedOrPaid.length > 0) {
-        const mostRecent = recentApprovedOrPaid[0];
-        const lastApprovedDate = new Date(mostRecent.approvedAt || mostRecent.createdAt);
-        const now = new Date();
-        const daysSinceLastApproval = Math.floor((now.getTime() - lastApprovedDate.getTime()) / (1000 * 60 * 60 * 24));
-
-        if (daysSinceLastApproval < MIN_DAYS_BETWEEN_REQUESTS) {
-          const daysRemaining = MIN_DAYS_BETWEEN_REQUESTS - daysSinceLastApproval;
-          return httpErr(400, `You must wait ${MIN_DAYS_BETWEEN_REQUESTS} days between advance pay requests. Your last request was approved ${daysSinceLastApproval} day(s) ago. Please wait ${daysRemaining} more day(s).`);
-        }
-      }
-
-      // ==============================
-      // BUSINESS RULE 3: PENDING COUNT CHECK
-      // ==============================
-      const pendingRequests = existingRequests.filter((r: any) => r.status === 'pending' && !r.isDeleted);
-      if (pendingRequests.length >= MAX_PENDING_REQUESTS) {
-        return httpErr(400, `You already have ${pendingRequests.length} pending advance pay requests. Maximum allowed is ${MAX_PENDING_REQUESTS}. Please wait for them to be processed or cancel some first.`);
-      }
-
-      // ==============================
-      // BUSINESS RULE 4: OUTSTANDING AMOUNT CHECK
-      // ==============================
-      // Calculate total outstanding (pending + approved but not paid, excluding deleted)
-      const totalOutstanding = existingRequests
-        .filter((r: any) => (r.status === 'pending' || r.status === 'approved') && !r.isDeleted)
-        .reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
-
-      if (totalOutstanding + amount > MAX_TOTAL_OUTSTANDING_ADVANCES) {
-        const remaining = MAX_TOTAL_OUTSTANDING_ADVANCES - totalOutstanding;
-        return httpErr(400, `Total outstanding advances cannot exceed $${MAX_TOTAL_OUTSTANDING_ADVANCES}. You currently have $${totalOutstanding.toFixed(2)} outstanding. Maximum you can request: $${Math.max(0, remaining).toFixed(2)}`);
-      }
-    }
 
     const advanceId = `adv_${uuidv4()}`;
     const now = new Date().toISOString();
@@ -3436,10 +3376,7 @@ async function adminCreateAdvancePayRecord(
     return httpErr(400, "Valid amount (positive number) is required");
   }
 
-  // Maximum amount validation - still enforce for consistency
-  if (amount > MAX_ADVANCE_PAY_AMOUNT) {
-    return httpErr(400, `Advance pay amount cannot exceed $${MAX_ADVANCE_PAY_AMOUNT}`);
-  }
+  // No maximum amount validation - restrictions removed
 
   if (!clinicId) {
     return httpErr(400, "Clinic ID is required");
@@ -3909,12 +3846,8 @@ async function markAdvancePayAsPaid(
  * This creates a request with status 'pending_staff_approval'
  * The staff member must approve before admin can mark as paid
  * 
- * Business Rules (same as staff-initiated):
- * 1. Maximum single request: $500
- * 2. Staff must have 90+ days tenure
- * 3. 30+ days since last approved/paid request
- * 4. Max 3 pending requests at a time
- * 5. Total outstanding cannot exceed $1000
+ * Note: All business rule restrictions have been removed.
+ * Only basic validation (staffId, amount > 0, clinic access) is enforced.
  */
 async function adminInitiateAdvancePayForStaff(
   userPerms: UserPermissions,
@@ -3924,7 +3857,7 @@ async function adminInitiateAdvancePayForStaff(
 ) {
   const { staffId, amount, reason, clinicId } = body;
 
-  // Basic validation
+  // Basic validation - only require staffId and positive amount
   if (!staffId || typeof staffId !== 'string') {
     return httpErr(400, "Staff ID (email) is required");
   }
@@ -3933,10 +3866,7 @@ async function adminInitiateAdvancePayForStaff(
     return httpErr(400, "Valid amount (positive number) is required");
   }
 
-  // Maximum amount validation
-  if (amount > MAX_ADVANCE_PAY_AMOUNT) {
-    return httpErr(400, `Advance pay amount cannot exceed $${MAX_ADVANCE_PAY_AMOUNT}`);
-  }
+  // No maximum amount validation - restrictions removed
 
   if (!clinicId) {
     return httpErr(400, "Clinic ID is required");
@@ -3958,63 +3888,8 @@ async function adminInitiateAdvancePayForStaff(
       return httpErr(404, "Staff member not found. Please verify the email address.");
     }
 
-    // BUSINESS RULE 1: TENURE CHECK
-    if (staffUser.createdAt) {
-      const hireDate = new Date(staffUser.createdAt);
-      const now = new Date();
-      const daysEmployed = Math.floor((now.getTime() - hireDate.getTime()) / (1000 * 60 * 60 * 24));
-
-      if (daysEmployed < MIN_TENURE_DAYS) {
-        const daysRemaining = MIN_TENURE_DAYS - daysEmployed;
-        return httpErr(400, `Staff member is not eligible for advance pay. They have been employed for ${daysEmployed} day(s). Minimum required: ${MIN_TENURE_DAYS} days. (${daysRemaining} more days needed)`);
-      }
-    }
-
-    // Check existing requests for the staff member
-    const { Items: existingRequests } = await ddb.send(new QueryCommand({
-      TableName: ADVANCE_PAY_TABLE,
-      IndexName: 'byStaff',
-      KeyConditionExpression: 'staffId = :staffId',
-      FilterExpression: 'attribute_not_exists(isDeleted) OR isDeleted = :false',
-      ExpressionAttributeValues: { ':staffId': staffId.toLowerCase(), ':false': false },
-    }));
-
-    if (existingRequests && existingRequests.length > 0) {
-      // BUSINESS RULE 2: FREQUENCY CHECK
-      const recentApprovedOrPaid = existingRequests
-        .filter((r: any) => (r.status === 'approved' || r.status === 'paid') && !r.isDeleted)
-        .sort((a: any, b: any) => new Date(b.approvedAt || b.createdAt).getTime() - new Date(a.approvedAt || a.createdAt).getTime());
-
-      if (recentApprovedOrPaid.length > 0) {
-        const mostRecent = recentApprovedOrPaid[0];
-        const lastApprovedDate = new Date(mostRecent.approvedAt || mostRecent.createdAt);
-        const now = new Date();
-        const daysSinceLastApproval = Math.floor((now.getTime() - lastApprovedDate.getTime()) / (1000 * 60 * 60 * 24));
-
-        if (daysSinceLastApproval < MIN_DAYS_BETWEEN_REQUESTS) {
-          const daysRemaining = MIN_DAYS_BETWEEN_REQUESTS - daysSinceLastApproval;
-          return httpErr(400, `Staff must wait ${MIN_DAYS_BETWEEN_REQUESTS} days between advance pay requests. Last request was approved ${daysSinceLastApproval} day(s) ago. (${daysRemaining} more days needed)`);
-        }
-      }
-
-      // BUSINESS RULE 3: PENDING COUNT CHECK (include pending_staff_approval)
-      const pendingRequests = existingRequests.filter((r: any) =>
-        (r.status === 'pending' || r.status === 'pending_staff_approval') && !r.isDeleted
-      );
-      if (pendingRequests.length >= MAX_PENDING_REQUESTS) {
-        return httpErr(400, `Staff already has ${pendingRequests.length} pending advance pay requests. Maximum allowed is ${MAX_PENDING_REQUESTS}.`);
-      }
-
-      // BUSINESS RULE 4: OUTSTANDING AMOUNT CHECK
-      const totalOutstanding = existingRequests
-        .filter((r: any) => (r.status === 'pending' || r.status === 'approved' || r.status === 'pending_staff_approval') && !r.isDeleted)
-        .reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
-
-      if (totalOutstanding + amount > MAX_TOTAL_OUTSTANDING_ADVANCES) {
-        const remaining = MAX_TOTAL_OUTSTANDING_ADVANCES - totalOutstanding;
-        return httpErr(400, `Total outstanding advances cannot exceed $${MAX_TOTAL_OUTSTANDING_ADVANCES}. Staff currently has $${totalOutstanding.toFixed(2)} outstanding. Maximum additional: $${Math.max(0, remaining).toFixed(2)}`);
-      }
-    }
+    // No tenure check, frequency check, pending count check, or outstanding amount check
+    // All business rule restrictions have been removed
 
     const staffName = `${staffUser.givenName || ''} ${staffUser.familyName || ''}`.trim() || staffId;
     const adminName = `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email;

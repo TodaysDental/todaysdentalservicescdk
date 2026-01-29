@@ -929,6 +929,9 @@ export class AiAgentsStack extends Stack {
         APPT_TYPES_TABLE: props.apptTypesTableName || 'TodaysDentalInsightsPatientPortalApptTypesN1-ApptTypes',
         // AI Agents Metrics table for tracking scheduling outcomes (booked, used, cancelled, rescheduled)
         AI_AGENTS_METRICS_TABLE: this.aiAgentsMetricsTable.tableName,
+        // Callback table configuration for failed appointment bookings and patient searches
+        CALLBACK_TABLE_PREFIX: 'todaysdentalinsights-callback-',
+        DEFAULT_CALLBACK_TABLE: 'TodaysDentalInsightsCallbackN1-CallbackRequests',
       },
     });
     applyTags(this.actionGroupFn, { Function: 'action-group' });
@@ -999,6 +1002,19 @@ export class AiAgentsStack extends Stack {
       effect: iam.Effect.ALLOW,
       actions: ['dynamodb:GetItem', 'dynamodb:Query'],
       resources: [apptTypesTableArn],
+    }));
+
+    // Grant write access to Callback tables for saving failed appointment bookings as callbacks
+    // This enables clinic staff to follow up with patients when AI scheduling fails
+    this.actionGroupFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['dynamodb:PutItem'],
+      resources: [
+        // Clinic-specific callback tables
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/todaysdentalinsights-callback-*`,
+        // Default callback table as fallback
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/TodaysDentalInsightsCallbackN1-CallbackRequests`,
+      ],
     }));
 
     // Allow Bedrock Agent role to invoke the action group Lambda

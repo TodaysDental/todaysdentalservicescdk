@@ -1,9 +1,9 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand, UpdateCommand, PutCommand, GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
-import { 
-    ChimeSDKMeetingsClient, 
+import {
+    ChimeSDKMeetingsClient,
     CreateMeetingCommand,
-    CreateAttendeeCommand, 
+    CreateAttendeeCommand,
     DeleteMeetingCommand,
     StartMeetingTranscriptionCommand,
     StopMeetingTranscriptionCommand
@@ -17,16 +17,47 @@ import { enrichCallContext } from './utils/agent-selection';
 import { createCheckQueueForWork } from './utils/check-queue-for-work';
 import { generateUniqueCallPosition } from '../shared/utils/unique-id';
 import { startMediaPipeline, stopMediaPipeline, isRealTimeTranscriptionEnabled } from './utils/media-pipeline-manager';
-import { 
-    isPushNotificationsEnabled, 
-    sendIncomingCallToAgents, 
+import {
+    isPushNotificationsEnabled,
+    sendIncomingCallToAgents,
     sendMissedCallNotification,
-    type IncomingCallNotification 
+    type IncomingCallNotification
 } from './utils/push-notifications';
 // FIX: Import barge-in detector to clear speaking state when TTS completes
 import { bargeInDetector } from './utils/barge-in-detector';
 // FIX: Import call state machine for coordinated state management
 import { callStateMachine, CallEvent } from './utils/call-state-machine';
+
+// ========================================
+// NEW ADVANCED FEATURES - Chime Stack Improvements
+// ========================================
+import { CHIME_CONFIG, logChimeConfig } from './config';
+import {
+    // Performance tracking
+    startTrace, endTrace, startSpan, endSpan, timeOperation,
+    // Metrics
+    publishMetric, publishMetrics, MetricName, publishCallMetrics, publishQueueMetrics, publishAgentMetrics,
+    // PII Redaction
+    redactPII, getSafeLogData, redactTranscript,
+    // Audit Logging
+    logAuditEvent, createAuditEvent, AuditEventType, auditCallEvent,
+    // Sentiment Analysis
+    analyzeSentiment, processTranscriptionSegment, generateCallSentimentSummary, publishSentimentMetrics,
+    // Broadcast Ring
+    broadcastRingToAllAgents, claimBroadcastCall, handleBroadcastTimeout, isBroadcastEnabled,
+    // Overflow Routing
+    shouldTriggerOverflow, getOverflowClinics, fetchOverflowAgents, attemptOverflowRouting, isOverflowAgent,
+    // Smart Retry
+    withRetry, withCircuitBreaker, withRetryAndCircuitBreaker,
+    // Enhanced Agent Selection
+    scoreAgentEnhanced, rankAgentsEnhanced, fetchAgentPerformanceData,
+    // Quality Scoring
+    calculateQualityMetrics, saveQualityMetrics, shouldAlertOnQuality,
+    // Supervisor Tools
+    getMonitorableCalls, startSupervision, SupervisionMode, sendWhisperMessage,
+    // Call Summarizer
+    summarizeCall, saveCallSummary, generateQuickSummary,
+} from './utils';
 
 // This Lambda is the "brain" for call routing.
 // It is NOT triggered by API Gateway. It is triggered by the Chime SDK SIP Media Application.
@@ -138,27 +169,27 @@ async function stopMeetingTranscriptionForMeeting(meetingId: string): Promise<vo
 // Map format: { "+1234567890": "clinicId", ... }
 const ENABLE_AI_PHONE_NUMBERS = process.env.ENABLE_AI_PHONE_NUMBERS === 'true';
 const AI_PHONE_NUMBERS: Record<string, string> = (() => {
-  try {
-    return JSON.parse(process.env.AI_PHONE_NUMBERS_JSON || '{}');
-  } catch {
-    console.warn('[AI_PHONE_NUMBERS] Failed to parse AI_PHONE_NUMBERS_JSON, defaulting to empty');
-    return {};
-  }
+    try {
+        return JSON.parse(process.env.AI_PHONE_NUMBERS_JSON || '{}');
+    } catch {
+        console.warn('[AI_PHONE_NUMBERS] Failed to parse AI_PHONE_NUMBERS_JSON, defaulting to empty');
+        return {};
+    }
 })();
 
 /**
  * Check if a phone number is an AI-dedicated phone number
  */
 function isAiPhoneNumber(phoneNumber: string | null | undefined): boolean {
-  if (!phoneNumber || !ENABLE_AI_PHONE_NUMBERS) return false;
-  return phoneNumber in AI_PHONE_NUMBERS;
+    if (!phoneNumber || !ENABLE_AI_PHONE_NUMBERS) return false;
+    return phoneNumber in AI_PHONE_NUMBERS;
 }
 
 /**
  * Get clinic ID for an AI phone number
  */
 function getClinicIdForAiNumber(phoneNumber: string): string | undefined {
-  return AI_PHONE_NUMBERS[phoneNumber];
+    return AI_PHONE_NUMBERS[phoneNumber];
 }
 
 function isValidTransactionId(value: unknown): value is string {
@@ -171,7 +202,7 @@ const QUEUE_TIMEOUT = 24 * 60 * 60;
 const AVG_CALL_DURATION = 300;
 
 // Call states
-type CallStatus = 
+type CallStatus =
     | 'queued'              // Call is in the queue, waiting for an agent
     | 'ringing'             // Call is ringing to agents
     | 'connected'           // Call is connected to an agent
@@ -253,7 +284,7 @@ interface QueueEntry {
 async function addToQueue(clinicId: string, callId: string, phoneNumber: string): Promise<QueueEntry> {
     const now = Math.floor(Date.now() / 1000);
     const MAX_RETRIES = 3;
-    
+
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         // FIX #7: First check if this call already exists in the queue
         // This prevents duplicate entries if addToQueue is called multiple times for the same call
@@ -263,22 +294,22 @@ async function addToQueue(clinicId: string, callId: string, phoneNumber: string)
             KeyConditionExpression: 'callId = :callId',
             ExpressionAttributeValues: { ':callId': callId }
         }));
-        
+
         if (existingCalls && existingCalls.length > 0) {
             const existingEntry = existingCalls[0];
-            console.warn('[addToQueue] Call already exists in queue - returning existing entry', { 
-                clinicId, 
-                callId, 
+            console.warn('[addToQueue] Call already exists in queue - returning existing entry', {
+                clinicId,
+                callId,
                 existingStatus: existingEntry.status,
                 existingPosition: existingEntry.queuePosition,
                 attempt
             });
             return existingEntry as QueueEntry;
         }
-        
+
         // FIX #4: Use unique position generation
         const { queuePosition, uniquePositionId } = generateUniqueCallPosition();
-        
+
         const entry: QueueEntry = {
             clinicId,
             callId,
@@ -300,14 +331,14 @@ async function addToQueue(clinicId: string, callId: string, phoneNumber: string)
                 // FIX #10: Added callId uniqueness condition to prevent duplicates due to GSI eventual consistency
                 ConditionExpression: 'attribute_not_exists(clinicId) AND attribute_not_exists(queuePosition)'
             }));
-            
+
             console.log('[addToQueue] Successfully queued call', { clinicId, callId, queuePosition, attempt });
             return entry;
-            
+
         } catch (err: any) {
             if (err.name === 'ConditionalCheckFailedException') {
                 console.warn('[addToQueue] Position collision - will retry', { clinicId, callId, queuePosition, attempt });
-                
+
                 // FIX #10: Add small delay before retry to allow GSI replication
                 if (attempt < MAX_RETRIES) {
                     await new Promise(resolve => setTimeout(resolve, 50 * Math.pow(2, attempt - 1)));
@@ -318,7 +349,7 @@ async function addToQueue(clinicId: string, callId: string, phoneNumber: string)
             }
         }
     }
-    
+
     // FIX #10: Final check after all retries - the call should exist by now due to eventual consistency
     const { Items: finalCheck } = await ddb.send(new QueryCommand({
         TableName: CALL_QUEUE_TABLE_NAME,
@@ -326,12 +357,12 @@ async function addToQueue(clinicId: string, callId: string, phoneNumber: string)
         KeyConditionExpression: 'callId = :callId',
         ExpressionAttributeValues: { ':callId': callId }
     }));
-    
+
     if (finalCheck && finalCheck.length > 0) {
         console.warn('[addToQueue] Found call after retries exhausted - likely added by parallel request', { callId });
         return finalCheck[0] as QueueEntry;
     }
-    
+
     // This should rarely happen - throw error for investigation
     throw new Error(`[addToQueue] Failed to queue call after ${MAX_RETRIES} attempts: ${callId}`);
 }
@@ -345,7 +376,7 @@ function getVipPhoneNumbers(): Set<string> {
     if (vipPhoneNumbersCache !== null) {
         return vipPhoneNumbersCache;
     }
-    
+
     // Parse VIP phone numbers from environment variable (once per cold start)
     try {
         const raw = process.env.VIP_PHONE_NUMBERS;
@@ -356,7 +387,7 @@ function getVipPhoneNumbers(): Set<string> {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
             vipPhoneNumbersCache = new Set<string>(parsed.map((v) => String(v)));
-            console.log('[inbound-router] VIP phone numbers loaded', { 
+            console.log('[inbound-router] VIP phone numbers loaded', {
                 count: vipPhoneNumbersCache.size
             });
         } else {
@@ -378,14 +409,14 @@ async function getQueuePosition(clinicId: string, callId: string): Promise<{ pos
             KeyConditionExpression: 'callId = :callId',
             ExpressionAttributeValues: { ':callId': callId }
         }));
-        
+
         if (!thisCallItems?.[0]) return null;
 
         const thisCall = thisCallItems[0];
         const { queueEntryTime, status } = thisCall;
-        
+
         if (status !== 'queued' || !queueEntryTime) return null;
-        
+
         const { Items: allQueuedCalls } = await ddb.send(new QueryCommand({
             TableName: CALL_QUEUE_TABLE_NAME,
             KeyConditionExpression: 'clinicId = :cid',
@@ -395,17 +426,17 @@ async function getQueuePosition(clinicId: string, callId: string): Promise<{ pos
                 ':cid': clinicId,
                 ':status': 'queued'
             },
-            ConsistentRead: true 
+            ConsistentRead: true
         }));
-        
+
         if (!allQueuedCalls) return null;
-        
+
         const sortedCalls = allQueuedCalls.sort((a, b) => a.queueEntryTime - b.queueEntryTime);
         const index = sortedCalls.findIndex(call => call.callId === callId);
-        if (index === -1) return null; 
-        
+        if (index === -1) return null;
+
         const position = index + 1;
-        
+
         // FIX #9: PERFORMANCE WARNING - This query scans ALL online agents across all clinics
         // then filters client-side. For large contact centers, consider adding a composite
         // GSI with partition key 'clinicId' and sort key 'status' for O(1) clinic-specific queries.
@@ -448,14 +479,14 @@ async function removeFromQueue(clinicId: string, callId: string, status: QueueEn
 
     const currentPosition = Items[0].queuePosition;
     const currentStatus = Items[0].status;
-    
+
     if (!isValidStateTransition(currentStatus as CallStatus, status as CallStatus)) {
         console.error(`[removeFromQueue] Invalid state transition from ${currentStatus} to ${status} for call ${callId}`);
         throw new Error(`Cannot transition call from ${currentStatus} to ${status}`);
     }
-    
+
     console.log(`[removeFromQueue] Valid state transition from ${currentStatus} to ${status} for call ${callId}`);
-    
+
     try {
         await ddb.send(new UpdateCommand({
             TableName: CALL_QUEUE_TABLE_NAME,
@@ -856,13 +887,13 @@ async function createAiMeetingWithPipeline(params: {
 } | null> {
     const { callId, clinicId, aiAgentId, aiSessionId, callerNumber } = params;
     const startTime = Date.now();
-    
+
     for (let attempt = 1; attempt <= MEETING_CREATION_MAX_RETRIES; attempt++) {
         try {
             console.log('[createAiMeetingWithPipeline] Creating AI meeting for real-time transcription', {
                 callId, clinicId, aiAgentId, attempt, maxRetries: MEETING_CREATION_MAX_RETRIES
             });
-            
+
             // 1. Create the meeting
             // ExternalMeetingId max length is 64 chars, so use shortened format
             const shortClinicId = clinicId.substring(0, 20); // Truncate clinic ID
@@ -877,7 +908,7 @@ async function createAiMeetingWithPipeline(params: {
                     },
                 },
             }));
-            
+
             if (!meetingResponse.Meeting?.MeetingId) {
                 console.error('[createAiMeetingWithPipeline] Failed to create meeting - no MeetingId returned', { attempt });
                 if (attempt < MEETING_CREATION_MAX_RETRIES) {
@@ -888,10 +919,10 @@ async function createAiMeetingWithPipeline(params: {
                 emitModeSelectionMetric('meeting-kvs', false, Date.now() - startTime);
                 return null;
             }
-            
+
             const meetingId = meetingResponse.Meeting.MeetingId;
             console.log('[createAiMeetingWithPipeline] Meeting created:', { meetingId, attempt });
-            
+
             // 2. Create attendee for the caller (PSTN participant)
             const attendeeResponse = await chime.send(new CreateAttendeeCommand({
                 MeetingId: meetingId,
@@ -902,7 +933,7 @@ async function createAiMeetingWithPipeline(params: {
                     Content: 'None',
                 },
             }));
-            
+
             if (!attendeeResponse.Attendee) {
                 console.error('[createAiMeetingWithPipeline] Failed to create attendee', { meetingId, attempt });
                 await cleanupMeeting(meetingId);
@@ -913,52 +944,52 @@ async function createAiMeetingWithPipeline(params: {
                 emitModeSelectionMetric('meeting-kvs', false, Date.now() - startTime);
                 return null;
             }
-            
+
             console.log('[createAiMeetingWithPipeline] Attendee created:', attendeeResponse.Attendee.AttendeeId);
-            
+
             // NOTE: We do NOT start Media Insights Pipeline here because:
             // 1. KVS streams only exist AFTER attendees join and start publishing media
             // 2. The caller hasn't joined the meeting yet (JoinChimeMeeting executes later)
             // 3. Waiting for KVS would block the Lambda for 10+ seconds and cause timeout
             //
             // The pipeline is started in ACTION_SUCCESSFUL handler after JoinChimeMeeting succeeds.
-            
+
             console.log('[createAiMeetingWithPipeline] Meeting ready for caller to join', {
                 meetingId,
                 duration: Date.now() - startTime,
                 attempt
             });
-            
+
             emitModeSelectionMetric('meeting-kvs', true, Date.now() - startTime);
-            
+
             return {
                 meetingInfo: meetingResponse.Meeting,
                 attendeeInfo: attendeeResponse.Attendee,
                 pipelineId: null, // Pipeline started after JoinChimeMeeting succeeds
             };
-            
+
         } catch (error: any) {
-            const isRetryable = error?.name === 'ServiceUnavailableException' || 
-                               error?.name === 'ThrottlingException' ||
-                               error?.$retryable?.throttling === true;
-            
+            const isRetryable = error?.name === 'ServiceUnavailableException' ||
+                error?.name === 'ThrottlingException' ||
+                error?.$retryable?.throttling === true;
+
             console.error('[createAiMeetingWithPipeline] Error:', {
                 error: error?.message || error,
                 errorName: error?.name,
                 attempt,
                 isRetryable
             });
-            
+
             if (isRetryable && attempt < MEETING_CREATION_MAX_RETRIES) {
                 await sleep(MEETING_CREATION_RETRY_DELAY_MS * attempt);
                 continue;
             }
-            
+
             emitModeSelectionMetric('meeting-kvs', false, Date.now() - startTime);
             return null;
         }
     }
-    
+
     console.error('[createAiMeetingWithPipeline] Exhausted all retries');
     emitModeSelectionMetric('meeting-kvs', false, Date.now() - startTime);
     return null;
@@ -1021,10 +1052,10 @@ async function isClinicOpen(clinicId: string): Promise<boolean> {
         }
 
         const now = new Date();
-        
+
         // Support both field names: timeZone (ClinicHoursStack) and timezone (legacy)
         const timezone = Item.timeZone || Item.timezone || 'America/New_York';
-        
+
         // Get current time in clinic's timezone
         const options: Intl.DateTimeFormatOptions = {
             timeZone: timezone,
@@ -1033,10 +1064,10 @@ async function isClinicOpen(clinicId: string): Promise<boolean> {
             minute: '2-digit',
             hour12: false,
         };
-        
+
         const formatter = new Intl.DateTimeFormat('en-US', options);
         const parts = formatter.formatToParts(now);
-        
+
         const dayOfWeek = parts.find(p => p.type === 'weekday')?.value?.toLowerCase() || '';
         const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0');
         const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0');
@@ -1046,12 +1077,12 @@ async function isClinicOpen(clinicId: string): Promise<boolean> {
         // 1. Direct on root: Item[dayOfWeek] (ClinicHoursStack format)
         // 2. Nested under hours: Item.hours[dayOfWeek] (legacy format)
         const todayHours = Item[dayOfWeek] || Item.hours?.[dayOfWeek];
-        
+
         if (!todayHours) {
             console.log('[isClinicOpen] No hours for today - clinic closed', { clinicId, dayOfWeek });
             return false;
         }
-        
+
         if (todayHours.closed) {
             console.log('[isClinicOpen] Clinic is marked closed today', { clinicId, dayOfWeek });
             return false;
@@ -1068,16 +1099,16 @@ async function isClinicOpen(clinicId: string): Promise<boolean> {
         const closeTime = closeHour * 60 + closeMin;
 
         const isOpen = currentTime >= openTime && currentTime < closeTime;
-        console.log('[isClinicOpen] Clinic hours check', { 
-            clinicId, 
-            dayOfWeek, 
+        console.log('[isClinicOpen] Clinic hours check', {
+            clinicId,
+            dayOfWeek,
             timezone,
             currentTime: `${hour}:${minute}`,
             openTime: todayHours.open,
             closeTime: todayHours.close,
-            isOpen 
+            isOpen
         });
-        
+
         return isOpen;
     } catch (error) {
         console.error('[isClinicOpen] Error checking clinic hours:', error);
@@ -1159,10 +1190,10 @@ async function getVoiceAiAgentForClinic(clinicId: string): Promise<{ agentId: st
             return null;
         }
 
-        console.log('[getVoiceAiAgentForClinic] Found voice AI agent', { 
-            clinicId, 
-            agentId, 
-            agentName: agent.name 
+        console.log('[getVoiceAiAgentForClinic] Found voice AI agent', {
+            clinicId,
+            agentId,
+            agentName: agent.name
         });
 
         return {
@@ -1340,9 +1371,9 @@ async function routeInboundCallToVoiceAi(params: {
     let meetingInfo: any = null;
     let attendeeInfo: any = null;
     const aiSessionId = voiceAiResponse[0]?.sessionId || randomUUID();
-    
+
     // Extract initial greeting from the AI response to play after meeting join
-    const initialGreeting = voiceAiResponse.find(r => r.action === 'SPEAK')?.text || 
+    const initialGreeting = voiceAiResponse.find(r => r.action === 'SPEAK')?.text ||
         "Hello! Thank you for calling. I'm your AI assistant. How may I help you today?";
 
     // Try meeting-based KVS first for best latency
@@ -1494,20 +1525,20 @@ function parsePhoneNumber(sipUri: string): string | null {
     try {
         const match = sipUri.match(/sip:(\+\d+)@/);
         if (!match) return null;
-        
+
         const phoneNumber = match[1];
-        
+
         // FIX #10: Validate E.164 format
         if (!E164_REGEX.test(phoneNumber)) {
-            console.warn('[parsePhoneNumber] Invalid E.164 format detected', { 
+            console.warn('[parsePhoneNumber] Invalid E.164 format detected', {
                 raw: phoneNumber,
-                reason: phoneNumber.length > 16 ? 'too long' : 
-                        phoneNumber.length < 2 ? 'too short' : 
+                reason: phoneNumber.length > 16 ? 'too long' :
+                    phoneNumber.length < 2 ? 'too short' :
                         'invalid format'
             });
             return null;
         }
-        
+
         return phoneNumber;
     } catch {
         return null;
@@ -1537,10 +1568,10 @@ function getPstnLegCallId(event: any): string | undefined {
     if (legAParticipant?.CallId) {
         return legAParticipant.CallId;
     }
-    
+
     // FIX #14: Second priority - look for PSTN leg type specifically
     // Don't fall back to participants[0] as it might be a WebRTC/SIP leg
-    const pstnParticipant = participants.find((participant: any) => 
+    const pstnParticipant = participants.find((participant: any) =>
         participant.ParticipantTag === 'LEG-B' || // Outbound PSTN is typically LEG-B
         participant.Direction === 'Outbound' ||
         participant.CallLegType === 'PSTN'
@@ -1548,10 +1579,10 @@ function getPstnLegCallId(event: any): string | undefined {
     if (pstnParticipant?.CallId) {
         return pstnParticipant.CallId;
     }
-    
+
     // FIX #14: Only return undefined, do NOT fall back to random participant
     // This prevents operations being performed on wrong call leg
-    console.warn('[getPstnLegCallId] No PSTN leg found in participants', { 
+    console.warn('[getPstnLegCallId] No PSTN leg found in participants', {
         participantCount: participants.length,
         tags: participants.map((p: any) => p.ParticipantTag),
         types: participants.map((p: any) => p.CallLegType)
@@ -1576,354 +1607,235 @@ export const handler = async (event: any): Promise<any> => {
     const pstnLegCallId = getPstnLegCallId(event);
 
     try {
-            switch (eventType) {
-                // Case 1: A new call from the PSTN (customer) to one of our clinic numbers
-                case 'NEW_INBOUND_CALL': {
-                    const sipHeaders = event?.CallDetails?.SipHeaders || {};
+        switch (eventType) {
+            // Case 1: A new call from the PSTN (customer) to one of our clinic numbers
+            case 'NEW_INBOUND_CALL': {
+                const sipHeaders = event?.CallDetails?.SipHeaders || {};
 
-                    const getPhoneFromValue = (value?: string | null) => {
-                        if (!value) return null;
-                        if (value.startsWith('+')) return value;
-                        return parsePhoneNumber(value);
-                    };
+                const getPhoneFromValue = (value?: string | null) => {
+                    if (!value) return null;
+                    if (value.startsWith('+')) return value;
+                    return parsePhoneNumber(value);
+                };
 
-                    const participants = event?.CallDetails?.Participants || [];
-                    const participantTo = participants[0]?.To;
-                    const participantFrom = participants[0]?.From;
+                const participants = event?.CallDetails?.Participants || [];
+                const participantTo = participants[0]?.To;
+                const participantFrom = participants[0]?.From;
 
-                    const toPhoneNumber =
-                        getPhoneFromValue(typeof sipHeaders.To === 'string' ? sipHeaders.To : null) ||
-                        getPhoneFromValue(typeof participantTo === 'string' ? participantTo : null);
+                const toPhoneNumber =
+                    getPhoneFromValue(typeof sipHeaders.To === 'string' ? sipHeaders.To : null) ||
+                    getPhoneFromValue(typeof participantTo === 'string' ? participantTo : null);
 
-                    const fromPhoneNumber =
-                        getPhoneFromValue(typeof sipHeaders.From === 'string' ? sipHeaders.From : null) ||
-                        getPhoneFromValue(typeof participantFrom === 'string' ? participantFrom : null) ||
-                        'Unknown';
+                const fromPhoneNumber =
+                    getPhoneFromValue(typeof sipHeaders.From === 'string' ? sipHeaders.From : null) ||
+                    getPhoneFromValue(typeof participantFrom === 'string' ? participantFrom : null) ||
+                    'Unknown';
 
-                    console.log('[NEW_INBOUND_CALL] Received inbound call', { callId, to: toPhoneNumber, from: fromPhoneNumber });
+                console.log('[NEW_INBOUND_CALL] Received inbound call', { callId, to: toPhoneNumber, from: fromPhoneNumber });
 
-                    if (!toPhoneNumber) {
-                        console.error("Could not parse 'To' phone number from event", {
-                            rawSipTo: event.CallDetails?.SipHeaders?.To,
-                            rawParticipantTo: participantTo,
-                        });
+                if (!toPhoneNumber) {
+                    console.error("Could not parse 'To' phone number from event", {
+                        rawSipTo: event.CallDetails?.SipHeaders?.To,
+                        rawParticipantTo: participantTo,
+                    });
+                    return buildActions([buildHangupAction('There was an error connecting your call.')]);
+                }
+
+                // ========== AI PHONE NUMBER CHECK (FIRST) ==========
+                // If this is an AI-dedicated phone number, route directly to Voice AI
+                // without checking business hours or looking up the clinic via GSI.
+                if (isAiPhoneNumber(toPhoneNumber)) {
+                    const aiClinicId = getClinicIdForAiNumber(toPhoneNumber);
+                    console.log(`[NEW_INBOUND_CALL] AI PHONE NUMBER detected - routing directly to Voice AI`, {
+                        callId,
+                        toPhoneNumber,
+                        clinicId: aiClinicId,
+                        callerNumber: fromPhoneNumber,
+                    });
+
+                    if (!aiClinicId) {
+                        console.error('[NEW_INBOUND_CALL] AI phone number has no clinic mapping');
                         return buildActions([buildHangupAction('There was an error connecting your call.')]);
                     }
+                    return await routeInboundCallToVoiceAi({
+                        clinicId: aiClinicId,
+                        callId,
+                        fromPhoneNumber,
+                        pstnLegCallId,
+                        isAiPhoneNumber: true, // Direct AI routing (no hours check needed)
+                        source: 'ai_phone_number',
+                    });
+                }
 
-                    // ========== AI PHONE NUMBER CHECK (FIRST) ==========
-                    // If this is an AI-dedicated phone number, route directly to Voice AI
-                    // without checking business hours or looking up the clinic via GSI.
-                    if (isAiPhoneNumber(toPhoneNumber)) {
-                        const aiClinicId = getClinicIdForAiNumber(toPhoneNumber);
-                        console.log(`[NEW_INBOUND_CALL] AI PHONE NUMBER detected - routing directly to Voice AI`, {
+                // ========== REGULAR CALL ROUTING ==========
+                // 1. Find which clinic was called
+                // (Assuming you have a GSI named 'phoneNumber-index' on your ClinicsTable)
+                const { Items: clinics } = await ddb.send(new QueryCommand({
+                    TableName: CLINICS_TABLE_NAME,
+                    IndexName: 'phoneNumber-index', // Make sure this GSI exists
+                    KeyConditionExpression: 'phoneNumber = :num',
+                    ExpressionAttributeValues: { ':num': toPhoneNumber },
+                }));
+
+                if (!clinics || clinics.length === 0) {
+                    console.warn(`No clinic found for number ${toPhoneNumber}`);
+                    return buildActions([buildHangupAction('The number you dialed is not in service.')]);
+                }
+                const clinic = clinics[0];
+                const clinicId = clinic.clinicId;
+                const aiPhoneNumber = typeof clinic.aiPhoneNumber === 'string' ? clinic.aiPhoneNumber.trim() : '';
+                console.log(`[NEW_INBOUND_CALL] Call is for clinic ${clinicId}`);
+
+                // ========== AFTER-HOURS AI CHECK ==========
+                // Check if clinic is closed and Voice AI should handle the call
+                if (ENABLE_AFTER_HOURS_AI) {
+                    const clinicOpen = await isClinicOpen(clinicId);
+
+                    if (!clinicOpen) {
+                        console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED - routing to AI via Chime SDK Meetings`, {
                             callId,
-                            toPhoneNumber,
-                            clinicId: aiClinicId,
+                            clinicId,
                             callerNumber: fromPhoneNumber,
                         });
 
-                        if (!aiClinicId) {
-                            console.error('[NEW_INBOUND_CALL] AI phone number has no clinic mapping');
-                            return buildActions([buildHangupAction('There was an error connecting your call.')]);
-                        }
-                        return await routeInboundCallToVoiceAi({
-                            clinicId: aiClinicId,
+                        // Route to Voice AI using Chime SDK Meetings architecture
+                        // This creates a meeting, adds the caller as attendee, and enables real-time transcription
+                        return routeInboundCallToVoiceAi({
                             callId,
+                            pstnLegCallId: pstnLegCallId || callId,
                             fromPhoneNumber,
-                            pstnLegCallId,
-                            isAiPhoneNumber: true, // Direct AI routing (no hours check needed)
-                            source: 'ai_phone_number',
+                            clinicId,
+                            isAiPhoneNumber: false,
+                            source: 'after_hours_forward'
                         });
                     }
 
-                    // ========== REGULAR CALL ROUTING ==========
-                    // 1. Find which clinic was called
-                    // (Assuming you have a GSI named 'phoneNumber-index' on your ClinicsTable)
-                    const { Items: clinics } = await ddb.send(new QueryCommand({
-                        TableName: CLINICS_TABLE_NAME,
-                        IndexName: 'phoneNumber-index', // Make sure this GSI exists
-                        KeyConditionExpression: 'phoneNumber = :num',
-                        ExpressionAttributeValues: { ':num': toPhoneNumber },
+                    console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is OPEN - proceeding with human agent routing`);
+                }
+
+                // 2. Build call context (priority, VIP, etc.)
+                const callContext = await enrichCallContext(
+                    ddb,
+                    callId,
+                    clinicId,
+                    fromPhoneNumber,
+                    CALL_QUEUE_TABLE_NAME,
+                    getVipPhoneNumbers()
+                );
+
+                // Always ensure a queue record exists for this call so we can:
+                // - fairly distribute idle agents across multiple waiting calls
+                // - fall back to queued state if no one can be rung
+                // - support consistent call lookups via callId-index
+                const queueEntry = await addToQueue(clinicId, callId, fromPhoneNumber);
+
+                // Persist enriched routing metadata so queued calls retain correct priority
+                try {
+                    const routingUpdateParts: string[] = [
+                        'priority = :priority',
+                        'isVip = :isVip',
+                        'isCallback = :isCallback',
+                        'previousCallCount = :previousCallCount',
+                        'updatedAt = :updatedAt'
+                    ];
+                    const routingValues: Record<string, any> = {
+                        ':priority': callContext.priority || 'normal',
+                        ':isVip': !!callContext.isVip,
+                        ':isCallback': !!callContext.isCallback,
+                        ':previousCallCount': typeof callContext.previousCallCount === 'number' ? callContext.previousCallCount : 0,
+                        ':updatedAt': new Date().toISOString(),
+                    };
+
+                    // Only set previousAgentId if known (avoid writing undefined)
+                    if (typeof callContext.previousAgentId === 'string' && callContext.previousAgentId.length > 0) {
+                        routingUpdateParts.push('previousAgentId = :previousAgentId');
+                        routingValues[':previousAgentId'] = callContext.previousAgentId;
+                    }
+                    if (Array.isArray(callContext.requiredSkills) && callContext.requiredSkills.length > 0) {
+                        routingUpdateParts.push('requiredSkills = :requiredSkills');
+                        routingValues[':requiredSkills'] = callContext.requiredSkills;
+                    }
+                    if (Array.isArray(callContext.preferredSkills) && callContext.preferredSkills.length > 0) {
+                        routingUpdateParts.push('preferredSkills = :preferredSkills');
+                        routingValues[':preferredSkills'] = callContext.preferredSkills;
+                    }
+                    if (typeof callContext.language === 'string' && callContext.language.length > 0) {
+                        routingUpdateParts.push('#language = :language');
+                        routingValues[':language'] = callContext.language;
+                    }
+
+                    await ddb.send(new UpdateCommand({
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        Key: { clinicId, queuePosition: queueEntry.queuePosition },
+                        UpdateExpression: `SET ${routingUpdateParts.join(', ')}`,
+                        ExpressionAttributeNames: {
+                            ...(typeof callContext.language === 'string' && callContext.language.length > 0 ? { '#language': 'language' } : {}),
+                        },
+                        ExpressionAttributeValues: routingValues,
                     }));
+                } catch (metaErr) {
+                    console.warn('[NEW_INBOUND_CALL] Failed to persist routing metadata (non-fatal):', metaErr);
+                }
 
-                    if (!clinics || clinics.length === 0) {
-                        console.warn(`No clinic found for number ${toPhoneNumber}`);
-                        return buildActions([buildHangupAction('The number you dialed is not in service.')]);
-                    }
-                    const clinic = clinics[0];
-                    const clinicId = clinic.clinicId;
-                    const aiPhoneNumber = typeof clinic.aiPhoneNumber === 'string' ? clinic.aiPhoneNumber.trim() : '';
-                    console.log(`[NEW_INBOUND_CALL] Call is for clinic ${clinicId}`);
+                let assignmentSucceeded = false;
 
-                    // ========== AFTER-HOURS AI CHECK ==========
-                    // Check if clinic is closed and Voice AI should handle the call
-                    if (ENABLE_AFTER_HOURS_AI) {
-                        const clinicOpen = await isClinicOpen(clinicId);
-                        
-                        if (!clinicOpen) {
-                            console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED - routing to AI via Chime SDK Meetings`, {
-                                callId,
-                                clinicId,
-                                callerNumber: fromPhoneNumber,
-                            });
-
-                            // Route to Voice AI using Chime SDK Meetings architecture
-                            // This creates a meeting, adds the caller as attendee, and enables real-time transcription
-                            return routeInboundCallToVoiceAi({
-                                callId,
-                                pstnLegCallId: pstnLegCallId || callId,
-                                fromPhoneNumber,
-                                clinicId,
-                                isAiPhoneNumber: false,
-                                source: 'after_hours_forward'
-                            });
-                        }
-                        
-                        console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is OPEN - proceeding with human agent routing`);
-                    }
-
-                    // 2. Build call context (priority, VIP, etc.)
-                    const callContext = await enrichCallContext(
+                // FAIR-SHARE RINGING:
+                // Trigger clinic-level dispatcher which splits idle agents across multiple waiting calls.
+                // If this is the only waiting call, it will still ring all available idle agents (up to MAX_RING_AGENTS).
+                try {
+                    const checkQueueForWork = createCheckQueueForWork({
                         ddb,
-                        callId,
-                        clinicId,
-                        fromPhoneNumber,
-                        CALL_QUEUE_TABLE_NAME,
-                        getVipPhoneNumbers()
+                        callQueueTableName: CALL_QUEUE_TABLE_NAME,
+                        agentPresenceTableName: AGENT_PRESENCE_TABLE_NAME,
+                    });
+                    await checkQueueForWork('SYSTEM', { activeClinicIds: [clinicId] } as any);
+                } catch (dispatchErr) {
+                    console.warn('[NEW_INBOUND_CALL] Fair-share dispatch failed (non-fatal):', dispatchErr);
+                }
+
+                // Determine whether THIS call is currently ringing after dispatch.
+                try {
+                    const { Item: refreshedCall } = await ddb.send(new GetCommand({
+                        TableName: CALL_QUEUE_TABLE_NAME,
+                        Key: { clinicId, queuePosition: queueEntry.queuePosition },
+                        ConsistentRead: true
+                    }));
+                    assignmentSucceeded = !!(
+                        refreshedCall &&
+                        refreshedCall.status === 'ringing' &&
+                        Array.isArray(refreshedCall.agentIds) &&
+                        refreshedCall.agentIds.length > 0
                     );
+                } catch (refreshErr) {
+                    console.warn('[NEW_INBOUND_CALL] Failed to read call state after dispatch (non-fatal):', refreshErr);
+                }
 
-                    // Always ensure a queue record exists for this call so we can:
-                    // - fairly distribute idle agents across multiple waiting calls
-                    // - fall back to queued state if no one can be rung
-                    // - support consistent call lookups via callId-index
-                    const queueEntry = await addToQueue(clinicId, callId, fromPhoneNumber);
+                if (assignmentSucceeded) {
+                    console.log(`[NEW_INBOUND_CALL] Placing customer ${callId} on hold while ringing agent(s).`);
 
-                    // Persist enriched routing metadata so queued calls retain correct priority
-                    try {
-                        const routingUpdateParts: string[] = [
-                            'priority = :priority',
-                            'isVip = :isVip',
-                            'isCallback = :isCallback',
-                            'previousCallCount = :previousCallCount',
-                            'updatedAt = :updatedAt'
-                        ];
-                        const routingValues: Record<string, any> = {
-                            ':priority': callContext.priority || 'normal',
-                            ':isVip': !!callContext.isVip,
-                            ':isCallback': !!callContext.isCallback,
-                            ':previousCallCount': typeof callContext.previousCallCount === 'number' ? callContext.previousCallCount : 0,
-                            ':updatedAt': new Date().toISOString(),
-                        };
+                    // Start call recording if enabled
+                    const enableRecording = process.env.ENABLE_CALL_RECORDING === 'true';
+                    const recordingsBucket = process.env.RECORDINGS_BUCKET;
+                    const actions = [];
 
-                        // Only set previousAgentId if known (avoid writing undefined)
-                        if (typeof callContext.previousAgentId === 'string' && callContext.previousAgentId.length > 0) {
-                            routingUpdateParts.push('previousAgentId = :previousAgentId');
-                            routingValues[':previousAgentId'] = callContext.previousAgentId;
-                        }
-                        if (Array.isArray(callContext.requiredSkills) && callContext.requiredSkills.length > 0) {
-                            routingUpdateParts.push('requiredSkills = :requiredSkills');
-                            routingValues[':requiredSkills'] = callContext.requiredSkills;
-                        }
-                        if (Array.isArray(callContext.preferredSkills) && callContext.preferredSkills.length > 0) {
-                            routingUpdateParts.push('preferredSkills = :preferredSkills');
-                            routingValues[':preferredSkills'] = callContext.preferredSkills;
-                        }
-                        if (typeof callContext.language === 'string' && callContext.language.length > 0) {
-                            routingUpdateParts.push('#language = :language');
-                            routingValues[':language'] = callContext.language;
-                        }
+                    if (enableRecording && recordingsBucket && pstnLegCallId) {
+                        console.log(`[NEW_INBOUND_CALL] Starting recording for call ${callId}`);
+                        actions.push(buildStartCallRecordingAction(pstnLegCallId, recordingsBucket));
 
-                        await ddb.send(new UpdateCommand({
-                            TableName: CALL_QUEUE_TABLE_NAME,
-                            Key: { clinicId, queuePosition: queueEntry.queuePosition },
-                            UpdateExpression: `SET ${routingUpdateParts.join(', ')}`,
-                            ExpressionAttributeNames: {
-                                ...(typeof callContext.language === 'string' && callContext.language.length > 0 ? { '#language': 'language' } : {}),
-                            },
-                            ExpressionAttributeValues: routingValues,
-                        }));
-                    } catch (metaErr) {
-                        console.warn('[NEW_INBOUND_CALL] Failed to persist routing metadata (non-fatal):', metaErr);
-                    }
+                        // Update call queue with recording metadata
+                        try {
+                            const { Items: callRecords } = await ddb.send(new QueryCommand({
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                IndexName: 'callId-index',
+                                KeyConditionExpression: 'callId = :callId',
+                                ExpressionAttributeValues: { ':callId': callId }
+                            }));
 
-                    let assignmentSucceeded = false;
-
-                    // FAIR-SHARE RINGING:
-                    // Trigger clinic-level dispatcher which splits idle agents across multiple waiting calls.
-                    // If this is the only waiting call, it will still ring all available idle agents (up to MAX_RING_AGENTS).
-                    try {
-                        const checkQueueForWork = createCheckQueueForWork({
-                            ddb,
-                            callQueueTableName: CALL_QUEUE_TABLE_NAME,
-                            agentPresenceTableName: AGENT_PRESENCE_TABLE_NAME,
-                        });
-                        await checkQueueForWork('SYSTEM', { activeClinicIds: [clinicId] } as any);
-                    } catch (dispatchErr) {
-                        console.warn('[NEW_INBOUND_CALL] Fair-share dispatch failed (non-fatal):', dispatchErr);
-                    }
-
-                    // Determine whether THIS call is currently ringing after dispatch.
-                    try {
-                        const { Item: refreshedCall } = await ddb.send(new GetCommand({
-                            TableName: CALL_QUEUE_TABLE_NAME,
-                            Key: { clinicId, queuePosition: queueEntry.queuePosition },
-                            ConsistentRead: true
-                        }));
-                        assignmentSucceeded = !!(
-                            refreshedCall &&
-                            refreshedCall.status === 'ringing' &&
-                            Array.isArray(refreshedCall.agentIds) &&
-                            refreshedCall.agentIds.length > 0
-                        );
-                    } catch (refreshErr) {
-                        console.warn('[NEW_INBOUND_CALL] Failed to read call state after dispatch (non-fatal):', refreshErr);
-                    }
-
-                    if (assignmentSucceeded) {
-                        console.log(`[NEW_INBOUND_CALL] Placing customer ${callId} on hold while ringing agent(s).`);
-                        
-                        // Start call recording if enabled
-                        const enableRecording = process.env.ENABLE_CALL_RECORDING === 'true';
-                        const recordingsBucket = process.env.RECORDINGS_BUCKET;
-                        const actions = [];
-
-                        if (enableRecording && recordingsBucket && pstnLegCallId) {
-                            console.log(`[NEW_INBOUND_CALL] Starting recording for call ${callId}`);
-                            actions.push(buildStartCallRecordingAction(pstnLegCallId, recordingsBucket));
-                            
-                            // Update call queue with recording metadata
-                            try {
-                                const { Items: callRecords } = await ddb.send(new QueryCommand({
-                                    TableName: CALL_QUEUE_TABLE_NAME,
-                                    IndexName: 'callId-index',
-                                    KeyConditionExpression: 'callId = :callId',
-                                    ExpressionAttributeValues: { ':callId': callId }
-                                }));
-                                
-                                if (callRecords && callRecords[0]) {
-                                    const { clinicId, queuePosition } = callRecords[0];
-                                    await ddb.send(new UpdateCommand({
-                                        TableName: CALL_QUEUE_TABLE_NAME,
-                                        Key: { clinicId, queuePosition },
-                                        UpdateExpression: 'SET recordingStarted = :true, recordingStartTime = :now, pstnCallId = :pstnCallId',
-                                        ExpressionAttributeValues: {
-                                            ':true': true,
-                                            ':now': new Date().toISOString(),
-                                            ':pstnCallId': pstnLegCallId
-                                        }
-                                    }));
-                                    console.log('[NEW_INBOUND_CALL] Updated call record with pstnCallId:', pstnLegCallId);
-                                }
-                            } catch (recordErr) {
-                                console.error('[NEW_INBOUND_CALL] Error updating recording metadata:', recordErr);
-                            }
-                        }
-
-                        actions.push(
-                            buildSpeakAction(
-                                callContext.isVip
-                                    ? 'Thank you for calling. This call may be recorded for quality assurance. As a valued customer, we are connecting you with a specialist.'
-                                    : 'Thank you for calling. This call may be recorded for quality and training purposes. Please hold while we connect you with an available agent.'
-                            ),
-                            buildPauseAction(500),
-                            buildPlayAudioAction('hold-music.wav', 999)
-                        );
-
-                        return buildActions(actions);
-                    }
-
-                    console.log(`[NEW_INBOUND_CALL] No available Online agents for clinic ${clinicId} or assignment failed.`);
-
-                    // ========== AI FALLBACK WHEN NO AGENTS AVAILABLE ==========
-                    // If enabled, offer AI assistance while waiting
-                    if (ENABLE_AFTER_HOURS_AI) {
-                        const voiceAiAgent = await getVoiceAiAgentForClinic(clinicId);
-                        
-                        if (voiceAiAgent) {
-                            console.log(`[NEW_INBOUND_CALL] Offering AI assistance while no agents available`, {
-                                callId,
-                                clinicId,
-                                aiAgentId: voiceAiAgent.agentId
-                            });
-
-                            // Add to queue AND offer AI assistance
-                            try {
-                                const queueEntry = await addToQueue(clinicId, callId, fromPhoneNumber);
-                                
-                                // Update queue entry with AI info
+                            if (callRecords && callRecords[0]) {
+                                const { clinicId, queuePosition } = callRecords[0];
                                 await ddb.send(new UpdateCommand({
                                     TableName: CALL_QUEUE_TABLE_NAME,
-                                    Key: { clinicId, queuePosition: queueEntry.queuePosition },
-                                    UpdateExpression: 'SET aiAssistAvailable = :true, aiAgentId = :agentId',
-                                    ExpressionAttributeValues: {
-                                        ':true': true,
-                                        ':agentId': voiceAiAgent.agentId
-                                    }
-                                }));
-
-                                const queueInfo = await getQueuePosition(clinicId, callId);
-                                const waitMinutes = Math.ceil((queueInfo?.estimatedWaitTime || 120) / 60);
-
-                                return buildActions([
-                                    buildSpeakAction(
-                                        `All of our agents are currently assisting other customers. ` +
-                                        `Your estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
-                                        `While you wait, I can connect you with ToothFairy, our AI assistant, who can help with scheduling or answer common questions. ` +
-                                        `Press 1 to speak with the AI assistant, or stay on the line to wait for a human agent.`
-                                    ),
-                                    buildSpeakAndGetDigitsAction('Press 1 to speak with the AI assistant, or continue holding for a human agent.', 1, 15),
-                                ]);
-                            } catch (err) {
-                                console.warn('[NEW_INBOUND_CALL] Error setting up AI fallback:', err);
-                                // Continue to normal queue handling
-                            }
-                        }
-                    }
-
-                    // Standard queue handling
-                    console.log(`[NEW_INBOUND_CALL] Adding call to queue.`);
-                    try {
-                        // Queue entry was already created above; keep existing behavior/log shape.
-                        console.log('[NEW_INBOUND_CALL] Call is queued', { clinicId, callId, queueEntry });
-
-                        const queueInfo = await getQueuePosition(clinicId, callId);
-                        const waitMinutes = Math.ceil((queueInfo?.estimatedWaitTime || 120) / 60);
-                        const position = queueInfo?.position || 1;
-
-                        let message: string;
-                        if (callContext.isVip) {
-                            message =
-                                `All agents are currently assisting other customers. ` +
-                                `As a valued customer, you will be connected as soon as possible. ` +
-                                `Your estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
-                                `This call may be recorded for quality assurance.`;
-                        } else if (callContext.isCallback) {
-                            message =
-                                `Thank you for calling back. All agents are currently busy. ` +
-                                `You are number ${position} in line. ` +
-                                `The estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
-                                `This call may be recorded for quality and training purposes.`;
-                        } else {
-                            message =
-                                `All agents are currently busy. You are number ${position} in line. ` +
-                                `The estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
-                                `This call may be recorded for quality and training purposes. Please stay on the line.`;
-                        }
-
-                        // Start call recording if enabled
-                        const enableRecording = process.env.ENABLE_CALL_RECORDING === 'true';
-                        const recordingsBucket = process.env.RECORDINGS_BUCKET;
-                        const actions = [];
-
-                        if (enableRecording && recordingsBucket && pstnLegCallId) {
-                            console.log(`[NEW_INBOUND_CALL] Starting recording for queued call ${callId}`);
-                            actions.push(buildStartCallRecordingAction(pstnLegCallId, recordingsBucket));
-                            
-                            // Update call queue with recording metadata
-                            try {
-                                await ddb.send(new UpdateCommand({
-                                    TableName: CALL_QUEUE_TABLE_NAME,
-                                    Key: { clinicId, queuePosition: queueEntry.queuePosition },
+                                    Key: { clinicId, queuePosition },
                                     UpdateExpression: 'SET recordingStarted = :true, recordingStartTime = :now, pstnCallId = :pstnCallId',
                                     ExpressionAttributeValues: {
                                         ':true': true,
@@ -1931,34 +1843,153 @@ export const handler = async (event: any): Promise<any> => {
                                         ':pstnCallId': pstnLegCallId
                                     }
                                 }));
-                                console.log('[NEW_INBOUND_CALL] Updated queued call record with pstnCallId:', pstnLegCallId);
-                            } catch (recordErr) {
-                                console.error('[NEW_INBOUND_CALL] Error updating recording metadata:', recordErr);
+                                console.log('[NEW_INBOUND_CALL] Updated call record with pstnCallId:', pstnLegCallId);
                             }
+                        } catch (recordErr) {
+                            console.error('[NEW_INBOUND_CALL] Error updating recording metadata:', recordErr);
                         }
-
-                        actions.push(
-                            buildSpeakAction(message),
-                            buildPauseAction(500),
-                            buildPlayAudioAction('hold-music.wav', 999)
-                        );
-
-                        return buildActions(actions);
-                    } catch (queueErr) {
-                        console.error('Error queuing call:', queueErr);
-                        return buildActions([buildHangupAction('All agents are currently busy. Please try again later.')]);
                     }
 
+                    actions.push(
+                        buildSpeakAction(
+                            callContext.isVip
+                                ? 'Thank you for calling. This call may be recorded for quality assurance. As a valued customer, we are connecting you with a specialist.'
+                                : 'Thank you for calling. This call may be recorded for quality and training purposes. Please hold while we connect you with an available agent.'
+                        ),
+                        buildPauseAction(500),
+                        buildPlayAudioAction('hold-music.wav', 999)
+                    );
+
+                    return buildActions(actions);
                 }
+
+                console.log(`[NEW_INBOUND_CALL] No available Online agents for clinic ${clinicId} or assignment failed.`);
+
+                // ========== AI FALLBACK WHEN NO AGENTS AVAILABLE ==========
+                // If enabled, offer AI assistance while waiting
+                if (ENABLE_AFTER_HOURS_AI) {
+                    const voiceAiAgent = await getVoiceAiAgentForClinic(clinicId);
+
+                    if (voiceAiAgent) {
+                        console.log(`[NEW_INBOUND_CALL] Offering AI assistance while no agents available`, {
+                            callId,
+                            clinicId,
+                            aiAgentId: voiceAiAgent.agentId
+                        });
+
+                        // Add to queue AND offer AI assistance
+                        try {
+                            const queueEntry = await addToQueue(clinicId, callId, fromPhoneNumber);
+
+                            // Update queue entry with AI info
+                            await ddb.send(new UpdateCommand({
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                Key: { clinicId, queuePosition: queueEntry.queuePosition },
+                                UpdateExpression: 'SET aiAssistAvailable = :true, aiAgentId = :agentId',
+                                ExpressionAttributeValues: {
+                                    ':true': true,
+                                    ':agentId': voiceAiAgent.agentId
+                                }
+                            }));
+
+                            const queueInfo = await getQueuePosition(clinicId, callId);
+                            const waitMinutes = Math.ceil((queueInfo?.estimatedWaitTime || 120) / 60);
+
+                            return buildActions([
+                                buildSpeakAction(
+                                    `All of our agents are currently assisting other customers. ` +
+                                    `Your estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
+                                    `While you wait, I can connect you with ToothFairy, our AI assistant, who can help with scheduling or answer common questions. ` +
+                                    `Press 1 to speak with the AI assistant, or stay on the line to wait for a human agent.`
+                                ),
+                                buildSpeakAndGetDigitsAction('Press 1 to speak with the AI assistant, or continue holding for a human agent.', 1, 15),
+                            ]);
+                        } catch (err) {
+                            console.warn('[NEW_INBOUND_CALL] Error setting up AI fallback:', err);
+                            // Continue to normal queue handling
+                        }
+                    }
+                }
+
+                // Standard queue handling
+                console.log(`[NEW_INBOUND_CALL] Adding call to queue.`);
+                try {
+                    // Queue entry was already created above; keep existing behavior/log shape.
+                    console.log('[NEW_INBOUND_CALL] Call is queued', { clinicId, callId, queueEntry });
+
+                    const queueInfo = await getQueuePosition(clinicId, callId);
+                    const waitMinutes = Math.ceil((queueInfo?.estimatedWaitTime || 120) / 60);
+                    const position = queueInfo?.position || 1;
+
+                    let message: string;
+                    if (callContext.isVip) {
+                        message =
+                            `All agents are currently assisting other customers. ` +
+                            `As a valued customer, you will be connected as soon as possible. ` +
+                            `Your estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
+                            `This call may be recorded for quality assurance.`;
+                    } else if (callContext.isCallback) {
+                        message =
+                            `Thank you for calling back. All agents are currently busy. ` +
+                            `You are number ${position} in line. ` +
+                            `The estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
+                            `This call may be recorded for quality and training purposes.`;
+                    } else {
+                        message =
+                            `All agents are currently busy. You are number ${position} in line. ` +
+                            `The estimated wait time is ${waitMinutes} ${waitMinutes === 1 ? 'minute' : 'minutes'}. ` +
+                            `This call may be recorded for quality and training purposes. Please stay on the line.`;
+                    }
+
+                    // Start call recording if enabled
+                    const enableRecording = process.env.ENABLE_CALL_RECORDING === 'true';
+                    const recordingsBucket = process.env.RECORDINGS_BUCKET;
+                    const actions = [];
+
+                    if (enableRecording && recordingsBucket && pstnLegCallId) {
+                        console.log(`[NEW_INBOUND_CALL] Starting recording for queued call ${callId}`);
+                        actions.push(buildStartCallRecordingAction(pstnLegCallId, recordingsBucket));
+
+                        // Update call queue with recording metadata
+                        try {
+                            await ddb.send(new UpdateCommand({
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                Key: { clinicId, queuePosition: queueEntry.queuePosition },
+                                UpdateExpression: 'SET recordingStarted = :true, recordingStartTime = :now, pstnCallId = :pstnCallId',
+                                ExpressionAttributeValues: {
+                                    ':true': true,
+                                    ':now': new Date().toISOString(),
+                                    ':pstnCallId': pstnLegCallId
+                                }
+                            }));
+                            console.log('[NEW_INBOUND_CALL] Updated queued call record with pstnCallId:', pstnLegCallId);
+                        } catch (recordErr) {
+                            console.error('[NEW_INBOUND_CALL] Error updating recording metadata:', recordErr);
+                        }
+                    }
+
+                    actions.push(
+                        buildSpeakAction(message),
+                        buildPauseAction(500),
+                        buildPlayAudioAction('hold-music.wav', 999)
+                    );
+
+                    return buildActions(actions);
+                } catch (queueErr) {
+                    console.error('Error queuing call:', queueErr);
+                    return buildActions([buildHangupAction('All agents are currently busy. Please try again later.')]);
+                }
+
+            }
 
             // Case 2: A new call *from* our system (agent outbound call OR AI outbound call)
             // This is triggered by outbound-call.ts (human agent) or outbound-call-scheduler.ts (AI)
             case 'NEW_OUTBOUND_CALL': {
                 console.log(`[NEW_OUTBOUND_CALL] Initiated for call ${callId}`, args);
-                
+
                 const callType = args.callType;
                 const clinicId = args.fromClinicId || args.clinicId;
-                
+
                 // ========== AI OUTBOUND CALL ==========
                 // Scheduled AI-initiated call (e.g., appointment reminders)
                 if (callType === 'AiOutbound') {
@@ -1995,14 +2026,14 @@ export const handler = async (event: any): Promise<any> => {
                     // Play ringback tone while waiting
                     return buildActions([]);
                 }
-                
+
                 // ========== HUMAN AGENT OUTBOUND CALL ==========
                 // The outbound-call.ts Lambda has already created the call record
                 // and updated the agent's status to 'dialing'.
-                
+
                 const outboundAgentId = args.agentId;
                 const meetingId = args.meetingId;
-                
+
                 // Update agent presence with enhanced outbound call tracking
                 if (outboundAgentId) {
                     try {
@@ -2051,7 +2082,7 @@ export const handler = async (event: any): Promise<any> => {
                         console.warn('[NEW_OUTBOUND_CALL] Failed to update call record:', err);
                     }
                 }
-                
+
                 // The logic will be picked up by RINGING, CALL_ANSWERED, or HANGUP
                 return buildActions([]);
             }
@@ -2112,7 +2143,7 @@ export const handler = async (event: any): Promise<any> => {
                 // Return empty actions - just acknowledgment
                 return buildActions([]);
             }
-            
+
             // Case 3: Customer answers an outbound call (human agent OR AI)
             case 'CALL_ANSWERED': {
                 console.log(`[CALL_ANSWERED] Received for call ${callId}.`, args);
@@ -2133,7 +2164,7 @@ export const handler = async (event: any): Promise<any> => {
                     // Generate greeting based on purpose
                     let greeting = "Hello";
                     if (patientName) greeting = `Hello ${patientName}`;
-                    
+
                     switch (purpose) {
                         case 'appointment_reminder':
                             greeting += ". This is ToothFairy, your AI dental assistant, calling with a reminder about your upcoming appointment.";
@@ -2196,10 +2227,10 @@ export const handler = async (event: any): Promise<any> => {
                 }));
 
                 if (!callRecords || callRecords.length === 0) {
-                     console.error(`[CALL_ANSWERED] No call record found for callId ${callId}`);
-                     return buildActions([buildHangupAction()]);
+                    console.error(`[CALL_ANSWERED] No call record found for callId ${callId}`);
+                    return buildActions([buildHangupAction()]);
                 }
-                
+
                 const callRecord = callRecords[0];
                 const { meetingInfo, assignedAgentId, status } = callRecord;
 
@@ -2214,13 +2245,13 @@ export const handler = async (event: any): Promise<any> => {
                             MeetingId: meetingId,
                             ExternalUserId: `customer-pstn-${callId}`
                         }));
-                        
+
                         if (!customerAttendeeResponse.Attendee?.AttendeeId) {
                             throw new Error('Failed to create customer attendee for outbound call');
                         }
                         const customerAttendee = customerAttendeeResponse.Attendee;
                         console.log(`[CALL_ANSWERED] Created customer attendee ${customerAttendee.AttendeeId}`);
-                        
+
                         // 2. Update Call Queue Status
                         try {
                             const { Items: callRecords } = await ddb.send(new QueryCommand({
@@ -2229,7 +2260,7 @@ export const handler = async (event: any): Promise<any> => {
                                 KeyConditionExpression: 'callId = :id',
                                 ExpressionAttributeValues: { ':id': callId }
                             }));
-                            
+
                             if (callRecords && callRecords[0]) {
                                 const { clinicId, queuePosition } = callRecords[0];
                                 await ddb.send(new UpdateCommand({
@@ -2244,7 +2275,7 @@ export const handler = async (event: any): Promise<any> => {
                                     }
                                 }));
                                 console.log(`[CALL_ANSWERED] Call queue updated for ${callId}`);
-                                
+
                                 // FIX: Update the agent's status to 'OnCall'
                                 await ddb.send(new UpdateCommand({
                                     TableName: AGENT_PRESENCE_TABLE_NAME,
@@ -2260,7 +2291,7 @@ export const handler = async (event: any): Promise<any> => {
                                     }
                                 }));
                                 console.log(`[CALL_ANSWERED] Agent ${assignedAgentId} status updated to OnCall`);
-                                
+
                                 // Start Media Insights Pipeline for real-time transcription
                                 if (isRealTimeTranscriptionEnabled()) {
                                     const callRecord = callRecords[0];
@@ -2284,7 +2315,7 @@ export const handler = async (event: any): Promise<any> => {
                                             })).catch(err => {
                                                 console.warn('[CALL_ANSWERED] Failed to store pipeline ID:', err.message);
                                             });
-                                            
+
                                             console.log('[CALL_ANSWERED] Media Pipeline started:', pipelineId);
                                         }
                                     }).catch(err => {
@@ -2296,7 +2327,7 @@ export const handler = async (event: any): Promise<any> => {
                         } catch (queueErr) {
                             console.warn(`[CALL_ANSWERED] Failed to update call queue:`, queueErr);
                         }
-                        
+
                         // 3. Bridge customer (PSTN) into the agent's meeting
                         if (!pstnLegCallId) {
                             console.error('[CALL_ANSWERED] Missing PSTN CallId for JoinChimeMeeting');
@@ -2308,7 +2339,7 @@ export const handler = async (event: any): Promise<any> => {
                         return buildActions([
                             buildJoinChimeMeetingAction(pstnLegCallId, { MeetingId: meetingId }, customerAttendee)
                         ]);
-                        
+
                     } catch (err: any) {
                         console.error(`[CALL_ANSWERED] Error bridging customer to meeting:`, err);
                         return buildActions([
@@ -2316,7 +2347,7 @@ export const handler = async (event: any): Promise<any> => {
                         ]);
                     }
                 }
-                
+
                 // If it's not an outbound call, it's an informational event.
                 console.log(`[CALL_ANSWERED] Informational event for call ${callId}. No action needed.`);
                 return buildActions([]);
@@ -2329,9 +2360,9 @@ export const handler = async (event: any): Promise<any> => {
                 if (args.action === 'HOLD_CALL' && args.agentId) {
                     const { agentId, meetingId, agentAttendeeId, removeAgent } = args;
                     console.log(`Processing hold request for call ${callId} from agent ${agentId}`, { meetingId, agentAttendeeId, removeAgent });
-                    
+
                     const actions = [];
-                    
+
                     if (meetingId && agentAttendeeId && (removeAgent === 'true' || removeAgent === true)) {
                         console.log(`[HOLD_CALL] Removing agent ${agentId} (attendee ${agentAttendeeId}) from meeting ${meetingId}`);
                         actions.push({
@@ -2349,17 +2380,17 @@ export const handler = async (event: any): Promise<any> => {
                             removeAgent
                         });
                     }
-                    
+
                     actions.push(buildSpeakAction('You have been placed on hold. Please wait.'));
                     actions.push(buildPauseAction(500));
                     actions.push(buildPlayAudioAction('hold-music.wav', 999)); // Loop hold music
-                    
+
                     return buildActions(actions);
                 }
                 console.warn('HOLD_CALL event without proper action');
                 return buildActions([]);
             }
-                
+
             // Case 6: Resume call - triggered by resume-call.ts API
             case 'RESUME_CALL': {
                 if (args.action === 'RESUME_CALL' && args.agentId) {
@@ -2385,7 +2416,7 @@ export const handler = async (event: any): Promise<any> => {
                     }
 
                     const actions = [];
-                    
+
                     if (meetingId && agentAttendeeId && (reconnectAgent === 'true' || reconnectAgent === true)) {
                         console.log(`[RESUME_CALL] Adding agent ${agentId} (attendee ${agentAttendeeId}) to meeting ${meetingId}`);
                         actions.push({
@@ -2397,7 +2428,7 @@ export const handler = async (event: any): Promise<any> => {
                             }
                         });
                     }
-                    
+
                     // Re-join the customer to the meeting (this stops the hold music)
                     actions.push(buildSpeakAction('Thank you for holding. Reconnecting now.'));
                     if (!pstnLegCallId) {
@@ -2405,14 +2436,14 @@ export const handler = async (event: any): Promise<any> => {
                         return buildActions([buildSpeakAction('Unable to reconnect your call.')]);
                     }
                     actions.push(buildJoinChimeMeetingAction(pstnLegCallId, callRecord.meetingInfo, callRecord.customerAttendeeInfo));
-                    
+
                     return buildActions(actions);
                 }
-                
+
                 console.warn('RESUME_CALL event without proper action');
                 return buildActions([]);
             }
-            
+
             // Other events from original file
             case 'RING_NEW_AGENTS': {
                 // This logic seems fine - it's triggered by call-rejected.ts
@@ -2429,9 +2460,9 @@ export const handler = async (event: any): Promise<any> => {
 
                     if (!callRecords || callRecords.length === 0) {
                         console.error('No call record found for ringing new agents');
-                        return buildActions([ buildSpeakAndBridgeAction('All agents are busy. Please stay on the line.') ]);
+                        return buildActions([buildSpeakAndBridgeAction('All agents are busy. Please stay on the line.')]);
                     }
-                    
+
                     const callRecord = callRecords[0];
                     const agentIds = args.agentIds.split(',');
 
@@ -2455,14 +2486,14 @@ export const handler = async (event: any): Promise<any> => {
                             }));
                             console.log(`[RING_NEW_AGENTS] Notified new agent ${agentId}`);
                         } catch (err: any) {
-                             if (err.name === 'ConditionalCheckFailedException') {
+                            if (err.name === 'ConditionalCheckFailedException') {
                                 console.warn(`[RING_NEW_AGENTS] Agent ${agentId} not available - skipping`);
                             } else {
                                 console.error(`[RING_NEW_AGENTS] Error notifying agent ${agentId}:`, err);
                             }
                         }
                     }));
-                    
+
                     // Let customer know we're still trying
                     return buildActions([
                         buildSpeakAndBridgeAction('We are connecting you with the next available agent. Please hold.')
@@ -2557,7 +2588,7 @@ export const handler = async (event: any): Promise<any> => {
                 // This is triggered by call-accepted.ts
                 if (args.action === 'BRIDGE_CUSTOMER_INBOUND' && args.meetingId && args.customerAttendeeId && args.customerAttendeeJoinToken) {
                     const { meetingId, customerAttendeeId, customerAttendeeJoinToken } = args;
-                    
+
                     console.log(`[BRIDGE_CUSTOMER_INBOUND] Bridging customer PSTN leg into meeting ${meetingId}`);
 
                     if (!pstnLegCallId) {
@@ -2575,12 +2606,12 @@ export const handler = async (event: any): Promise<any> => {
                         )
                     ]);
                 }
-                
+
                 // Check if the update is a Hangup action
                 // This is triggered by call-hungup.ts or cleanup-monitor
                 if (args.Action === 'Hangup') { // Note: This is 'Action' (capital A)
                     console.log(`[CALL_UPDATE_REQUESTED] Acknowledging Hangup request for call ${callId}`);
-                    
+
                     // Get all active participants to hang up
                     const participants = event?.CallDetails?.Participants || [];
                     const hangupActions = participants
@@ -2592,15 +2623,15 @@ export const handler = async (event: any): Promise<any> => {
                                 SipResponseCode: '0'
                             }
                         }));
-                    
+
                     // If no specific participants, hang up all
                     if (hangupActions.length === 0) {
                         hangupActions.push({ Type: 'Hangup', Parameters: { SipResponseCode: '0' } });
                     }
-                    
+
                     return buildActions(hangupActions);
                 }
-                
+
                 // If it's another action (like 'Hold', etc.), just log and acknowledge
                 console.log(`[CALL_UPDATE_REQUESTED] Acknowledging unknown action:`, args);
                 return buildActions([]); // Return empty actions to acknowledge
@@ -2610,54 +2641,54 @@ export const handler = async (event: any): Promise<any> => {
             case 'HANGUP':
             case 'CALL_ENDED': {
                 console.log(`[${eventType}] Call ${callId} ended. Cleaning up resources.`);
-                
+
                 // Extract SIP response code to determine why the call ended
                 // Common codes: 486 = Busy, 480 = No Answer, 603 = Decline, 487 = Request Terminated
-                const sipResponseCode = event?.CallDetails?.SipResponseCode || 
-                                        event?.ActionData?.Parameters?.SipResponseCode ||
-                                        '0';
+                const sipResponseCode = event?.CallDetails?.SipResponseCode ||
+                    event?.ActionData?.Parameters?.SipResponseCode ||
+                    '0';
                 const hangupSource = event?.ActionData?.Parameters?.Source || 'unknown';
                 const participants = event?.CallDetails?.Participants || [];
                 const sipHeaders = event?.CallDetails?.SipHeaders || {};
-                
+
                 // Check for voicemail indicators
-                const isVoicemailLikely = 
+                const isVoicemailLikely =
                     sipHeaders['X-Voicemail'] === 'true' ||
                     sipHeaders['X-Answer-Machine'] === 'true' ||
-                    (sipResponseCode === '200' && participants.some((p: any) => 
-                        p.CallLegType === 'PSTN' && 
+                    (sipResponseCode === '200' && participants.some((p: any) =>
+                        p.CallLegType === 'PSTN' &&
                         (p.Duration && p.Duration < 3000) // Call answered but very short
                     ));
-                
+
                 console.log(`[${eventType}] SIP Response Code: ${sipResponseCode}, Source: ${hangupSource}, VoicemailLikely: ${isVoicemailLikely}`);
-                
+
                 // Determine the reason for call end with more specific reasons
                 let callEndReason = 'unknown';
                 let callEndUserFriendly = '';
-                
+
                 switch (sipResponseCode?.toString()) {
-                    case '486': 
-                        callEndReason = 'busy'; 
+                    case '486':
+                        callEndReason = 'busy';
                         callEndUserFriendly = 'Line is busy';
                         break;
-                    case '480': 
-                        callEndReason = 'no_answer'; 
+                    case '480':
+                        callEndReason = 'no_answer';
                         callEndUserFriendly = 'No answer - call timed out';
                         break;
-                    case '603': 
-                        callEndReason = 'declined'; 
+                    case '603':
+                        callEndReason = 'declined';
                         callEndUserFriendly = 'Call was declined';
                         break;
-                    case '487': 
-                        callEndReason = 'cancelled'; 
+                    case '487':
+                        callEndReason = 'cancelled';
                         callEndUserFriendly = 'Call was cancelled';
                         break;
-                    case '404': 
-                        callEndReason = 'invalid_number'; 
+                    case '404':
+                        callEndReason = 'invalid_number';
                         callEndUserFriendly = 'Number not found or invalid';
                         break;
-                    case '408': 
-                        callEndReason = 'timeout'; 
+                    case '408':
+                        callEndReason = 'timeout';
                         callEndUserFriendly = 'Call timed out';
                         break;
                     case '484':
@@ -2677,8 +2708,8 @@ export const handler = async (event: any): Promise<any> => {
                         callEndReason = 'not_acceptable';
                         callEndUserFriendly = 'Call could not be completed';
                         break;
-                    case '0': 
-                        callEndReason = isVoicemailLikely ? 'voicemail' : 'normal'; 
+                    case '0':
+                        callEndReason = isVoicemailLikely ? 'voicemail' : 'normal';
                         callEndUserFriendly = isVoicemailLikely ? 'Went to voicemail' : 'Call ended normally';
                         break;
                     case '200':
@@ -2691,11 +2722,11 @@ export const handler = async (event: any): Promise<any> => {
                             callEndUserFriendly = 'Call ended normally';
                         }
                         break;
-                    default: 
+                    default:
                         callEndReason = `sip_${sipResponseCode}`;
                         callEndUserFriendly = `Call ended (code: ${sipResponseCode})`;
                 }
-                
+
                 // Stop recording if enabled (belt and suspenders - Chime auto-stops but this ensures it)
                 const recordingsBucket = process.env.RECORDINGS_BUCKET;
                 if (recordingsBucket && pstnLegCallId) {
@@ -2707,7 +2738,7 @@ export const handler = async (event: any): Promise<any> => {
                         // Non-fatal, Chime will auto-stop when call ends
                     }
                 }
-                
+
                 const { Items: callRecords } = await ddb.send(new QueryCommand({
                     TableName: CALL_QUEUE_TABLE_NAME,
                     IndexName: 'callId-index',
@@ -2718,16 +2749,16 @@ export const handler = async (event: any): Promise<any> => {
                 if (callRecords && callRecords[0]) {
                     const callRecord = callRecords[0];
                     const { clinicId, queuePosition, meetingInfo, assignedAgentId, agentIds, status, direction } = callRecord;
-                    
-                    console.log(`[${eventType}] Found call record`, { 
-                        callId, 
-                        status, 
+
+                    console.log(`[${eventType}] Found call record`, {
+                        callId,
+                        status,
                         direction,
-                        assignedAgent: assignedAgentId, 
+                        assignedAgent: assignedAgentId,
                         hasMeeting: !!meetingInfo?.MeetingId,
-                        callEndReason 
+                        callEndReason
                     });
-                    
+
                     // FIX: Await Media Pipeline cleanup to prevent orphaned pipelines
                     // Previously this was fire-and-forget, leaving pipelines running after Lambda terminates
                     if (callRecord.mediaPipelineId) {
@@ -2739,15 +2770,15 @@ export const handler = async (event: any): Promise<any> => {
                             // Non-fatal - pipeline will eventually timeout, but log for monitoring
                         }
                     }
-                    
+
                     // *** CRITICAL FIX ***
                     // Only delete the meeting if it was a temporary "queue" meeting for INBOUND calls.
                     // For OUTBOUND calls, meetingInfo contains the AGENT'S SESSION meeting - DO NOT delete it!
                     const isOutboundCall = direction === 'outbound' || status === 'dialing';
-                    
+
                     // Check if this is an AI call with meeting-kvs mode - these meetings SHOULD be cleaned up
                     const isAiMeetingKvs = callRecord.isAiCall && callRecord.pipelineMode === 'meeting-kvs';
-                    
+
                     // FIX #6: Also cleanup meetings for 'ringing' calls that were abandoned
                     // FIX: Also cleanup meetings for AI calls with meeting-kvs mode (these are temporary AI-only meetings)
                     // Previously only 'queued' status triggered cleanup, leaving orphaned meetings
@@ -2755,7 +2786,7 @@ export const handler = async (event: any): Promise<any> => {
                         ((status === 'queued' || status === 'ringing') && !isOutboundCall) ||
                         isAiMeetingKvs // Always cleanup AI meeting-kvs meetings
                     ) && meetingInfo?.MeetingId;
-                    
+
                     if (shouldCleanupMeeting) {
                         try {
                             await cleanupMeeting(meetingInfo.MeetingId);
@@ -2769,7 +2800,7 @@ export const handler = async (event: any): Promise<any> => {
                     } else if (meetingInfo?.MeetingId) {
                         console.log(`[${eventType}] Call ended for agent session meeting ${meetingInfo.MeetingId}. Meeting will NOT be deleted.`);
                     }
-                    
+
                     // Determine final status based on call state and end reason
                     let finalStatus: string;
                     if (status === 'connected' || status === 'on_hold') {
@@ -2780,11 +2811,11 @@ export const handler = async (event: any): Promise<any> => {
                     } else {
                         finalStatus = 'abandoned';
                     }
-                    
-                    const callDuration = callRecord.acceptedAt 
+
+                    const callDuration = callRecord.acceptedAt
                         ? Math.floor(Date.now() / 1000) - Math.floor(new Date(callRecord.acceptedAt).getTime() / 1000)
                         : 0;
-                        
+
                     try {
                         await ddb.send(new UpdateCommand({
                             TableName: CALL_QUEUE_TABLE_NAME,
@@ -2801,13 +2832,113 @@ export const handler = async (event: any): Promise<any> => {
                                 ':sipCode': sipResponseCode?.toString() || 'unknown'
                             }
                         }));
-                        
+
                         console.log(`[${eventType}] Call ${callId} record updated with end reason: ${callEndReason} - ${callEndUserFriendly}`);
-                        
+
+                        // ========== AUDIT LOGGING ==========
+                        // Log call completion for HIPAA compliance audit trail
+                        if (CHIME_CONFIG.AUDIT.ENABLED) {
+                            try {
+                                const auditEvent = createAuditEvent(
+                                    AuditEventType.CALL_ENDED,
+                                    { type: 'agent', id: assignedAgentId || 'system', name: undefined },
+                                    { type: 'call', id: callId },
+                                    clinicId,
+                                    {
+                                        finalStatus,
+                                        callDuration,
+                                        callEndReason,
+                                        sipResponseCode,
+                                        direction: direction || 'inbound',
+                                    },
+                                    { callId }
+                                );
+                                await logAuditEvent(ddb, auditEvent, CALL_QUEUE_TABLE_NAME).catch(() => { });
+                            } catch (auditErr) {
+                                console.warn(`[${eventType}] Audit logging failed (non-fatal):`, auditErr);
+                            }
+                        }
+
+                        // ========== CALL METRICS ==========
+                        // Publish call completion metrics for dashboard
+                        const callType = finalStatus === 'completed' ? 'answered' :
+                            finalStatus === 'abandoned' ? 'abandoned' : 'missed';
+                        await publishCallMetrics(clinicId, callType, callDuration, 0).catch(() => { });
+
+                        // ========== CALL QUALITY SCORING ==========
+                        // Calculate comprehensive quality score at call end
+                        if (CHIME_CONFIG.QUALITY.ENABLED && callDuration > 0) {
+                            try {
+                                // Extract wait time from call record
+                                const waitTime = callRecord.queuedAt && callRecord.acceptedAt
+                                    ? Math.floor((new Date(callRecord.acceptedAt).getTime() - new Date(callRecord.queuedAt).getTime()) / 1000)
+                                    : 0;
+
+                                // Get sentiment from call record (if sentiment analysis was performed)
+                                const callSentiment = callRecord.overallSentiment || callRecord.sentiment || 'NEUTRAL';
+
+                                // Calculate quality metrics
+                                const qualityMetrics = calculateQualityMetrics({
+                                    // Audio metrics (from call record if available)
+                                    packetLoss: callRecord.packetLoss || 0,
+                                    jitter: callRecord.jitter || 0,
+                                    latency: callRecord.latency || 0,
+                                    mos: callRecord.mos,
+
+                                    // Agent metrics
+                                    responseTime: callRecord.agentResponseTime || 0,
+                                    holdCount: callRecord.holdCount || 0,
+                                    totalHoldTime: callRecord.totalHoldTime || 0,
+                                    transferCount: callRecord.transferCount || 0,
+                                    callDuration,
+
+                                    // Customer experience
+                                    waitTime,
+                                    sentiment: callSentiment,
+                                    resolved: finalStatus === 'completed',
+                                    escalated: !!callRecord.escalated,
+                                    abandoned: finalStatus === 'abandoned',
+
+                                    // Compliance
+                                    piiMentioned: callRecord.piiMentioned || false,
+                                    hipaaCompliant: callRecord.hipaaCompliant !== false,
+                                    recordingEnabled: !!callRecord.recordingPath,
+                                });
+
+                                // Save quality metrics to call record
+                                await saveQualityMetrics(
+                                    ddb,
+                                    callId,
+                                    clinicId,
+                                    Math.floor(Date.now() / 1000),
+                                    qualityMetrics,
+                                    CALL_QUEUE_TABLE_NAME
+                                );
+
+                                console.log(`[${eventType}] Call quality scored: ${qualityMetrics.overallScore}/100`, {
+                                    callId,
+                                    audio: qualityMetrics.audioQuality.score,
+                                    agent: qualityMetrics.agentPerformance.score,
+                                    customer: qualityMetrics.customerExperience.score,
+                                    compliance: qualityMetrics.compliance.score,
+                                });
+
+                                // Check if quality warrants an alert
+                                const qualityAlert = shouldAlertOnQuality(qualityMetrics);
+                                if (qualityAlert.alert) {
+                                    console.warn(`[${eventType}] Quality alert triggered:`, qualityAlert.reasons);
+                                    // Could add supervisor notification here
+                                }
+
+                            } catch (qualityErr) {
+                                console.warn(`[${eventType}] Quality scoring failed (non-fatal):`, qualityErr);
+                            }
+                        }
+
                     } catch (updateErr) {
                         console.error(`[${eventType}] Failed to update call record:`, updateErr);
                     }
-                    
+
                     // Update agent status if they were assigned
                     if (assignedAgentId) {
                         try {
@@ -2815,7 +2946,7 @@ export const handler = async (event: any): Promise<any> => {
                             // For outbound calls that were rejected/unanswered, this is critical for UI
                             const wasDialingOutbound = status === 'dialing' && isOutboundCall;
                             const dialingFailed = wasDialingOutbound && callEndReason !== 'normal' && callEndReason !== 'completed';
-                            
+
                             // Enhanced update with detailed call end info
                             await ddb.send(new UpdateCommand({
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
@@ -2837,7 +2968,7 @@ export const handler = async (event: any): Promise<any> => {
                                     ':dialFailed': dialingFailed
                                 }
                             }));
-                            
+
                             if (dialingFailed) {
                                 console.log(`[${eventType}] Agent ${assignedAgentId} outbound call FAILED. Reason: ${callEndReason} - ${callEndUserFriendly}`);
                             } else {
@@ -2851,7 +2982,7 @@ export const handler = async (event: any): Promise<any> => {
                             }
                         }
                     }
-                    
+
                     // Clear ringing status for any agents who were ringing but didn't answer
                     if (status === 'ringing' && agentIds && Array.isArray(agentIds) && agentIds.length > 0) {
                         console.log(`[${eventType}] Clearing ringing status for ${agentIds.length} agents`);
@@ -2888,7 +3019,7 @@ export const handler = async (event: any): Promise<any> => {
                 // Check if this is a digit input response
                 const receivedDigits = event?.ActionData?.ReceivedDigits;
                 const actionType = event?.ActionData?.Type;
-                
+
                 if ((actionType === 'PlayAudioAndGetDigits' || actionType === 'SpeakAndGetDigits') && receivedDigits) {
                     console.log(`[DIGITS_RECEIVED] Customer entered digits: ${receivedDigits} for call ${callId}`, { actionType });
 
@@ -2991,7 +3122,7 @@ export const handler = async (event: any): Promise<any> => {
                 // start the Media Insights Pipeline for real-time KVS streaming transcription
                 if (eventType === 'ACTION_SUCCESSFUL' && actionType === 'JoinChimeMeeting') {
                     console.log(`[ACTION_SUCCESSFUL] JoinChimeMeeting completed for call ${callId}`);
-                    
+
                     // Check if this is an AI call that needs Media Pipeline started
                     try {
                         const { Items: callRecords } = await ddb.send(new QueryCommand({
@@ -3000,21 +3131,21 @@ export const handler = async (event: any): Promise<any> => {
                             KeyConditionExpression: 'callId = :callId',
                             ExpressionAttributeValues: { ':callId': callId }
                         }));
-                        
+
                         if (callRecords && callRecords[0]) {
                             const callRecord = callRecords[0];
-                            
+
                             // Check if this is an AI call with meeting-kvs mode that needs pipeline started
-                            if (callRecord.isAiCall && callRecord.pipelineMode === 'meeting-kvs' && 
+                            if (callRecord.isAiCall && callRecord.pipelineMode === 'meeting-kvs' &&
                                 callRecord.pipelineStatus === 'starting' && callRecord.meetingId) {
-                                
+
                                 console.log('[ACTION_SUCCESSFUL] AI call JoinChimeMeeting success - starting transcription', {
                                     callId,
                                     meetingId: callRecord.meetingId,
                                     clinicId: callRecord.clinicId,
                                     aiAgentId: callRecord.aiAgentId,
                                 });
-                                
+
                                 // PRIMARY: Start real-time meeting transcription (Chime SDK native API)
                                 // This works with SipMediaApplicationDialIn and doesn't require KVS streams
                                 startMeetingTranscription(callRecord.meetingId, callId)
@@ -3024,7 +3155,7 @@ export const handler = async (event: any): Promise<any> => {
                                                 callId,
                                                 meetingId: callRecord.meetingId,
                                             });
-                                            
+
                                             // Update call record with transcription status
                                             try {
                                                 await ddb.send(new UpdateCommand({
@@ -3043,7 +3174,7 @@ export const handler = async (event: any): Promise<any> => {
                                             }
                                         } else {
                                             console.warn('[ACTION_SUCCESSFUL] Meeting transcription failed to start, trying Media Pipeline fallback');
-                                            
+
                                             // FALLBACK: Try Media Insights Pipeline (may not work for SipMediaApplicationDialIn)
                                             return startMediaPipeline({
                                                 callId,
@@ -3083,30 +3214,30 @@ export const handler = async (event: any): Promise<any> => {
                                     .catch((err) => {
                                         console.error('[ACTION_SUCCESSFUL] Error in transcription/pipeline setup:', err);
                                     });
-                                
+
                                 // Play the initial AI greeting now that the caller is in the meeting
                                 // The caller couldn't hear it earlier because JoinChimeMeeting was processing
-                                const initialGreeting = callRecord.initialGreeting || 
+                                const initialGreeting = callRecord.initialGreeting ||
                                     "Hello! Thank you for calling. I'm your AI assistant. How may I help you today?";
-                                
+
                                 // CRITICAL FIX: Get the caller's CallId (LEG-A) to target actions correctly
                                 // After JoinChimeMeeting, there are two participants and we must specify which leg to target
                                 const callerLeg = event?.CallDetails?.Participants?.find(
                                     (p: any) => p.ParticipantTag === 'LEG-A'
                                 );
                                 const callerCallId = callerLeg?.CallId;
-                                
+
                                 console.log('[ACTION_SUCCESSFUL] Playing initial AI greeting to caller', {
                                     callId,
                                     callerCallId,
                                     greeting: initialGreeting.substring(0, 50) + '...',
                                 });
-                                
+
                                 // Build actions: Pause actions to wait for transcripts
                                 // IMPORTANT: Chime SMA has a limit of ~10 actions per response
                                 // CRITICAL FIX: Audio actions returned in the same response as JoinChimeMeeting
                                 // are being silently skipped. Defer the greeting to the next Pause event.
-                                
+
                                 // Mark greeting as deferred (best-effort)
                                 try {
                                     await ddb.send(new UpdateCommand({
@@ -3118,12 +3249,12 @@ export const handler = async (event: any): Promise<any> => {
                                 } catch (deferErr: any) {
                                     console.warn('[ACTION_SUCCESSFUL] Failed to mark greeting deferred:', deferErr?.message || deferErr);
                                 }
-                                
+
                                 const waitActions: any[] = [];
                                 for (let i = 0; i < 4; i++) {
                                     waitActions.push(buildPauseAction(3000, callerCallId)); // 3 second pauses, total 12 seconds
                                 }
-                                
+
                                 console.log('[ACTION_SUCCESSFUL] AI call meeting joined - greeting deferred; waiting for real-time transcripts');
                                 console.log('[ACTION_SUCCESSFUL] DEBUG: Returning actions:', JSON.stringify(waitActions.map(a => ({ Type: a.Type, hasCallId: !!a.Parameters?.CallId }))));
                                 return buildActions(waitActions);
@@ -3132,7 +3263,7 @@ export const handler = async (event: any): Promise<any> => {
                     } catch (err) {
                         console.error('[ACTION_SUCCESSFUL] Error handling AI meeting join:', err);
                     }
-                    
+
                     // For non-AI meeting joins, fall through to default handling
                 }
 
@@ -3141,7 +3272,7 @@ export const handler = async (event: any): Promise<any> => {
                     console.log(`[ACTION_SUCCESSFUL] RecordAudio completed for call ${callId}`, {
                         recordingDestination: event?.ActionData?.Parameters?.RecordingDestination,
                     });
-                    
+
                     // The recording has been saved to S3. The transcribe-audio-segment Lambda
                     // will be triggered by S3 notification to process the audio and send
                     // the AI response via UpdateSipMediaApplicationCall.
@@ -3149,16 +3280,16 @@ export const handler = async (event: any): Promise<any> => {
                     // To avoid long/looping "thinking" audio during record-audio fallback,
                     // play a single short thinking clip (or pause briefly).
                     console.log(`[ACTION_SUCCESSFUL] Waiting for AI response after RecordAudio`);
-                    
+
                     return buildActions([
                         buildPlayThinkingAudioAction(1, pstnLegCallId),
                     ]);
                 }
-                
+
                 // For other ACTION_SUCCESSFUL events, check for pending AI responses
                 if (eventType === 'ACTION_SUCCESSFUL') {
                     console.log(`[ACTION_SUCCESSFUL] Action completed for call ${callId}`, { actionType });
-                    
+
                     // FIX: Clear AI speaking state when TTS (Speak/PlayAudio) completes
                     // This prevents false positives in barge-in detection where we think
                     // AI is still speaking but it has actually finished.
@@ -3168,7 +3299,7 @@ export const handler = async (event: any): Promise<any> => {
                         callStateMachine.transition(callId, CallEvent.TTS_COMPLETED);
                         console.log(`[ACTION_SUCCESSFUL] Cleared AI speaking state for call ${callId}, transitioned to LISTENING`);
                     }
-                    
+
                     // CRITICAL FIX: Check for pending AI responses from transcript bridge
                     // This handles the case where the AI Transcript Bridge has queued a response
                     try {
@@ -3178,7 +3309,7 @@ export const handler = async (event: any): Promise<any> => {
                             KeyConditionExpression: 'callId = :callId',
                             ExpressionAttributeValues: { ':callId': callId }
                         }));
-                        
+
                         if (callRecords && callRecords[0]) {
                             const callRecord = callRecords[0];
 
@@ -3216,15 +3347,15 @@ export const handler = async (event: any): Promise<any> => {
 
                                 return buildActions([greetingAction]);
                             }
-                            
+
                             // Check if this is an AI call with pending response
                             if (callRecord.isAiCall && callRecord.pendingAiResponse) {
                                 console.log('[ACTION_SUCCESSFUL] Found pending AI response, processing...');
-                                
+
                                 // Parse the pending response
                                 const pendingResponses = JSON.parse(callRecord.pendingAiResponse);
                                 const actions: any[] = [];
-                                
+
                                 for (const response of pendingResponses) {
                                     switch (response.action) {
                                         case 'SPEAK':
@@ -3268,7 +3399,7 @@ export const handler = async (event: any): Promise<any> => {
                                             break;
                                     }
                                 }
-                                
+
                                 // Clear the pending response
                                 await ddb.send(new UpdateCommand({
                                     TableName: CALL_QUEUE_TABLE_NAME,
@@ -3278,13 +3409,13 @@ export const handler = async (event: any): Promise<any> => {
                                         ':now': new Date().toISOString(),
                                     }
                                 }));
-                                
+
                                 if (actions.length > 0) {
                                     console.log('[ACTION_SUCCESSFUL] Returning pending AI actions:', { count: actions.length });
                                     return buildActions(actions);
                                 }
                             }
-                            
+
                             // For AI calls with no pending response, continue listening
                             if (callRecord.isAiCall && !callRecord.pendingAiResponse) {
                                 // Safety net: if we are waiting for real-time transcription to come online
@@ -3292,9 +3423,9 @@ export const handler = async (event: any): Promise<any> => {
                                 // caller doesn't experience total silence.
                                 // Note: pipelineStatus transitions from 'starting' -> 'transcription-active' when StartMeetingTranscription succeeds
                                 // Also check transcriptionStatus which is set to 'active' when transcription is confirmed running
-                                const transcriptionIsActive = callRecord.pipelineStatus === 'transcription-active' || 
-                                                               callRecord.transcriptionStatus === 'active' ||
-                                                               callRecord.mediaPipelineId;
+                                const transcriptionIsActive = callRecord.pipelineStatus === 'transcription-active' ||
+                                    callRecord.transcriptionStatus === 'active' ||
+                                    callRecord.mediaPipelineId;
                                 const recordAudioFallbackAvailable = ENABLE_RECORD_AUDIO_FALLBACK && Boolean(AI_RECORDINGS_BUCKET);
                                 const nowSec = Math.floor(Date.now() / 1000);
                                 const transcriptionStartedAtSec = callRecord.transcriptionStartedAt
@@ -3307,7 +3438,7 @@ export const handler = async (event: any): Promise<any> => {
                                 const baseStartSec = transcriptionStartedAtSec ||
                                     (typeof callRecord.queueEntryTime === 'number' ? callRecord.queueEntryTime : nowSec);
                                 const silenceSec = lastAiResponseSec ? (nowSec - lastAiResponseSec) : (nowSec - baseStartSec);
-                                
+
                                 if (!transcriptionIsActive && callRecord.pipelineStatus === 'starting') {
                                     const startedAt = typeof callRecord.queueEntryTime === 'number' ? callRecord.queueEntryTime : nowSec;
                                     const waitingSec = nowSec - startedAt;
@@ -3428,7 +3559,7 @@ export const handler = async (event: any): Promise<any> => {
                     } catch (err) {
                         console.error('[ACTION_SUCCESSFUL] Error checking for pending AI response:', err);
                     }
-                    
+
                     return buildActions([]);
                 }
 
@@ -3439,11 +3570,11 @@ export const handler = async (event: any): Promise<any> => {
             case 'SEND_DTMF': {
                 if (args.action === 'SEND_DTMF' && args.digits) {
                     const { digits, durationMs, gapMs, agentId } = args;
-                    console.log(`[SEND_DTMF] Sending DTMF digits for call ${callId}`, { 
+                    console.log(`[SEND_DTMF] Sending DTMF digits for call ${callId}`, {
                         digitsLength: digits?.length,
                         durationMs,
                         gapMs,
-                        agentId 
+                        agentId
                     });
 
                     // Build SendDigits action for DTMF
@@ -3467,10 +3598,10 @@ export const handler = async (event: any): Promise<any> => {
             case 'ADD_CALL_CONNECTED': {
                 if (args.callType === 'AddCall' && args.primaryCallId) {
                     const { primaryCallId, agentId, meetingId, holdPrimaryCall } = args;
-                    console.log(`[ADD_CALL_CONNECTED] Secondary call ${callId} connected for agent ${agentId}`, { 
-                        primaryCallId, 
+                    console.log(`[ADD_CALL_CONNECTED] Secondary call ${callId} connected for agent ${agentId}`, {
+                        primaryCallId,
                         meetingId,
-                        holdPrimaryCall 
+                        holdPrimaryCall
                     });
 
                     // Join the secondary call participant to the agent's meeting
@@ -3528,10 +3659,10 @@ export const handler = async (event: any): Promise<any> => {
             case 'CONFERENCE_MERGE': {
                 if (args.action === 'CONFERENCE_MERGE' && args.conferenceId && args.meetingId) {
                     const { conferenceId, meetingId, agentId, role, otherCallId } = args;
-                    console.log(`[CONFERENCE_MERGE] Merging call ${callId} into conference ${conferenceId}`, { 
-                        role, 
+                    console.log(`[CONFERENCE_MERGE] Merging call ${callId} into conference ${conferenceId}`, {
+                        role,
                         meetingId,
-                        otherCallId 
+                        otherCallId
                     });
 
                     // Join this call's participant to the conference meeting
@@ -3644,7 +3775,7 @@ export const handler = async (event: any): Promise<any> => {
                 }
                 return buildActions([]);
             }
-            
+
             // --- Informational events ---
             // Note: RINGING is now handled above with outbound call tracking
             case 'ACTION_SUCCESSFUL':
@@ -3685,7 +3816,7 @@ export const handler = async (event: any): Promise<any> => {
                     const forwardReason = sipHeaders['X-Forward-Reason'];
                     // X-Original-Caller was set during CallAndBridge to preserve caller ID
                     const originalCaller = sipHeaders['X-Original-Caller'] || 'unknown';
-                    
+
                     console.warn(`[ACTION_FAILED] CallAndBridge failed`, {
                         errorType,
                         errorMessage,
@@ -3693,11 +3824,11 @@ export const handler = async (event: any): Promise<any> => {
                         forwardReason,
                         originalCaller,
                     });
-                    
+
                     // If this was an after-hours forward that failed, handle AI call directly
                     if (forwardReason === 'after-hours' && clinicIdFromHeader) {
                         console.log(`[ACTION_FAILED] Falling back to direct AI handling for clinic ${clinicIdFromHeader}`);
-                        
+
                         try {
                             // Route directly to Voice AI without PSTN forward
                             return await routeInboundCallToVoiceAi({
@@ -3720,7 +3851,7 @@ export const handler = async (event: any): Promise<any> => {
                             ]);
                         }
                     }
-                    
+
                     // For non-after-hours CallAndBridge failures, inform caller
                     return buildActions([
                         buildSpeakAction("I'm sorry, we couldn't complete your call transfer. Please try again later."),

@@ -26,6 +26,7 @@ const CALL_QUEUE_TABLE = process.env.CALL_QUEUE_TABLE_NAME;
 const RECORDING_METADATA_TABLE = process.env.RECORDING_METADATA_TABLE_NAME;
 const CHAT_HISTORY_TABLE = process.env.CHAT_HISTORY_TABLE_NAME;
 const CLINICS_TABLE = process.env.CLINICS_TABLE_NAME;
+const CALL_ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE_NAME;
 
 interface CallAnalyticsResponse {
   // Header Info
@@ -36,10 +37,10 @@ interface CallAnalyticsResponse {
   to: string;
   from: string;
   callLength: number; // in seconds
-  
+
   // Call History
   callHistory: CallHistoryEntry[];
-  
+
   // Call Insights
   insights: {
     summary: string;
@@ -53,7 +54,7 @@ interface CallAnalyticsResponse {
     inquiredServices: 'yes' | 'no';
     callType: 'appointment' | 'inquiry' | 'complaint' | 'billing' | 'emergency' | 'other';
   };
-  
+
   // Transcript
   transcript: TranscriptEntry[];
 }
@@ -92,7 +93,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   try {
     // Get user permissions from authorizer context
     const userPerms = getUserPermissions(event);
-    
+
     if (!userPerms) {
       return {
         statusCode: 401,
@@ -135,8 +136,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // Get call history for this phone number
     const callHistory = await getCallHistory(
-      callRecord.phoneNumber, 
-      callRecord.clinicId, 
+      callRecord.phoneNumber,
+      callRecord.clinicId,
       callId
     );
 
@@ -194,33 +195,80 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 };
 
 /**
- * Get call record from CallQueue table
+ * Get call record from CallQueue table or CallAnalytics table
+ * Searches CallQueue first (for Chime calls), then CallAnalytics (for LexAI calls)
  */
 async function getCallRecord(callId: string): Promise<any> {
   try {
-    // Try querying by pstnCallId index first
-    const queryResult = await ddb.send(new QueryCommand({
-      TableName: CALL_QUEUE_TABLE,
-      IndexName: 'pstnCallId-index',
-      KeyConditionExpression: 'pstnCallId = :callId',
-      ExpressionAttributeValues: { ':callId': callId },
-      Limit: 1
-    }));
+    // 1. Try CallQueue table first (Chime-based calls)
+    if (CALL_QUEUE_TABLE) {
+      // Try querying by pstnCallId index first
+      const queryResult = await ddb.send(new QueryCommand({
+        TableName: CALL_QUEUE_TABLE,
+        IndexName: 'pstnCallId-index',
+        KeyConditionExpression: 'pstnCallId = :callId',
+        ExpressionAttributeValues: { ':callId': callId },
+        Limit: 1
+      }));
 
-    if (queryResult.Items && queryResult.Items.length > 0) {
-      return queryResult.Items[0];
+      if (queryResult.Items && queryResult.Items.length > 0) {
+        return { ...queryResult.Items[0], _source: 'callQueue' };
+      }
+
+      // Also try by callId field
+      const queryResult2 = await ddb.send(new QueryCommand({
+        TableName: CALL_QUEUE_TABLE,
+        IndexName: 'callId-index',
+        KeyConditionExpression: 'callId = :callId',
+        ExpressionAttributeValues: { ':callId': callId },
+        Limit: 1
+      }));
+
+      if (queryResult2.Items?.[0]) {
+        return { ...queryResult2.Items[0], _source: 'callQueue' };
+      }
     }
 
-    // Also try by callId field
-    const queryResult2 = await ddb.send(new QueryCommand({
-      TableName: CALL_QUEUE_TABLE,
-      IndexName: 'callId-index',
-      KeyConditionExpression: 'callId = :callId',
-      ExpressionAttributeValues: { ':callId': callId },
-      Limit: 1
-    }));
+    // 2. Fall back to CallAnalytics table (LexAI / Voice AI calls)
+    if (CALL_ANALYTICS_TABLE) {
+      console.log('[getCallRecord] Searching CallAnalytics table for callId:', callId);
 
-    return queryResult2.Items?.[0] || null;
+      // CallAnalytics table schema: PK=callId, SK=timestamp
+      // Query by callId (partition key)
+      const analyticsResult = await ddb.send(new QueryCommand({
+        TableName: CALL_ANALYTICS_TABLE,
+        KeyConditionExpression: 'callId = :callId',
+        ExpressionAttributeValues: { ':callId': callId },
+        Limit: 1,
+        ScanIndexForward: false // Get most recent record first
+      }));
+
+      if (analyticsResult.Items && analyticsResult.Items.length > 0) {
+        const record = analyticsResult.Items[0];
+        console.log('[getCallRecord] Found in CallAnalytics:', { callId, clinicId: record.clinicId });
+
+        // Normalize schema to match CallQueue structure
+        return {
+          callId: record.callId,
+          clinicId: record.clinicId,
+          phoneNumber: record.callerPhoneNumber || record.phoneNumber || record.from,
+          clinicPhoneNumber: record.clinicPhoneNumber || record.to,
+          direction: record.direction || 'inbound',
+          callDuration: record.callDuration || record.durationSeconds || 0,
+          queueEntryTime: record.timestamp || record.startTime,
+          status: record.status || record.callStatus,
+          sessionId: record.sessionId,
+          // LexAI specific fields
+          contactId: record.contactId,
+          isAiCall: true,
+          aiType: record.aiType || 'lexai',
+          _source: 'callAnalytics'
+        };
+      }
+    }
+
+    console.log('[getCallRecord] Call not found in any table:', callId);
+    return null;
 
   } catch (error) {
     console.error('[getCallRecord] Error:', error);
@@ -253,7 +301,7 @@ async function getClinicName(clinicId: string): Promise<string> {
  * Get call history for a phone number
  */
 async function getCallHistory(
-  phoneNumber: string, 
+  phoneNumber: string,
   clinicId: string,
   currentCallId: string
 ): Promise<CallHistoryEntry[]> {
@@ -276,12 +324,12 @@ async function getCallHistory(
     }));
 
     const calls = result.Items || [];
-    
+
     return calls
       .filter(call => call.callId !== currentCallId && call.pstnCallId !== currentCallId)
       .map(call => {
         const queueTime = call.queueEntryTime || call.queueEntryTimeIso;
-        const date = queueTime 
+        const date = queueTime
           ? new Date(typeof queueTime === 'number' ? queueTime * 1000 : queueTime)
           : new Date();
 
@@ -369,7 +417,7 @@ async function getSessionInsights(sessionId: string | undefined): Promise<any> {
     }));
 
     const messages = result.Items || [];
-    
+
     // Find session state which contains analyzed insights
     const sessionState = messages.find(m => m.messageType === 'session_state');
     if (sessionState?.insights) {
@@ -391,27 +439,27 @@ async function getSessionInsights(sessionId: string | undefined): Promise<any> {
 async function analyzeSession(messages: any[]): Promise<any> {
   const userMessages = messages.filter(m => m.messageType === 'user');
   const assistantMessages = messages.filter(m => m.messageType === 'assistant');
-  
+
   // Build summary from conversation
   const summary = await buildSummary(userMessages, assistantMessages);
-  
+
   // Detect appointment scheduling attempts
   const appointmentStatus = detectAppointmentStatus(messages);
   const notSchedulingReason = detectNotSchedulingReason(messages, appointmentStatus);
-  
+
   // Detect missed opportunities
   const missedOpportunity = detectMissedOpportunity(messages, appointmentStatus);
-  const missedOpportunityReason = missedOpportunity 
+  const missedOpportunityReason = missedOpportunity
     ? detectMissedOpportunityReason(messages, appointmentStatus)
     : null;
-  
+
   // Detect other flags
   const billingConcerns = detectBillingConcerns(messages);
   const givenFeedback = detectGivenFeedback(messages);
   const inquiredServices = detectInquiredServices(messages);
   const callType = detectCallType(messages);
   const priority = detectPriority(messages, callType, appointmentStatus);
-  
+
   // Extract patient name if available
   const patientName = extractPatientName(messages);
 
@@ -460,7 +508,7 @@ async function buildSummary(userMessages: any[], assistantMessages: any[]): Prom
 
   // Simple summary generation
   let summary = 'The caller ';
-  
+
   if (firstUserMessage.toLowerCase().includes('appointment')) {
     summary += 'called to schedule an appointment. ';
   } else if (firstUserMessage.toLowerCase().includes('emergency')) {
@@ -474,11 +522,11 @@ async function buildSummary(userMessages: any[], assistantMessages: any[]): Prom
   }
 
   // Add outcome
-  if (lastAssistantMessage.toLowerCase().includes('scheduled') || 
-      lastAssistantMessage.toLowerCase().includes('booked')) {
+  if (lastAssistantMessage.toLowerCase().includes('scheduled') ||
+    lastAssistantMessage.toLowerCase().includes('booked')) {
     summary += 'An appointment was successfully scheduled.';
-  } else if (lastAssistantMessage.toLowerCase().includes('no availability') || 
-             lastAssistantMessage.toLowerCase().includes('no slots')) {
+  } else if (lastAssistantMessage.toLowerCase().includes('no availability') ||
+    lastAssistantMessage.toLowerCase().includes('no slots')) {
     summary += 'Unfortunately, no appointment slots were available.';
   } else {
     summary += 'The conversation concluded without scheduling an appointment.';
@@ -489,7 +537,7 @@ async function buildSummary(userMessages: any[], assistantMessages: any[]): Prom
 
 function detectAppointmentStatus(messages: any[]): string {
   const allText = messages.map(m => m.message?.toLowerCase() || '').join(' ');
-  
+
   if (allText.includes('appointment scheduled') || allText.includes('booked successfully')) {
     return 'scheduled';
   }
@@ -502,7 +550,7 @@ function detectAppointmentStatus(messages: any[]): string {
   if (allText.includes('no availability') || allText.includes('no slots')) {
     return 'not_scheduled';
   }
-  
+
   return 'unknown';
 }
 
@@ -512,7 +560,7 @@ function detectNotSchedulingReason(messages: any[], appointmentStatus: string): 
   }
 
   const allText = messages.map(m => m.message?.toLowerCase() || '').join(' ');
-  
+
   if (allText.includes('no availability') || allText.includes('no slots')) {
     return 'No available appointment slots';
   }
@@ -522,7 +570,7 @@ function detectNotSchedulingReason(messages: any[], appointmentStatus: string): 
   if (allText.includes('will call back') || allText.includes('call later')) {
     return 'Caller will call back later';
   }
-  
+
   return 'Not provided';
 }
 
@@ -533,12 +581,12 @@ function detectMissedOpportunity(messages: any[], appointmentStatus: string): bo
   }
 
   const allText = messages.map(m => m.message?.toLowerCase() || '').join(' ');
-  
+
   // Indicators of intent to schedule
-  const hasIntent = allText.includes('appointment') || 
-                   allText.includes('schedule') || 
-                   allText.includes('book') ||
-                   allText.includes('emergency');
+  const hasIntent = allText.includes('appointment') ||
+    allText.includes('schedule') ||
+    allText.includes('book') ||
+    allText.includes('emergency');
 
   return hasIntent && appointmentStatus !== 'scheduled';
 }
@@ -561,17 +609,17 @@ function detectMissedOpportunityReason(messages: any[], appointmentStatus: strin
 
 function detectBillingConcerns(messages: any[]): boolean {
   const allText = messages.map(m => m.message?.toLowerCase() || '').join(' ');
-  return allText.includes('billing') || 
-         allText.includes('insurance') || 
-         allText.includes('payment') ||
-         allText.includes('cost');
+  return allText.includes('billing') ||
+    allText.includes('insurance') ||
+    allText.includes('payment') ||
+    allText.includes('cost');
 }
 
 function detectGivenFeedback(messages: any[]): boolean {
   const allText = messages.map(m => m.message?.toLowerCase() || '').join(' ');
-  return allText.includes('feedback') || 
-         allText.includes('complaint') ||
-         allText.includes('suggestion');
+  return allText.includes('feedback') ||
+    allText.includes('complaint') ||
+    allText.includes('suggestion');
 }
 
 function detectInquiredServices(messages: any[]): boolean {
@@ -580,13 +628,13 @@ function detectInquiredServices(messages: any[]): boolean {
     'cleaning', 'whitening', 'filling', 'crown', 'bridge', 'implant',
     'extraction', 'root canal', 'denture', 'braces', 'orthodontic'
   ];
-  
+
   return serviceKeywords.some(keyword => allText.includes(keyword));
 }
 
 function detectCallType(messages: any[]): string {
   const allText = messages.map(m => m.message?.toLowerCase() || '').join(' ');
-  
+
   if (allText.includes('emergency') || allText.includes('urgent') || allText.includes('pain')) {
     return 'emergency';
   }
@@ -602,7 +650,7 @@ function detectCallType(messages: any[]): string {
   if (allText.includes('question') || allText.includes('how much') || allText.includes('do you')) {
     return 'inquiry';
   }
-  
+
   return 'other';
 }
 
@@ -610,7 +658,7 @@ function detectPriority(messages: any[], callType: string, appointmentStatus: st
   if (callType === 'emergency') {
     return 'high';
   }
-  
+
   if (appointmentStatus === 'not_scheduled' && messages.length > 0) {
     const allText = messages.map(m => m.message?.toLowerCase() || '').join(' ');
     if (allText.includes('urgent') || allText.includes('soon') || allText.includes('asap')) {
@@ -630,10 +678,10 @@ function extractPatientName(messages: any[]): string | null {
   const sessionState = messages.find(m => m.messageType === 'session_state');
   if (sessionState?.sessionState) {
     try {
-      const state = typeof sessionState.sessionState === 'string' 
+      const state = typeof sessionState.sessionState === 'string'
         ? JSON.parse(sessionState.sessionState)
         : sessionState.sessionState;
-      
+
       if (state.FName && state.LName) {
         return `${state.FName} ${state.LName}`;
       }
@@ -658,7 +706,7 @@ function formatDuration(seconds: number): string {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = seconds % 60;
-  
+
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
 
@@ -674,24 +722,24 @@ function parseTranscriptText(transcriptText: string): { transcript: TranscriptEn
   // Format: "AGENT: text\nCUSTOMER: text\n..."
   const lines = transcriptText.split('\n').filter(l => l.trim());
   const transcript: TranscriptEntry[] = [];
-  
+
   let elapsedSeconds = 0;
   for (const line of lines) {
     if (line.includes('AGENT:') || line.includes('CUSTOMER:')) {
       const speaker = line.includes('AGENT:') ? 'AGENT' : 'CUSTOMER';
       const text = line.replace(/^(AGENT:|CUSTOMER:)/, '').trim();
-      
+
       transcript.push({
         timestamp: formatTimestamp(elapsedSeconds),
         speaker,
         text
       });
-      
+
       // Estimate ~5 seconds per line
       elapsedSeconds += 5;
     }
   }
-  
+
   return { transcript };
 }
 
@@ -709,7 +757,7 @@ async function fetchTranscriptFromS3(s3Key: string): Promise<any> {
 
     const response = await s3Client.send(command);
     const bodyString = await response.Body?.transformToString();
-    
+
     return bodyString ? JSON.parse(bodyString) : null;
   } catch (error) {
     console.error('[fetchTranscriptFromS3] Error:', error);
@@ -733,7 +781,7 @@ function parseTranscriptData(data: any): { transcript: TranscriptEntry[] } {
       currentTime = parseFloat(item.start_time || '0');
     } else if (item.type === 'punctuation') {
       currentText += item.alternatives?.[0]?.content || '';
-      
+
       // End of sentence - create entry
       if (currentText.trim()) {
         transcript.push({
@@ -741,7 +789,7 @@ function parseTranscriptData(data: any): { transcript: TranscriptEntry[] } {
           speaker: currentSpeaker,
           text: currentText.trim()
         });
-        
+
         currentText = '';
         // Alternate speaker for next segment
         currentSpeaker = currentSpeaker === 'AGENT' ? 'CUSTOMER' : 'AGENT';
@@ -765,7 +813,7 @@ function formatTimestamp(seconds: number): string {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = Math.floor(seconds % 60);
-  
+
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
 
