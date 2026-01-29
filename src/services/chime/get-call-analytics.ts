@@ -103,6 +103,7 @@ const ddb = DynamoDBDocumentClient.from(dynamodbClient);
 const ANALYTICS_TABLE_NAME = process.env.CALL_ANALYTICS_TABLE_NAME;
 const AGENT_PERFORMANCE_TABLE_NAME = process.env.AGENT_PERFORMANCE_TABLE_NAME; // Optional
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME; // For queue calls endpoint
+const TRANSCRIPT_BUFFER_TABLE_NAME = process.env.TRANSCRIPT_BUFFER_TABLE_NAME; // Optional (TranscriptBuffersV2)
 
 // Validate required environment variables
 if (!ANALYTICS_TABLE_NAME) {
@@ -307,6 +308,7 @@ async function getCallAnalytics(
     TableName: ANALYTICS_TABLE_NAME,
     KeyConditionExpression: 'callId = :callId',
     ExpressionAttributeValues: { ':callId': callId },
+    ScanIndexForward: false, // Get most recent record first (callId is PK, timestamp is SK)
     Limit: 1
   }));
 
@@ -330,8 +332,119 @@ async function getCallAnalytics(
     };
   }
   
-  // CRITICAL FIX: Generate ETag for caching
-  const etagSource = `${callId}-${analytics.timestamp}-${analytics.finalizedAt || analytics.updatedAt}`;
+  // ----------------------------------------
+  // Transcript hydration (Lex/Connect & Voice AI)
+  // ----------------------------------------
+  // Some call sources (e.g., Connect/Lex AI) store transcript segments in TranscriptBuffersV2,
+  // but do not persist `latestTranscripts` / `fullTranscript` in CallAnalytics.
+  // Hydrate missing fields from TranscriptBuffers to make the UI consistent.
+  let transcriptBuffer: any | null = null;
+  if (TRANSCRIPT_BUFFER_TABLE_NAME) {
+    try {
+      const bufferResult = await ddb.send(new GetCommand({
+        TableName: TRANSCRIPT_BUFFER_TABLE_NAME,
+        Key: { callId }
+      }));
+      transcriptBuffer = bufferResult.Item || null;
+    } catch (err: any) {
+      console.warn('[getCallAnalytics] Failed to fetch transcript buffer (non-fatal):', {
+        callId,
+        errorName: err?.name,
+        errorMessage: err?.message
+      });
+    }
+  }
+
+  if (transcriptBuffer && Array.isArray(transcriptBuffer.segments) && transcriptBuffer.segments.length > 0) {
+    const segments: any[] = transcriptBuffer.segments;
+    const bufferSegmentCount =
+      typeof transcriptBuffer.segmentCount === 'number'
+        ? transcriptBuffer.segmentCount
+        : segments.length;
+
+    // Ensure transcriptCount is at least the buffer segment count
+    const existingCount = typeof analytics.transcriptCount === 'number' ? analytics.transcriptCount : 0;
+    analytics.transcriptCount = Math.max(existingCount, bufferSegmentCount);
+
+    // Hydrate latestTranscripts if missing/empty
+    const existingLatest = Array.isArray(analytics.latestTranscripts) ? analytics.latestTranscripts : [];
+    if (existingLatest.length === 0) {
+      analytics.latestTranscripts = segments
+        .slice(-10)
+        .map((seg: any, idx: number) => {
+          const rawSpeaker = String(seg.speaker || 'CUSTOMER').toUpperCase();
+          const speaker = rawSpeaker === 'AGENT' || rawSpeaker === 'ASSISTANT' ? 'AGENT' : 'CUSTOMER';
+          const timestamp =
+            typeof seg.startTime === 'number'
+              ? seg.startTime
+              : (typeof seg.timestamp === 'number' ? seg.timestamp : idx);
+          const text = String(seg.content ?? seg.text ?? seg.message ?? '').trim();
+          const confidence = typeof seg.confidence === 'number' ? seg.confidence : undefined;
+          return { timestamp, speaker, text, confidence };
+        })
+        .filter((t: any) => typeof t.text === 'string' && t.text.trim().length > 0);
+    }
+
+    // Hydrate fullTranscript if missing/empty (bounded to avoid huge payloads)
+    const hasFullTranscript = typeof analytics.fullTranscript === 'string' && analytics.fullTranscript.trim().length > 0;
+    if (!hasFullTranscript) {
+      const MAX_SEGMENTS_FOR_FULL = 400;
+      const MAX_CHARS_FOR_FULL = 20000;
+
+      const segmentsForFull = segments.length > MAX_SEGMENTS_FOR_FULL
+        ? segments.slice(-MAX_SEGMENTS_FOR_FULL)
+        : segments;
+
+      const lines: string[] = [];
+      for (const seg of segmentsForFull) {
+        const rawSpeaker = String(seg.speaker || 'CUSTOMER').toUpperCase();
+        const speaker = rawSpeaker === 'AGENT' || rawSpeaker === 'ASSISTANT' ? 'AGENT' : 'CUSTOMER';
+        const text = String(seg.content ?? seg.text ?? seg.message ?? '').trim();
+        if (!text) continue;
+        lines.push(`${speaker}: ${text}`);
+      }
+
+      let fullText = lines.join('\n');
+      let truncated = false;
+
+      if (segments.length > MAX_SEGMENTS_FOR_FULL) truncated = true;
+      if (fullText.length > MAX_CHARS_FOR_FULL) {
+        fullText = fullText.substring(fullText.length - MAX_CHARS_FOR_FULL);
+        truncated = true;
+      }
+
+      analytics.fullTranscript = fullText;
+      // Extra field (not required by clients) to indicate truncation.
+      (analytics as any).fullTranscriptTruncated = truncated;
+    }
+  }
+
+  // ----------------------------------------
+  // Caching / ETag
+  // ----------------------------------------
+  const isFinalized =
+    analytics.analyticsState === AnalyticsState.FINALIZED ||
+    analytics.finalized === true ||
+    analytics.callStatus === 'completed' ||
+    analytics.callStatus === 'finalized';
+
+  // For active/finalizing calls, do not allow caching (prevents stale transcripts for Connect/Lex records
+  // that update `lastActivityTime` but may not set `updatedAt`).
+  const cacheControl = isFinalized ? 'public, max-age=3600' : 'no-store';
+
+  // CRITICAL FIX: Generate ETag for caching (include transcript buffer metadata to avoid stale reads)
+  const changeMarker =
+    analytics.finalizedAt ||
+    analytics.updatedAt ||
+    analytics.lastActivityTime ||
+    analytics.callEndTime ||
+    analytics.timestamp;
+
+  const bufferMarker = transcriptBuffer
+    ? `${transcriptBuffer.lastUpdate || ''}-${transcriptBuffer.segmentCount || transcriptBuffer.segments?.length || 0}`
+    : '';
+
+  const etagSource = `${callId}-${analytics.timestamp}-${changeMarker}-${bufferMarker}`;
   const etag = Buffer.from(etagSource).toString('base64');
   
   // Check If-None-Match header
@@ -342,7 +455,7 @@ async function getCallAnalytics(
       headers: {
         ...corsHeaders,
         'ETag': etag,
-        'Cache-Control': 'public, max-age=3600' // Completed calls can be cached
+        'Cache-Control': cacheControl
       },
       body: ''
     };
@@ -353,7 +466,7 @@ async function getCallAnalytics(
     headers: {
       ...corsHeaders,
       'ETag': etag,
-      'Cache-Control': 'public, max-age=3600',
+      'Cache-Control': cacheControl,
       'X-Data-Version': analytics.timestamp.toString()
     },
     body: JSON.stringify({

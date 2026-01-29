@@ -471,6 +471,8 @@ export class AdminStack extends Stack {
           CALL_QUEUE_TABLE_NAME: props.callQueueTableName || '',
           AGENT_PRESENCE_TABLE_NAME: props.agentPresenceTableName || '',
           STAFF_USER_TABLE: props.staffUserTableName || '',
+          // Optional: allow /analytics/call/{callId} to hydrate transcripts from TranscriptBuffersV2
+          TRANSCRIPT_BUFFER_TABLE_NAME: props.transcriptBufferTableName || '',
           AWS_REGION_OVERRIDE: Stack.of(this).region,
         },
       });
@@ -513,6 +515,16 @@ export class AdminStack extends Stack {
           actions: ['dynamodb:GetItem', 'dynamodb:BatchGetItem'],
           resources: [
             `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.staffUserTableName}`,
+          ],
+        }));
+      }
+
+      // Grant read permission to TranscriptBuffers table (for transcript hydration)
+      if (props.transcriptBufferTableName) {
+        this.getAnalyticsFn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['dynamodb:GetItem'],
+          resources: [
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.transcriptBufferTableName}`,
           ],
         }));
       }

@@ -32,6 +32,8 @@ export interface RecordingMetadata {
   recordingId: string;
   timestamp: number;
   callId: string;
+  // PSTN leg call ID extracted from the recording S3 key path (used for mapping/diagnostics)
+  pstnCallId?: string;
   clinicId: string;
   s3Bucket: string;
   s3Key: string;
@@ -144,15 +146,16 @@ export async function processRecordingIdempotent(
   bucket: string,
   key: string
 ): Promise<RecordingMetadata | null> {
-  const callId = extractCallIdFromKey(key);
+  // NOTE: The ID embedded in the S3 key path is the PSTN leg call ID (not always the analytics `callId` / transactionId).
+  const pstnCallId = extractCallIdFromKey(key);
   
-  if (!callId) {
+  if (!pstnCallId) {
     console.error('[RecordingManager] Cannot extract callId from key:', key);
     return null;
   }
 
   // Generate deterministic recording ID
-  const recordingId = generateRecordingId(callId, key);
+  const recordingId = generateRecordingId(pstnCallId, key);
 
   // Check if already processed (idempotency check)
   try {
@@ -174,11 +177,10 @@ export async function processRecordingIdempotent(
   const fileSize = headResult.ContentLength || 0;
 
   // Get call record to enrich metadata
-  // NOTE: callId extracted from S3 key is actually the pstnCallId (PSTN leg ID)
-  const callRecord = await findCallByCallId(ddb, callQueueTableName, callId);
+  const callRecord = await findCallByCallId(ddb, callQueueTableName, pstnCallId);
   
   if (!callRecord) {
-    console.warn('[RecordingManager] Call record not found for pstnCallId:', callId);
+    console.warn('[RecordingManager] Call record not found for pstnCallId:', pstnCallId);
     console.warn('[RecordingManager] S3 key:', key);
     console.warn('[RecordingManager] This will cause clinicId to be set as "unknown"');
     console.warn('[RecordingManager] Possible causes: 1) Call record not created yet, 2) pstnCallId not stored in record, 3) Timing issue');
@@ -205,7 +207,10 @@ export async function processRecordingIdempotent(
   const metadata: RecordingMetadata = {
     recordingId,
     timestamp,
-    callId,
+    // Prefer the analytics callId/transactionId (callRecord.callId) so the UI can fetch recordings by the same callId
+    // it uses for analytics. Fall back to pstnCallId when we cannot resolve the call record yet.
+    callId: callRecord?.callId || pstnCallId,
+    pstnCallId,
     clinicId: callRecord?.clinicId || 'unknown',
     s3Bucket: bucket,
     s3Key: key,

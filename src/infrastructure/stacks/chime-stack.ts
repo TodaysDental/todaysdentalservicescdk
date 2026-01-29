@@ -2895,10 +2895,13 @@ export class ChimeStack extends Stack {
       // 6. Update getRecordingFn with actual bucket/table names (created outside conditional)
       getRecordingFn.addEnvironment('RECORDINGS_BUCKET', recordingsBucket.bucketName);
       getRecordingFn.addEnvironment('RECORDING_METADATA_TABLE', recordingMetadataTable.tableName);
+      // Optional: allow GetRecording to map analytics callId -> pstnCallId via CallQueue (backward compatibility)
+      getRecordingFn.addEnvironment('CALL_QUEUE_TABLE_NAME', this.callQueueTable.tableName);
 
       // Grant permissions to getRecordingFn
       recordingsBucket.grantRead(getRecordingFn);
       recordingMetadataTable.grantReadData(getRecordingFn);
+      this.callQueueTable.grantReadData(getRecordingFn);
       // Only grant KMS permissions if using own bucket
       if (recordingsKey) {
         recordingsKey.grantDecrypt(getRecordingFn);

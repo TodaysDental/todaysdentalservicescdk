@@ -25,6 +25,8 @@ const s3 = new S3Client({});
 
 const RECORDINGS_BUCKET = process.env.RECORDINGS_BUCKET || '';
 const RECORDING_METADATA_TABLE = process.env.RECORDING_METADATA_TABLE || '';
+// Optional: used to map analytics callId/transactionId -> pstnCallId for older recording metadata schemas
+const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME || '';
 
 // CRITICAL FIX: Check if recording is enabled via environment variable
 // This allows the Lambda to be deployed even when recording is disabled
@@ -66,6 +68,69 @@ async function scanRecordingsByCallId(callId: string, maxItems: number = 50): Pr
   }
 
   return found.slice(0, maxItems);
+}
+
+function safeAttachmentFilename(s3Key: string, fallback: string): string {
+  const raw = (s3Key.split('/').pop() || fallback).toString();
+  const cleaned = raw.replace(/[\r\n"]/g, '').trim();
+  return cleaned || fallback;
+}
+
+async function queryRecordingsByCallId(callId: string, maxItems: number = 50): Promise<any[]> {
+  try {
+    const res = await ddb.send(new QueryCommand({
+      TableName: RECORDING_METADATA_TABLE,
+      IndexName: 'callId-index',
+      KeyConditionExpression: 'callId = :callId',
+      ExpressionAttributeValues: { ':callId': callId }
+    }));
+    return (res.Items || []).slice(0, maxItems);
+  } catch (err: any) {
+    const msg = String(err?.message || '');
+    const isMissingIndex =
+      err?.name === 'ValidationException' &&
+      /specified index/i.test(msg);
+
+    console.error('[GetRecording] Query by callId-index failed', {
+      callId,
+      errorName: err?.name,
+      errorMessage: err?.message
+    });
+
+    if (isMissingIndex) {
+      console.warn('[GetRecording] Falling back to Scan (callId-index missing)', { callId });
+      return await scanRecordingsByCallId(callId, maxItems);
+    }
+    throw err;
+  }
+}
+
+async function mapCallIdToPstnCallId(callId: string): Promise<string | null> {
+  if (!CALL_QUEUE_TABLE_NAME) return null;
+
+  try {
+    const res = await ddb.send(new QueryCommand({
+      TableName: CALL_QUEUE_TABLE_NAME,
+      IndexName: 'callId-index',
+      KeyConditionExpression: 'callId = :callId',
+      ExpressionAttributeValues: { ':callId': callId },
+      Limit: 1
+    }));
+
+    const record = res.Items?.[0];
+    const pstn = record?.pstnCallId || record?.vcCallId || record?.pstnLegCallId;
+    if (typeof pstn === 'string' && pstn.trim()) {
+      return pstn.trim();
+    }
+  } catch (err: any) {
+    console.warn('[GetRecording] Failed to map callId -> pstnCallId (non-fatal):', {
+      callId,
+      errorName: err?.name,
+      errorMessage: err?.message
+    });
+  }
+
+  return null;
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
@@ -201,11 +266,17 @@ async function getRecording(
     };
   }
 
+  const fileName = safeAttachmentFilename(
+    loc.key,
+    `recording-${recording.recordingId || recordingId}.wav`
+  );
+
   const presignedUrl = await getSignedUrl(
     s3,
     new GetObjectCommand({
       Bucket: loc.bucket,
-      Key: loc.key
+      Key: loc.key,
+      ResponseContentDisposition: `attachment; filename="${fileName}"`
     }),
     { expiresIn: 3600 } // 1 hour
   );
@@ -243,32 +314,19 @@ async function getRecordingsForCall(
     };
   }
 
-  let recordings: any[] | undefined;
-  try {
-    const res = await ddb.send(new QueryCommand({
-      TableName: RECORDING_METADATA_TABLE,
-      IndexName: 'callId-index',
-      KeyConditionExpression: 'callId = :callId',
-      ExpressionAttributeValues: { ':callId': callId }
-    }));
-    recordings = res.Items;
-  } catch (err: any) {
-    const msg = String(err?.message || '');
-    const isMissingIndex =
-      err?.name === 'ValidationException' &&
-      /specified index/i.test(msg);
+  // 1) Primary: callId-index lookup using the callId provided by the client (usually analytics callId/transactionId)
+  let recordings: any[] = await queryRecordingsByCallId(callId);
 
-    console.error('[GetRecording] Query by callId-index failed', {
-      callId,
-      errorName: err?.name,
-      errorMessage: err?.message
-    });
-
-    if (isMissingIndex) {
-      console.warn('[GetRecording] Falling back to Scan (callId-index missing)', { callId });
-      recordings = await scanRecordingsByCallId(callId);
-    } else {
-      throw err;
+  // 2) Backward compatibility: older RecordingMetadata rows stored `callId` as pstnCallId (from the S3 key path).
+  // If we didn't find recordings, try to map callId -> pstnCallId via CallQueue and query again.
+  if (!recordings || recordings.length === 0) {
+    const pstnCallId = await mapCallIdToPstnCallId(callId);
+    if (pstnCallId && pstnCallId !== callId) {
+      console.log('[GetRecording] No recordings found for callId; retrying with pstnCallId', {
+        callId,
+        pstnCallId
+      });
+      recordings = await queryRecordingsByCallId(pstnCallId);
     }
   }
 
@@ -311,11 +369,17 @@ async function getRecordingsForCall(
       }
 
       try {
+        const fileName = safeAttachmentFilename(
+          loc.key,
+          `recording-${recording?.recordingId || recording?.callId || callId}.wav`
+        );
+
         const presignedUrl = await getSignedUrl(
           s3,
           new GetObjectCommand({
             Bucket: loc.bucket,
-            Key: loc.key
+            Key: loc.key,
+            ResponseContentDisposition: `attachment; filename="${fileName}"`
           }),
           { expiresIn: 3600 }
         );
