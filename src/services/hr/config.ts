@@ -5,22 +5,22 @@
  * This can be externalized to DynamoDB or environment variables for easier management
  */
 
-// Advance Pay Configuration
+// Advance Pay Configuration - No restrictions enforced
 export const ADVANCE_PAY_CONFIG = {
-    // Maximum amount per single request
-    maxAmountPerRequest: Number(process.env.MAX_ADVANCE_PAY_AMOUNT) || 500,
+    // No maximum amount limit
+    maxAmountPerRequest: null as number | null,
 
-    // Maximum total outstanding (pending + approved) balance
-    maxTotalOutstanding: Number(process.env.MAX_TOTAL_OUTSTANDING_ADVANCES) || 1000,
+    // No maximum total outstanding limit
+    maxTotalOutstanding: null as number | null,
 
-    // Maximum number of pending requests at a time
-    maxPendingRequests: Number(process.env.MAX_PENDING_ADVANCE_REQUESTS) || 3,
+    // No maximum pending requests limit
+    maxPendingRequests: null as number | null,
 
-    // Minimum employment tenure in days
-    minTenureDays: Number(process.env.MIN_TENURE_DAYS) || 90,
+    // No minimum employment tenure required
+    minTenureDays: 0,
 
-    // Minimum days between approved/paid requests
-    minDaysBetweenRequests: Number(process.env.MIN_DAYS_BETWEEN_REQUESTS) || 30,
+    // No minimum days between requests required
+    minDaysBetweenRequests: 0,
 
     // Auto-expire pending requests after this many days
     autoExpireDays: Number(process.env.ADVANCE_PAY_EXPIRE_DAYS) || 30,

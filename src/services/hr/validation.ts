@@ -109,11 +109,11 @@ export const leaveInputSchema = z.object({
 
 /**
  * Advance pay request creation schema
+ * Note: Max amount validation removed - no restrictions on advance pay amounts
  */
 export const advancePayInputSchema = z.object({
     amount: z.number()
-        .min(1, 'Amount must be at least $1')
-        .max(ADVANCE_PAY_CONFIG.maxAmountPerRequest, `Maximum amount is $${ADVANCE_PAY_CONFIG.maxAmountPerRequest}`),
+        .min(1, 'Amount must be at least $1'),
     reason: z.string().max(500).optional(),
     clinicId: z.string().min(1, 'Clinic ID is required'),
 });
