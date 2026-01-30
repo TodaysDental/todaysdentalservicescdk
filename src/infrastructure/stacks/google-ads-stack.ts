@@ -485,6 +485,9 @@ export class GoogleAdsStack extends Stack {
     const targetingGeoSearchRes = targetingRes.addResource('geo-search');
     targetingGeoSearchRes.addMethod('GET', new apigw.LambdaIntegration(targetingFn), { authorizer });
 
+    const targetingRadiusRes = targetingRes.addResource('radius');
+    targetingRadiusRes.addMethod('POST', new apigw.LambdaIntegration(targetingFn), { authorizer });
+
     // --- Conversions Routes ---
     const conversionsRes = root.addResource('conversions');
     conversionsRes.addMethod('GET', new apigw.LambdaIntegration(conversionsFn), { authorizer });

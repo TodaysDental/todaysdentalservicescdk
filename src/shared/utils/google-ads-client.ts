@@ -671,6 +671,100 @@ export async function addNegativeKeywords(
   return (client as any).adGroupCriteria.create(operations);
 }
 
+/**
+ * Add radius targeting (proximity) to a campaign
+ * Uses Google Ads Proximity criterion for radius-based geotargeting
+ */
+export async function addRadiusTarget(
+  customerId: string,
+  campaignResourceName: string,
+  options: {
+    latitude: number;
+    longitude: number;
+    radius: number;
+    units: 'MILES' | 'KILOMETERS';
+    bidModifier?: number;
+  }
+): Promise<any> {
+  // Validate resource name format
+  if (!validateResourceName(campaignResourceName, RESOURCE_NAME_PATTERNS.campaign)) {
+    throw new Error(`Invalid campaign resource name format: ${campaignResourceName}`);
+  }
+
+  const client = await getGoogleAdsClient(customerId);
+
+  // Google Ads API uses proximity targeting for radius-based geotargeting
+  const operation = {
+    create: {
+      campaign: campaignResourceName,
+      proximity: {
+        geo_point: {
+          latitude_in_micro_degrees: Math.round(options.latitude * 1000000),
+          longitude_in_micro_degrees: Math.round(options.longitude * 1000000),
+        },
+        radius: options.radius,
+        radius_units: options.units,
+      },
+      bid_modifier: options.bidModifier || 1.0,
+    },
+  };
+
+  console.log(`[GoogleAdsClient] Adding radius target: ${options.radius} ${options.units} around (${options.latitude}, ${options.longitude})`);
+
+  return (client as any).campaignCriteria.create([operation]);
+}
+
+/**
+ * Add location targets to a campaign using geo target constants
+ */
+export async function addLocationTargets(
+  customerId: string,
+  campaignResourceName: string,
+  locations: Array<{
+    geoTargetConstant: string; // e.g., 'geoTargetConstants/1014044'
+  }>,
+  options?: {
+    negative?: boolean;
+  }
+): Promise<any> {
+  // Validate resource name format
+  if (!validateResourceName(campaignResourceName, RESOURCE_NAME_PATTERNS.campaign)) {
+    throw new Error(`Invalid campaign resource name format: ${campaignResourceName}`);
+  }
+
+  const client = await getGoogleAdsClient(customerId);
+
+  const operations = locations.map(loc => ({
+    create: {
+      campaign: campaignResourceName,
+      location: {
+        geo_target_constant: loc.geoTargetConstant,
+      },
+      negative: options?.negative || false,
+    },
+  }));
+
+  console.log(`[GoogleAdsClient] Adding ${locations.length} location targets to campaign`);
+
+  return (client as any).campaignCriteria.create(operations);
+}
+
+/**
+ * Remove a campaign criterion (location, radius, device, etc.)
+ */
+export async function removeCampaignCriterion(
+  customerId: string,
+  criterionResourceName: string
+): Promise<any> {
+  const client = await getGoogleAdsClient(customerId);
+
+  const operation = {
+    remove: criterionResourceName,
+  };
+
+  return (client as any).campaignCriteria.remove([operation]);
+}
+
 // ========================================
 // UTILITY FUNCTIONS
 // ========================================

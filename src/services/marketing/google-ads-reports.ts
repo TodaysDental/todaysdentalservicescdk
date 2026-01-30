@@ -133,14 +133,29 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
 function parseDateRange(startDate?: string, endDate?: string, preset?: string): { start: string; end: string } {
   const today = new Date();
-  
+
   if (preset) {
     switch (preset) {
+      case 'TODAY':
+        const todayStr = today.toISOString().split('T')[0];
+        return { start: todayStr, end: todayStr };
+      case 'YESTERDAY':
+        const yesterday = new Date(today);
+        yesterday.setDate(today.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split('T')[0];
+        return { start: yesterdayStr, end: yesterdayStr };
       case 'LAST_7_DAYS':
         const last7 = new Date(today);
         last7.setDate(today.getDate() - 7);
         return {
           start: last7.toISOString().split('T')[0],
+          end: today.toISOString().split('T')[0],
+        };
+      case 'LAST_14_DAYS':
+        const last14 = new Date(today);
+        last14.setDate(today.getDate() - 14);
+        return {
+          start: last14.toISOString().split('T')[0],
           end: today.toISOString().split('T')[0],
         };
       case 'LAST_30_DAYS':
@@ -170,6 +185,23 @@ function parseDateRange(startDate?: string, endDate?: string, preset?: string): 
           start: lastMonthStart.toISOString().split('T')[0],
           end: lastMonthEnd.toISOString().split('T')[0],
         };
+      case 'THIS_QUARTER':
+        const currentQuarter = Math.floor(today.getMonth() / 3);
+        const quarterStart = new Date(today.getFullYear(), currentQuarter * 3, 1);
+        return {
+          start: quarterStart.toISOString().split('T')[0],
+          end: today.toISOString().split('T')[0],
+        };
+      case 'LAST_QUARTER':
+        const lastQuarter = Math.floor(today.getMonth() / 3) - 1;
+        const lastQuarterYear = lastQuarter < 0 ? today.getFullYear() - 1 : today.getFullYear();
+        const lastQuarterNum = lastQuarter < 0 ? 3 : lastQuarter;
+        const lastQuarterStart = new Date(lastQuarterYear, lastQuarterNum * 3, 1);
+        const lastQuarterEnd = new Date(lastQuarterYear, lastQuarterNum * 3 + 3, 0);
+        return {
+          start: lastQuarterStart.toISOString().split('T')[0],
+          end: lastQuarterEnd.toISOString().split('T')[0],
+        };
     }
   }
 
@@ -185,6 +217,7 @@ function parseDateRange(startDate?: string, endDate?: string, preset?: string): 
 
   return { start: startDate, end: endDate };
 }
+
 
 // ============================================
 // REPORT HANDLERS
@@ -240,7 +273,7 @@ async function getCampaignReport(
 
     // Aggregate by campaign
     const campaignData: Record<string, any> = {};
-    
+
     results.forEach((row: any) => {
       const campaignId = row.campaign.id?.toString();
       if (!campaignData[campaignId]) {
@@ -757,7 +790,7 @@ async function downloadReport(
   try {
     // Get the appropriate report data
     let reportData: any;
-    
+
     // Create a mock event with the same parameters
     const mockEvent = { ...event };
 
@@ -784,7 +817,7 @@ async function downloadReport(
 
     // Generate CSV
     let csv = '';
-    
+
     if (reportType === 'campaign' && reportData.report?.campaigns) {
       csv = 'Campaign Name,Status,Impressions,Clicks,Cost,Conversions,CTR,Avg CPC,Cost/Conversion\n';
       reportData.report.campaigns.forEach((c: any) => {
@@ -887,14 +920,14 @@ async function getAccountSummary(
           ...summary,
           metrics: {
             ...summary.metrics,
-            ctr: summary.metrics.impressions > 0 
-              ? (summary.metrics.clicks / summary.metrics.impressions * 100).toFixed(2) 
+            ctr: summary.metrics.impressions > 0
+              ? (summary.metrics.clicks / summary.metrics.impressions * 100).toFixed(2)
               : 0,
-            avgCpc: summary.metrics.clicks > 0 
-              ? (summary.metrics.cost / summary.metrics.clicks).toFixed(2) 
+            avgCpc: summary.metrics.clicks > 0
+              ? (summary.metrics.cost / summary.metrics.clicks).toFixed(2)
               : 0,
-            costPerConversion: summary.metrics.conversions > 0 
-              ? (summary.metrics.cost / summary.metrics.conversions).toFixed(2) 
+            costPerConversion: summary.metrics.conversions > 0
+              ? (summary.metrics.cost / summary.metrics.conversions).toFixed(2)
               : 0,
           },
         },

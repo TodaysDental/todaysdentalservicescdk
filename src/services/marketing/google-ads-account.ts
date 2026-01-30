@@ -178,13 +178,11 @@ async function getAccountStructure(
   corsHeaders: Record<string, string>
 ): Promise<APIGatewayProxyResult> {
   const customerId = event.queryStringParameters?.customerId;
+  const managerId = event.queryStringParameters?.managerId;
 
+  // If no customerId provided, list all accessible customers under the MCC
   if (!customerId) {
-    return {
-      statusCode: 400,
-      headers: corsHeaders,
-      body: JSON.stringify({ error: 'customerId is required' }),
-    };
+    return await listAccessibleCustomers(corsHeaders);
   }
 
   try {
@@ -256,6 +254,108 @@ async function getAccountStructure(
     };
   } catch (error: any) {
     console.error('[GoogleAdsAccount] Error getting account structure:', error);
+    return {
+      statusCode: 500,
+      headers: corsHeaders,
+      body: JSON.stringify({ error: error.message }),
+    };
+  }
+}
+
+/**
+ * List all accessible customers under the MCC (Manager Account)
+ * Uses getAllClinicsWithGoogleAdsStatus to get configured customers
+ */
+async function listAccessibleCustomers(
+  corsHeaders: Record<string, string>
+): Promise<APIGatewayProxyResult> {
+  try {
+    // Import at runtime to avoid circular dependencies
+    const { getClinicsWithGoogleAds, getLoginCustomerId } = await import('../../shared/utils/google-ads-client');
+
+    // Get all clinics with Google Ads configured
+    const clinicsWithAds = await getClinicsWithGoogleAds();
+
+    if (clinicsWithAds.length === 0) {
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          success: true,
+          customers: [],
+          message: 'No Google Ads accounts configured',
+        }),
+      };
+    }
+
+    // Fetch account details for each configured customer
+    const customers: any[] = [];
+
+    for (const clinic of clinicsWithAds) {
+      try {
+        const { getGoogleAdsClient } = await import('../../shared/utils/google-ads-client');
+        const client = await getGoogleAdsClient(clinic.customerId);
+
+        const query = `
+          SELECT
+            customer.id,
+            customer.descriptive_name,
+            customer.currency_code,
+            customer.time_zone,
+            customer.manager,
+            customer.test_account
+          FROM customer
+          WHERE customer.id = ${clinic.customerId.replace(/-/g, '')}
+          LIMIT 1
+        `;
+
+        const results = await client.query(query);
+
+        if (results.length > 0) {
+          const customer = results[0].customer;
+          const customerIdNum = customer?.id?.toString() || clinic.customerId.replace(/-/g, '');
+          customers.push({
+            resourceName: `customers/${customerIdNum}`,
+            customerId: customerIdNum,
+            descriptiveName: customer?.descriptive_name || clinic.clinicName,
+            currencyCode: customer?.currency_code || 'USD',
+            timeZone: customer?.time_zone || 'America/New_York',
+            manager: customer?.manager || false,
+            testAccount: customer?.test_account || false,
+            clinicId: clinic.clinicId,
+            clinicName: clinic.clinicName,
+          });
+        }
+      } catch (err: any) {
+        console.warn(`[GoogleAdsAccount] Could not fetch details for customer ${clinic.customerId}:`, err.message);
+        // Still include the clinic with basic info
+        const customerIdNum = clinic.customerId.replace(/-/g, '');
+        customers.push({
+          resourceName: `customers/${customerIdNum}`,
+          customerId: customerIdNum,
+          descriptiveName: clinic.clinicName,
+          currencyCode: 'USD',
+          timeZone: 'America/New_York',
+          manager: false,
+          testAccount: false,
+          clinicId: clinic.clinicId,
+          clinicName: clinic.clinicName,
+          error: 'Could not fetch Google Ads details',
+        });
+      }
+    }
+
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        success: true,
+        customers,
+        total: customers.length,
+      }),
+    };
+  } catch (error: any) {
+    console.error('[GoogleAdsAccount] Error listing accessible customers:', error);
     return {
       statusCode: 500,
       headers: corsHeaders,
@@ -509,11 +609,11 @@ async function getBudgetRecommendations(
       resourceName: row.recommendation.resource_name,
       type: row.recommendation.type,
       campaignName: row.campaign?.name,
-      currentBudget: row.recommendation.campaign_budget_recommendation?.current_budget_amount_micros 
-        ? microsToDollars(row.recommendation.campaign_budget_recommendation.current_budget_amount_micros) 
+      currentBudget: row.recommendation.campaign_budget_recommendation?.current_budget_amount_micros
+        ? microsToDollars(row.recommendation.campaign_budget_recommendation.current_budget_amount_micros)
         : null,
-      recommendedBudget: row.recommendation.campaign_budget_recommendation?.recommended_budget_amount_micros 
-        ? microsToDollars(row.recommendation.campaign_budget_recommendation.recommended_budget_amount_micros) 
+      recommendedBudget: row.recommendation.campaign_budget_recommendation?.recommended_budget_amount_micros
+        ? microsToDollars(row.recommendation.campaign_budget_recommendation.recommended_budget_amount_micros)
         : null,
       impact: {
         base: {

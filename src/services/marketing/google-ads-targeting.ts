@@ -33,6 +33,9 @@ import {
   getGoogleAdsClient,
   microsToDollars,
   dollarsToMicros,
+  addRadiusTarget,
+  addLocationTargets,
+  removeCampaignCriterion,
 } from '../../shared/utils/google-ads-client';
 
 // Module permission configuration
@@ -160,6 +163,11 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
       if (method === 'POST') return await updateAdSchedule(event, corsHeaders);
     }
 
+    // --- Radius Targeting Routes ---
+    if (path.includes('/targeting/radius') && method === 'POST') {
+      return await addRadiusTargeting(event, corsHeaders);
+    }
+
     // --- Geo Target Constant Search ---
     if (path.includes('/targeting/geo-search') && method === 'GET') {
       return await searchGeoTargetConstants(event, corsHeaders);
@@ -273,19 +281,13 @@ async function addLocationTargeting(
   }
 
   try {
-    const client = await getGoogleAdsClient(customerId);
-
-    const operations = locations.map(loc => ({
-      create: {
-        campaign: campaignResourceName,
-        location: {
-          geo_target_constant: loc.geoTargetConstant,
-        },
-        negative: negative,
-      },
-    }));
-
-    const response = await (client as any).campaignCriteria.create(operations);
+    // Use the microservice utility function
+    const response = await addLocationTargets(
+      customerId,
+      campaignResourceName,
+      locations.map(loc => ({ geoTargetConstant: loc.geoTargetConstant || '' })),
+      { negative }
+    );
 
     console.log(`[GoogleAdsTargeting] Added ${locations.length} location targets`);
 
@@ -300,6 +302,66 @@ async function addLocationTargeting(
     };
   } catch (error: any) {
     console.error('[GoogleAdsTargeting] Error adding locations:', error);
+    return {
+      statusCode: 500,
+      headers: corsHeaders,
+      body: JSON.stringify({ error: error.message }),
+    };
+  }
+}
+
+// --- Radius Targeting Handler ---
+
+interface RadiusTargetRequest {
+  customerId: string;
+  campaignResourceName: string;
+  latitude: number;
+  longitude: number;
+  radius: number;
+  units: 'MILES' | 'KILOMETERS';
+  bidModifier?: number;
+}
+
+async function addRadiusTargeting(
+  event: APIGatewayProxyEvent,
+  corsHeaders: Record<string, string>
+): Promise<APIGatewayProxyResult> {
+  const body: RadiusTargetRequest = JSON.parse(event.body || '{}');
+  const { customerId, campaignResourceName, latitude, longitude, radius, units, bidModifier } = body;
+
+  if (!customerId || !campaignResourceName || latitude === undefined || longitude === undefined || !radius) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        error: 'customerId, campaignResourceName, latitude, longitude, and radius are required',
+      }),
+    };
+  }
+
+  try {
+    // Use the microservice utility function
+    const response = await addRadiusTarget(customerId, campaignResourceName, {
+      latitude,
+      longitude,
+      radius,
+      units,
+      bidModifier,
+    });
+
+    console.log(`[GoogleAdsTargeting] Added radius target: ${radius} ${units} around (${latitude}, ${longitude})`);
+
+    return {
+      statusCode: 201,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        success: true,
+        message: `Added radius target: ${radius} ${units} around coordinates`,
+        resourceName: response.results?.[0]?.resource_name,
+      }),
+    };
+  } catch (error: any) {
+    console.error('[GoogleAdsTargeting] Error adding radius target:', error);
     return {
       statusCode: 500,
       headers: corsHeaders,
@@ -698,8 +760,8 @@ async function getDeviceBidAdjustments(
       criterionId: row.campaign_criterion.criterion_id?.toString(),
       deviceType: row.campaign_criterion.device?.type,
       bidModifier: row.campaign_criterion.bid_modifier,
-      bidModifierPercent: row.campaign_criterion.bid_modifier 
-        ? Math.round((row.campaign_criterion.bid_modifier - 1) * 100) 
+      bidModifierPercent: row.campaign_criterion.bid_modifier
+        ? Math.round((row.campaign_criterion.bid_modifier - 1) * 100)
         : 0,
       campaign: {
         name: row.campaign?.name,

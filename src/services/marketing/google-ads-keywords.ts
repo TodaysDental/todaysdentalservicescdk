@@ -250,21 +250,91 @@ async function addKeywords(
   event: APIGatewayProxyEvent,
   corsHeaders: Record<string, string>
 ): Promise<APIGatewayProxyResult> {
-  const body: AddKeywordsRequest = JSON.parse(event.body || '{}');
-  const { customerId, adGroupResourceName, keywords } = body;
+  console.log('[GoogleAdsKeywords] addKeywords called with body:', event.body);
 
-  if (!customerId || !adGroupResourceName || !keywords || keywords.length === 0) {
+  let body: AddKeywordsRequest;
+  try {
+    body = JSON.parse(event.body || '{}');
+  } catch (parseError: any) {
+    console.error('[GoogleAdsKeywords] Failed to parse request body:', parseError.message);
     return {
       statusCode: 400,
       headers: corsHeaders,
       body: JSON.stringify({
-        error: 'Missing required fields: customerId, adGroupResourceName, keywords',
+        success: false,
+        error: 'Invalid JSON in request body',
       }),
     };
   }
 
+  const { customerId, adGroupResourceName, keywords } = body;
+
+  // Validate required fields
+  if (!customerId) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        success: false,
+        error: 'Missing required field: customerId',
+      }),
+    };
+  }
+
+  if (!adGroupResourceName) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        success: false,
+        error: 'Missing required field: adGroupResourceName',
+      }),
+    };
+  }
+
+  if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        success: false,
+        error: 'Missing or invalid required field: keywords (must be non-empty array)',
+      }),
+    };
+  }
+
+  // Validate each keyword has required fields
+  const validMatchTypes = ['EXACT', 'PHRASE', 'BROAD'];
+  for (let i = 0; i < keywords.length; i++) {
+    const kw = keywords[i];
+    if (!kw.text || typeof kw.text !== 'string' || kw.text.trim().length === 0) {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          success: false,
+          error: `Invalid keyword at index ${i}: text is required and must be non-empty`,
+        }),
+      };
+    }
+    if (!kw.matchType || !validMatchTypes.includes(kw.matchType)) {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          success: false,
+          error: `Invalid keyword at index ${i}: matchType must be one of ${validMatchTypes.join(', ')}`,
+        }),
+      };
+    }
+  }
+
+  console.log(`[GoogleAdsKeywords] Adding ${keywords.length} keywords to customerId=${customerId}, adGroup=${adGroupResourceName}`);
+  console.log('[GoogleAdsKeywords] Keywords:', JSON.stringify(keywords));
+
   try {
     const response = await addKeywordsToGoogle(customerId, adGroupResourceName, keywords);
+    console.log('[GoogleAdsKeywords] Successfully added keywords, response:', JSON.stringify(response));
 
     return {
       statusCode: 201,
@@ -273,14 +343,44 @@ async function addKeywords(
         success: true,
         addedCount: keywords.length,
         message: `Successfully added ${keywords.length} keywords`,
+        response,
       }),
     };
   } catch (error: any) {
     console.error('[GoogleAdsKeywords] Error adding keywords:', error);
+    console.error('[GoogleAdsKeywords] Error stack:', error.stack);
+
+    // Extract more detailed error information from Google Ads API errors
+    let errorMessage = error.message || 'Unknown error occurred';
+    let errorDetails: any = {};
+
+    // Check for Google Ads API specific error structure
+    if (error.errors && Array.isArray(error.errors)) {
+      errorDetails.googleAdsErrors = error.errors.map((e: any) => ({
+        message: e.message,
+        errorCode: e.errorCode,
+        trigger: e.trigger,
+        location: e.location,
+      }));
+      errorMessage = error.errors.map((e: any) => e.message).join('; ');
+    }
+
+    // Check for request validation errors
+    if (error.code) {
+      errorDetails.code = error.code;
+    }
+
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ error: error.message }),
+      body: JSON.stringify({
+        success: false,
+        error: errorMessage,
+        details: Object.keys(errorDetails).length > 0 ? errorDetails : undefined,
+        customerId,
+        adGroupResourceName,
+        keywordCount: keywords.length,
+      }),
     };
   }
 }
@@ -428,7 +528,7 @@ async function addNegativeKeywords(
     } else {
       // Campaign level negative keywords
       const client = await getGoogleAdsClient(customerId);
-      
+
       const operations = keywords.map(kw => ({
         create: {
           campaign: campaignResourceName,

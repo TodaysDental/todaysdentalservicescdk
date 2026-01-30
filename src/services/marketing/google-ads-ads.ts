@@ -57,7 +57,14 @@ interface CreateRSARequest {
 
 interface UpdateAdRequest {
   customerId: string;
+  adGroupResourceName?: string; // Required for content updates (delete & recreate)
   status?: 'ENABLED' | 'PAUSED';
+  // RSA content fields (triggers delete & recreate)
+  headlines?: string[];
+  descriptions?: string[];
+  finalUrl?: string;
+  path1?: string;
+  path2?: string;
 }
 
 interface CreateSitelinkRequest {
@@ -450,7 +457,7 @@ async function getAd(
     const adGroupAd = row.ad_group_ad;
     const adData = adGroupAd?.ad;
     const adGroup = row.ad_group;
-    
+
     const ad = {
       adId: adData?.id?.toString() || '',
       resourceName: adData?.resource_name || '',
@@ -514,7 +521,7 @@ async function updateAd(
 ): Promise<APIGatewayProxyResult> {
   const adId = event.pathParameters?.id;
   const body: UpdateAdRequest = JSON.parse(event.body || '{}');
-  const { customerId, status } = body;
+  const { customerId, adGroupResourceName, status, headlines, descriptions, finalUrl, path1, path2 } = body;
 
   if (!adId || !customerId) {
     return {
@@ -524,12 +531,24 @@ async function updateAd(
     };
   }
 
+  // Check if this is a content update (requires delete & recreate)
+  const hasContentUpdate = headlines || descriptions || finalUrl !== undefined;
+
   try {
     const client = await getGoogleAdsClient(customerId);
 
-    // First get the ad to find its ad group
+    // First get the current ad details
     const query = `
-      SELECT ad_group_ad.ad.id, ad_group_ad.ad.resource_name, ad_group.resource_name
+      SELECT 
+        ad_group_ad.ad.id, 
+        ad_group_ad.ad.resource_name, 
+        ad_group_ad.ad.final_urls,
+        ad_group_ad.ad.responsive_search_ad.headlines,
+        ad_group_ad.ad.responsive_search_ad.descriptions,
+        ad_group_ad.ad.responsive_search_ad.path1,
+        ad_group_ad.ad.responsive_search_ad.path2,
+        ad_group_ad.status,
+        ad_group.resource_name
       FROM ad_group_ad
       WHERE ad_group_ad.ad.id = ${adId}
     `;
@@ -543,45 +562,154 @@ async function updateAd(
       };
     }
 
-    const adGroupResourceName = results[0].ad_group?.resource_name || '';
-    const adResourceName = results[0].ad_group_ad?.ad?.resource_name || '';
-
-    // Build the update operation - ad_group_ad has resource_name format: customers/{customerId}/adGroupAds/{adGroupId}~{adId}
-    const adGroupId = adGroupResourceName ? adGroupResourceName.split('/').pop() : '';
+    const currentAd = results[0];
+    const currentAdGroupResourceName = adGroupResourceName || currentAd.ad_group?.resource_name || '';
+    const adGroupId = currentAdGroupResourceName ? currentAdGroupResourceName.split('/').pop() : '';
     const adGroupAdResourceName = `customers/${customerId}/adGroupAds/${adGroupId}~${adId}`;
 
-    const updateOperation: any = {
-      update: {
-        resource_name: adGroupAdResourceName,
-      },
-      update_mask: { paths: [] },
-    };
+    // If content update, we need to delete and recreate
+    if (hasContentUpdate) {
+      // Validate adGroupResourceName for content updates
+      if (!currentAdGroupResourceName) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: 'adGroupResourceName is required for content updates' }),
+        };
+      }
 
-    if (status) {
-      updateOperation.update.status = status;
-      updateOperation.update_mask.paths.push('status');
-    }
+      // Get current values for fields not being updated
+      const currentRsa = currentAd.ad_group_ad?.ad?.responsive_search_ad;
+      const currentHeadlines = currentRsa?.headlines?.map((h: any) => h.text) || [];
+      const currentDescriptions = currentRsa?.descriptions?.map((d: any) => d.text) || [];
+      const currentFinalUrl = currentAd.ad_group_ad?.ad?.final_urls?.[0] || '';
+      const currentPath1 = currentRsa?.path1 || '';
+      const currentPath2 = currentRsa?.path2 || '';
+      const currentStatus = currentAd.ad_group_ad?.status || 'PAUSED';
 
-    if (updateOperation.update_mask.paths.length === 0) {
+      // Merge with new values
+      const newHeadlines = headlines || currentHeadlines;
+      const newDescriptions = descriptions || currentDescriptions;
+      const newFinalUrl = finalUrl !== undefined ? finalUrl : currentFinalUrl;
+      const newPath1 = path1 !== undefined ? path1 : currentPath1;
+      const newPath2 = path2 !== undefined ? path2 : currentPath2;
+      const newStatus = status || currentStatus;
+
+      // Validate new headlines
+      if (newHeadlines.length < 3 || newHeadlines.length > 15) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: 'Headlines must be between 3 and 15 items' }),
+        };
+      }
+
+      // Validate new descriptions
+      if (newDescriptions.length < 2 || newDescriptions.length > 4) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: 'Descriptions must be between 2 and 4 items' }),
+        };
+      }
+
+      // Validate headline lengths
+      const invalidHeadlines = newHeadlines.filter((h: string) => h.length > 30);
+      if (invalidHeadlines.length > 0) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: `Headlines must be 30 characters or less` }),
+        };
+      }
+
+      // Validate description lengths
+      const invalidDescriptions = newDescriptions.filter((d: string) => d.length > 90);
+      if (invalidDescriptions.length > 0) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: `Descriptions must be 90 characters or less` }),
+        };
+      }
+
+      // Step 1: Delete the old ad (set to REMOVED)
+      const removeOperation = {
+        update: {
+          resource_name: adGroupAdResourceName,
+          status: 'REMOVED',
+        },
+        update_mask: { paths: ['status'] },
+      };
+
+      await (client as any).adGroupAds.update([removeOperation]);
+      console.log(`[GoogleAdsAds] Removed old ad: ${adId}`);
+
+      // Step 2: Create new ad with updated content
+      const adGroupAdOperation = {
+        create: {
+          ad_group: currentAdGroupResourceName,
+          status: newStatus,
+          ad: {
+            responsive_search_ad: {
+              headlines: newHeadlines.map((text: string) => ({ text })),
+              descriptions: newDescriptions.map((text: string) => ({ text })),
+              path1: newPath1 || undefined,
+              path2: newPath2 || undefined,
+            },
+            final_urls: [newFinalUrl],
+          },
+        },
+      };
+
+      const response = await (client as any).adGroupAds.create([adGroupAdOperation]);
+      const newResourceName = response.results[0].resource_name;
+
+      console.log(`[GoogleAdsAds] Created new ad: ${newResourceName}`);
+
       return {
-        statusCode: 400,
+        statusCode: 200,
         headers: corsHeaders,
-        body: JSON.stringify({ error: 'No fields to update' }),
+        body: JSON.stringify({
+          success: true,
+          message: 'Ad updated successfully (replaced)',
+          newResourceName,
+          updatedFields: ['headlines', 'descriptions', 'finalUrl', 'path1', 'path2', 'status'].filter(
+            f => body[f as keyof UpdateAdRequest] !== undefined
+          ),
+        }),
       };
     }
 
-    await (client as any).adGroupAds.update([updateOperation]);
+    // Status-only update (in-place)
+    if (status) {
+      const updateOperation: any = {
+        update: {
+          resource_name: adGroupAdResourceName,
+          status,
+        },
+        update_mask: { paths: ['status'] },
+      };
 
-    console.log(`[GoogleAdsAds] Updated ad: ${adResourceName}`);
+      await (client as any).adGroupAds.update([updateOperation]);
+
+      console.log(`[GoogleAdsAds] Updated ad status: ${adId}`);
+
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          success: true,
+          message: 'Ad updated successfully',
+          updatedFields: ['status'],
+        }),
+      };
+    }
 
     return {
-      statusCode: 200,
+      statusCode: 400,
       headers: corsHeaders,
-      body: JSON.stringify({
-        success: true,
-        message: 'Ad updated successfully',
-        updatedFields: updateOperation.update_mask.paths,
-      }),
+      body: JSON.stringify({ error: 'No fields to update' }),
     };
   } catch (error: any) {
     console.error('[GoogleAdsAds] Error updating ad:', error);
@@ -592,6 +720,7 @@ async function updateAd(
     };
   }
 }
+
 
 async function deleteAd(
   event: APIGatewayProxyEvent,
@@ -815,7 +944,7 @@ async function listExtensions(
     });
 
     // Filter by type if specified
-    const filteredExtensions = type 
+    const filteredExtensions = type
       ? extensions.filter(e => e.type === type.toUpperCase())
       : extensions;
 
@@ -933,19 +1062,40 @@ async function createExtension(
         };
     }
 
+    console.log(`[GoogleAdsAds] Creating ${assetType} asset with operation:`, JSON.stringify(assetOperation, null, 2));
+
     const response = await (client as any).assets.create([assetOperation]);
     const resourceName = response.results[0].resource_name;
 
     console.log(`[GoogleAdsAds] Created ${assetType} extension: ${resourceName}`);
 
-    // If campaign is specified, link the asset to the campaign
+    // If campaign is specified, link the asset to the campaign with the correct field_type
     if (campaignResourceName) {
+      // Determine the correct field_type based on asset type
+      let fieldType: string;
+      switch (assetType) {
+        case 'SITELINK':
+          fieldType = 'SITELINK';
+          break;
+        case 'CALLOUT':
+          fieldType = 'CALLOUT';
+          break;
+        case 'CALL':
+          fieldType = 'CALL';
+          break;
+        default:
+          fieldType = assetType;
+      }
+
       const linkOperation = {
         create: {
           asset: resourceName,
           campaign: campaignResourceName,
+          field_type: fieldType,
         },
       };
+
+      console.log(`[GoogleAdsAds] Linking asset to campaign with operation:`, JSON.stringify(linkOperation, null, 2));
 
       await (client as any).campaignAssets.create([linkOperation]);
       console.log(`[GoogleAdsAds] Linked asset to campaign: ${campaignResourceName}`);
@@ -965,10 +1115,15 @@ async function createExtension(
     };
   } catch (error: any) {
     console.error('[GoogleAdsAds] Error creating extension:', error);
+    // Include more detailed error information
+    const errorMessage = error.errors?.[0]?.message || error.message || 'Unknown error';
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ error: error.message }),
+      body: JSON.stringify({
+        error: errorMessage,
+        details: error.errors ? error.errors.map((e: any) => ({ message: e.message, code: e.error_code })) : undefined
+      }),
     };
   }
 }
