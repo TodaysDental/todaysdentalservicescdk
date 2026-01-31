@@ -609,30 +609,56 @@ export async function getSearchQueryReport(
 
 /**
  * Add keywords to an ad group
+ * 
+ * NOTE: The google-ads-api library's create() method expects an array of
+ * resource objects directly (IAdGroupCriterion), NOT wrapped in operation
+ * objects like { create: { ... } }. The library handles operation types internally.
  */
 export async function addKeywords(
   customerId: string,
   adGroupResourceName: string,
   keywords: Array<{ text: string; matchType: string }>
 ): Promise<any> {
-  const client = await getGoogleAdsClient(customerId);
+  console.log(`[GoogleAdsClient] addKeywords called with customerId=${customerId}, adGroup=${adGroupResourceName}, keywordCount=${keywords.length}`);
 
-  const operations = keywords.map(kw => ({
-    create: {
+  try {
+    const client = await getGoogleAdsClient(customerId);
+
+    // The library's create() expects resource objects directly, not operation wrappers
+    const resources = keywords.map(kw => ({
       ad_group: adGroupResourceName,
       status: 'ENABLED',
       keyword: {
         text: kw.text.trim(),
         match_type: kw.matchType,
       },
-    },
-  }));
+    }));
 
-  return (client as any).adGroupCriteria.create(operations);
+    console.log(`[GoogleAdsClient] Creating ${resources.length} keywords`);
+    console.log('[GoogleAdsClient] Resources:', JSON.stringify(resources, null, 2));
+
+    const result = await (client as any).adGroupCriteria.create(resources);
+
+    console.log('[GoogleAdsClient] Successfully created keywords:', JSON.stringify(result, null, 2));
+    return result;
+  } catch (error: any) {
+    console.error('[GoogleAdsClient] Error adding keywords:', error);
+    console.error('[GoogleAdsClient] Error details:', JSON.stringify({
+      message: error.message,
+      code: error.code,
+      errors: error.errors,
+      details: error.details,
+    }, null, 2));
+
+    // Re-throw with more context
+    throw error;
+  }
 }
 
 /**
  * Remove keywords by resource names
+ * 
+ * NOTE: The library's remove() expects an array of resource name strings directly.
  */
 export async function removeKeywords(
   customerId: string,
@@ -640,15 +666,16 @@ export async function removeKeywords(
 ): Promise<any> {
   const client = await getGoogleAdsClient(customerId);
 
-  const operations = keywordResourceNames.map(resourceName => ({
-    remove: resourceName,
-  }));
-
-  return (client as any).adGroupCriteria.remove(operations);
+  // The library's remove() expects resource names directly as strings
+  return (client as any).adGroupCriteria.remove(keywordResourceNames);
 }
 
 /**
  * Add negative keywords to an ad group
+ * 
+ * NOTE: The google-ads-api library's create() method expects an array of
+ * resource objects directly (IAdGroupCriterion), NOT wrapped in operation
+ * objects like { create: { ... } }. The library handles operation types internally.
  */
 export async function addNegativeKeywords(
   customerId: string,
@@ -657,18 +684,17 @@ export async function addNegativeKeywords(
 ): Promise<any> {
   const client = await getGoogleAdsClient(customerId);
 
-  const operations = keywords.map(kw => ({
-    create: {
-      ad_group: adGroupResourceName,
-      negative: true,
-      keyword: {
-        text: kw.text.trim(),
-        match_type: kw.matchType || 'BROAD',
-      },
+  // The library's create() expects resource objects directly, not operation wrappers
+  const resources = keywords.map(kw => ({
+    ad_group: adGroupResourceName,
+    negative: true,
+    keyword: {
+      text: kw.text.trim(),
+      match_type: kw.matchType || 'BROAD',
     },
   }));
 
-  return (client as any).adGroupCriteria.create(operations);
+  return (client as any).adGroupCriteria.create(resources);
 }
 
 /**

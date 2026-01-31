@@ -625,37 +625,35 @@ async function bulkPublishCampaigns(
         }
 
         // Add default keywords if provided
+        // NOTE: The google-ads-api library's create() expects resource objects directly,
+        // NOT wrapped in { create: { ... } } operation objects
         if (defaultKeywords && defaultKeywords.length > 0) {
-          const keywordOperations = defaultKeywords.map(kw => ({
-            create: {
-              ad_group: adGroupResourceName,
-              status: 'ENABLED',
-              keyword: {
-                text: replacePlaceholders(kw.text, clinic),
-                match_type: kw.matchType,
-              },
+          const keywordResources = defaultKeywords.map(kw => ({
+            ad_group: adGroupResourceName,
+            status: 'ENABLED',
+            keyword: {
+              text: replacePlaceholders(kw.text, clinic),
+              match_type: kw.matchType,
             },
           }));
 
-          await (client as any).adGroupCriteria.create(keywordOperations);
+          await (client as any).adGroupCriteria.create(keywordResources);
           keywordsAdded = defaultKeywords.length;
           console.log(`[GoogleAdsBulk] Added ${keywordsAdded} keywords for ${customerId}`);
         }
 
         // Add default negative keywords if provided
         if (defaultNegativeKeywords && defaultNegativeKeywords.length > 0) {
-          const negativeKeywordOperations = defaultNegativeKeywords.map(text => ({
-            create: {
-              ad_group: adGroupResourceName,
-              negative: true,
-              keyword: {
-                text: replacePlaceholders(text, clinic),
-                match_type: 'PHRASE',
-              },
+          const negativeKeywordResources = defaultNegativeKeywords.map(text => ({
+            ad_group: adGroupResourceName,
+            negative: true,
+            keyword: {
+              text: replacePlaceholders(text, clinic),
+              match_type: 'PHRASE',
             },
           }));
 
-          await (client as any).adGroupCriteria.create(negativeKeywordOperations);
+          await (client as any).adGroupCriteria.create(negativeKeywordResources);
           negativeKeywordsAdded = defaultNegativeKeywords.length;
           console.log(`[GoogleAdsBulk] Added ${negativeKeywordsAdded} negative keywords for ${customerId}`);
         }
