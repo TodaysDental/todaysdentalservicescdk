@@ -23,7 +23,7 @@ import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 // TYPES
 // ========================================
 
-export type PushNotificationType = 
+export type PushNotificationType =
   | 'new_message'
   | 'task_assigned'
   | 'task_completed'
@@ -36,6 +36,20 @@ export type PushNotificationType =
   | 'queue_update'
   | 'appointment_reminder'
   | 'staff_alert'
+  // HR Module notification types
+  | 'shift_assigned'
+  | 'shift_updated'
+  | 'shift_cancelled'
+  | 'shift_reminder'
+  | 'leave_submitted'
+  | 'leave_approved'
+  | 'leave_denied'
+  | 'advance_pay_submitted'
+  | 'advance_pay_approved'
+  | 'advance_pay_denied'
+  | 'advance_pay_disbursed'
+  | 'calendar_event'
+  | 'hr_alert'
   | 'general';
 
 export interface PushNotificationPayload {
@@ -110,7 +124,7 @@ export class PushNotificationService {
    */
   private buildMessage(notification: PushNotificationPayload, platform: 'ios' | 'android'): string {
     const { title, body, data, badge, sound, imageUrl, category, threadId, type } = notification;
-    
+
     // Build APNS payload for iOS
     const apnsPayload = {
       aps: {
@@ -130,7 +144,7 @@ export class PushNotificationService {
       type,
       timestamp: Date.now(),
     };
-    
+
     // Build FCM payload for Android
     const fcmPayload = {
       notification: {
@@ -156,7 +170,7 @@ export class PushNotificationService {
         },
       },
     };
-    
+
     // Return platform-specific message structure for SNS
     const message: Record<string, string> = {
       default: body,
@@ -164,7 +178,7 @@ export class PushNotificationService {
       APNS_SANDBOX: JSON.stringify(apnsPayload),
       GCM: JSON.stringify(fcmPayload),
     };
-    
+
     return JSON.stringify(message);
   }
 
@@ -198,13 +212,13 @@ export class PushNotificationService {
   ): Promise<SendPushResult> {
     try {
       const message = this.buildMessage(notification, platform);
-      
+
       const result = await this.sns.send(new PublishCommand({
         TargetArn: endpointArn,
         Message: message,
         MessageStructure: 'json',
       }));
-      
+
       return {
         success: true,
         messageId: result.MessageId,
@@ -232,7 +246,7 @@ export class PushNotificationService {
           ':enabled': true,
         },
       }));
-      
+
       return (result.Items || []) as DeviceRecord[];
     } catch (error: any) {
       console.error(`[PushService] Failed to get devices for user ${userId}:`, error.message);
@@ -255,7 +269,7 @@ export class PushNotificationService {
           ':enabled': true,
         },
       }));
-      
+
       return (result.Items || []) as DeviceRecord[];
     } catch (error: any) {
       console.error(`[PushService] Failed to get devices for clinic ${clinicId}:`, error.message);
@@ -268,16 +282,16 @@ export class PushNotificationService {
    */
   async sendToUser(userId: string, notification: PushNotificationPayload): Promise<BatchSendResult> {
     const devices = await this.getDevicesForUser(userId);
-    
+
     if (devices.length === 0) {
       console.log(`[PushService] No devices registered for user ${userId}`);
       return { sent: 0, failed: 0, results: [] };
     }
-    
+
     const results: SendPushResult[] = [];
     let sent = 0;
     let failed = 0;
-    
+
     // Send to all devices in parallel
     const sendPromises = devices.map(async (device) => {
       const result = await this.sendToEndpoint(device.endpointArn, notification, device.platform);
@@ -287,9 +301,9 @@ export class PushNotificationService {
         platform: device.platform,
       };
     });
-    
+
     const sendResults = await Promise.all(sendPromises);
-    
+
     for (const result of sendResults) {
       results.push(result);
       if (result.success) {
@@ -298,7 +312,7 @@ export class PushNotificationService {
         failed++;
       }
     }
-    
+
     console.log(`[PushService] Sent to user ${userId}: ${sent} success, ${failed} failed`);
     return { sent, failed, results };
   }
@@ -310,11 +324,11 @@ export class PushNotificationService {
     if (userIds.length === 0) {
       return { sent: 0, failed: 0, results: [] };
     }
-    
+
     const batchResults = await Promise.all(
       userIds.map(userId => this.sendToUser(userId, notification))
     );
-    
+
     // Aggregate results
     const aggregated: BatchSendResult = { sent: 0, failed: 0, results: [] };
     for (const result of batchResults) {
@@ -322,7 +336,7 @@ export class PushNotificationService {
       aggregated.failed += result.failed;
       aggregated.results.push(...result.results);
     }
-    
+
     return aggregated;
   }
 
@@ -331,16 +345,16 @@ export class PushNotificationService {
    */
   async sendToClinic(clinicId: string, notification: PushNotificationPayload): Promise<BatchSendResult> {
     const devices = await this.getDevicesForClinic(clinicId);
-    
+
     if (devices.length === 0) {
       console.log(`[PushService] No devices registered for clinic ${clinicId}`);
       return { sent: 0, failed: 0, results: [] };
     }
-    
+
     const results: SendPushResult[] = [];
     let sent = 0;
     let failed = 0;
-    
+
     // Send to all devices in parallel
     const sendPromises = devices.map(async (device) => {
       const result = await this.sendToEndpoint(device.endpointArn, notification, device.platform);
@@ -350,9 +364,9 @@ export class PushNotificationService {
         platform: device.platform,
       };
     });
-    
+
     const sendResults = await Promise.all(sendPromises);
-    
+
     for (const result of sendResults) {
       results.push(result);
       if (result.success) {
@@ -361,7 +375,7 @@ export class PushNotificationService {
         failed++;
       }
     }
-    
+
     console.log(`[PushService] Sent to clinic ${clinicId}: ${sent} success, ${failed} failed`);
     return { sent, failed, results };
   }
@@ -377,19 +391,19 @@ export class PushNotificationService {
     if (!this.lambda || !this.sendPushFunctionName) {
       throw new Error('[PushService] Lambda client or function name not configured for cross-stack invocation');
     }
-    
+
     const payload = {
       ...target,
       notification,
     };
-    
+
     try {
       const response = await this.lambda.send(new InvokeCommand({
         FunctionName: this.sendPushFunctionName,
         Payload: JSON.stringify(payload),
         InvocationType: 'RequestResponse',
       }));
-      
+
       if (response.Payload) {
         const result = JSON.parse(new TextDecoder().decode(response.Payload));
         if (result.statusCode === 200) {
@@ -402,7 +416,7 @@ export class PushNotificationService {
         }
         throw new Error(result.body || 'Unknown error from send-push Lambda');
       }
-      
+
       return { sent: 0, failed: 0, results: [] };
     } catch (error: any) {
       console.error('[PushService] Failed to invoke send-push Lambda:', error.message);
@@ -539,10 +553,10 @@ export function buildVoicemailNotification(
   voicemailId: string,
   clinicName: string
 ): PushNotificationPayload {
-  const durationStr = durationSeconds > 60 
-    ? `${Math.floor(durationSeconds / 60)}:${String(durationSeconds % 60).padStart(2, '0')}` 
+  const durationStr = durationSeconds > 60
+    ? `${Math.floor(durationSeconds / 60)}:${String(durationSeconds % 60).padStart(2, '0')}`
     : `${durationSeconds}s`;
-  
+
   return {
     title: 'New Voicemail',
     body: `${callerInfo} left a ${durationStr} voicemail for ${clinicName}`,
@@ -569,7 +583,7 @@ export function buildMeetingScheduledNotification(
   const date = new Date(startTime);
   const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
   const dateStr = date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-  
+
   return {
     title: `Meeting: ${meetingTitle}`,
     body: `${organizerName} scheduled for ${dateStr} at ${timeStr}`,
@@ -591,10 +605,10 @@ export function buildQueueUpdateNotification(
   estimatedWaitMinutes?: number,
   clinicName?: string
 ): PushNotificationPayload {
-  const waitText = estimatedWaitMinutes 
-    ? `Estimated wait: ${estimatedWaitMinutes} minutes` 
+  const waitText = estimatedWaitMinutes
+    ? `Estimated wait: ${estimatedWaitMinutes} minutes`
     : '';
-  
+
   return {
     title: 'Queue Update',
     body: `You are #${queuePosition} in queue${clinicName ? ` for ${clinicName}` : ''}. ${waitText}`,

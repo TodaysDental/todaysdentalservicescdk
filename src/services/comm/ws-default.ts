@@ -9,11 +9,23 @@ import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { v4 as uuidv4 } from 'uuid';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { CognitoIdentityProviderClient, AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
+import {
+    handleAddReaction, handleRemoveReaction,
+    handleReplyToThread, handleGetThreadReplies,
+    handleEditMessage, handleDeleteMessage,
+    handleTypingStart, handleTypingStop,
+    handleSetPresence, handleGetPresence,
+    handlePinMessage, handleUnpinMessage, handleGetPinnedMessages,
+    handleAddBookmark, handleRemoveBookmark, handleGetBookmarks,
+    handleSearch,
+    handleScheduleMessage, handleCancelScheduledMessage, handleGetScheduledMessages,
+    handleCreateChannel, handleJoinChannel, handleLeaveChannel, handleListChannels, handleArchiveChannel,
+} from './messaging-features-handlers';
 
 // Environment Variables
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || '';
-const MESSAGES_TABLE = process.env.MESSAGES_TABLE || ''; 
+const MESSAGES_TABLE = process.env.MESSAGES_TABLE || '';
 const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
 const TEAMS_TABLE = process.env.TEAMS_TABLE || '';
 const MEETINGS_TABLE = process.env.MEETINGS_TABLE || '';
@@ -81,7 +93,7 @@ interface FavorRequest {
     senderID: string;
     receiverID?: string;
     teamID?: string;
-    
+
     // Enhanced task fields
     title?: string;
     description?: string;
@@ -89,18 +101,18 @@ interface FavorRequest {
     priority: TaskPriority;
     category?: SystemModule;
     tags?: string[];
-    
+
     // Forwarding chain
     forwardingChain?: ForwardRecord[];
     currentAssigneeID?: string;
     requiresAcceptance?: boolean;
-    
+
     // Completion/Rejection
     completedAt?: string;
     completionNotes?: string;
     rejectionReason?: string;
     rejectedAt?: string;
-    
+
     // Existing fields
     createdAt: string;
     updatedAt: string;
@@ -203,7 +215,7 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 await fetchHistory(senderID, payload, connectionId, apiGwManagement);
                 break;
             case 'markRead':
-                await markRead(senderID, payload, connectionId, apiGwManagement); 
+                await markRead(senderID, payload, connectionId, apiGwManagement);
                 break;
             case 'fetchRequests':
                 await fetchRequests(senderID, payload, connectionId, apiGwManagement);
@@ -246,6 +258,103 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
             case 'deleteMeeting':
                 await deleteMeeting(senderID, payload, connectionId, apiGwManagement);
                 break;
+
+            // ======= SLACK-LIKE FEATURES =======
+            // Reactions
+            case 'addReaction':
+                await handleAddReaction(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'removeReaction':
+                await handleRemoveReaction(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Threads
+            case 'replyToThread':
+                await handleReplyToThread(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getThreadReplies':
+                await handleGetThreadReplies(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Edit/Delete
+            case 'editMessage':
+                await handleEditMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'deleteMessage':
+                await handleDeleteMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Typing Indicators
+            case 'typingStart':
+                await handleTypingStart(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'typingStop':
+                await handleTypingStop(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Presence
+            case 'setPresence':
+                await handleSetPresence(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getPresence':
+                await handleGetPresence(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Pinned Messages
+            case 'pinMessage':
+                await handlePinMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'unpinMessage':
+                await handleUnpinMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getPinnedMessages':
+                await handleGetPinnedMessages(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Bookmarks
+            case 'addBookmark':
+                await handleAddBookmark(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'removeBookmark':
+                await handleRemoveBookmark(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getBookmarks':
+                await handleGetBookmarks(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Search
+            case 'search':
+                await handleSearch(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Scheduled Messages
+            case 'scheduleMessage':
+                await handleScheduleMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'cancelScheduledMessage':
+                await handleCancelScheduledMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getScheduledMessages':
+                await handleGetScheduledMessages(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Channels
+            case 'createChannel':
+                await handleCreateChannel(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'joinChannel':
+                await handleJoinChannel(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'leaveChannel':
+                await handleLeaveChannel(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'archiveChannel':
+                await handleArchiveChannel(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'listChannels':
+                await handleListChannels(senderID, payload, connectionId, apiGwManagement);
+                break;
+
             default:
                 await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unknown action' });
         }
@@ -272,12 +381,12 @@ async function createTeam(
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
     const { name, members } = payload;
-    
+
     if (!name || !Array.isArray(members) || members.length === 0) {
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing team name or members list.' });
         return;
     }
-    
+
     if (!TEAMS_TABLE) {
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Teams table not configured.' });
         return;
@@ -303,7 +412,7 @@ async function createTeam(
             TableName: TEAMS_TABLE,
             Item: newTeam,
         }));
-        
+
         console.log(`Team created: ${teamID} by ${ownerID}`);
 
         // Notify all team members (including the creator) about the new team
@@ -311,8 +420,8 @@ async function createTeam(
             type: 'teamCreated',
             team: newTeam,
         };
-        await sendToAll(apiGwManagement, uniqueMembers, notificationPayload, { notifyOffline: false }); 
-        
+        await sendToAll(apiGwManagement, uniqueMembers, notificationPayload, { notifyOffline: false });
+
     } catch (e) {
         console.error('Failed to create team:', e);
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to create team.' });
@@ -338,7 +447,7 @@ async function listTeams(
         // Scan the table and filter for teams where the caller is a member
         // Note: For production with large datasets, use a GSI or inverted index pattern
         const { ScanCommand } = await import('@aws-sdk/lib-dynamodb');
-        
+
         const result = await ddb.send(new ScanCommand({
             TableName: TEAMS_TABLE,
             FilterExpression: 'contains(members, :callerID)',
@@ -589,11 +698,11 @@ async function startFavorRequest(
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
     // Enhanced: Include title, description, priority, category
-    const { 
+    const {
         receiverID, teamID, initialMessage, requestType, deadline,
-        title, description, priority = 'Medium', category, tags 
+        title, description, priority = 'Medium', category, tags
     } = payload;
-    
+
     if (!initialMessage || !requestType || (!receiverID && !teamID)) {
         await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Missing initialMessage, requestType, and recipient (receiverID or teamID).' });
         return;
@@ -613,7 +722,7 @@ async function startFavorRequest(
             Key: { teamID },
         }));
         const team = teamResult.Item as Team;
-        
+
         if (!team) {
             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: `Team ID ${teamID} not found.` });
             return;
@@ -624,10 +733,10 @@ async function startFavorRequest(
             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Unauthorized: You are not a member of this team.' });
             return;
         }
-        
+
         // Recipients are all team members except the sender
         recipients = team.members.filter(memberId => memberId !== senderID);
-        
+
         if (recipients.length === 0) {
             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'The team has no other members to assign the task to.' });
             return;
@@ -640,7 +749,7 @@ async function startFavorRequest(
         }
         recipients = [receiverID as string];
     }
-    
+
     const favorRequestID = uuidv4();
     const timestamp = Date.now();
     const nowIso = new Date().toISOString();
@@ -660,10 +769,10 @@ async function startFavorRequest(
         currentAssigneeID: isGroupRequest ? undefined : receiverID,
         createdAt: nowIso,
         updatedAt: nowIso,
-        userID: senderID, 
+        userID: senderID,
         requestType,
-        unreadCount: recipients.length, 
-        initialMessage: initialMessage, 
+        unreadCount: recipients.length,
+        initialMessage: initialMessage,
         ...(deadline && { deadline: String(deadline) }),
     };
 
@@ -672,7 +781,7 @@ async function startFavorRequest(
         TableName: FAVORS_TABLE,
         Item: newFavor,
     }));
-    
+
     // 2. Create the initial message
     const messageData: MessageData = {
         favorRequestID,
@@ -684,16 +793,16 @@ async function startFavorRequest(
 
     // 3. Save message and broadcast
     await _saveAndBroadcastMessage(messageData, apiGwManagement, isGroupRequest ? recipients : undefined);
-    
+
     // 4. Send email notification (Only for 1-to-1 requests for simplicity)
     if (!isGroupRequest) {
         try {
             await sendNewFavorNotificationEmail(senderID, receiverID as string, initialMessage, requestType, deadline);
-        } catch(e) {
+        } catch (e) {
             console.error("Failed to send SES notification email for 1-to-1:", e);
         }
     }
-    
+
     // 5. Send push notifications to recipients (for offline users)
     const senderDetails = await getUserDetails(senderID);
     await sendTaskPushNotification(
@@ -706,13 +815,13 @@ async function startFavorRequest(
     );
 
     // 6. Send confirmation back to the sender
-    await sendToClient(apiGwManagement, senderConnectionId, { 
-        type: 'favorRequestStarted', 
+    await sendToClient(apiGwManagement, senderConnectionId, {
+        type: 'favorRequestStarted',
         favorRequestID,
         favor: newFavor,
         receiverID,
         teamID,
-        requestType, 
+        requestType,
         deadline,
         title: newFavor.title,
         priority: newFavor.priority,
@@ -737,7 +846,7 @@ async function sendMessage(
         }
         return;
     }
-    
+
     const timestamp = Date.now();
 
     // 1. Validate and Update Favor Request (optimistic locking/status check)
@@ -746,7 +855,7 @@ async function sendMessage(
         Key: { favorRequestID },
     }));
     const favor = favorResult.Item as FavorRequest;
-    
+
     if (!favor) {
         if (senderConnectionId) {
             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Favor request not found.' });
@@ -762,7 +871,7 @@ async function sendMessage(
         }
         return;
     }
-    
+
     // Determine the list of all non-sending recipients
     const recipientIDs = await getRecipientIDs(favor, senderID);
 
@@ -775,23 +884,23 @@ async function sendMessage(
 
     // 2. Update the favor's last update time AND increment the unread counter 
     // Increment unread count by the number of recipients.
-    const incrementAmount = recipientIDs.length; 
-    
-    const updateResult = await ddb.send(new UpdateCommand({ 
+    const incrementAmount = recipientIDs.length;
+
+    const updateResult = await ddb.send(new UpdateCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
-        UpdateExpression: 'SET updatedAt = :ua ADD unreadCount :incr', 
-        ExpressionAttributeValues: { 
+        UpdateExpression: 'SET updatedAt = :ua ADD unreadCount :incr',
+        ExpressionAttributeValues: {
             ':ua': new Date().toISOString(),
             ':incr': incrementAmount
         },
-        ReturnValues: 'ALL_NEW', 
+        ReturnValues: 'ALL_NEW',
     }));
-    
+
     // Broadcast the updated favor object to all participants (sender + all recipients)
     const updatedFavor = updateResult.Attributes as FavorRequest;
     const allParticipants = [...recipientIDs, senderID];
-    
+
     const broadcastUpdatePayload = {
         type: 'favorRequestUpdated',
         favor: updatedFavor,
@@ -831,19 +940,19 @@ async function getRecipientIDs(favor: FavorRequest, senderID: string): Promise<s
             Key: { teamID: favor.teamID },
         }));
         const team = teamResult.Item as Team;
-        
+
         // Recipients are all team members except the sender
         return team ? team.members.filter(memberId => memberId !== senderID) : [];
-        
+
     } else if (favor.receiverID) {
         // 1-to-1 chat: Recipient is the person who is not the sender
         const recipientID = favor.senderID === senderID ? favor.receiverID : favor.senderID;
         // Check if the sender is actually a participant before returning the other one
         if (favor.senderID === senderID || favor.receiverID === senderID) {
-             return [recipientID];
+            return [recipientID];
         }
     }
-    
+
     return []; // Request not found, inactive, or unauthorized
 }
 
@@ -857,19 +966,19 @@ async function isUserParticipant(favor: FavorRequest, userID: string): Promise<b
     if (!favor.teamID) {
         return favor.senderID === userID || favor.receiverID === userID;
     }
-    
+
     // For group requests, check team membership
     if (!TEAMS_TABLE) {
         console.error("TEAMS_TABLE not configured for participant check.");
         return false;
     }
-    
+
     const teamResult = await ddb.send(new GetCommand({
         TableName: TEAMS_TABLE,
         Key: { teamID: favor.teamID },
     }));
     const team = teamResult.Item as Team;
-    
+
     return team ? team.members.includes(userID) : false;
 }
 
@@ -890,7 +999,7 @@ async function getAllParticipants(favor: FavorRequest): Promise<string[]> {
         const team = teamResult.Item as Team;
         return team ? team.members : [favor.senderID];
     }
-    
+
     // For 1-to-1 requests
     const participants = [favor.senderID];
     if (favor.receiverID) {
@@ -941,12 +1050,12 @@ async function markRead(
             TableName: FAVORS_TABLE,
             Key: { favorRequestID },
             UpdateExpression: 'SET unreadCount = :zero',
-            ExpressionAttributeValues: { 
+            ExpressionAttributeValues: {
                 ':zero': 0,
             },
-            ReturnValues: 'ALL_NEW', 
+            ReturnValues: 'ALL_NEW',
         }));
-        
+
         // 4. Send the read status update to the caller
         const updatedFavor = updateResult.Attributes as FavorRequest;
         const broadcastUpdatePayload = {
@@ -1010,7 +1119,7 @@ async function resolveRequest(
         }
         return;
     }
-    
+
     const nowIso = new Date().toISOString();
 
     // 3. Update Favor Status
@@ -1019,7 +1128,7 @@ async function resolveRequest(
             TableName: FAVORS_TABLE,
             Key: { favorRequestID },
             // Also reset unread count on resolve
-            UpdateExpression: 'SET #s = :resolved, updatedAt = :ua, unreadCount = :zero', 
+            UpdateExpression: 'SET #s = :resolved, updatedAt = :ua, unreadCount = :zero',
             ExpressionAttributeNames: { '#s': 'status' },
             ExpressionAttributeValues: {
                 ':resolved': 'resolved',
@@ -1027,7 +1136,7 @@ async function resolveRequest(
                 ':zero': 0, // Reset unread count
             },
         }));
-        
+
         // Get all participants for the broadcast
         const participants = await getAllParticipants(favor);
 
@@ -1038,9 +1147,9 @@ async function resolveRequest(
             resolvedBy: senderID,
             updatedAt: nowIso
         };
-        
+
         await sendToAll(apiGwManagement, participants, broadcastPayload, { notifyOffline: false });
-        
+
     } catch (e: any) {
         console.error('Error resolving request:', e);
         if (senderConnectionId) {
@@ -1063,7 +1172,7 @@ async function fetchRequests(
 ): Promise<void> {
     // role can be 'sent', 'received', 'group', or 'all'
     const { role = 'all', limit = 50, nextToken } = payload;
-    
+
     const queryLimit = Math.min(limit, 100);
 
     let exclusiveStartKey: any = undefined;
@@ -1084,7 +1193,7 @@ async function fetchRequests(
     ) => {
         return ddb.send(
             new QueryCommand({
-                TableName: FAVORS_TABLE, 
+                TableName: FAVORS_TABLE,
                 IndexName: indexName,
                 KeyConditionExpression: `${keyName} = :uid`,
                 ExpressionAttributeValues: {
@@ -1100,7 +1209,7 @@ async function fetchRequests(
     // Helper to get all team IDs the user is a member of
     const getUserTeamIDs = async (): Promise<string[]> => {
         if (!TEAMS_TABLE) return [];
-        
+
         const { ScanCommand } = await import('@aws-sdk/lib-dynamodb');
         const result = await ddb.send(new ScanCommand({
             TableName: TEAMS_TABLE,
@@ -1110,22 +1219,22 @@ async function fetchRequests(
             },
             ProjectionExpression: 'teamID',
         }));
-        
+
         return (result.Items || []).map((item: any) => item.teamID);
     };
 
     // Helper to fetch group requests for given team IDs
     const fetchGroupRequests = async (teamIDs: string[]): Promise<any[]> => {
         if (teamIDs.length === 0) return [];
-        
-        const groupRequestPromises = teamIDs.map(teamID => 
+
+        const groupRequestPromises = teamIDs.map(teamID =>
             queryByIndex('TeamIndex', 'teamID', teamID)
         );
-        
+
         const results = await Promise.all(groupRequestPromises);
         return results.flatMap(r => r.Items || []);
     };
-    
+
     let items: any[] = [];
     let newToken: string | undefined = undefined;
 
@@ -1139,7 +1248,7 @@ async function fetchRequests(
             );
             items = sentResult.Items || [];
             newToken = sentResult.LastEvaluatedKey ? JSON.stringify(sentResult.LastEvaluatedKey) : undefined;
-            
+
         } else if (role === 'received') {
             const recvResult = await queryByIndex(
                 'ReceiverIndex',
@@ -1154,7 +1263,7 @@ async function fetchRequests(
             // Fetch only group requests where the user is a team member
             const teamIDs = await getUserTeamIDs();
             items = await fetchGroupRequests(teamIDs);
-            
+
             // Sort by updatedAt desc
             items.sort((a, b) => {
                 const aTime = a.updatedAt || '';
@@ -1163,10 +1272,10 @@ async function fetchRequests(
                 if (aTime > bTime) return -1;
                 return 0;
             });
-            
+
             items = items.slice(0, queryLimit);
             newToken = undefined;
-            
+
         } else { // role = 'all' -> merge sent, received, and group requests
             // Fetch 1-to-1 requests (sent and received)
             const [sentResult, recvResult, teamIDs] = await Promise.all([
@@ -1179,7 +1288,7 @@ async function fetchRequests(
             const groupItems = await fetchGroupRequests(teamIDs);
 
             const allItems = [
-                ...(sentResult.Items || []), 
+                ...(sentResult.Items || []),
                 ...(recvResult.Items || []),
                 ...groupItems
             ];
@@ -1201,7 +1310,7 @@ async function fetchRequests(
                 if (aTime > bTime) return -1;
                 return 0;
             });
-            
+
             // Limit the result set in-memory
             items = merged.slice(0, queryLimit);
             newToken = undefined; // Merging makes DDB pagination token complex/irrelevant
@@ -1233,7 +1342,7 @@ async function fetchRequests(
  * If undefined, logic falls back to 1-to-1 (favor.senderID/receiverID).
  */
 async function _saveAndBroadcastMessage(
-    messageData: MessageData, 
+    messageData: MessageData,
     apiGwManagement: ApiGatewayManagementApiClient,
     recipientIDs?: string[]
 ): Promise<void> {
@@ -1242,11 +1351,11 @@ async function _saveAndBroadcastMessage(
         TableName: MESSAGES_TABLE,
         Item: messageData,
     }));
-    
+
     // 2. Find the request details to identify recipients if not explicitly provided
     let participants = [messageData.senderID];
     let recipients = recipientIDs;
-    
+
     if (!recipients) {
         const favorResult = await ddb.send(new GetCommand({
             TableName: FAVORS_TABLE,
@@ -1256,18 +1365,18 @@ async function _saveAndBroadcastMessage(
         if (!favor) return;
 
         // Use the new helper to get all non-sending participants
-        recipients = await getRecipientIDs(favor, messageData.senderID); 
+        recipients = await getRecipientIDs(favor, messageData.senderID);
         participants = [...participants, ...recipients];
     } else {
         participants = [...participants, ...recipients];
     }
-    
+
     // 3. Broadcast to all participants (sender gets an echo, recipients get the new message)
     const broadcastPayload = {
         type: 'newMessage',
         message: messageData,
     };
-    
+
     // sendToAll will handle real-time and SNS notifications for all users in the 'participants' list
     await sendToAll(apiGwManagement, participants, broadcastPayload, { notifyOffline: true, senderID: messageData.senderID });
 }
@@ -1284,7 +1393,7 @@ async function getSenderInfo(connectionId: string): Promise<SenderInfo | undefin
         Key: { connectionId },
     }));
     const item = result.Item as (SenderInfo & { ttl: number }) | undefined;
-    
+
     if (!item) return undefined;
     return { connectionId: item.connectionId, userID: item.userID };
 }
@@ -1293,16 +1402,16 @@ async function getSenderInfo(connectionId: string): Promise<SenderInfo | undefin
 async function getSenderInfoByUserID(userID: string): Promise<SenderInfo | undefined> {
     // NOTE: This assumes a Global Secondary Index (GSI) named 'UserIDIndex' exists
     // on the CONNECTIONS_TABLE with 'userID' as the Partition Key.
-    
+
     const result = await ddb.send(new QueryCommand({
         TableName: CONNECTIONS_TABLE,
-        IndexName: 'UserIDIndex', 
+        IndexName: 'UserIDIndex',
         KeyConditionExpression: 'userID = :uid',
         ExpressionAttributeValues: { ':uid': userID },
         Limit: 1,
     }));
     const item = result.Items?.[0] as SenderInfo | undefined;
-    
+
     if (!item) return undefined;
     return { connectionId: item.connectionId, userID: item.userID };
 }
@@ -1319,7 +1428,7 @@ async function getUserDetails(userID: string): Promise<{ email?: string; fullNam
             UserPoolId: USER_POOL_ID,
             Username: userID,
         });
-        
+
         const response = await cognito.send(command);
 
         const emailAttr = response.UserAttributes?.find(attr => attr.Name === 'email')?.Value;
@@ -1340,34 +1449,34 @@ async function getUserDetails(userID: string): Promise<{ email?: string; fullNam
  * Sends an email notification to the receiver about a new favor request via SES.
  */
 async function sendNewFavorNotificationEmail(
-    senderID: string, 
-    receiverID: string, 
-    messageContent: string, 
-    requestType: string, 
+    senderID: string,
+    receiverID: string,
+    messageContent: string,
+    requestType: string,
     deadline?: string
 ): Promise<void> {
     if (!SES_SOURCE_EMAIL) {
         console.warn('SES_SOURCE_EMAIL not configured. Skipping email notification.');
         return;
     }
-    
+
     // 1. Get user details for Sender and Receiver
     const [sender, receiver] = await Promise.all([
         getUserDetails(senderID),
         getUserDetails(receiverID),
     ]);
-    
+
     if (!receiver.email) {
         console.warn(`Receiver ${receiverID} has no email address. Skipping email.`);
         return;
     }
-    
-    const formattedDeadline = deadline ? 
-        new Date(deadline).toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' }) : 
+
+    const formattedDeadline = deadline ?
+        new Date(deadline).toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' }) :
         '';
 
-    const deadlineText = formattedDeadline ? 
-        `\n\n**Deadline:** ${formattedDeadline}` : 
+    const deadlineText = formattedDeadline ?
+        `\n\n**Deadline:** ${formattedDeadline}` :
         '';
 
     const emailHtmlBody = `
@@ -1389,7 +1498,7 @@ async function sendNewFavorNotificationEmail(
             </body>
         </html>
     `;
-    
+
     const emailTextBody = `
         New ${requestType} Notification
         
@@ -1423,7 +1532,7 @@ async function sendNewFavorNotificationEmail(
         // V2 uses FromEmailAddress for the sender address
         FromEmailAddress: SES_SOURCE_EMAIL,
     }));
-    
+
     console.log(`SES Notification sent to ${receiver.email} for favor request from ${sender.fullName}.`);
 }
 
@@ -1435,7 +1544,7 @@ async function fetchHistory(
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
     const { favorRequestID, limit = 100, lastTimestamp } = payload;
-    
+
     if (!favorRequestID) {
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID for history fetch.' });
         return;
@@ -1471,7 +1580,7 @@ async function fetchHistory(
     };
 
     const historyResult = await ddb.send(new QueryCommand(queryInput));
-    
+
     // 4. Send history back to the client
     await sendToClient(apiGwManagement, connectionId, {
         type: 'favorHistory',
@@ -1499,20 +1608,20 @@ async function sendToClient(apiGwManagement: ApiGatewayManagementApiClient, conn
 
 /** Sends a message to a list of user IDs by finding their active connections. */
 async function sendToAll(
-    apiGwManagement: ApiGatewayManagementApiClient, 
-    userIDs: string[], 
-    data: any, 
+    apiGwManagement: ApiGatewayManagementApiClient,
+    userIDs: string[],
+    data: any,
     options: { notifyOffline: boolean; senderID?: string; senderName?: string }
 ): Promise<void> {
     const connectionPromises = userIDs.map(id => getSenderInfoByUserID(id));
     const connections = await Promise.all(connectionPromises);
-    
+
     const offlineRecipients: string[] = [];
 
     for (let i = 0; i < userIDs.length; i++) {
         const userID = userIDs[i];
         const conn = connections[i];
-        
+
         if (conn) {
             // User is online, send via WebSocket
             await sendToClient(apiGwManagement, conn.connectionId, data);
@@ -1521,11 +1630,11 @@ async function sendToAll(
             offlineRecipients.push(userID);
         }
     }
-    
+
     // Send push notifications to all offline recipients
     if (offlineRecipients.length > 0 && options.notifyOffline) {
         const messageData = data.message as MessageData;
-        
+
         if (messageData) {
             // For message notifications, use push notifications if available
             await sendPushNotificationsToOfflineUsers(
@@ -1549,16 +1658,16 @@ async function sendPushNotificationsToOfflineUsers(
     if (offlineUserIds.length === 0) {
         return;
     }
-    
+
     // Use the actual content to create a useful preview
-    const preview = messageData.content && messageData.content.length > 100 
-        ? messageData.content.substring(0, 97) + '...' 
+    const preview = messageData.content && messageData.content.length > 100
+        ? messageData.content.substring(0, 97) + '...'
         : messageData.content || '';
-    
+
     // If push notifications are enabled, use the send-push Lambda
     if (PUSH_NOTIFICATIONS_ENABLED && SEND_PUSH_FUNCTION_ARN) {
         console.log(`[PushNotifications] Sending to ${offlineUserIds.length} offline users via Lambda`);
-        
+
         try {
             const notificationPayload = {
                 _internalCall: true,
@@ -1576,13 +1685,13 @@ async function sendPushNotificationsToOfflineUsers(
                     threadId: `conversation-${messageData.favorRequestID}`,
                 },
             };
-            
+
             const response = await lambdaClient.send(new InvokeCommand({
                 FunctionName: SEND_PUSH_FUNCTION_ARN,
                 Payload: JSON.stringify(notificationPayload),
                 InvocationType: 'Event', // Async invocation - don't wait for response
             }));
-            
+
             console.log(`[PushNotifications] Lambda invoked, StatusCode: ${response.StatusCode}`);
         } catch (error: any) {
             console.error('[PushNotifications] Failed to invoke send-push Lambda:', error.message);
@@ -1601,12 +1710,12 @@ async function publishSnsNotification(messageData: any): Promise<void> {
         console.warn('SNS Topic ARN not configured. Skipping notification.');
         return;
     }
-    
+
     // Use the actual content to create a useful preview
-    const preview = messageData.content && messageData.content.length > 100 
-        ? messageData.content.substring(0, 97) + '...' 
+    const preview = messageData.content && messageData.content.length > 100
+        ? messageData.content.substring(0, 97) + '...'
         : messageData.content || '';
-        
+
     await sns.send(new PublishCommand({
         TopicArn: NOTIFICATIONS_TOPIC_ARN,
         Message: JSON.stringify({
@@ -1616,7 +1725,7 @@ async function publishSnsNotification(messageData: any): Promise<void> {
             senderID: messageData.senderID,
             messagePreview: preview,
             // Pass group context if available
-            teamID: messageData.teamID, 
+            teamID: messageData.teamID,
             offlineRecipients: messageData.offlineRecipients, // List of users who should receive the notification
         }),
     }));
@@ -1636,10 +1745,10 @@ async function sendTaskPushNotification(
     if (!PUSH_NOTIFICATIONS_ENABLED || userIds.length === 0) {
         return;
     }
-    
+
     let title: string;
     let body: string;
-    
+
     switch (type) {
         case 'task_assigned':
             title = `New Task: ${taskTitle}`;
@@ -1656,7 +1765,7 @@ async function sendTaskPushNotification(
         default:
             return;
     }
-    
+
     try {
         const notificationPayload = {
             _internalCall: true,
@@ -1672,13 +1781,13 @@ async function sendTaskPushNotification(
                 },
             },
         };
-        
+
         await lambdaClient.send(new InvokeCommand({
             FunctionName: SEND_PUSH_FUNCTION_ARN,
             Payload: JSON.stringify(notificationPayload),
             InvocationType: 'Event',
         }));
-        
+
         console.log(`[PushNotifications] Task notification sent to ${userIds.length} users`);
     } catch (error: any) {
         console.error('[PushNotifications] Failed to send task notification:', error.message);
@@ -1699,20 +1808,20 @@ async function sendMeetingPushNotification(
     if (!PUSH_NOTIFICATIONS_ENABLED || userIds.length === 0) {
         return;
     }
-    
+
     let title: string;
     let body: string;
-    
-    const dateStr = startTime 
-        ? new Date(startTime).toLocaleString('en-US', { 
-            weekday: 'short', 
-            month: 'short', 
+
+    const dateStr = startTime
+        ? new Date(startTime).toLocaleString('en-US', {
+            weekday: 'short',
+            month: 'short',
             day: 'numeric',
             hour: 'numeric',
             minute: '2-digit'
-          })
+        })
         : '';
-    
+
     switch (type) {
         case 'meeting_scheduled':
             title = `Meeting: ${meetingTitle}`;
@@ -1729,7 +1838,7 @@ async function sendMeetingPushNotification(
         default:
             return;
     }
-    
+
     try {
         const notificationPayload = {
             _internalCall: true,
@@ -1745,13 +1854,13 @@ async function sendMeetingPushNotification(
                 },
             },
         };
-        
+
         await lambdaClient.send(new InvokeCommand({
             FunctionName: SEND_PUSH_FUNCTION_ARN,
             Payload: JSON.stringify(notificationPayload),
             InvocationType: 'Event',
         }));
-        
+
         console.log(`[PushNotifications] Meeting notification sent to ${userIds.length} users`);
     } catch (error: any) {
         console.error('[PushNotifications] Failed to send meeting notification:', error.message);
@@ -1778,7 +1887,7 @@ async function getPresignedUrl(senderID: string, payload: any, connectionId: str
 
     try {
         const url = await getSignedUrl(s3, command, { expiresIn: 900 }); // URL valid for 15 minutes
-        
+
         await sendToClient(apiGwManagement, connectionId, {
             type: 'presignedUrl',
             favorRequestID: payload.favorRequestID,
@@ -1925,7 +2034,7 @@ async function respondToForward(
 
     // 2. Find the forward record for this user
     const forwardingChain = favor.forwardingChain || [];
-    const forwardIndex = forwardID 
+    const forwardIndex = forwardID
         ? forwardingChain.findIndex(f => f.forwardID === forwardID)
         : forwardingChain.findIndex(f => f.toUserID === senderID && f.status === 'pending');
 
@@ -1963,7 +2072,7 @@ async function respondToForward(
     await ddb.send(new UpdateCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
-        UpdateExpression: 'SET forwardingChain = :chain, #s = :status, currentAssigneeID = :assignee, updatedAt = :ua' + 
+        UpdateExpression: 'SET forwardingChain = :chain, #s = :status, currentAssigneeID = :assignee, updatedAt = :ua' +
             (action === 'reject' ? ', rejectionReason = :reason, rejectedAt = :rejAt' : ''),
         ExpressionAttributeNames: { '#s': 'status' },
         ExpressionAttributeValues: {
@@ -2093,7 +2202,7 @@ async function updateTaskDeadline(
 
     // 3. Update the deadline
     const nowIso = new Date().toISOString();
-    
+
     if (removeDeadline) {
         await ddb.send(new UpdateCommand({
             TableName: FAVORS_TABLE,

@@ -576,8 +576,16 @@ const hrStack = new HrStack(app, 'TodaysDentalInsightsHrN1', {
   env,
   staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
   clinicsTableName: chimeStack.clinicsTable.tableName, // For timezone lookup in shift emails
+  // ========================================
+  // PUSH NOTIFICATIONS INTEGRATION
+  // ========================================
+  // Enables mobile push notifications for HR events (shifts, leave, advance pay)
+  deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
+  deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
+  sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
 });
 // hrStack.addDependency(coreStack); // Implicit
+
 
 // Credentialing Stack - Provider credentialing and payer enrollment management
 const credentialingStack = new CredentialingStack(app, 'TodaysDentalInsightsCredentialingN1', {
@@ -823,6 +831,7 @@ clinicBudgetStack.addDependency(coreStack); // Explicit - imports AuthorizerFunc
 openDentalStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 hrStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 hrStack.addDependency(chimeStack); // Explicit - uses Clinics table for timezone lookup
+hrStack.addDependency(pushNotificationsStack); // Explicit - uses push notification Lambda
 
 communicationsStack.addDependency(coreStack); // Explicit - uses JWT secret
 communicationsStack.addDependency(pushNotificationsStack); // Explicit - uses push notification Lambda
