@@ -21,6 +21,17 @@ import {
     handleScheduleMessage, handleCancelScheduledMessage, handleGetScheduledMessages,
     handleCreateChannel, handleJoinChannel, handleLeaveChannel, handleListChannels, handleArchiveChannel,
 } from './messaging-features-handlers';
+import {
+    handleMarkDelivered, handleMarkMessagesRead,
+    handleGetVoiceUploadUrl, handleSendVoiceMessage,
+    handleUpdateConversationSettings, handleMuteConversation, handleUnmuteConversation,
+    handleArchiveConversation, handlePinConversation,
+    handleGetConversationAnalytics,
+    handleSearchGifs, handleGetTrendingGifs, handleSendGif,
+    handleGetStickerPacks, handleGetStickers, handleSendSticker,
+    handleInitiateCall, handleJoinCall, handleEndCall, handleDeclineCall,
+    handleFetchLinkPreview, handleGetConversationFiles,
+} from './enhanced-messaging-handlers';
 
 // Environment Variables
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -121,6 +132,7 @@ interface FavorRequest {
     unreadCount: number;
     initialMessage: string;
     deadline?: string;
+    isMainGroupChat?: boolean; // WhatsApp-style main group chat flag
 }
 
 interface Meeting {
@@ -154,7 +166,7 @@ interface MessageData {
     senderID: string;
     content: string;
     timestamp: number;
-    type: 'text' | 'file';
+    type: 'text' | 'file' | 'system';
     fileKey?: string;
     fileDetails?: FileDetails;
 }
@@ -353,6 +365,96 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 break;
             case 'listChannels':
                 await handleListChannels(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Group Chat
+            case 'openGroupChat':
+                await handleOpenGroupChat(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // ======= ENHANCED MESSAGING FEATURES =======
+            // Message Delivery Status
+            case 'markDelivered':
+                await handleMarkDelivered(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'markMessagesRead':
+                await handleMarkMessagesRead(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Voice Messages
+            case 'getVoiceUploadUrl':
+                await handleGetVoiceUploadUrl(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'sendVoiceMessage':
+                await handleSendVoiceMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Conversation Settings (Mute, Archive, Pin, Notifications)
+            case 'updateConversationSettings':
+                await handleUpdateConversationSettings(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'muteConversation':
+                await handleMuteConversation(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'unmuteConversation':
+                await handleUnmuteConversation(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'archiveConversation':
+                await handleArchiveConversation(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'pinConversation':
+                await handlePinConversation(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Analytics & Insights
+            case 'getConversationAnalytics':
+                await handleGetConversationAnalytics(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // GIF Support
+            case 'searchGifs':
+                await handleSearchGifs(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getTrendingGifs':
+                await handleGetTrendingGifs(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'sendGif':
+                await handleSendGif(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Stickers
+            case 'getStickerPacks':
+                await handleGetStickerPacks(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getStickers':
+                await handleGetStickers(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'sendSticker':
+                await handleSendSticker(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Voice/Video Calling
+            case 'initiateCall':
+                await handleInitiateCall(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'joinCall':
+                await handleJoinCall(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'endCall':
+                await handleEndCall(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'declineCall':
+                await handleDeclineCall(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Link Previews
+            case 'fetchLinkPreview':
+                await handleFetchLinkPreview(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Files
+            case 'getConversationFiles':
+                await handleGetConversationFiles(senderID, payload, connectionId, apiGwManagement);
                 break;
 
             default:
@@ -659,6 +761,175 @@ async function removeUserFromTeam(
     } catch (e) {
         console.error('Failed to remove user from team:', e);
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to remove user from team.' });
+    }
+}
+
+/**
+ * WhatsApp-style Group Chat: Opens or creates the main conversation for a team.
+ * This allows users to immediately start chatting with a group when they click on it.
+ */
+async function handleOpenGroupChat(
+    callerID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { teamID } = payload;
+
+    if (!teamID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing teamID.' });
+        return;
+    }
+
+    if (!TEAMS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Teams table not configured.' });
+        return;
+    }
+
+    try {
+        // 1. Fetch the team to verify membership
+        const teamResult = await ddb.send(new GetCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID },
+        }));
+        const team = teamResult.Item as Team;
+
+        if (!team) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Team not found.' });
+            return;
+        }
+
+        // 2. Verify caller is a member of the team
+        if (!team.members.includes(callerID)) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a member of this team.' });
+            return;
+        }
+
+        // 3. Check if there's an existing "main" group conversation for this team
+        // A main conversation has isMainGroupChat set to true OR is the first conversation for the team
+        const { ScanCommand } = await import('@aws-sdk/lib-dynamodb');
+
+        const existingConvos = await ddb.send(new ScanCommand({
+            TableName: FAVORS_TABLE,
+            FilterExpression: 'teamID = :teamID',
+            ExpressionAttributeValues: {
+                ':teamID': teamID,
+            },
+        }));
+
+        const conversations = (existingConvos.Items || []) as FavorRequest[];
+
+        // Find the main group chat (first one or one marked as main)
+        const mainConvo = conversations.find(c => (c as any).isMainGroupChat === true)
+            || conversations[0];
+
+        if (mainConvo) {
+            // 4a. Return existing conversation and its history
+            console.log(`Opening existing group chat: ${mainConvo.favorRequestID} for team ${teamID}`);
+
+            // Fetch message history
+            const { QueryCommand } = await import('@aws-sdk/lib-dynamodb');
+            const messagesResult = await ddb.send(new QueryCommand({
+                TableName: MESSAGES_TABLE,
+                KeyConditionExpression: 'favorRequestID = :frid',
+                ExpressionAttributeValues: {
+                    ':frid': mainConvo.favorRequestID,
+                },
+                ScanIndexForward: true, // Oldest first
+                Limit: 100,
+            }));
+
+            const messages = (messagesResult.Items || []) as MessageData[];
+
+            await sendToClient(apiGwManagement, connectionId, {
+                type: 'groupChatOpened',
+                favor: mainConvo,
+                favorRequestID: mainConvo.favorRequestID,
+                teamID,
+                team: {
+                    teamID: team.teamID,
+                    name: team.name,
+                    members: team.members,
+                    ownerID: team.ownerID,
+                },
+                messages,
+                isExisting: true,
+            });
+
+        } else {
+            // 4b. Create a new main group conversation
+            console.log(`Creating new main group chat for team ${teamID}`);
+
+            const favorRequestID = uuidv4();
+            const nowIso = new Date().toISOString();
+
+            const newFavor: FavorRequest = {
+                favorRequestID,
+                senderID: callerID,
+                teamID,
+                title: team.name, // Use team name as conversation title
+                description: `Group chat for ${team.name}`,
+                status: 'active',
+                priority: 'Medium' as TaskPriority,
+                currentAssigneeID: undefined,
+                createdAt: nowIso,
+                updatedAt: nowIso,
+                userID: callerID,
+                requestType: 'General',
+                unreadCount: 0,
+                initialMessage: `Welcome to ${team.name}! 👋`,
+                isMainGroupChat: true, // Mark as the main group chat
+            };
+
+            await ddb.send(new PutCommand({
+                TableName: FAVORS_TABLE,
+                Item: newFavor,
+            }));
+
+            // Create welcome message
+            const welcomeMessage: MessageData = {
+                favorRequestID,
+                senderID: 'system',
+                content: `Welcome to ${team.name}! This is the beginning of your group chat. 🎉`,
+                timestamp: Date.now(),
+                type: 'system',
+            };
+
+            await ddb.send(new PutCommand({
+                TableName: MESSAGES_TABLE,
+                Item: {
+                    ...welcomeMessage,
+                    messageID: uuidv4(),
+                },
+            }));
+
+            // Notify all team members about the new conversation
+            const notificationPayload = {
+                type: 'favorRequestUpdated',
+                favor: newFavor,
+            };
+            await sendToAll(apiGwManagement, team.members, notificationPayload, { notifyOffline: false });
+
+            // Return the new conversation to the caller
+            await sendToClient(apiGwManagement, connectionId, {
+                type: 'groupChatOpened',
+                favor: newFavor,
+                favorRequestID,
+                teamID,
+                team: {
+                    teamID: team.teamID,
+                    name: team.name,
+                    members: team.members,
+                    ownerID: team.ownerID,
+                },
+                messages: [welcomeMessage],
+                isExisting: false,
+            });
+        }
+
+    } catch (e) {
+        console.error('Failed to open group chat:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to open group chat.' });
     }
 }
 
