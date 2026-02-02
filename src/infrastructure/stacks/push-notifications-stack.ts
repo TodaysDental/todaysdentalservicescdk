@@ -4,12 +4,19 @@
  * Provides mobile push notification infrastructure using AWS SNS Platform Applications.
  * Supports iOS (APNs) and Android (FCM) push notifications.
  * 
- * Prerequisites:
- * - Store APNs credentials in AWS Secrets Manager (see SECRETS-SETUP.md)
- * - Store FCM credentials in AWS Secrets Manager (see SECRETS-SETUP.md)
+ * CREDENTIALS SOURCE: GlobalSecrets DynamoDB Table
+ * 
+ * Required GlobalSecrets entries for FCM (Android):
+ * - secretId: fcm, secretType: server_key (Legacy FCM Server Key)
+ * 
+ * Required GlobalSecrets entries for APNs (iOS):
+ * - secretId: apns, secretType: signing_key (.p8 private key content)
+ * - secretId: apns, secretType: key_id
+ * - secretId: apns, secretType: team_id
+ * - secretId: apns, secretType: bundle_id
  */
 
-import { Duration, Stack, StackProps, CfnOutput, Fn, Tags, RemovalPolicy, SecretValue } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, Fn, Tags, RemovalPolicy, CustomResource } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -17,37 +24,33 @@ import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
-import * as sns from 'aws-cdk-lib/aws-sns';
-import { CfnResource } from 'aws-cdk-lib';
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cr from 'aws-cdk-lib/custom-resources';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface PushNotificationsStackProps extends StackProps {
   /**
-   * Optional: Name of the Secrets Manager secret containing APNs credentials.
-   * Expected secret structure:
-   * {
-   *   "signingKey": "-----BEGIN PRIVATE KEY-----\n...",
-   *   "keyId": "ABC123DEFG",
-   *   "teamId": "TEAM123456",
-   *   "bundleId": "com.yourcompany.app"
-   * }
+   * Name of the GlobalSecrets DynamoDB table
+   * Required for reading FCM/APNs credentials
    */
-  apnsSecretName?: string;
+  globalSecretsTableName: string;
 
   /**
-   * Optional: Name of the Secrets Manager secret containing FCM credentials.
-   * Expected secret structure:
-   * {
-   *   "serverKey": "AAAA..."
-   * }
+   * ARN of the GlobalSecrets DynamoDB table
+   * Required for IAM permissions
    */
-  fcmSecretName?: string;
+  globalSecretsTableArn?: string;
+
+  /**
+   * ARN of the KMS key used to encrypt GlobalSecrets
+   * Required if the table is encrypted
+   */
+  secretsEncryptionKeyArn?: string;
 
   /**
    * Enable APNs sandbox environment for development.
-   * Default: true (creates both sandbox and production)
+   * Default: true (creates both sandbox and production if credentials exist)
    */
   enableApnsSandbox?: boolean;
 }
@@ -59,16 +62,17 @@ export class PushNotificationsStack extends Stack {
   public readonly registerDeviceFn: lambdaNode.NodejsFunction;
   public readonly unregisterDeviceFn: lambdaNode.NodejsFunction;
   public readonly sendPushFn: lambdaNode.NodejsFunction;
-  // Platform application types use 'any' for CDK version compatibility
-  // CfnPlatformApplication may not be exported in all CDK versions
-  public readonly fcmPlatformApp?: any;
-  public readonly apnsPlatformApp?: any;
-  public readonly apnsSandboxPlatformApp?: any;
+  public readonly platformSetupFn: lambdaNode.NodejsFunction;
 
-  constructor(scope: Construct, id: string, props: PushNotificationsStackProps = {}) {
+  constructor(scope: Construct, id: string, props: PushNotificationsStackProps) {
     super(scope, id, props);
 
-    const { apnsSecretName, fcmSecretName, enableApnsSandbox = true } = props;
+    const {
+      globalSecretsTableName,
+      globalSecretsTableArn,
+      secretsEncryptionKeyArn,
+      enableApnsSandbox = true,
+    } = props;
 
     // Tags & alarm helpers
     const baseTags: Record<string, string> = {
@@ -130,70 +134,67 @@ export class PushNotificationsStack extends Stack {
     applyTags(this.deviceTokensTable, { Table: 'device-tokens' });
 
     // ========================================
-    // SNS PLATFORM APPLICATIONS
+    // CUSTOM RESOURCE - Platform Setup Lambda
     // ========================================
+    // This Lambda reads credentials from GlobalSecrets and creates SNS Platform Apps
 
-    // Environment variables for Lambda functions
-    const platformArnEnvVars: Record<string, string> = {};
+    this.platformSetupFn = new lambdaNode.NodejsFunction(this, 'PlatformSetupFn', {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.minutes(2), // Platform creation can take time
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      entry: path.join(__dirname, '..', '..', 'services', 'push-notifications', 'platform-setup.ts'),
+      handler: 'handler',
+      environment: {
+        GLOBAL_SECRETS_TABLE: globalSecretsTableName,
+        STACK_NAME: id,
+        ENABLE_APNS_SANDBOX: enableApnsSandbox ? 'true' : 'false',
+      },
+    });
+    applyTags(this.platformSetupFn, { Function: 'platform-setup' });
 
-    // FCM Platform Application (Android)
-    if (fcmSecretName) {
-      const fcmSecret = secretsmanager.Secret.fromSecretNameV2(this, 'FCMSecret', fcmSecretName);
-      
-      this.fcmPlatformApp = new CfnResource(this, 'FCMPlatformApp', {
-        type: 'AWS::SNS::PlatformApplication',
-        properties: {
-          Name: `${id}-FCM`,
-          Platform: 'GCM',
-          Attributes: {
-            PlatformCredential: fcmSecret.secretValueFromJson('serverKey').unsafeUnwrap(),
-          },
-        },
-      });
-      applyTags(this.fcmPlatformApp as unknown as Construct, { Platform: 'fcm' });
-      platformArnEnvVars.FCM_PLATFORM_ARN = this.fcmPlatformApp.ref;
+    // Grant permissions to read from GlobalSecrets
+    // Note: fromTableAttributes requires either tableArn OR tableName, not both
+    const globalSecretsTable = globalSecretsTableArn
+      ? dynamodb.Table.fromTableArn(this, 'GlobalSecretsRef', globalSecretsTableArn)
+      : dynamodb.Table.fromTableName(this, 'GlobalSecretsRef', globalSecretsTableName);
+    globalSecretsTable.grantReadData(this.platformSetupFn);
+
+    // Grant KMS decrypt if encryption key is provided
+    if (secretsEncryptionKeyArn) {
+      const secretsKey = kms.Key.fromKeyArn(this, 'SecretsKeyRef', secretsEncryptionKeyArn);
+      secretsKey.grantDecrypt(this.platformSetupFn);
     }
 
-    // APNs Platform Application (iOS Production)
-    if (apnsSecretName) {
-      const apnsSecret = secretsmanager.Secret.fromSecretNameV2(this, 'APNSSecret', apnsSecretName);
-      
-      // Production APNs
-      this.apnsPlatformApp = new CfnResource(this, 'APNSPlatformApp', {
-        type: 'AWS::SNS::PlatformApplication',
-        properties: {
-          Name: `${id}-APNS`,
-          Platform: 'APNS',
-          Attributes: {
-            PlatformCredential: apnsSecret.secretValueFromJson('signingKey').unsafeUnwrap(),
-            PlatformPrincipal: apnsSecret.secretValueFromJson('keyId').unsafeUnwrap(),
-            TeamId: apnsSecret.secretValueFromJson('teamId').unsafeUnwrap(),
-            BundleId: apnsSecret.secretValueFromJson('bundleId').unsafeUnwrap(),
-          },
-        },
-      });
-      applyTags(this.apnsPlatformApp as unknown as Construct, { Platform: 'apns' });
-      platformArnEnvVars.APNS_PLATFORM_ARN = this.apnsPlatformApp.ref;
+    // Grant SNS permissions to create/manage platform applications
+    this.platformSetupFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'sns:CreatePlatformApplication',
+        'sns:SetPlatformApplicationAttributes',
+        'sns:DeletePlatformApplication',
+        'sns:ListPlatformApplications',
+      ],
+      resources: ['*'],
+    }));
 
-      // Sandbox APNs (for development)
-      if (enableApnsSandbox) {
-        this.apnsSandboxPlatformApp = new CfnResource(this, 'APNSSandboxPlatformApp', {
-          type: 'AWS::SNS::PlatformApplication',
-          properties: {
-            Name: `${id}-APNS-Sandbox`,
-            Platform: 'APNS_SANDBOX',
-            Attributes: {
-              PlatformCredential: apnsSecret.secretValueFromJson('signingKey').unsafeUnwrap(),
-              PlatformPrincipal: apnsSecret.secretValueFromJson('keyId').unsafeUnwrap(),
-              TeamId: apnsSecret.secretValueFromJson('teamId').unsafeUnwrap(),
-              BundleId: apnsSecret.secretValueFromJson('bundleId').unsafeUnwrap(),
-            },
-          },
-        });
-        applyTags(this.apnsSandboxPlatformApp as unknown as Construct, { Platform: 'apns-sandbox' });
-        platformArnEnvVars.APNS_SANDBOX_PLATFORM_ARN = this.apnsSandboxPlatformApp.ref;
-      }
-    }
+    // Create the Custom Resource
+    const platformSetupProvider = new cr.Provider(this, 'PlatformSetupProvider', {
+      onEventHandler: this.platformSetupFn,
+    });
+
+    const platformSetup = new CustomResource(this, 'PlatformSetupResource', {
+      serviceToken: platformSetupProvider.serviceToken,
+      properties: {
+        // Include these to trigger update when secrets change
+        Version: Date.now().toString(),
+      },
+    });
+
+    // Get platform ARNs from Custom Resource output
+    const fcmPlatformArn = platformSetup.getAttString('FcmPlatformArn');
+    const apnsPlatformArn = platformSetup.getAttString('ApnsPlatformArn');
+    const apnsSandboxPlatformArn = platformSetup.getAttString('ApnsSandboxPlatformArn');
 
     // ========================================
     // IMPORT AUTHORIZER FROM CORE STACK
@@ -219,7 +220,11 @@ export class PushNotificationsStack extends Stack {
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
         DEVICE_TOKENS_TABLE: this.deviceTokensTable.tableName,
-        ...platformArnEnvVars,
+        GLOBAL_SECRETS_TABLE: globalSecretsTableName,
+        // Platform ARNs from Custom Resource (may be empty if credentials not configured)
+        FCM_PLATFORM_ARN: fcmPlatformArn || '',
+        APNS_PLATFORM_ARN: apnsPlatformArn || '',
+        APNS_SANDBOX_PLATFORM_ARN: apnsSandboxPlatformArn || '',
       },
     };
 
@@ -247,6 +252,11 @@ export class PushNotificationsStack extends Stack {
     });
     applyTags(this.sendPushFn, { Function: 'send-push' });
 
+    // Ensure Lambda functions wait for platform setup
+    this.registerDeviceFn.node.addDependency(platformSetup);
+    this.unregisterDeviceFn.node.addDependency(platformSetup);
+    this.sendPushFn.node.addDependency(platformSetup);
+
     // ========================================
     // IAM PERMISSIONS
     // ========================================
@@ -255,6 +265,18 @@ export class PushNotificationsStack extends Stack {
     this.deviceTokensTable.grantReadWriteData(this.registerDeviceFn);
     this.deviceTokensTable.grantReadWriteData(this.unregisterDeviceFn);
     this.deviceTokensTable.grantReadData(this.sendPushFn);
+
+    // GlobalSecrets table permissions (for runtime credential access if needed)
+    globalSecretsTable.grantReadData(this.registerDeviceFn);
+    globalSecretsTable.grantReadData(this.sendPushFn);
+
+    // Grant KMS decrypt for all lambdas if encryption key is provided
+    if (secretsEncryptionKeyArn) {
+      const secretsKey = kms.Key.fromKeyArn(this, 'SecretsKeyRef2', secretsEncryptionKeyArn);
+      secretsKey.grantDecrypt(this.registerDeviceFn);
+      secretsKey.grantDecrypt(this.unregisterDeviceFn);
+      secretsKey.grantDecrypt(this.sendPushFn);
+    }
 
     // SNS permissions for creating/managing endpoints
     const snsPolicy = new iam.PolicyStatement({
@@ -452,29 +474,20 @@ export class PushNotificationsStack extends Stack {
       exportName: `${Stack.of(this).stackName}-SendPushFunctionName`,
     });
 
-    if (this.fcmPlatformApp) {
-      new CfnOutput(this, 'FCMPlatformAppArn', {
-        value: this.fcmPlatformApp.ref,
-        description: 'FCM Platform Application ARN',
-        exportName: `${Stack.of(this).stackName}-FCMPlatformAppArn`,
-      });
-    }
+    // Output platform ARNs (may be empty if credentials not configured)
+    new CfnOutput(this, 'FCMPlatformArn', {
+      value: fcmPlatformArn || 'NOT_CONFIGURED',
+      description: 'FCM Platform Application ARN (from GlobalSecrets)',
+    });
 
-    if (this.apnsPlatformApp) {
-      new CfnOutput(this, 'APNSPlatformAppArn', {
-        value: this.apnsPlatformApp.ref,
-        description: 'APNs Platform Application ARN',
-        exportName: `${Stack.of(this).stackName}-APNSPlatformAppArn`,
-      });
-    }
+    new CfnOutput(this, 'APNSPlatformArn', {
+      value: apnsPlatformArn || 'NOT_CONFIGURED',
+      description: 'APNs Platform Application ARN (from GlobalSecrets)',
+    });
 
-    if (this.apnsSandboxPlatformApp) {
-      new CfnOutput(this, 'APNSSandboxPlatformAppArn', {
-        value: this.apnsSandboxPlatformApp.ref,
-        description: 'APNs Sandbox Platform Application ARN',
-        exportName: `${Stack.of(this).stackName}-APNSSandboxPlatformAppArn`,
-      });
-    }
+    new CfnOutput(this, 'APNSSandboxPlatformArn', {
+      value: apnsSandboxPlatformArn || 'NOT_CONFIGURED',
+      description: 'APNs Sandbox Platform Application ARN (from GlobalSecrets)',
+    });
   }
 }
-

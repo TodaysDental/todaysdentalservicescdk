@@ -1121,7 +1121,7 @@ export async function handleInitiateCall(
 
             // Send push notification for reliability (especially when app is in background)
             try {
-                const { sendIncomingCallNotification } = await import('./fcm-push-manager');
+                const { sendIncomingCallNotification } = await import('./push-notifications');
                 await sendIncomingCallNotification(ddb, participantID, {
                     callID,
                     callerID: senderID,
@@ -1395,7 +1395,7 @@ export async function handleDeclineCall(
 
             // Send missed call notification to caller via push
             try {
-                const { sendMissedCallNotification } = await import('./fcm-push-manager');
+                const { sendMissedCallNotification } = await import('./push-notifications');
                 await sendMissedCallNotification(ddb, call.callerID, senderID, call.callType);
             } catch (pushError) {
                 console.warn('[Call] Failed to send missed call notification:', pushError);

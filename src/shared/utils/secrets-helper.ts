@@ -215,7 +215,7 @@ export async function getAllClinicSecrets(): Promise<ClinicSecrets[]> {
     }
 
     const secrets = response.Items.map(item => unmarshall(item) as ClinicSecrets);
-    
+
     // Update cache for each clinic
     secrets.forEach(secret => {
       setCacheEntry(clinicSecretsCache, secret.clinicId, secret);
@@ -240,7 +240,7 @@ export async function getAllClinicSecrets(): Promise<ClinicSecrets[]> {
  */
 export async function getGlobalSecret(secretId: string, secretType: string): Promise<string | null> {
   const cacheKey = `${secretId}#${secretType}`;
-  
+
   // Check cache first
   const cached = globalSecretsCache.get(cacheKey);
   if (isCacheValid(cached)) {
@@ -376,7 +376,7 @@ export async function getAllClinicConfigs(): Promise<ClinicConfig[]> {
     }
 
     const configs = response.Items.map(item => unmarshall(item) as ClinicConfig);
-    
+
     // Update cache for each clinic
     configs.forEach(config => {
       setCacheEntry(clinicConfigCache, config.clinicId, config);
@@ -587,7 +587,7 @@ export async function getCpanelCredentials(): Promise<{
 
   // Get config from api_token metadata or config entry
   const metadata = apiTokenEntry.metadata || configEntry?.metadata || {};
-  
+
   return {
     host: metadata.host || configEntry?.value || 'box2383.bluehost.com',
     port: parseInt(metadata.port || '2083', 10),
@@ -595,4 +595,25 @@ export async function getCpanelCredentials(): Promise<{
     apiToken: apiTokenEntry.value,
     domain: metadata.domain || 'todaysdentalpartners.com',
   };
+}
+
+/**
+ * Get Firebase Cloud Messaging (FCM) credentials for push notifications
+ * Uses the FCM HTTP v1 API with service account authentication
+ */
+export async function getFCMCredentials(): Promise<{
+  projectId: string;
+  serviceAccountKey: string;
+} | null> {
+  const [projectId, serviceAccountKey] = await Promise.all([
+    getGlobalSecret('fcm', 'project_id'),
+    getGlobalSecret('fcm', 'service_account'),
+  ]);
+
+  if (!projectId || !serviceAccountKey) {
+    console.warn('[SecretsHelper] FCM credentials not found in GlobalSecrets');
+    return null;
+  }
+
+  return { projectId, serviceAccountKey };
 }

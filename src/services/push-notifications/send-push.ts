@@ -1,3 +1,19 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /**
  * Send Push Notification Handler
  * 
@@ -29,10 +45,16 @@ import {
 
 // Environment variables
 const DEVICE_TOKENS_TABLE = process.env.DEVICE_TOKENS_TABLE || '';
+const FCM_PLATFORM_ARN = process.env.FCM_PLATFORM_ARN || '';
+const APNS_PLATFORM_ARN = process.env.APNS_PLATFORM_ARN || '';
+const APNS_SANDBOX_PLATFORM_ARN = process.env.APNS_SANDBOX_PLATFORM_ARN || '';
 
 // Clients
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const sns = new SNSClient({});
+
+// FCM v1 client for direct API calls (fallback when SNS not configured)
+import { sendFcmV1Notification, isFcmV1Available } from './fcm-v1-client';
 
 // Helper functions
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
@@ -51,14 +73,17 @@ function parseBody(body: any): Record<string, any> {
 }
 
 // Push notification types
-type NotificationType = 
+type NotificationType =
   | 'appointment_reminder'
   | 'appointment_confirmation'
   | 'new_message'
   | 'treatment_update'
   | 'payment_due'
   | 'general'
-  | 'staff_alert';
+  | 'staff_alert'
+  | 'incoming_call'
+  | 'missed_call'
+  | 'mention';
 
 interface PushNotificationPayload {
   title: string;
@@ -75,10 +100,10 @@ interface SendPushRequest {
   userId?: string;        // Send to specific user
   clinicId?: string;      // Send to all devices in a clinic
   endpointArn?: string;   // Send to specific endpoint
-  
+
   // Notification content
   notification: PushNotificationPayload;
-  
+
   // Options
   dryRun?: boolean;       // If true, don't actually send
 }
@@ -87,7 +112,8 @@ interface DeviceRecord {
   userId: string;
   deviceId: string;
   clinicId: string;
-  endpointArn: string;
+  deviceToken: string;   // Raw FCM/APNs token (for FCM v1 API fallback)
+  endpointArn?: string;  // SNS endpoint ARN (may be empty if Platform App not configured)
   platform: 'ios' | 'android';
   enabled: boolean;
 }
@@ -97,7 +123,7 @@ interface DeviceRecord {
  */
 function buildMessage(notification: PushNotificationPayload, platform: 'ios' | 'android'): string {
   const { title, body, data, badge, sound, imageUrl } = notification;
-  
+
   // Build APNS payload for iOS
   const apnsPayload = {
     aps: {
@@ -113,7 +139,7 @@ function buildMessage(notification: PushNotificationPayload, platform: 'ios' | '
     ...data,
     type: notification.type || 'general',
   };
-  
+
   // Build FCM payload for Android
   const fcmPayload = {
     notification: {
@@ -135,7 +161,7 @@ function buildMessage(notification: PushNotificationPayload, platform: 'ios' | '
       },
     },
   };
-  
+
   // Return platform-specific message structure for SNS
   const message: Record<string, string> = {
     default: body,
@@ -143,38 +169,97 @@ function buildMessage(notification: PushNotificationPayload, platform: 'ios' | '
     APNS_SANDBOX: JSON.stringify(apnsPayload),
     GCM: JSON.stringify(fcmPayload),
   };
-  
+
   return JSON.stringify(message);
 }
 
 /**
- * Send push notification to a single endpoint
+ * Send push notification to a single device
+ * 
+ * Uses SNS endpoint if available, otherwise falls back to direct API:
+ * - Android: FCM HTTP v1 API
+ * - iOS: Not supported for direct API (requires SNS)
  */
+async function sendToDevice(
+  device: DeviceRecord,
+  notification: PushNotificationPayload
+): Promise<{ success: boolean; messageId?: string; error?: string; method?: string }> {
+  const { platform, endpointArn, deviceToken } = device;
+
+  // Try SNS endpoint first if available
+  if (endpointArn) {
+    try {
+      const message = buildMessage(notification, platform);
+
+      const result = await sns.send(new PublishCommand({
+        TargetArn: endpointArn,
+        Message: message,
+        MessageStructure: 'json',
+      }));
+
+      return {
+        success: true,
+        messageId: result.MessageId,
+        method: 'sns',
+      };
+    } catch (error: any) {
+      console.warn(`[SendPush] SNS send failed for ${endpointArn}:`, error.message);
+      // Fall through to FCM v1 API for Android
+    }
+  }
+
+  // Fallback: Use FCM v1 API directly for Android
+  if (platform === 'android' && deviceToken) {
+    console.log('[SendPush] Using FCM v1 API fallback for Android device');
+
+    const result = await sendFcmV1Notification(deviceToken, {
+      title: notification.title,
+      body: notification.body,
+      data: notification.data,
+      imageUrl: notification.imageUrl,
+      priority: 'high',
+      channelId: notification.type === 'incoming_call' ? 'calls' : 'default',
+    });
+
+    return {
+      ...result,
+      method: 'fcm_v1_api',
+    };
+  }
+
+  // iOS without SNS endpoint: Not supported for direct API
+  if (platform === 'ios' && !endpointArn) {
+    return {
+      success: false,
+      error: 'iOS push requires SNS Platform Application (APNs credentials not configured)',
+      method: 'none',
+    };
+  }
+
+  return {
+    success: false,
+    error: 'No valid delivery method available',
+    method: 'none',
+  };
+}
+
+// Legacy function for backward compatibility
 async function sendToEndpoint(
   endpointArn: string,
   notification: PushNotificationPayload,
   platform: 'ios' | 'android'
 ): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  try {
-    const message = buildMessage(notification, platform);
-    
-    const result = await sns.send(new PublishCommand({
-      TargetArn: endpointArn,
-      Message: message,
-      MessageStructure: 'json',
-    }));
-    
-    return {
-      success: true,
-      messageId: result.MessageId,
-    };
-  } catch (error: any) {
-    console.error(`[SendPush] Failed to send to ${endpointArn}:`, error.message);
-    return {
-      success: false,
-      error: error.message,
-    };
-  }
+  // Create a minimal device record for the new function
+  const device: DeviceRecord = {
+    userId: '',
+    deviceId: '',
+    clinicId: '',
+    deviceToken: '',
+    endpointArn,
+    platform,
+    enabled: true,
+  };
+  return sendToDevice(device, notification);
 }
 
 /**
@@ -190,7 +275,7 @@ async function getDevicesForUser(userId: string): Promise<DeviceRecord[]> {
       ':enabled': true,
     },
   }));
-  
+
   return (result.Items || []) as DeviceRecord[];
 }
 
@@ -209,7 +294,7 @@ async function getDevicesForClinic(clinicId: string): Promise<DeviceRecord[]> {
       ':enabled': true,
     },
   }));
-  
+
   return (result.Items || []) as DeviceRecord[];
 }
 
@@ -222,15 +307,15 @@ async function handleSendToUser(
   dryRun: boolean
 ): Promise<{ sent: number; failed: number; results: any[] }> {
   const devices = await getDevicesForUser(userId);
-  
+
   if (devices.length === 0) {
     return { sent: 0, failed: 0, results: [] };
   }
-  
+
   const results: any[] = [];
   let sent = 0;
   let failed = 0;
-  
+
   for (const device of devices) {
     if (dryRun) {
       results.push({
@@ -241,21 +326,21 @@ async function handleSendToUser(
       sent++;
       continue;
     }
-    
-    const result = await sendToEndpoint(device.endpointArn, notification, device.platform);
+
+    const result = await sendToDevice(device, notification);
     results.push({
       deviceId: device.deviceId,
       platform: device.platform,
       ...result,
     });
-    
+
     if (result.success) {
       sent++;
     } else {
       failed++;
     }
   }
-  
+
   return { sent, failed, results };
 }
 
@@ -268,16 +353,16 @@ async function handleSendToClinic(
   dryRun: boolean
 ): Promise<{ sent: number; failed: number; userCount: number; results: any[] }> {
   const devices = await getDevicesForClinic(clinicId);
-  
+
   if (devices.length === 0) {
     return { sent: 0, failed: 0, userCount: 0, results: [] };
   }
-  
+
   const results: any[] = [];
   let sent = 0;
   let failed = 0;
   const uniqueUsers = new Set(devices.map(d => d.userId));
-  
+
   for (const device of devices) {
     if (dryRun) {
       results.push({
@@ -289,22 +374,22 @@ async function handleSendToClinic(
       sent++;
       continue;
     }
-    
-    const result = await sendToEndpoint(device.endpointArn, notification, device.platform);
+
+    const result = await sendToDevice(device, notification);
     results.push({
       userId: device.userId,
       deviceId: device.deviceId,
       platform: device.platform,
       ...result,
     });
-    
+
     if (result.success) {
       sent++;
     } else {
       failed++;
     }
   }
-  
+
   return { sent, failed, userCount: uniqueUsers.size, results };
 }
 
@@ -317,16 +402,16 @@ async function handleSendPush(
 ): Promise<APIGatewayProxyResult> {
   const body = parseBody(event.body) as SendPushRequest;
   const pathClinicId = event.pathParameters?.clinicId;
-  
+
   // Validate notification payload
   if (!body.notification) {
     return http(400, { error: 'notification object is required' }, event);
   }
-  
+
   if (!body.notification.title || !body.notification.body) {
     return http(400, { error: 'notification.title and notification.body are required' }, event);
   }
-  
+
   // Check permissions for sending notifications
   if (!hasModulePermission(
     userPerms.clinicRoles,
@@ -337,10 +422,10 @@ async function handleSendPush(
   )) {
     return http(403, { error: 'You do not have permission to send push notifications' }, event);
   }
-  
+
   const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
   const dryRun = body.dryRun ?? false;
-  
+
   try {
     // Send to specific endpoint
     if (body.endpointArn) {
@@ -348,7 +433,7 @@ async function handleSendPush(
       if (!userPerms.isSuperAdmin && !userPerms.isGlobalSuperAdmin) {
         return http(403, { error: 'Direct endpoint access requires admin privileges' }, event);
       }
-      
+
       if (dryRun) {
         return http(200, {
           success: true,
@@ -357,7 +442,7 @@ async function handleSendPush(
           endpointArn: body.endpointArn,
         }, event);
       }
-      
+
       // Assume iOS for direct endpoint (could be enhanced with metadata lookup)
       const result = await sendToEndpoint(body.endpointArn, body.notification, 'ios');
       return http(200, {
@@ -365,14 +450,14 @@ async function handleSendPush(
         ...result,
       }, event);
     }
-    
+
     // Send to clinic (from path or body)
     const targetClinicId = pathClinicId || body.clinicId;
     if (targetClinicId) {
       if (!hasClinicAccess(allowedClinics, targetClinicId)) {
         return http(403, { error: 'Forbidden: no access to this clinic' }, event);
       }
-      
+
       const result = await handleSendToClinic(targetClinicId, body.notification, dryRun);
       return http(200, {
         success: true,
@@ -382,7 +467,7 @@ async function handleSendPush(
         ...result,
       }, event);
     }
-    
+
     // Send to specific user
     if (body.userId) {
       const result = await handleSendToUser(body.userId, body.notification, dryRun);
@@ -394,7 +479,7 @@ async function handleSendPush(
         ...result,
       }, event);
     }
-    
+
     return http(400, { error: 'One of userId, clinicId, or endpointArn is required' }, event);
   } catch (error: any) {
     console.error('[SendPush] Error:', error);
@@ -422,7 +507,7 @@ async function handleInternalInvocation(
   payload: InternalInvocationPayload
 ): Promise<{ statusCode: number; body: string }> {
   const { userId, userIds, clinicId, notification } = payload;
-  
+
   // Validate notification payload
   if (!notification || !notification.title || !notification.body) {
     return {
@@ -430,21 +515,21 @@ async function handleInternalInvocation(
       body: JSON.stringify({ error: 'notification.title and notification.body are required' }),
     };
   }
-  
+
   try {
     // Send to multiple users (batch)
     if (userIds && userIds.length > 0) {
       let totalSent = 0;
       let totalFailed = 0;
       const allResults: any[] = [];
-      
+
       for (const uid of userIds) {
         const result = await handleSendToUser(uid, notification, false);
         totalSent += result.sent;
         totalFailed += result.failed;
         allResults.push(...result.results);
       }
-      
+
       return {
         statusCode: 200,
         body: JSON.stringify({
@@ -457,7 +542,7 @@ async function handleInternalInvocation(
         }),
       };
     }
-    
+
     // Send to specific user
     if (userId) {
       const result = await handleSendToUser(userId, notification, false);
@@ -471,7 +556,7 @@ async function handleInternalInvocation(
         }),
       };
     }
-    
+
     // Send to clinic
     if (clinicId) {
       const result = await handleSendToClinic(clinicId, notification, false);
@@ -485,7 +570,7 @@ async function handleInternalInvocation(
         }),
       };
     }
-    
+
     return {
       statusCode: 400,
       body: JSON.stringify({ error: 'One of userId, userIds, or clinicId is required' }),
@@ -512,7 +597,7 @@ export const handler = async (
     console.log('[SendPush] Internal invocation');
     return handleInternalInvocation(event as InternalInvocationPayload);
   }
-  
+
   // Handle as API Gateway event
   const apiEvent = event as APIGatewayProxyEvent;
   console.log('[SendPush] Request:', apiEvent.httpMethod, apiEvent.path);

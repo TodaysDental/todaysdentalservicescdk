@@ -416,19 +416,29 @@ const CONNECT_CALL_RECORDINGS_KMS_KEY_ARN =
 // PUSH NOTIFICATIONS STACK (must be defined before ChimeStack and CommStack)
 // ========================================
 // Mobile push notifications via SNS (iOS APNs + Android FCM)
-// Prerequisites: Store credentials in Secrets Manager before enabling platform applications:
-// - todaysdentalinsights/push/apns - APNs credentials (signingKey, keyId, teamId, bundleId)
-// - todaysdentalinsights/push/fcm - FCM credentials (serverKey)
+// Credentials are read from GlobalSecrets DynamoDB table at deploy time.
+//
+// Required GlobalSecrets entries for FCM (Android):
+// - secretId: fcm, secretType: server_key
+//
+// Required GlobalSecrets entries for APNs (iOS):
+// - secretId: apns, secretType: signing_key
+// - secretId: apns, secretType: key_id
+// - secretId: apns, secretType: team_id
+// - secretId: apns, secretType: bundle_id
 //
 // Used by: CommStack (offline messaging), ChimeStack (call notifications)
 const pushNotificationsStack = new PushNotificationsStack(app, PUSH_NOTIFICATIONS_STACK_NAME, {
   env,
-  // Enable these after creating the Secrets Manager secrets (see docs/PUSH-NOTIFICATIONS-SETUP.md):
-  // apnsSecretName: 'todaysdentalinsights/push/apns',
-  // fcmSecretName: 'todaysdentalinsights/push/fcm',
+  // GlobalSecrets table for FCM/APNs credentials
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  globalSecretsTableArn: secretsStack.globalSecretsTable.tableArn,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
   enableApnsSandbox: true,
 });
 pushNotificationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+pushNotificationsStack.addDependency(secretsStack); // Explicit - reads from GlobalSecrets table
+
 
 const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
   env,
