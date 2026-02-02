@@ -187,7 +187,8 @@ export class PushNotificationsStack extends Stack {
       serviceToken: platformSetupProvider.serviceToken,
       properties: {
         // Include these to trigger update when secrets change
-        Version: Date.now().toString(),
+        // Force recreation after adding FCM token credentials support (2026-02-02)
+        Version: '2026-02-02-fcm-json-stringify-fix',
       },
     });
 

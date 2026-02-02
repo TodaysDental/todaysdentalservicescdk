@@ -132,19 +132,62 @@ async function deletePlatformApp(arn: string): Promise<void> {
 /**
  * Setup FCM Platform Application (Android)
  * 
- * FCM supports two credential types:
- * 1. Legacy Server Key (for SNS Platform Applications)
- *    - GlobalSecrets: secretId=fcm, secretType=server_key
- * 2. Service Account JSON (for FCM HTTP v1 API - stored for reference)
+ * FCM supports two credential types for AWS SNS:
+ * 1. Token Credentials (Recommended) - Firebase Service Account JSON
  *    - GlobalSecrets: secretId=fcm, secretType=service_account
- *    - This is NOT used for SNS, but the send-push Lambda can use it for direct API calls
+ *    - Contains the full service account JSON from Firebase Console
+ * 2. Key Credentials (Legacy, deprecated by Google)
+ *    - GlobalSecrets: secretId=fcm, secretType=server_key
+ *    - Legacy server key from Firebase Console
+ * 
+ * AWS SNS supports both, but Token Credentials is recommended as Google
+ * is deprecating the legacy Cloud Messaging API.
  */
 async function setupFCM(): Promise<string | null> {
-    // First try Legacy Server Key (required for SNS Platform Applications)
+    // First try Token Credentials (Service Account JSON) - Recommended
+    const serviceAccountJson = await getGlobalSecret('fcm', 'service_account');
+
+    if (serviceAccountJson) {
+        console.log('[PushSetup] Found FCM service_account, creating SNS Platform Application with token credentials');
+        try {
+            // The service account JSON might have actual newlines in the private_key field
+            // that should be \n escape sequences. This can happen due to double-processing during storage.
+            // We need to convert actual newlines back to \n escape sequences within string values.
+            // A simple approach: replace actual newlines with \n (escaped)
+            const cleanedJson = serviceAccountJson
+                .replace(/\r\n/g, '\\n')  // Windows newlines
+                .replace(/\n/g, '\\n');    // Unix newlines
+
+            // Validate it's valid JSON
+            const parsed = JSON.parse(cleanedJson);
+            console.log('[PushSetup] FCM service_account JSON validated, project_id:', parsed.project_id);
+            console.log('[PushSetup] FCM service_account client_email:', parsed.client_email);
+            console.log('[PushSetup] FCM private_key starts with:', parsed.private_key?.substring(0, 50));
+            console.log('[PushSetup] FCM private_key length:', parsed.private_key?.length);
+
+            // Re-stringify the parsed JSON to ensure proper formatting for AWS SNS
+            // AWS SNS expects a properly formatted JSON string with escaped newlines
+            const formattedJson = JSON.stringify(parsed);
+            console.log('[PushSetup] Sending formatted JSON (length:', formattedJson.length, ')');
+
+            return createOrUpdatePlatformApp(
+                `${STACK_NAME}-FCM`,
+                'GCM',
+                {
+                    PlatformCredential: formattedJson,
+                }
+            );
+        } catch (parseError) {
+            console.error('[PushSetup] Invalid FCM service_account JSON:', parseError);
+        }
+    }
+
+    // Fallback to Legacy Server Key (deprecated by Google but still works)
     const serverKey = await getGlobalSecret('fcm', 'server_key');
 
     if (serverKey) {
-        console.log('[PushSetup] Found FCM server_key, creating SNS Platform Application');
+        console.log('[PushSetup] Found FCM server_key (legacy), creating SNS Platform Application');
+        console.log('[PushSetup] Note: Legacy server key is deprecated. Consider migrating to service_account');
         return createOrUpdatePlatformApp(
             `${STACK_NAME}-FCM`,
             'GCM',
@@ -152,19 +195,13 @@ async function setupFCM(): Promise<string | null> {
         );
     }
 
-    // Check if service_account exists (for informational purposes)
-    const serviceAccount = await getGlobalSecret('fcm', 'service_account');
-    if (serviceAccount) {
-        console.log('[PushSetup] Found FCM service_account (for HTTP v1 API), but SNS requires server_key');
-        console.log('[PushSetup] To enable SNS Platform Application, add fcm/server_key to GlobalSecrets');
-        console.log('[PushSetup] Get Legacy Server Key from Firebase Console → Project Settings → Cloud Messaging');
-        // The send-push Lambda can still use service_account for direct FCM v1 API calls
-        return null;
-    }
-
-    console.log('[PushSetup] FCM credentials not found in GlobalSecrets, skipping FCM setup');
+    console.log('[PushSetup] FCM credentials not found in GlobalSecrets');
+    console.log('[PushSetup] To enable FCM push notifications, add one of:');
+    console.log('[PushSetup]   - fcm/service_account (recommended): Firebase service account JSON');
+    console.log('[PushSetup]   - fcm/server_key (legacy): Firebase Cloud Messaging server key');
     return null;
 }
+
 
 
 /**
@@ -255,20 +292,46 @@ async function sendResponse(
 }
 
 /**
- * Main handler
+ * Main handler for CDK Custom Resource Provider framework
+ * 
+ * When using cr.Provider, the framework wraps this Lambda and:
+ * 1. Intercepts the CloudFormation event
+ * 2. Calls our handler with a modified event
+ * 3. Expects us to RETURN the response (not send it via HTTP)
+ * 4. Sends the CloudFormation response on our behalf
+ * 
+ * The expected return format is:
+ * {
+ *   PhysicalResourceId: string,
+ *   Data: { key: value, ... }  // These become custom resource attributes
+ * }
  */
-export const handler = async (event: CloudFormationEvent): Promise<void> => {
+export const handler = async (event: CloudFormationEvent): Promise<{
+    PhysicalResourceId: string;
+    Data: Record<string, string>;
+}> => {
     console.log('[PushSetup] Event:', JSON.stringify(event, null, 2));
 
     const physicalResourceId = event.PhysicalResourceId || `push-platform-setup-${Date.now()}`;
 
+    // IMPORTANT: Always return all expected attributes, even when empty.
+    // CloudFormation's CustomResource.getAttString() will fail if an attribute
+    // is not present in the response.
+    const emptyData = {
+        FcmPlatformArn: '',
+        ApnsPlatformArn: '',
+        ApnsSandboxPlatformArn: '',
+    };
+
     try {
         if (event.RequestType === 'Delete') {
             // On delete, we could clean up platform apps, but they're usually retained
-            // for continuity. Just return success.
+            // for continuity. Return empty data for all expected attributes.
             console.log('[PushSetup] Delete request - platform apps will be retained');
-            await sendResponse(event, 'SUCCESS', physicalResourceId, {});
-            return;
+            return {
+                PhysicalResourceId: physicalResourceId,
+                Data: emptyData,
+            };
         }
 
         // Create or Update
@@ -277,16 +340,21 @@ export const handler = async (event: CloudFormationEvent): Promise<void> => {
         const fcmArn = await setupFCM();
         const apnsResult = await setupAPNS();
 
-        const data: Record<string, string> = {};
-        if (fcmArn) data.FcmPlatformArn = fcmArn;
-        if (apnsResult.production) data.ApnsPlatformArn = apnsResult.production;
-        if (apnsResult.sandbox) data.ApnsSandboxPlatformArn = apnsResult.sandbox;
+        const data = {
+            FcmPlatformArn: fcmArn || '',
+            ApnsPlatformArn: apnsResult.production || '',
+            ApnsSandboxPlatformArn: apnsResult.sandbox || '',
+        };
 
         console.log('[PushSetup] Setup complete:', data);
 
-        await sendResponse(event, 'SUCCESS', physicalResourceId, data);
+        return {
+            PhysicalResourceId: physicalResourceId,
+            Data: data,
+        };
     } catch (error: any) {
         console.error('[PushSetup] Error:', error);
-        await sendResponse(event, 'FAILED', physicalResourceId, {}, error.message);
+        // For CR Provider, throwing an error will cause the framework to send a FAILED response
+        throw error;
     }
 };
