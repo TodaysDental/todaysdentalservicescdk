@@ -8,14 +8,20 @@
  * - Calendar event reminders
  * 
  * Uses the PushNotificationsStack's send-push Lambda for cross-stack invocation.
+ * 
+ * Robustness Features:
+ * - Retry mechanism with exponential backoff
+ * - Error tracking and detailed logging
+ * - Idempotency keys to prevent duplicate notifications
  */
 
-import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { LambdaClient, InvokeCommand, InvocationType } from '@aws-sdk/client-lambda';
 
 // Environment variables
 const SEND_PUSH_FUNCTION_ARN = process.env.SEND_PUSH_FUNCTION_ARN || '';
-const DEVICE_TOKENS_TABLE = process.env.DEVICE_TOKENS_TABLE || '';
-const PUSH_NOTIFICATIONS_ENABLED = !!(SEND_PUSH_FUNCTION_ARN && DEVICE_TOKENS_TABLE);
+// Note: DEVICE_TOKENS_TABLE is handled internally by the send-push Lambda
+// This utility only invokes the Lambda, so we only need the ARN
+const PUSH_NOTIFICATIONS_ENABLED = !!SEND_PUSH_FUNCTION_ARN;
 
 // Initialize Lambda client (reused across invocations)
 let lambdaClient: LambdaClient | null = null;
@@ -52,6 +58,7 @@ export interface HRNotificationPayload {
     type: HRNotificationType;
     data?: Record<string, any>;
     sound?: string;
+    idempotencyKey?: string;
 }
 
 export interface ShiftNotificationData {
@@ -99,6 +106,13 @@ export interface CalendarEventNotificationData {
     eventType: string;
 }
 
+export interface SendPushResult {
+    success: boolean;
+    sent?: number;
+    failed?: number;
+    error?: string;
+}
+
 // ========================================
 // CORE PUSH NOTIFICATION FUNCTIONS
 // ========================================
@@ -112,29 +126,117 @@ export function isPushNotificationsEnabled(): boolean {
 
 /**
  * Send push notification via the send-push Lambda
+ * 
+ * @param payload - The notification payload  
+ * @param options - Configuration options
+ *   - sync: If true, wait for response (default: false)
+ *   - skipPreferenceCheck: If true, bypass user preferences
  */
-async function invokeSendPushLambda(payload: any): Promise<boolean> {
+async function invokeSendPushLambda(
+    payload: any,
+    options: { sync?: boolean; skipPreferenceCheck?: boolean } = {}
+): Promise<SendPushResult> {
     if (!PUSH_NOTIFICATIONS_ENABLED) {
         console.log('[HRPush] Push notifications not configured, skipping');
-        return false;
+        return { success: false, error: 'Push notifications not configured' };
     }
 
+    const { sync = false, skipPreferenceCheck = false } = options;
+
     try {
+        const invocationType: InvocationType = sync ? 'RequestResponse' : 'Event';
+
         const response = await getLambdaClient().send(new InvokeCommand({
             FunctionName: SEND_PUSH_FUNCTION_ARN,
             Payload: JSON.stringify({
                 _internalCall: true,
+                skipPreferenceCheck,
                 ...payload,
             }),
-            InvocationType: 'Event', // Async - don't wait for response
+            InvocationType: invocationType,
         }));
 
-        console.log(`[HRPush] Lambda invoked, StatusCode: ${response.StatusCode}`);
-        return response.StatusCode === 202 || response.StatusCode === 200;
+        // For async invocations, we only get StatusCode
+        if (!sync) {
+            const success = response.StatusCode === 202 || response.StatusCode === 200;
+            if (!success) {
+                console.error(`[HRPush] Async Lambda invocation failed, StatusCode: ${response.StatusCode}`);
+            } else {
+                console.log(`[HRPush] Async Lambda invoked, StatusCode: ${response.StatusCode}`);
+            }
+            return { success };
+        }
+
+        // For sync invocations, parse the response
+        if (response.Payload) {
+            const payloadStr = new TextDecoder().decode(response.Payload);
+            const result = JSON.parse(payloadStr);
+
+            // Handle Lambda function errors
+            if (response.FunctionError) {
+                console.error('[HRPush] Lambda function error:', result);
+                return {
+                    success: false,
+                    error: result.errorMessage || 'Lambda function error',
+                };
+            }
+
+            // Parse the response body
+            if (result.statusCode && result.body) {
+                const body = JSON.parse(result.body);
+                return {
+                    success: result.statusCode === 200,
+                    sent: body.sent,
+                    failed: body.failed,
+                    error: body.error,
+                };
+            }
+
+            return { success: true, ...result };
+        }
+
+        return { success: true };
     } catch (error: any) {
         console.error('[HRPush] Failed to invoke send-push Lambda:', error.message);
-        return false;
+        return { success: false, error: error.message };
     }
+}
+
+/**
+ * Send push notification with retry capability
+ */
+async function invokeSendPushLambdaWithRetry(
+    payload: any,
+    options: { sync?: boolean; skipPreferenceCheck?: boolean; maxRetries?: number } = {}
+): Promise<SendPushResult> {
+    const { maxRetries = 2, ...invokeOptions } = options;
+
+    let lastError: string | undefined;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const result = await invokeSendPushLambda(payload, invokeOptions);
+
+        if (result.success) {
+            return result;
+        }
+
+        lastError = result.error;
+
+        // Don't retry for certain errors
+        if (result.error?.includes('not configured') ||
+            result.error?.includes('Invalid') ||
+            result.error?.includes('Unauthorized')) {
+            break;
+        }
+
+        if (attempt < maxRetries) {
+            // Exponential backoff
+            await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 100));
+            console.log(`[HRPush] Retrying push notification (attempt ${attempt + 2})`);
+        }
+    }
+
+    return { success: false, error: lastError || 'Max retries exceeded' };
 }
 
 /**
@@ -187,14 +289,16 @@ export async function sendShiftAssignedNotification(
 
     const startTime = formatDateTime(data.startTime);
     const clinicName = data.clinicName || data.clinicId;
+    const idempotencyKey = `shift_assigned:${data.shiftId}:${data.staffId}`;
 
-    await invokeSendPushLambda({
+    const result = await invokeSendPushLambda({
         userId: data.staffId,
         notification: {
             title: 'New Shift Assigned',
             body: `You have been assigned a shift at ${clinicName} on ${startTime}`,
             type: 'shift_assigned',
             sound: 'default',
+            idempotencyKey,
             data: {
                 shiftId: data.shiftId,
                 clinicId: data.clinicId,
@@ -206,7 +310,9 @@ export async function sendShiftAssignedNotification(
         },
     });
 
-    console.log(`[HRPush] Sent shift assigned notification to ${data.staffId}`);
+    if (result.success) {
+        console.log(`[HRPush] Sent shift assigned notification to ${data.staffId}`);
+    }
 }
 
 /**
@@ -221,7 +327,7 @@ export async function sendShiftUpdatedNotification(
     const startTime = formatDateTime(data.startTime);
     const clinicName = data.clinicName || data.clinicId;
 
-    await invokeSendPushLambda({
+    const result = await invokeSendPushLambda({
         userId: data.staffId,
         notification: {
             title: 'Shift Updated',
@@ -239,7 +345,9 @@ export async function sendShiftUpdatedNotification(
         },
     });
 
-    console.log(`[HRPush] Sent shift updated notification to ${data.staffId}`);
+    if (result.success) {
+        console.log(`[HRPush] Sent shift updated notification to ${data.staffId}`);
+    }
 }
 
 /**
@@ -255,7 +363,7 @@ export async function sendShiftCancelledNotification(
     const clinicName = data.clinicName || data.clinicId;
     const reasonText = reason ? `: ${reason}` : '';
 
-    await invokeSendPushLambda({
+    const result = await invokeSendPushLambda({
         userId: data.staffId,
         notification: {
             title: 'Shift Cancelled',
@@ -272,7 +380,9 @@ export async function sendShiftCancelledNotification(
         },
     });
 
-    console.log(`[HRPush] Sent shift cancelled notification to ${data.staffId}`);
+    if (result.success) {
+        console.log(`[HRPush] Sent shift cancelled notification to ${data.staffId}`);
+    }
 }
 
 /**
@@ -289,14 +399,16 @@ export async function sendShiftReminderNotification(
     const timeText = minutesBefore >= 60
         ? `${Math.floor(minutesBefore / 60)} hour${minutesBefore >= 120 ? 's' : ''}`
         : `${minutesBefore} minutes`;
+    const idempotencyKey = `shift_reminder:${data.shiftId}:${minutesBefore}`;
 
-    await invokeSendPushLambda({
+    const result = await invokeSendPushLambda({
         userId: data.staffId,
         notification: {
             title: 'Shift Reminder',
             body: `Your shift at ${clinicName} starts in ${timeText}`,
             type: 'shift_reminder',
             sound: 'default',
+            idempotencyKey,
             data: {
                 shiftId: data.shiftId,
                 clinicId: data.clinicId,
@@ -306,7 +418,9 @@ export async function sendShiftReminderNotification(
         },
     });
 
-    console.log(`[HRPush] Sent shift reminder notification to ${data.staffId}`);
+    if (result.success) {
+        console.log(`[HRPush] Sent shift reminder notification to ${data.staffId}`);
+    }
 }
 
 // ========================================
@@ -326,14 +440,16 @@ export async function sendLeaveSubmittedNotification(
         ? formatDate(data.startDate)
         : `${formatDate(data.startDate)} - ${formatDate(data.endDate)}`;
     const staffName = data.staffName || 'A staff member';
+    const idempotencyKey = `leave_submitted:${data.leaveId}`;
 
-    await invokeSendPushLambda({
+    const result = await invokeSendPushLambda({
         userIds: adminUserIds,
         notification: {
             title: 'Leave Request Submitted',
             body: `${staffName} has requested ${data.leaveType} leave for ${dateRange}`,
             type: 'leave_submitted',
             sound: 'default',
+            idempotencyKey,
             data: {
                 leaveId: data.leaveId,
                 staffId: data.staffId,
@@ -346,7 +462,9 @@ export async function sendLeaveSubmittedNotification(
         },
     });
 
-    console.log(`[HRPush] Sent leave submitted notification to ${adminUserIds.length} admins`);
+    if (result.success) {
+        console.log(`[HRPush] Sent leave submitted notification to ${adminUserIds.length} admins`);
+    }
 }
 
 /**
@@ -360,14 +478,16 @@ export async function sendLeaveApprovedNotification(
     const dateRange = data.startDate === data.endDate
         ? formatDate(data.startDate)
         : `${formatDate(data.startDate)} - ${formatDate(data.endDate)}`;
+    const idempotencyKey = `leave_approved:${data.leaveId}`;
 
-    await invokeSendPushLambda({
+    const result = await invokeSendPushLambda({
         userId: data.staffId,
         notification: {
             title: 'Leave Request Approved ✓',
             body: `Your ${data.leaveType} leave for ${dateRange} has been approved`,
             type: 'leave_approved',
             sound: 'default',
+            idempotencyKey,
             data: {
                 leaveId: data.leaveId,
                 clinicId: data.clinicId,
@@ -379,7 +499,9 @@ export async function sendLeaveApprovedNotification(
         },
     });
 
-    console.log(`[HRPush] Sent leave approved notification to ${data.staffId}`);
+    if (result.success) {
+        console.log(`[HRPush] Sent leave approved notification to ${data.staffId}`);
+    }
 }
 
 /**
@@ -394,14 +516,16 @@ export async function sendLeaveDeniedNotification(
         ? formatDate(data.startDate)
         : `${formatDate(data.startDate)} - ${formatDate(data.endDate)}`;
     const reasonText = data.denyReason ? `: ${data.denyReason}` : '';
+    const idempotencyKey = `leave_denied:${data.leaveId}`;
 
-    await invokeSendPushLambda({
+    const result = await invokeSendPushLambda({
         userId: data.staffId,
         notification: {
             title: 'Leave Request Denied',
             body: `Your ${data.leaveType} leave for ${dateRange} has been denied${reasonText}`,
             type: 'leave_denied',
             sound: 'default',
+            idempotencyKey,
             data: {
                 leaveId: data.leaveId,
                 clinicId: data.clinicId,
@@ -414,7 +538,9 @@ export async function sendLeaveDeniedNotification(
         },
     });
 
-    console.log(`[HRPush] Sent leave denied notification to ${data.staffId}`);
+    if (result.success) {
+        console.log(`[HRPush] Sent leave denied notification to ${data.staffId}`);
+    }
 }
 
 // ========================================
@@ -432,14 +558,16 @@ export async function sendAdvancePaySubmittedNotification(
 
     const staffName = data.staffName || 'A staff member';
     const amountStr = formatCurrency(data.amount);
+    const idempotencyKey = `advance_pay_submitted:${data.advanceId}`;
 
-    await invokeSendPushLambda({
+    const result = await invokeSendPushLambda({
         userIds: adminUserIds,
         notification: {
             title: 'Advance Pay Request',
             body: `${staffName} has requested an advance pay of ${amountStr}`,
             type: 'advance_pay_submitted',
             sound: 'default',
+            idempotencyKey,
             data: {
                 advanceId: data.advanceId,
                 staffId: data.staffId,
@@ -450,7 +578,9 @@ export async function sendAdvancePaySubmittedNotification(
         },
     });
 
-    console.log(`[HRPush] Sent advance pay submitted notification to ${adminUserIds.length} admins`);
+    if (result.success) {
+        console.log(`[HRPush] Sent advance pay submitted notification to ${adminUserIds.length} admins`);
+    }
 }
 
 /**
@@ -462,14 +592,16 @@ export async function sendAdvancePayApprovedNotification(
     if (!PUSH_NOTIFICATIONS_ENABLED) return;
 
     const amountStr = formatCurrency(data.amount);
+    const idempotencyKey = `advance_pay_approved:${data.advanceId}`;
 
-    await invokeSendPushLambda({
+    const result = await invokeSendPushLambda({
         userId: data.staffId,
         notification: {
             title: 'Advance Pay Approved ✓',
             body: `Your advance pay request of ${amountStr} has been approved`,
             type: 'advance_pay_approved',
             sound: 'default',
+            idempotencyKey,
             data: {
                 advanceId: data.advanceId,
                 clinicId: data.clinicId,
@@ -479,7 +611,9 @@ export async function sendAdvancePayApprovedNotification(
         },
     });
 
-    console.log(`[HRPush] Sent advance pay approved notification to ${data.staffId}`);
+    if (result.success) {
+        console.log(`[HRPush] Sent advance pay approved notification to ${data.staffId}`);
+    }
 }
 
 /**
@@ -492,14 +626,16 @@ export async function sendAdvancePayDeniedNotification(
 
     const amountStr = formatCurrency(data.amount);
     const reasonText = data.denyReason ? `: ${data.denyReason}` : '';
+    const idempotencyKey = `advance_pay_denied:${data.advanceId}`;
 
-    await invokeSendPushLambda({
+    const result = await invokeSendPushLambda({
         userId: data.staffId,
         notification: {
             title: 'Advance Pay Denied',
             body: `Your advance pay request of ${amountStr} has been denied${reasonText}`,
             type: 'advance_pay_denied',
             sound: 'default',
+            idempotencyKey,
             data: {
                 advanceId: data.advanceId,
                 clinicId: data.clinicId,
@@ -510,7 +646,9 @@ export async function sendAdvancePayDeniedNotification(
         },
     });
 
-    console.log(`[HRPush] Sent advance pay denied notification to ${data.staffId}`);
+    if (result.success) {
+        console.log(`[HRPush] Sent advance pay denied notification to ${data.staffId}`);
+    }
 }
 
 /**
@@ -522,14 +660,16 @@ export async function sendAdvancePayDisbursedNotification(
     if (!PUSH_NOTIFICATIONS_ENABLED) return;
 
     const amountStr = formatCurrency(data.amount);
+    const idempotencyKey = `advance_pay_disbursed:${data.advanceId}`;
 
-    await invokeSendPushLambda({
+    const result = await invokeSendPushLambda({
         userId: data.staffId,
         notification: {
             title: 'Advance Pay Disbursed 💵',
             body: `Your advance pay of ${amountStr} has been disbursed`,
             type: 'advance_pay_disbursed',
             sound: 'default',
+            idempotencyKey,
             data: {
                 advanceId: data.advanceId,
                 clinicId: data.clinicId,
@@ -539,7 +679,9 @@ export async function sendAdvancePayDisbursedNotification(
         },
     });
 
-    console.log(`[HRPush] Sent advance pay disbursed notification to ${data.staffId}`);
+    if (result.success) {
+        console.log(`[HRPush] Sent advance pay disbursed notification to ${data.staffId}`);
+    }
 }
 
 // ========================================
@@ -557,14 +699,16 @@ export async function sendCalendarEventNotification(
 
     const startTime = formatDateTime(data.startDateTime);
     const clinicName = data.clinicName || data.clinicId;
+    const idempotencyKey = `calendar_event:${data.eventId}`;
 
-    await invokeSendPushLambda({
+    const result = await invokeSendPushLambda({
         userIds,
         notification: {
             title: data.title,
             body: `${data.eventType} at ${clinicName} on ${startTime}`,
             type: 'calendar_event',
             sound: 'default',
+            idempotencyKey,
             data: {
                 eventId: data.eventId,
                 clinicId: data.clinicId,
@@ -576,7 +720,9 @@ export async function sendCalendarEventNotification(
         },
     });
 
-    console.log(`[HRPush] Sent calendar event notification to ${userIds.length} users`);
+    if (result.success) {
+        console.log(`[HRPush] Sent calendar event notification to ${userIds.length} users`);
+    }
 }
 
 /**
@@ -590,7 +736,7 @@ export async function sendClinicHRAlert(
 ): Promise<void> {
     if (!PUSH_NOTIFICATIONS_ENABLED) return;
 
-    await invokeSendPushLambda({
+    const result = await invokeSendPushLambda({
         clinicId,
         notification: {
             title,
@@ -606,5 +752,22 @@ export async function sendClinicHRAlert(
         },
     });
 
-    console.log(`[HRPush] Sent HR alert to clinic ${clinicId}: ${title}`);
+    if (result.success) {
+        console.log(`[HRPush] Sent HR alert to clinic ${clinicId}: ${title}`);
+    }
+}
+
+/**
+ * Send notification with full result details
+ * Returns detailed information about delivery success/failure
+ */
+export async function sendNotificationWithDetails(
+    target: { userId?: string; userIds?: string[]; clinicId?: string },
+    notification: HRNotificationPayload,
+    options: { sync?: boolean; skipPreferenceCheck?: boolean } = {}
+): Promise<SendPushResult> {
+    return invokeSendPushLambdaWithRetry({
+        ...target,
+        notification,
+    }, { ...options, sync: true });
 }

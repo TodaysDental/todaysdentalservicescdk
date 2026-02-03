@@ -220,6 +220,12 @@ export class PatientPortalStack extends Stack {
         resources: [
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets'}`,
+        ],
+      }));
+      // Grant read access including Scan for ClinicConfig (needed for CORS origin validation via getAllClinicConfigs)
+      patientPortalLambda.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
+        resources: [
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
         ],
       }));

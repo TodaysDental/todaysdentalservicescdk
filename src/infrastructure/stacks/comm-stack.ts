@@ -47,6 +47,7 @@ export class CommStack extends Stack {
   public readonly connectionsTable: dynamodb.Table;
   public readonly teamsTable: dynamodb.Table;
   public readonly meetingsTable: dynamodb.Table; // Meetings table for scheduled meetings
+  public readonly callsTable: dynamodb.Table; // Calls table for voice/video calling sessions
   public readonly auditLogsTable: dynamodb.Table; // Audit trail table
   public readonly fileBucket: s3.Bucket;
   public readonly notificationsTopic: sns.Topic;
@@ -132,8 +133,9 @@ export class CommStack extends Stack {
     });
 
     // 2. Favor Requests Table (Stores request metadata)
-    this.favorsTable = new dynamodb.Table(this, 'FavorRequestsTableV4', {
-      tableName: `${this.stackName}-FavorRequestsV4`,
+    // V5: Added CategoryIndex, CurrentAssigneeIndex, MainGroupChatIndex GSIs
+    this.favorsTable = new dynamodb.Table(this, 'FavorRequestsTableN1', {
+      tableName: `${this.stackName}-FavorRequestsN1`,
       partitionKey: { name: 'favorRequestID', type: dynamodb.AttributeType.STRING },
       removalPolicy: RemovalPolicy.RETAIN,
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -173,21 +175,26 @@ export class CommStack extends Stack {
         projectionType: dynamodb.ProjectionType.ALL,
     });
     // GSI for category-based queries (uses SYSTEM_MODULES: HR, Accounting, Operations, Finance, Marketing, Legal, IT)
-    // TODO: Deploy this GSI in next deployment (DynamoDB only allows 1 GSI change per update)
-    // this.favorsTable.addGlobalSecondaryIndex({
-    //     indexName: 'CategoryIndex',
-    //     partitionKey: { name: 'category', type: dynamodb.AttributeType.STRING },
-    //     sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
-    //     projectionType: dynamodb.ProjectionType.ALL,
-    // });
+    this.favorsTable.addGlobalSecondaryIndex({
+        indexName: 'CategoryIndex',
+        partitionKey: { name: 'category', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+    });
     // GSI for current assignee lookup (for forwarded tasks)
-    // TODO: Deploy this GSI after CategoryIndex (DynamoDB only allows 1 GSI change per update)
-    // this.favorsTable.addGlobalSecondaryIndex({
-    //     indexName: 'CurrentAssigneeIndex',
-    //     partitionKey: { name: 'currentAssigneeID', type: dynamodb.AttributeType.STRING },
-    //     sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
-    //     projectionType: dynamodb.ProjectionType.ALL,
-    // });
+    this.favorsTable.addGlobalSecondaryIndex({
+      indexName: 'CurrentAssigneeIndex',
+      partitionKey: { name: 'currentAssigneeID', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+  });
+  // GSI for efficient main group chat lookup by teamID (fixes ScanCommand performance issue)
+  this.favorsTable.addGlobalSecondaryIndex({
+      indexName: 'MainGroupChatIndex',
+      partitionKey: { name: 'teamID', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'isMainGroupChat', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+  });  
 
     // 3. Messages Table (Stores each message in a separate row)
     this.messagesTable = new dynamodb.Table(this, 'MessagesTableV4', {
@@ -244,6 +251,17 @@ export class CommStack extends Stack {
         sortKey: { name: 'startTime', type: dynamodb.AttributeType.STRING },
         projectionType: dynamodb.ProjectionType.ALL,
     });
+
+    // 5b. Calls Table (Stores active/recent voice/video calls for in-app calling)
+    // NOTE: Required by services/comm/enhanced-messaging-handlers.ts (CALLS_TABLE env var)
+    this.callsTable = new dynamodb.Table(this, 'CallsTableV1', {
+      tableName: `${this.stackName}-CallsV1`,
+      partitionKey: { name: 'callID', type: dynamodb.AttributeType.STRING },
+      timeToLiveAttribute: 'ttl', // auto-expire call sessions
+      removalPolicy: RemovalPolicy.RETAIN,
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+    });
+    applyTags(this.callsTable, { Table: 'calls' });
 
     // 6. Audit Logs Table (for tracking all user actions)
     this.auditLogsTable = new dynamodb.Table(this, 'AuditLogsTableV1', {
@@ -325,6 +343,7 @@ export class CommStack extends Stack {
       FAVORS_TABLE: this.favorsTable.tableName,
       TEAMS_TABLE: this.teamsTable.tableName,
       MEETINGS_TABLE: this.meetingsTable.tableName,
+      CALLS_TABLE: this.callsTable.tableName,
       AUDIT_LOGS_TABLE: this.auditLogsTable.tableName,
       FILE_BUCKET_NAME: this.fileBucket.bucketName,
       NOTIFICATIONS_TOPIC_ARN: this.notificationsTopic.topicArn,
@@ -400,6 +419,7 @@ export class CommStack extends Stack {
     this.favorsTable.grantReadWriteData(defaultFn);
     this.teamsTable.grantReadWriteData(defaultFn);
     this.meetingsTable.grantReadWriteData(defaultFn);
+    this.callsTable.grantReadWriteData(defaultFn);
     this.fileBucket.grantReadWrite(defaultFn);
     this.notificationsTopic.grantPublish(defaultFn);
     
@@ -445,6 +465,21 @@ export class CommStack extends Stack {
         ],
     });
     defaultFn.addToRolePolicy(apiGatewayManagementPolicy);
+
+    // ========================================
+    // CHIME SDK MEETINGS PERMISSIONS (COMM CALLING)
+    // ========================================
+    // Required for services/comm/chime-meeting-manager.ts used by in-app voice/video calling
+    defaultFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'chime:CreateMeeting',
+        'chime:CreateAttendee',
+        'chime:GetMeeting',
+        'chime:ListAttendees',
+        'chime:DeleteMeeting',
+      ],
+      resources: ['*'],
+    }));
 
     // ========================================
     // REST API HANDLER LAMBDA
@@ -660,6 +695,7 @@ export class CommStack extends Stack {
     createDynamoThrottleAlarm(this.messagesTable.tableName, 'MessagesTable');
     createDynamoThrottleAlarm(this.teamsTable.tableName, 'TeamsTable');
     createDynamoThrottleAlarm(this.meetingsTable.tableName, 'MeetingsTable');
+    createDynamoThrottleAlarm(this.callsTable.tableName, 'CallsTable');
     createDynamoThrottleAlarm(this.auditLogsTable.tableName, 'AuditLogsTable');
 
     // ========================================

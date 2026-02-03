@@ -2,13 +2,14 @@
  * Unregister Device Handler for Push Notifications
  * 
  * Handles device token removal from mobile apps.
- * Deletes SNS Platform Endpoints and removes device metadata from DynamoDB.
+ * Removes device metadata from DynamoDB.
+ * 
+ * DIRECT FIREBASE INTEGRATION - No SNS Platform Endpoints to delete
  */
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, DeleteCommand, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { SNSClient, DeleteEndpointCommand } from '@aws-sdk/client-sns';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import {
   getUserPermissions,
@@ -20,7 +21,6 @@ const DEVICE_TOKENS_TABLE = process.env.DEVICE_TOKENS_TABLE || '';
 
 // Clients
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const sns = new SNSClient({});
 
 // Helper functions
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
@@ -69,7 +69,7 @@ async function handleUnregisterByToken(
   const deviceId = createDeviceId(deviceToken);
 
   try {
-    // Get the device record to find the endpoint ARN
+    // Get the device record to verify it exists
     const getResult = await ddb.send(new GetCommand({
       TableName: DEVICE_TOKENS_TABLE,
       Key: {
@@ -80,21 +80,6 @@ async function handleUnregisterByToken(
 
     if (!getResult.Item) {
       return http(404, { error: 'Device not found' }, event);
-    }
-
-    const endpointArn = getResult.Item.endpointArn;
-
-    // Delete SNS endpoint
-    if (endpointArn) {
-      try {
-        await sns.send(new DeleteEndpointCommand({
-          EndpointArn: endpointArn,
-        }));
-        console.log(`[UnregisterDevice] Deleted SNS endpoint: ${endpointArn}`);
-      } catch (snsError: any) {
-        // Log but don't fail if endpoint deletion fails
-        console.warn(`[UnregisterDevice] Failed to delete SNS endpoint: ${snsError.message}`);
-      }
     }
 
     // Delete from DynamoDB
@@ -135,7 +120,7 @@ async function handleUnregisterById(
   const userId = userPerms.email || 'unknown';
 
   try {
-    // Get the device record to find the endpoint ARN
+    // Get the device record to verify it exists
     const getResult = await ddb.send(new GetCommand({
       TableName: DEVICE_TOKENS_TABLE,
       Key: {
@@ -146,20 +131,6 @@ async function handleUnregisterById(
 
     if (!getResult.Item) {
       return http(404, { error: 'Device not found' }, event);
-    }
-
-    const endpointArn = getResult.Item.endpointArn;
-
-    // Delete SNS endpoint
-    if (endpointArn) {
-      try {
-        await sns.send(new DeleteEndpointCommand({
-          EndpointArn: endpointArn,
-        }));
-        console.log(`[UnregisterDevice] Deleted SNS endpoint: ${endpointArn}`);
-      } catch (snsError: any) {
-        console.warn(`[UnregisterDevice] Failed to delete SNS endpoint: ${snsError.message}`);
-      }
     }
 
     // Delete from DynamoDB
@@ -206,20 +177,8 @@ async function handleUnregisterAll(
     const devices = queryResult.Items || [];
     let deletedCount = 0;
 
-    // Delete each device
+    // Delete each device from DynamoDB
     for (const device of devices) {
-      // Delete SNS endpoint
-      if (device.endpointArn) {
-        try {
-          await sns.send(new DeleteEndpointCommand({
-            EndpointArn: device.endpointArn,
-          }));
-        } catch (snsError: any) {
-          console.warn(`[UnregisterDevice] Failed to delete SNS endpoint: ${snsError.message}`);
-        }
-      }
-
-      // Delete from DynamoDB
       await ddb.send(new DeleteCommand({
         TableName: DEVICE_TOKENS_TABLE,
         Key: {
@@ -261,7 +220,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
   // Route based on path and method
   const path = event.path || '';
-  
+
   if (event.httpMethod === 'DELETE') {
     // DELETE /push/devices/{deviceId}
     if (event.pathParameters?.deviceId) {
@@ -284,4 +243,3 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
   return http(405, { error: 'Method Not Allowed' }, event);
 };
-

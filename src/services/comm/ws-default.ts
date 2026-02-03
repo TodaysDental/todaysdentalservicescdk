@@ -29,7 +29,7 @@ import {
     handleGetConversationAnalytics,
     handleSearchGifs, handleGetTrendingGifs, handleSendGif,
     handleGetStickerPacks, handleGetStickers, handleSendSticker,
-    handleInitiateCall, handleJoinCall, handleEndCall, handleDeclineCall,
+    handleInitiateCall, handleJoinCall, handleLeaveCall, handleEndCall, handleDeclineCall, handleMuteCall, handleToggleVideo,
     handleFetchLinkPreview, handleGetConversationFiles,
 } from './enhanced-messaging-handlers';
 
@@ -440,11 +440,20 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
             case 'joinCall':
                 await handleJoinCall(senderID, payload, connectionId, apiGwManagement);
                 break;
+            case 'leaveCall':
+                await handleLeaveCall(senderID, payload, connectionId, apiGwManagement);
+                break;
             case 'endCall':
                 await handleEndCall(senderID, payload, connectionId, apiGwManagement);
                 break;
             case 'declineCall':
                 await handleDeclineCall(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'muteCall':
+                await handleMuteCall(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'toggleVideo':
+                await handleToggleVideo(senderID, payload, connectionId, apiGwManagement);
                 break;
 
             // Link Previews
@@ -806,20 +815,22 @@ async function handleOpenGroupChat(
         }
 
         // 3. Check if there's an existing "main" group conversation for this team
-        // A main conversation has isMainGroupChat set to true OR is the first conversation for the team
-        const { ScanCommand } = await import('@aws-sdk/lib-dynamodb');
+        // Use TeamIndex GSI for efficient lookup instead of ScanCommand
+        const { QueryCommand } = await import('@aws-sdk/lib-dynamodb');
 
-        const existingConvos = await ddb.send(new ScanCommand({
+        const existingConvos = await ddb.send(new QueryCommand({
             TableName: FAVORS_TABLE,
-            FilterExpression: 'teamID = :teamID',
+            IndexName: 'TeamIndex',
+            KeyConditionExpression: 'teamID = :teamID',
             ExpressionAttributeValues: {
                 ':teamID': teamID,
             },
+            ScanIndexForward: false, // Most recent first
         }));
 
         const conversations = (existingConvos.Items || []) as FavorRequest[];
 
-        // Find the main group chat (first one or one marked as main)
+        // Find the main group chat (first one marked as main, or fallback to first conversation)
         const mainConvo = conversations.find(c => (c as any).isMainGroupChat === true)
             || conversations[0];
 

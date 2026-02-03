@@ -8,15 +8,22 @@
  * - Queue position updates
  * 
  * Uses the PushNotificationsStack's send-push Lambda for cross-stack invocation.
+ * 
+ * Robustness Features:
+ * - Synchronous invocation for critical call notifications
+ * - Retry mechanism with exponential backoff
+ * - Error tracking and detailed logging
+ * - Idempotency keys to prevent duplicate notifications
  */
 
-import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { LambdaClient, InvokeCommand, InvocationType } from '@aws-sdk/client-lambda';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 
 // Environment variables
 const SEND_PUSH_FUNCTION_ARN = process.env.SEND_PUSH_FUNCTION_ARN || '';
-const DEVICE_TOKENS_TABLE = process.env.DEVICE_TOKENS_TABLE || '';
-const PUSH_NOTIFICATIONS_ENABLED = !!(SEND_PUSH_FUNCTION_ARN && DEVICE_TOKENS_TABLE);
+// Note: DEVICE_TOKENS_TABLE is handled internally by the send-push Lambda
+// This utility only invokes the Lambda, so we only need the ARN
+const PUSH_NOTIFICATIONS_ENABLED = !!SEND_PUSH_FUNCTION_ARN;
 
 // Initialize Lambda client (reused across invocations)
 let lambdaClient: LambdaClient | null = null;
@@ -57,6 +64,13 @@ export interface VoicemailNotification extends CallNotificationData {
   s3Key?: string;
 }
 
+export interface SendPushResult {
+  success: boolean;
+  sent?: number;
+  failed?: number;
+  error?: string;
+}
+
 // ========================================
 // CORE PUSH NOTIFICATION FUNCTIONS
 // ========================================
@@ -70,29 +84,117 @@ export function isPushNotificationsEnabled(): boolean {
 
 /**
  * Send push notification via the send-push Lambda
+ * 
+ * @param payload - The notification payload
+ * @param options - Configuration options
+ *   - sync: If true, wait for response (default: false for non-critical)
+ *   - skipPreferenceCheck: If true, bypass user preferences (for critical notifications)
  */
-async function invokeSendPushLambda(payload: any): Promise<boolean> {
+async function invokeSendPushLambda(
+  payload: any,
+  options: { sync?: boolean; skipPreferenceCheck?: boolean } = {}
+): Promise<SendPushResult> {
   if (!PUSH_NOTIFICATIONS_ENABLED) {
     console.log('[ChimePush] Push notifications not configured, skipping');
-    return false;
+    return { success: false, error: 'Push notifications not configured' };
   }
 
+  const { sync = false, skipPreferenceCheck = false } = options;
+
   try {
+    const invocationType: InvocationType = sync ? 'RequestResponse' : 'Event';
+
     const response = await getLambdaClient().send(new InvokeCommand({
       FunctionName: SEND_PUSH_FUNCTION_ARN,
       Payload: JSON.stringify({
         _internalCall: true,
+        skipPreferenceCheck,
         ...payload,
       }),
-      InvocationType: 'Event', // Async - don't wait for response
+      InvocationType: invocationType,
     }));
 
-    console.log(`[ChimePush] Lambda invoked, StatusCode: ${response.StatusCode}`);
-    return response.StatusCode === 202 || response.StatusCode === 200;
+    // For async invocations, we only get StatusCode
+    if (!sync) {
+      const success = response.StatusCode === 202 || response.StatusCode === 200;
+      if (!success) {
+        console.error(`[ChimePush] Async Lambda invocation failed, StatusCode: ${response.StatusCode}`);
+      } else {
+        console.log(`[ChimePush] Async Lambda invoked, StatusCode: ${response.StatusCode}`);
+      }
+      return { success };
+    }
+
+    // For sync invocations, parse the response
+    if (response.Payload) {
+      const payloadStr = new TextDecoder().decode(response.Payload);
+      const result = JSON.parse(payloadStr);
+
+      // Handle Lambda function errors
+      if (response.FunctionError) {
+        console.error('[ChimePush] Lambda function error:', result);
+        return {
+          success: false,
+          error: result.errorMessage || 'Lambda function error',
+        };
+      }
+
+      // Parse the response body
+      if (result.statusCode && result.body) {
+        const body = JSON.parse(result.body);
+        return {
+          success: result.statusCode === 200,
+          sent: body.sent,
+          failed: body.failed,
+          error: body.error,
+        };
+      }
+
+      return { success: true, ...result };
+    }
+
+    return { success: true };
   } catch (error: any) {
     console.error('[ChimePush] Failed to invoke send-push Lambda:', error.message);
-    return false;
+    return { success: false, error: error.message };
   }
+}
+
+/**
+ * Send push notification with retry capability
+ */
+async function invokeSendPushLambdaWithRetry(
+  payload: any,
+  options: { sync?: boolean; skipPreferenceCheck?: boolean; maxRetries?: number } = {}
+): Promise<SendPushResult> {
+  const { maxRetries = 2, ...invokeOptions } = options;
+
+  let lastError: string | undefined;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const result = await invokeSendPushLambda(payload, invokeOptions);
+
+    if (result.success) {
+      return result;
+    }
+
+    lastError = result.error;
+
+    // Don't retry for certain errors
+    if (result.error?.includes('not configured') ||
+      result.error?.includes('Invalid') ||
+      result.error?.includes('Unauthorized')) {
+      break;
+    }
+
+    if (attempt < maxRetries) {
+      // Exponential backoff
+      await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 100));
+      console.log(`[ChimePush] Retrying push notification (attempt ${attempt + 2})`);
+    }
+  }
+
+  return { success: false, error: lastError || 'Max retries exceeded' };
 }
 
 /**
@@ -100,14 +202,14 @@ async function invokeSendPushLambda(payload: any): Promise<boolean> {
  */
 function formatPhoneNumber(phone: string): string {
   if (!phone) return 'Unknown';
-  
+
   // Remove +1 prefix if present
   const cleaned = phone.replace(/^\+1/, '').replace(/\D/g, '');
-  
+
   if (cleaned.length === 10) {
     return `(${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
   }
-  
+
   return phone;
 }
 
@@ -127,7 +229,8 @@ function getCallerDisplay(data: CallNotificationData): string {
 
 /**
  * Send incoming call push notification to available agents in a clinic
- * 
+ * Uses SYNCHRONOUS invocation to ensure delivery confirmation
+ *
  * @param ddb - DynamoDB Document Client for querying available agents
  * @param agentPresenceTableName - Name of the agent presence table
  * @param notification - Call notification data
@@ -159,18 +262,22 @@ export async function sendIncomingCallNotification(
 
     const agentUserIds = agents.map(a => a.agentId);
     const callerDisplay = getCallerDisplay(notification);
-    
-    const queueInfo = notification.queuePosition 
+
+    const queueInfo = notification.queuePosition
       ? ` (Queue #${notification.queuePosition})`
       : '';
 
-    await invokeSendPushLambda({
+    // Use idempotency key to prevent duplicate notifications
+    const idempotencyKey = `incoming_call:${notification.callId}:${notification.timestamp}`;
+
+    const result = await invokeSendPushLambdaWithRetry({
       userIds: agentUserIds,
       notification: {
         title: 'Incoming Call',
         body: `${callerDisplay} calling ${notification.clinicName}${queueInfo}`,
         type: 'incoming_call',
-        sound: 'ringtone.caf', // Custom iOS ringtone
+        sound: 'ringtone.caf',
+        idempotencyKey,
         data: {
           callId: notification.callId,
           clinicId: notification.clinicId,
@@ -183,9 +290,17 @@ export async function sendIncomingCallNotification(
         },
         category: 'INCOMING_CALL',
       },
+    }, {
+      sync: true,  // Critical notification - wait for confirmation
+      skipPreferenceCheck: true,  // Always deliver incoming calls
+      maxRetries: 2,
     });
 
-    console.log(`[ChimePush] Sent incoming call notification to ${agentUserIds.length} agents`);
+    if (result.success) {
+      console.log(`[ChimePush] Sent incoming call notification to ${agentUserIds.length} agents (${result.sent} delivered)`);
+    } else {
+      console.error(`[ChimePush] Failed to send incoming call notification: ${result.error}`);
+    }
   } catch (error: any) {
     console.error('[ChimePush] Failed to send incoming call notification:', error.message);
   }
@@ -201,14 +316,16 @@ export async function sendIncomingCallToAgents(
   if (!PUSH_NOTIFICATIONS_ENABLED || agentUserIds.length === 0) return;
 
   const callerDisplay = getCallerDisplay(notification);
+  const idempotencyKey = `incoming_call:${notification.callId}:agents:${notification.timestamp}`;
 
-  await invokeSendPushLambda({
+  const result = await invokeSendPushLambdaWithRetry({
     userIds: agentUserIds,
     notification: {
       title: 'Incoming Call',
       body: `${callerDisplay} calling ${notification.clinicName}`,
       type: 'incoming_call',
       sound: 'ringtone.caf',
+      idempotencyKey,
       data: {
         callId: notification.callId,
         clinicId: notification.clinicId,
@@ -219,9 +336,17 @@ export async function sendIncomingCallToAgents(
       },
       category: 'INCOMING_CALL',
     },
+  }, {
+    sync: true,
+    skipPreferenceCheck: true,
+    maxRetries: 2,
   });
 
-  console.log(`[ChimePush] Sent incoming call notification to ${agentUserIds.length} agents`);
+  if (result.success) {
+    console.log(`[ChimePush] Sent incoming call notification to ${agentUserIds.length} agents`);
+  } else {
+    console.error(`[ChimePush] Failed to send incoming call to agents: ${result.error}`);
+  }
 }
 
 // ========================================
@@ -230,8 +355,7 @@ export async function sendIncomingCallToAgents(
 
 /**
  * Send missed call notification to clinic supervisors/managers
- * 
- * @param clinicId - Clinic ID to notify
+ *
  * @param notification - Missed call data
  */
 export async function sendMissedCallNotification(
@@ -240,7 +364,7 @@ export async function sendMissedCallNotification(
   if (!PUSH_NOTIFICATIONS_ENABLED) return;
 
   const callerDisplay = getCallerDisplay(notification);
-  
+
   let reasonText = '';
   switch (notification.reason) {
     case 'no_agents':
@@ -256,7 +380,7 @@ export async function sendMissedCallNotification(
       reasonText = '';
   }
 
-  await invokeSendPushLambda({
+  const result = await invokeSendPushLambda({
     clinicId: notification.clinicId,
     notification: {
       title: 'Missed Call',
@@ -276,7 +400,9 @@ export async function sendMissedCallNotification(
     },
   });
 
-  console.log(`[ChimePush] Sent missed call notification for clinic ${notification.clinicId}`);
+  if (result.success) {
+    console.log(`[ChimePush] Sent missed call notification for clinic ${notification.clinicId}`);
+  }
 }
 
 /**
@@ -290,7 +416,7 @@ export async function sendMissedCallToUsers(
 
   const callerDisplay = getCallerDisplay(notification);
 
-  await invokeSendPushLambda({
+  const result = await invokeSendPushLambda({
     userIds,
     notification: {
       title: 'Missed Call',
@@ -306,7 +432,9 @@ export async function sendMissedCallToUsers(
     },
   });
 
-  console.log(`[ChimePush] Sent missed call notification to ${userIds.length} users`);
+  if (result.success) {
+    console.log(`[ChimePush] Sent missed call notification to ${userIds.length} users`);
+  }
 }
 
 // ========================================
@@ -326,7 +454,7 @@ export async function sendVoicemailNotification(
     ? `${Math.floor(notification.durationSeconds / 60)}:${String(notification.durationSeconds % 60).padStart(2, '0')}`
     : `${notification.durationSeconds}s`;
 
-  await invokeSendPushLambda({
+  const result = await invokeSendPushLambda({
     clinicId: notification.clinicId,
     notification: {
       title: 'New Voicemail',
@@ -347,7 +475,9 @@ export async function sendVoicemailNotification(
     },
   });
 
-  console.log(`[ChimePush] Sent voicemail notification for clinic ${notification.clinicId}`);
+  if (result.success) {
+    console.log(`[ChimePush] Sent voicemail notification for clinic ${notification.clinicId}`);
+  }
 }
 
 /**
@@ -364,7 +494,7 @@ export async function sendVoicemailToUsers(
     ? `${Math.floor(notification.durationSeconds / 60)}:${String(notification.durationSeconds % 60).padStart(2, '0')}`
     : `${notification.durationSeconds}s`;
 
-  await invokeSendPushLambda({
+  const result = await invokeSendPushLambda({
     userIds,
     notification: {
       title: 'New Voicemail',
@@ -381,7 +511,9 @@ export async function sendVoicemailToUsers(
     },
   });
 
-  console.log(`[ChimePush] Sent voicemail notification to ${userIds.length} users`);
+  if (result.success) {
+    console.log(`[ChimePush] Sent voicemail notification to ${userIds.length} users`);
+  }
 }
 
 // ========================================
@@ -403,7 +535,7 @@ export async function sendQueuePositionUpdate(
     ? `. Estimated wait: ${estimatedWaitMinutes} min`
     : '';
 
-  await invokeSendPushLambda({
+  const result = await invokeSendPushLambda({
     userId,
     notification: {
       title: 'Queue Update',
@@ -419,7 +551,9 @@ export async function sendQueuePositionUpdate(
     },
   });
 
-  console.log(`[ChimePush] Sent queue position update to user ${userId}: #${queuePosition}`);
+  if (result.success) {
+    console.log(`[ChimePush] Sent queue position update to user ${userId}: #${queuePosition}`);
+  }
 }
 
 // ========================================
@@ -437,7 +571,7 @@ export async function sendAgentAlert(
 ): Promise<void> {
   if (!PUSH_NOTIFICATIONS_ENABLED || agentUserIds.length === 0) return;
 
-  await invokeSendPushLambda({
+  const result = await invokeSendPushLambda({
     userIds: agentUserIds,
     notification: {
       title,
@@ -451,7 +585,9 @@ export async function sendAgentAlert(
     },
   });
 
-  console.log(`[ChimePush] Sent agent alert to ${agentUserIds.length} agents: ${title}`);
+  if (result.success) {
+    console.log(`[ChimePush] Sent agent alert to ${agentUserIds.length} agents: ${title}`);
+  }
 }
 
 /**
@@ -465,7 +601,7 @@ export async function sendClinicAlert(
 ): Promise<void> {
   if (!PUSH_NOTIFICATIONS_ENABLED) return;
 
-  await invokeSendPushLambda({
+  const result = await invokeSendPushLambda({
     clinicId,
     notification: {
       title,
@@ -481,5 +617,29 @@ export async function sendClinicAlert(
     },
   });
 
-  console.log(`[ChimePush] Sent clinic alert for ${clinicId}: ${title}`);
+  if (result.success) {
+    console.log(`[ChimePush] Sent clinic alert for ${clinicId}: ${title}`);
+  }
+}
+
+/**
+ * Send notification with full result details
+ * Returns detailed information about delivery success/failure
+ */
+export async function sendNotificationWithDetails(
+  target: { userId?: string; userIds?: string[]; clinicId?: string },
+  notification: {
+    title: string;
+    body: string;
+    type?: string;
+    data?: Record<string, any>;
+    sound?: string;
+    idempotencyKey?: string;
+  },
+  options: { sync?: boolean; skipPreferenceCheck?: boolean } = {}
+): Promise<SendPushResult> {
+  return invokeSendPushLambda({
+    ...target,
+    notification,
+  }, { ...options, sync: true });
 }

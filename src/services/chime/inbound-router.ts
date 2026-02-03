@@ -27,6 +27,8 @@ import {
 import { bargeInDetector } from './utils/barge-in-detector';
 // FIX: Import call state machine for coordinated state management
 import { callStateMachine, CallEvent } from './utils/call-state-machine';
+// Import per-clinic AI inbound toggle check
+import { isAiInboundEnabled } from '../ai-agents/voice-agent-config';
 
 // ========================================
 // NEW ADVANCED FEATURES - Chime Stack Improvements
@@ -1688,29 +1690,69 @@ export const handler = async (event: any): Promise<any> => {
 
                 // ========== AFTER-HOURS AI CHECK ==========
                 // Check if clinic is closed and Voice AI should handle the call
+                // Uses both global toggle (ENABLE_AFTER_HOURS_AI) and per-clinic toggle (aiInboundEnabled)
                 if (ENABLE_AFTER_HOURS_AI) {
                     const clinicOpen = await isClinicOpen(clinicId);
 
                     if (!clinicOpen) {
-                        console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED - routing to AI via Chime SDK Meetings`, {
-                            callId,
-                            clinicId,
-                            callerNumber: fromPhoneNumber,
-                        });
+                        // Check per-clinic AI inbound toggle - if disabled, route to agents only
+                        const aiInboundEnabledForClinic = await isAiInboundEnabled(clinicId);
+                        
+                        if (!aiInboundEnabledForClinic) {
+                            console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED but AI inbound is DISABLED - routing to human agents`, {
+                                callId,
+                                clinicId,
+                                callerNumber: fromPhoneNumber,
+                            });
+                            // Fall through to normal agent routing below
+                        } else {
+                            // AI After-Hours is ENABLED for this clinic
+                            // Check if clinic has a dedicated AI phone number to forward to
+                            if (aiPhoneNumber) {
+                                console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED - forwarding to AI phone number`, {
+                                    callId,
+                                    clinicId,
+                                    callerNumber: fromPhoneNumber,
+                                    aiPhoneNumber,
+                                });
 
-                        // Route to Voice AI using Chime SDK Meetings architecture
-                        // This creates a meeting, adds the caller as attendee, and enables real-time transcription
-                        return routeInboundCallToVoiceAi({
-                            callId,
-                            pstnLegCallId: pstnLegCallId || callId,
-                            fromPhoneNumber,
-                            clinicId,
-                            isAiPhoneNumber: false,
-                            source: 'after_hours_forward'
-                        });
+                                // Forward call to the AI phone number via PSTN CallAndBridge
+                                // The AI phone number SIP rule will handle it as a direct AI call
+                                return buildActions([
+                                    buildSpeakAction('Please hold while we connect you to our after-hours assistant.'),
+                                    buildCallAndBridgeAction(
+                                        toPhoneNumber, // Caller ID shows the clinic's main number
+                                        aiPhoneNumber, // Forward to the AI phone number
+                                        {
+                                            'X-Clinic-Id': clinicId,
+                                            'X-Forward-Reason': 'after-hours',
+                                            'X-Original-Caller': fromPhoneNumber,
+                                        }
+                                    ),
+                                ]);
+                            }
+
+                            // No AI phone number configured - use direct Voice AI routing
+                            console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED - routing to AI via Chime SDK Meetings (no aiPhoneNumber configured)`, {
+                                callId,
+                                clinicId,
+                                callerNumber: fromPhoneNumber,
+                            });
+
+                            // Route to Voice AI using Chime SDK Meetings architecture
+                            // This creates a meeting, adds the caller as attendee, and enables real-time transcription
+                            return routeInboundCallToVoiceAi({
+                                callId,
+                                pstnLegCallId: pstnLegCallId || callId,
+                                fromPhoneNumber,
+                                clinicId,
+                                isAiPhoneNumber: false,
+                                source: 'after_hours_forward'
+                            });
+                        }
+                    } else {
+                        console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is OPEN - proceeding with human agent routing`);
                     }
-
-                    console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is OPEN - proceeding with human agent routing`);
                 }
 
                 // 2. Build call context (priority, VIP, etc.)

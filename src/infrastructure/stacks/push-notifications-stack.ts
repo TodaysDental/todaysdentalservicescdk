@@ -1,22 +1,23 @@
 /**
  * Push Notifications Stack
  * 
- * Provides mobile push notification infrastructure using AWS SNS Platform Applications.
- * Supports iOS (APNs) and Android (FCM) push notifications.
+ * Provides mobile push notification infrastructure using direct Firebase Cloud Messaging (FCM).
+ * Supports iOS (via APNs through Firebase) and Android (FCM) push notifications.
+ * 
+ * DIRECT FIREBASE INTEGRATION - No AWS SNS Platform Applications
  * 
  * CREDENTIALS SOURCE: GlobalSecrets DynamoDB Table
  * 
- * Required GlobalSecrets entries for FCM (Android):
- * - secretId: fcm, secretType: server_key (Legacy FCM Server Key)
+ * Required GlobalSecrets entries for FCM (Android & iOS):
+ * - secretId: fcm, secretType: service_account (Firebase Service Account JSON)
  * 
- * Required GlobalSecrets entries for APNs (iOS):
- * - secretId: apns, secretType: signing_key (.p8 private key content)
- * - secretId: apns, secretType: key_id
- * - secretId: apns, secretType: team_id
- * - secretId: apns, secretType: bundle_id
+ * For iOS support, configure APNs key in Firebase Console:
+ * 1. Go to Firebase Console > Project Settings > Cloud Messaging
+ * 2. Upload your APNs authentication key (.p8 file)
+ * 3. Firebase will route iOS notifications to APNs automatically
  */
 
-import { Duration, Stack, StackProps, CfnOutput, Fn, Tags, RemovalPolicy, CustomResource } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, Fn, Tags, RemovalPolicy } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -26,13 +27,14 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
-import * as cr from 'aws-cdk-lib/custom-resources';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as lambdaDestinations from 'aws-cdk-lib/aws-lambda-destinations';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface PushNotificationsStackProps extends StackProps {
   /**
    * Name of the GlobalSecrets DynamoDB table
-   * Required for reading FCM/APNs credentials
+   * Required for reading FCM credentials at runtime
    */
   globalSecretsTableName: string;
 
@@ -47,12 +49,6 @@ export interface PushNotificationsStackProps extends StackProps {
    * Required if the table is encrypted
    */
   secretsEncryptionKeyArn?: string;
-
-  /**
-   * Enable APNs sandbox environment for development.
-   * Default: true (creates both sandbox and production if credentials exist)
-   */
-  enableApnsSandbox?: boolean;
 }
 
 export class PushNotificationsStack extends Stack {
@@ -62,7 +58,6 @@ export class PushNotificationsStack extends Stack {
   public readonly registerDeviceFn: lambdaNode.NodejsFunction;
   public readonly unregisterDeviceFn: lambdaNode.NodejsFunction;
   public readonly sendPushFn: lambdaNode.NodejsFunction;
-  public readonly platformSetupFn: lambdaNode.NodejsFunction;
 
   constructor(scope: Construct, id: string, props: PushNotificationsStackProps) {
     super(scope, id, props);
@@ -71,7 +66,6 @@ export class PushNotificationsStack extends Stack {
       globalSecretsTableName,
       globalSecretsTableArn,
       secretsEncryptionKeyArn,
-      enableApnsSandbox = true,
     } = props;
 
     // Tags & alarm helpers
@@ -124,78 +118,15 @@ export class PushNotificationsStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
-    // GSI for querying by endpointArn (for cleanup when endpoints are invalidated)
+    // GSI for O(1) token lookups (replaces expensive full table scans)
+    // Used for token collision detection and device handoff scenarios
     this.deviceTokensTable.addGlobalSecondaryIndex({
-      indexName: 'endpointArn-index',
-      partitionKey: { name: 'endpointArn', type: dynamodb.AttributeType.STRING },
+      indexName: 'deviceToken-index',
+      partitionKey: { name: 'deviceToken', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.KEYS_ONLY,
     });
 
     applyTags(this.deviceTokensTable, { Table: 'device-tokens' });
-
-    // ========================================
-    // CUSTOM RESOURCE - Platform Setup Lambda
-    // ========================================
-    // This Lambda reads credentials from GlobalSecrets and creates SNS Platform Apps
-
-    this.platformSetupFn = new lambdaNode.NodejsFunction(this, 'PlatformSetupFn', {
-      runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 256,
-      timeout: Duration.minutes(2), // Platform creation can take time
-      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
-      entry: path.join(__dirname, '..', '..', 'services', 'push-notifications', 'platform-setup.ts'),
-      handler: 'handler',
-      environment: {
-        GLOBAL_SECRETS_TABLE: globalSecretsTableName,
-        STACK_NAME: id,
-        ENABLE_APNS_SANDBOX: enableApnsSandbox ? 'true' : 'false',
-      },
-    });
-    applyTags(this.platformSetupFn, { Function: 'platform-setup' });
-
-    // Grant permissions to read from GlobalSecrets
-    // Note: fromTableAttributes requires either tableArn OR tableName, not both
-    const globalSecretsTable = globalSecretsTableArn
-      ? dynamodb.Table.fromTableArn(this, 'GlobalSecretsRef', globalSecretsTableArn)
-      : dynamodb.Table.fromTableName(this, 'GlobalSecretsRef', globalSecretsTableName);
-    globalSecretsTable.grantReadData(this.platformSetupFn);
-
-    // Grant KMS decrypt if encryption key is provided
-    if (secretsEncryptionKeyArn) {
-      const secretsKey = kms.Key.fromKeyArn(this, 'SecretsKeyRef', secretsEncryptionKeyArn);
-      secretsKey.grantDecrypt(this.platformSetupFn);
-    }
-
-    // Grant SNS permissions to create/manage platform applications
-    this.platformSetupFn.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        'sns:CreatePlatformApplication',
-        'sns:SetPlatformApplicationAttributes',
-        'sns:DeletePlatformApplication',
-        'sns:ListPlatformApplications',
-      ],
-      resources: ['*'],
-    }));
-
-    // Create the Custom Resource
-    const platformSetupProvider = new cr.Provider(this, 'PlatformSetupProvider', {
-      onEventHandler: this.platformSetupFn,
-    });
-
-    const platformSetup = new CustomResource(this, 'PlatformSetupResource', {
-      serviceToken: platformSetupProvider.serviceToken,
-      properties: {
-        // Include these to trigger update when secrets change
-        // Force recreation after adding FCM token credentials support (2026-02-02)
-        Version: '2026-02-02-fcm-json-stringify-fix',
-      },
-    });
-
-    // Get platform ARNs from Custom Resource output
-    const fcmPlatformArn = platformSetup.getAttString('FcmPlatformArn');
-    const apnsPlatformArn = platformSetup.getAttString('ApnsPlatformArn');
-    const apnsSandboxPlatformArn = platformSetup.getAttString('ApnsSandboxPlatformArn');
 
     // ========================================
     // IMPORT AUTHORIZER FROM CORE STACK
@@ -211,21 +142,50 @@ export class PushNotificationsStack extends Stack {
     });
 
     // ========================================
+    // GLOBALSECRECTS TABLE REFERENCE
+    // ========================================
+
+    const globalSecretsTable = globalSecretsTableArn
+      ? dynamodb.Table.fromTableArn(this, 'GlobalSecretsRef', globalSecretsTableArn)
+      : dynamodb.Table.fromTableName(this, 'GlobalSecretsRef', globalSecretsTableName);
+
+    // ========================================
+    // DEAD-LETTER QUEUE FOR ASYNC FAILURES
+    // ========================================
+
+    // DLQ to capture failed async push notification invocations
+    // This enables monitoring and potential retry of failed messages
+    const sendPushDlq = new sqs.Queue(this, 'SendPushDLQ', {
+      queueName: `${id}-SendPush-DLQ`,
+      retentionPeriod: Duration.days(14), // Retain failed messages for 14 days
+      visibilityTimeout: Duration.seconds(300), // 5 minutes for processing
+    });
+    applyTags(sendPushDlq, { Queue: 'send-push-dlq' });
+
+    // CloudWatch alarm for DLQ messages (alert on any failures)
+    new cloudwatch.Alarm(this, 'SendPushDLQAlarm', {
+      metric: sendPushDlq.metricApproximateNumberOfMessagesVisible({
+        period: Duration.minutes(5),
+        statistic: 'Sum',
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      alarmDescription: 'Alert when push notification failures are in DLQ',
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    // ========================================
     // LAMBDA FUNCTIONS
     // ========================================
 
     const commonLambdaProps = {
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 256,
-      timeout: Duration.seconds(20),
+      timeout: Duration.seconds(30),
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
         DEVICE_TOKENS_TABLE: this.deviceTokensTable.tableName,
         GLOBAL_SECRETS_TABLE: globalSecretsTableName,
-        // Platform ARNs from Custom Resource (may be empty if credentials not configured)
-        FCM_PLATFORM_ARN: fcmPlatformArn || '',
-        APNS_PLATFORM_ARN: apnsPlatformArn || '',
-        APNS_SANDBOX_PLATFORM_ARN: apnsSandboxPlatformArn || '',
       },
     };
 
@@ -245,56 +205,38 @@ export class PushNotificationsStack extends Stack {
     });
     applyTags(this.unregisterDeviceFn, { Function: 'unregister-device' });
 
-    // Send Push Lambda
+    // Send Push Lambda with DLQ for async failure tracking
     this.sendPushFn = new lambdaNode.NodejsFunction(this, 'SendPushFn', {
       ...commonLambdaProps,
+      timeout: Duration.seconds(60), // Longer timeout for batch sending
       entry: path.join(__dirname, '..', '..', 'services', 'push-notifications', 'send-push.ts'),
       handler: 'handler',
+      // Configure async invocation error handling
+      // Failed async invocations will be sent to the DLQ after 2 retries
+      retryAttempts: 2,
+      onFailure: new lambdaDestinations.SqsDestination(sendPushDlq),
     });
     applyTags(this.sendPushFn, { Function: 'send-push' });
-
-    // Ensure Lambda functions wait for platform setup
-    this.registerDeviceFn.node.addDependency(platformSetup);
-    this.unregisterDeviceFn.node.addDependency(platformSetup);
-    this.sendPushFn.node.addDependency(platformSetup);
 
     // ========================================
     // IAM PERMISSIONS
     // ========================================
 
-    // DynamoDB permissions
+    // DynamoDB permissions for device tokens
     this.deviceTokensTable.grantReadWriteData(this.registerDeviceFn);
     this.deviceTokensTable.grantReadWriteData(this.unregisterDeviceFn);
     this.deviceTokensTable.grantReadData(this.sendPushFn);
 
-    // GlobalSecrets table permissions (for runtime credential access if needed)
-    globalSecretsTable.grantReadData(this.registerDeviceFn);
+    // GlobalSecrets table permissions (for FCM credential access)
     globalSecretsTable.grantReadData(this.sendPushFn);
 
     // Grant KMS decrypt for all lambdas if encryption key is provided
     if (secretsEncryptionKeyArn) {
-      const secretsKey = kms.Key.fromKeyArn(this, 'SecretsKeyRef2', secretsEncryptionKeyArn);
+      const secretsKey = kms.Key.fromKeyArn(this, 'SecretsKeyRef', secretsEncryptionKeyArn);
       secretsKey.grantDecrypt(this.registerDeviceFn);
       secretsKey.grantDecrypt(this.unregisterDeviceFn);
       secretsKey.grantDecrypt(this.sendPushFn);
     }
-
-    // SNS permissions for creating/managing endpoints
-    const snsPolicy = new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        'sns:CreatePlatformEndpoint',
-        'sns:GetEndpointAttributes',
-        'sns:SetEndpointAttributes',
-        'sns:DeleteEndpoint',
-        'sns:Publish',
-      ],
-      resources: ['*'], // Platform application ARNs are dynamic
-    });
-
-    this.registerDeviceFn.addToRolePolicy(snsPolicy);
-    this.unregisterDeviceFn.addToRolePolicy(snsPolicy);
-    this.sendPushFn.addToRolePolicy(snsPolicy);
 
     // ========================================
     // API GATEWAY
@@ -303,7 +245,7 @@ export class PushNotificationsStack extends Stack {
     const corsConfig = getCdkCorsConfig();
     this.pushApi = new apigw.RestApi(this, 'PushNotificationsApi', {
       restApiName: 'Push Notifications API',
-      description: 'API for mobile push notification management',
+      description: 'API for mobile push notification management (Direct Firebase)',
       defaultCorsPreflightOptions: corsConfig,
       defaultMethodOptions: {
         authorizationType: apigw.AuthorizationType.CUSTOM,
@@ -348,26 +290,27 @@ export class PushNotificationsStack extends Stack {
     // ========================================
     // API ROUTES
     // ========================================
+    // Note: Base path mapping uses 'push', so API routes start from root.
+    // External URL: https://apig.todaysdentalinsights.com/push/register
+    // maps to API Gateway path: /register (base path 'push' is stripped)
 
-    const pushResource = this.pushApi.root.addResource('push');
-
-    // POST /push/register - Register device token
-    const registerResource = pushResource.addResource('register');
+    // POST /register - Register device token
+    const registerResource = this.pushApi.root.addResource('register');
     registerResource.addMethod('POST', new apigw.LambdaIntegration(this.registerDeviceFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
     });
 
-    // POST /push/unregister - Unregister device by token (in body)
-    const unregisterResource = pushResource.addResource('unregister');
+    // POST /unregister - Unregister device by token (in body)
+    const unregisterResource = this.pushApi.root.addResource('unregister');
     unregisterResource.addMethod('POST', new apigw.LambdaIntegration(this.unregisterDeviceFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
     });
 
-    // GET /push/devices - Get user's registered devices
-    // DELETE /push/devices - Unregister device by token (in body)
-    const devicesResource = pushResource.addResource('devices');
+    // GET /devices - Get user's registered devices
+    // DELETE /devices - Unregister device by token (in body)
+    const devicesResource = this.pushApi.root.addResource('devices');
     devicesResource.addMethod('GET', new apigw.LambdaIntegration(this.registerDeviceFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
@@ -377,32 +320,39 @@ export class PushNotificationsStack extends Stack {
       authorizationType: apigw.AuthorizationType.CUSTOM,
     });
 
-    // DELETE /push/devices/{deviceId} - Unregister specific device
+    // DELETE /devices/{deviceId} - Unregister specific device
     const deviceIdResource = devicesResource.addResource('{deviceId}');
     deviceIdResource.addMethod('DELETE', new apigw.LambdaIntegration(this.unregisterDeviceFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
     });
 
-    // DELETE /push/devices/all - Unregister all user devices
+    // DELETE /devices/all - Unregister all user devices
     const devicesAllResource = devicesResource.addResource('all');
     devicesAllResource.addMethod('DELETE', new apigw.LambdaIntegration(this.unregisterDeviceFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
     });
 
-    // POST /push/send - Send push notification (admin/internal)
-    const sendResource = pushResource.addResource('send');
+    // POST /send - Send push notification (admin/internal)
+    const sendResource = this.pushApi.root.addResource('send');
     sendResource.addMethod('POST', new apigw.LambdaIntegration(this.sendPushFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
     });
 
-    // POST /push/clinic/{clinicId}/send - Send push to clinic
-    const clinicResource = pushResource.addResource('clinic');
+    // POST /clinic/{clinicId}/send - Send push to clinic
+    const clinicResource = this.pushApi.root.addResource('clinic');
     const clinicIdResource = clinicResource.addResource('{clinicId}');
     const clinicSendResource = clinicIdResource.addResource('send');
     clinicSendResource.addMethod('POST', new apigw.LambdaIntegration(this.sendPushFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // POST /heartbeat - Heartbeat to extend TTL
+    const heartbeatResource = this.pushApi.root.addResource('heartbeat');
+    heartbeatResource.addMethod('POST', new apigw.LambdaIntegration(this.registerDeviceFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
     });
@@ -462,7 +412,7 @@ export class PushNotificationsStack extends Stack {
     });
 
     // Export send-push Lambda function ARN for cross-stack invocation
-    // Other stacks (Comm, Chime) can invoke this Lambda directly
+    // Other stacks (Comm, Chime, HR) can invoke this Lambda directly
     new CfnOutput(this, 'SendPushFunctionArn', {
       value: this.sendPushFn.functionArn,
       description: 'Send Push Lambda Function ARN for cross-stack invocation',
@@ -475,20 +425,23 @@ export class PushNotificationsStack extends Stack {
       exportName: `${Stack.of(this).stackName}-SendPushFunctionName`,
     });
 
-    // Output platform ARNs (may be empty if credentials not configured)
-    new CfnOutput(this, 'FCMPlatformArn', {
-      value: fcmPlatformArn || 'NOT_CONFIGURED',
-      description: 'FCM Platform Application ARN (from GlobalSecrets)',
+    // Export DLQ information for monitoring and processing
+    new CfnOutput(this, 'SendPushDLQArn', {
+      value: sendPushDlq.queueArn,
+      description: 'Dead-Letter Queue ARN for failed push notifications',
+      exportName: `${Stack.of(this).stackName}-SendPushDLQArn`,
     });
 
-    new CfnOutput(this, 'APNSPlatformArn', {
-      value: apnsPlatformArn || 'NOT_CONFIGURED',
-      description: 'APNs Platform Application ARN (from GlobalSecrets)',
+    new CfnOutput(this, 'SendPushDLQUrl', {
+      value: sendPushDlq.queueUrl,
+      description: 'Dead-Letter Queue URL for failed push notifications',
+      exportName: `${Stack.of(this).stackName}-SendPushDLQUrl`,
     });
 
-    new CfnOutput(this, 'APNSSandboxPlatformArn', {
-      value: apnsSandboxPlatformArn || 'NOT_CONFIGURED',
-      description: 'APNs Sandbox Platform Application ARN (from GlobalSecrets)',
+    // Note: SNS Platform ARN outputs removed - using direct Firebase integration
+    new CfnOutput(this, 'DeliveryMethod', {
+      value: 'DIRECT_FIREBASE_FCM_V1',
+      description: 'Push notification delivery method',
     });
   }
 }

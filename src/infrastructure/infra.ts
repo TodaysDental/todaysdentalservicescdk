@@ -415,26 +415,24 @@ const CONNECT_CALL_RECORDINGS_KMS_KEY_ARN =
 // ========================================
 // PUSH NOTIFICATIONS STACK (must be defined before ChimeStack and CommStack)
 // ========================================
-// Mobile push notifications via SNS (iOS APNs + Android FCM)
-// Credentials are read from GlobalSecrets DynamoDB table at deploy time.
+// Mobile push notifications via DIRECT Firebase FCM HTTP v1 API
+// No AWS SNS Platform Applications - all notifications sent directly to Firebase
 //
-// Required GlobalSecrets entries for FCM (Android):
-// - secretId: fcm, secretType: server_key
+// Required GlobalSecrets entries for FCM (Android & iOS):
+// - secretId: fcm, secretType: service_account (Firebase Service Account JSON)
 //
-// Required GlobalSecrets entries for APNs (iOS):
-// - secretId: apns, secretType: signing_key
-// - secretId: apns, secretType: key_id
-// - secretId: apns, secretType: team_id
-// - secretId: apns, secretType: bundle_id
+// For iOS support: Configure APNs key in Firebase Console:
+// 1. Go to Firebase Console > Project Settings > Cloud Messaging
+// 2. Upload your APNs authentication key (.p8 file)
+// 3. Firebase will route iOS notifications to APNs automatically
 //
-// Used by: CommStack (offline messaging), ChimeStack (call notifications)
+// Used by: CommStack (offline messaging), ChimeStack (call notifications), HrStack
 const pushNotificationsStack = new PushNotificationsStack(app, PUSH_NOTIFICATIONS_STACK_NAME, {
   env,
-  // GlobalSecrets table for FCM/APNs credentials
+  // GlobalSecrets table for FCM service account credentials
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
   globalSecretsTableArn: secretsStack.globalSecretsTable.tableArn,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-  enableApnsSandbox: true,
 });
 pushNotificationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 pushNotificationsStack.addDependency(secretsStack); // Explicit - reads from GlobalSecrets table

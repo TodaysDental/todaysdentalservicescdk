@@ -19,35 +19,43 @@ import { v4 as uuidv4 } from 'uuid';
 // CONFIGURATION
 // ========================================
 
-const REGION = process.env.AWS_REGION || 'us-east-1';
-const CHIME_REGION = process.env.CHIME_REGION || 'us-east-1';
+// NOTE:
+// - CHIME_MEDIA_REGION controls where meeting media is hosted.
+// - If unset, we fall back to CHIME_REGION (legacy), then AWS_REGION, then us-east-1.
+const CHIME_MEDIA_REGION =
+    process.env.CHIME_MEDIA_REGION ||
+    process.env.CHIME_REGION ||
+    process.env.AWS_REGION ||
+    'us-east-1';
 
-const chimeClient = new ChimeSDKMeetingsClient({ region: CHIME_REGION });
+const chimeClient = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 
 // ========================================
 // TYPES
 // ========================================
 
 export interface ChimeMeetingInfo {
-    meetingId: string;
-    externalMeetingId: string;
-    mediaPlacement: {
-        audioHostUrl: string;
-        audioFallbackUrl: string;
-        signalingUrl: string;
-        turnControlUrl: string;
-        screenDataUrl?: string;
-        screenViewingUrl?: string;
-        screenSharingUrl?: string;
-        eventIngestionUrl?: string;
+    // Matches the shape expected by `amazon-chime-sdk-js` MeetingSessionConfiguration
+    MeetingId: string;
+    ExternalMeetingId?: string;
+    MediaPlacement: {
+        AudioHostUrl: string;
+        AudioFallbackUrl: string;
+        SignalingUrl: string;
+        TurnControlUrl: string;
+        ScreenDataUrl?: string;
+        ScreenViewingUrl?: string;
+        ScreenSharingUrl?: string;
+        EventIngestionUrl?: string;
     };
-    mediaRegion: string;
+    MediaRegion: string;
 }
 
 export interface ChimeAttendeeInfo {
-    attendeeId: string;
-    externalUserId: string;
-    joinToken: string;
+    // Matches the shape expected by `amazon-chime-sdk-js` MeetingSessionConfiguration
+    AttendeeId: string;
+    ExternalUserId: string;
+    JoinToken: string;
 }
 
 export interface MeetingJoinInfo {
@@ -58,6 +66,21 @@ export interface MeetingJoinInfo {
 // ========================================
 // MEETING MANAGEMENT
 // ========================================
+
+function makeExternalUserId(userID: string): string {
+    // Chime SDK constraints:
+    // - 2 to 64 chars
+    // - only certain printable characters are allowed; we keep it conservative.
+    const safe = (userID || 'user')
+        .toString()
+        .trim()
+        .replace(/[^a-zA-Z0-9+\-_.@]/g, '_');
+
+    const suffix = uuidv4().replace(/-/g, '').slice(0, 8);
+    const maxBaseLen = 64 - (1 + suffix.length);
+    const base = (safe.length >= 2 ? safe : 'user').slice(0, Math.max(2, maxBaseLen));
+    return `${base}-${suffix}`.slice(0, 64);
+}
 
 /**
  * Create a new Chime SDK meeting for a call
@@ -72,34 +95,19 @@ export async function createMeeting(
         const response = await chimeClient.send(new CreateMeetingCommand({
             ClientRequestToken: uuidv4(),
             ExternalMeetingId: externalMeetingId,
-            MediaRegion: CHIME_REGION,
+            MediaRegion: CHIME_MEDIA_REGION,
             MeetingFeatures: {
                 Audio: { EchoReduction: 'AVAILABLE' },
                 Video: callType === 'video' ? { MaxResolution: 'HD' } : undefined,
             },
         }));
 
-        if (!response.Meeting) {
+        if (!response.Meeting?.MeetingId || !response.Meeting?.MediaPlacement || !response.Meeting?.MediaRegion) {
             throw new Error('Failed to create meeting - no meeting data returned');
         }
 
-        const meeting = response.Meeting;
-
-        return {
-            meetingId: meeting.MeetingId!,
-            externalMeetingId: meeting.ExternalMeetingId!,
-            mediaPlacement: {
-                audioHostUrl: meeting.MediaPlacement?.AudioHostUrl!,
-                audioFallbackUrl: meeting.MediaPlacement?.AudioFallbackUrl!,
-                signalingUrl: meeting.MediaPlacement?.SignalingUrl!,
-                turnControlUrl: meeting.MediaPlacement?.TurnControlUrl!,
-                screenDataUrl: meeting.MediaPlacement?.ScreenDataUrl,
-                screenViewingUrl: meeting.MediaPlacement?.ScreenViewingUrl,
-                screenSharingUrl: meeting.MediaPlacement?.ScreenSharingUrl,
-                eventIngestionUrl: meeting.MediaPlacement?.EventIngestionUrl,
-            },
-            mediaRegion: meeting.MediaRegion!,
-        };
+        // Return the meeting object in the exact shape expected by the frontend Chime SDK.
+        return response.Meeting as unknown as ChimeMeetingInfo;
     } catch (error) {
         console.error('[ChimeMeetingManager] Error creating meeting:', error);
         throw error;
@@ -117,7 +125,8 @@ export async function createAttendee(
     try {
         const response = await chimeClient.send(new CreateAttendeeCommand({
             MeetingId: meetingId,
-            ExternalUserId: userID,
+            // Use a safe, <=64-char external user id (email can be too long)
+            ExternalUserId: makeExternalUserId(userID),
             Capabilities: {
                 Audio: 'SendReceive',
                 Video: 'SendReceive',
@@ -125,17 +134,11 @@ export async function createAttendee(
             },
         }));
 
-        if (!response.Attendee) {
+        if (!response.Attendee?.AttendeeId || !response.Attendee?.ExternalUserId || !response.Attendee?.JoinToken) {
             throw new Error('Failed to create attendee - no attendee data returned');
         }
 
-        const attendee = response.Attendee;
-
-        return {
-            attendeeId: attendee.AttendeeId!,
-            externalUserId: attendee.ExternalUserId!,
-            joinToken: attendee.JoinToken!,
-        };
+        return response.Attendee as unknown as ChimeAttendeeInfo;
     } catch (error) {
         console.error('[ChimeMeetingManager] Error creating attendee:', error);
         throw error;
@@ -154,9 +157,9 @@ export async function createMeetingWithAttendee(
     console.log(`[ChimeMeetingManager] Creating meeting for call ${callID}`);
 
     const meeting = await createMeeting(callID, callType);
-    const attendee = await createAttendee(meeting.meetingId, callerID, callerName);
+    const attendee = await createAttendee(meeting.MeetingId, callerID, callerName);
 
-    console.log(`[ChimeMeetingManager] Meeting created: ${meeting.meetingId}, Attendee: ${attendee.attendeeId}`);
+    console.log(`[ChimeMeetingManager] Meeting created: ${meeting.MeetingId}, Attendee: ${attendee.AttendeeId}`);
 
     return { meeting, attendee };
 }
@@ -176,31 +179,15 @@ export async function joinMeeting(
         MeetingId: meetingId,
     }));
 
-    if (!meetingResponse.Meeting) {
+    if (!meetingResponse.Meeting?.MeetingId || !meetingResponse.Meeting?.MediaPlacement || !meetingResponse.Meeting?.MediaRegion) {
         throw new Error('Meeting not found');
     }
-
-    const meeting = meetingResponse.Meeting;
 
     // Create attendee for this user
     const attendee = await createAttendee(meetingId, userID, userName);
 
     return {
-        meeting: {
-            meetingId: meeting.MeetingId!,
-            externalMeetingId: meeting.ExternalMeetingId!,
-            mediaPlacement: {
-                audioHostUrl: meeting.MediaPlacement?.AudioHostUrl!,
-                audioFallbackUrl: meeting.MediaPlacement?.AudioFallbackUrl!,
-                signalingUrl: meeting.MediaPlacement?.SignalingUrl!,
-                turnControlUrl: meeting.MediaPlacement?.TurnControlUrl!,
-                screenDataUrl: meeting.MediaPlacement?.ScreenDataUrl,
-                screenViewingUrl: meeting.MediaPlacement?.ScreenViewingUrl,
-                screenSharingUrl: meeting.MediaPlacement?.ScreenSharingUrl,
-                eventIngestionUrl: meeting.MediaPlacement?.EventIngestionUrl,
-            },
-            mediaRegion: meeting.MediaRegion!,
-        },
+        meeting: meetingResponse.Meeting as unknown as ChimeMeetingInfo,
         attendee,
     };
 }
@@ -237,9 +224,9 @@ export async function listAttendees(meetingId: string): Promise<ChimeAttendeeInf
         }));
 
         return (response.Attendees || []).map(attendee => ({
-            attendeeId: attendee.AttendeeId!,
-            externalUserId: attendee.ExternalUserId!,
-            joinToken: '', // Not returned in list
+            AttendeeId: attendee.AttendeeId!,
+            ExternalUserId: attendee.ExternalUserId!,
+            JoinToken: '', // Not returned in list
         }));
     } catch (error) {
         console.error('[ChimeMeetingManager] Error listing attendees:', error);

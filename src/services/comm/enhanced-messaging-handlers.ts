@@ -150,7 +150,8 @@ async function getConnectionIdForUser(userID: string): Promise<string | null> {
     try {
         const result = await ddb.send(new QueryCommand({
             TableName: CONNECTIONS_TABLE,
-            IndexName: 'userID-index',
+            // Must match CommStack `ConnectionsTableV4` GSI name
+            IndexName: 'UserIDIndex',
             KeyConditionExpression: 'userID = :uid',
             ExpressionAttributeValues: { ':uid': userID },
             Limit: 1,
@@ -1053,6 +1054,11 @@ export async function handleInitiateCall(
         return;
     }
 
+    if (!CALLS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Calls table not configured.' });
+        return;
+    }
+
     const callID = uuidv4();
     const now = new Date().toISOString();
 
@@ -1069,21 +1075,14 @@ export async function handleInitiateCall(
     }
 
     try {
-        // Create Chime SDK meeting (dynamic import to avoid cold start overhead)
-        let meetingInfo: { meetingId: string; attendeeId: string; joinToken: string } | null = null;
-        try {
-            const { createMeetingWithAttendee } = await import('./chime-meeting-manager');
-            const result = await createMeetingWithAttendee(callID, callType, senderID, callerName);
-            meetingInfo = {
-                meetingId: result.meeting.meetingId,
-                attendeeId: result.attendee.attendeeId,
-                joinToken: result.attendee.joinToken,
-            };
-            console.log(`[Call] Created Chime meeting: ${meetingInfo.meetingId}`);
-        } catch (chimeError) {
-            console.error('[Call] Failed to create Chime meeting:', chimeError);
-            // Continue without Chime - can still use push-based notification
-        }
+        // Create Chime SDK meeting + first attendee (caller)
+        const { createMeetingWithAttendee } = await import('./chime-meeting-manager');
+        const meetingJoinInfo = await createMeetingWithAttendee(callID, callType, senderID, callerName);
+        console.log(`[Call] Created Chime meeting: ${meetingJoinInfo.meeting.MeetingId}`);
+
+        const uniqueParticipantIDs = Array.from(
+            new Set([senderID, ...(participantIDs || [])].filter(Boolean))
+        );
 
         const call: Call = {
             callID,
@@ -1091,19 +1090,21 @@ export async function handleInitiateCall(
             callerID: senderID,
             callerName,
             callType,
-            participantIDs: [senderID, ...participantIDs],
+            participantIDs: uniqueParticipantIDs,
             status: 'ringing',
             startedAt: now,
-            meetingId: meetingInfo?.meetingId,
+            meetingId: meetingJoinInfo.meeting.MeetingId,
         };
 
         // Store call record
-        if (CALLS_TABLE) {
-            await ddb.send(new PutCommand({
-                TableName: CALLS_TABLE,
-                Item: call,
-            }));
-        }
+        await ddb.send(new PutCommand({
+            TableName: CALLS_TABLE,
+            Item: {
+                ...call,
+                // Auto-expire call records (24h). Keeps table small while allowing short-term history/debugging.
+                ttl: Math.floor(Date.now() / 1000) + (24 * 60 * 60),
+            },
+        }));
 
         // Notify all participants about the incoming call
         for (const participantID of participantIDs) {
@@ -1115,7 +1116,7 @@ export async function handleInitiateCall(
                 await sendToClient(apiGwManagement, participantConnectionId, {
                     type: 'incomingCall',
                     call,
-                    meetingId: meetingInfo?.meetingId,
+                    meetingId: meetingJoinInfo.meeting.MeetingId,
                 });
             }
 
@@ -1128,24 +1129,29 @@ export async function handleInitiateCall(
                     callerName,
                     callType,
                     favorRequestID,
-                    meetingId: meetingInfo?.meetingId,
+                    meetingId: meetingJoinInfo.meeting.MeetingId,
                 });
             } catch (pushError) {
                 console.warn(`[Call] Failed to send push notification to ${participantID}:`, pushError);
             }
         }
 
-        // Send confirmation and join info to caller
+        // Send full call object to caller
         await sendToClient(apiGwManagement, connectionId, {
-            type: 'callStatusUpdate',
+            type: 'callInitiated',
+            call,
+        });
+
+        // Send Chime SDK meeting join info to caller (so the initiator can join immediately)
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'callJoinInfo',
             callID,
-            status: 'ringing',
-            updatedBy: senderID,
-            meetingInfo: meetingInfo ? {
-                meetingId: meetingInfo.meetingId,
-                attendeeId: meetingInfo.attendeeId,
-                joinToken: meetingInfo.joinToken,
-            } : undefined,
+            meetingId: meetingJoinInfo.meeting.MeetingId,
+            meetingToken: meetingJoinInfo.attendee.JoinToken,
+            attendeeId: meetingJoinInfo.attendee.AttendeeId,
+            externalMeetingId: meetingJoinInfo.meeting.ExternalMeetingId,
+            meeting: meetingJoinInfo.meeting,
+            attendee: meetingJoinInfo.attendee,
         });
 
     } catch (e) {
@@ -1170,16 +1176,19 @@ export async function handleJoinCall(
         return;
     }
 
+    if (!CALLS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Calls table not configured.' });
+        return;
+    }
+
     try {
         // Get call record
         let call: Call | undefined;
-        if (CALLS_TABLE) {
-            const callResult = await ddb.send(new GetCommand({
-                TableName: CALLS_TABLE,
-                Key: { callID },
-            }));
-            call = callResult.Item as Call;
-        }
+        const callResult = await ddb.send(new GetCommand({
+            TableName: CALLS_TABLE,
+            Key: { callID },
+        }));
+        call = callResult.Item as Call;
 
         if (!call) {
             await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Call not found' });
@@ -1213,17 +1222,13 @@ export async function handleJoinCall(
         }
 
         // Join Chime SDK meeting and get attendee credentials
-        let meetingJoinInfo: { meetingId: string; attendeeId: string; joinToken: string } | null = null;
+        let meetingJoinInfo: any | null = null;
         if (call.meetingId) {
             try {
                 const { joinMeeting } = await import('./chime-meeting-manager');
                 const result = await joinMeeting(call.meetingId, senderID);
-                meetingJoinInfo = {
-                    meetingId: result.meeting.meetingId,
-                    attendeeId: result.attendee.attendeeId,
-                    joinToken: result.attendee.joinToken,
-                };
-                console.log(`[Call] User ${senderID} joined Chime meeting: ${meetingJoinInfo.meetingId}`);
+                meetingJoinInfo = result;
+                console.log(`[Call] User ${senderID} joined Chime meeting: ${meetingJoinInfo.meeting.MeetingId}`);
             } catch (chimeError) {
                 console.error('[Call] Failed to join Chime meeting:', chimeError);
             }
@@ -1233,19 +1238,159 @@ export async function handleJoinCall(
         await sendToClient(apiGwManagement, connectionId, {
             type: 'callJoinInfo',
             callID,
-            meetingId: call.meetingId || callID,
-            meetingToken: meetingJoinInfo?.joinToken || '',
-            attendeeId: meetingJoinInfo?.attendeeId || senderID,
-            meeting: meetingJoinInfo ? {
-                meetingId: meetingJoinInfo.meetingId,
-                attendeeId: meetingJoinInfo.attendeeId,
-                joinToken: meetingJoinInfo.joinToken,
-            } : undefined,
+            meetingId: meetingJoinInfo?.meeting?.MeetingId || call.meetingId || callID,
+            meetingToken: meetingJoinInfo?.attendee?.JoinToken || '',
+            attendeeId: meetingJoinInfo?.attendee?.AttendeeId || senderID,
+            externalMeetingId: meetingJoinInfo?.meeting?.ExternalMeetingId,
+            meeting: meetingJoinInfo?.meeting,
+            attendee: meetingJoinInfo?.attendee,
         });
 
     } catch (e) {
         console.error('Error joining call:', e);
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to join call' });
+    }
+}
+
+/**
+ * Leave an ongoing call (does not end the meeting for others)
+ */
+export async function handleLeaveCall(
+    senderID: string,
+    payload: { callID: string },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { callID } = payload;
+    if (!callID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing callID' });
+        return;
+    }
+    if (!CALLS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Calls table not configured.' });
+        return;
+    }
+
+    try {
+        const callResult = await ddb.send(new GetCommand({
+            TableName: CALLS_TABLE,
+            Key: { callID },
+        }));
+        const call = callResult.Item as Call | undefined;
+
+        if (!call) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Call not found' });
+            return;
+        }
+
+        // Notify participants (UI-only; media is handled client-side by Chime SDK)
+        for (const participantID of call.participantIDs || []) {
+            const pConnectionId = await getConnectionIdForUser(participantID);
+            if (pConnectionId) {
+                await sendToClient(apiGwManagement, pConnectionId, {
+                    type: 'callParticipantUpdate',
+                    callID,
+                    action: 'left',
+                    participantID: senderID,
+                    participantName: senderID,
+                });
+            }
+        }
+    } catch (e) {
+        console.error('Error leaving call:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to leave call' });
+    }
+}
+
+/**
+ * Update mute state (UI-only broadcast)
+ */
+export async function handleMuteCall(
+    senderID: string,
+    payload: { callID: string; muted: boolean },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { callID, muted } = payload;
+    if (!callID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing callID' });
+        return;
+    }
+    if (!CALLS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Calls table not configured.' });
+        return;
+    }
+
+    try {
+        const callResult = await ddb.send(new GetCommand({
+            TableName: CALLS_TABLE,
+            Key: { callID },
+        }));
+        const call = callResult.Item as Call | undefined;
+        if (!call) return;
+
+        const action = muted ? 'muted' : 'unmuted';
+        for (const participantID of call.participantIDs || []) {
+            const pConnectionId = await getConnectionIdForUser(participantID);
+            if (pConnectionId) {
+                await sendToClient(apiGwManagement, pConnectionId, {
+                    type: 'callParticipantUpdate',
+                    callID,
+                    action,
+                    participantID: senderID,
+                    participantName: senderID,
+                });
+            }
+        }
+    } catch (e) {
+        console.error('Error updating mute state:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to update mute state' });
+    }
+}
+
+/**
+ * Update video state (UI-only broadcast)
+ */
+export async function handleToggleVideo(
+    senderID: string,
+    payload: { callID: string; videoOn: boolean },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { callID, videoOn } = payload;
+    if (!callID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing callID' });
+        return;
+    }
+    if (!CALLS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Calls table not configured.' });
+        return;
+    }
+
+    try {
+        const callResult = await ddb.send(new GetCommand({
+            TableName: CALLS_TABLE,
+            Key: { callID },
+        }));
+        const call = callResult.Item as Call | undefined;
+        if (!call) return;
+
+        const action = videoOn ? 'videoOn' : 'videoOff';
+        for (const participantID of call.participantIDs || []) {
+            const pConnectionId = await getConnectionIdForUser(participantID);
+            if (pConnectionId) {
+                await sendToClient(apiGwManagement, pConnectionId, {
+                    type: 'callParticipantUpdate',
+                    callID,
+                    action,
+                    participantID: senderID,
+                    participantName: senderID,
+                });
+            }
+        }
+    } catch (e) {
+        console.error('Error updating video state:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to update video state' });
     }
 }
 
