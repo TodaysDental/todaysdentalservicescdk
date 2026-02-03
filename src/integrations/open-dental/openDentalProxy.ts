@@ -1,4 +1,5 @@
 import https from 'https';
+import { randomUUID } from 'crypto';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import {
   getUserPermissions,
@@ -145,8 +146,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return httpErr(event, 500, 'SFTP configuration error: Password not available');
     }
 
+    // IMPORTANT: When multiple clinics run in parallel, each request must download
+    // its own CSV result file. Using "download latest CSV" can cross-wire responses.
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const fileName = `query_${timestamp}.csv`;
+    const safeClinicId = clinicId.replace(/[^a-zA-Z0-9_-]/g, '-');
+    const requestId = (() => {
+      const rid = (event.requestContext as any)?.requestId;
+      return typeof rid === 'string' && rid ? rid : randomUUID();
+    })();
+    const safeRequestId = requestId.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 32);
+    const fileName = `query_${safeClinicId}_${timestamp}_${safeRequestId}.csv`;
 
     // Clean hostname - remove any protocol or trailing slashes
     const clean = (s: string) => (s || '').replace(/^(https?:\/\/)?/, '').replace(/^\/+|\/+$/g, '');
@@ -173,6 +182,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     console.log('SFTP Host:', host);
     console.log('SFTP Username:', username);
     console.log('SFTP Address:', sftpAddress);
+    console.log('SFTP File Name:', fileName);
     console.log('Expected S3 Path: s3://bucket/sftp-home/sftpuser/' + fileName);
     console.log('CONSOLIDATED_SFTP_HOST env:', process.env.CONSOLIDATED_SFTP_HOST);
     console.log('CONSOLIDATED_SFTP_PASSWORD available (from GlobalSecrets):', !!creds.sftpPassword);
@@ -215,14 +225,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Wait a bit for Open Dental to write the file
     await new Promise(resolve => setTimeout(resolve, 3000));
 
-    // Fetch CSV over SFTP using ssh2
-    // Look in the root directory (.) since that's where sftpuser's logical mapping points
-    const csvData: string = await downloadLatestCsv({
-      host: creds.sftpHost,
+    // Fetch *this request's* CSV over SFTP using ssh2.
+    // Look in the root directory (.) since that's where sftpuser's logical mapping points.
+    const csvData: string = await downloadCsvByName({
+      host,
       port: creds.sftpPort || 22,
       username: username,
       password: creds.sftpPassword,
       remoteDir: '.', // Root directory for sftpuser
+      fileName,
     });
 
     let jsonResult: any;
@@ -349,8 +360,78 @@ async function downloadLatestCsvOnce(opts: { host: string; port: number; usernam
   });
 }
 
-async function downloadLatestCsv(opts: { host: string; port: number; username: string; password: string; remoteDir: string; }): Promise<string> {
-  return retryWithBackoff(() => downloadLatestCsvOnce(opts), 3, 2000);
+type DownloadCsvByNameOpts = { host: string; port: number; username: string; password: string; remoteDir: string; fileName: string };
+
+/**
+ * Download a specific CSV file that we just asked Open Dental to write.
+ *
+ * This is critical for correctness when multiple clinics run in parallel:
+ * picking "latest CSV" can return another request's output.
+ */
+async function downloadCsvByNameOnce(opts: DownloadCsvByNameOpts): Promise<string> {
+  const { host, port, username, password, remoteDir, fileName } = opts;
+  const conn = new SSH2Client();
+  return new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      conn.end();
+      reject(new Error('SFTP connection timeout'));
+    }, 30000); // 30 second timeout
+
+    conn.on('ready', () => {
+      conn.sftp((err: any, sftp: any) => {
+        if (err) { clearTimeout(timeout); conn.end(); reject(err); return; }
+
+        const actualPath = `${remoteDir}/${fileName}`;
+        const startedAt = Date.now();
+        const maxWaitMs = 20000;
+        const pollMs = 750;
+        let lastSize: number | null = null;
+        let stableCount = 0;
+
+        const pollForFile = () => {
+          sftp.stat(actualPath, (statErr: any, stats: any) => {
+            if (statErr) {
+              if (Date.now() - startedAt > maxWaitMs) {
+                clearTimeout(timeout);
+                conn.end();
+                reject(new Error(`CSV file not found on SFTP after ${maxWaitMs}ms: ${fileName}`));
+                return;
+              }
+              setTimeout(pollForFile, pollMs);
+              return;
+            }
+
+            const size = typeof stats?.size === 'number' ? (stats.size as number) : null;
+            if (size !== null && lastSize !== null && size === lastSize) {
+              stableCount += 1;
+            } else {
+              stableCount = 0;
+            }
+            if (size !== null) lastSize = size;
+
+            // Require at least one "stable size" check to reduce partial reads
+            if (stableCount >= 1) {
+              const readStream = sftp.createReadStream(actualPath);
+              let csvContent = '';
+              readStream.on('data', (chunk: any) => { csvContent += chunk.toString(); });
+              readStream.on('end', () => { clearTimeout(timeout); conn.end(); resolve(csvContent); });
+              readStream.on('error', (e: any) => { clearTimeout(timeout); conn.end(); reject(e); });
+              return;
+            }
+
+            setTimeout(pollForFile, pollMs);
+          });
+        };
+
+        pollForFile();
+      });
+    }).on('error', (e: any) => { clearTimeout(timeout); reject(e); }).connect({ host, port, username, password, readyTimeout: 15000 });
+  });
+}
+
+async function downloadCsvByName(opts: DownloadCsvByNameOpts): Promise<string> {
+  // Retry a few times for transient network/SFTP issues
+  return retryWithBackoff(() => downloadCsvByNameOnce(opts), 3, 1500);
 }
 
 function httpErr(event: APIGatewayProxyEvent, code: number, message: string): APIGatewayProxyResult {

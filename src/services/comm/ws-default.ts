@@ -2,7 +2,7 @@ import { APIGatewayEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk/client-apigatewaymanagementapi';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
@@ -225,6 +225,9 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 break;
             case 'getPresignedUrl':
                 await getPresignedUrl(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getPresignedDownloadUrl':
+                await getPresignedDownloadUrl(senderID, payload, connectionId, apiGwManagement);
                 break;
             case 'fetchHistory':
                 await fetchHistory(senderID, payload, connectionId, apiGwManagement);
@@ -1223,9 +1226,10 @@ async function getRecipientIDs(favor: FavorRequest, senderID: string): Promise<s
             Key: { teamID: favor.teamID },
         }));
         const team = teamResult.Item as Team;
+        const members = normalizeMembers(team?.members);
 
         // Recipients are all team members except the sender
-        return team ? team.members.filter(memberId => memberId !== senderID) : [];
+        return members.filter(memberId => memberId !== senderID);
 
     } else if (favor.receiverID) {
         // 1-to-1 chat: Recipient is the person who is not the sender
@@ -1261,8 +1265,9 @@ async function isUserParticipant(favor: FavorRequest, userID: string): Promise<b
         Key: { teamID: favor.teamID },
     }));
     const team = teamResult.Item as Team;
+    const members = normalizeMembers(team?.members);
 
-    return team ? team.members.includes(userID) : false;
+    return members.includes(userID);
 }
 
 /**
@@ -1280,7 +1285,8 @@ async function getAllParticipants(favor: FavorRequest): Promise<string[]> {
             Key: { teamID: favor.teamID },
         }));
         const team = teamResult.Item as Team;
-        return team ? team.members : [favor.senderID];
+        const members = normalizeMembers(team?.members);
+        return members.length > 0 ? members : [favor.senderID];
     }
 
     // For 1-to-1 requests
@@ -2158,8 +2164,32 @@ async function getPresignedUrl(senderID: string, payload: any, connectionId: str
         return;
     }
 
+    if (!FILE_BUCKET_NAME) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: File bucket not configured.' });
+        return;
+    }
+
+    // Verify the sender is a participant in this request before issuing an upload URL
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID: payload.favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+    if (!favor) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Favor request not found.' });
+        return;
+    }
+    const isParticipant = await isUserParticipant(favor, senderID);
+    if (!isParticipant) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this request.' });
+        return;
+    }
+
+    const rawName = String(payload.fileName);
+    const safeFileName = rawName.split('/').pop()?.split('\\').pop() || 'file';
+
     // Key structure: favors/{favorRequestID}/{senderID}-{UUID}-{fileName}
-    const fileKey = `favors/${payload.favorRequestID}/${senderID}-${uuidv4()}-${payload.fileName}`;
+    const fileKey = `favors/${payload.favorRequestID}/${senderID}-${uuidv4()}-${safeFileName}`;
 
     const command = new PutObjectCommand({
         Bucket: FILE_BUCKET_NAME,
@@ -2181,6 +2211,87 @@ async function getPresignedUrl(senderID: string, payload: any, connectionId: str
         console.error('Error generating signed URL:', e);
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to generate file upload URL' });
     }
+}
+
+/**
+ * Generates a signed S3 GET URL for an existing file (download/preview).
+ * This is distinct from `getPresignedUrl`, which returns a PUT URL for uploads.
+ */
+async function getPresignedDownloadUrl(
+    requesterID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, fileKey } = payload || {};
+
+    if (!favorRequestID || !fileKey) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID or fileKey.' });
+        return;
+    }
+
+    if (!FILE_BUCKET_NAME) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: File bucket not configured.' });
+        return;
+    }
+
+    // Ensure the request is scoped to the conversation and not an arbitrary S3 key
+    const cleanKey = sanitizeFileKey(String(fileKey));
+    const expectedPrefix = `favors/${favorRequestID}/`;
+    if (!cleanKey.startsWith(expectedPrefix)) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Invalid fileKey for this conversation.' });
+        return;
+    }
+
+    // Validate authorization (must be a participant of the conversation)
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+    if (!favor) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Favor request not found.' });
+        return;
+    }
+
+    const isParticipant = await isUserParticipant(favor, requesterID);
+    if (!isParticipant) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this request.' });
+        return;
+    }
+
+    try {
+        const command = new GetObjectCommand({
+            Bucket: FILE_BUCKET_NAME,
+            Key: cleanKey,
+        });
+
+        const url = await getSignedUrl(s3, command, { expiresIn: 900 }); // URL valid for 15 minutes
+
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'presignedDownloadUrl',
+            favorRequestID,
+            url,
+            fileKey: cleanKey,
+        });
+    } catch (e) {
+        console.error('Error generating signed download URL:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to generate file download URL' });
+    }
+}
+
+/**
+ * Normalizes a DynamoDB "members" attribute to a string[].
+ * Some tables may store members as a List (array) or a String Set (JS Set via DocumentClient).
+ */
+function normalizeMembers(members: unknown): string[] {
+    if (Array.isArray(members)) {
+        return members.filter((m): m is string => typeof m === 'string');
+    }
+    if (members instanceof Set) {
+        return Array.from(members).filter((m): m is string => typeof m === 'string');
+    }
+    return [];
 }
 
 // ========================================
