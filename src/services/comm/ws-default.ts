@@ -1,6 +1,6 @@
 import { APIGatewayEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk/client-apigatewaymanagementapi';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -199,6 +199,9 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
         const senderID = senderInfo.userID;
 
         switch (payload.action) {
+            case 'ping':
+                // Heartbeat ping from client. No-op to keep the connection alive.
+                break;
             case 'createTeam': // Create a new team/group
                 await createTeam(senderID, payload, connectionId, apiGwManagement);
                 break;
@@ -557,8 +560,6 @@ async function listTeams(
     try {
         // Scan the table and filter for teams where the caller is a member
         // Note: For production with large datasets, use a GSI or inverted index pattern
-        const { ScanCommand } = await import('@aws-sdk/lib-dynamodb');
-
         const result = await ddb.send(new ScanCommand({
             TableName: TEAMS_TABLE,
             FilterExpression: 'contains(members, :callerID)',
@@ -816,8 +817,6 @@ async function handleOpenGroupChat(
 
         // 3. Check if there's an existing "main" group conversation for this team
         // Use TeamIndex GSI for efficient lookup instead of ScanCommand
-        const { QueryCommand } = await import('@aws-sdk/lib-dynamodb');
-
         const existingConvos = await ddb.send(new QueryCommand({
             TableName: FAVORS_TABLE,
             IndexName: 'TeamIndex',
@@ -839,7 +838,6 @@ async function handleOpenGroupChat(
             console.log(`Opening existing group chat: ${mainConvo.favorRequestID} for team ${teamID}`);
 
             // Fetch message history
-            const { QueryCommand } = await import('@aws-sdk/lib-dynamodb');
             const messagesResult = await ddb.send(new QueryCommand({
                 TableName: MESSAGES_TABLE,
                 KeyConditionExpression: 'favorRequestID = :frid',
@@ -1157,9 +1155,12 @@ async function sendMessage(
     // Determine the list of all non-sending recipients
     const recipientIDs = await getRecipientIDs(favor, senderID);
 
-    if (favor.status !== 'active' || recipientIDs.length === 0) {
+    // Allow messaging for active workflows (pending/active/in_progress/forwarded).
+    // Only block messaging for closed tasks.
+    const isClosed = favor.status === 'completed' || favor.status === 'rejected';
+    if (isClosed || recipientIDs.length === 0) {
         if (senderConnectionId) {
-            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Request is inactive, resolved, or has no recipients.' });
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Request is closed or has no recipients.' });
         }
         return;
     }
@@ -1492,7 +1493,6 @@ async function fetchRequests(
     const getUserTeamIDs = async (): Promise<string[]> => {
         if (!TEAMS_TABLE) return [];
 
-        const { ScanCommand } = await import('@aws-sdk/lib-dynamodb');
         const result = await ddb.send(new ScanCommand({
             TableName: TEAMS_TABLE,
             FilterExpression: 'contains(members, :callerID)',
