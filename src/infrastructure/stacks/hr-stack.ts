@@ -500,9 +500,9 @@ export class HrStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'hr', 'index.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X, // Match your admin-stack.ts
-      memorySize: 256,
+      memorySize: 512,
       timeout: Duration.seconds(30),
-      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20', minify: true },
       environment: {
         SHIFTS_TABLE: this.shiftsTable.tableName,
         LEAVE_TABLE: this.leaveTable.tableName,

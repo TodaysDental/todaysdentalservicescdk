@@ -114,11 +114,27 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // ==================================================================
     // 3. GET /users - List all users (admin only)
-    // Supports optional ?clinicId=X query param for filtered/minimal response
+    // Supports optional:
+    // - ?clinicId=X   (single clinic minimal response)
+    // - ?clinicIds=a,b,c (multi-clinic minimal response; scan once)
     // ==================================================================
     if (event.httpMethod === 'GET' && !pathUsername) {
       const filterClinicId = event.queryStringParameters?.clinicId;
-      return await handleListUsers(callerIsGlobalSuperAdmin, callerIsSuperAdmin, allowedClinics, filterClinicId);
+      const filterClinicIdsRaw = event.queryStringParameters?.clinicIds;
+      const filterClinicIds = filterClinicIdsRaw
+        ? filterClinicIdsRaw
+            .split(',')
+            .map((id) => id.trim())
+            .filter(Boolean)
+        : undefined;
+
+      return await handleListUsers(
+        callerIsGlobalSuperAdmin,
+        callerIsSuperAdmin,
+        allowedClinics,
+        filterClinicId,
+        filterClinicIds
+      );
     }
 
     // ==================================================================
@@ -185,17 +201,81 @@ async function handleListUsers(
   isGlobalSuperAdmin: boolean,
   isSuperAdmin: boolean,
   allowedClinics: Set<string>,
-  filterClinicId?: string
+  filterClinicId?: string,
+  filterClinicIds?: string[]
 ): Promise<APIGatewayProxyResult> {
-  // Scan all users
+  const hasAllAccess = allowedClinics.has('*');
+
+  const normalizedClinicIds = (filterClinicIds || [])
+    .map((id) => String(id).trim())
+    .filter(Boolean);
+
+  // If both clinicId and clinicIds are provided, prefer clinicIds
+  const useClinicIds = normalizedClinicIds.length > 0;
+  const isFilteredRequest = Boolean(filterClinicId) || useClinicIds;
+
+  // Scan all users (projection to reduce payload)
+  const projectionExpression = isFilteredRequest
+    ? 'email, givenName, familyName, isActive, clinicRoles, isSuperAdmin, isGlobalSuperAdmin'
+    : 'email, givenName, familyName, clinicRoles, isSuperAdmin, isGlobalSuperAdmin, isActive, emailVerified, lastLoginAt, createdAt';
+
   const result = await ddb.send(new ScanCommand({
     TableName: STAFF_USER_TABLE,
+    ProjectionExpression: projectionExpression,
   }));
 
   const users = (result.Items || []) as StaffUser[];
 
-  // Check if caller has access to all clinics (super admins)
-  const hasAllAccess = allowedClinics.has('*');
+  // ==========================================
+  // FILTERED PATH: ?clinicIds=a,b,c (minimal)
+  // ==========================================
+  if (useClinicIds) {
+    const requestedClinicIds = Array.from(new Set(normalizedClinicIds));
+
+    // Verify caller has access to every requested clinic
+    if (!hasAllAccess) {
+      const unauthorized = requestedClinicIds.filter((id) => !hasClinicAccess(allowedClinics, id));
+      if (unauthorized.length > 0) {
+        return httpErr(403, `no access to clinics: ${unauthorized.join(', ')}`);
+      }
+    }
+
+    const requestedSet = new Set(requestedClinicIds);
+    const items: Array<Record<string, any>> = [];
+
+    for (const user of users) {
+      const matchingClinicRoles = (user.clinicRoles || []).filter((cr: any) =>
+        requestedSet.has(String(cr?.clinicId))
+      );
+
+      if (matchingClinicRoles.length === 0) {
+        continue; // User doesn't belong to any requested clinic
+      }
+
+      items.push({
+        email: user.email,
+        givenName: user.givenName,
+        familyName: user.familyName,
+        isActive: user.isActive,
+        // Return only clinic roles relevant to requested clinics
+        clinicRoles: matchingClinicRoles.map((cr: any) => ({
+          clinicId: String(cr.clinicId),
+          role: cr.role,
+          hourlyPay: cr.hourlyPay,
+          basePay: cr.basePay,
+          workLocation: cr.workLocation,
+          UserNum: cr.UserNum,
+          UserName: cr.UserName,
+          EmployeeNum: cr.EmployeeNum,
+          employeeName: cr.employeeName,
+          ProviderNum: cr.ProviderNum,
+          providerName: cr.providerName,
+        })),
+      });
+    }
+
+    return httpOk({ users: items, filtered: true, clinicIds: requestedClinicIds });
+  }
 
   // If filtering by clinic, we return a minimal payload (no staffDetails fetch needed for list view)
   if (filterClinicId) {

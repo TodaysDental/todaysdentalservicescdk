@@ -263,9 +263,9 @@ export class AdminStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'admin', 'users.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
-      memorySize: 256,
+      memorySize: 512,
       timeout: Duration.seconds(30),
-      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20', minify: true },
       environment: {
         STAFF_USER_TABLE: props.staffUserTableName,
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName ?? '',
