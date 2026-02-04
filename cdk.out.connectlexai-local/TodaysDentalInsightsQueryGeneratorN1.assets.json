@@ -1,0 +1,36 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "8e82065d47e32a474e5a111e08932f27e6405bbba79d34a9eefc7ea5dc591bdf": {
+      "displayName": "QueryGeneratorFn/Code",
+      "source": {
+        "path": "asset.8e82065d47e32a474e5a111e08932f27e6405bbba79d34a9eefc7ea5dc591bdf",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-a4d5923c": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "8e82065d47e32a474e5a111e08932f27e6405bbba79d34a9eefc7ea5dc591bdf.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "6da8ce5f9733e1a179703b3d07d96182c33fcaa2fa5657ae608077849277f076": {
+      "displayName": "TodaysDentalInsightsQueryGeneratorN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsQueryGeneratorN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-dc474034": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "6da8ce5f9733e1a179703b3d07d96182c33fcaa2fa5657ae608077849277f076.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

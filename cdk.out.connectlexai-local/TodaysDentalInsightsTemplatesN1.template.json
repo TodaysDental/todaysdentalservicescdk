@@ -1,0 +1,1435 @@
+{
+ "Resources": {
+  "TemplatesTable3F253039": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "template_id",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "KeySchema": [
+     {
+      "AttributeName": "template_id",
+      "KeyType": "HASH"
+     }
+    ],
+    "TableName": "TodaysDentalInsightsTemplatesN1-Templates",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Templates"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsTemplatesN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "templates"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesTable/Resource"
+   }
+  },
+  "TemplatesApiA04EF73E": {
+   "Type": "AWS::ApiGateway::RestApi",
+   "Properties": {
+    "Description": "Templates service API",
+    "Name": "TemplatesApi",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Templates"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsTemplatesN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Resource"
+   }
+  },
+  "TemplatesApiCloudWatchRole6F0CCA14": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "apigateway.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Templates"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsTemplatesN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/CloudWatchRole/Resource"
+   }
+  },
+  "TemplatesApiAccountF562DFB2": {
+   "Type": "AWS::ApiGateway::Account",
+   "Properties": {
+    "CloudWatchRoleArn": {
+     "Fn::GetAtt": [
+      "TemplatesApiCloudWatchRole6F0CCA14",
+      "Arn"
+     ]
+    }
+   },
+   "DependsOn": [
+    "TemplatesApiA04EF73E"
+   ],
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Account"
+   }
+  },
+  "TemplatesApiDeployment7B2E32AB572f342b9baaa302480c63d41a2aade7": {
+   "Type": "AWS::ApiGateway::Deployment",
+   "Properties": {
+    "Description": "Templates service API",
+    "RestApiId": {
+     "Ref": "TemplatesApiA04EF73E"
+    }
+   },
+   "DependsOn": [
+    "GatewayResponseDefault4XXC22BF2A7",
+    "GatewayResponseDefault5XX28177100",
+    "GatewayResponseUnauthorized78FCB15B",
+    "TemplatesApiOPTIONS940B857F",
+    "TemplatesApitemplatestemplateIdDELETE4F22BCCC",
+    "TemplatesApitemplatestemplateIdOPTIONS905957A7",
+    "TemplatesApitemplatestemplateIdPUTD267EEE9",
+    "TemplatesApitemplatestemplateId0FE8C9EB",
+    "TemplatesApitemplatesGETB1C93DA1",
+    "TemplatesApitemplatesOPTIONSBD0132EC",
+    "TemplatesApitemplatesPOST910C6ADF",
+    "TemplatesApitemplates35E02104"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Deployment/Resource",
+    "aws:cdk:do-not-refactor": true
+   }
+  },
+  "TemplatesApiDeploymentStageprod330DB85D": {
+   "Type": "AWS::ApiGateway::Stage",
+   "Properties": {
+    "DeploymentId": {
+     "Ref": "TemplatesApiDeployment7B2E32AB572f342b9baaa302480c63d41a2aade7"
+    },
+    "MethodSettings": [
+     {
+      "DataTraceEnabled": false,
+      "HttpMethod": "*",
+      "LoggingLevel": "INFO",
+      "MetricsEnabled": true,
+      "ResourcePath": "/*"
+     }
+    ],
+    "RestApiId": {
+     "Ref": "TemplatesApiA04EF73E"
+    },
+    "StageName": "prod",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Templates"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsTemplatesN1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "TemplatesApiAccountF562DFB2"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/DeploymentStage.prod/Resource"
+   }
+  },
+  "TemplatesApiOPTIONS940B857F": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Fn::GetAtt": [
+      "TemplatesApiA04EF73E",
+      "RootResourceId"
+     ]
+    },
+    "RestApiId": {
+     "Ref": "TemplatesApiA04EF73E"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/OPTIONS/Resource"
+   }
+  },
+  "TemplatesApitemplates35E02104": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "TemplatesApiA04EF73E",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "templates",
+    "RestApiId": {
+     "Ref": "TemplatesApiA04EF73E"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/templates/Resource"
+   }
+  },
+  "TemplatesApitemplatesOPTIONSBD0132EC": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "TemplatesApitemplates35E02104"
+    },
+    "RestApiId": {
+     "Ref": "TemplatesApiA04EF73E"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/templates/OPTIONS/Resource"
+   }
+  },
+  "TemplatesApitemplatesGETApiPermissionTodaysDentalInsightsTemplatesN1TemplatesApi5D751EEBGETtemplatesF8B266F4": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "TemplatesFn0A37676D",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "TemplatesApiA04EF73E"
+       },
+       "/",
+       {
+        "Ref": "TemplatesApiDeploymentStageprod330DB85D"
+       },
+       "/GET/templates"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/templates/GET/ApiPermission.TodaysDentalInsightsTemplatesN1TemplatesApi5D751EEB.GET..templates"
+   }
+  },
+  "TemplatesApitemplatesGETApiPermissionTestTodaysDentalInsightsTemplatesN1TemplatesApi5D751EEBGETtemplatesB5FA3A09": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "TemplatesFn0A37676D",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "TemplatesApiA04EF73E"
+       },
+       "/test-invoke-stage/GET/templates"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/templates/GET/ApiPermission.Test.TodaysDentalInsightsTemplatesN1TemplatesApi5D751EEB.GET..templates"
+   }
+  },
+  "TemplatesApitemplatesGETB1C93DA1": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "TemplatesAuthorizerB45E8659"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "TemplatesFn0A37676D",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "TemplatesApitemplates35E02104"
+    },
+    "RestApiId": {
+     "Ref": "TemplatesApiA04EF73E"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/templates/GET/Resource"
+   }
+  },
+  "TemplatesApitemplatesPOSTApiPermissionTodaysDentalInsightsTemplatesN1TemplatesApi5D751EEBPOSTtemplates828973F8": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "TemplatesFn0A37676D",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "TemplatesApiA04EF73E"
+       },
+       "/",
+       {
+        "Ref": "TemplatesApiDeploymentStageprod330DB85D"
+       },
+       "/POST/templates"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/templates/POST/ApiPermission.TodaysDentalInsightsTemplatesN1TemplatesApi5D751EEB.POST..templates"
+   }
+  },
+  "TemplatesApitemplatesPOSTApiPermissionTestTodaysDentalInsightsTemplatesN1TemplatesApi5D751EEBPOSTtemplatesC63B6BC5": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "TemplatesFn0A37676D",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "TemplatesApiA04EF73E"
+       },
+       "/test-invoke-stage/POST/templates"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/templates/POST/ApiPermission.Test.TodaysDentalInsightsTemplatesN1TemplatesApi5D751EEB.POST..templates"
+   }
+  },
+  "TemplatesApitemplatesPOST910C6ADF": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "TemplatesAuthorizerB45E8659"
+    },
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "TemplatesFn0A37676D",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "201"
+     },
+     {
+      "StatusCode": "400"
+     },
+     {
+      "StatusCode": "403"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "TemplatesApitemplates35E02104"
+    },
+    "RestApiId": {
+     "Ref": "TemplatesApiA04EF73E"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/templates/POST/Resource"
+   }
+  },
+  "TemplatesApitemplatestemplateId0FE8C9EB": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "TemplatesApitemplates35E02104"
+    },
+    "PathPart": "{templateId}",
+    "RestApiId": {
+     "Ref": "TemplatesApiA04EF73E"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/templates/{templateId}/Resource"
+   }
+  },
+  "TemplatesApitemplatestemplateIdOPTIONS905957A7": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "TemplatesApitemplatestemplateId0FE8C9EB"
+    },
+    "RestApiId": {
+     "Ref": "TemplatesApiA04EF73E"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/templates/{templateId}/OPTIONS/Resource"
+   }
+  },
+  "TemplatesApitemplatestemplateIdPUTApiPermissionTodaysDentalInsightsTemplatesN1TemplatesApi5D751EEBPUTtemplatestemplateId6146129C": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "TemplatesFn0A37676D",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "TemplatesApiA04EF73E"
+       },
+       "/",
+       {
+        "Ref": "TemplatesApiDeploymentStageprod330DB85D"
+       },
+       "/PUT/templates/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/templates/{templateId}/PUT/ApiPermission.TodaysDentalInsightsTemplatesN1TemplatesApi5D751EEB.PUT..templates.{templateId}"
+   }
+  },
+  "TemplatesApitemplatestemplateIdPUTApiPermissionTestTodaysDentalInsightsTemplatesN1TemplatesApi5D751EEBPUTtemplatestemplateId40461402": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "TemplatesFn0A37676D",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "TemplatesApiA04EF73E"
+       },
+       "/test-invoke-stage/PUT/templates/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/templates/{templateId}/PUT/ApiPermission.Test.TodaysDentalInsightsTemplatesN1TemplatesApi5D751EEB.PUT..templates.{templateId}"
+   }
+  },
+  "TemplatesApitemplatestemplateIdPUTD267EEE9": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "TemplatesAuthorizerB45E8659"
+    },
+    "HttpMethod": "PUT",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "TemplatesFn0A37676D",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "400"
+     },
+     {
+      "StatusCode": "403"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "TemplatesApitemplatestemplateId0FE8C9EB"
+    },
+    "RestApiId": {
+     "Ref": "TemplatesApiA04EF73E"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/templates/{templateId}/PUT/Resource"
+   }
+  },
+  "TemplatesApitemplatestemplateIdDELETEApiPermissionTodaysDentalInsightsTemplatesN1TemplatesApi5D751EEBDELETEtemplatestemplateIdF9DABD74": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "TemplatesFn0A37676D",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "TemplatesApiA04EF73E"
+       },
+       "/",
+       {
+        "Ref": "TemplatesApiDeploymentStageprod330DB85D"
+       },
+       "/DELETE/templates/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/templates/{templateId}/DELETE/ApiPermission.TodaysDentalInsightsTemplatesN1TemplatesApi5D751EEB.DELETE..templates.{templateId}"
+   }
+  },
+  "TemplatesApitemplatestemplateIdDELETEApiPermissionTestTodaysDentalInsightsTemplatesN1TemplatesApi5D751EEBDELETEtemplatestemplateIdFD6B9B5F": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "TemplatesFn0A37676D",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "TemplatesApiA04EF73E"
+       },
+       "/test-invoke-stage/DELETE/templates/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/templates/{templateId}/DELETE/ApiPermission.Test.TodaysDentalInsightsTemplatesN1TemplatesApi5D751EEB.DELETE..templates.{templateId}"
+   }
+  },
+  "TemplatesApitemplatestemplateIdDELETE4F22BCCC": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "TemplatesAuthorizerB45E8659"
+    },
+    "HttpMethod": "DELETE",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "TemplatesFn0A37676D",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "403"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "TemplatesApitemplatestemplateId0FE8C9EB"
+    },
+    "RestApiId": {
+     "Ref": "TemplatesApiA04EF73E"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApi/Default/templates/{templateId}/DELETE/Resource"
+   }
+  },
+  "GatewayResponseDefault4XXC22BF2A7": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_4XX",
+    "RestApiId": {
+     "Ref": "TemplatesApiA04EF73E"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/GatewayResponseDefault4XX/Resource"
+   }
+  },
+  "GatewayResponseDefault5XX28177100": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_5XX",
+    "RestApiId": {
+     "Ref": "TemplatesApiA04EF73E"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/GatewayResponseDefault5XX/Resource"
+   }
+  },
+  "GatewayResponseUnauthorized78FCB15B": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "UNAUTHORIZED",
+    "RestApiId": {
+     "Ref": "TemplatesApiA04EF73E"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/GatewayResponseUnauthorized/Resource"
+   }
+  },
+  "TemplatesAuthorizerB45E8659": {
+   "Type": "AWS::ApiGateway::Authorizer",
+   "Properties": {
+    "AuthorizerResultTtlInSeconds": 300,
+    "AuthorizerUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Fn::Select": [
+         1,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":apigateway:",
+       {
+        "Fn::Select": [
+         3,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":lambda:path/2015-03-31/functions/",
+       {
+        "Fn::ImportValue": "AuthorizerFunctionArnN1"
+       },
+       "/invocations"
+      ]
+     ]
+    },
+    "IdentitySource": "method.request.header.Authorization",
+    "Name": "TodaysDentalInsightsTemplatesN1TemplatesAuthorizer947BEC74",
+    "RestApiId": {
+     "Ref": "TemplatesApiA04EF73E"
+    },
+    "Type": "REQUEST"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesAuthorizer/Resource"
+   }
+  },
+  "AuthorizerInvokePermission": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::ImportValue": "AuthorizerFunctionArnN1"
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "TemplatesApiA04EF73E"
+       },
+       "/authorizers/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/AuthorizerInvokePermission"
+   }
+  },
+  "TemplatesFnServiceRoleA8215554": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "templates"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Templates"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsTemplatesN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesFn/ServiceRole/Resource"
+   }
+  },
+  "TemplatesFnServiceRoleDefaultPolicy1D1CB3FF": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "TemplatesTable3F253039",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "TemplatesFnServiceRoleDefaultPolicy1D1CB3FF",
+    "Roles": [
+     {
+      "Ref": "TemplatesFnServiceRoleA8215554"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "TemplatesFn0A37676D": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "74d5642b607209b248b0716114520e9fa51f0152c8b4f4f02d8858b4d1643249.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "TABLE_NAME": {
+       "Ref": "TemplatesTable3F253039"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "TemplatesFnServiceRoleA8215554",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "templates"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Templates"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsTemplatesN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "TemplatesFnServiceRoleDefaultPolicy1D1CB3FF",
+    "TemplatesFnServiceRoleA8215554"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesFn/Resource",
+    "aws:asset:path": "asset.74d5642b607209b248b0716114520e9fa51f0152c8b4f4f02d8858b4d1643249",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "TemplatesApiBasePathMapping": {
+   "Type": "AWS::ApiGateway::BasePathMapping",
+   "Properties": {
+    "BasePath": "templates",
+    "DomainName": "apig.todaysdentalinsights.com",
+    "RestApiId": {
+     "Ref": "TemplatesApiA04EF73E"
+    },
+    "Stage": {
+     "Ref": "TemplatesApiDeploymentStageprod330DB85D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesApiBasePathMapping"
+   }
+  },
+  "TemplatesFnErrorAlarmF14EABA5": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when templates Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "TemplatesFn0A37676D"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Templates"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsTemplatesN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesFnErrorAlarm/Resource"
+   }
+  },
+  "TemplatesFnThrottleAlarm49F63681": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when templates Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "TemplatesFn0A37676D"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Templates"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsTemplatesN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesFnThrottleAlarm/Resource"
+   }
+  },
+  "TemplatesFnDurationAlarmFB090313": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when templates Lambda p99 duration exceeds 24000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "TemplatesFn0A37676D"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Templates"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsTemplatesN1"
+     }
+    ],
+    "Threshold": 24000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesFnDurationAlarm/Resource"
+   }
+  },
+  "TemplatesTableThrottleAlarm2BC00114": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "TemplatesTable3F253039"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "TemplatesTable3F253039"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Templates"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsTemplatesN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesTableThrottleAlarm/Resource"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/11R21LDIBD9Ft8patQPSHXqU7UTfe9sYW1puRnATMzk311IM9P6tOcCu3ug4lV1z+9uoAsLIU8LrXZ8+IggToyk7SB7C8ZJEj9hp5E9f9kCRgZe7SFiBz0fGgyx9iq7F7AWwiUb2Qt67XqDBEm9YDRnX1pOgK661ApcQkC2xnhwMptnNLvnIRN+nTYg7p0NxfsvNfid8k6JurTqF9uy2hXLAzcQD2vwXtn9yBQYCuWmvKVunFaiz3RCI9NgdhL4kCVsjQpBOctWyYpIoGQga+bz+a11Eo+Bv5Uyuyw8bCEEjIHXuRDnyyROGEsfoV2SHURx4EOtoTUlQgbjePUu7yn6FFnpkd+0hMkT+THc/lRP/JG++hiUWrT0Mcogb6b6BwgEpfAHAgAA"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "TemplatesApiEndpointB60FC50B": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "TemplatesApiA04EF73E"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "TemplatesApiDeploymentStageprod330DB85D"
+      },
+      "/"
+     ]
+    ]
+   }
+  },
+  "TemplatesTableName": {
+   "Description": "Name of the Templates DynamoDB table",
+   "Value": {
+    "Ref": "TemplatesTable3F253039"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsTemplatesN1-TemplatesTableName"
+   }
+  },
+  "TemplatesApiUrl": {
+   "Description": "Templates API base URL (custom domain + resource path)",
+   "Value": "https://apig.todaysdentalinsights.com/templates/templates",
+   "Export": {
+    "Name": "TodaysDentalInsightsTemplatesN1-TemplatesApiUrl"
+   }
+  },
+  "TemplatesApiId": {
+   "Description": "Templates API Gateway ID",
+   "Value": {
+    "Ref": "TemplatesApiA04EF73E"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsTemplatesN1-TemplatesApiId"
+   }
+  },
+  "ExportsOutputRefTemplatesTable3F2530396272C7B9": {
+   "Value": {
+    "Ref": "TemplatesTable3F253039"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsTemplatesN1:ExportsOutputRefTemplatesTable3F2530396272C7B9"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/tdi3/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

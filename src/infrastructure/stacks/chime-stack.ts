@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput, Tags } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput, Tags, Fn } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -484,6 +484,8 @@ export class ChimeStack extends Stack {
         LOCKS_TABLE_NAME: this.locksTable.tableName,
         HOLD_MUSIC_BUCKET: '', // Will be updated after bucket creation
         CHIME_MEDIA_REGION: chimeMediaRegion,
+        // Marketing voice call analytics (NotificationsStack export)
+        VOICE_CALL_ANALYTICS_TABLE: Fn.importValue('TodaysDentalInsightsNotificationsN1-VoiceCallAnalyticsTableName'),
         // After-hours forwarding (Connect/Lex AI)
         ENABLE_AFTER_HOURS_AI: props.enableAfterHoursAi ? 'true' : 'false',
         CLINIC_HOURS_TABLE: resolvedClinicHoursTableName || '',
@@ -499,6 +501,15 @@ export class ChimeStack extends Stack {
     this.agentPresenceTable.grantReadWriteData(smaHandler);
     this.callQueueTable.grantReadWriteData(smaHandler);
     this.locksTable.grantReadWriteData(smaHandler);
+
+    // Marketing voice call analytics table (in NotificationsStack)
+    smaHandler.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${Fn.importValue('TodaysDentalInsightsNotificationsN1-VoiceCallAnalyticsTableName')}`,
+      ],
+    }));
 
     // After-hours forwarding requires reading clinic hours + per-clinic AI inbound toggle.
     if (resolvedClinicHoursTableName) {

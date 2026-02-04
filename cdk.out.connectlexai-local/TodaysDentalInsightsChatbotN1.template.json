@@ -1,0 +1,2791 @@
+{
+ "Resources": {
+  "ConversationTableN1173091FF": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "sessionId",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "timestamp",
+      "AttributeType": "N"
+     },
+     {
+      "AttributeName": "clinicId",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "connectionId",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "GlobalSecondaryIndexes": [
+     {
+      "IndexName": "ClinicIndex",
+      "KeySchema": [
+       {
+        "AttributeName": "clinicId",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "timestamp",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "ConnectionIndex",
+      "KeySchema": [
+       {
+        "AttributeName": "connectionId",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "timestamp",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     }
+    ],
+    "KeySchema": [
+     {
+      "AttributeName": "sessionId",
+      "KeyType": "HASH"
+     },
+     {
+      "AttributeName": "timestamp",
+      "KeyType": "RANGE"
+     }
+    ],
+    "PointInTimeRecoverySpecification": {
+     "PointInTimeRecoveryEnabled": true
+    },
+    "TableName": "TodaysDentalInsightsChatbotN1-ConversationN1",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "conversations"
+     }
+    ],
+    "TimeToLiveSpecification": {
+     "AttributeName": "ttl",
+     "Enabled": true
+    }
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ConversationTableN1/Resource"
+   }
+  },
+  "ChatbotCommonLayer7D6D03AF": {
+   "Type": "AWS::Lambda::LayerVersion",
+   "Properties": {
+    "CompatibleRuntimes": [
+     "nodejs18.x"
+    ],
+    "Content": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "a0d09e3560d2e4c07e316e84d142034e9372e7f066612678ea018550d017c253.zip"
+    },
+    "Description": "Common dependencies for chatbot functions"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotCommonLayer/Resource",
+    "aws:asset:path": "asset.a0d09e3560d2e4c07e316e84d142034e9372e7f066612678ea018550d017c253",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Content"
+   }
+  },
+  "WebSocketConnectHandlerServiceRole9B0CB972": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "websocket-connect"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketConnectHandler/ServiceRole/Resource"
+   }
+  },
+  "WebSocketConnectHandlerServiceRoleDefaultPolicyC801F5F7": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ConversationTableN1173091FF",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ConversationTableN1173091FF",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "WebSocketConnectHandlerServiceRoleDefaultPolicyC801F5F7",
+    "Roles": [
+     {
+      "Ref": "WebSocketConnectHandlerServiceRole9B0CB972"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketConnectHandler/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "WebSocketConnectHandler3316DFBA": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "63becf3aaab59b9c7ef44782f44a2f4d6de0263e779aba46bdaa838fb4389341.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CONVERSATIONS_TABLE": {
+       "Ref": "ConversationTableN1173091FF"
+      },
+      "ALLOWED_ORIGINS": "https://todaysdentalinsights.com,https://www.todaysdentalinsights.com,http://localhost:3000,http://127.0.0.1:3000,https://dentistinnewbritain.com,https://dentistingreenville.com,https://todaysdentalcayce.com,https://creekcrossingdentalcare.com,https://dentistinwinston-salem.com,https://dentistincentennial.com,https://renodentalcareandorthodontics.com,https://todaysdentalalexandria.com,https://todaysdentalgreenville.com,https://todaysdentalwestcolumbia.com,https://dentistinconcord.com,https://dentistinedgewatermd.com,https://lawrencevilledentistry.com,https://dentistinlouisville.com,https://dentistatsaludapointe.com,https://dentistinoregonoh.com,https://todaysdentallexington.com,https://dentistinbowie.com,https://dentistinpowellohio.com,https://dentistinperrysburg.com,https://dentistinaustintx.com,https://therimdentalcare.com,https://dentistinbloomingdaleil.com,https://dentistinvernonhills.com,https://themeadowsdentalcare.com,https://stillwaterdentalcareandortho.com,https://pearlanddentalcare.com,https://www.dentistinnewbritain.com,https://www.dentistingreenville.com,https://www.todaysdentalcayce.com,https://www.creekcrossingdentalcare.com,https://www.dentistinwinston-salem.com,https://www.dentistincentennial.com,https://www.renodentalcareandorthodontics.com,https://www.todaysdentalalexandria.com,https://www.todaysdentalgreenville.com,https://www.todaysdentalwestcolumbia.com,https://www.dentistinconcord.com,https://www.dentistinedgewatermd.com,https://www.lawrencevilledentistry.com,https://www.dentistinlouisville.com,https://www.dentistatsaludapointe.com,https://www.dentistinoregonoh.com,https://www.todaysdentallexington.com,https://www.dentistinbowie.com,https://www.dentistinpowellohio.com,https://www.dentistinperrysburg.com,https://www.dentistinaustintx.com,https://www.therimdentalcare.com,https://www.dentistinbloomingdaleil.com,https://www.dentistinvernonhills.com,https://www.themeadowsdentalcare.com,https://www.stillwaterdentalcareandortho.com,https://www.pearlanddentalcare.com"
+     }
+    },
+    "Handler": "index.handler",
+    "Layers": [
+     {
+      "Ref": "ChatbotCommonLayer7D6D03AF"
+     }
+    ],
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "WebSocketConnectHandlerServiceRole9B0CB972",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs18.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "websocket-connect"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "WebSocketConnectHandlerServiceRoleDefaultPolicyC801F5F7",
+    "WebSocketConnectHandlerServiceRole9B0CB972"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketConnectHandler/Resource",
+    "aws:asset:path": "asset.63becf3aaab59b9c7ef44782f44a2f4d6de0263e779aba46bdaa838fb4389341",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "WebSocketDisconnectHandlerServiceRole71ECA331": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "websocket-disconnect"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketDisconnectHandler/ServiceRole/Resource"
+   }
+  },
+  "WebSocketDisconnectHandlerServiceRoleDefaultPolicy38B2FA46": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ConversationTableN1173091FF",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ConversationTableN1173091FF",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "WebSocketDisconnectHandlerServiceRoleDefaultPolicy38B2FA46",
+    "Roles": [
+     {
+      "Ref": "WebSocketDisconnectHandlerServiceRole71ECA331"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketDisconnectHandler/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "WebSocketDisconnectHandlerD09D008B": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "c9a386f6b83595e77138bfa0b16479dfed852bce75819ba9ec01fcd40e255005.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CONVERSATIONS_TABLE": {
+       "Ref": "ConversationTableN1173091FF"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "Layers": [
+     {
+      "Ref": "ChatbotCommonLayer7D6D03AF"
+     }
+    ],
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "WebSocketDisconnectHandlerServiceRole71ECA331",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs18.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "websocket-disconnect"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "WebSocketDisconnectHandlerServiceRoleDefaultPolicy38B2FA46",
+    "WebSocketDisconnectHandlerServiceRole71ECA331"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketDisconnectHandler/Resource",
+    "aws:asset:path": "asset.c9a386f6b83595e77138bfa0b16479dfed852bce75819ba9ec01fcd40e255005",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "WebSocketMessageHandlerServiceRole64F7A975": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "websocket-message"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketMessageHandler/ServiceRole/Resource"
+   }
+  },
+  "WebSocketMessageHandlerServiceRoleDefaultPolicy822DCC85": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ConversationTableN1173091FF",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ConversationTableN1173091FF",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+           }
+          ]
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsClinicPricingN1:ExportsOutputRefClinicPricingTable208116C23BF231FF"
+           }
+          ]
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsClinicInsuranceN1-ClinicInsurance"
+          ]
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Query",
+        "dynamodb:Scan"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ConversationTableN1173091FF",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ConversationTableN1173091FF",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+           },
+           "/index/*"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsClinicPricingN1:ExportsOutputRefClinicPricingTable208116C23BF231FF"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsClinicPricingN1:ExportsOutputRefClinicPricingTable208116C23BF231FF"
+           },
+           "/index/*"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsClinicInsuranceN1-ClinicInsurance"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsClinicInsuranceN1-ClinicInsurance/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "bedrock:InvokeModel",
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": "execute-api:ManageConnections",
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "WebSocketMessageHandlerServiceRoleDefaultPolicy822DCC85",
+    "Roles": [
+     {
+      "Ref": "WebSocketMessageHandlerServiceRole64F7A975"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketMessageHandler/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "WebSocketMessageHandler3F36AF15": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "9e4daba8f66536fe02ab264d28715d9526b0d5faa1ce965317abfc7e5a9fc891.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CONVERSATIONS_TABLE": {
+       "Ref": "ConversationTableN1173091FF"
+      },
+      "ALLOWED_ORIGINS": "https://todaysdentalinsights.com,https://www.todaysdentalinsights.com,http://localhost:3000,http://127.0.0.1:3000,https://dentistinnewbritain.com,https://dentistingreenville.com,https://todaysdentalcayce.com,https://creekcrossingdentalcare.com,https://dentistinwinston-salem.com,https://dentistincentennial.com,https://renodentalcareandorthodontics.com,https://todaysdentalalexandria.com,https://todaysdentalgreenville.com,https://todaysdentalwestcolumbia.com,https://dentistinconcord.com,https://dentistinedgewatermd.com,https://lawrencevilledentistry.com,https://dentistinlouisville.com,https://dentistatsaludapointe.com,https://dentistinoregonoh.com,https://todaysdentallexington.com,https://dentistinbowie.com,https://dentistinpowellohio.com,https://dentistinperrysburg.com,https://dentistinaustintx.com,https://therimdentalcare.com,https://dentistinbloomingdaleil.com,https://dentistinvernonhills.com,https://themeadowsdentalcare.com,https://stillwaterdentalcareandortho.com,https://pearlanddentalcare.com,https://www.dentistinnewbritain.com,https://www.dentistingreenville.com,https://www.todaysdentalcayce.com,https://www.creekcrossingdentalcare.com,https://www.dentistinwinston-salem.com,https://www.dentistincentennial.com,https://www.renodentalcareandorthodontics.com,https://www.todaysdentalalexandria.com,https://www.todaysdentalgreenville.com,https://www.todaysdentalwestcolumbia.com,https://www.dentistinconcord.com,https://www.dentistinedgewatermd.com,https://www.lawrencevilledentistry.com,https://www.dentistinlouisville.com,https://www.dentistatsaludapointe.com,https://www.dentistinoregonoh.com,https://www.todaysdentallexington.com,https://www.dentistinbowie.com,https://www.dentistinpowellohio.com,https://www.dentistinperrysburg.com,https://www.dentistinaustintx.com,https://www.therimdentalcare.com,https://www.dentistinbloomingdaleil.com,https://www.dentistinvernonhills.com,https://www.themeadowsdentalcare.com,https://www.stillwaterdentalcareandortho.com,https://www.pearlanddentalcare.com",
+      "CLINIC_HOURS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+      },
+      "CLINIC_PRICING_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsClinicPricingN1:ExportsOutputRefClinicPricingTable208116C23BF231FF"
+      },
+      "CLINIC_INSURANCE_TABLE": "TodaysDentalInsightsClinicInsuranceN1-ClinicInsurance"
+     }
+    },
+    "Handler": "index.handler",
+    "Layers": [
+     {
+      "Ref": "ChatbotCommonLayer7D6D03AF"
+     }
+    ],
+    "MemorySize": 1024,
+    "Role": {
+     "Fn::GetAtt": [
+      "WebSocketMessageHandlerServiceRole64F7A975",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs18.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "websocket-message"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Timeout": 300
+   },
+   "DependsOn": [
+    "WebSocketMessageHandlerServiceRoleDefaultPolicy822DCC85",
+    "WebSocketMessageHandlerServiceRole64F7A975"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketMessageHandler/Resource",
+    "aws:asset:path": "asset.9e4daba8f66536fe02ab264d28715d9526b0d5faa1ce965317abfc7e5a9fc891",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ChatHistoryHandlerServiceRoleE770D26B": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "chat-history"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatHistoryHandler/ServiceRole/Resource"
+   }
+  },
+  "ChatHistoryHandlerServiceRoleDefaultPolicy23F1FD59": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ConversationTableN1173091FF",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ConversationTableN1173091FF",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ChatHistoryHandlerServiceRoleDefaultPolicy23F1FD59",
+    "Roles": [
+     {
+      "Ref": "ChatHistoryHandlerServiceRoleE770D26B"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatHistoryHandler/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ChatHistoryHandlerD7D2A005": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "6007a4b0413579ebdab4b3690c3fc0dd56c60cdcb90fcf64adb458b4d9f50093.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CONVERSATIONS_TABLE": {
+       "Ref": "ConversationTableN1173091FF"
+      },
+      "ALLOWED_ORIGINS": "https://todaysdentalinsights.com,https://www.todaysdentalinsights.com,http://localhost:3000,http://127.0.0.1:3000,https://dentistinnewbritain.com,https://dentistingreenville.com,https://todaysdentalcayce.com,https://creekcrossingdentalcare.com,https://dentistinwinston-salem.com,https://dentistincentennial.com,https://renodentalcareandorthodontics.com,https://todaysdentalalexandria.com,https://todaysdentalgreenville.com,https://todaysdentalwestcolumbia.com,https://dentistinconcord.com,https://dentistinedgewatermd.com,https://lawrencevilledentistry.com,https://dentistinlouisville.com,https://dentistatsaludapointe.com,https://dentistinoregonoh.com,https://todaysdentallexington.com,https://dentistinbowie.com,https://dentistinpowellohio.com,https://dentistinperrysburg.com,https://dentistinaustintx.com,https://therimdentalcare.com,https://dentistinbloomingdaleil.com,https://dentistinvernonhills.com,https://themeadowsdentalcare.com,https://stillwaterdentalcareandortho.com,https://pearlanddentalcare.com,https://www.dentistinnewbritain.com,https://www.dentistingreenville.com,https://www.todaysdentalcayce.com,https://www.creekcrossingdentalcare.com,https://www.dentistinwinston-salem.com,https://www.dentistincentennial.com,https://www.renodentalcareandorthodontics.com,https://www.todaysdentalalexandria.com,https://www.todaysdentalgreenville.com,https://www.todaysdentalwestcolumbia.com,https://www.dentistinconcord.com,https://www.dentistinedgewatermd.com,https://www.lawrencevilledentistry.com,https://www.dentistinlouisville.com,https://www.dentistatsaludapointe.com,https://www.dentistinoregonoh.com,https://www.todaysdentallexington.com,https://www.dentistinbowie.com,https://www.dentistinpowellohio.com,https://www.dentistinperrysburg.com,https://www.dentistinaustintx.com,https://www.therimdentalcare.com,https://www.dentistinbloomingdaleil.com,https://www.dentistinvernonhills.com,https://www.themeadowsdentalcare.com,https://www.stillwaterdentalcareandortho.com,https://www.pearlanddentalcare.com"
+     }
+    },
+    "Handler": "index.handler",
+    "Layers": [
+     {
+      "Ref": "ChatbotCommonLayer7D6D03AF"
+     }
+    ],
+    "MemorySize": 512,
+    "Role": {
+     "Fn::GetAtt": [
+      "ChatHistoryHandlerServiceRoleE770D26B",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs18.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "chat-history"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "ChatHistoryHandlerServiceRoleDefaultPolicy23F1FD59",
+    "ChatHistoryHandlerServiceRoleE770D26B"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatHistoryHandler/Resource",
+    "aws:asset:path": "asset.6007a4b0413579ebdab4b3690c3fc0dd56c60cdcb90fcf64adb458b4d9f50093",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ChatbotWebSocketApi72B63158": {
+   "Type": "AWS::ApiGatewayV2::Api",
+   "Properties": {
+    "Description": "WebSocket API for dental clinic chatbot",
+    "Name": "chatbot-websocket-api",
+    "ProtocolType": "WEBSOCKET",
+    "RouteSelectionExpression": "$request.body.action",
+    "Tags": {
+     "ManagedBy": "cdk",
+     "Service": "Chatbot",
+     "Stack": "TodaysDentalInsightsChatbotN1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotWebSocketApi/Resource"
+   }
+  },
+  "ChatbotWebSocketApiconnectRouteConnectIntegrationPermissionC984534B": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "WebSocketConnectHandler3316DFBA",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ChatbotWebSocketApi72B63158"
+       },
+       "/*$connect"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotWebSocketApi/$connect-Route/ConnectIntegration-Permission"
+   }
+  },
+  "ChatbotWebSocketApiconnectRouteConnectIntegrationB3D8427B": {
+   "Type": "AWS::ApiGatewayV2::Integration",
+   "Properties": {
+    "ApiId": {
+     "Ref": "ChatbotWebSocketApi72B63158"
+    },
+    "IntegrationType": "AWS_PROXY",
+    "IntegrationUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+       {
+        "Fn::GetAtt": [
+         "WebSocketConnectHandler3316DFBA",
+         "Arn"
+        ]
+       },
+       "/invocations"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotWebSocketApi/$connect-Route/ConnectIntegration/Resource"
+   }
+  },
+  "ChatbotWebSocketApiconnectRouteA497BCA2": {
+   "Type": "AWS::ApiGatewayV2::Route",
+   "Properties": {
+    "ApiId": {
+     "Ref": "ChatbotWebSocketApi72B63158"
+    },
+    "AuthorizationType": "NONE",
+    "RouteKey": "$connect",
+    "Target": {
+     "Fn::Join": [
+      "",
+      [
+       "integrations/",
+       {
+        "Ref": "ChatbotWebSocketApiconnectRouteConnectIntegrationB3D8427B"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotWebSocketApi/$connect-Route/Resource"
+   }
+  },
+  "ChatbotWebSocketApidisconnectRouteDisconnectIntegrationPermissionE73C6992": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "WebSocketDisconnectHandlerD09D008B",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ChatbotWebSocketApi72B63158"
+       },
+       "/*$disconnect"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotWebSocketApi/$disconnect-Route/DisconnectIntegration-Permission"
+   }
+  },
+  "ChatbotWebSocketApidisconnectRouteDisconnectIntegrationC271F4AD": {
+   "Type": "AWS::ApiGatewayV2::Integration",
+   "Properties": {
+    "ApiId": {
+     "Ref": "ChatbotWebSocketApi72B63158"
+    },
+    "IntegrationType": "AWS_PROXY",
+    "IntegrationUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+       {
+        "Fn::GetAtt": [
+         "WebSocketDisconnectHandlerD09D008B",
+         "Arn"
+        ]
+       },
+       "/invocations"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotWebSocketApi/$disconnect-Route/DisconnectIntegration/Resource"
+   }
+  },
+  "ChatbotWebSocketApidisconnectRoute7629BEF2": {
+   "Type": "AWS::ApiGatewayV2::Route",
+   "Properties": {
+    "ApiId": {
+     "Ref": "ChatbotWebSocketApi72B63158"
+    },
+    "AuthorizationType": "NONE",
+    "RouteKey": "$disconnect",
+    "Target": {
+     "Fn::Join": [
+      "",
+      [
+       "integrations/",
+       {
+        "Ref": "ChatbotWebSocketApidisconnectRouteDisconnectIntegrationC271F4AD"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotWebSocketApi/$disconnect-Route/Resource"
+   }
+  },
+  "ChatbotWebSocketApidefaultRouteMessageIntegrationPermission3C3D4B8D": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "WebSocketMessageHandler3F36AF15",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ChatbotWebSocketApi72B63158"
+       },
+       "/*$default"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotWebSocketApi/$default-Route/MessageIntegration-Permission"
+   }
+  },
+  "ChatbotWebSocketApidefaultRouteMessageIntegrationF2C3D181": {
+   "Type": "AWS::ApiGatewayV2::Integration",
+   "Properties": {
+    "ApiId": {
+     "Ref": "ChatbotWebSocketApi72B63158"
+    },
+    "IntegrationType": "AWS_PROXY",
+    "IntegrationUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+       {
+        "Fn::GetAtt": [
+         "WebSocketMessageHandler3F36AF15",
+         "Arn"
+        ]
+       },
+       "/invocations"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotWebSocketApi/$default-Route/MessageIntegration/Resource"
+   }
+  },
+  "ChatbotWebSocketApidefaultRoute98A78F7F": {
+   "Type": "AWS::ApiGatewayV2::Route",
+   "Properties": {
+    "ApiId": {
+     "Ref": "ChatbotWebSocketApi72B63158"
+    },
+    "AuthorizationType": "NONE",
+    "RouteKey": "$default",
+    "Target": {
+     "Fn::Join": [
+      "",
+      [
+       "integrations/",
+       {
+        "Ref": "ChatbotWebSocketApidefaultRouteMessageIntegrationF2C3D181"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotWebSocketApi/$default-Route/Resource"
+   }
+  },
+  "ChatbotWebSocketStage818A060C": {
+   "Type": "AWS::ApiGatewayV2::Stage",
+   "Properties": {
+    "ApiId": {
+     "Ref": "ChatbotWebSocketApi72B63158"
+    },
+    "AutoDeploy": true,
+    "StageName": "prod",
+    "Tags": {
+     "ManagedBy": "cdk",
+     "Service": "Chatbot",
+     "Stack": "TodaysDentalInsightsChatbotN1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotWebSocketStage/Resource"
+   }
+  },
+  "ChatbotRestApi74AB1744": {
+   "Type": "AWS::ApiGateway::RestApi",
+   "Properties": {
+    "Description": "REST API for managing chatbot clinic data",
+    "Name": "chatbot-rest-api",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApi/Resource"
+   }
+  },
+  "ChatbotRestApiCloudWatchRoleE5653B1C": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "apigateway.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApi/CloudWatchRole/Resource"
+   }
+  },
+  "ChatbotRestApiAccount3F80DA62": {
+   "Type": "AWS::ApiGateway::Account",
+   "Properties": {
+    "CloudWatchRoleArn": {
+     "Fn::GetAtt": [
+      "ChatbotRestApiCloudWatchRoleE5653B1C",
+      "Arn"
+     ]
+    }
+   },
+   "DependsOn": [
+    "ChatbotRestApi74AB1744"
+   ],
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApi/Account"
+   }
+  },
+  "ChatbotRestApiDeployment98736D7Ca7cc0d1ff52fb365145802f0bccbfcfb": {
+   "Type": "AWS::ApiGateway::Deployment",
+   "Properties": {
+    "Description": "REST API for managing chatbot clinic data",
+    "RestApiId": {
+     "Ref": "ChatbotRestApi74AB1744"
+    }
+   },
+   "DependsOn": [
+    "ChatbotRestApichathistorysessionIdGETA9566B33",
+    "ChatbotRestApichathistorysessionIdOPTIONS1A114D3C",
+    "ChatbotRestApichathistorysessionId750785F4",
+    "ChatbotRestApichathistoryGETAEEBE5D1",
+    "ChatbotRestApichathistoryOPTIONS77E488F6",
+    "ChatbotRestApichathistoryC0EB0203",
+    "ChatbotRestApiOPTIONS9D764162",
+    "GatewayResponseDefault4XXC22BF2A7",
+    "GatewayResponseDefault5XX28177100",
+    "GatewayResponseUnauthorized78FCB15B"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApi/Deployment/Resource",
+    "aws:cdk:do-not-refactor": true
+   }
+  },
+  "ChatbotRestApiDeploymentStageprod7456DB51": {
+   "Type": "AWS::ApiGateway::Stage",
+   "Properties": {
+    "DeploymentId": {
+     "Ref": "ChatbotRestApiDeployment98736D7Ca7cc0d1ff52fb365145802f0bccbfcfb"
+    },
+    "MethodSettings": [
+     {
+      "DataTraceEnabled": false,
+      "HttpMethod": "*",
+      "LoggingLevel": "INFO",
+      "MetricsEnabled": true,
+      "ResourcePath": "/*"
+     }
+    ],
+    "RestApiId": {
+     "Ref": "ChatbotRestApi74AB1744"
+    },
+    "StageName": "prod",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "ChatbotRestApiAccount3F80DA62"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApi/DeploymentStage.prod/Resource"
+   }
+  },
+  "ChatbotRestApiOPTIONS9D764162": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Fn::GetAtt": [
+      "ChatbotRestApi74AB1744",
+      "RootResourceId"
+     ]
+    },
+    "RestApiId": {
+     "Ref": "ChatbotRestApi74AB1744"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApi/Default/OPTIONS/Resource"
+   }
+  },
+  "ChatbotRestApichathistoryC0EB0203": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "ChatbotRestApi74AB1744",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "chat-history",
+    "RestApiId": {
+     "Ref": "ChatbotRestApi74AB1744"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApi/Default/chat-history/Resource"
+   }
+  },
+  "ChatbotRestApichathistoryOPTIONS77E488F6": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ChatbotRestApichathistoryC0EB0203"
+    },
+    "RestApiId": {
+     "Ref": "ChatbotRestApi74AB1744"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApi/Default/chat-history/OPTIONS/Resource"
+   }
+  },
+  "ChatbotRestApichathistoryGETApiPermissionTodaysDentalInsightsChatbotN1ChatbotRestApiC7D41B52GETchathistoryB764E5F9": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ChatHistoryHandlerD7D2A005",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ChatbotRestApi74AB1744"
+       },
+       "/",
+       {
+        "Ref": "ChatbotRestApiDeploymentStageprod7456DB51"
+       },
+       "/GET/chat-history"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApi/Default/chat-history/GET/ApiPermission.TodaysDentalInsightsChatbotN1ChatbotRestApiC7D41B52.GET..chat-history"
+   }
+  },
+  "ChatbotRestApichathistoryGETApiPermissionTestTodaysDentalInsightsChatbotN1ChatbotRestApiC7D41B52GETchathistory1712D15F": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ChatHistoryHandlerD7D2A005",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ChatbotRestApi74AB1744"
+       },
+       "/test-invoke-stage/GET/chat-history"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApi/Default/chat-history/GET/ApiPermission.Test.TodaysDentalInsightsChatbotN1ChatbotRestApiC7D41B52.GET..chat-history"
+   }
+  },
+  "ChatbotRestApichathistoryGETAEEBE5D1": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ChatbotAuthorizer66FB8F12"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ChatHistoryHandlerD7D2A005",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "ChatbotRestApichathistoryC0EB0203"
+    },
+    "RestApiId": {
+     "Ref": "ChatbotRestApi74AB1744"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApi/Default/chat-history/GET/Resource"
+   }
+  },
+  "ChatbotRestApichathistorysessionId750785F4": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "ChatbotRestApichathistoryC0EB0203"
+    },
+    "PathPart": "{sessionId}",
+    "RestApiId": {
+     "Ref": "ChatbotRestApi74AB1744"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApi/Default/chat-history/{sessionId}/Resource"
+   }
+  },
+  "ChatbotRestApichathistorysessionIdOPTIONS1A114D3C": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ChatbotRestApichathistorysessionId750785F4"
+    },
+    "RestApiId": {
+     "Ref": "ChatbotRestApi74AB1744"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApi/Default/chat-history/{sessionId}/OPTIONS/Resource"
+   }
+  },
+  "ChatbotRestApichathistorysessionIdGETApiPermissionTodaysDentalInsightsChatbotN1ChatbotRestApiC7D41B52GETchathistorysessionIdA44823BD": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ChatHistoryHandlerD7D2A005",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ChatbotRestApi74AB1744"
+       },
+       "/",
+       {
+        "Ref": "ChatbotRestApiDeploymentStageprod7456DB51"
+       },
+       "/GET/chat-history/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApi/Default/chat-history/{sessionId}/GET/ApiPermission.TodaysDentalInsightsChatbotN1ChatbotRestApiC7D41B52.GET..chat-history.{sessionId}"
+   }
+  },
+  "ChatbotRestApichathistorysessionIdGETApiPermissionTestTodaysDentalInsightsChatbotN1ChatbotRestApiC7D41B52GETchathistorysessionId30B99CC7": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ChatHistoryHandlerD7D2A005",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ChatbotRestApi74AB1744"
+       },
+       "/test-invoke-stage/GET/chat-history/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApi/Default/chat-history/{sessionId}/GET/ApiPermission.Test.TodaysDentalInsightsChatbotN1ChatbotRestApiC7D41B52.GET..chat-history.{sessionId}"
+   }
+  },
+  "ChatbotRestApichathistorysessionIdGETA9566B33": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ChatbotAuthorizer66FB8F12"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ChatHistoryHandlerD7D2A005",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "ChatbotRestApichathistorysessionId750785F4"
+    },
+    "RestApiId": {
+     "Ref": "ChatbotRestApi74AB1744"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApi/Default/chat-history/{sessionId}/GET/Resource"
+   }
+  },
+  "ChatbotAuthorizer66FB8F12": {
+   "Type": "AWS::ApiGateway::Authorizer",
+   "Properties": {
+    "AuthorizerResultTtlInSeconds": 300,
+    "AuthorizerUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Fn::Select": [
+         1,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":apigateway:",
+       {
+        "Fn::Select": [
+         3,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":lambda:path/2015-03-31/functions/",
+       {
+        "Fn::ImportValue": "AuthorizerFunctionArnN1"
+       },
+       "/invocations"
+      ]
+     ]
+    },
+    "IdentitySource": "method.request.header.Authorization",
+    "Name": "TodaysDentalInsightsChatbotN1ChatbotAuthorizer2F41C189",
+    "RestApiId": {
+     "Ref": "ChatbotRestApi74AB1744"
+    },
+    "Type": "REQUEST"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotAuthorizer/Resource"
+   }
+  },
+  "GatewayResponseDefault4XXC22BF2A7": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_4XX",
+    "RestApiId": {
+     "Ref": "ChatbotRestApi74AB1744"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/GatewayResponseDefault4XX/Resource"
+   }
+  },
+  "GatewayResponseDefault5XX28177100": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_5XX",
+    "RestApiId": {
+     "Ref": "ChatbotRestApi74AB1744"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/GatewayResponseDefault5XX/Resource"
+   }
+  },
+  "GatewayResponseUnauthorized78FCB15B": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "UNAUTHORIZED",
+    "RestApiId": {
+     "Ref": "ChatbotRestApi74AB1744"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/GatewayResponseUnauthorized/Resource"
+   }
+  },
+  "AuthorizerInvokePermission": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::ImportValue": "AuthorizerFunctionArnN1"
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ChatbotRestApi74AB1744"
+       },
+       "/authorizers/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/AuthorizerInvokePermission"
+   }
+  },
+  "WebSocketConnectHandlerErrorAlarm43E0640C": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when websocket-connect Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WebSocketConnectHandler3316DFBA"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketConnectHandlerErrorAlarm/Resource"
+   }
+  },
+  "WebSocketConnectHandlerThrottleAlarmC1E7ABEB": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when websocket-connect Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WebSocketConnectHandler3316DFBA"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketConnectHandlerThrottleAlarm/Resource"
+   }
+  },
+  "WebSocketConnectHandlerDurationAlarmD7643B50": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when websocket-connect Lambda p99 duration exceeds 24000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WebSocketConnectHandler3316DFBA"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Threshold": 24000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketConnectHandlerDurationAlarm/Resource"
+   }
+  },
+  "WebSocketDisconnectHandlerErrorAlarmA269E094": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when websocket-disconnect Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WebSocketDisconnectHandlerD09D008B"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketDisconnectHandlerErrorAlarm/Resource"
+   }
+  },
+  "WebSocketDisconnectHandlerThrottleAlarmC2C3DD0A": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when websocket-disconnect Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WebSocketDisconnectHandlerD09D008B"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketDisconnectHandlerThrottleAlarm/Resource"
+   }
+  },
+  "WebSocketDisconnectHandlerDurationAlarmEB9D17A1": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when websocket-disconnect Lambda p99 duration exceeds 24000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WebSocketDisconnectHandlerD09D008B"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Threshold": 24000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketDisconnectHandlerDurationAlarm/Resource"
+   }
+  },
+  "WebSocketMessageHandlerErrorAlarm5E8D12BD": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when websocket-message Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WebSocketMessageHandler3F36AF15"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketMessageHandlerErrorAlarm/Resource"
+   }
+  },
+  "WebSocketMessageHandlerThrottleAlarm307D957B": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when websocket-message Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WebSocketMessageHandler3F36AF15"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketMessageHandlerThrottleAlarm/Resource"
+   }
+  },
+  "WebSocketMessageHandlerDurationAlarm9D296346": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when websocket-message Lambda p99 duration exceeds 240000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "WebSocketMessageHandler3F36AF15"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Threshold": 240000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketMessageHandlerDurationAlarm/Resource"
+   }
+  },
+  "ChatHistoryHandlerErrorAlarmD1CB1F7F": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when chat-history Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ChatHistoryHandlerD7D2A005"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatHistoryHandlerErrorAlarm/Resource"
+   }
+  },
+  "ChatHistoryHandlerThrottleAlarmBDC39A58": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when chat-history Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ChatHistoryHandlerD7D2A005"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatHistoryHandlerThrottleAlarm/Resource"
+   }
+  },
+  "ChatHistoryHandlerDurationAlarm0986E501": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when chat-history Lambda p99 duration exceeds 24000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ChatHistoryHandlerD7D2A005"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Threshold": 24000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatHistoryHandlerDurationAlarm/Resource"
+   }
+  },
+  "ConversationTableN1ThrottleAlarmD66B0458": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "ConversationTableN1173091FF"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "ConversationTableN1173091FF"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chatbot"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChatbotN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ConversationTableN1ThrottleAlarm/Resource"
+   }
+  },
+  "ChatbotRestApiBasePathMapping": {
+   "Type": "AWS::ApiGateway::BasePathMapping",
+   "Properties": {
+    "BasePath": "chatbot",
+    "DomainName": "apig.todaysdentalinsights.com",
+    "RestApiId": {
+     "Ref": "ChatbotRestApi74AB1744"
+    },
+    "Stage": {
+     "Ref": "ChatbotRestApiDeploymentStageprod7456DB51"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatbotRestApiBasePathMapping"
+   }
+  },
+  "WebSocketDomain39D2A650": {
+   "Type": "AWS::ApiGatewayV2::DomainName",
+   "Properties": {
+    "DomainName": "ws.todaysdentalinsights.com",
+    "DomainNameConfigurations": [
+     {
+      "CertificateArn": "arn:aws:acm:us-east-1:851620242036:certificate/4609e555-88a2-403f-b053-9d0899a899b9",
+      "EndpointType": "REGIONAL"
+     }
+    ],
+    "Tags": {
+     "ManagedBy": "cdk",
+     "Service": "Chatbot",
+     "Stack": "TodaysDentalInsightsChatbotN1"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketDomain/Resource"
+   }
+  },
+  "WebSocketMappingF76F644C": {
+   "Type": "AWS::ApiGatewayV2::ApiMapping",
+   "Properties": {
+    "ApiId": {
+     "Ref": "ChatbotWebSocketApi72B63158"
+    },
+    "ApiMappingKey": "chat",
+    "DomainName": {
+     "Ref": "WebSocketDomain39D2A650"
+    },
+    "Stage": "prod"
+   },
+   "DependsOn": [
+    "ChatbotWebSocketStage818A060C"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketMapping/Resource"
+   }
+  },
+  "WebSocketRecordE0526F0A": {
+   "Type": "AWS::Route53::RecordSet",
+   "Properties": {
+    "AliasTarget": {
+     "DNSName": {
+      "Fn::GetAtt": [
+       "WebSocketDomain39D2A650",
+       "RegionalDomainName"
+      ]
+     },
+     "HostedZoneId": {
+      "Fn::GetAtt": [
+       "WebSocketDomain39D2A650",
+       "RegionalHostedZoneId"
+      ]
+     }
+    },
+    "HostedZoneId": "Z0782155122P6UMFMK24C",
+    "Name": "ws.todaysdentalinsights.com.",
+    "Type": "A"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketRecord/Resource"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/21S207DMAz9Ft67AB37gA4EQmJj6hA8Tm5qumxNUnLZVKr+O0narlPFS32O7fgcp4lJHN+Tuxs46xnNj7OSZaTZGqDHyKV2TV4L4DJ3yQ/ISowev0UHwncJGtuoBJ7lQJo3qFF9otJMCt845c9WUNPjDSrOdKgM6W6Ynu9AazSaJD44TpaWHtH4ci+1EzLHgybrEC5jGXDSpLJzGeJGlozWQS+gNoKKFWDwDPUpJs0XZlvphycV810+XHKptAZH+ioMFgqGBSZ00uxusAg2OvAkOTCxBh5yV8wJrqCqmCh6+Z5dG3U7oR4cXsGEUmmFiZ6wKmXN0UE/fGQTE+6otIqGnxat0Oxl7os9Gqq9SIdT/LFe0LoWxX5RBd2RvXQOXX8lhQ5n/0l5wQ2Y/WU3Wkqbn8HQPWmSEhQPYz1oI+UvcjF3hRSpVHnnx6MtmrYdfYbn4TfrL+/dmsqaNvJvgxz07SlekAf3sg+asZlyF8U4krSLf+Tmchb2AgAA"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChatbotN1/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "ChatbotRestApiEndpointEDCFFA2A": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "ChatbotRestApi74AB1744"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "ChatbotRestApiDeploymentStageprod7456DB51"
+      },
+      "/"
+     ]
+    ]
+   }
+  },
+  "WebSocketApiEndpoint": {
+   "Description": "Default WebSocket API endpoint for chatbot",
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "wss://",
+      {
+       "Ref": "ChatbotWebSocketApi72B63158"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/prod"
+     ]
+    ]
+   }
+  },
+  "WebSocketCustomDomainEndpoint": {
+   "Description": "Custom domain WebSocket API endpoint for chatbot",
+   "Value": "wss://ws.todaysdentalinsights.com/chat"
+  },
+  "WebSocketDomainName": {
+   "Description": "WebSocket custom domain name for cross-stack API mappings",
+   "Value": {
+    "Ref": "WebSocketDomain39D2A650"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsChatbotN1-WebSocketDomainName"
+   }
+  },
+  "WebSocketRegionalDomainName": {
+   "Description": "Regional domain name for WebSocket custom domain",
+   "Value": {
+    "Fn::GetAtt": [
+     "WebSocketDomain39D2A650",
+     "RegionalDomainName"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsChatbotN1-WebSocketRegionalDomainName"
+   }
+  },
+  "WebSocketRegionalHostedZoneId": {
+   "Description": "Regional hosted zone ID for WebSocket custom domain",
+   "Value": {
+    "Fn::GetAtt": [
+     "WebSocketDomain39D2A650",
+     "RegionalHostedZoneId"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsChatbotN1-WebSocketRegionalHostedZoneId"
+   }
+  },
+  "RestApiEndpoint": {
+   "Description": "Default REST API endpoint for clinic data management",
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "ChatbotRestApi74AB1744"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "ChatbotRestApiDeploymentStageprod7456DB51"
+      },
+      "/"
+     ]
+    ]
+   }
+  },
+  "RestCustomDomainEndpoint": {
+   "Description": "Custom domain REST API endpoint for chatbot data management",
+   "Value": "https://apig.todaysdentalinsights.com/chatbot"
+  },
+  "ConversationsTableName": {
+   "Description": "DynamoDB table for conversation storage",
+   "Value": {
+    "Ref": "ConversationTableN1173091FF"
+   }
+  },
+  "ImportedClinicHoursTableName": {
+   "Description": "Imported Clinic Hours DynamoDB table name",
+   "Value": {
+    "Fn::ImportValue": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+   }
+  },
+  "ImportedClinicPricingTableName": {
+   "Description": "Imported Clinic Pricing DynamoDB table name",
+   "Value": {
+    "Fn::ImportValue": "TodaysDentalInsightsClinicPricingN1:ExportsOutputRefClinicPricingTable208116C23BF231FF"
+   }
+  },
+  "ImportedClinicInsuranceTableName": {
+   "Description": "Imported Clinic Insurance DynamoDB table name",
+   "Value": "TodaysDentalInsightsClinicInsuranceN1-ClinicInsurance"
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/tdi3/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

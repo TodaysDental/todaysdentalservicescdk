@@ -910,7 +910,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'action-group-handler.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 1024,
+      memorySize: 4096,
       timeout: Duration.minutes(2), // Tool calls may take time
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
@@ -1039,7 +1039,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'insurance-textract-handler.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 1024,
+      memorySize: 4096,
       timeout: Duration.seconds(60), // Textract can take time for complex images
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
@@ -1133,7 +1133,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'agents.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 1024, // Increased from 512 for faster AI response times
+      memorySize: 4096, // Increased for uniform memory allocation across AI Agents stack
       timeout: Duration.seconds(60), // Agent creation/prepare can take time
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
@@ -1194,7 +1194,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'invoke-agent.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 1024,
+      memorySize: 4096,
       timeout: Duration.minutes(5),
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
@@ -1231,7 +1231,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'voice-ai-handler.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 1024,
+      memorySize: 4096,
       timeout: Duration.minutes(5), // Voice calls can be long
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
@@ -1357,7 +1357,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'voice-agent-config.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 256,
+      memorySize: 4096,
       timeout: Duration.seconds(30),
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
@@ -1384,7 +1384,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'conversation-history.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 512,
+      memorySize: 4096,
       timeout: Duration.seconds(60), // Stats queries may take time
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
@@ -1425,7 +1425,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'chime', 'meeting-manager.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 512,
+      memorySize: 4096,
       timeout: Duration.seconds(30),
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
@@ -1506,7 +1506,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'chime', 'meeting-transcription-handler.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 512,
+      memorySize: 4096,
       timeout: Duration.seconds(60), // Longer timeout for AI processing
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
@@ -1601,7 +1601,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'chime', 'meeting-join-handler.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 512,
+      memorySize: 4096,
       timeout: Duration.seconds(30),
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
@@ -1644,7 +1644,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'outbound-call-scheduler.ts'),
       handler: 'executeOutboundCall',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 1024,
+      memorySize: 4096,
       timeout: Duration.minutes(5),
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
@@ -1722,7 +1722,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'outbound-call-scheduler.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 1024, // Increased for bulk operations
+      memorySize: 4096, // Increased for uniform memory allocation across AI Agents stack
       timeout: Duration.minutes(3), // Increased for processing up to 500 calls
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
@@ -1780,7 +1780,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'outbound-queue-processor.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 512,
+      memorySize: 4096,
       timeout: Duration.minutes(5), // Matches SQS visibility timeout
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
@@ -1837,7 +1837,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'websocket-connect.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 256,
+      memorySize: 4096,
       timeout: Duration.seconds(30),
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
@@ -1855,7 +1855,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'websocket-disconnect.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 256,
+      memorySize: 4096,
       timeout: Duration.seconds(30),
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
@@ -1870,7 +1870,7 @@ export class AiAgentsStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'websocket-message.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 1024,
+      memorySize: 4096,
       timeout: Duration.minutes(5),
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {

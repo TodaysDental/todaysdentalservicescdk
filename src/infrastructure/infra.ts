@@ -270,6 +270,11 @@ const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNoti
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  // Chime outbound calling (Marketing voice campaigns)
+  // NOTE: NotificationsStack is instantiated before CHIME_STACK_NAME is declared below,
+  // so we pass the known parameter name explicitly here.
+  smaIdMapParameterName: '/TodaysDentalInsightsChimeN1/SmaIdMap',
+  chimeMediaRegion: process.env.CHIME_MEDIA_REGION || 'us-east-1',
 });
 notificationsStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for unsubscribe secret
 const marketingStack = new MarketingStack(app, 'TodaysDentalInsightsMarketingN1', {

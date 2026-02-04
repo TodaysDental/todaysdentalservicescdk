@@ -313,6 +313,8 @@ export class SchedulesStack extends Stack {
         EMAIL_QUEUE_URL: emailQueue.queueUrl,
         // Email analytics table for tracking scheduled emails
         EMAIL_ANALYTICS_TABLE: Fn.importValue('TodaysDentalInsightsNotificationsN1-EmailAnalyticsTableName'),
+        // Voice call analytics table for tracking outbound CALL campaigns
+        VOICE_CALL_ANALYTICS_TABLE: Fn.importValue('TodaysDentalInsightsNotificationsN1-VoiceCallAnalyticsTableName'),
         // RCS API base URL for sending RCS messages (via public API Gateway endpoint)
         RCS_API_BASE_URL: 'https://apig.todaysdentalinsights.com/rcs',
       },
@@ -484,6 +486,14 @@ export class SchedulesStack extends Stack {
     this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:GetItem'],
       resources: [`arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/TodaysDentalInsightsNotificationsN1-EmailAnalytics`],
+    }));
+
+    // Grant voice call analytics table access for tracking outbound CALL campaigns
+    this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:GetItem'],
+      resources: [
+        `arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/${Fn.importValue('TodaysDentalInsightsNotificationsN1-VoiceCallAnalyticsTableName')}`,
+      ],
     }));
 
     // Add SQS event source for queue consumer

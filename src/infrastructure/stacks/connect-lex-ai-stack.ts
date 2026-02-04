@@ -176,6 +176,42 @@ export class ConnectLexAiStack extends Stack {
     applyTags(this);
 
     // ========================================
+    // 0b. Public Audio Bucket (MP3 assets)
+    // ========================================
+    // Previously, ConnectLexAiStack referenced ChimeStack's PublicAudioBucket for MP3 URLs.
+    // That cross-stack export/import makes Chime updates fragile (cannot delete exports in use).
+    // Create a standalone public audio bucket here so this stack has no Chime dependency.
+    const publicAudioBucket = new s3.Bucket(this, 'PublicAudioBucket', {
+      // NOTE: Bucket names must be <= 63 chars; include account for uniqueness.
+      bucketName: `${this.stackName.toLowerCase()}-public-audio-${this.account}`,
+      removalPolicy: RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      // Public read is required for direct HTTPS S3 URLs (used by legacy thinking-audio path).
+      // Keep ACLs blocked while allowing a bucket policy to grant GetObject.
+      publicReadAccess: true,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ACLS,
+      enforceSSL: true,
+    });
+    applyTags(publicAudioBucket, { Bucket: 'public-audio' });
+
+    // Upload MP3 audio assets to the public audio bucket
+    new s3deploy.BucketDeployment(this, 'DeployPublicAudioMp3', {
+      sources: [
+        s3deploy.Source.asset(path.join(__dirname, '..', '..', '..', 'assets', 'audio'), {
+          exclude: ['*.wav'], // Only include MP3 files
+        }),
+      ],
+      destinationBucket: publicAudioBucket,
+      prune: false,
+      contentType: 'audio/mpeg',
+    });
+
+    // Default thinking-audio URL points at the MP3 in this stack's public audio bucket.
+    // (Connect flow uses WAV prompts now, but this keeps the env var usable without Chime exports.)
+    const defaultThinkingAudioUrl = `https://${publicAudioBucket.bucketName}.s3.${this.region}.amazonaws.com/Computer-keyboard-sound-short.mp3`;
+
+    // ========================================
     // 1. Lex Bedrock Hook Lambda
     // ========================================
     this.lexBedrockHookFn = new lambdaNode.NodejsFunction(this, 'LexBedrockHookFn', {
@@ -198,7 +234,7 @@ export class ConnectLexAiStack extends Stack {
         HOLD_MUSIC_BUCKET: props.holdMusicBucketName || '',
         ENABLE_THINKING_AUDIO: 'true',
         // CloudFront URL for MP3 thinking audio (optional - if not set, uses verbal cue)
-        THINKING_AUDIO_URL: props.thinkingAudioUrl || '',
+        THINKING_AUDIO_URL: props.thinkingAudioUrl || defaultThinkingAudioUrl,
         // Thinking audio mode: 'audio' = MP3 file, 'verbal' = spoken acknowledgment
         // NOTE: Amazon Polly SSML does NOT support <audio>, so 'verbal' is the safe default.
         THINKING_AUDIO_MODE: props.thinkingAudioMode || 'verbal',

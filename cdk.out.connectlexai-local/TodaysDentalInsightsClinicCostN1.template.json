@@ -1,0 +1,1629 @@
+{
+ "Resources": {
+  "ClinicCostTableFF9A3919": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "clinicName",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "KeySchema": [
+     {
+      "AttributeName": "clinicName",
+      "KeyType": "HASH"
+     }
+    ],
+    "TableName": "TodaysDentalInsightsClinicCostN1-ClinicCostOfOperation",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicCost"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicCostN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "clinic-cost-of-operation"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostTable/Resource"
+   }
+  },
+  "ClinicCostApiBFE297FF": {
+   "Type": "AWS::ApiGateway::RestApi",
+   "Properties": {
+    "Description": "Clinic Cost of Operation service API",
+    "Name": "ClinicCostApi",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicCost"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicCostN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Resource"
+   }
+  },
+  "ClinicCostApiCloudWatchRole87DE0C18": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "apigateway.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicCost"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicCostN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/CloudWatchRole/Resource"
+   }
+  },
+  "ClinicCostApiAccount5F71B625": {
+   "Type": "AWS::ApiGateway::Account",
+   "Properties": {
+    "CloudWatchRoleArn": {
+     "Fn::GetAtt": [
+      "ClinicCostApiCloudWatchRole87DE0C18",
+      "Arn"
+     ]
+    }
+   },
+   "DependsOn": [
+    "ClinicCostApiBFE297FF"
+   ],
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Account"
+   }
+  },
+  "ClinicCostApiDeployment53174CAA3c2cb262c796150d3eaabbeb31096335": {
+   "Type": "AWS::ApiGateway::Deployment",
+   "Properties": {
+    "Description": "Clinic Cost of Operation service API",
+    "RestApiId": {
+     "Ref": "ClinicCostApiBFE297FF"
+    }
+   },
+   "DependsOn": [
+    "ClinicCostApicliniccostsclinicNameGET8B0EDDFF",
+    "ClinicCostApicliniccostsclinicNameOPTIONSC2DD7B5D",
+    "ClinicCostApicliniccostsclinicNamePUT48390315",
+    "ClinicCostApicliniccostsclinicName8405F9E7",
+    "ClinicCostApicliniccostsGET5BF56CF0",
+    "ClinicCostApicliniccostsOPTIONS7AA37BEA",
+    "ClinicCostApicliniccosts42530AD3",
+    "ClinicCostApiOPTIONS9646CFD3",
+    "GatewayResponseDefault4XXC22BF2A7",
+    "GatewayResponseDefault5XX28177100",
+    "GatewayResponseUnauthorized78FCB15B"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Deployment/Resource",
+    "aws:cdk:do-not-refactor": true
+   }
+  },
+  "ClinicCostApiDeploymentStageprod7F3EEB6F": {
+   "Type": "AWS::ApiGateway::Stage",
+   "Properties": {
+    "DeploymentId": {
+     "Ref": "ClinicCostApiDeployment53174CAA3c2cb262c796150d3eaabbeb31096335"
+    },
+    "MethodSettings": [
+     {
+      "DataTraceEnabled": false,
+      "HttpMethod": "*",
+      "LoggingLevel": "INFO",
+      "MetricsEnabled": true,
+      "ResourcePath": "/*"
+     }
+    ],
+    "RestApiId": {
+     "Ref": "ClinicCostApiBFE297FF"
+    },
+    "StageName": "prod",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicCost"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicCostN1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "ClinicCostApiAccount5F71B625"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/DeploymentStage.prod/Resource"
+   }
+  },
+  "ClinicCostApiOPTIONS9646CFD3": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Fn::GetAtt": [
+      "ClinicCostApiBFE297FF",
+      "RootResourceId"
+     ]
+    },
+    "RestApiId": {
+     "Ref": "ClinicCostApiBFE297FF"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Default/OPTIONS/Resource"
+   }
+  },
+  "ClinicCostApicliniccosts42530AD3": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "ClinicCostApiBFE297FF",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "clinic-costs",
+    "RestApiId": {
+     "Ref": "ClinicCostApiBFE297FF"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Default/clinic-costs/Resource"
+   }
+  },
+  "ClinicCostApicliniccostsOPTIONS7AA37BEA": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicCostApicliniccosts42530AD3"
+    },
+    "RestApiId": {
+     "Ref": "ClinicCostApiBFE297FF"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Default/clinic-costs/OPTIONS/Resource"
+   }
+  },
+  "ClinicCostApicliniccostsGETApiPermissionTodaysDentalInsightsClinicCostN1ClinicCostApi9BC01D1BGETcliniccostsED542E69": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicCostCrudFnC6C764FB",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicCostApiBFE297FF"
+       },
+       "/",
+       {
+        "Ref": "ClinicCostApiDeploymentStageprod7F3EEB6F"
+       },
+       "/GET/clinic-costs"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Default/clinic-costs/GET/ApiPermission.TodaysDentalInsightsClinicCostN1ClinicCostApi9BC01D1B.GET..clinic-costs"
+   }
+  },
+  "ClinicCostApicliniccostsGETApiPermissionTestTodaysDentalInsightsClinicCostN1ClinicCostApi9BC01D1BGETcliniccosts95F38197": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicCostCrudFnC6C764FB",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicCostApiBFE297FF"
+       },
+       "/test-invoke-stage/GET/clinic-costs"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Default/clinic-costs/GET/ApiPermission.Test.TodaysDentalInsightsClinicCostN1ClinicCostApi9BC01D1B.GET..clinic-costs"
+   }
+  },
+  "ClinicCostApicliniccostsGET5BF56CF0": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ClinicCostAuthorizer7EB5594B"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ClinicCostCrudFnC6C764FB",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicCostApicliniccosts42530AD3"
+    },
+    "RestApiId": {
+     "Ref": "ClinicCostApiBFE297FF"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Default/clinic-costs/GET/Resource"
+   }
+  },
+  "ClinicCostApicliniccostsclinicName8405F9E7": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "ClinicCostApicliniccosts42530AD3"
+    },
+    "PathPart": "{clinicName}",
+    "RestApiId": {
+     "Ref": "ClinicCostApiBFE297FF"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Default/clinic-costs/{clinicName}/Resource"
+   }
+  },
+  "ClinicCostApicliniccostsclinicNameOPTIONSC2DD7B5D": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicCostApicliniccostsclinicName8405F9E7"
+    },
+    "RestApiId": {
+     "Ref": "ClinicCostApiBFE297FF"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Default/clinic-costs/{clinicName}/OPTIONS/Resource"
+   }
+  },
+  "ClinicCostApicliniccostsclinicNameGETApiPermissionTodaysDentalInsightsClinicCostN1ClinicCostApi9BC01D1BGETcliniccostsclinicNameFF37A039": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicCostCrudFnC6C764FB",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicCostApiBFE297FF"
+       },
+       "/",
+       {
+        "Ref": "ClinicCostApiDeploymentStageprod7F3EEB6F"
+       },
+       "/GET/clinic-costs/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Default/clinic-costs/{clinicName}/GET/ApiPermission.TodaysDentalInsightsClinicCostN1ClinicCostApi9BC01D1B.GET..clinic-costs.{clinicName}"
+   }
+  },
+  "ClinicCostApicliniccostsclinicNameGETApiPermissionTestTodaysDentalInsightsClinicCostN1ClinicCostApi9BC01D1BGETcliniccostsclinicName29F63975": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicCostCrudFnC6C764FB",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicCostApiBFE297FF"
+       },
+       "/test-invoke-stage/GET/clinic-costs/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Default/clinic-costs/{clinicName}/GET/ApiPermission.Test.TodaysDentalInsightsClinicCostN1ClinicCostApi9BC01D1B.GET..clinic-costs.{clinicName}"
+   }
+  },
+  "ClinicCostApicliniccostsclinicNameGET8B0EDDFF": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ClinicCostAuthorizer7EB5594B"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ClinicCostCrudFnC6C764FB",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "404"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicCostApicliniccostsclinicName8405F9E7"
+    },
+    "RestApiId": {
+     "Ref": "ClinicCostApiBFE297FF"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Default/clinic-costs/{clinicName}/GET/Resource"
+   }
+  },
+  "ClinicCostApicliniccostsclinicNamePUTApiPermissionTodaysDentalInsightsClinicCostN1ClinicCostApi9BC01D1BPUTcliniccostsclinicName4D028A55": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicCostCrudFnC6C764FB",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicCostApiBFE297FF"
+       },
+       "/",
+       {
+        "Ref": "ClinicCostApiDeploymentStageprod7F3EEB6F"
+       },
+       "/PUT/clinic-costs/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Default/clinic-costs/{clinicName}/PUT/ApiPermission.TodaysDentalInsightsClinicCostN1ClinicCostApi9BC01D1B.PUT..clinic-costs.{clinicName}"
+   }
+  },
+  "ClinicCostApicliniccostsclinicNamePUTApiPermissionTestTodaysDentalInsightsClinicCostN1ClinicCostApi9BC01D1BPUTcliniccostsclinicName8904C778": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ClinicCostCrudFnC6C764FB",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicCostApiBFE297FF"
+       },
+       "/test-invoke-stage/PUT/clinic-costs/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Default/clinic-costs/{clinicName}/PUT/ApiPermission.Test.TodaysDentalInsightsClinicCostN1ClinicCostApi9BC01D1B.PUT..clinic-costs.{clinicName}"
+   }
+  },
+  "ClinicCostApicliniccostsclinicNamePUT48390315": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ClinicCostAuthorizer7EB5594B"
+    },
+    "HttpMethod": "PUT",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ClinicCostCrudFnC6C764FB",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "400"
+     },
+     {
+      "StatusCode": "403"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ClinicCostApicliniccostsclinicName8405F9E7"
+    },
+    "RestApiId": {
+     "Ref": "ClinicCostApiBFE297FF"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApi/Default/clinic-costs/{clinicName}/PUT/Resource"
+   }
+  },
+  "GatewayResponseDefault4XXC22BF2A7": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_4XX",
+    "RestApiId": {
+     "Ref": "ClinicCostApiBFE297FF"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/GatewayResponseDefault4XX/Resource"
+   }
+  },
+  "GatewayResponseDefault5XX28177100": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_5XX",
+    "RestApiId": {
+     "Ref": "ClinicCostApiBFE297FF"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/GatewayResponseDefault5XX/Resource"
+   }
+  },
+  "GatewayResponseUnauthorized78FCB15B": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "UNAUTHORIZED",
+    "RestApiId": {
+     "Ref": "ClinicCostApiBFE297FF"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/GatewayResponseUnauthorized/Resource"
+   }
+  },
+  "ClinicCostAuthorizer7EB5594B": {
+   "Type": "AWS::ApiGateway::Authorizer",
+   "Properties": {
+    "AuthorizerResultTtlInSeconds": 300,
+    "AuthorizerUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Fn::Select": [
+         1,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":apigateway:",
+       {
+        "Fn::Select": [
+         3,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":lambda:path/2015-03-31/functions/",
+       {
+        "Fn::ImportValue": "AuthorizerFunctionArnN1"
+       },
+       "/invocations"
+      ]
+     ]
+    },
+    "IdentitySource": "method.request.header.Authorization",
+    "Name": "TodaysDentalInsightsClinicCostN1ClinicCostAuthorizerE25A92C1",
+    "RestApiId": {
+     "Ref": "ClinicCostApiBFE297FF"
+    },
+    "Type": "REQUEST"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostAuthorizer/Resource"
+   }
+  },
+  "AuthorizerInvokePermission": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::ImportValue": "AuthorizerFunctionArnN1"
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ClinicCostApiBFE297FF"
+       },
+       "/authorizers/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/AuthorizerInvokePermission"
+   }
+  },
+  "ClinicCostCrudFnServiceRoleC00EF48B": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "clinic-cost-crud"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicCost"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicCostN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostCrudFn/ServiceRole/Resource"
+   }
+  },
+  "ClinicCostCrudFnServiceRoleDefaultPolicy27C18475": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ClinicCostTableFF9A3919",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ClinicCostCrudFnServiceRoleDefaultPolicy27C18475",
+    "Roles": [
+     {
+      "Ref": "ClinicCostCrudFnServiceRoleC00EF48B"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostCrudFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ClinicCostCrudFnC6C764FB": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "2b91f0c1467020686ef9f9590a8ddb45c495fc6bc8e10cf96bcf5aa3b2aa3d93.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CLINIC_COST_TABLE": {
+       "Ref": "ClinicCostTableFF9A3919"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "ClinicCostCrudFnServiceRoleC00EF48B",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "clinic-cost-crud"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicCost"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicCostN1"
+     }
+    ],
+    "Timeout": 10
+   },
+   "DependsOn": [
+    "ClinicCostCrudFnServiceRoleDefaultPolicy27C18475",
+    "ClinicCostCrudFnServiceRoleC00EF48B"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostCrudFn/Resource",
+    "aws:asset:path": "asset.2b91f0c1467020686ef9f9590a8ddb45c495fc6bc8e10cf96bcf5aa3b2aa3d93",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ClinicCostSeederFnServiceRole253A2B0E": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "clinic-cost-seeder"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicCost"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicCostN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostSeederFn/ServiceRole/Resource"
+   }
+  },
+  "ClinicCostSeederFnServiceRoleDefaultPolicyAB060D7F": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ClinicCostTableFF9A3919",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ClinicCostSeederFnServiceRoleDefaultPolicyAB060D7F",
+    "Roles": [
+     {
+      "Ref": "ClinicCostSeederFnServiceRole253A2B0E"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostSeederFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ClinicCostSeederFn8BF55283": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "fe98de89fa70000c642c1bdfb1237523d4ef1eb74ce1cfc6a346c6db17d83aaf.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CLINIC_COST_TABLE": {
+       "Ref": "ClinicCostTableFF9A3919"
+      },
+      "INITIAL_DATA": "[{\"clinicName\":\"Cayce\",\"costPerDay\":7299.37},{\"clinicName\":\"Lexington\",\"costPerDay\":4155.52},{\"clinicName\":\"Greenville\",\"costPerDay\":4149.97},{\"clinicName\":\"Alexandria\",\"costPerDay\":2091.44},{\"clinicName\":\"West Columbia\",\"costPerDay\":3134.86},{\"clinicName\":\"Saludapointe\",\"costPerDay\":4912.68},{\"clinicName\":\"Bowie\",\"costPerDay\":2710.88},{\"clinicName\":\"Lawrenceville\",\"costPerDay\":2719.39},{\"clinicName\":\"Perrysburg\",\"costPerDay\":2816.72},{\"clinicName\":\"Concord\",\"costPerDay\":3246.02},{\"clinicName\":\"Oregon\",\"costPerDay\":2923.71},{\"clinicName\":\"Powell\",\"costPerDay\":3046.59},{\"clinicName\":\"Edgewater\",\"costPerDay\":2401.23},{\"clinicName\":\"Stillwater\",\"costPerDay\":7552.54},{\"clinicName\":\"New Greenville\",\"costPerDay\":3031.37},{\"clinicName\":\"Louisville\",\"costPerDay\":46040.81},{\"clinicName\":\"New Britain\",\"costPerDay\":2022.54},{\"clinicName\":\"Bloomingdale\",\"costPerDay\":3107.4},{\"clinicName\":\"Meadows\",\"costPerDay\":2675.44},{\"clinicName\":\"Winston\",\"costPerDay\":2557.19},{\"clinicName\":\"Austin\",\"costPerDay\":66176.03},{\"clinicName\":\"Vernon Hills\",\"costPerDay\":2558.33},{\"clinicName\":\"San Antonio / RIM Dental\",\"costPerDay\":3601.04},{\"clinicName\":\"Mesquite / Creek Crossing\",\"costPerDay\":2687.88},{\"clinicName\":\"Reno\",\"costPerDay\":2441.95},{\"clinicName\":\"Centennial\",\"costPerDay\":3886.79},{\"clinicName\":\"Pearland\",\"costPerDay\":7559.22}]"
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "ClinicCostSeederFnServiceRole253A2B0E",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "clinic-cost-seeder"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicCost"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicCostN1"
+     }
+    ],
+    "Timeout": 60
+   },
+   "DependsOn": [
+    "ClinicCostSeederFnServiceRoleDefaultPolicyAB060D7F",
+    "ClinicCostSeederFnServiceRole253A2B0E"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostSeederFn/Resource",
+    "aws:asset:path": "asset.fe98de89fa70000c642c1bdfb1237523d4ef1eb74ce1cfc6a346c6db17d83aaf",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ClinicCostSeederProviderframeworkonEventServiceRole7782EC96": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicCost"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicCostN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostSeederProvider/framework-onEvent/ServiceRole/Resource"
+   }
+  },
+  "ClinicCostSeederProviderframeworkonEventServiceRoleDefaultPolicyD3E1123D": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ClinicCostSeederFn8BF55283",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ClinicCostSeederFn8BF55283",
+             "Arn"
+            ]
+           },
+           ":*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "lambda:GetFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "ClinicCostSeederFn8BF55283",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ClinicCostSeederProviderframeworkonEventServiceRoleDefaultPolicyD3E1123D",
+    "Roles": [
+     {
+      "Ref": "ClinicCostSeederProviderframeworkonEventServiceRole7782EC96"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostSeederProvider/framework-onEvent/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ClinicCostSeederProviderframeworkonEvent631CC680": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "bdc104ed9cab1b5b6421713c8155f0b753380595356f710400609664d3635eca.zip"
+    },
+    "Description": "AWS CDK resource provider framework - onEvent (TodaysDentalInsightsClinicCostN1/ClinicCostSeederProvider)",
+    "Environment": {
+     "Variables": {
+      "USER_ON_EVENT_FUNCTION_ARN": {
+       "Fn::GetAtt": [
+        "ClinicCostSeederFn8BF55283",
+        "Arn"
+       ]
+      }
+     }
+    },
+    "Handler": "framework.onEvent",
+    "LoggingConfig": {
+     "ApplicationLogLevel": "FATAL",
+     "LogFormat": "JSON"
+    },
+    "Role": {
+     "Fn::GetAtt": [
+      "ClinicCostSeederProviderframeworkonEventServiceRole7782EC96",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicCost"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicCostN1"
+     }
+    ],
+    "Timeout": 900
+   },
+   "DependsOn": [
+    "ClinicCostSeederProviderframeworkonEventServiceRoleDefaultPolicyD3E1123D",
+    "ClinicCostSeederProviderframeworkonEventServiceRole7782EC96"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostSeederProvider/framework-onEvent/Resource",
+    "aws:asset:path": "asset.bdc104ed9cab1b5b6421713c8155f0b753380595356f710400609664d3635eca",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ClinicCostSeeder": {
+   "Type": "AWS::CloudFormation::CustomResource",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "ClinicCostSeederProviderframeworkonEvent631CC680",
+      "Arn"
+     ]
+    },
+    "version": "1.0.0"
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostSeeder/Default"
+   }
+  },
+  "ClinicCostCrudFnErrorAlarm1ED9EC45": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when clinic-cost-crud Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ClinicCostCrudFnC6C764FB"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicCost"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicCostN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostCrudFnErrorAlarm/Resource"
+   }
+  },
+  "ClinicCostCrudFnThrottleAlarm9649FC57": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when clinic-cost-crud Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ClinicCostCrudFnC6C764FB"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicCost"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicCostN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostCrudFnThrottleAlarm/Resource"
+   }
+  },
+  "ClinicCostCrudFnDurationAlarm983F979C": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when clinic-cost-crud Lambda p99 duration exceeds 8000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ClinicCostCrudFnC6C764FB"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicCost"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicCostN1"
+     }
+    ],
+    "Threshold": 8000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostCrudFnDurationAlarm/Resource"
+   }
+  },
+  "ClinicCostTableThrottleAlarm1BF0B227": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "ClinicCostTableFF9A3919"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "ClinicCostTableFF9A3919"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ClinicCost"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsClinicCostN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostTableThrottleAlarm/Resource"
+   }
+  },
+  "ClinicCostApiBasePathMapping": {
+   "Type": "AWS::ApiGateway::BasePathMapping",
+   "Properties": {
+    "BasePath": "clinic-cost",
+    "DomainName": "apig.todaysdentalinsights.com",
+    "RestApiId": {
+     "Ref": "ClinicCostApiBFE297FF"
+    },
+    "Stage": {
+     "Ref": "ClinicCostApiDeploymentStageprod7F3EEB6F"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostApiBasePathMapping"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/21SzVLCMBB+Fu8hatUHKDp6Qhn0zizJCoEmqdkEpnb67m5SYNDxtN9Psn9JJavqVt5cwYEmSu8mjVnJ/j2C2gmWlr3uHFivWfyAVYPi8dMVMAhozRoiHqCT/QIp1q3J7gWslfLJRfGEbeM7iwxZvWBcZ11SjoCv+hQUToFQzDBuvM7mEZ3cY5ERv4wdMG+9o+L9lRb4lXJPibME842htPaL5YJziJsZtK1x60EYsDyUH+ctce4bo7pMRzSIBuxKg+yzhMEaIuOdeE5ORQZlBrZO/GycLi6d17gl+VrC+RjdLYEII8k6B+ZymtQOY0moGp/0AaLayL5uINgySwbD8GtBbym2KYqSIy+XpxIqUfR2GY7HSM6D3xudV1Cc/xY8iNym3NL1vnqQ9/xRtmTMJPCzGotyMcYfZ3Hx/EUCAAA="
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "ClinicCostApiEndpointBF19BF73": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "ClinicCostApiBFE297FF"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "ClinicCostApiDeploymentStageprod7F3EEB6F"
+      },
+      "/"
+     ]
+    ]
+   }
+  },
+  "ClinicCostTableName": {
+   "Description": "Name of the Clinic Cost of Operation DynamoDB table",
+   "Value": {
+    "Ref": "ClinicCostTableFF9A3919"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsClinicCostN1-ClinicCostTableName"
+   }
+  },
+  "ClinicCostApiUrl": {
+   "Description": "Clinic Cost API Gateway URL",
+   "Value": "https://apig.todaysdentalinsights.com/clinic-cost/",
+   "Export": {
+    "Name": "TodaysDentalInsightsClinicCostN1-ClinicCostApiUrl"
+   }
+  },
+  "ClinicCostApiId": {
+   "Description": "Clinic Cost API Gateway ID",
+   "Value": {
+    "Ref": "ClinicCostApiBFE297FF"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsClinicCostN1-ClinicCostApiId"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/tdi3/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

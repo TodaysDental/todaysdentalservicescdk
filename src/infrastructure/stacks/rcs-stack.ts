@@ -140,21 +140,6 @@ export class RcsStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
-    // GSI for querying inbound messages by phone number across all clinics (optional, but preserves prior capability)
-    this.rcsTemplatesTable.addGlobalSecondaryIndex({
-      indexName: 'PhoneIndex',
-      partitionKey: { name: 'from', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // GSI for querying by message SID (status updates / debug)
-    this.rcsTemplatesTable.addGlobalSecondaryIndex({
-      indexName: 'MessageSidIndex',
-      partitionKey: { name: 'messageSid', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
     // RCS Analytics Table - Pre-aggregated analytics metrics
     this.rcsAnalyticsTable = new dynamodb.Table(this, 'RcsAnalyticsTable', {
       tableName: `${this.stackName}-RcsAnalytics`,

@@ -20,6 +20,10 @@ export interface NotificationsStackProps extends StackProps {
   clinicConfigTableName?: string;
   /** KMS key ARN for decrypting secrets */
   secretsEncryptionKeyArn?: string;
+  /** SSM parameter name that stores the per-clinic SMA ID map JSON */
+  smaIdMapParameterName?: string;
+  /** Chime SDK media region to use for Meetings/Voice (default: us-east-1) */
+  chimeMediaRegion?: string;
 }
 
 export class NotificationsStack extends Stack {
@@ -29,11 +33,13 @@ export class NotificationsStack extends Stack {
   public readonly notificationsTable: dynamodb.Table;
   public readonly emailAnalyticsTable: dynamodb.Table;
   public readonly emailStatsTable: dynamodb.Table;
+  public readonly voiceCallAnalyticsTable: dynamodb.Table;
   public readonly unsubscribeTable: dynamodb.Table;
   public readonly emailAnalyticsFn: lambdaNode.NodejsFunction;
   public readonly emailEventProcessorFn: lambdaNode.NodejsFunction;
   public readonly unsubscribeFn: lambdaNode.NodejsFunction;
   public readonly emailAiFn: lambdaNode.NodejsFunction;
+  public readonly voiceCallAnalyticsFn: lambdaNode.NodejsFunction;
   public readonly sesConfigurationSet: ses.ConfigurationSet;
   public readonly sesEventsTopic: sns.Topic;
 
@@ -156,6 +162,35 @@ export class NotificationsStack extends Stack {
       tableName: `${id}-EmailStats`,
     });
     applyTags(this.emailStatsTable, { Table: 'email-stats' });
+
+    // ========================================
+    // VOICE CALL ANALYTICS TABLE (Marketing CALL)
+    // ========================================
+    // Tracks individual outbound voice call attempts (via Chime SMA + Polly Speak).
+    // Partition Key: callId (SMA TransactionId UUID)
+    // GSIs allow querying by clinic and time for Sent/Analytics tabs.
+    this.voiceCallAnalyticsTable = new dynamodb.Table(this, 'VoiceCallAnalyticsTable', {
+      partitionKey: { name: 'callId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      tableName: `${id}-VoiceCallAnalytics`,
+      timeToLiveAttribute: 'ttl', // Auto-cleanup old records after 1 year
+    });
+
+    this.voiceCallAnalyticsTable.addGlobalSecondaryIndex({
+      indexName: 'clinicId-startedAt-index',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'startedAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    this.voiceCallAnalyticsTable.addGlobalSecondaryIndex({
+      indexName: 'recipientPhone-startedAt-index',
+      partitionKey: { name: 'recipientPhone', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'startedAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    applyTags(this.voiceCallAnalyticsTable, { Table: 'voice-call-analytics' });
 
     // ========================================
     // UNSUBSCRIBE PREFERENCES TABLE
@@ -312,6 +347,25 @@ export class NotificationsStack extends Stack {
     this.emailStatsTable.grantReadData(this.emailAnalyticsFn);
 
     // ========================================
+    // VOICE CALL ANALYTICS API LAMBDA
+    // ========================================
+    this.voiceCallAnalyticsFn = new lambdaNode.NodejsFunction(this, 'VoiceCallAnalyticsFn', {
+      entry: path.join(__dirname, '..', '..', 'integrations', 'communication', 'voice-call-analytics-api.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(20),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        VOICE_CALL_ANALYTICS_TABLE: this.voiceCallAnalyticsTable.tableName,
+      },
+    });
+    applyTags(this.voiceCallAnalyticsFn, { Function: 'voice-call-analytics-api' });
+
+    // Grant DynamoDB read permissions to voice analytics API
+    this.voiceCallAnalyticsTable.grantReadData(this.voiceCallAnalyticsFn);
+
+    // ========================================
     // UNSUBSCRIBE HANDLER LAMBDA
     // ========================================
 
@@ -458,12 +512,16 @@ export class NotificationsStack extends Stack {
         TEMPLATES_TABLE: props.templatesTableName,
         NOTIFICATIONS_TABLE: this.notificationsTable.tableName,
         EMAIL_ANALYTICS_TABLE: this.emailAnalyticsTable.tableName,
+        VOICE_CALL_ANALYTICS_TABLE: this.voiceCallAnalyticsTable.tableName,
         UNSUBSCRIBE_TABLE: this.unsubscribeTable.tableName,
         SES_CONFIGURATION_SET_NAME: this.sesConfigurationSet.configurationSetName,
         UNSUBSCRIBE_BASE_URL: 'https://apig.todaysdentalinsights.com/notifications',
         // Secrets tables for dynamic clinic configuration retrieval
         GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
         CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
+        // Chime outbound calling (SMA + Meetings)
+        CHIME_MEDIA_REGION: props.chimeMediaRegion || 'us-east-1',
+        SMA_ID_MAP_PARAMETER_NAME: props.smaIdMapParameterName || '',
       },
     });
     applyTags(this.notifyFn, { Function: 'notifications' });
@@ -528,6 +586,39 @@ export class NotificationsStack extends Stack {
         'dynamodb:UpdateItem',
       ],
       resources: [this.emailAnalyticsTable.tableArn],
+    }));
+
+    // Grant write access to voice call analytics table for tracking
+    this.notifyFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'dynamodb:PutItem',
+        'dynamodb:UpdateItem',
+        'dynamodb:GetItem',
+      ],
+      resources: [this.voiceCallAnalyticsTable.tableArn],
+    }));
+
+    // Chime outbound calling permissions (Marketing CALL)
+    // - Reads SMA ID map from SSM
+    // - Creates ephemeral meeting per call
+    // - Initiates SIP Media Application call
+    if (props.smaIdMapParameterName) {
+      this.notifyFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['ssm:GetParameter'],
+        resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter${props.smaIdMapParameterName}`],
+      }));
+    }
+
+    this.notifyFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'chime:CreateSipMediaApplicationCall',
+        'chime-sdk-voice:CreateSipMediaApplicationCall',
+        'chime:CreateMeeting',
+        'chime:DeleteMeeting',
+        'chime-sdk-meetings:CreateMeeting',
+        'chime-sdk-meetings:DeleteMeeting',
+      ],
+      resources: ['*'],
     }));
 
     // ========================================
@@ -609,7 +700,7 @@ export class NotificationsStack extends Stack {
                 type: apigw.JsonSchemaType.ARRAY,
                 items: {
                   type: apigw.JsonSchemaType.STRING,
-                  enum: ['EMAIL', 'SMS']
+                  enum: ['EMAIL', 'SMS', 'CALL']
                 },
                 minItems: 1
               },
@@ -622,7 +713,12 @@ export class NotificationsStack extends Stack {
               // Custom SMS content (used when templateMessage is not provided)
               customSmsText: { type: apigw.JsonSchemaType.STRING },
               textMessage: { type: apigw.JsonSchemaType.STRING }, // Alias for customSmsText
-              toEmail: { type: apigw.JsonSchemaType.STRING }
+              toEmail: { type: apigw.JsonSchemaType.STRING },
+              // Custom Voice Call content (used when templateMessage is not provided)
+              customVoiceText: { type: apigw.JsonSchemaType.STRING },
+              voiceId: { type: apigw.JsonSchemaType.STRING },
+              voiceEngine: { type: apigw.JsonSchemaType.STRING, enum: ['standard', 'neural'] },
+              voiceLanguageCode: { type: apigw.JsonSchemaType.STRING },
             }
           }
         })
@@ -714,6 +810,83 @@ export class NotificationsStack extends Stack {
     // GET /email-analytics/emails/{messageId} - Get specific email details
     const emailDetailResource = emailsResource.addResource('{messageId}');
     emailDetailResource.addMethod('GET', analyticsIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Access-Control-Allow-Origin': true,
+            'method.response.header.Access-Control-Allow-Headers': true,
+            'method.response.header.Access-Control-Allow-Methods': true
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' },
+        { statusCode: '404' }
+      ],
+    });
+
+    // ========================================
+    // VOICE CALL ANALYTICS API ROUTES
+    // ========================================
+    const voiceAnalyticsIntegration = new apigw.LambdaIntegration(this.voiceCallAnalyticsFn);
+    const callAnalyticsResource = this.notificationsApi.root.addResource('call-analytics');
+
+    // GET /call-analytics/dashboard
+    const callDashboardResource = callAnalyticsResource.addResource('dashboard');
+    callDashboardResource.addMethod('GET', voiceAnalyticsIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      requestParameters: {
+        'method.request.querystring.clinicId': true,
+        'method.request.querystring.periodDays': false,
+      },
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Access-Control-Allow-Origin': true,
+            'method.response.header.Access-Control-Allow-Headers': true,
+            'method.response.header.Access-Control-Allow-Methods': true
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' }
+      ],
+    });
+
+    // GET /call-analytics/calls
+    const callsResource = callAnalyticsResource.addResource('calls');
+    callsResource.addMethod('GET', voiceAnalyticsIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      requestParameters: {
+        'method.request.querystring.clinicId': true,
+        'method.request.querystring.status': false,
+        'method.request.querystring.limit': false,
+        'method.request.querystring.nextToken': false,
+      },
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Access-Control-Allow-Origin': true,
+            'method.response.header.Access-Control-Allow-Headers': true,
+            'method.response.header.Access-Control-Allow-Methods': true
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' }
+      ],
+    });
+
+    // GET /call-analytics/calls/{callId}
+    const callDetailResource = callsResource.addResource('{callId}');
+    callDetailResource.addMethod('GET', voiceAnalyticsIntegration, {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [
@@ -952,6 +1125,7 @@ export class NotificationsStack extends Stack {
     [
       { fn: this.notifyFn, name: 'notifications', durationMs: Math.floor(Duration.seconds(20).toMilliseconds() * 0.8) },
       { fn: this.emailAnalyticsFn, name: 'email-analytics-api', durationMs: Math.floor(Duration.seconds(20).toMilliseconds() * 0.8) },
+      { fn: this.voiceCallAnalyticsFn, name: 'voice-call-analytics-api', durationMs: Math.floor(Duration.seconds(20).toMilliseconds() * 0.8) },
       { fn: this.emailEventProcessorFn, name: 'email-event-processor', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
       { fn: this.unsubscribeFn, name: 'unsubscribe-handler', durationMs: Math.floor(Duration.seconds(20).toMilliseconds() * 0.8) },
       { fn: this.emailAiFn, name: 'email-ai-handler', durationMs: Math.floor(Duration.seconds(60).toMilliseconds() * 0.8) },
@@ -964,6 +1138,7 @@ export class NotificationsStack extends Stack {
     createDynamoThrottleAlarm(this.notificationsTable.tableName, 'NotificationsTable');
     createDynamoThrottleAlarm(this.emailAnalyticsTable.tableName, 'EmailAnalyticsTable');
     createDynamoThrottleAlarm(this.emailStatsTable.tableName, 'EmailStatsTable');
+    createDynamoThrottleAlarm(this.voiceCallAnalyticsTable.tableName, 'VoiceCallAnalyticsTable');
     createDynamoThrottleAlarm(this.unsubscribeTable.tableName, 'UnsubscribeTable');
 
     // ========================================
@@ -1016,6 +1191,18 @@ export class NotificationsStack extends Stack {
       value: 'https://apig.todaysdentalinsights.com/notifications/email/ai/',
       description: 'Email AI Content Generation API Endpoint (authenticated)',
       exportName: `${Stack.of(this).stackName}-EmailAiApiEndpoint`,
+    });
+
+    new CfnOutput(this, 'VoiceCallAnalyticsTableName', {
+      value: this.voiceCallAnalyticsTable.tableName,
+      description: 'Voice Call Analytics DynamoDB Table Name',
+      exportName: `${Stack.of(this).stackName}-VoiceCallAnalyticsTableName`,
+    });
+
+    new CfnOutput(this, 'CallAnalyticsApiEndpoint', {
+      value: 'https://apig.todaysdentalinsights.com/notifications/call-analytics/',
+      description: 'Voice Call Analytics API Endpoint (authenticated)',
+      exportName: `${Stack.of(this).stackName}-CallAnalyticsApiEndpoint`,
     });
   }
 }

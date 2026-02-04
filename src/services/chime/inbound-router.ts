@@ -69,6 +69,7 @@ const CLINICS_TABLE_NAME = process.env.CLINICS_TABLE_NAME!;
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME!;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME!;
 const LOCKS_TABLE_NAME = process.env.LOCKS_TABLE_NAME!;
+const VOICE_CALL_ANALYTICS_TABLE = process.env.VOICE_CALL_ANALYTICS_TABLE;
 const HOLD_MUSIC_BUCKET = process.env.HOLD_MUSIC_BUCKET;
 const POLLY_VOICE_ID = (process.env.POLLY_VOICE_ID || 'Joanna') as VoiceId;
 const POLLY_ENGINE = (process.env.POLLY_ENGINE || 'standard') as Engine;
@@ -635,6 +636,102 @@ async function cleanupMeeting(meetingId: string) {
         if (err.name !== 'NotFoundException') {
             console.warn('Error cleaning up meeting:', err);
         }
+    }
+}
+
+/**
+ * Best-effort upsert into NotificationsStack VoiceCallAnalytics table.
+ * This enables Marketing -> Voice Calls -> Analytics/Sent tabs.
+ */
+async function upsertVoiceCallAnalytics(
+    callId: string,
+    data: {
+        clinicId?: string;
+        scheduleId?: string;
+        templateName?: string;
+        patNum?: string;
+        patientName?: string;
+        recipientPhone?: string;
+        fromPhoneNumber?: string;
+        meetingId?: string;
+        status?: string;
+        startedAt?: string;
+        answeredAt?: string;
+        endedAt?: string;
+        sipResponseCode?: string;
+        endReason?: string;
+        voiceId?: string;
+        voiceEngine?: string;
+        voiceLanguageCode?: string;
+        source?: string;
+    }
+): Promise<void> {
+    if (!VOICE_CALL_ANALYTICS_TABLE) return;
+    try {
+        const nowIso = new Date().toISOString();
+        const ttl = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
+
+        const exprNames: Record<string, string> = { '#status': 'status' };
+        const exprValues: Record<string, any> = {
+            ':now': nowIso,
+            ':ttl': ttl,
+            ':status': String(data.status || 'UNKNOWN'),
+        };
+
+        let updateExpr = 'SET updatedAt = :now, ttl = if_not_exists(ttl, :ttl), #status = :status';
+
+        const setIfNotExists = (attr: string, value: any, token: string) => {
+            if (value === undefined || value === null || String(value).length === 0) return;
+            exprValues[token] = value;
+            updateExpr += `, ${attr} = if_not_exists(${attr}, ${token})`;
+        };
+
+        setIfNotExists('clinicId', data.clinicId, ':clinicId');
+        setIfNotExists('scheduleId', data.scheduleId, ':scheduleId');
+        setIfNotExists('templateName', data.templateName, ':templateName');
+        setIfNotExists('patNum', data.patNum, ':patNum');
+        setIfNotExists('patientName', data.patientName, ':patientName');
+        setIfNotExists('recipientPhone', data.recipientPhone, ':recipientPhone');
+        setIfNotExists('fromPhoneNumber', data.fromPhoneNumber, ':fromPhoneNumber');
+        setIfNotExists('meetingId', data.meetingId, ':meetingId');
+        setIfNotExists('voiceId', data.voiceId, ':voiceId');
+        setIfNotExists('voiceEngine', data.voiceEngine, ':voiceEngine');
+        setIfNotExists('voiceLanguageCode', data.voiceLanguageCode, ':voiceLanguageCode');
+        setIfNotExists('source', data.source, ':source');
+
+        // Timestamps
+        if (data.startedAt) {
+            exprValues[':startedAt'] = data.startedAt;
+            updateExpr += ', startedAt = if_not_exists(startedAt, :startedAt)';
+        }
+        if (data.answeredAt) {
+            exprValues[':answeredAt'] = data.answeredAt;
+            updateExpr += ', answeredAt = :answeredAt';
+        }
+        if (data.endedAt) {
+            exprValues[':endedAt'] = data.endedAt;
+            updateExpr += ', endedAt = :endedAt';
+        }
+
+        // End metadata
+        if (data.sipResponseCode !== undefined) {
+            exprValues[':sip'] = String(data.sipResponseCode);
+            updateExpr += ', sipResponseCode = :sip';
+        }
+        if (data.endReason !== undefined) {
+            exprValues[':reason'] = String(data.endReason);
+            updateExpr += ', endReason = :reason';
+        }
+
+        await ddb.send(new UpdateCommand({
+            TableName: VOICE_CALL_ANALYTICS_TABLE,
+            Key: { callId },
+            UpdateExpression: updateExpr,
+            ExpressionAttributeNames: exprNames,
+            ExpressionAttributeValues: exprValues,
+        }));
+    } catch (err: any) {
+        console.warn('[VoiceCallAnalytics] Failed to upsert (non-fatal):', err?.message || err);
     }
 }
 
@@ -1328,6 +1425,26 @@ export const handler = async (event: any): Promise<any> => {
                     const engine = engineRaw === 'standard' ? 'standard' : 'neural';
                     const languageCode = String(args?.voice_languageCode || args?.voiceLanguageCode || 'en-US');
 
+                    // Best-effort: mark call as answered in analytics table
+                    const nowIso = new Date().toISOString();
+                    await upsertVoiceCallAnalytics(callId, {
+                        clinicId: String(args?.fromClinicId || args?.clinicId || '').trim() || undefined,
+                        scheduleId: String(args?.scheduleId || '').trim() || undefined,
+                        templateName: String(args?.templateName || '').trim() || undefined,
+                        patNum: String(args?.patNum || '').trim() || undefined,
+                        patientName: String(args?.patientName || '').trim() || undefined,
+                        recipientPhone: String(args?.toPhoneNumber || '').trim() || undefined,
+                        fromPhoneNumber: String(args?.fromPhoneNumber || '').trim() || undefined,
+                        meetingId,
+                        status: 'ANSWERED',
+                        startedAt: nowIso, // only applied if the record doesn't exist yet
+                        answeredAt: nowIso,
+                        voiceId,
+                        voiceEngine: engine,
+                        voiceLanguageCode: languageCode,
+                        source: String(args?.source || '').trim() || undefined,
+                    });
+
                     const actions: any[] = [];
 
                     // Best-effort: join the PSTN leg into the ephemeral meeting
@@ -1750,6 +1867,53 @@ export const handler = async (event: any): Promise<any> => {
                 // Cleanup the ephemeral meeting using the meetingId passed via ArgumentsMap.
                 if (args?.callType === 'MarketingOutbound') {
                     const meetingId = typeof args?.meetingId === 'string' ? args.meetingId : undefined;
+                    const sipResponseCode = event?.CallDetails?.SipResponseCode ||
+                        event?.ActionData?.Parameters?.SipResponseCode ||
+                        '0';
+
+                    // Map SIP response to end reason (subset of main mapping below)
+                    let endReason = 'unknown';
+                    switch (sipResponseCode?.toString()) {
+                        case '486': endReason = 'busy'; break;
+                        case '480': endReason = 'no_answer'; break;
+                        case '603': endReason = 'declined'; break;
+                        case '487': endReason = 'cancelled'; break;
+                        case '404': endReason = 'invalid_number'; break;
+                        case '408': endReason = 'timeout'; break;
+                        case '484': endReason = 'incomplete_number'; break;
+                        case '503': endReason = 'service_unavailable'; break;
+                        case '502':
+                        case '504': endReason = 'network_error'; break;
+                        case '0':
+                        case '200': endReason = 'normal'; break;
+                        default: endReason = `sip_${sipResponseCode}`;
+                    }
+
+                    const finalStatus = (sipResponseCode?.toString() === '0' || sipResponseCode?.toString() === '200')
+                        ? 'COMPLETED'
+                        : 'FAILED';
+
+                    const nowIso = new Date().toISOString();
+                    await upsertVoiceCallAnalytics(callId, {
+                        clinicId: String(args?.fromClinicId || args?.clinicId || '').trim() || undefined,
+                        scheduleId: String(args?.scheduleId || '').trim() || undefined,
+                        templateName: String(args?.templateName || '').trim() || undefined,
+                        patNum: String(args?.patNum || '').trim() || undefined,
+                        patientName: String(args?.patientName || '').trim() || undefined,
+                        recipientPhone: String(args?.toPhoneNumber || '').trim() || undefined,
+                        fromPhoneNumber: String(args?.fromPhoneNumber || '').trim() || undefined,
+                        meetingId,
+                        status: finalStatus,
+                        startedAt: nowIso, // only applied if the record doesn't exist yet
+                        endedAt: nowIso,
+                        sipResponseCode: String(sipResponseCode || ''),
+                        endReason,
+                        voiceId: String(args?.voice_voiceId || args?.voiceId || '').trim() || undefined,
+                        voiceEngine: String(args?.voice_engine || args?.voiceEngine || '').trim() || undefined,
+                        voiceLanguageCode: String(args?.voice_languageCode || args?.voiceLanguageCode || '').trim() || undefined,
+                        source: String(args?.source || '').trim() || undefined,
+                    });
+
                     if (meetingId) {
                         try {
                             await cleanupMeeting(meetingId);

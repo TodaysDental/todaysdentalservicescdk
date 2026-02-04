@@ -70,6 +70,7 @@ const TEMPLATES_TABLE = process.env.TEMPLATES_TABLE || 'Templates';
 const QUERIES_TABLE = process.env.QUERIES_TABLE || 'SQLQueries-V3';
 const EMAIL_ANALYTICS_TABLE = process.env.EMAIL_ANALYTICS_TABLE || '';
 const EMAIL_QUEUE_URL = process.env.EMAIL_QUEUE_URL || '';
+const VOICE_CALL_ANALYTICS_TABLE = process.env.VOICE_CALL_ANALYTICS_TABLE || '';
 
 // Batch size for SQS SendMessageBatch (max 10)
 const SQS_BATCH_SIZE = 10;
@@ -390,6 +391,8 @@ type SendMarketingCallArgs = {
   languageCode?: string;
   scheduleId?: string;
   templateName?: string;
+  patNum?: string;
+  patientName?: string;
 };
 
 async function sendMarketingCall(args: SendMarketingCallArgs): Promise<void> {
@@ -425,6 +428,8 @@ async function sendMarketingCall(args: SendMarketingCallArgs): Promise<void> {
         scheduleId: String(args.scheduleId || ''),
         templateName: String(args.templateName || ''),
         meetingId: String(meetingId),
+        patNum: String(args.patNum || ''),
+        patientName: String(args.patientName || ''),
         voice_message: String(args.message || ''),
         voice_voiceId: String(args.voiceId || ''),
         voice_engine: String(args.engine || 'neural'),
@@ -434,13 +439,45 @@ async function sendMarketingCall(args: SendMarketingCallArgs): Promise<void> {
       },
     }));
 
+    const transactionId = callRes?.SipMediaApplicationCall?.TransactionId;
     console.log('[QueueConsumer/CALL] Started marketing outbound call', {
       clinicId: args.clinicId,
       to: args.toPhoneNumber,
       from: args.fromPhoneNumber,
       meetingId,
-      transactionId: callRes?.SipMediaApplicationCall?.TransactionId,
+      transactionId,
     });
+
+    // Best-effort: store voice call analytics record for Sent/Analytics tabs
+    if (VOICE_CALL_ANALYTICS_TABLE && transactionId) {
+      try {
+        const now = new Date();
+        const ttl = Math.floor(now.getTime() / 1000) + (365 * 24 * 60 * 60);
+        await doc.send(new PutCommand({
+          TableName: VOICE_CALL_ANALYTICS_TABLE,
+          Item: {
+            callId: transactionId,
+            clinicId: args.clinicId,
+            scheduleId: args.scheduleId || '',
+            templateName: args.templateName || '',
+            patNum: args.patNum || '',
+            patientName: args.patientName || '',
+            recipientPhone: args.toPhoneNumber,
+            fromPhoneNumber: args.fromPhoneNumber,
+            meetingId,
+            status: 'INITIATED',
+            startedAt: now.toISOString(),
+            voiceId: args.voiceId || '',
+            voiceEngine: args.engine || 'neural',
+            voiceLanguageCode: args.languageCode || 'en-US',
+            source: 'schedule',
+            ttl,
+          }
+        }));
+      } catch (analyticsErr) {
+        console.warn('[QueueConsumer/CALL] Failed to store voice call analytics (non-fatal):', analyticsErr);
+      }
+    }
   } catch (err) {
     // If call initiation fails, cleanup meeting here since inbound-router won't receive events
     try {
@@ -969,6 +1006,19 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
     if (hasCallType && voiceTemplateText && fromPhoneNumber) {
       try {
         const templateContext = await buildTemplateContext(clinicId, row);
+        const patNum =
+          String(
+            (row as any)?.PatNum ??
+              (row as any)?.patNum ??
+              (row as any)?.PATNUM ??
+              (row as any)?.patientId ??
+              (row as any)?.PatientId ??
+              ''
+          ).trim() || undefined;
+        const patientName =
+          (templateContext['patient_name'] || '').trim() ||
+          [templateContext['first_name'], templateContext['last_name']].filter(Boolean).join(' ').trim() ||
+          undefined;
         const renderedVoice = renderTemplate(voiceTemplateText, templateContext).trim();
         if (!renderedVoice) {
           console.warn(`[QueueConsumer/CALL] Rendered voice message is empty; skipping call to ${phone}`);
@@ -983,6 +1033,8 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
             languageCode: template?.voice_languageCode || 'en-US',
             scheduleId,
             templateName: templateMessage,
+            patNum,
+            patientName,
           });
           callsStarted++;
         }
