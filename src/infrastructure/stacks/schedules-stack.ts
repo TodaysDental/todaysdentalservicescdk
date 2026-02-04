@@ -24,6 +24,10 @@ export interface SchedulesStackProps extends StackProps {
   clinicConfigTableName?: string;
   /** KMS key ARN for decrypting secrets */
   secretsEncryptionKeyArn?: string;
+  /** SSM parameter name that stores the per-clinic SMA ID map JSON */
+  smaIdMapParameterName?: string;
+  /** Chime SDK media region to use for Meetings/Voice (default: us-east-1) */
+  chimeMediaRegion?: string;
 }
 
 export class SchedulesStack extends Stack {
@@ -302,6 +306,9 @@ export class SchedulesStack extends Stack {
         // SFTP password now retrieved from GlobalSecrets table
         GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
         CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
+        // Chime outbound calling (SMA + Meetings)
+        CHIME_MEDIA_REGION: props.chimeMediaRegion || 'us-east-1',
+        SMA_ID_MAP_PARAMETER_NAME: props.smaIdMapParameterName || '',
         // Email queue for individual email tasks
         EMAIL_QUEUE_URL: emailQueue.queueUrl,
         // Email analytics table for tracking scheduled emails
@@ -339,6 +346,33 @@ export class SchedulesStack extends Stack {
       sameEnvironment: true,
     });
     rcsSendMessageFn.grantInvoke(this.schedulerQueueConsumerFn);
+
+    // ========================================
+    // CHIME OUTBOUND CALLING INTEGRATION (CALL)
+    // ========================================
+    // The queue consumer can initiate Chime SMA outbound calls for marketing voice campaigns.
+    // It creates a short-lived Chime meeting (for call bridging / optional recording) and
+    // calls the per-clinic SIP Media Application (SMA) using the SMA ID Map stored in SSM.
+    if (props.smaIdMapParameterName) {
+      this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['ssm:GetParameter'],
+        resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter${props.smaIdMapParameterName}`],
+      }));
+    }
+
+    this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        // SIP Media Application outbound call
+        'chime:CreateSipMediaApplicationCall',
+        'chime-sdk-voice:CreateSipMediaApplicationCall',
+        // Ephemeral meeting for outbound voice campaigns
+        'chime:CreateMeeting',
+        'chime:DeleteMeeting',
+        'chime-sdk-meetings:CreateMeeting',
+        'chime-sdk-meetings:DeleteMeeting',
+      ],
+      resources: ['*'],
+    }));
 
     // Email Sender Lambda - processes individual email tasks from the email queue
     // High concurrency to maximize throughput while staying under SES rate limits

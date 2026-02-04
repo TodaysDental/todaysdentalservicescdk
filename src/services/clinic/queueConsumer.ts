@@ -3,6 +3,9 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand, ScanCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { SQSClient, SendMessageBatchCommand } from '@aws-sdk/client-sqs';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { ChimeSDKVoiceClient, CreateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
+import { ChimeSDKMeetingsClient, CreateMeetingCommand, DeleteMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
+import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { v4 as uuidv4 } from 'uuid';
 import { SQSEvent } from 'aws-lambda';
 import { parse as parseCsv } from 'csv-parse/sync';
@@ -55,6 +58,13 @@ const sqsClient = new SQSClient({});
 const lambdaClient = new LambdaClient({});
 const sms = new (PinpointSMSVoiceV2Client as any)({});
 
+// Chime SDK clients (for outbound marketing calls)
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
+const SMA_ID_MAP_PARAMETER_NAME = process.env.SMA_ID_MAP_PARAMETER_NAME || '';
+const chimeMeetingsClient = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
+const chimeVoiceClient = new ChimeSDKVoiceClient({ region: CHIME_MEDIA_REGION });
+const ssmClient = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
+
 const SCHEDULES_TABLE = process.env.SCHEDULES_TABLE || process.env.SCHEDULER || 'SCHEDULER';
 const TEMPLATES_TABLE = process.env.TEMPLATES_TABLE || 'Templates';
 const QUERIES_TABLE = process.env.QUERIES_TABLE || 'SQLQueries-V3';
@@ -69,6 +79,39 @@ const CONSOLIDATED_SFTP_HOST = process.env.CONSOLIDATED_SFTP_HOST || '';
 
 // Cache for clinic credentials (populated on demand from DynamoDB)
 const clinicCredsCache: Record<string, ClinicCreds> = {};
+
+// SMA ID Map cache (loaded from SSM once per warm Lambda)
+let cachedSmaIdMap: Record<string, string> | null = null;
+
+async function getSmaIdMap(): Promise<Record<string, string>> {
+  if (cachedSmaIdMap) return cachedSmaIdMap;
+
+  if (!SMA_ID_MAP_PARAMETER_NAME) {
+    console.warn('[QueueConsumer/CALL] No SMA_ID_MAP_PARAMETER_NAME configured; CALL notifications will be skipped');
+    cachedSmaIdMap = {};
+    return cachedSmaIdMap;
+  }
+
+  try {
+    const response = await ssmClient.send(new GetParameterCommand({ Name: SMA_ID_MAP_PARAMETER_NAME }));
+    if (response.Parameter?.Value) {
+      cachedSmaIdMap = JSON.parse(response.Parameter.Value);
+      console.log('[QueueConsumer/CALL] Loaded SMA ID Map from SSM:', Object.keys(cachedSmaIdMap || {}).length, 'entries');
+      return cachedSmaIdMap || {};
+    }
+  } catch (error) {
+    console.error('[QueueConsumer/CALL] Failed to load SMA ID Map from SSM:', error);
+  }
+
+  cachedSmaIdMap = {};
+  return cachedSmaIdMap;
+}
+
+async function getSmaIdForClinic(clinicId: string): Promise<string | undefined> {
+  const map = await getSmaIdMap();
+  if (map[clinicId]) return map[clinicId];
+  return map['default'] || Object.values(map)[0];
+}
 
 /**
  * Get clinic credentials from DynamoDB (cached)
@@ -317,7 +360,8 @@ function normalizePhone(p: string): string | undefined {
   const digits = (p || '').replace(/[^\d]/g, '');
   if (digits.length === 10) return `+1${digits}`;
   if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (digits.startsWith('+') && digits.length > 8) return digits;
+  // NOTE: `digits` never includes '+'. Keep this for backward compatibility, but it won't be hit.
+  if ((p || '').startsWith('+') && digits.length > 8) return `+${digits}`;
   return undefined;
 }
 
@@ -334,6 +378,78 @@ async function sendSms({ clinicId, to, body }: { clinicId: string; to: string; b
     MessageType: 'TRANSACTIONAL',
   });
   await sms.send(cmd);
+}
+
+type SendMarketingCallArgs = {
+  clinicId: string;
+  fromPhoneNumber: string;
+  toPhoneNumber: string;
+  message: string;
+  voiceId?: string;
+  engine?: 'standard' | 'neural';
+  languageCode?: string;
+  scheduleId?: string;
+  templateName?: string;
+};
+
+async function sendMarketingCall(args: SendMarketingCallArgs): Promise<void> {
+  const smaId = await getSmaIdForClinic(args.clinicId);
+  if (!smaId) {
+    throw new Error(`[QueueConsumer/CALL] No SMA ID found for clinic "${args.clinicId}" (and no default SMA configured)`);
+  }
+
+  // Create an ephemeral meeting for this call (required by marketing outbound call flow)
+  const externalMeetingIdBase = `mkt-${args.clinicId}-${Date.now()}`;
+  const externalMeetingId = externalMeetingIdBase.slice(0, 64);
+
+  const meetingRes = await chimeMeetingsClient.send(new CreateMeetingCommand({
+    ClientRequestToken: uuidv4(),
+    MediaRegion: CHIME_MEDIA_REGION,
+    ExternalMeetingId: externalMeetingId,
+  }));
+
+  const meetingId = meetingRes.Meeting?.MeetingId;
+  if (!meetingId) {
+    throw new Error('[QueueConsumer/CALL] Failed to create Chime meeting (missing MeetingId)');
+  }
+
+  try {
+    const callRes = await chimeVoiceClient.send(new CreateSipMediaApplicationCallCommand({
+      FromPhoneNumber: args.fromPhoneNumber,
+      ToPhoneNumber: args.toPhoneNumber,
+      SipMediaApplicationId: smaId,
+      ArgumentsMap: {
+        callType: 'MarketingOutbound',
+        clinicId: String(args.clinicId),
+        fromClinicId: String(args.clinicId),
+        scheduleId: String(args.scheduleId || ''),
+        templateName: String(args.templateName || ''),
+        meetingId: String(meetingId),
+        voice_message: String(args.message || ''),
+        voice_voiceId: String(args.voiceId || ''),
+        voice_engine: String(args.engine || 'neural'),
+        voice_languageCode: String(args.languageCode || 'en-US'),
+        toPhoneNumber: String(args.toPhoneNumber),
+        fromPhoneNumber: String(args.fromPhoneNumber),
+      },
+    }));
+
+    console.log('[QueueConsumer/CALL] Started marketing outbound call', {
+      clinicId: args.clinicId,
+      to: args.toPhoneNumber,
+      from: args.fromPhoneNumber,
+      meetingId,
+      transactionId: callRes?.SipMediaApplicationCall?.TransactionId,
+    });
+  } catch (err) {
+    // If call initiation fails, cleanup meeting here since inbound-router won't receive events
+    try {
+      await chimeMeetingsClient.send(new DeleteMeetingCommand({ MeetingId: meetingId }));
+    } catch (cleanupErr) {
+      console.warn('[QueueConsumer/CALL] Failed to cleanup meeting after call initiation failure:', cleanupErr);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -606,9 +722,15 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   console.log(`Processing schedule ${scheduleId} for clinic ${clinicId} (${timeZone})`);
 
   // Determine types once (used for both fetching and sending)
-  const hasEmailType = notificationTypes.includes('EMAIL');
-  const hasSmsType = notificationTypes.includes('SMS');
-  const hasRcsType = notificationTypes.includes('RCS') || notificationTypes.includes('rcs');
+  const normalizedTypes = (notificationTypes || []).map((t) => String(t).toUpperCase());
+  const hasEmailType = normalizedTypes.includes('EMAIL');
+  const hasSmsType = normalizedTypes.includes('SMS');
+  const hasRcsType = normalizedTypes.includes('RCS');
+  const hasCallType =
+    normalizedTypes.includes('CALL') ||
+    normalizedTypes.includes('VOICE') ||
+    normalizedTypes.includes('VOICE_CALL') ||
+    normalizedTypes.includes('PHONE_CALL');
 
   // Fetch the SQL query
   const sql = await fetchQueryByName(queryTemplate);
@@ -621,7 +743,7 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   // - Email/SMS schedules use TemplatesStack (templateMessage = template_name)
   // - RCS schedules prefer RcsStack templates table (templateMessage = templateId)
   let template: any | null = null;
-  if (hasEmailType || hasSmsType) {
+  if (hasEmailType || hasSmsType || hasCallType) {
     template = await fetchTemplateByName(templateMessage);
   }
 
@@ -635,7 +757,7 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   }
 
   // Validate template availability per notification type
-  if ((hasEmailType || hasSmsType) && !template) {
+  if ((hasEmailType || hasSmsType || hasCallType) && !template) {
     console.warn(`Missing TemplatesStack template for schedule ${scheduleId}: templateMessage=${templateMessage}`);
     return;
   }
@@ -650,12 +772,24 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
     }
   }
 
+  // Validate voice template content if CALL notifications are enabled
+  const voiceTemplateText: string | undefined = template?.voice_message || template?.text_message;
+  if (hasCallType && !voiceTemplateText) {
+    console.warn(`Missing voice_message/text_message for CALL schedule ${scheduleId}: templateMessage=${templateMessage}`);
+    // If CALL is the only notification type, abort the schedule; otherwise keep processing other channels
+    if (!hasEmailType && !hasSmsType && !hasRcsType) {
+      return;
+    }
+  }
+
   // Run the OpenDental query for this clinic
   const rows = await runOpenDentalQuery({ clinicId, sql });
   
   let emailsEnqueued = 0;
   let smsSent = 0;
   let rcsSent = 0;
+  let callsStarted = 0;
+  let callsFailed = 0;
 
   // Collect email tasks to enqueue in batches
   const emailTasksToEnqueue: EmailQueueTask[] = [];
@@ -720,6 +854,22 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   }
   
   console.log(`Enqueued ${emailsEnqueued} emails to email queue for ${clinicId}`);
+
+  // Resolve clinic caller ID for outbound CALL notifications (best-effort)
+  let fromPhoneNumber: string | undefined;
+  if (hasCallType && voiceTemplateText) {
+    try {
+      const clinicConfig = await getClinicConfig(clinicId);
+      if (clinicConfig?.phoneNumber) {
+        fromPhoneNumber = normalizePhone(String(clinicConfig.phoneNumber)) || String(clinicConfig.phoneNumber);
+      }
+      if (!fromPhoneNumber) {
+        console.warn(`[QueueConsumer/CALL] Missing clinic phoneNumber for clinic ${clinicId}; skipping CALL notifications`);
+      }
+    } catch (err) {
+      console.warn(`[QueueConsumer/CALL] Failed to load clinic config for caller ID; skipping CALL notifications`, err);
+    }
+  }
 
   // Process SMS and RCS directly (usually lower volume, keep simple)
   const resolvedRcs = hasRcsType
@@ -814,12 +964,43 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
         console.error(`Failed to send SMS to ${phone}:`, error);
       }
     }
+
+    // Voice marketing calls (CALL/VOICE)
+    if (hasCallType && voiceTemplateText && fromPhoneNumber) {
+      try {
+        const templateContext = await buildTemplateContext(clinicId, row);
+        const renderedVoice = renderTemplate(voiceTemplateText, templateContext).trim();
+        if (!renderedVoice) {
+          console.warn(`[QueueConsumer/CALL] Rendered voice message is empty; skipping call to ${phone}`);
+        } else {
+          await sendMarketingCall({
+            clinicId,
+            fromPhoneNumber,
+            toPhoneNumber: phone,
+            message: renderedVoice,
+            voiceId: template?.voice_voiceId || 'Joanna',
+            engine: (template?.voice_engine as 'standard' | 'neural') || 'neural',
+            languageCode: template?.voice_languageCode || 'en-US',
+            scheduleId,
+            templateName: templateMessage,
+          });
+          callsStarted++;
+        }
+      } catch (error) {
+        callsFailed++;
+        console.error(`Failed to start CALL to ${phone}:`, error);
+      }
+    }
   }
 
   // Mark the schedule as run for this clinic
   await markRanForClinic(scheduleId, clinicId);
   
-  console.log(`Completed schedule ${scheduleId} for clinic ${clinicId}: ${emailsEnqueued} emails enqueued, ${smsSent} SMS sent, ${rcsSent} RCS sent from ${rows.length} rows`);
+  console.log(
+    `Completed schedule ${scheduleId} for clinic ${clinicId}: ` +
+      `${emailsEnqueued} emails enqueued, ${smsSent} SMS sent, ${rcsSent} RCS sent, ` +
+      `${callsStarted} calls started (${callsFailed} failed) from ${rows.length} rows`
+  );
 }
 
 export const handler = async (event: SQSEvent) => {

@@ -456,22 +456,11 @@ const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
   connectCallRecordingsBucketName: CONNECT_CALL_RECORDINGS_BUCKET_NAME,
   connectCallRecordingsPrefix: CONNECT_CALL_RECORDINGS_PREFIX,
   connectCallRecordingsKmsKeyArn: CONNECT_CALL_RECORDINGS_KMS_KEY_ARN,
-  // Voice AI integration (from AiAgentsStack)
-  // NOTE: Set ENABLE_AFTER_HOURS_AI=true after AiAgentsStack is deployed
+  // After-hours forwarding to Connect/Lex (AI phone number)
   enableAfterHoursAi: ENABLE_AFTER_HOURS_AI,
-  voiceAiLambdaArn: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceAiFunctionArn`) : undefined,
   // CRITICAL FIX: Use ClinicHoursStack table directly - it's the source of truth for clinic hours
   clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
-  aiAgentsTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableName`) : undefined,
   voiceConfigTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceConfigTableName`) : undefined,
-  scheduledCallsTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-ScheduledCallsTableName`) : undefined,
-  // NOTE: ChimeStack creates the recordings bucket - it will be shared with AiAgentsStack
-  // Enable real-time transcription for Voice AI - required for AI to listen to speech
-  // This sets up Media Insights Pipeline + Amazon Transcribe + Kinesis for speech-to-text
-  enableRealTimeTranscription: ENABLE_AFTER_HOURS_AI,
-  // Enable AI phone numbers - creates SIP Rules for aiPhoneNumber entries in clinic-config.json
-  // Calls to AI phone numbers route directly to Voice AI (no business hours check)
-  enableAiPhoneNumbers: ENABLE_AFTER_HOURS_AI,
   // ========================================
   // PUSH NOTIFICATIONS INTEGRATION
   // ========================================
@@ -614,6 +603,9 @@ const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesN1'
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  // Chime outbound calling (marketing voice campaigns)
+  smaIdMapParameterName: `/${CHIME_STACK_NAME}/SmaIdMap`,
+  chimeMediaRegion: CHIME_MEDIA_REGION,
 });
 schedulesStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
 
@@ -783,8 +775,6 @@ const connectLexAiStack = new ConnectLexAiStack(app, 'TodaysDentalInsightsConnec
   // AI phone numbers mapping for clinic detection (built from clinic-config.json)
   aiPhoneNumbersJson: JSON.stringify(aiPhoneNumbersMap),
   defaultClinicId: defaultClinicForAi,
-  // Thinking audio URL from ChimeStack - plays keyboard sounds during AI processing
-  thinkingAudioUrl: chimeStack.thinkingAudioUrl,
   thinkingAudioMode: 'verbal',
   // Enable async pattern for 60s Bedrock timeout (overcomes Connect's 8s sync limit)
   // This allows complex tool calls (patient search, appointment booking) to complete
@@ -794,7 +784,7 @@ const connectLexAiStack = new ConnectLexAiStack(app, 'TodaysDentalInsightsConnec
 });
 connectLexAiStack.addDependency(aiAgentsStack);
 connectLexAiStack.addDependency(analyticsStack);
-connectLexAiStack.addDependency(chimeStack); // Needs public audio bucket from ChimeStack
+// ConnectLexAiStack is standalone for AI calling (no Chime dependency).
 
 // Query Generator Stack - AI-powered SQL query generation using Bedrock
 const queryGeneratorStack = new QueryGeneratorStack(app, 'TodaysDentalInsightsQueryGeneratorN1', {

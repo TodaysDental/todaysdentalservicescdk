@@ -59,12 +59,17 @@ interface Template {
   template_name: string;
   module: string; // HR, Accounting, Operations, Finance, Marketing, Insurance, IT
   email_subject?: string;
-  email_body: string;
+  email_body?: string;
   text_message?: string;
   // RCS message fields
   rcs_message?: string;         // Plain text RCS message
   rcs_rich_card?: RCSRichCard;  // Single rich card template
   rcs_carousel?: RCSCarousel;   // Carousel template (2-10 cards)
+  // Voice call (Chime SMA Speak / Amazon Polly)
+  voice_message?: string;       // Plain text to be spoken
+  voice_voiceId?: string;       // Polly VoiceId (e.g., Joanna)
+  voice_engine?: 'standard' | 'neural';
+  voice_languageCode?: string;  // e.g., en-US
   modified_at: string;
   modified_by: string;
   created_at: string;
@@ -180,11 +185,31 @@ async function createTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
   const body = JSON.parse(event.body || '{}');
 
   // Validate required fields
-  if (!body.template_name || !body.email_body) {
+  if (!body.template_name || !String(body.template_name).trim()) {
     return {
       statusCode: 400,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ error: 'Template name and email body are required' }),
+      body: JSON.stringify({ error: 'Template name is required' }),
+    };
+  }
+
+  // Require at least one content field (email/sms/rcs/voice)
+  const hasAnyContent =
+    (typeof body.email_body === 'string' && body.email_body.trim().length > 0) ||
+    (typeof body.text_message === 'string' && body.text_message.trim().length > 0) ||
+    (typeof body.rcs_message === 'string' && body.rcs_message.trim().length > 0) ||
+    !!body.rcs_rich_card ||
+    !!body.rcs_carousel ||
+    (typeof body.voice_message === 'string' && body.voice_message.trim().length > 0);
+
+  if (!hasAnyContent) {
+    return {
+      statusCode: 400,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({
+        error:
+          'At least one template content field is required (email_body, text_message, rcs_message, rcs_rich_card, rcs_carousel, voice_message)',
+      }),
     };
   }
 
@@ -255,6 +280,15 @@ async function createTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     }
   }
 
+  // Validate voice engine if provided
+  if (body.voice_engine && !['standard', 'neural'].includes(body.voice_engine)) {
+    return {
+      statusCode: 400,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({ error: 'voice_engine must be "standard" or "neural"' }),
+    };
+  }
+
   const templateId = uuidv4();
   const timestamp = new Date().toISOString();
   const modifiedBy = getUserDisplayName(userPerms);
@@ -264,11 +298,15 @@ async function createTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     template_name: body.template_name,
     module: body.module,
     email_subject: body.email_subject || '',
-    email_body: body.email_body,
+    email_body: body.email_body || '',
     text_message: body.text_message || '',
     rcs_message: body.rcs_message || '',
     rcs_rich_card: body.rcs_rich_card,
     rcs_carousel: body.rcs_carousel,
+    voice_message: body.voice_message || '',
+    voice_voiceId: body.voice_voiceId || '',
+    voice_engine: body.voice_engine,
+    voice_languageCode: body.voice_languageCode || '',
     created_at: timestamp,
     modified_at: timestamp,
     modified_by: modifiedBy,
@@ -297,11 +335,31 @@ async function updateTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
   const body = JSON.parse(event.body || '{}');
 
   // Validate required fields
-  if (!body.template_name || !body.email_body) {
+  if (!body.template_name || !String(body.template_name).trim()) {
     return {
       statusCode: 400,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ error: 'Template name and email body are required' }),
+      body: JSON.stringify({ error: 'Template name is required' }),
+    };
+  }
+
+  // Require at least one content field (email/sms/rcs/voice)
+  const hasAnyContent =
+    (typeof body.email_body === 'string' && body.email_body.trim().length > 0) ||
+    (typeof body.text_message === 'string' && body.text_message.trim().length > 0) ||
+    (typeof body.rcs_message === 'string' && body.rcs_message.trim().length > 0) ||
+    !!body.rcs_rich_card ||
+    !!body.rcs_carousel ||
+    (typeof body.voice_message === 'string' && body.voice_message.trim().length > 0);
+
+  if (!hasAnyContent) {
+    return {
+      statusCode: 400,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({
+        error:
+          'At least one template content field is required (email_body, text_message, rcs_message, rcs_rich_card, rcs_carousel, voice_message)',
+      }),
     };
   }
 
@@ -361,6 +419,15 @@ async function updateTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     }
   }
 
+  // Validate voice engine if provided
+  if (body.voice_engine && !['standard', 'neural'].includes(body.voice_engine)) {
+    return {
+      statusCode: 400,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({ error: 'voice_engine must be "standard" or "neural"' }),
+    };
+  }
+
   const timestamp = new Date().toISOString();
   const modifiedBy = getUserDisplayName(userPerms);
 
@@ -369,11 +436,15 @@ async function updateTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     template_name: body.template_name,
     module: body.module,
     email_subject: body.email_subject || '',
-    email_body: body.email_body,
+    email_body: body.email_body || '',
     text_message: body.text_message || '',
     rcs_message: body.rcs_message || '',
     rcs_rich_card: body.rcs_rich_card,
     rcs_carousel: body.rcs_carousel,
+    voice_message: body.voice_message || '',
+    voice_voiceId: body.voice_voiceId || '',
+    voice_engine: body.voice_engine,
+    voice_languageCode: body.voice_languageCode || '',
     modified_at: timestamp,
     modified_by: modifiedBy,
     clinic_id: body.clinic_id,
