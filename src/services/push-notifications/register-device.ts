@@ -15,7 +15,7 @@
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient, ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand, GetCommand, QueryCommand, DeleteCommand, UpdateCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, QueryCommand, DeleteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { createHash } from 'crypto';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import {
@@ -313,119 +313,67 @@ async function handleRegister(
       await removeTokenFromPreviousUser(existingDevice.userId, existingDevice.deviceId);
     }
 
-    // Register for each clinic
-    const registrationResults: { clinicId: string; success: boolean; isUpdate: boolean }[] = [];
+    // Store all clinics on a single device record (one item per userId+deviceId)
+    // This fixes the previous behavior where only ONE clinicId was ever persisted due to a loop+break.
+    const existingResult = await ddb.send(new GetCommand({
+      TableName: DEVICE_TOKENS_TABLE,
+      Key: { userId, deviceId },
+    }));
 
-    for (const clinicId of clinicIdsToRegister) {
-      try {
-        // Check if this user already has this device registered for this clinic
-        const existingResult = await ddb.send(new GetCommand({
-          TableName: DEVICE_TOKENS_TABLE,
-          Key: { userId, deviceId },
-        }));
+    const isUpdate = !!existingResult.Item;
+    const existingClinicIdsRaw = (existingResult.Item as any)?.clinicIds;
+    const existingClinicIds = Array.isArray(existingClinicIdsRaw) ? existingClinicIdsRaw : [];
+    const mergedClinicIds = [...new Set([...existingClinicIds, ...clinicIdsToRegister])];
 
-        const isUpdate = !!existingResult.Item;
-        const createdAt = existingResult.Item?.createdAt || now;
+    const primaryClinicId = clinicIdsToRegister[0];
 
-        // For multi-clinic support, we store clinicIds as a set
-        // Single deviceId per user, with all their clinics in one record
-        const existingClinicIds = existingResult.Item?.clinicIds || [];
-        const newClinicIds = [...new Set([...existingClinicIds, clinicId])];
+    await ddb.send(new UpdateCommand({
+      TableName: DEVICE_TOKENS_TABLE,
+      Key: { userId, deviceId },
+      UpdateExpression: `
+        SET deviceToken = :token,
+            clinicId = :clinicId,
+            clinicIds = :clinicIds,
+            platform = :platform,
+            environment = :env,
+            deviceName = :deviceName,
+            appVersion = :appVersion,
+            osVersion = :osVersion,
+            enabled = :enabled,
+            updatedAt = :updatedAt,
+            lastActiveAt = :lastActiveAt,
+            createdAt = if_not_exists(createdAt, :createdAt),
+            #ttl = :ttl
+      `,
+      ExpressionAttributeNames: {
+        '#ttl': 'ttl',
+      },
+      ExpressionAttributeValues: {
+        ':token': trimmedToken,
+        ':clinicId': primaryClinicId,
+        ':clinicIds': mergedClinicIds,
+        ':platform': platform,
+        ':env': env,
+        ':deviceName': deviceName || null,
+        ':appVersion': appVersion || null,
+        ':osVersion': osVersion || null,
+        ':enabled': true,
+        ':updatedAt': now,
+        ':lastActiveAt': now,
+        ':createdAt': now,
+        ':ttl': ttl,
+      },
+    }));
 
-        const record: DeviceTokenRecord & { clinicIds?: string[] } = {
-          userId,
-          deviceId,
-          clinicId: clinicIdsToRegister[0], // Primary clinic (first one)
-          clinicIds: newClinicIds, // All registered clinics
-          deviceToken: trimmedToken,
-          platform,
-          environment: env,
-          deviceName,
-          appVersion,
-          osVersion,
-          enabled: true,
-          createdAt,
-          updatedAt: now,
-          lastActiveAt: now,
-          ttl,
-        };
+    console.log(
+      `[RegisterDevice] ${isUpdate ? 'Updated' : 'Created'} device ${deviceId} for user ${userId}, clinics: ${mergedClinicIds.join(', ')}`
+    );
 
-        if (isUpdate) {
-          // Update existing record atomically
-          await ddb.send(new UpdateCommand({
-            TableName: DEVICE_TOKENS_TABLE,
-            Key: { userId, deviceId },
-            UpdateExpression: `
-              SET deviceToken = :token,
-                  clinicId = :clinicId,
-                  clinicIds = :clinicIds,
-                  platform = :platform,
-                  environment = :env,
-                  deviceName = :deviceName,
-                  appVersion = :appVersion,
-                  osVersion = :osVersion,
-                  enabled = :enabled,
-                  updatedAt = :updatedAt,
-                  lastActiveAt = :lastActiveAt,
-                  #ttl = :ttl
-            `,
-            ExpressionAttributeNames: {
-              '#ttl': 'ttl',
-            },
-            ExpressionAttributeValues: {
-              ':token': trimmedToken,
-              ':clinicId': clinicIdsToRegister[0],
-              ':clinicIds': newClinicIds,
-              ':platform': platform,
-              ':env': env,
-              ':deviceName': deviceName || null,
-              ':appVersion': appVersion || null,
-              ':osVersion': osVersion || null,
-              ':enabled': true,
-              ':updatedAt': now,
-              ':lastActiveAt': now,
-              ':ttl': ttl,
-            },
-          }));
-          console.log(`[RegisterDevice] Updated device ${deviceId} for user ${userId}, clinics: ${newClinicIds.join(', ')}`);
-        } else {
-          // Create new record with condition to prevent duplicates
-          await ddb.send(new PutCommand({
-            TableName: DEVICE_TOKENS_TABLE,
-            Item: record,
-            ConditionExpression: 'attribute_not_exists(userId) AND attribute_not_exists(deviceId)',
-          }));
-          console.log(`[RegisterDevice] Created device ${deviceId} for user ${userId}, clinics: ${newClinicIds.join(', ')}`);
-        }
-
-        registrationResults.push({ clinicId, success: true, isUpdate });
-        
-        // Only need to register once since we're storing all clinics in one record
-        break;
-      } catch (clinicError: any) {
-        if (clinicError instanceof ConditionalCheckFailedException) {
-          // Race condition - try update
-          const updateNow = new Date().toISOString();
-          await ddb.send(new UpdateCommand({
-            TableName: DEVICE_TOKENS_TABLE,
-            Key: { userId, deviceId },
-            UpdateExpression: 'SET updatedAt = :now, lastActiveAt = :now, enabled = :enabled, #ttl = :ttl, clinicIds = list_append(if_not_exists(clinicIds, :empty), :newClinic)',
-            ExpressionAttributeNames: { '#ttl': 'ttl' },
-            ExpressionAttributeValues: {
-              ':now': updateNow,
-              ':enabled': true,
-              ':ttl': calculateTtl(),
-              ':newClinic': [clinicId],
-              ':empty': [],
-            },
-          }));
-          registrationResults.push({ clinicId, success: true, isUpdate: true });
-          break;
-        }
-        console.error(`[RegisterDevice] Error registering for clinic ${clinicId}:`, clinicError);
-        registrationResults.push({ clinicId, success: false, isUpdate: false });
-      }
-    }
+    const registrationResults = clinicIdsToRegister.map((cid) => ({
+      clinicId: cid,
+      success: true,
+      isUpdate,
+    }));
 
     const successCount = registrationResults.filter(r => r.success).length;
     console.log(`[RegisterDevice] Registered device for user ${userId}, ${successCount}/${clinicIdsToRegister.length} clinics, platform ${platform}`);

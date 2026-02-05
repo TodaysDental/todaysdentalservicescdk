@@ -41,6 +41,7 @@ import { sendFcmV1Notification, sendFcmV1NotificationBatch, isFcmV1Available, re
 // Environment variables
 const DEVICE_TOKENS_TABLE = process.env.DEVICE_TOKENS_TABLE || '';
 const UNSUBSCRIBE_TABLE = process.env.UNSUBSCRIBE_TABLE || '';
+const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE || '';
 const DEDUPLICATION_TTL_MS = 60 * 1000; // 1 minute deduplication window
 
 // Clients
@@ -525,23 +526,54 @@ async function getDevicesForUser(userId: string): Promise<DeviceRecord[]> {
 }
 
 /**
- * Get all devices for a clinic with pagination support
- * Handles DynamoDB 1MB limit by iterating through all pages
- * 
- * Supports both legacy (clinicId) and new (clinicIds array) storage formats
- * - Legacy: devices have clinicId field matching the target clinic
- * - New: devices have clinicIds array containing the target clinic
- * 
- * Implementation:
- * 1. Query GSI for devices where clinicId = targetClinic (primary clinic match)
- * 2. Scan table for devices where clinicIds CONTAINS targetClinic (secondary clinic match)
- * 
- * For large-scale deployments, consider:
- * - Denormalizing to one record per clinic per device
- * - Using DynamoDB Streams to maintain a clinic->devices mapping table
- * - Using OpenSearch for array-contains queries
+ * Resolve current userIds that have access to a clinic.
+ *
+ * IMPORTANT: Clinic access can change over time. We treat the StaffUser table
+ * (clinicRoles) as the source of truth so clinic-targeted pushes always reflect
+ * current access, even if devices haven't re-registered.
  */
-async function getDevicesForClinic(clinicId: string): Promise<DeviceRecord[]> {
+async function getUserIdsForClinicFromStaffUser(clinicId: string): Promise<string[]> {
+  if (!STAFF_USER_TABLE) {
+    console.warn('[SendPush] STAFF_USER_TABLE not configured; cannot resolve clinic recipients dynamically');
+    return [];
+  }
+
+  const userIds: string[] = [];
+  let lastEvaluatedKey: Record<string, any> | undefined;
+
+  do {
+    const result = await ddb.send(new ScanCommand({
+      TableName: STAFF_USER_TABLE,
+      ProjectionExpression: 'email, isActive, clinicRoles',
+      ConsistentRead: true,
+      ExclusiveStartKey: lastEvaluatedKey,
+    }));
+
+    for (const item of (result.Items || [])) {
+      const email = String((item as any)?.email || '').trim().toLowerCase();
+      if (!email) continue;
+      if ((item as any)?.isActive === false) continue;
+
+      const clinicRoles = (item as any)?.clinicRoles;
+      const roles = Array.isArray(clinicRoles) ? clinicRoles : [];
+      const hasClinicAccess = roles.some((cr: any) => String(cr?.clinicId || '') === clinicId);
+
+      if (hasClinicAccess) {
+        userIds.push(email);
+      }
+    }
+
+    lastEvaluatedKey = result.LastEvaluatedKey;
+  } while (lastEvaluatedKey);
+
+  return userIds;
+}
+
+/**
+ * Legacy clinic device lookup (kept as a fallback).
+ * Queries DeviceTokens table by clinicId-index and scans for clinicIds array membership.
+ */
+async function getDevicesForClinicLegacy(clinicId: string): Promise<DeviceRecord[]> {
   const devices: DeviceRecord[] = [];
   const seenDeviceIds = new Set<string>();
   let lastEvaluatedKey: Record<string, any> | undefined;
@@ -607,6 +639,47 @@ async function getDevicesForClinic(clinicId: string): Promise<DeviceRecord[]> {
   }
 
   console.log(`[SendPush] Found ${devices.length} devices for clinic ${clinicId} (${seenDeviceIds.size} unique)`);
+  return devices;
+}
+
+/**
+ * Get all devices for a clinic based on CURRENT clinic access.
+ *
+ * Implementation:
+ * 1. Scan StaffUser to find users whose clinicRoles include the clinicId (source of truth)
+ * 2. Query DeviceTokens by userId for those users (concurrency-limited)
+ */
+async function getDevicesForClinic(clinicId: string): Promise<DeviceRecord[]> {
+  if (!STAFF_USER_TABLE) {
+    console.warn('[SendPush] STAFF_USER_TABLE not configured; falling back to legacy clinic device lookup');
+    return getDevicesForClinicLegacy(clinicId);
+  }
+
+  const userIds = await getUserIdsForClinicFromStaffUser(clinicId);
+  if (userIds.length === 0) {
+    console.log(`[SendPush] No users with access to clinic ${clinicId}`);
+    return [];
+  }
+
+  const devices: DeviceRecord[] = [];
+  const seenDeviceIds = new Set<string>();
+
+  // Concurrency limit to avoid DynamoDB throttling when clinics have many users
+  const CONCURRENCY = 10;
+  for (let i = 0; i < userIds.length; i += CONCURRENCY) {
+    const batch = userIds.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(batch.map((userId) => getDevicesForUser(userId)));
+    for (const deviceList of batchResults) {
+      for (const device of deviceList) {
+        const key = `${device.userId}:${device.deviceId}`;
+        if (seenDeviceIds.has(key)) continue;
+        seenDeviceIds.add(key);
+        devices.push(device);
+      }
+    }
+  }
+
+  console.log(`[SendPush] Found ${devices.length} devices for clinic ${clinicId} from ${userIds.length} user(s)`);
   return devices;
 }
 

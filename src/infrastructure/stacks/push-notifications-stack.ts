@@ -150,6 +150,13 @@ export class PushNotificationsStack extends Stack {
       : dynamodb.Table.fromTableName(this, 'GlobalSecretsRef', globalSecretsTableName);
 
     // ========================================
+    // IMPORT STAFF USER TABLE (SOURCE OF TRUTH FOR CLINIC ACCESS)
+    // ========================================
+
+    const staffUserTableName = Fn.importValue('CoreStack-StaffUserTableName');
+    const staffUserTable = dynamodb.Table.fromTableName(this, 'StaffUserTableRef', staffUserTableName);
+
+    // ========================================
     // DEAD-LETTER QUEUE FOR ASYNC FAILURES
     // ========================================
 
@@ -211,6 +218,10 @@ export class PushNotificationsStack extends Stack {
       timeout: Duration.seconds(60), // Longer timeout for batch sending
       entry: path.join(__dirname, '..', '..', 'services', 'push-notifications', 'send-push.ts'),
       handler: 'handler',
+      environment: {
+        ...commonLambdaProps.environment,
+        STAFF_USER_TABLE: staffUserTableName,
+      },
       // Configure async invocation error handling
       // Failed async invocations will be sent to the DLQ after 2 retries
       retryAttempts: 2,
@@ -229,6 +240,9 @@ export class PushNotificationsStack extends Stack {
 
     // GlobalSecrets table permissions (for FCM credential access)
     globalSecretsTable.grantReadData(this.sendPushFn);
+
+    // StaffUser table permissions (for dynamic clinic targeting based on current access)
+    staffUserTable.grantReadData(this.sendPushFn);
 
     // Grant KMS decrypt for all lambdas if encryption key is provided
     if (secretsEncryptionKeyArn) {
