@@ -158,6 +158,72 @@ export function registerInvalidTokenCallback(callback: InvalidTokenCallback): vo
 // ========================================
 
 /**
+ * Escape raw control characters that appear inside JSON string literals.
+ *
+ * This repairs common copy/paste issues where a JSON string value (most often
+ * `private_key`) contains literal newlines or other control characters, which
+ * makes `JSON.parse()` throw `Bad control character in string literal`.
+ *
+ * NOTE: This intentionally ONLY escapes control characters while we are inside
+ * a JSON string (between quotes), leaving formatting whitespace (newlines outside
+ * strings) untouched.
+ */
+function escapeControlCharsInJsonStringLiterals(jsonText: string): string {
+    let out = '';
+    let inString = false;
+    let escaped = false;
+
+    for (let i = 0; i < jsonText.length; i++) {
+        const ch = jsonText[i]!;
+
+        if (inString) {
+            if (escaped) {
+                out += ch;
+                escaped = false;
+                continue;
+            }
+
+            if (ch === '\\') {
+                out += ch;
+                escaped = true;
+                continue;
+            }
+
+            if (ch === '"') {
+                out += ch;
+                inString = false;
+                continue;
+            }
+
+            // Escape raw control characters inside string literals
+            if (ch === '\n') { out += '\\n'; continue; }
+            if (ch === '\r') { out += '\\r'; continue; }
+            if (ch === '\t') { out += '\\t'; continue; }
+
+            const code = ch.charCodeAt(0);
+            if (code < 0x20) {
+                out += `\\u${code.toString(16).padStart(4, '0')}`;
+                continue;
+            }
+
+            out += ch;
+            continue;
+        }
+
+        // Not in a string
+        if (ch === '"') {
+            out += ch;
+            inString = true;
+            continue;
+        }
+
+        out += ch;
+    }
+
+    return out;
+}
+
+/**
  * Get service account credentials from GlobalSecrets
  */
 async function getServiceAccount(): Promise<any> {
@@ -180,7 +246,23 @@ async function getServiceAccount(): Promise<any> {
         }
 
         const item = unmarshall(result.Item);
-        cachedServiceAccount = JSON.parse(item.value);
+        const rawValue = typeof (item as any).value === 'string' ? (item as any).value : '';
+
+        try {
+            cachedServiceAccount = JSON.parse(rawValue);
+        } catch (error: any) {
+            // Attempt repair for common control-character issues (e.g., literal newlines in private_key)
+            try {
+                const repaired = escapeControlCharsInJsonStringLiterals(rawValue);
+                cachedServiceAccount = JSON.parse(repaired);
+                console.warn('[FCM-v1] Repaired invalid service account JSON (escaped control characters in string literals)');
+            } catch (repairError: any) {
+                console.error('[FCM-v1] Service account JSON is invalid. Ensure GlobalSecrets fcm/service_account is valid JSON and private_key newlines are escaped as \\\\n');
+                console.error('[FCM-v1] Original parse error:', error?.message || String(error));
+                return null;
+            }
+        }
+
         return cachedServiceAccount;
     } catch (error) {
         console.error('[FCM-v1] Error loading service account:', error);

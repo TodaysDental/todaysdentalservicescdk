@@ -269,32 +269,69 @@ async function handleRegister(
   // Get user's allowed clinics
   const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
 
+  // IMPORTANT:
+  // - `allowedClinics` may be `['*']` for (global) super admins, which is great for auth checks,
+  //   but NOT useful for persisting real clinic IDs on the device record.
+  // - `clinicRoles` is the source of truth for the explicit clinic IDs the user is currently associated with.
+  const explicitClinicIds = new Set(
+    (userPerms.clinicRoles || [])
+      .map((cr: any) => String(cr?.clinicId || '').trim())
+      .filter(Boolean)
+  );
+
   // Determine which clinics to register for
   let clinicIdsToRegister: string[] = [];
 
   // Priority 1: Multiple clinic IDs from body (multi-clinic registration)
   if (bodyClinicIds && Array.isArray(bodyClinicIds) && bodyClinicIds.length > 0) {
-    // Filter to only allowed clinics
-    clinicIdsToRegister = bodyClinicIds.filter(cid => hasClinicAccess(allowedClinics, cid));
+    const normalizedRequested = bodyClinicIds
+      .map((cid: any) => String(cid || '').trim())
+      .filter(Boolean);
+
+    // Prefer explicit clinicIds from roles when present (prevents persisting "*" or arbitrary values)
+    const filtered = explicitClinicIds.size > 0
+      ? normalizedRequested.filter((cid) => explicitClinicIds.has(cid))
+      : normalizedRequested.filter((cid) => hasClinicAccess(allowedClinics, cid));
+
+    clinicIdsToRegister = Array.from(new Set(filtered));
     if (clinicIdsToRegister.length === 0) {
       return http(403, { error: 'Forbidden: no access to any of the specified clinics' }, event);
     }
   }
   // Priority 2: Single clinic from path or body
   else if (pathClinicId || bodyClinicId) {
-    const clinicId = pathClinicId || bodyClinicId;
-    if (!hasClinicAccess(allowedClinics, clinicId!)) {
+    const requestedClinicId = String(pathClinicId || bodyClinicId || '').trim();
+    if (!requestedClinicId || !hasClinicAccess(allowedClinics, requestedClinicId)) {
       return http(403, { error: 'Forbidden: no access to this clinic' }, event);
     }
-    clinicIdsToRegister = [clinicId!];
+
+    // For multi-clinic users, persist *all* explicit clinics (derived from clinicRoles),
+    // while keeping the requested clinic as the "primary" clinicId for the GSI.
+    // If we cannot enumerate clinics (rare), fall back to just the requested clinic.
+    clinicIdsToRegister = explicitClinicIds.size > 0
+      ? Array.from(explicitClinicIds)
+      : [requestedClinicId];
   }
   // Priority 3: Register for ALL user's allowed clinics (default for multi-clinic users)
-  else if (allowedClinics.size > 0) {
-    clinicIdsToRegister = Array.from(allowedClinics);
-    console.log(`[RegisterDevice] No clinic specified, registering for all ${clinicIdsToRegister.length} allowed clinics`);
+  else if (explicitClinicIds.size > 0) {
+    clinicIdsToRegister = Array.from(explicitClinicIds);
+    console.log(`[RegisterDevice] No clinic specified, registering for all ${clinicIdsToRegister.length} clinics from clinicRoles`);
+  } else if (allowedClinics.has('*')) {
+    // Super admins may have wildcard access without an explicit clinicRoles list.
+    // In that case, require the client to specify clinicId(s) explicitly.
+    return http(400, { error: 'clinicId or clinicIds is required for super admin registration' }, event);
   } else {
     return http(400, { error: 'clinicId is required and user has no clinic access' }, event);
   }
+
+  // Normalize + de-dupe again in case Set iteration produced duplicates
+  clinicIdsToRegister = Array.from(
+    new Set(
+      clinicIdsToRegister
+        .map((cid) => String(cid || '').trim())
+        .filter(Boolean)
+    )
+  );
 
   const userId = userPerms.email || 'unknown';
   // Use client-provided deviceId if available, otherwise generate from token
@@ -314,20 +351,15 @@ async function handleRegister(
     }
 
     // Store all clinics on a single device record (one item per userId+deviceId)
-    // This fixes the previous behavior where only ONE clinicId was ever persisted due to a loop+break.
-    const existingResult = await ddb.send(new GetCommand({
-      TableName: DEVICE_TOKENS_TABLE,
-      Key: { userId, deviceId },
-    }));
+    // NOTE: We intentionally SET clinicIds to the computed list (not a union),
+    // so it reflects current access at registration time.
+    const requestedPrimaryClinicId = String(pathClinicId || bodyClinicId || '').trim();
+    const primaryClinicId =
+      requestedPrimaryClinicId && clinicIdsToRegister.includes(requestedPrimaryClinicId)
+        ? requestedPrimaryClinicId
+        : clinicIdsToRegister[0];
 
-    const isUpdate = !!existingResult.Item;
-    const existingClinicIdsRaw = (existingResult.Item as any)?.clinicIds;
-    const existingClinicIds = Array.isArray(existingClinicIdsRaw) ? existingClinicIdsRaw : [];
-    const mergedClinicIds = [...new Set([...existingClinicIds, ...clinicIdsToRegister])];
-
-    const primaryClinicId = clinicIdsToRegister[0];
-
-    await ddb.send(new UpdateCommand({
+    const updateResult = await ddb.send(new UpdateCommand({
       TableName: DEVICE_TOKENS_TABLE,
       Key: { userId, deviceId },
       UpdateExpression: `
@@ -351,7 +383,7 @@ async function handleRegister(
       ExpressionAttributeValues: {
         ':token': trimmedToken,
         ':clinicId': primaryClinicId,
-        ':clinicIds': mergedClinicIds,
+        ':clinicIds': clinicIdsToRegister,
         ':platform': platform,
         ':env': env,
         ':deviceName': deviceName || null,
@@ -363,10 +395,13 @@ async function handleRegister(
         ':createdAt': now,
         ':ttl': ttl,
       },
+      ReturnValues: 'ALL_OLD',
     }));
 
+    const isUpdate = !!updateResult.Attributes;
+
     console.log(
-      `[RegisterDevice] ${isUpdate ? 'Updated' : 'Created'} device ${deviceId} for user ${userId}, clinics: ${mergedClinicIds.join(', ')}`
+      `[RegisterDevice] ${isUpdate ? 'Updated' : 'Created'} device ${deviceId} for user ${userId}, clinics: ${clinicIdsToRegister.join(', ')}`
     );
 
     const registrationResults = clinicIdsToRegister.map((cid) => ({

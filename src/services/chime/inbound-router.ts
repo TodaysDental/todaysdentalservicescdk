@@ -10,7 +10,6 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { PollyClient, SynthesizeSpeechCommand, Engine, OutputFormat, VoiceId } from '@aws-sdk/client-polly';
 import { Readable } from 'stream';
 import { enrichCallContext } from './utils/agent-selection';
-import { createCheckQueueForWork } from './utils/check-queue-for-work';
 import { generateUniqueCallPosition } from '../shared/utils/unique-id';
 import { startMediaPipeline, stopMediaPipeline, isRealTimeTranscriptionEnabled } from './utils/media-pipeline-manager';
 import {
@@ -67,6 +66,8 @@ const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
 const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 const CLINICS_TABLE_NAME = process.env.CLINICS_TABLE_NAME!;
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME!;
+// Push-first routing source of truth (agents explicitly toggle active)
+const AGENT_ACTIVE_TABLE_NAME = process.env.AGENT_ACTIVE_TABLE_NAME || '';
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME!;
 const LOCKS_TABLE_NAME = process.env.LOCKS_TABLE_NAME!;
 const VOICE_CALL_ANALYTICS_TABLE = process.env.VOICE_CALL_ANALYTICS_TABLE;
@@ -88,6 +89,8 @@ function isValidTransactionId(value: unknown): value is string {
 const QUEUE_TIMEOUT = 24 * 60 * 60;
 // Average call duration in seconds (5 minutes) - used for wait time estimation
 const AVG_CALL_DURATION = 300;
+// Max agents to ring for an inbound call offer (push-first + call-queue agentIds)
+const MAX_RING_AGENTS = Math.max(1, Number.parseInt(process.env.MAX_RING_AGENTS || '25', 10));
 
 // Call states
 type CallStatus =
@@ -1119,41 +1122,150 @@ export const handler = async (event: any): Promise<any> => {
                     console.warn('[NEW_INBOUND_CALL] Failed to persist routing metadata (non-fatal):', metaErr);
                 }
 
-                let assignmentSucceeded = false;
+                // ========================================
+                // PUSH-FIRST ROUTING (MEETING-PER-CALL)
+                // ========================================
+                // - Source of truth for who can receive call offers is AgentActive table (not AgentPresence).
+                // - We create a per-call meeting + customer attendee immediately, but do NOT join PSTN leg yet.
+                //   The PSTN leg is bridged into the meeting only after an agent accepts (BRIDGE_CUSTOMER_INBOUND).
 
-                // FAIR-SHARE RINGING:
-                // Trigger clinic-level dispatcher which splits idle agents across multiple waiting calls.
-                // If this is the only waiting call, it will still ring all available idle agents (up to MAX_RING_AGENTS).
+                // 1) Ensure per-call meeting + customer attendee exist (best-effort)
                 try {
-                    const checkQueueForWork = createCheckQueueForWork({
-                        ddb,
-                        callQueueTableName: CALL_QUEUE_TABLE_NAME,
-                        agentPresenceTableName: AGENT_PRESENCE_TABLE_NAME,
-                    });
-                    await checkQueueForWork('SYSTEM', { activeClinicIds: [clinicId] } as any);
-                } catch (dispatchErr) {
-                    console.warn('[NEW_INBOUND_CALL] Fair-share dispatch failed (non-fatal):', dispatchErr);
-                }
-
-                // Determine whether THIS call is currently ringing after dispatch.
-                try {
-                    const { Item: refreshedCall } = await ddb.send(new GetCommand({
+                    const { Item: existingCall } = await ddb.send(new GetCommand({
                         TableName: CALL_QUEUE_TABLE_NAME,
                         Key: { clinicId, queuePosition: queueEntry.queuePosition },
-                        ConsistentRead: true
+                        ConsistentRead: true,
                     }));
-                    assignmentSucceeded = !!(
-                        refreshedCall &&
-                        refreshedCall.status === 'ringing' &&
-                        Array.isArray(refreshedCall.agentIds) &&
-                        refreshedCall.agentIds.length > 0
-                    );
-                } catch (refreshErr) {
-                    console.warn('[NEW_INBOUND_CALL] Failed to read call state after dispatch (non-fatal):', refreshErr);
+
+                    const existingMeetingId =
+                        (existingCall as any)?.meetingId ||
+                        (existingCall as any)?.meetingInfo?.MeetingId;
+                    const hasCustomerAttendee =
+                        !!(existingCall as any)?.customerAttendeeInfo?.AttendeeId &&
+                        !!(existingCall as any)?.customerAttendeeInfo?.JoinToken;
+
+                    if (!existingMeetingId || !hasCustomerAttendee) {
+                        const meetingResponse = await chime.send(new CreateMeetingCommand({
+                            ClientRequestToken: callId,
+                            MediaRegion: CHIME_MEDIA_REGION,
+                            ExternalMeetingId: callId,
+                        }));
+
+                        const meetingInfo = meetingResponse.Meeting;
+                        const meetingId = meetingInfo?.MeetingId;
+                        if (meetingId) {
+                            const customerAttendeeResponse = await chime.send(new CreateAttendeeCommand({
+                                MeetingId: meetingId,
+                                ExternalUserId: `customer-${callId}`.slice(0, 64),
+                            }));
+
+                            const customerAttendeeInfo = customerAttendeeResponse.Attendee;
+
+                            if (customerAttendeeInfo?.AttendeeId && customerAttendeeInfo?.JoinToken) {
+                                await ddb.send(new UpdateCommand({
+                                    TableName: CALL_QUEUE_TABLE_NAME,
+                                    Key: { clinicId, queuePosition: queueEntry.queuePosition },
+                                    UpdateExpression: 'SET meetingId = :meetingId, meetingInfo = :meetingInfo, customerAttendeeInfo = :customerAttendee, updatedAt = :ts',
+                                    ExpressionAttributeValues: {
+                                        ':meetingId': meetingId,
+                                        ':meetingInfo': meetingInfo,
+                                        ':customerAttendee': customerAttendeeInfo,
+                                        ':ts': new Date().toISOString(),
+                                    },
+                                }));
+                            } else {
+                                console.warn('[NEW_INBOUND_CALL] Customer attendee created but missing required fields (non-fatal)', {
+                                    callId,
+                                    clinicId,
+                                    hasAttendeeId: !!customerAttendeeInfo?.AttendeeId,
+                                    hasJoinToken: !!customerAttendeeInfo?.JoinToken,
+                                });
+                            }
+                        } else {
+                            console.warn('[NEW_INBOUND_CALL] Meeting created but missing MeetingId (non-fatal)', { callId, clinicId });
+                        }
+                    }
+                } catch (meetingErr) {
+                    console.warn('[NEW_INBOUND_CALL] Failed to create/persist per-call meeting (non-fatal):', meetingErr);
                 }
 
-                if (assignmentSucceeded) {
-                    console.log(`[NEW_INBOUND_CALL] Placing customer ${callId} on hold while ringing agent(s).`);
+                // 2) Query explicitly-active agents for this clinic (AgentActive table)
+                let activeAgentIds: string[] = [];
+                if (AGENT_ACTIVE_TABLE_NAME) {
+                    try {
+                        const { Items: activeRows } = await ddb.send(new QueryCommand({
+                            TableName: AGENT_ACTIVE_TABLE_NAME,
+                            KeyConditionExpression: 'clinicId = :clinicId',
+                            FilterExpression: '#state = :active',
+                            ExpressionAttributeNames: { '#state': 'state' },
+                            ExpressionAttributeValues: {
+                                ':clinicId': clinicId,
+                                ':active': 'active',
+                            },
+                            ProjectionExpression: 'agentId',
+                        }));
+
+                        activeAgentIds = (activeRows || [])
+                            .map((r: any) => r?.agentId)
+                            .filter((v: any): v is string => typeof v === 'string' && v.length > 0);
+                    } catch (activeErr) {
+                        console.warn('[NEW_INBOUND_CALL] Failed querying AgentActive (non-fatal):', activeErr);
+                    }
+                } else {
+                    console.warn('[NEW_INBOUND_CALL] AGENT_ACTIVE_TABLE_NAME not configured; call will remain queued', { callId, clinicId });
+                }
+
+                // 3) If agents are active, transition call to ringing and push an offer
+                const uniqueAgentIds = Array.from(new Set(activeAgentIds)).slice(0, MAX_RING_AGENTS);
+                if (uniqueAgentIds.length > 0) {
+                    const ringAttemptTimestamp = new Date().toISOString();
+                    let ringingStarted = false;
+
+                    try {
+                        await ddb.send(new UpdateCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            Key: { clinicId, queuePosition: queueEntry.queuePosition },
+                            UpdateExpression:
+                                'SET #status = :ringing, agentIds = :agentIds, ringStartTimeIso = :ts, ringStartTime = :now, lastStateChange = :ts, updatedAt = :ts',
+                            ConditionExpression: '#status = :queued',
+                            ExpressionAttributeNames: { '#status': 'status' },
+                            ExpressionAttributeValues: {
+                                ':ringing': 'ringing',
+                                ':queued': 'queued',
+                                ':agentIds': uniqueAgentIds,
+                                ':ts': ringAttemptTimestamp,
+                                ':now': Date.now(),
+                            },
+                        }));
+                        ringingStarted = true;
+                    } catch (err: any) {
+                        if (err?.name === 'ConditionalCheckFailedException') {
+                            // Another process may have transitioned state; treat as non-fatal and continue.
+                            console.warn('[NEW_INBOUND_CALL] Call not in queued state when attempting to ring (non-fatal)', { callId, clinicId });
+                        } else {
+                            console.warn('[NEW_INBOUND_CALL] Failed to set call to ringing (non-fatal):', err);
+                        }
+                    }
+
+                    if (ringingStarted && isPushNotificationsEnabled()) {
+                        try {
+                            await sendIncomingCallToAgents(uniqueAgentIds, {
+                                callId,
+                                clinicId,
+                                clinicName: String(clinic.clinicName || clinicId),
+                                callerPhoneNumber: fromPhoneNumber,
+                                timestamp: ringAttemptTimestamp,
+                            });
+                        } catch (pushErr) {
+                            console.warn('[NEW_INBOUND_CALL] Failed to send push offer (non-fatal):', pushErr);
+                        }
+                    }
+
+                    console.log(`[NEW_INBOUND_CALL] Placing customer ${callId} on hold while notifying agent(s) via push.`, {
+                        clinicId,
+                        agentsNotified: uniqueAgentIds.length,
+                        ringingStarted,
+                    });
 
                     // Start call recording if enabled
                     const enableRecording = process.env.ENABLE_CALL_RECORDING === 'true';
@@ -1164,29 +1276,19 @@ export const handler = async (event: any): Promise<any> => {
                         console.log(`[NEW_INBOUND_CALL] Starting recording for call ${callId}`);
                         actions.push(buildStartCallRecordingAction(pstnLegCallId, recordingsBucket));
 
-                        // Update call queue with recording metadata
+                        // Update call queue with recording metadata (best-effort)
                         try {
-                            const { Items: callRecords } = await ddb.send(new QueryCommand({
+                            await ddb.send(new UpdateCommand({
                                 TableName: CALL_QUEUE_TABLE_NAME,
-                                IndexName: 'callId-index',
-                                KeyConditionExpression: 'callId = :callId',
-                                ExpressionAttributeValues: { ':callId': callId }
+                                Key: { clinicId, queuePosition: queueEntry.queuePosition },
+                                UpdateExpression: 'SET recordingStarted = :true, recordingStartTime = :now, pstnCallId = :pstnCallId',
+                                ExpressionAttributeValues: {
+                                    ':true': true,
+                                    ':now': new Date().toISOString(),
+                                    ':pstnCallId': pstnLegCallId
+                                }
                             }));
-
-                            if (callRecords && callRecords[0]) {
-                                const { clinicId, queuePosition } = callRecords[0];
-                                await ddb.send(new UpdateCommand({
-                                    TableName: CALL_QUEUE_TABLE_NAME,
-                                    Key: { clinicId, queuePosition },
-                                    UpdateExpression: 'SET recordingStarted = :true, recordingStartTime = :now, pstnCallId = :pstnCallId',
-                                    ExpressionAttributeValues: {
-                                        ':true': true,
-                                        ':now': new Date().toISOString(),
-                                        ':pstnCallId': pstnLegCallId
-                                    }
-                                }));
-                                console.log('[NEW_INBOUND_CALL] Updated call record with pstnCallId:', pstnLegCallId);
-                            }
+                            console.log('[NEW_INBOUND_CALL] Updated call record with pstnCallId:', pstnLegCallId);
                         } catch (recordErr) {
                             console.error('[NEW_INBOUND_CALL] Error updating recording metadata:', recordErr);
                         }
@@ -1205,7 +1307,7 @@ export const handler = async (event: any): Promise<any> => {
                     return buildActions(actions);
                 }
 
-                console.log(`[NEW_INBOUND_CALL] No available Online agents for clinic ${clinicId} or assignment failed.`);
+                console.log(`[NEW_INBOUND_CALL] No active agents for clinic ${clinicId}. Keeping caller in queue.`);
 
                 // Standard queue handling
                 console.log(`[NEW_INBOUND_CALL] Adding call to queue.`);
@@ -2081,28 +2183,41 @@ export const handler = async (event: any): Promise<any> => {
                     }
 
                     // *** CRITICAL FIX ***
-                    // Only delete the meeting if it was a temporary "queue" meeting for INBOUND calls.
-                    // For OUTBOUND calls, meetingInfo contains the AGENT'S SESSION meeting - DO NOT delete it!
+                    // Delete per-call meetings for:
+                    // - ALL inbound calls (meeting-per-call / queued-call flows)
+                    // - Outbound calls ONLY when explicitly marked meetingModel='per_call'
+                    // This protects legacy outbound calls that used the agent's session meeting.
                     const isOutboundCall = direction === 'outbound' || status === 'dialing';
+                    const meetingModel = typeof (callRecord as any).meetingModel === 'string'
+                        ? String((callRecord as any).meetingModel).trim().toLowerCase()
+                        : '';
+                    const isPerCallMeeting = !isOutboundCall || meetingModel === 'per_call';
 
-                    // FIX #6: Also cleanup meetings for 'ringing' calls that were abandoned
-                    // Previously only 'queued' status triggered cleanup, leaving orphaned meetings
-                    const shouldCleanupMeeting = (
-                        ((status === 'queued' || status === 'ringing') && !isOutboundCall)
-                    ) && meetingInfo?.MeetingId;
+                    const meetingIdForCleanup: string | undefined =
+                        (meetingInfo && typeof meetingInfo.MeetingId === 'string' && meetingInfo.MeetingId.length > 0)
+                            ? meetingInfo.MeetingId
+                            : (typeof (callRecord as any).meetingId === 'string' ? (callRecord as any).meetingId : undefined);
 
-                    if (shouldCleanupMeeting) {
+                    // FIX: Meeting-per-call requires cleaning up the meeting for ALL inbound call states
+                    // (queued/ringing/accepting/connected/on_hold). Otherwise meetings leak on completed calls.
+                    const shouldCleanupMeeting = isPerCallMeeting && !!meetingIdForCleanup;
+
+                    if (shouldCleanupMeeting && meetingIdForCleanup) {
                         try {
-                            await cleanupMeeting(meetingInfo.MeetingId);
-                            console.log(`[${eventType}] Cleaned up ${status.toUpperCase()} meeting ${meetingInfo.MeetingId}`);
+                            await cleanupMeeting(meetingIdForCleanup);
+                            console.log(`[${eventType}] Cleaned up per-call meeting ${meetingIdForCleanup}`, {
+                                callId,
+                                status,
+                                direction,
+                            });
                         } catch (meetingErr) {
                             console.warn(`[${eventType}] Failed to cleanup meeting:`, meetingErr);
                         }
-                    } else if (isOutboundCall && meetingInfo?.MeetingId) {
+                    } else if (isOutboundCall && meetingIdForCleanup) {
                         // *** FIX: Do NOT delete the agent's session meeting for outbound calls ***
-                        console.log(`[${eventType}] Outbound call ended. Agent session meeting ${meetingInfo.MeetingId} will NOT be deleted.`);
-                    } else if (meetingInfo?.MeetingId) {
-                        console.log(`[${eventType}] Call ended for agent session meeting ${meetingInfo.MeetingId}. Meeting will NOT be deleted.`);
+                        console.log(`[${eventType}] Outbound call ended. Legacy outbound meeting ${meetingIdForCleanup} will NOT be deleted.`);
+                    } else if (meetingIdForCleanup) {
+                        console.log(`[${eventType}] Call ended. Meeting ${meetingIdForCleanup} will NOT be deleted.`);
                     }
 
                     // Determine final status based on call state and end reason
@@ -2241,6 +2356,57 @@ export const handler = async (event: any): Promise<any> => {
 
                     } catch (updateErr) {
                         console.error(`[${eventType}] Failed to update call record:`, updateErr);
+                    }
+
+                    // Reset AgentActive (push-first) if agent was assigned (best-effort)
+                    // IMPORTANT: outbound per-call marks the agent busy across ALL active clinics,
+                    // so we must reset any rows where currentCallId === callId.
+                    if (AGENT_ACTIVE_TABLE_NAME && assignedAgentId) {
+                        try {
+                            const { Items: agentActiveRows } = await ddb.send(new QueryCommand({
+                                TableName: AGENT_ACTIVE_TABLE_NAME,
+                                IndexName: 'agentId-index',
+                                KeyConditionExpression: 'agentId = :agentId',
+                                ExpressionAttributeValues: { ':agentId': assignedAgentId },
+                                ProjectionExpression: 'clinicId, agentId, #state, currentCallId',
+                                ExpressionAttributeNames: { '#state': 'state' },
+                            }));
+
+                            const clinicIdsToReset = (agentActiveRows || [])
+                                .filter((r: any) =>
+                                    typeof r?.clinicId === 'string' &&
+                                    String(r?.state || '').toLowerCase() === 'busy' &&
+                                    String(r?.currentCallId || '') === String(callId)
+                                )
+                                .map((r: any) => String(r.clinicId))
+                                .filter((v: string) => v.length > 0);
+
+                            if (clinicIdsToReset.length > 0) {
+                                await Promise.allSettled(clinicIdsToReset.map(async (cId: string) => {
+                                    await ddb.send(new UpdateCommand({
+                                        TableName: AGENT_ACTIVE_TABLE_NAME,
+                                        Key: { clinicId: cId, agentId: assignedAgentId },
+                                        UpdateExpression: 'SET #state = :active, updatedAt = :ts REMOVE currentCallId',
+                                        ConditionExpression: '#state = :busy AND currentCallId = :callId',
+                                        ExpressionAttributeNames: { '#state': 'state' },
+                                        ExpressionAttributeValues: {
+                                            ':active': 'active',
+                                            ':busy': 'busy',
+                                            ':callId': callId,
+                                            ':ts': new Date().toISOString(),
+                                        }
+                                    }));
+                                }));
+                                console.log(`[${eventType}] AgentActive ${assignedAgentId} marked as active after call end`, {
+                                    callId,
+                                    resetClinics: clinicIdsToReset.length,
+                                });
+                            }
+                        } catch (agentActiveErr: any) {
+                            if (agentActiveErr.name !== 'ConditionalCheckFailedException') {
+                                console.warn(`[${eventType}] Failed to update AgentActive for agent ${assignedAgentId} (non-fatal):`, agentActiveErr);
+                            }
+                        }
                     }
 
                     // Update agent status if they were assigned

@@ -40,9 +40,14 @@ export interface AdminStackProps extends StackProps {
   // routes that integrate with these functions.
   startSessionFnArn?: string;
   stopSessionFnArn?: string;
+  agentActiveFnArn?: string;
+  agentInactiveFnArn?: string;
   outboundCallFnArn?: string;
   transferCallFnArn?: string;
   callAcceptedFnArn?: string;
+  callAcceptedV2FnArn?: string;
+  callRejectedV2FnArn?: string;
+  callHungupV2FnArn?: string;
   callRejectedFnArn?: string;
   callHungupFnArn?: string;
   leaveCallFnArn?: string;
@@ -857,7 +862,9 @@ export class AdminStack extends Stack {
     // avoids passing the Admin API object into the Chime stack which would
     // create a circular dependency.
     if (props.startSessionFnArn || props.stopSessionFnArn || props.outboundCallFnArn || props.transferCallFnArn ||
-      props.callAcceptedFnArn || props.callRejectedFnArn || props.callHungupFnArn || props.leaveCallFnArn ||
+      props.agentActiveFnArn || props.agentInactiveFnArn ||
+      props.callAcceptedFnArn || props.callAcceptedV2FnArn || props.callRejectedV2FnArn || props.callHungupV2FnArn ||
+      props.callRejectedFnArn || props.callHungupFnArn || props.leaveCallFnArn ||
       props.heartbeatFnArn || props.holdCallFnArn || props.resumeCallFnArn ||
       props.addCallFnArn || props.sendDtmfFnArn || props.callNotesFnArn || props.conferenceCallFnArn) {
       const chimeApiRoot = this.api.root.getResource('chime') ?? this.api.root.addResource('chime');
@@ -892,6 +899,39 @@ export class AdminStack extends Stack {
           authorizer: this.authorizer,
           authorizationType: apigw.AuthorizationType.CUSTOM,
         });
+      }
+
+      // Agent Active / Inactive (push-first availability toggle)
+      if (props.agentActiveFnArn || props.agentInactiveFnArn) {
+        const agentRes = chimeApiRoot.addResource('agent');
+
+        if (props.agentActiveFnArn) {
+          const importedAgentActive = lambda.Function.fromFunctionArn(this, 'ImportedAgentActiveFn', props.agentActiveFnArn);
+          importedAgentActive.addPermission('ApiGatewayInvokeAgentActive', {
+            principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+            sourceArn: this.api.arnForExecuteApi('*', '/chime/agent/active', '*')
+          });
+
+          const agentActiveRes = agentRes.addResource('active');
+          agentActiveRes.addMethod('POST', new apigw.LambdaIntegration(importedAgentActive, { proxy: true }), {
+            authorizer: this.authorizer,
+            authorizationType: apigw.AuthorizationType.CUSTOM,
+          });
+        }
+
+        if (props.agentInactiveFnArn) {
+          const importedAgentInactive = lambda.Function.fromFunctionArn(this, 'ImportedAgentInactiveFn', props.agentInactiveFnArn);
+          importedAgentInactive.addPermission('ApiGatewayInvokeAgentInactive', {
+            principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+            sourceArn: this.api.arnForExecuteApi('*', '/chime/agent/inactive', '*')
+          });
+
+          const agentInactiveRes = agentRes.addResource('inactive');
+          agentInactiveRes.addMethod('POST', new apigw.LambdaIntegration(importedAgentInactive, { proxy: true }), {
+            authorizer: this.authorizer,
+            authorizationType: apigw.AuthorizationType.CUSTOM,
+          });
+        }
       }
 
       if (props.outboundCallFnArn) {
@@ -937,6 +977,51 @@ export class AdminStack extends Stack {
 
         const callAcceptedRes = chimeApiRoot.addResource('call-accepted');
         callAcceptedRes.addMethod('POST', new apigw.LambdaIntegration(importedCallAccepted, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+      }
+
+      if (props.callAcceptedV2FnArn) {
+        const importedCallAcceptedV2 = lambda.Function.fromFunctionArn(this, 'ImportedCallAcceptedV2Fn', props.callAcceptedV2FnArn);
+
+        importedCallAcceptedV2.addPermission('ApiGatewayInvokeCallAcceptedV2', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/call-accepted-v2', '*')
+        });
+
+        const callAcceptedV2Res = chimeApiRoot.addResource('call-accepted-v2');
+        callAcceptedV2Res.addMethod('POST', new apigw.LambdaIntegration(importedCallAcceptedV2, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+      }
+
+      if (props.callRejectedV2FnArn) {
+        const importedCallRejectedV2 = lambda.Function.fromFunctionArn(this, 'ImportedCallRejectedV2Fn', props.callRejectedV2FnArn);
+
+        importedCallRejectedV2.addPermission('ApiGatewayInvokeCallRejectedV2', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/call-rejected-v2', '*')
+        });
+
+        const callRejectedV2Res = chimeApiRoot.addResource('call-rejected-v2');
+        callRejectedV2Res.addMethod('POST', new apigw.LambdaIntegration(importedCallRejectedV2, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+      }
+
+      if (props.callHungupV2FnArn) {
+        const importedCallHungupV2 = lambda.Function.fromFunctionArn(this, 'ImportedCallHungupV2Fn', props.callHungupV2FnArn);
+
+        importedCallHungupV2.addPermission('ApiGatewayInvokeCallHungupV2', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/chime/call-hungup-v2', '*')
+        });
+
+        const callHungupV2Res = chimeApiRoot.addResource('call-hungup-v2');
+        callHungupV2Res.addMethod('POST', new apigw.LambdaIntegration(importedCallHungupV2, { proxy: true }), {
           authorizer: this.authorizer,
           authorizationType: apigw.AuthorizationType.CUSTOM,
         });

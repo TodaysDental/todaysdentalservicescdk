@@ -198,6 +198,7 @@ export interface VoiceConnectorOriginationRouteConfig {
 export class ChimeStack extends Stack {
   public readonly clinicsTable: dynamodb.Table;
   public readonly agentPresenceTable: dynamodb.Table;
+  public readonly agentActiveTable: dynamodb.Table;
   public readonly callQueueTable: dynamodb.Table;
   public readonly locksTable: dynamodb.Table;
   public readonly agentPerformanceTable: dynamodb.Table;
@@ -383,6 +384,29 @@ export class ChimeStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // Agent Active table (push-first inbound routing source of truth)
+    // PK: clinicId, SK: agentId
+    // Tracks which agents are actively receiving call offers for a clinic.
+    this.agentActiveTable = new dynamodb.Table(this, 'AgentActiveTable', {
+      tableName: `${this.stackName}-AgentActive`,
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'agentId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+      // Optional: TTL can be used later to auto-expire stale active rows
+      timeToLiveAttribute: 'ttl',
+    });
+    applyTags(this.agentActiveTable, { Table: 'agent-active' });
+
+    // GSI to quickly look up all clinics for a given agentId (for global inactivation / diagnostics)
+    this.agentActiveTable.addGlobalSecondaryIndex({
+      indexName: 'agentId-index',
+      partitionKey: { name: 'agentId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
 
     // Call Queue table - V2 with corrected GSI types
     this.callQueueTable = new dynamodb.Table(this, 'CallQueueTable', {
@@ -480,6 +504,7 @@ export class ChimeStack extends Stack {
       environment: {
         CLINICS_TABLE_NAME: this.clinicsTable.tableName,
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         LOCKS_TABLE_NAME: this.locksTable.tableName,
         HOLD_MUSIC_BUCKET: '', // Will be updated after bucket creation
@@ -499,6 +524,7 @@ export class ChimeStack extends Stack {
     // Grant DynamoDB permissions
     this.clinicsTable.grantReadData(smaHandler);
     this.agentPresenceTable.grantReadWriteData(smaHandler);
+    this.agentActiveTable.grantReadWriteData(smaHandler);
     this.callQueueTable.grantReadWriteData(smaHandler);
     this.locksTable.grantReadWriteData(smaHandler);
 
@@ -1346,6 +1372,59 @@ export class ChimeStack extends Stack {
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
 
+    // Lambda for POST /chime/agent/active
+    // Push-first availability toggle (writes AgentActive table; may also ring queued calls).
+    const agentActiveFn = new lambdaNode.NodejsFunction(this, 'AgentActiveFn', {
+      functionName: `${this.stackName}-AgentActive`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'agent-active.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
+        JWT_SECRET: jwtSecretValue,
+        CHIME_MEDIA_REGION: chimeMediaRegion,
+        // Push Notifications Integration (best-effort dispatch of queued calls)
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
+      },
+    });
+    applyTags(agentActiveFn, { Function: 'agent-active' });
+    this.agentActiveTable.grantReadWriteData(agentActiveFn);
+    this.callQueueTable.grantReadWriteData(agentActiveFn);
+    this.locksTable.grantReadWriteData(agentActiveFn);
+    if (props.sendPushFunctionArn) {
+      agentActiveFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
+    agentActiveFn.addPermission('AdminApiInvokeAgentActive', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
+    // Lambda for POST /chime/agent/inactive
+    const agentInactiveFn = new lambdaNode.NodejsFunction(this, 'AgentInactiveFn', {
+      functionName: `${this.stackName}-AgentInactive`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'agent-inactive.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
+        JWT_SECRET: jwtSecretValue,
+      },
+    });
+    applyTags(agentInactiveFn, { Function: 'agent-inactive' });
+    this.agentActiveTable.grantReadWriteData(agentInactiveFn);
+    agentInactiveFn.addPermission('AdminApiInvokeAgentInactive', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
     // Lambda for POST /chime/outbound-call
     const outboundCallFn = new lambdaNode.NodejsFunction(this, 'OutboundCallFn', {
       functionName: `${this.stackName}-OutboundCall`,
@@ -1355,6 +1434,7 @@ export class ChimeStack extends Stack {
       timeout: Duration.seconds(10),
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
         CLINICS_TABLE_NAME: this.clinicsTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         LOCKS_TABLE_NAME: this.locksTable.tableName,
@@ -1368,6 +1448,7 @@ export class ChimeStack extends Stack {
     });
     outboundCallFn.addToRolePolicy(chimeSdkPolicy);
     this.agentPresenceTable.grantReadWriteData(outboundCallFn);
+    this.agentActiveTable.grantReadWriteData(outboundCallFn);
     this.clinicsTable.grantReadData(outboundCallFn);
     this.callQueueTable.grantReadWriteData(outboundCallFn);
     this.locksTable.grantReadWriteData(outboundCallFn);
@@ -1448,6 +1529,112 @@ export class ChimeStack extends Stack {
       resources: ['*'],
     }));
     callAcceptedFn.addPermission('AdminApiInvokeCallAccepted', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
+    // Lambda for POST /chime/call-accepted-v2
+    // Push-first meeting-per-call acceptance: returns meeting credentials and bridges PSTN leg.
+    const callAcceptedV2Fn = new lambdaNode.NodejsFunction(this, 'CallAcceptedV2Fn', {
+      functionName: `${this.stackName}-CallAcceptedV2`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'call-accepted-v2.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
+        SMA_ID_MAP: smaIdMapJson,
+        CHIME_MEDIA_REGION: chimeMediaRegion,
+        JWT_SECRET: jwtSecretValue,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    applyTags(callAcceptedV2Fn, { Function: 'call-accepted-v2' });
+    this.agentActiveTable.grantReadWriteData(callAcceptedV2Fn);
+    this.callQueueTable.grantReadWriteData(callAcceptedV2Fn);
+    this.locksTable.grantReadWriteData(callAcceptedV2Fn);
+    callAcceptedV2Fn.addToRolePolicy(chimeSdkPolicy);
+    callAcceptedV2Fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'chime:UpdateSipMediaApplicationCall',
+        'chime-sdk-voice:UpdateSipMediaApplicationCall',
+      ],
+      resources: ['*'],
+    }));
+    callAcceptedV2Fn.addPermission('AdminApiInvokeCallAcceptedV2', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
+    // Lambda for POST /chime/call-rejected-v2
+    // Push-first meeting-per-call rejection: remove agent from ring list and re-offer to other active agents.
+    const callRejectedV2Fn = new lambdaNode.NodejsFunction(this, 'CallRejectedV2Fn', {
+      functionName: `${this.stackName}-CallRejectedV2`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'call-rejected-v2.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
+        JWT_SECRET: jwtSecretValue,
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    applyTags(callRejectedV2Fn, { Function: 'call-rejected-v2' });
+    this.agentActiveTable.grantReadWriteData(callRejectedV2Fn);
+    this.callQueueTable.grantReadWriteData(callRejectedV2Fn);
+    this.locksTable.grantReadWriteData(callRejectedV2Fn);
+    if (props.sendPushFunctionArn) {
+      callRejectedV2Fn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
+    callRejectedV2Fn.addPermission('AdminApiInvokeCallRejectedV2', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
+    // Lambda for POST /chime/call-hungup-v2
+    // Push-first meeting-per-call hangup: request SMA hangup and reset AgentActive busy -> active (best-effort).
+    const callHungupV2Fn = new lambdaNode.NodejsFunction(this, 'CallHungupV2Fn', {
+      functionName: `${this.stackName}-CallHungupV2`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'call-hungup-v2.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
+        SMA_ID_MAP: smaIdMapJson,
+        CHIME_MEDIA_REGION: chimeMediaRegion,
+        JWT_SECRET: jwtSecretValue,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    applyTags(callHungupV2Fn, { Function: 'call-hungup-v2' });
+    this.agentActiveTable.grantReadWriteData(callHungupV2Fn);
+    this.callQueueTable.grantReadWriteData(callHungupV2Fn);
+    this.locksTable.grantReadWriteData(callHungupV2Fn);
+    callHungupV2Fn.addToRolePolicy(chimeSdkPolicy);
+    callHungupV2Fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'chime:UpdateSipMediaApplicationCall',
+        'chime-sdk-voice:UpdateSipMediaApplicationCall',
+      ],
+      resources: ['*'],
+    }));
+    callHungupV2Fn.addPermission('AdminApiInvokeCallHungupV2', {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
@@ -1870,6 +2057,18 @@ export class ChimeStack extends Stack {
       exportName: `${this.stackName}-AgentPresenceTableName`,
     });
 
+    new CfnOutput(this, 'AgentActiveTableName', {
+      value: this.agentActiveTable.tableName,
+      description: 'AgentActive table name for push-first call routing',
+      exportName: `${this.stackName}-AgentActiveTableName`,
+    });
+
+    new CfnOutput(this, 'AgentActiveTableArn', {
+      value: this.agentActiveTable.tableArn,
+      description: 'AgentActive table ARN for cross-stack IAM policies',
+      exportName: `${this.stackName}-AgentActiveTableArn`,
+    });
+
     // Export CallQueue table name for AnalyticsStack derived references
     new CfnOutput(this, 'CallQueueTableName', {
       value: this.callQueueTable.tableName,
@@ -1909,6 +2108,14 @@ export class ChimeStack extends Stack {
       value: stopSessionFn.functionArn,
       exportName: `${this.stackName}-StopSessionArn`,
     });
+    new CfnOutput(this, 'AgentActiveFnArn', {
+      value: agentActiveFn.functionArn,
+      exportName: `${this.stackName}-AgentActiveArn`,
+    });
+    new CfnOutput(this, 'AgentInactiveFnArn', {
+      value: agentInactiveFn.functionArn,
+      exportName: `${this.stackName}-AgentInactiveArn`,
+    });
     new CfnOutput(this, 'OutboundCallFnArn', {
       value: outboundCallFn.functionArn,
       exportName: `${this.stackName}-OutboundCallArn`,
@@ -1920,6 +2127,18 @@ export class ChimeStack extends Stack {
     new CfnOutput(this, 'CallAcceptedFnArn', {
       value: callAcceptedFn.functionArn,
       exportName: `${this.stackName}-CallAcceptedArn`,
+    });
+    new CfnOutput(this, 'CallAcceptedV2FnArn', {
+      value: callAcceptedV2Fn.functionArn,
+      exportName: `${this.stackName}-CallAcceptedV2Arn`,
+    });
+    new CfnOutput(this, 'CallRejectedV2FnArn', {
+      value: callRejectedV2Fn.functionArn,
+      exportName: `${this.stackName}-CallRejectedV2Arn`,
+    });
+    new CfnOutput(this, 'CallHungupV2FnArn', {
+      value: callHungupV2Fn.functionArn,
+      exportName: `${this.stackName}-CallHungupV2Arn`,
     });
     new CfnOutput(this, 'CallRejectedFnArn', {
       value: callRejectedFn.functionArn,
