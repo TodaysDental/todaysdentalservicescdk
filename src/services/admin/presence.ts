@@ -37,6 +37,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const getCmd = new GetCommand({
       TableName: tableName,
       Key: { agentId: sub },
+      // Prevent UI flicker from eventually-consistent reads while ringing/on-call.
+      // This endpoint is polled frequently and should reflect the latest presence state.
+      ConsistentRead: true,
     });
 
     const result = await docClient.send(getCmd as any);

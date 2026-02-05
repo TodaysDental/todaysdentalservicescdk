@@ -1829,23 +1829,47 @@ export const handler = async (event: any): Promise<any> => {
 
                 // Check if the update is a Hangup action
                 // This is triggered by call-hungup.ts or cleanup-monitor
-                if (args.Action === 'Hangup') { // Note: This is 'Action' (capital A)
-                    console.log(`[CALL_UPDATE_REQUESTED] Acknowledging Hangup request for call ${callId}`);
+                // NOTE: Different callers use different argument casing (`Action` vs `action`).
+                // Normalize to ensure hangup is reliably detected.
+                const updateRequestedActionRaw = (args as any)?.Action ?? (args as any)?.action;
+                const updateRequestedAction =
+                    typeof updateRequestedActionRaw === 'string'
+                        ? updateRequestedActionRaw.toLowerCase()
+                        : '';
 
-                    // Get all active participants to hang up
-                    const participants = event?.CallDetails?.Participants || [];
-                    const hangupActions = participants
-                        .filter((p: any) => p.Status === 'Connected')
-                        .map((p: any) => ({
-                            Type: 'Hangup',
-                            Parameters: {
-                                CallId: p.CallId,
-                                SipResponseCode: '0'
-                            }
-                        }));
+                if (updateRequestedAction === 'hangup') {
+                    console.log(`[CALL_UPDATE_REQUESTED] Acknowledging Hangup request for call ${callId}`, {
+                        hasParticipants: Array.isArray(event?.CallDetails?.Participants),
+                        participantCount: Array.isArray(event?.CallDetails?.Participants) ? event.CallDetails.Participants.length : 0,
+                    });
 
-                    // If no specific participants, hang up all
+                    // Get all participant CallIds to hang up (do NOT rely on Status being "Connected",
+                    // as some CALL_UPDATE_REQUESTED events omit or vary status fields).
+                    const participants = Array.isArray(event?.CallDetails?.Participants)
+                        ? event.CallDetails.Participants
+                        : [];
+
+                    const participantCallIds = participants
+                        .map((p: any) => p?.CallId)
+                        .filter((id: any): id is string => typeof id === 'string' && id.length > 0);
+
+                    const uniqueCallIds: string[] = Array.from(new Set<string>(participantCallIds));
+
+                    const hangupActions: any[] = uniqueCallIds.map((id: string) => ({
+                        Type: 'Hangup',
+                        Parameters: {
+                            CallId: id,
+                            SipResponseCode: '0',
+                        },
+                    }));
+
+                    // If no specific participants/call-ids are present, attempt a generic hangup
+                    // (best-effort; SMA will decide which leg to terminate).
                     if (hangupActions.length === 0) {
+                        console.warn('[CALL_UPDATE_REQUESTED] No participant CallIds found; issuing generic Hangup', {
+                            callId,
+                            args,
+                        });
                         hangupActions.push({ Type: 'Hangup', Parameters: { SipResponseCode: '0' } });
                     }
 
@@ -2231,7 +2255,7 @@ export const handler = async (event: any): Promise<any> => {
                             await ddb.send(new UpdateCommand({
                                 TableName: AGENT_PRESENCE_TABLE_NAME,
                                 Key: { agentId: assignedAgentId },
-                                UpdateExpression: `SET #status = :status, lastActivityAt = :timestamp, lastCallEndedAt = :timestamp, 
+                                UpdateExpression: `SET #status = :status, lastActivityAt = :timestamp, lastCallEndedAt = :timestamp, lastCallEndTime = :timestamp, 
                                     lastCallEndReason = :reason, lastCallEndMessage = :message, lastCallId = :callId,
                                     lastCallWasOutbound = :wasOutbound, lastDialingFailed = :dialFailed
                                     REMOVE currentCallId, callStatus, currentMeetingAttendeeId, dialingState, dialingStartedAt, 
