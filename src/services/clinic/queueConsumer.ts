@@ -1,4 +1,5 @@
 import https from 'https';
+import { randomBytes } from 'crypto';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand, ScanCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { SQSClient, SendMessageBatchCommand } from '@aws-sdk/client-sqs';
@@ -71,6 +72,15 @@ const QUERIES_TABLE = process.env.QUERIES_TABLE || 'SQLQueries-V3';
 const EMAIL_ANALYTICS_TABLE = process.env.EMAIL_ANALYTICS_TABLE || '';
 const EMAIL_QUEUE_URL = process.env.EMAIL_QUEUE_URL || '';
 const VOICE_CALL_ANALYTICS_TABLE = process.env.VOICE_CALL_ANALYTICS_TABLE || '';
+
+// Consent Forms scheduling (requires access to ConsentFormData stack tables)
+const CONSENT_FORM_TEMPLATES_TABLE_NAME = process.env.CONSENT_FORM_TEMPLATES_TABLE_NAME || '';
+const CONSENT_FORM_INSTANCES_TABLE_NAME = process.env.CONSENT_FORM_INSTANCES_TABLE_NAME || '';
+const CONSENT_FORM_DEFAULT_TOKEN_TTL_DAYS = (() => {
+  const n = Number(process.env.CONSENT_FORM_DEFAULT_TOKEN_TTL_DAYS || '7');
+  if (!Number.isFinite(n) || n <= 0) return 7;
+  return Math.min(Math.max(Math.floor(n), 1), 365);
+})();
 
 // Batch size for SQS SendMessageBatch (max 10)
 const SQS_BATCH_SIZE = 10;
@@ -155,6 +165,83 @@ async function fetchTemplateByName(templateName: string): Promise<any | null> {
   const res = await doc.send(new ScanCommand({ TableName: TEMPLATES_TABLE }));
   const items = (res.Items || []) as any[];
   return items.find((t) => String(t.template_name).toLowerCase() === String(templateName).toLowerCase()) || null;
+}
+
+function parseConsentFormIdFromTemplateMessage(templateMessage: string): string | null {
+  const raw = String(templateMessage || '').trim();
+  const m =
+    /^consentform\s*:\s*(.+)$/i.exec(raw) ||
+    /^consent-form\s*:\s*(.+)$/i.exec(raw) ||
+    /^consent_forms\s*:\s*(.+)$/i.exec(raw);
+  const id = String(m?.[1] || '').trim();
+  return id || null;
+}
+
+async function fetchConsentFormTemplateById(consentFormId: string): Promise<any | null> {
+  if (!CONSENT_FORM_TEMPLATES_TABLE_NAME) return null;
+  if (!consentFormId) return null;
+  const res = await doc.send(new GetCommand({
+    TableName: CONSENT_FORM_TEMPLATES_TABLE_NAME,
+    Key: { consent_form_id: consentFormId },
+  }));
+  return (res.Item as any) || null;
+}
+
+function generateConsentFormToken(): string {
+  // URL-safe token for patient-facing links
+  return randomBytes(32).toString('base64url');
+}
+
+function buildConsentFormSigningUrl(websiteLink: string | undefined, token: string): string {
+  const base = String(websiteLink || '').trim().replace(/\/+$/g, '');
+  if (!base) return `https://dentistinconcord.com/consent-form/${token}`;
+  return `${base}/consent-form/${token}`;
+}
+
+async function createConsentFormInstanceForSchedule(args: {
+  clinicId: string;
+  patNum: number;
+  consentFormId: string;
+  template: any;
+  scheduleId?: string;
+}): Promise<{ instanceId: string; token: string; signingUrl: string; expiresAtSeconds: number }> {
+  if (!CONSENT_FORM_INSTANCES_TABLE_NAME) {
+    throw new Error('Missing CONSENT_FORM_INSTANCES_TABLE_NAME');
+  }
+
+  const instanceId = uuidv4();
+  const token = generateConsentFormToken();
+  const nowIso = new Date().toISOString();
+  const expiresAtSeconds =
+    Math.floor(Date.now() / 1000) + CONSENT_FORM_DEFAULT_TOKEN_TTL_DAYS * 24 * 60 * 60;
+
+  const clinicConfig = await getClinicConfig(args.clinicId);
+  const signingUrl = buildConsentFormSigningUrl(clinicConfig?.websiteLink, token);
+
+  const item: any = {
+    instance_id: instanceId,
+    token,
+    clinicId: args.clinicId,
+    patNum: args.patNum,
+    consent_form_id: args.consentFormId,
+    templateName: String(args.template?.templateName || args.template?.template_name || ''),
+    language: String(args.template?.language || 'en'),
+    elements: Array.isArray(args.template?.elements) ? args.template.elements : [],
+    status: 'sent',
+    created_at: nowIso,
+    sent_at: nowIso,
+    expires_at: expiresAtSeconds,
+    created_by: 'schedule',
+    signing_url: signingUrl,
+  };
+  if (args.scheduleId) item.scheduleId = args.scheduleId;
+
+  await doc.send(new PutCommand({
+    TableName: CONSENT_FORM_INSTANCES_TABLE_NAME,
+    Item: item,
+  }));
+
+  return { instanceId, token, signingUrl, expiresAtSeconds };
 }
 
 async function fetchRcsTemplateById(clinicId: string, templateId: string): Promise<any | null> {
@@ -355,6 +442,55 @@ function extractEmailAndPhone(row: any): { email?: string; phone?: string } {
     if (!phone && /(cell|wireless|mobile|phone)/.test(key)) phone = normalizePhone(val);
   }
   return { email, phone };
+}
+
+function extractPatNum(row: any): number | undefined {
+  const tryParse = (value: any): number | undefined => {
+    let s = String(value ?? '').trim();
+    if (!s) return undefined;
+    // Strip surrounding quotes (CSV parsing with quote:false keeps them)
+    if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1).trim();
+    const n = Number(s);
+    if (!Number.isFinite(n) || n <= 0) return undefined;
+    return Math.floor(n);
+  };
+
+  // Common field names
+  const directCandidates = [
+    (row as any)?.PatNum,
+    (row as any)?.patNum,
+    (row as any)?.PATNUM,
+    (row as any)?.PatientId,
+    (row as any)?.patientId,
+    (row as any)?.patient_id,
+    (row as any)?.pat_num,
+    (row as any)?.ChartNumber,
+    (row as any)?.chartNumber,
+    (row as any)?.ChartNum,
+    (row as any)?.chartnum,
+  ];
+  for (const c of directCandidates) {
+    const n = tryParse(c);
+    if (n) return n;
+  }
+
+  // Fallback: scan keys
+  for (const [k, v] of Object.entries(row || {})) {
+    const key = String(k).toLowerCase();
+    if (
+      key === 'patnum' ||
+      key.includes('patnum') ||
+      key === 'patientid' ||
+      key.includes('patientid') ||
+      key.includes('chartnumber') ||
+      key.includes('chartnum')
+    ) {
+      const n = tryParse(v);
+      if (n) return n;
+    }
+  }
+
+  return undefined;
 }
 
 function normalizePhone(p: string): string | undefined {
@@ -753,6 +889,151 @@ async function enqueueEmailBatch(tasks: EmailQueueTask[]): Promise<void> {
   }));
 }
 
+async function processConsentFormScheduleTask(args: {
+  scheduleId: string;
+  clinicId: string;
+  consentFormId: string;
+  sql: string;
+  hasEmailType: boolean;
+  hasSmsType: boolean;
+}): Promise<void> {
+  const { scheduleId, clinicId, consentFormId, sql, hasEmailType, hasSmsType } = args;
+
+  if (!CONSENT_FORM_TEMPLATES_TABLE_NAME || !CONSENT_FORM_INSTANCES_TABLE_NAME) {
+    console.warn(
+      `[ConsentForms/Schedule] Missing env vars (CONSENT_FORM_TEMPLATES_TABLE_NAME / CONSENT_FORM_INSTANCES_TABLE_NAME). Skipping schedule ${scheduleId}.`
+    );
+    return;
+  }
+
+  if (!hasEmailType && !hasSmsType) {
+    console.warn(
+      `[ConsentForms/Schedule] No supported notificationTypes (EMAIL/SMS) for schedule ${scheduleId}. Skipping.`
+    );
+    return;
+  }
+
+  const cfTemplate = await fetchConsentFormTemplateById(consentFormId);
+  if (!cfTemplate) {
+    console.warn(
+      `[ConsentForms/Schedule] Consent form template not found: consentFormId=${consentFormId} (schedule ${scheduleId}).`
+    );
+    return;
+  }
+
+  const tmplName =
+    String(cfTemplate.templateName || cfTemplate.template_name || 'Consent Form').trim() || 'Consent Form';
+  const lang = String(cfTemplate.language || 'en').trim();
+
+  const rows = await runOpenDentalQuery({ clinicId, sql });
+
+  let instancesCreated = 0;
+  let emailsEnqueued = 0;
+  let smsSent = 0;
+  let skippedNoPatNum = 0;
+  let skippedNoContact = 0;
+  let errors = 0;
+
+  const emailTasksToEnqueue: EmailQueueTask[] = [];
+  const seenPatNums = new Set<number>();
+
+  for (const row of rows) {
+    const patNum = extractPatNum(row);
+    if (!patNum) {
+      skippedNoPatNum++;
+      continue;
+    }
+    if (seenPatNums.has(patNum)) continue;
+    seenPatNums.add(patNum);
+
+    const { email, phone } = extractEmailAndPhone(row);
+    const recipientEmail = hasEmailType ? email : undefined;
+    const recipientPhone = hasSmsType ? phone : undefined;
+
+    if (!recipientEmail && !recipientPhone) {
+      skippedNoContact++;
+      continue;
+    }
+
+    try {
+      const instance = await createConsentFormInstanceForSchedule({
+        clinicId,
+        patNum,
+        consentFormId,
+        template: cfTemplate,
+        scheduleId,
+      });
+      instancesCreated++;
+
+      const signingUrl = instance.signingUrl;
+      const langBadge = lang ? ` (${lang})` : '';
+
+      const smsText = `Please sign your ${tmplName}${langBadge} consent form: ${signingUrl}`;
+      const emailSubject = `Consent Form: ${tmplName}`;
+      const emailText = `Please review and sign your consent form: ${signingUrl}`;
+      const emailHtml = `
+        <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+          <p>Please review and sign your consent form:</p>
+          <p><a href="${signingUrl}" target="_blank" rel="noopener noreferrer">${signingUrl}</a></p>
+          <p>If you have any questions, please contact the office.</p>
+        </div>
+      `.trim();
+
+      if (recipientEmail) {
+        emailTasksToEnqueue.push({
+          trackingId: '',
+          clinicId,
+          recipientEmail,
+          subject: emailSubject,
+          htmlBody: emailHtml,
+          textBody: emailText,
+          templateName: `ConsentForm:${consentFormId}`,
+          scheduleId,
+        });
+
+        if (emailTasksToEnqueue.length >= SQS_BATCH_SIZE) {
+          await enqueueEmailBatch(emailTasksToEnqueue);
+          emailsEnqueued += emailTasksToEnqueue.length;
+          emailTasksToEnqueue.length = 0;
+        }
+      }
+
+      if (recipientPhone) {
+        try {
+          await sendSms({ clinicId, to: recipientPhone, body: smsText });
+          smsSent++;
+        } catch (smsError) {
+          errors++;
+          console.error(
+            `[ConsentForms/Schedule] Failed to send SMS to ${recipientPhone} (patNum=${patNum}, schedule=${scheduleId}):`,
+            smsError
+          );
+        }
+      }
+    } catch (err) {
+      errors++;
+      console.error(
+        `[ConsentForms/Schedule] Failed to create/send for patNum=${patNum} (schedule=${scheduleId}):`,
+        err
+      );
+    }
+  }
+
+  if (emailTasksToEnqueue.length > 0) {
+    await enqueueEmailBatch(emailTasksToEnqueue);
+    emailsEnqueued += emailTasksToEnqueue.length;
+  }
+
+  await markRanForClinic(scheduleId, clinicId);
+
+  console.log(
+    `[ConsentForms/Schedule] Completed schedule ${scheduleId} for clinic ${clinicId}: ` +
+      `${instancesCreated} instances, ${emailsEnqueued} emails enqueued, ${smsSent} SMS sent, ` +
+      `${skippedNoPatNum} skipped(no PatNum), ${skippedNoContact} skipped(no contact), ${errors} errors ` +
+      `from ${rows.length} rows`
+  );
+}
+
 async function processScheduleTask(task: ScheduleTask): Promise<void> {
   const { scheduleId, clinicId, queryTemplate, templateMessage, notificationTypes, timeZone } = task;
   
@@ -773,6 +1054,21 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   const sql = await fetchQueryByName(queryTemplate);
   if (!sql) {
     console.warn(`Missing query for schedule ${scheduleId}: queryTemplate=${queryTemplate}`);
+    return;
+  }
+
+  // Consent Form schedules are encoded via templateMessage prefix:
+  //   templateMessage = "consentForm:<consent_form_id>"
+  const consentFormId = parseConsentFormIdFromTemplateMessage(templateMessage);
+  if (consentFormId) {
+    await processConsentFormScheduleTask({
+      scheduleId,
+      clinicId,
+      consentFormId,
+      sql,
+      hasEmailType,
+      hasSmsType,
+    });
     return;
   }
 

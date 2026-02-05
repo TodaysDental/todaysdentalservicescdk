@@ -238,6 +238,10 @@ const templatesStack = new TemplatesStack(app, 'TodaysDentalInsightsTemplatesN1'
 // Consent Form Data service
 const consentFormDataStack = new ConsentFormDataStack(app, 'TodaysDentalInsightsConsentFormDataN1', {
   env,
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
 // *** END NEW STACK ***
 
@@ -261,6 +265,7 @@ const openDentalStack = new OpenDentalStack(app, 'TodaysDentalInsightsOpenDental
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
 openDentalStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
+consentFormDataStack.addDependency(openDentalStack); // Explicit - imports consolidated Transfer endpoint/bucket outputs
 
 // Notifications service
 const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNotificationsN1', {
@@ -606,13 +611,18 @@ const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesN1'
   consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
   // Pass secrets table names for dynamic SFTP credential retrieval
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  // Consent Forms scheduling (create instances + snapshot template)
+  consentFormTemplatesTableName: consentFormDataStack.consentFormDataTable.tableName,
+  consentFormInstancesTableName: consentFormDataStack.consentFormInstancesTable.tableName,
   // Chime outbound calling (marketing voice campaigns)
   smaIdMapParameterName: `/${CHIME_STACK_NAME}/SmaIdMap`,
   chimeMediaRegion: CHIME_MEDIA_REGION,
 });
 schedulesStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
+schedulesStack.addDependency(consentFormDataStack); // Explicit - reads/writes Consent Forms tables for scheduling
 
 const callbackStack = new CallbackStack(app, 'TodaysDentalInsightsCallbackN1', {
   env,

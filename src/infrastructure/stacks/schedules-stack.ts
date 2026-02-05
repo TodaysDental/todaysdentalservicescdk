@@ -20,10 +20,16 @@ export interface SchedulesStackProps extends StackProps {
   consolidatedTransferServerId: string;
   /** GlobalSecrets DynamoDB table name for retrieving SFTP credentials */
   globalSecretsTableName?: string;
+  /** ClinicSecrets DynamoDB table name for per-clinic credentials */
+  clinicSecretsTableName?: string;
   /** ClinicConfig DynamoDB table name for clinic configuration */
   clinicConfigTableName?: string;
   /** KMS key ARN for decrypting secrets */
   secretsEncryptionKeyArn?: string;
+  /** Consent Form templates table name (ConsentFormData stack) */
+  consentFormTemplatesTableName?: string;
+  /** Consent Form instances table name (ConsentFormData stack) */
+  consentFormInstancesTableName?: string;
   /** SSM parameter name that stores the per-clinic SMA ID map JSON */
   smaIdMapParameterName?: string;
   /** Chime SDK media region to use for Meetings/Voice (default: us-east-1) */
@@ -305,7 +311,12 @@ export class SchedulesStack extends Stack {
         CONSOLIDATED_SFTP_HOST: props.consolidatedTransferServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',
         // SFTP password now retrieved from GlobalSecrets table
         GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
+        CLINIC_SECRETS_TABLE: props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets',
         CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
+        // Consent Forms scheduling (instances + templates)
+        CONSENT_FORM_TEMPLATES_TABLE_NAME: props.consentFormTemplatesTableName || '',
+        CONSENT_FORM_INSTANCES_TABLE_NAME: props.consentFormInstancesTableName || '',
+        CONSENT_FORM_DEFAULT_TOKEN_TTL_DAYS: '7',
         // Chime outbound calling (SMA + Meetings)
         CHIME_MEDIA_REGION: props.chimeMediaRegion || 'us-east-1',
         SMA_ID_MAP_PARAMETER_NAME: props.smaIdMapParameterName || '',
@@ -480,6 +491,20 @@ export class SchedulesStack extends Stack {
     templatesTable.grantReadData(this.schedulerQueueConsumerFn);
     queriesTable.grantReadData(this.schedulerQueueConsumerFn);
     clinicHoursTable.grantReadData(this.schedulerQueueConsumerFn);
+
+    // Consent Forms scheduling permissions (optional)
+    if (props.consentFormTemplatesTableName) {
+      const consentFormTemplatesTable = dynamodb.Table.fromTableAttributes(this, 'ConsentFormTemplatesTable', {
+        tableName: props.consentFormTemplatesTableName,
+      });
+      consentFormTemplatesTable.grantReadData(this.schedulerQueueConsumerFn);
+    }
+    if (props.consentFormInstancesTableName) {
+      const consentFormInstancesTable = dynamodb.Table.fromTableAttributes(this, 'ConsentFormInstancesTable', {
+        tableName: props.consentFormInstancesTableName,
+      });
+      consentFormInstancesTable.grantReadWriteData(this.schedulerQueueConsumerFn);
+    }
     
     // Grant email analytics table access for tracking scheduled/sent/failed emails
     // Using IAM policy directly since we import by name from cross-stack
@@ -512,6 +537,7 @@ export class SchedulesStack extends Stack {
         actions: ['dynamodb:GetItem', 'dynamodb:Query'],
         resources: [
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets'}`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
         ],
       });

@@ -72,11 +72,16 @@ export async function makeOpenDentalRequest(
     throw new Error(`Clinic configuration not found for ${clinicId}`);
   }
 
-  const headers = {
+  const bodyJson = body ? JSON.stringify(body) : undefined;
+  const headers: Record<string, string> = {
     'Authorization': `ODFHIR ${clinic.developerKey}/${clinic.customerKey}`,
     'Content-Type': 'application/json',
     'Accept': 'application/json',
   };
+  // OpenDental API requires Content-Length for JSON bodies (does not reliably accept chunked encoding)
+  if (bodyJson) {
+    headers['Content-Length'] = Buffer.byteLength(bodyJson).toString();
+  }
 
   return new Promise((resolve, reject) => {
     const options: https.RequestOptions = {
@@ -120,8 +125,8 @@ export async function makeOpenDentalRequest(
       });
     });
 
-    if (body) {
-      req.write(JSON.stringify(body));
+    if (bodyJson) {
+      req.write(bodyJson);
     }
 
     req.end();

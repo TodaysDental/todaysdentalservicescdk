@@ -19,6 +19,16 @@ const TABLE_NAME = process.env.TABLE_NAME || 'ConsentFormData';
 // Dynamic CORS helper
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
 
+type ConsentFormLanguage = 'en' | 'es';
+
+function normalizeConsentFormLanguage(raw: unknown): ConsentFormLanguage | undefined {
+  const v = String(raw ?? '').trim().toLowerCase();
+  if (!v) return undefined;
+  if (v === 'en' || v === 'english') return 'en';
+  if (v === 'es' || v === 'spanish' || v === 'español' || v === 'espanol') return 'es';
+  return undefined;
+}
+
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const httpMethod = event.httpMethod;
@@ -125,16 +135,35 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
 // GET /consent-forms
 async function listConsentForms(event: APIGatewayProxyEvent, userPerms: UserPermissions) {
+  const languageRaw = event.queryStringParameters?.language;
+  const languageFilter = normalizeConsentFormLanguage(languageRaw);
+  if (languageRaw && !languageFilter) {
+    return {
+      statusCode: 400,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({ error: "Invalid 'language' query param. Use 'en' or 'es'." }),
+    };
+  }
+
   const command = new ScanCommand({
     TableName: TABLE_NAME,
   });
 
   const response = await docClient.send(command);
+
+  const normalizedItems = (response.Items || []).map((item: any) => ({
+    ...item,
+    language: normalizeConsentFormLanguage(item?.language) || 'en',
+  }));
+  const consentForms = languageFilter
+    ? normalizedItems.filter((i: any) => i.language === languageFilter)
+    : normalizedItems;
+
   return {
     statusCode: 200,
     headers: getCorsHeaders(event),
     body: JSON.stringify({
-      consentForms: response.Items || [],
+      consentForms,
     }),
   };
 }
@@ -161,7 +190,10 @@ async function getConsentForm(event: APIGatewayProxyEvent, userPerms: UserPermis
   return {
     statusCode: 200,
     headers: getCorsHeaders(event),
-    body: JSON.stringify(response.Item),
+    body: JSON.stringify({
+      ...(response.Item as any),
+      language: normalizeConsentFormLanguage((response.Item as any)?.language) || 'en',
+    }),
   };
 }
 
@@ -178,12 +210,23 @@ async function createConsentForm(event: APIGatewayProxyEvent, userPerms: UserPer
     };
   }
 
+  const languageRaw = body.language;
+  const language = normalizeConsentFormLanguage(languageRaw) || 'en';
+  if (languageRaw && !normalizeConsentFormLanguage(languageRaw)) {
+    return {
+      statusCode: 400,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({ error: "Invalid 'language'. Use 'en' or 'es'." }),
+    };
+  }
+
   const consentFormId = uuidv4();
   const timestamp = new Date().toISOString();
 
   const item = {
     consent_form_id: consentFormId,
     templateName: body.templateName,
+    language,
     elements: body.elements, // Store the full elements array
     modified_at: timestamp,
     modified_by: getUserDisplayName(userPerms),
@@ -219,11 +262,22 @@ async function updateConsentForm(event: APIGatewayProxyEvent, userPerms: UserPer
     };
   }
 
+  const languageRaw = body.language;
+  const language = normalizeConsentFormLanguage(languageRaw) || 'en';
+  if (languageRaw && !normalizeConsentFormLanguage(languageRaw)) {
+    return {
+      statusCode: 400,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({ error: "Invalid 'language'. Use 'en' or 'es'." }),
+    };
+  }
+
   const timestamp = new Date().toISOString();
 
   const item = {
     consent_form_id: consentFormId, // This is the partition key
     templateName: body.templateName,
+    language,
     elements: body.elements,
     modified_at: timestamp,
     modified_by: getUserDisplayName(userPerms),
