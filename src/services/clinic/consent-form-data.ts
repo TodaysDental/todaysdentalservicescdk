@@ -18,6 +18,10 @@ const TABLE_NAME = process.env.TABLE_NAME || 'ConsentFormData';
 
 // Dynamic CORS helper
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
+const getJsonHeaders = (event: APIGatewayProxyEvent) => ({
+  ...getCorsHeaders(event),
+  'Content-Type': 'application/json',
+});
 
 type ConsentFormLanguage = 'en' | 'es';
 
@@ -46,7 +50,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   if (httpMethod === 'OPTIONS') {
     return {
       statusCode: 200,
-      headers: getCorsHeaders(event),
+      headers: getJsonHeaders(event),
       body: JSON.stringify({ message: 'CORS preflight response' }),
     };
   }
@@ -56,7 +60,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   if (!userPerms) {
     return {
       statusCode: 401,
-      headers: getCorsHeaders(event),
+      headers: getJsonHeaders(event),
       body: JSON.stringify({ error: 'Unauthorized - Invalid token' }),
     };
   }
@@ -71,7 +75,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   )) {
     return {
       statusCode: 403,
-      headers: getCorsHeaders(event),
+      headers: getJsonHeaders(event),
       body: JSON.stringify({ error: 'You do not have permission to modify consent forms in the Operations module' }),
     };
   }
@@ -86,7 +90,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   )) {
     return {
       statusCode: 403,
-      headers: getCorsHeaders(event),
+      headers: getJsonHeaders(event),
       body: JSON.stringify({ error: 'You do not have permission to read consent forms in the Operations module' }),
     };
   }
@@ -119,7 +123,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // If no route matches
     return {
       statusCode: 404,
-      headers: getCorsHeaders(event),
+      headers: getJsonHeaders(event),
       body: JSON.stringify({ error: 'Not Found' }),
     };
 
@@ -127,7 +131,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     console.error('Error:', error);
     return {
       statusCode: 500,
-      headers: getCorsHeaders(event),
+      headers: getJsonHeaders(event),
       body: JSON.stringify({ error: error.message ?? 'Internal Server Error' }),
     };
   }
@@ -140,13 +144,28 @@ async function listConsentForms(event: APIGatewayProxyEvent, userPerms: UserPerm
   if (languageRaw && !languageFilter) {
     return {
       statusCode: 400,
-      headers: getCorsHeaders(event),
+      headers: getJsonHeaders(event),
       body: JSON.stringify({ error: "Invalid 'language' query param. Use 'en' or 'es'." }),
     };
   }
 
+  const summaryRaw = event.queryStringParameters?.summary;
+  const includeElementsRaw = event.queryStringParameters?.includeElements;
+  const wantsSummary = ['1', 'true', 'yes'].includes(String(summaryRaw ?? '').trim().toLowerCase());
+  const includeElements =
+    !wantsSummary &&
+    !['0', 'false', 'no'].includes(String(includeElementsRaw ?? '').trim().toLowerCase());
+
   const command = new ScanCommand({
     TableName: TABLE_NAME,
+    ...(includeElements
+      ? {}
+      : {
+          // Summary list (used by dropdowns/managers) does not need the full `elements` payload.
+          // Use a projection to reduce DynamoDB read + response size.
+          ProjectionExpression: 'consent_form_id, templateName, #lang, modified_at, modified_by',
+          ExpressionAttributeNames: { '#lang': 'language' },
+        }),
   });
 
   const response = await docClient.send(command);
@@ -159,11 +178,18 @@ async function listConsentForms(event: APIGatewayProxyEvent, userPerms: UserPerm
     ? normalizedItems.filter((i: any) => i.language === languageFilter)
     : normalizedItems;
 
+  const responseItems = includeElements
+    ? consentForms
+    : consentForms.map((i: any) => {
+        const { elements, ...rest } = i || {};
+        return rest;
+      });
+
   return {
     statusCode: 200,
-    headers: getCorsHeaders(event),
+    headers: getJsonHeaders(event),
     body: JSON.stringify({
-      consentForms,
+      consentForms: responseItems,
     }),
   };
 }
@@ -182,14 +208,14 @@ async function getConsentForm(event: APIGatewayProxyEvent, userPerms: UserPermis
   if (!response.Item) {
     return {
       statusCode: 404,
-      headers: getCorsHeaders(event),
+      headers: getJsonHeaders(event),
       body: JSON.stringify({ error: 'Consent form not found' }),
     };
   }
 
   return {
     statusCode: 200,
-    headers: getCorsHeaders(event),
+    headers: getJsonHeaders(event),
     body: JSON.stringify({
       ...(response.Item as any),
       language: normalizeConsentFormLanguage((response.Item as any)?.language) || 'en',
@@ -205,7 +231,7 @@ async function createConsentForm(event: APIGatewayProxyEvent, userPerms: UserPer
   if (!body.templateName || !body.elements || !Array.isArray(body.elements)) {
     return {
       statusCode: 400,
-      headers: getCorsHeaders(event),
+      headers: getJsonHeaders(event),
       body: JSON.stringify({ error: 'templateName and elements array are required' }),
     };
   }
@@ -215,7 +241,7 @@ async function createConsentForm(event: APIGatewayProxyEvent, userPerms: UserPer
   if (languageRaw && !normalizeConsentFormLanguage(languageRaw)) {
     return {
       statusCode: 400,
-      headers: getCorsHeaders(event),
+      headers: getJsonHeaders(event),
       body: JSON.stringify({ error: "Invalid 'language'. Use 'en' or 'es'." }),
     };
   }
@@ -241,7 +267,7 @@ async function createConsentForm(event: APIGatewayProxyEvent, userPerms: UserPer
 
   return {
     statusCode: 201,
-    headers: getCorsHeaders(event),
+    headers: getJsonHeaders(event),
     body: JSON.stringify({
       consent_form_id: consentFormId,
       message: 'Consent form created successfully',
@@ -257,7 +283,7 @@ async function updateConsentForm(event: APIGatewayProxyEvent, userPerms: UserPer
   if (!body.templateName || !body.elements || !Array.isArray(body.elements)) {
     return {
       statusCode: 400,
-      headers: getCorsHeaders(event),
+      headers: getJsonHeaders(event),
       body: JSON.stringify({ error: 'templateName and elements array are required' }),
     };
   }
@@ -267,7 +293,7 @@ async function updateConsentForm(event: APIGatewayProxyEvent, userPerms: UserPer
   if (languageRaw && !normalizeConsentFormLanguage(languageRaw)) {
     return {
       statusCode: 400,
-      headers: getCorsHeaders(event),
+      headers: getJsonHeaders(event),
       body: JSON.stringify({ error: "Invalid 'language'. Use 'en' or 'es'." }),
     };
   }
@@ -292,7 +318,7 @@ async function updateConsentForm(event: APIGatewayProxyEvent, userPerms: UserPer
 
   return {
     statusCode: 200,
-    headers: getCorsHeaders(event),
+    headers: getJsonHeaders(event),
     body: JSON.stringify({
       consent_form_id: consentFormId,
       message: 'Consent form updated successfully',
@@ -313,7 +339,7 @@ async function deleteConsentForm(event: APIGatewayProxyEvent, userPerms: UserPer
 
   return {
     statusCode: 200,
-    headers: getCorsHeaders(event),
+    headers: getJsonHeaders(event),
     body: JSON.stringify({ message: 'Consent form deleted successfully' }),
   };
 }

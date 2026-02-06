@@ -1,5 +1,5 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, CreateSipMediaApplicationCallCommand, CreateSipMediaApplicationCallCommandOutput } from '@aws-sdk/client-chime-sdk-voice';
 import {
   ChimeSDKMeetingsClient,
@@ -62,6 +62,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   let callReference: string | undefined;
   let callId: string | undefined;
   let markedBusyClinicIds: string[] = [];
+  let tempBusyClinicId: string | undefined;
   let dialLock: DistributedLock | null = null;
 
   try {
@@ -198,43 +199,80 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           .filter((r) => String(r?.state || '').toLowerCase() === 'active' && typeof r?.clinicId === 'string' && r.clinicId.length > 0)
           .map((r) => String(r.clinicId));
 
-        if (activeClinicIds.length === 0) {
-          return {
-            statusCode: 409,
-            headers: corsHeaders,
-            body: JSON.stringify({ message: 'Agent must be active to place outbound calls. Please go online first.' }),
-          };
-        }
-    
-        // 4) Mark agent busy (best-effort) across all active clinics to prevent inbound offers.
+        // 4) Mark agent busy to enforce single-call concurrency and prevent inbound offers.
+        // - If agent is Online (has AgentActive rows), mark ALL active clinics busy.
+        // - If agent is Offline (no AgentActive rows), create a temporary busy marker for fromClinicId.
         callReference = `outbound-${Date.now()}-${randomUUID().slice(0, 8)}`;
         const nowIso = new Date().toISOString();
+        const markerNowTs = Math.floor(Date.now() / 1000);
+        const tempBusyTtl = markerNowTs + TTL_POLICY.ACTIVE_CALL_SECONDS;
 
-        const busyResults = await Promise.allSettled(
-          activeClinicIds.map(async (clinicId: string) => {
-            await ddb.send(new UpdateCommand({
+        if (activeClinicIds.length > 0) {
+          const busyResults = await Promise.allSettled(
+            activeClinicIds.map(async (clinicId: string) => {
+              await ddb.send(new UpdateCommand({
+                TableName: AGENT_ACTIVE_TABLE_NAME,
+                Key: { clinicId, agentId },
+                UpdateExpression: 'SET #state = :busy, currentCallId = :callRef, updatedAt = :now',
+                ConditionExpression: '#state = :active',
+                ExpressionAttributeNames: { '#state': 'state' },
+                ExpressionAttributeValues: {
+                  ':busy': 'busy',
+                  ':active': 'active',
+                  ':callRef': callReference,
+                  ':now': nowIso,
+                },
+              }));
+            })
+          );
+
+          markedBusyClinicIds = activeClinicIds.filter((_, idx) => busyResults[idx].status === 'fulfilled');
+          if (markedBusyClinicIds.length === 0) {
+            return {
+              statusCode: 409,
+              headers: corsHeaders,
+              body: JSON.stringify({ message: 'Agent status changed. Please try again.' }),
+            };
+          }
+        } else {
+          // Offline outbound: create a temp busy marker so:
+          // - Backend enforces single-call concurrency (busyRow check)
+          // - Inbound router will NOT include the agent in offers (it filters state='active')
+          // - On call end, inbound-router will delete tempBusy rows to return agent to Offline
+          const markerClinicId = String(body.fromClinicId || '').trim();
+          if (!markerClinicId) {
+            return {
+              statusCode: 400,
+              headers: corsHeaders,
+              body: JSON.stringify({ message: 'fromClinicId is required' }),
+            };
+          }
+
+          try {
+            await ddb.send(new PutCommand({
               TableName: AGENT_ACTIVE_TABLE_NAME,
-              Key: { clinicId, agentId },
-              UpdateExpression: 'SET #state = :busy, currentCallId = :callRef, updatedAt = :now',
-              ConditionExpression: '#state = :active',
-              ExpressionAttributeNames: { '#state': 'state' },
-              ExpressionAttributeValues: {
-                ':busy': 'busy',
-                ':active': 'active',
-                ':callRef': callReference,
-                ':now': nowIso,
+              Item: {
+                clinicId: markerClinicId,
+                agentId,
+                state: 'busy',
+                currentCallId: callReference,
+                tempBusy: true,
+                updatedAt: nowIso,
+                ttl: tempBusyTtl,
               },
+              ConditionExpression: 'attribute_not_exists(clinicId)',
             }));
-          })
-        );
-
-        markedBusyClinicIds = activeClinicIds.filter((_, idx) => busyResults[idx].status === 'fulfilled');
-        if (markedBusyClinicIds.length === 0) {
-          return {
-            statusCode: 409,
-            headers: corsHeaders,
-            body: JSON.stringify({ message: 'Agent status changed. Please try again.' }),
-          };
+            tempBusyClinicId = markerClinicId;
+          } catch (markerErr: any) {
+            if (markerErr?.name === 'ConditionalCheckFailedException') {
+              return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Agent status changed. Please try again.' }),
+              };
+            }
+            throw markerErr;
+          }
         }
 
         // 5) Create per-call meeting + agent attendee
@@ -261,7 +299,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const smaId = getSmaIdForClinic(body.fromClinicId);
         if (!smaId) {
             console.error('[outbound-call] Missing SMA mapping for clinic', { clinicId: body.fromClinicId });
-            return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'Outbound calling is not configured for this clinic' }) };
+            throw new Error('Outbound calling is not configured for this clinic');
         }
 
         // 6) Initiate outbound call leg to customer (SMA)
@@ -324,7 +362,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         // Update AgentActive busy rows to point at real callId (best-effort)
         const updateNowIso = new Date().toISOString();
-        await Promise.allSettled(markedBusyClinicIds.map(async (clinicId: string) => {
+        const busyClinicIdsToUpdate = [
+          ...markedBusyClinicIds,
+          ...(tempBusyClinicId ? [tempBusyClinicId] : []),
+        ];
+
+        await Promise.allSettled(busyClinicIdsToUpdate.map(async (clinicId: string) => {
           await ddb.send(new UpdateCommand({
             TableName: AGENT_ACTIVE_TABLE_NAME,
             Key: { clinicId, agentId },
@@ -432,6 +475,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           }
         }
       }));
+    }
+
+    // 1b) If we created a temp busy marker (Offline outbound), delete it (do NOT set active).
+    if (AGENT_ACTIVE_TABLE_NAME && agentId && tempBusyClinicId) {
+      const rollbackCallId = callId || callReference;
+      await ddb.send(new DeleteCommand({
+        TableName: AGENT_ACTIVE_TABLE_NAME,
+        Key: { clinicId: tempBusyClinicId, agentId },
+        ConditionExpression: '#state = :busy AND currentCallId = :callId AND tempBusy = :true',
+        ExpressionAttributeNames: { '#state': 'state' },
+        ExpressionAttributeValues: { ':busy': 'busy', ':callId': rollbackCallId, ':true': true },
+      })).catch(() => {});
     }
 
     // 2) Delete orphaned meeting (best-effort)

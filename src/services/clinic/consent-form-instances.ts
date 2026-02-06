@@ -13,6 +13,7 @@ import {
   UserPermissions,
 } from '../../shared/utils/permissions-helper';
 import { getClinicConfig } from '../../shared/utils/secrets-helper';
+import { renderConsentFormElements } from '../../shared/utils/consent-form-renderer';
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
@@ -27,11 +28,15 @@ const DEFAULT_TOKEN_TTL_DAYS = (() => {
 })();
 
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
+const getJsonHeaders = (event: APIGatewayProxyEvent) => ({
+  ...getCorsHeaders(event),
+  'Content-Type': 'application/json',
+});
 
 function json(event: APIGatewayProxyEvent, statusCode: number, body: any): APIGatewayProxyResult {
   return {
     statusCode,
-    headers: getCorsHeaders(event),
+    headers: getJsonHeaders(event),
     body: JSON.stringify(body),
   };
 }
@@ -81,7 +86,7 @@ function requireModulePermission(
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   // Preflight
   if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers: getCorsHeaders(event), body: '' };
+    return { statusCode: 204, headers: getJsonHeaders(event), body: '' };
   }
 
   if (!TEMPLATES_TABLE_NAME || !INSTANCES_TABLE_NAME) {
@@ -139,6 +144,31 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const clinicConfig = await getClinicConfig(clinicId);
       const signingUrl = buildSigningUrl(clinicConfig?.websiteLink, token);
 
+      const templateElements = Array.isArray(template.elements) ? template.elements : [];
+
+      // Render placeholders into a patient-specific snapshot (best-effort; do not block send on render failures)
+      let renderedElements: any[] = templateElements;
+      let clinicSnapshot: any | undefined;
+      let patientSnapshot: any | undefined;
+      let renderedAtIso: string | undefined;
+      let renderVersion: string | undefined;
+      try {
+        const render = await renderConsentFormElements({
+          clinicId,
+          patNum,
+          elements: templateElements,
+          clinicConfig,
+        });
+        renderedElements = render.renderedElements;
+        clinicSnapshot = render.snapshots?.clinic;
+        patientSnapshot = render.snapshots?.patient;
+        renderedAtIso = nowIso;
+        renderVersion = 'v1';
+      } catch (renderErr) {
+        // Intentionally do not log patient-identifying info (PHI). Keep fallback behavior.
+        console.warn('[ConsentFormInstances] Render failed; storing template elements as-is');
+      }
+
       const item = {
         instance_id: instanceId,
         token,
@@ -147,13 +177,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         consent_form_id: consentFormId,
         templateName: String(template.templateName || ''),
         language: String(template.language || 'en'),
-        elements: Array.isArray(template.elements) ? template.elements : [],
+        elements: renderedElements,
         status: 'sent',
         created_at: nowIso,
         sent_at: nowIso,
         expires_at: expiresAtSeconds, // DynamoDB TTL (epoch seconds)
         created_by: getUserDisplayName(userPerms),
         signing_url: signingUrl,
+        ...(renderedAtIso ? { rendered_at: renderedAtIso } : {}),
+        ...(renderVersion ? { render_version: renderVersion } : {}),
+        ...(clinicSnapshot ? { clinic_snapshot: clinicSnapshot } : {}),
+        ...(patientSnapshot ? { patient_snapshot: patientSnapshot } : {}),
       };
 
       await docClient.send(new PutCommand({
@@ -208,7 +242,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
       // Return lightweight entries for history listing (omit full elements)
       const instances = (resp.Items || []).map((i: any) => {
-        const { elements, ...rest } = i || {};
+        const { elements, patient_snapshot, clinic_snapshot, ...rest } = i || {};
         return rest;
       });
 

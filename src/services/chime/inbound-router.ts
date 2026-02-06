@@ -1,5 +1,5 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, QueryCommand, UpdateCommand, PutCommand, GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand, UpdateCommand, PutCommand, GetCommand, DeleteCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import {
     ChimeSDKMeetingsClient,
     CreateMeetingCommand,
@@ -2368,21 +2368,53 @@ export const handler = async (event: any): Promise<any> => {
                                 IndexName: 'agentId-index',
                                 KeyConditionExpression: 'agentId = :agentId',
                                 ExpressionAttributeValues: { ':agentId': assignedAgentId },
-                                ProjectionExpression: 'clinicId, agentId, #state, currentCallId',
+                                ProjectionExpression: 'clinicId, agentId, #state, currentCallId, tempBusy',
                                 ExpressionAttributeNames: { '#state': 'state' },
                             }));
 
-                            const clinicIdsToReset = (agentActiveRows || [])
+                            const callReference =
+                                typeof (callRecord as any)?.callReference === 'string'
+                                    ? String((callRecord as any).callReference).trim()
+                                    : '';
+                            const callIdsToMatch = new Set<string>([String(callId)]);
+                            if (callReference && callReference !== String(callId)) {
+                                callIdsToMatch.add(callReference);
+                            }
+
+                            const busyRowsForThisCall = (agentActiveRows || [])
                                 .filter((r: any) =>
                                     typeof r?.clinicId === 'string' &&
+                                    String(r?.clinicId || '').length > 0 &&
                                     String(r?.state || '').toLowerCase() === 'busy' &&
-                                    String(r?.currentCallId || '') === String(callId)
-                                )
-                                .map((r: any) => String(r.clinicId))
-                                .filter((v: string) => v.length > 0);
+                                    callIdsToMatch.has(String(r?.currentCallId || ''))
+                                ) as any[];
 
-                            if (clinicIdsToReset.length > 0) {
-                                await Promise.allSettled(clinicIdsToReset.map(async (cId: string) => {
+                            if (busyRowsForThisCall.length > 0) {
+                                const ts = new Date().toISOString();
+                                let deletedTempBusy = 0;
+                                let resetActive = 0;
+
+                                await Promise.allSettled(busyRowsForThisCall.map(async (row: any) => {
+                                    const cId = String(row.clinicId);
+                                    const rowCallId = String(row.currentCallId || '');
+                                    const isTempBusy = row?.tempBusy === true;
+
+                                    if (isTempBusy) {
+                                        await ddb.send(new DeleteCommand({
+                                            TableName: AGENT_ACTIVE_TABLE_NAME,
+                                            Key: { clinicId: cId, agentId: assignedAgentId },
+                                            ConditionExpression: 'tempBusy = :true AND #state = :busy AND currentCallId = :callId',
+                                            ExpressionAttributeNames: { '#state': 'state' },
+                                            ExpressionAttributeValues: {
+                                                ':true': true,
+                                                ':busy': 'busy',
+                                                ':callId': rowCallId,
+                                            }
+                                        }));
+                                        deletedTempBusy += 1;
+                                        return;
+                                    }
+
                                     await ddb.send(new UpdateCommand({
                                         TableName: AGENT_ACTIVE_TABLE_NAME,
                                         Key: { clinicId: cId, agentId: assignedAgentId },
@@ -2392,14 +2424,18 @@ export const handler = async (event: any): Promise<any> => {
                                         ExpressionAttributeValues: {
                                             ':active': 'active',
                                             ':busy': 'busy',
-                                            ':callId': callId,
-                                            ':ts': new Date().toISOString(),
+                                            ':callId': rowCallId,
+                                            ':ts': ts,
                                         }
                                     }));
+                                    resetActive += 1;
                                 }));
-                                console.log(`[${eventType}] AgentActive ${assignedAgentId} marked as active after call end`, {
+
+                                console.log(`[${eventType}] AgentActive ${assignedAgentId} updated after call end`, {
                                     callId,
-                                    resetClinics: clinicIdsToReset.length,
+                                    matchedIds: Array.from(callIdsToMatch),
+                                    resetActive,
+                                    deletedTempBusy,
                                 });
                             }
                         } catch (agentActiveErr: any) {

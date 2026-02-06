@@ -4,8 +4,9 @@ import { DynamoDBDocumentClient, QueryCommand, UpdateCommand } from '@aws-sdk/li
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { randomBytes } from 'crypto';
 import { buildCorsHeaders } from '../../shared/utils/cors';
-import { getPatientByPatNum, makeOpenDentalRequest } from '../../shared/utils/opendental-api';
-import { getClinicConfig, getGlobalSecret } from '../../shared/utils/secrets-helper';
+import { makeOpenDentalRequest } from '../../shared/utils/opendental-api';
+import { getGlobalSecret } from '../../shared/utils/secrets-helper';
+import { renderConsentFormElements } from '../../shared/utils/consent-form-renderer';
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
@@ -24,11 +25,15 @@ const MAX_PDF_SIZE_MB = (() => {
 })();
 
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
+const getJsonHeaders = (event: APIGatewayProxyEvent) => ({
+  ...getCorsHeaders(event),
+  'Content-Type': 'application/json',
+});
 
 function json(event: APIGatewayProxyEvent, statusCode: number, body: any): APIGatewayProxyResult {
   return {
     statusCode,
-    headers: getCorsHeaders(event),
+    headers: getJsonHeaders(event),
     body: JSON.stringify(body),
   };
 }
@@ -125,7 +130,7 @@ async function getInstanceByToken(token: string): Promise<any | null> {
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   // Preflight
   if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers: getCorsHeaders(event), body: '' };
+    return { statusCode: 204, headers: getJsonHeaders(event), body: '' };
   }
 
   if (!INSTANCES_TABLE_NAME) {
@@ -146,35 +151,53 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       if (!instance) return err(event, 404, 'Consent form link not found');
       if (isExpired(instance)) return err(event, 410, 'Consent form link expired');
 
-      const [patient, clinicConfig] = await Promise.all([
-        getPatientByPatNum(Number(instance.patNum), String(instance.clinicId)),
-        getClinicConfig(String(instance.clinicId)),
-      ]);
+      const hasRendered =
+        !!instance?.rendered_at &&
+        !!instance?.clinic_snapshot &&
+        !!instance?.patient_snapshot;
 
-      const patientSnapshot = {
-        PatNum: patient?.PatNum ?? instance.patNum,
-        FName: patient?.FName || '',
-        LName: patient?.LName || '',
-        Birthdate: patient?.Birthdate || '',
-        Email: patient?.Email || '',
-        WirelessPhone: patient?.WirelessPhone || '',
-        HmPhone: patient?.HmPhone || '',
-        WkPhone: patient?.WkPhone || '',
-      };
+      // If already rendered + snapped at creation, return without extra OpenDental calls.
+      if (hasRendered) {
+        return json(event, 200, {
+          instance,
+          patient: instance.patient_snapshot,
+          clinic: instance.clinic_snapshot,
+        });
+      }
 
-      const clinicSnapshot = {
-        clinicId: clinicConfig?.clinicId || String(instance.clinicId),
-        clinicName: (clinicConfig as any)?.clinicName || '',
-        websiteLink: (clinicConfig as any)?.websiteLink || '',
-        clinicPhone: (clinicConfig as any)?.clinicPhone || '',
-        clinicEmail: (clinicConfig as any)?.clinicEmail || '',
-      };
+      // Fallback: render on-the-fly for older/scheduled instances.
+      const clinicId = String(instance.clinicId || '').trim();
+      const patNum = Number(instance.patNum);
 
-      return json(event, 200, {
-        instance,
-        patient: patientSnapshot,
-        clinic: clinicSnapshot,
-      });
+      try {
+        const render = await renderConsentFormElements({
+          clinicId,
+          patNum,
+          elements: Array.isArray(instance.elements) ? instance.elements : [],
+        });
+
+        const renderedInstance = {
+          ...instance,
+          elements: render.renderedElements,
+          rendered_at: instance.rendered_at || new Date().toISOString(),
+          render_version: instance.render_version || 'v1',
+          clinic_snapshot: instance.clinic_snapshot || render.snapshots.clinic,
+          patient_snapshot: instance.patient_snapshot || render.snapshots.patient,
+        };
+
+        return json(event, 200, {
+          instance: renderedInstance,
+          patient: renderedInstance.patient_snapshot,
+          clinic: renderedInstance.clinic_snapshot,
+        });
+      } catch (renderErr) {
+        console.warn('[ConsentFormPublic] Render failed; returning instance as-is');
+        return json(event, 200, {
+          instance,
+          patient: instance.patient_snapshot || { PatNum: instance.patNum },
+          clinic: instance.clinic_snapshot || { clinicId: instance.clinicId },
+        });
+      }
     }
 
     // POST /consent-forms/instances/{token}/submit

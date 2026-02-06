@@ -275,7 +275,12 @@ export class ConsentFormDataStack extends Stack {
     const clinicSecretsArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicSecretsTableName}`;
     this.consentFormInstancesFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
-      resources: [clinicConfigArn, `${clinicConfigArn}/index/*`],
+      resources: [
+        clinicConfigArn,
+        `${clinicConfigArn}/index/*`,
+        clinicSecretsArn,
+        `${clinicSecretsArn}/index/*`,
+      ],
     }));
     this.consentFormPublicFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
