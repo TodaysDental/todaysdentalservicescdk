@@ -1,6 +1,6 @@
 import { APIGatewayEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, BatchGetCommand, DeleteCommand, GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk/client-apigatewaymanagementapi';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -1354,6 +1354,22 @@ async function markRead(
 
         await sendToClient(apiGwManagement, connectionId, broadcastUpdatePayload);
 
+        // Cross-device sync: clear notifications on the user’s OTHER devices
+        try {
+            const connResult = await ddb.send(new GetCommand({
+                TableName: CONNECTIONS_TABLE,
+                Key: { connectionId },
+            }));
+            const deviceId = (connResult.Item as any)?.deviceId;
+            await sendSyncUnreadToOtherDevices(
+                callerID,
+                favorRequestID,
+                typeof deviceId === 'string' && deviceId ? [deviceId] : undefined
+            );
+        } catch (syncErr) {
+            console.warn('[markRead] Failed to send sync_unread push (non-fatal):', syncErr);
+        }
+
     } catch (e: any) {
         console.error('Error marking read:', e);
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to update read status.' });
@@ -1686,22 +1702,83 @@ async function getSenderInfo(connectionId: string): Promise<SenderInfo | undefin
     return { connectionId: item.connectionId, userID: item.userID };
 }
 
-/** Retrieves connection information by User ID. */
-async function getSenderInfoByUserID(userID: string): Promise<SenderInfo | undefined> {
+/** Retrieves all active connections for a User ID. */
+async function getSenderInfosByUserID(userID: string): Promise<SenderInfo[]> {
     // NOTE: This assumes a Global Secondary Index (GSI) named 'UserIDIndex' exists
     // on the CONNECTIONS_TABLE with 'userID' as the Partition Key.
-
     const result = await ddb.send(new QueryCommand({
         TableName: CONNECTIONS_TABLE,
         IndexName: 'UserIDIndex',
         KeyConditionExpression: 'userID = :uid',
         ExpressionAttributeValues: { ':uid': userID },
-        Limit: 1,
     }));
-    const item = result.Items?.[0] as SenderInfo | undefined;
 
-    if (!item) return undefined;
-    return { connectionId: item.connectionId, userID: item.userID };
+    return (result.Items || [])
+        .map((item: any) => ({
+            connectionId: item?.connectionId,
+            userID: item?.userID,
+        }))
+        .filter((x: any): x is SenderInfo => typeof x.connectionId === 'string' && typeof x.userID === 'string');
+}
+
+/** Retrieves one active connection for a User ID (legacy helper). */
+async function getSenderInfoByUserID(userID: string): Promise<SenderInfo | undefined> {
+    const all = await getSenderInfosByUserID(userID);
+    return all[0];
+}
+
+type ConnectionRecord = SenderInfo & { deviceId?: string; client?: string };
+
+/** Retrieves full connection records (incl. deviceId/client) for a User ID. */
+async function getConnectionRecordsByUserID(userID: string): Promise<ConnectionRecord[]> {
+    const senders = await getSenderInfosByUserID(userID);
+    if (senders.length === 0) return [];
+
+    // Fast path for the common case (single connection)
+    if (senders.length === 1) {
+        const one = senders[0];
+        try {
+            const result = await ddb.send(new GetCommand({
+                TableName: CONNECTIONS_TABLE,
+                Key: { connectionId: one.connectionId },
+            }));
+            const item = result.Item as any;
+            if (!item?.connectionId || !item?.userID) return [one];
+            return [{
+                connectionId: item.connectionId,
+                userID: item.userID,
+                deviceId: typeof item.deviceId === 'string' ? item.deviceId : undefined,
+                client: typeof item.client === 'string' ? item.client : undefined,
+            }];
+        } catch {
+            return [one];
+        }
+    }
+
+    // Batch-get the connection rows to include deviceId/client (GSI is KEYS_ONLY)
+    try {
+        const keys = senders.map(s => ({ connectionId: s.connectionId }));
+        const batch = await ddb.send(new BatchGetCommand({
+            RequestItems: {
+                [CONNECTIONS_TABLE]: {
+                    Keys: keys,
+                },
+            },
+        }));
+
+        const items = (batch.Responses?.[CONNECTIONS_TABLE] as any[]) || [];
+        return items
+            .map((item: any) => ({
+                connectionId: item?.connectionId,
+                userID: item?.userID,
+                deviceId: typeof item?.deviceId === 'string' ? item.deviceId : undefined,
+                client: typeof item?.client === 'string' ? item.client : undefined,
+            }))
+            .filter((x: any): x is ConnectionRecord => typeof x.connectionId === 'string' && typeof x.userID === 'string');
+    } catch (e) {
+        console.warn('[Connections] BatchGet failed, falling back to SenderInfo only:', e);
+        return senders;
+    }
 }
 
 /** Helper function to fetch user's first name and email from Cognito. */
@@ -1887,7 +1964,17 @@ async function sendToClient(apiGwManagement: ApiGatewayManagementApiClient, conn
     } catch (e) {
         if ((e as any).statusCode === 410) {
             console.warn(`Found stale connection, deleting: ${connectionId}`);
-            // In a real implementation, you would delete the stale connection here.
+            // Clean up stale connections so users don’t get stuck as “online”.
+            if (CONNECTIONS_TABLE) {
+                try {
+                    await ddb.send(new DeleteCommand({
+                        TableName: CONNECTIONS_TABLE,
+                        Key: { connectionId },
+                    }));
+                } catch (deleteErr) {
+                    console.warn(`Failed to delete stale connection ${connectionId}:`, deleteErr);
+                }
+            }
         } else {
             console.error('Failed to send data to connection:', e);
         }
@@ -1901,34 +1988,41 @@ async function sendToAll(
     data: any,
     options: { notifyOffline: boolean; senderID?: string; senderName?: string }
 ): Promise<void> {
-    const connectionPromises = userIDs.map(id => getSenderInfoByUserID(id));
-    const connections = await Promise.all(connectionPromises);
+    const connectionPromises = userIDs.map(id => getConnectionRecordsByUserID(id));
+    const connectionsByUser = await Promise.all(connectionPromises);
 
-    const offlineRecipients: string[] = [];
+    // Device-aware push: exclude devices that are already connected via WS
+    const excludeDeviceIds = new Set<string>();
+    const pushRecipients = options.notifyOffline
+        ? userIDs.filter(uid => uid && uid !== options.senderID)
+        : [];
 
     for (let i = 0; i < userIDs.length; i++) {
         const userID = userIDs[i];
-        const conn = connections[i];
+        const conns = connectionsByUser[i];
 
-        if (conn) {
-            // User is online, send via WebSocket
-            await sendToClient(apiGwManagement, conn.connectionId, data);
-        } else if (options.notifyOffline && userID !== options.senderID) {
-            // User is offline AND is a recipient (not the sender)
-            offlineRecipients.push(userID);
+        if (conns && conns.length > 0) {
+            // User is online (at least one active WS connection), send via WebSocket to ALL devices/tabs
+            for (const conn of conns) {
+                await sendToClient(apiGwManagement, conn.connectionId, data);
+                if (pushRecipients.includes(userID) && conn.deviceId) {
+                    excludeDeviceIds.add(conn.deviceId);
+                }
+            }
         }
     }
 
-    // Send push notifications to all offline recipients
-    if (offlineRecipients.length > 0 && options.notifyOffline) {
+    // Send push notifications to recipient users' OFFLINE devices (exclude WS-connected deviceIds)
+    if (pushRecipients.length > 0 && options.notifyOffline) {
         const messageData = data.message as MessageData;
 
         if (messageData) {
             // For message notifications, use push notifications if available
             await sendPushNotificationsToOfflineUsers(
-                offlineRecipients,
+                pushRecipients,
                 messageData,
-                options.senderName
+                options.senderName,
+                excludeDeviceIds.size > 0 ? Array.from(excludeDeviceIds) : undefined
             );
         }
     }
@@ -1941,7 +2035,8 @@ async function sendToAll(
 async function sendPushNotificationsToOfflineUsers(
     offlineUserIds: string[],
     messageData: any,
-    senderName?: string
+    senderName?: string,
+    excludeDeviceIds?: string[]
 ): Promise<void> {
     if (offlineUserIds.length === 0) {
         return;
@@ -1954,20 +2049,25 @@ async function sendPushNotificationsToOfflineUsers(
 
     // If push notifications are enabled, use the send-push Lambda
     if (PUSH_NOTIFICATIONS_ENABLED && SEND_PUSH_FUNCTION_ARN) {
-        console.log(`[PushNotifications] Sending to ${offlineUserIds.length} offline users via Lambda`);
+        console.log(`[PushNotifications] Sending to ${offlineUserIds.length} user(s) via Lambda`, {
+            excludeDeviceIdsCount: excludeDeviceIds?.length || 0,
+        });
 
         try {
             const notificationPayload = {
                 _internalCall: true,
                 userIds: offlineUserIds,
+                ...(excludeDeviceIds && excludeDeviceIds.length > 0 ? { excludeDeviceIds } : {}),
                 notification: {
                     title: senderName ? `Message from ${senderName}` : 'New Message',
                     body: preview,
                     type: 'new_message',
                     data: {
                         conversationId: messageData.favorRequestID,
+                        tag: `conversation-${messageData.favorRequestID}`,
                         senderID: messageData.senderID,
                         action: 'open_conversation',
+                        url: `/#/communication?favorRequestID=${encodeURIComponent(messageData.favorRequestID)}`,
                         timestamp: Date.now(),
                     },
                     threadId: `conversation-${messageData.favorRequestID}`,
@@ -1989,6 +2089,45 @@ async function sendPushNotificationsToOfflineUsers(
     } else {
         // Fallback to SNS topic
         await publishSnsNotification({ ...messageData, offlineRecipients: offlineUserIds });
+    }
+}
+
+/**
+ * Cross-device sync for unread/notification clearing.
+ * Sent to the same user’s OTHER devices when unread state changes elsewhere.
+ */
+async function sendSyncUnreadToOtherDevices(
+    userId: string,
+    favorRequestID: string,
+    excludeDeviceIds?: string[]
+): Promise<void> {
+    if (!PUSH_NOTIFICATIONS_ENABLED || !SEND_PUSH_FUNCTION_ARN) return;
+
+    try {
+        const payload = {
+            _internalCall: true,
+            userId,
+            skipPreferenceCheck: true,
+            ...(excludeDeviceIds && excludeDeviceIds.length > 0 ? { excludeDeviceIds } : {}),
+            notification: {
+                title: 'Sync',
+                body: 'Unread state updated',
+                type: 'sync_unread',
+                data: {
+                    type: 'sync_unread',
+                    conversationId: favorRequestID,
+                    tag: `conversation-${favorRequestID}`,
+                    timestamp: Date.now(),
+                },
+            },
+        };
+
+        await lambdaClient.send(new InvokeCommand({
+            FunctionName: SEND_PUSH_FUNCTION_ARN,
+            Payload: Buffer.from(JSON.stringify(payload)),
+        }));
+    } catch (e) {
+        console.warn('[PushNotifications] Failed to send sync_unread:', e);
     }
 }
 

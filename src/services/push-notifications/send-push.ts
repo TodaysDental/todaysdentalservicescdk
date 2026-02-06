@@ -75,6 +75,7 @@ type NotificationType =
   | 'appointment_reminder'
   | 'appointment_confirmation'
   | 'new_message'
+  | 'sync_unread'
   | 'treatment_update'
   | 'payment_due'
   | 'general'
@@ -114,6 +115,7 @@ interface SendPushRequest {
   // Target (one of these is required)
   userId?: string;        // Send to specific user
   clinicId?: string;      // Send to all devices in a clinic
+  excludeDeviceIds?: string[]; // Do not send to these deviceIds
 
   // Notification content
   notification: PushNotificationPayload;
@@ -694,7 +696,8 @@ async function handleSendToUser(
   userId: string,
   notification: PushNotificationPayload,
   dryRun: boolean,
-  skipPreferenceCheck: boolean = false
+  skipPreferenceCheck: boolean = false,
+  excludeDeviceIds?: string[]
 ): Promise<{ sent: number; failed: number; results: SendResult[]; skipped?: string }> {
   // Check for duplicates
   const dedupKey = generateDeduplicationKey('user', userId, notification);
@@ -713,20 +716,28 @@ async function handleSendToUser(
   }
 
   const devices = await getDevicesForUser(userId);
+  const excludeSet = new Set((excludeDeviceIds || []).filter(Boolean));
+  const filteredDevices = excludeSet.size > 0
+    ? devices.filter(d => !excludeSet.has(d.deviceId))
+    : devices;
 
-  if (devices.length === 0) {
-    console.log(`[SendPush] No devices registered for user ${userId}`);
+  if (filteredDevices.length === 0) {
+    if (devices.length === 0) {
+      console.log(`[SendPush] No devices registered for user ${userId}`);
+    } else {
+      console.log(`[SendPush] All devices excluded for user ${userId} (excludeDeviceIds=${Array.from(excludeSet).join(',')})`);
+    }
     return { sent: 0, failed: 0, results: [] };
   }
 
   if (dryRun) {
-    const results = devices.map(device => ({
+    const results = filteredDevices.map(device => ({
       deviceId: device.deviceId,
       platform: device.platform,
       success: true,
       dryRun: true,
     } as SendResult));
-    return { sent: devices.length, failed: 0, results };
+    return { sent: filteredDevices.length, failed: 0, results };
   }
 
   // Prepare notification data
@@ -740,7 +751,7 @@ async function handleSendToUser(
 
   // Send to all devices using batch function
   const batchResult = await sendFcmV1NotificationBatch(
-    devices.map(d => ({ deviceToken: d.deviceToken, platform: d.platform })),
+    filteredDevices.map(d => ({ deviceToken: d.deviceToken, platform: d.platform })),
     {
       title: notification.title,
       body: notification.body,
@@ -760,7 +771,7 @@ async function handleSendToUser(
 
   for (let i = 0; i < batchResult.results.length; i++) {
     const result = batchResult.results[i];
-    const device = devices[i];
+    const device = filteredDevices[i];
 
     // Safety check for array bounds
     if (!device) {
@@ -796,7 +807,8 @@ async function handleSendToClinic(
   clinicId: string,
   notification: PushNotificationPayload,
   dryRun: boolean,
-  skipPreferenceCheck: boolean = false
+  skipPreferenceCheck: boolean = false,
+  excludeDeviceIds?: string[]
 ): Promise<{ sent: number; failed: number; userCount: number; results: SendResult[] }> {
   // Check for duplicates
   const dedupKey = generateDeduplicationKey('clinic', clinicId, notification);
@@ -823,6 +835,12 @@ async function handleSendToClinic(
       console.log(`[SendPush] Filtering out ${unsubscribedUsers.size} unsubscribed users for clinic ${clinicId}`);
       filteredDevices = devices.filter(d => !unsubscribedUsers.has(d.userId));
     }
+  }
+
+  // Optional: exclude deviceIds (device-aware delivery)
+  const excludeSet = new Set((excludeDeviceIds || []).filter(Boolean));
+  if (excludeSet.size > 0) {
+    filteredDevices = filteredDevices.filter(d => !excludeSet.has(d.deviceId));
   }
 
   const uniqueUsers = new Set(filteredDevices.map(d => d.userId));
@@ -1007,6 +1025,7 @@ interface InternalInvocationPayload {
   userId?: string;
   userIds?: string[];
   clinicId?: string;
+  excludeDeviceIds?: string[];
   notification: PushNotificationPayload;
   skipPreferenceCheck?: boolean;
 }
@@ -1018,7 +1037,7 @@ interface InternalInvocationPayload {
 async function handleInternalInvocation(
   payload: InternalInvocationPayload
 ): Promise<{ statusCode: number; body: string }> {
-  const { userId, userIds, clinicId, notification, skipPreferenceCheck = false } = payload;
+  const { userId, userIds, clinicId, excludeDeviceIds, notification, skipPreferenceCheck = false } = payload;
 
   // Validate notification payload
   if (!notification || !notification.title || !notification.body) {
@@ -1050,7 +1069,7 @@ async function handleInternalInvocation(
       const allResults: any[] = [];
 
       for (const uid of userIds) {
-        const result = await handleSendToUser(uid, notification, false, skipPreferenceCheck);
+        const result = await handleSendToUser(uid, notification, false, skipPreferenceCheck, excludeDeviceIds);
         totalSent += result.sent;
         totalFailed += result.failed;
         allResults.push(...result.results);
@@ -1072,7 +1091,7 @@ async function handleInternalInvocation(
 
     // Send to specific user
     if (userId) {
-      const result = await handleSendToUser(userId, notification, false, skipPreferenceCheck);
+      const result = await handleSendToUser(userId, notification, false, skipPreferenceCheck, excludeDeviceIds);
       return {
         statusCode: 200,
         body: JSON.stringify({
@@ -1087,7 +1106,7 @@ async function handleInternalInvocation(
 
     // Send to clinic
     if (clinicId) {
-      const result = await handleSendToClinic(clinicId, notification, false, skipPreferenceCheck);
+      const result = await handleSendToClinic(clinicId, notification, false, skipPreferenceCheck, excludeDeviceIds);
       return {
         statusCode: 200,
         body: JSON.stringify({

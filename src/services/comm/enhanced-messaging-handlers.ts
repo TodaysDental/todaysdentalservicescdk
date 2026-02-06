@@ -26,6 +26,7 @@ import { v4 as uuidv4 } from 'uuid';
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const MESSAGES_TABLE = process.env.MESSAGES_TABLE || '';
 const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
+const TEAMS_TABLE = process.env.TEAMS_TABLE || '';
 const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || '';
 const FILE_BUCKET_NAME = process.env.FILE_BUCKET_NAME || '';
 const CONVERSATION_SETTINGS_TABLE = process.env.CONVERSATION_SETTINGS_TABLE || '';
@@ -146,7 +147,7 @@ async function sendToClient(
     }
 }
 
-async function getConnectionIdForUser(userID: string): Promise<string | null> {
+async function getConnectionIdsForUser(userID: string): Promise<string[]> {
     try {
         const result = await ddb.send(new QueryCommand({
             TableName: CONNECTIONS_TABLE,
@@ -154,12 +155,13 @@ async function getConnectionIdForUser(userID: string): Promise<string | null> {
             IndexName: 'UserIDIndex',
             KeyConditionExpression: 'userID = :uid',
             ExpressionAttributeValues: { ':uid': userID },
-            Limit: 1,
         }));
-        return result.Items?.[0]?.connectionId || null;
+        return (result.Items || [])
+            .map((item: any) => item?.connectionId)
+            .filter((id: any): id is string => typeof id === 'string' && id.length > 0);
     } catch (e) {
-        console.error('Error getting connection for user:', e);
-        return null;
+        console.error('Error getting connections for user:', e);
+        return [];
     }
 }
 
@@ -177,18 +179,32 @@ async function broadcastToConversation(
 
     if (!favorResult.Item) return;
 
-    const participants: string[] = [];
-    if (favorResult.Item.senderID) participants.push(favorResult.Item.senderID);
-    if (favorResult.Item.receiverID) participants.push(favorResult.Item.receiverID);
-    if (favorResult.Item.teamID) {
-        // For group chats, get team members
-        // This would require querying the teams table
+    const participants = new Set<string>();
+    if ((favorResult.Item as any).senderID) participants.add(String((favorResult.Item as any).senderID));
+    if ((favorResult.Item as any).receiverID) participants.add(String((favorResult.Item as any).receiverID));
+
+    const teamID = (favorResult.Item as any).teamID as string | undefined;
+    if (teamID && TEAMS_TABLE) {
+        try {
+            const teamResult = await ddb.send(new GetCommand({
+                TableName: TEAMS_TABLE,
+                Key: { teamID },
+            }));
+            const members = (teamResult.Item as any)?.members;
+            if (Array.isArray(members)) {
+                for (const m of members) {
+                    if (m) participants.add(String(m));
+                }
+            }
+        } catch (e) {
+            console.warn('[broadcastToConversation] Failed to load team members:', e);
+        }
     }
 
     for (const userID of participants) {
-        if (userID === excludeUserID) continue;
-        const connectionId = await getConnectionIdForUser(userID);
-        if (connectionId) {
+        if (excludeUserID && userID === excludeUserID) continue;
+        const connectionIds = await getConnectionIdsForUser(userID);
+        for (const connectionId of connectionIds) {
             await sendToClient(apiGwManagement, connectionId, payload);
         }
     }
@@ -198,48 +214,91 @@ async function broadcastToConversation(
 // MESSAGE DELIVERY STATUS HANDLERS
 // ========================================
 
+function parseTimestampLike(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    // numeric string (ms or seconds)
+    if (/^\d{10,}$/.test(trimmed)) return Number(trimmed);
+    // e.g. msg-1700000000000-abc -> extract the first long digit run
+    const match = trimmed.match(/(\d{10,})/);
+    return match ? Number(match[1]) : null;
+}
+
+function normalizeMessageTimestamps(payload: { timestamps?: unknown; messageIDs?: unknown }): number[] {
+    const out: number[] = [];
+
+    if (Array.isArray(payload.timestamps)) {
+        for (const t of payload.timestamps) {
+            const ts = parseTimestampLike(t);
+            if (ts) out.push(ts);
+        }
+    }
+
+    if (out.length === 0 && Array.isArray(payload.messageIDs)) {
+        for (const id of payload.messageIDs) {
+            const ts = parseTimestampLike(id);
+            if (ts) out.push(ts);
+        }
+    }
+
+    // De-dupe and keep stable order
+    return Array.from(new Set(out)).filter((n) => Number.isFinite(n) && n > 0);
+}
+
 /**
  * Mark messages as delivered when they reach the client
  */
 export async function handleMarkDelivered(
     senderID: string,
-    payload: { messageIDs: string[]; favorRequestID: string },
+    payload: { favorRequestID: string; timestamps?: number[]; messageIDs?: string[] },
     connectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    const { messageIDs, favorRequestID } = payload;
+    const { favorRequestID } = payload;
+    const timestamps = normalizeMessageTimestamps(payload);
 
-    if (!messageIDs || messageIDs.length === 0) {
-        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing messageIDs' });
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID' });
+        return;
+    }
+
+    if (timestamps.length === 0) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing timestamps' });
         return;
     }
 
     const now = Date.now();
 
-    for (const messageID of messageIDs) {
+    for (const timestamp of timestamps) {
         try {
             await ddb.send(new UpdateCommand({
                 TableName: MESSAGES_TABLE,
-                Key: { favorRequestID, timestamp: parseInt(messageID.split('-')[1]) || now },
-                UpdateExpression: 'SET deliveryStatus = :status, deliveredAt = :at',
+                Key: { favorRequestID, timestamp },
+                ConditionExpression: 'attribute_exists(favorRequestID) AND attribute_exists(#ts)',
+                ExpressionAttributeNames: { '#ts': 'timestamp' },
+                UpdateExpression: 'SET deliveryStatus = :status, deliveredAt = :at, updatedAt = :at',
                 ExpressionAttributeValues: {
                     ':status': 'delivered',
                     ':at': now,
                 },
             }));
         } catch (e) {
-            console.error(`Error marking message ${messageID} as delivered:`, e);
+            // Avoid creating phantom items if client sent bad timestamps
+            console.error(`Error marking message ${timestamp} as delivered:`, e);
         }
     }
 
-    // Notify the sender that messages were delivered
+    // Broadcast delivery status update to conversation participants (including other devices of the same user)
     await broadcastToConversation(apiGwManagement, favorRequestID, {
         type: 'deliveryStatusUpdate',
         favorRequestID,
-        messageIDs,
+        timestamps,
         status: 'delivered',
         deliveredAt: now,
-    }, senderID);
+        updatedAt: now,
+    });
 }
 
 /**
@@ -247,35 +306,44 @@ export async function handleMarkDelivered(
  */
 export async function handleMarkMessagesRead(
     senderID: string,
-    payload: { messageIDs: string[]; favorRequestID: string },
+    payload: { favorRequestID: string; timestamps?: number[]; messageIDs?: string[] },
     connectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    const { messageIDs, favorRequestID } = payload;
+    const { favorRequestID } = payload;
+    const timestamps = normalizeMessageTimestamps(payload);
 
-    if (!messageIDs || messageIDs.length === 0) {
-        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing messageIDs' });
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID' });
+        return;
+    }
+
+    if (timestamps.length === 0) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing timestamps' });
         return;
     }
 
     const now = Date.now();
     const readReceipt: ReadReceipt = { userID: senderID, readAt: now };
 
-    for (const messageID of messageIDs) {
+    for (const timestamp of timestamps) {
         try {
             // Update each message with the read receipt
             await ddb.send(new UpdateCommand({
                 TableName: MESSAGES_TABLE,
-                Key: { favorRequestID, messageID },
-                UpdateExpression: 'SET deliveryStatus = :status, readBy = list_append(if_not_exists(readBy, :empty), :receipt)',
+                Key: { favorRequestID, timestamp },
+                ConditionExpression: 'attribute_exists(favorRequestID) AND attribute_exists(#ts)',
+                ExpressionAttributeNames: { '#ts': 'timestamp' },
+                UpdateExpression: 'SET deliveryStatus = :status, readAt = :at, updatedAt = :at, readBy = list_append(if_not_exists(readBy, :empty), :receipt)',
                 ExpressionAttributeValues: {
                     ':status': 'read',
+                    ':at': now,
                     ':receipt': [readReceipt],
                     ':empty': [],
                 },
             }));
         } catch (e) {
-            console.error(`Error marking message ${messageID} as read:`, e);
+            console.error(`Error marking message ${timestamp} as read:`, e);
         }
     }
 
@@ -283,11 +351,11 @@ export async function handleMarkMessagesRead(
     await broadcastToConversation(apiGwManagement, favorRequestID, {
         type: 'deliveryStatusUpdate',
         favorRequestID,
-        messageIDs,
+        timestamps,
         status: 'read',
         readBy: [readReceipt],
         updatedAt: now,
-    }, senderID);
+    });
 }
 
 // ========================================
@@ -1111,8 +1179,8 @@ export async function handleInitiateCall(
             if (participantID === senderID) continue;
 
             // Try WebSocket first
-            const participantConnectionId = await getConnectionIdForUser(participantID);
-            if (participantConnectionId) {
+            const participantConnectionIds = await getConnectionIdsForUser(participantID);
+            for (const participantConnectionId of participantConnectionIds) {
                 await sendToClient(apiGwManagement, participantConnectionId, {
                     type: 'incomingCall',
                     call,
@@ -1209,8 +1277,8 @@ export async function handleJoinCall(
 
             // Notify all participants that call is connected
             for (const participantID of call.participantIDs) {
-                const pConnectionId = await getConnectionIdForUser(participantID);
-                if (pConnectionId) {
+                const pConnectionIds = await getConnectionIdsForUser(participantID);
+                for (const pConnectionId of pConnectionIds) {
                     await sendToClient(apiGwManagement, pConnectionId, {
                         type: 'callStatusUpdate',
                         callID,
@@ -1285,8 +1353,8 @@ export async function handleLeaveCall(
 
         // Notify participants (UI-only; media is handled client-side by Chime SDK)
         for (const participantID of call.participantIDs || []) {
-            const pConnectionId = await getConnectionIdForUser(participantID);
-            if (pConnectionId) {
+            const pConnectionIds = await getConnectionIdsForUser(participantID);
+            for (const pConnectionId of pConnectionIds) {
                 await sendToClient(apiGwManagement, pConnectionId, {
                     type: 'callParticipantUpdate',
                     callID,
@@ -1331,8 +1399,8 @@ export async function handleMuteCall(
 
         const action = muted ? 'muted' : 'unmuted';
         for (const participantID of call.participantIDs || []) {
-            const pConnectionId = await getConnectionIdForUser(participantID);
-            if (pConnectionId) {
+            const pConnectionIds = await getConnectionIdsForUser(participantID);
+            for (const pConnectionId of pConnectionIds) {
                 await sendToClient(apiGwManagement, pConnectionId, {
                     type: 'callParticipantUpdate',
                     callID,
@@ -1377,8 +1445,8 @@ export async function handleToggleVideo(
 
         const action = videoOn ? 'videoOn' : 'videoOff';
         for (const participantID of call.participantIDs || []) {
-            const pConnectionId = await getConnectionIdForUser(participantID);
-            if (pConnectionId) {
+            const pConnectionIds = await getConnectionIdsForUser(participantID);
+            for (const pConnectionId of pConnectionIds) {
                 await sendToClient(apiGwManagement, pConnectionId, {
                     type: 'callParticipantUpdate',
                     callID,
@@ -1455,8 +1523,8 @@ export async function handleEndCall(
         // Notify all participants
         if (call) {
             for (const participantID of call.participantIDs) {
-                const pConnectionId = await getConnectionIdForUser(participantID);
-                if (pConnectionId) {
+                const pConnectionIds = await getConnectionIdsForUser(participantID);
+                for (const pConnectionId of pConnectionIds) {
                     await sendToClient(apiGwManagement, pConnectionId, {
                         type: 'callStatusUpdate',
                         callID,
@@ -1528,8 +1596,8 @@ export async function handleDeclineCall(
 
         // Notify caller that call was declined
         if (call) {
-            const callerConnectionId = await getConnectionIdForUser(call.callerID);
-            if (callerConnectionId) {
+            const callerConnectionIds = await getConnectionIdsForUser(call.callerID);
+            for (const callerConnectionId of callerConnectionIds) {
                 await sendToClient(apiGwManagement, callerConnectionId, {
                     type: 'callStatusUpdate',
                     callID,

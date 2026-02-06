@@ -2,7 +2,9 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
+import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { AuditService } from './audit-service';
+import { createAttendee, createMeetingForScheduledMeeting, joinMeeting as joinChimeMeeting } from './chime-meeting-manager';
 
 // Environment Variables
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -11,6 +13,9 @@ const TEAMS_TABLE = process.env.TEAMS_TABLE || '';
 const MEETINGS_TABLE = process.env.MEETINGS_TABLE || '';
 const MESSAGES_TABLE = process.env.MESSAGES_TABLE || '';
 const LOG_LEVEL = process.env.LOG_LEVEL || 'INFO';
+
+// Public meeting link base (fixed domain default)
+const PUBLIC_APP_BASE_URL = process.env.PUBLIC_APP_BASE_URL || 'https://todaysdentalinsights.com';
 
 // Authorization Constants
 const MAX_GROUP_MEMBERS = 100;
@@ -238,6 +243,16 @@ interface Meeting {
     updatedAt: string;
 }
 
+interface MeetingRecord extends Meeting {
+    // Used for unauthenticated guest join (do not expose the hash to clients unless needed)
+    guestJoinTokenHash?: string;
+    guestJoinExpiresAt?: number; // unix epoch seconds
+    // Populated when the first attendee joins
+    chimeMeetingId?: string;
+    chimeExternalMeetingId?: string;
+    chimeMediaRegion?: string;
+}
+
 // Helper functions
 function response(statusCode: number, body: any): APIGatewayProxyResult {
     return {
@@ -280,6 +295,72 @@ function getUserIdFromEvent(event: APIGatewayProxyEvent): string | null {
     return userID || null;
 }
 
+function uniqStrings(values: Array<string | undefined | null>): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of values) {
+        const v = typeof raw === 'string' ? raw.trim() : '';
+        if (!v) continue;
+        if (seen.has(v)) continue;
+        seen.add(v);
+        out.push(v);
+    }
+    return out;
+}
+
+function parseDateMaybe(value: any): Date | null {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return null;
+    return d;
+}
+
+function computeGuestJoinExpiresAtSeconds(startTime?: string, endTime?: string): number {
+    // Valid through endTime (or startTime) + 24h, with fallback to now+7d.
+    const end = parseDateMaybe(endTime);
+    const start = parseDateMaybe(startTime);
+    const baseMs = (end || start || new Date()).getTime();
+    const expiresMs = baseMs + 24 * 60 * 60 * 1000;
+    const fallbackMs = Date.now() + 7 * 24 * 60 * 60 * 1000;
+    const ms = Number.isFinite(expiresMs) ? expiresMs : fallbackMs;
+    return Math.floor(ms / 1000);
+}
+
+function makeGuestJoinToken(): string {
+    // base64url is URL-safe and compact.
+    return randomBytes(32).toString('base64url');
+}
+
+function hashGuestJoinToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+}
+
+function timingSafeEqualUtf8(a: string, b: string): boolean {
+    if (typeof a !== 'string' || typeof b !== 'string') return false;
+    if (a.length !== b.length) return false;
+    try {
+        return timingSafeEqual(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
+    } catch {
+        return false;
+    }
+}
+
+async function getTeamById(teamID: string, fnCtx?: LogContext): Promise<Team | null> {
+    if (!teamID || !TEAMS_TABLE) return null;
+    const dbStart = Date.now();
+    log.dbOperation('GetItem', TEAMS_TABLE, { teamID }, fnCtx);
+    const result = await ddb.send(new GetCommand({
+        TableName: TEAMS_TABLE,
+        Key: { teamID },
+    }));
+    log.dbResult('GetItem', TEAMS_TABLE, result.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
+    return (result.Item as Team) || null;
+}
+
+function isUserDirectConversationParticipant(favor: FavorRequest, userID: string): boolean {
+    return favor.senderID === userID || favor.receiverID === userID || favor.currentAssigneeID === userID;
+}
+
 // ========================================
 // MAIN HANDLER
 // ========================================
@@ -297,12 +378,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     console.log('RequestContext:', JSON.stringify(event.requestContext, null, 2));
     console.log('========================');
     
-    const userID = getUserIdFromEvent(event);
+    // Public endpoints (no authorizer)
+    const isPublicMeetingJoin = path.match(/^\/api\/public\/meetings\/[^/]+\/join$/) && httpMethod === 'POST';
+
+    const userID = isPublicMeetingJoin ? null : getUserIdFromEvent(event);
 
     // Log incoming request
-    log.request(event, userID);
+    log.request(event, userID || 'public');
 
-    if (!userID) {
+    if (!isPublicMeetingJoin && !userID) {
         console.error('CRITICAL: Failed to extract userID from event');
         console.error('Full event.requestContext.authorizer:', JSON.stringify(event.requestContext.authorizer, null, 2));
         log.warn('Authentication failed - no userID extracted', { requestId, path, httpMethod });
@@ -310,7 +394,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return response(401, { success: false, message: 'Unauthorized - Failed to extract user ID from request' });
     }
 
-    const logCtx: LogContext = { requestId, userID, httpMethod, path };
+    const logCtx: LogContext = { requestId, userID: userID || 'public', httpMethod, path, isPublic: isPublicMeetingJoin };
+    const authedUserID = userID || '';
 
     try {
         const parsedBody = body ? JSON.parse(body) : {};
@@ -321,99 +406,109 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         // Route based on path and method
         // Conversations endpoints
-        if (path.match(/^\/api\/conversations\/search$/)) {
+        if (isPublicMeetingJoin) {
+            const meetingID = pathParameters?.meetingID || path.split('/')[4];
+            log.info('Routing to publicJoinMeeting', { ...logCtx, meetingID });
+            routeMatched = true;
+            result = await publicJoinMeeting(meetingID, parsedBody, logCtx);
+        } else if (path.match(/^\/api\/conversations\/search$/)) {
             log.info('Routing to searchConversations', logCtx);
             routeMatched = true;
-            result = await searchConversations(userID, queryStringParameters, logCtx);
+            result = await searchConversations(authedUserID, queryStringParameters, logCtx);
         } else if (path.match(/^\/api\/conversations\/profiles$/)) {
             log.info('Routing to getConversationProfiles', logCtx);
             routeMatched = true;
-            result = await getConversationProfiles(userID, queryStringParameters, logCtx);
+            result = await getConversationProfiles(authedUserID, queryStringParameters, logCtx);
         } else if (path.match(/^\/api\/conversations\/[^/]+\/complete$/)) {
             const favorRequestID = pathParameters?.favorRequestID || path.split('/')[3];
             log.info('Routing to getConversationComplete', { ...logCtx, favorRequestID });
             routeMatched = true;
-            result = await getConversationComplete(userID, favorRequestID, logCtx);
+            result = await getConversationComplete(authedUserID, favorRequestID, logCtx);
         } else if (path.match(/^\/api\/conversations\/[^/]+\/user-details$/)) {
             const favorRequestID = pathParameters?.favorRequestID || path.split('/')[3];
             log.info('Routing to getConversationUserDetails', { ...logCtx, favorRequestID });
             routeMatched = true;
-            result = await getConversationUserDetails(userID, favorRequestID, logCtx);
+            result = await getConversationUserDetails(authedUserID, favorRequestID, logCtx);
         } else if (path.match(/^\/api\/conversations\/[^/]+\/deadline$/) && httpMethod === 'PUT') {
             const favorRequestID = pathParameters?.favorRequestID || path.split('/')[3];
             log.info('Routing to updateConversationDeadline', { ...logCtx, favorRequestID });
             routeMatched = true;
-            result = await updateConversationDeadline(userID, favorRequestID, parsedBody, logCtx);
+            result = await updateConversationDeadline(authedUserID, favorRequestID, parsedBody, logCtx);
         } else if (path.match(/^\/api\/conversations\/[^/]+$/) && httpMethod === 'DELETE') {
             const favorRequestID = pathParameters?.favorRequestID || path.split('/')[3];
             log.info('Routing to deleteConversation', { ...logCtx, favorRequestID });
             routeMatched = true;
-            result = await deleteConversation(userID, favorRequestID, queryStringParameters, logCtx);
+            result = await deleteConversation(authedUserID, favorRequestID, queryStringParameters, logCtx);
         } else if (path.match(/^\/api\/conversations$/) && httpMethod === 'GET') {
             log.info('Routing to getConversations', logCtx);
             routeMatched = true;
-            result = await getConversations(userID, queryStringParameters, logCtx);
+            result = await getConversations(authedUserID, queryStringParameters, logCtx);
         }
 
         // Tasks endpoints
         else if (path.match(/^\/api\/tasks\/by-status$/) && httpMethod === 'GET') {
             log.info('Routing to getTasksByStatus', logCtx);
             routeMatched = true;
-            result = await getTasksByStatus(userID, queryStringParameters, logCtx);
+            result = await getTasksByStatus(authedUserID, queryStringParameters, logCtx);
         } else if (path.match(/^\/api\/tasks\/forward-history$/) && httpMethod === 'GET') {
             log.info('Routing to getForwardHistory', logCtx);
             routeMatched = true;
-            result = await getForwardHistory(userID, queryStringParameters, logCtx);
+            result = await getForwardHistory(authedUserID, queryStringParameters, logCtx);
         } else if (path.match(/^\/api\/tasks\/forwarded-to-me$/) && httpMethod === 'GET') {
             log.info('Routing to getForwardedToMe', logCtx);
             routeMatched = true;
-            result = await getForwardedToMe(userID, queryStringParameters, logCtx);
+            result = await getForwardedToMe(authedUserID, queryStringParameters, logCtx);
         } else if (path.match(/^\/api\/tasks\/group$/) && httpMethod === 'POST') {
             log.info('Routing to createGroupTask', logCtx);
             routeMatched = true;
-            result = await createGroupTask(userID, parsedBody, logCtx);
+            result = await createGroupTask(authedUserID, parsedBody, logCtx);
         } else if (path.match(/^\/api\/tasks\/[^/]+\/forward\/[^/]+\/respond$/) && httpMethod === 'POST') {
             const parts = path.split('/');
             const taskID = parts[3];
             const forwardID = parts[5];
             log.info('Routing to respondToForward', { ...logCtx, taskID, forwardID });
             routeMatched = true;
-            result = await respondToForward(userID, taskID, forwardID, parsedBody, logCtx);
+            result = await respondToForward(authedUserID, taskID, forwardID, parsedBody, logCtx);
         } else if (path.match(/^\/api\/tasks\/[^/]+\/forward$/) && httpMethod === 'POST') {
             const taskID = pathParameters?.taskID || path.split('/')[3];
             log.info('Routing to forwardTask', { ...logCtx, taskID });
             routeMatched = true;
-            result = await forwardTask(userID, taskID, parsedBody, logCtx);
+            result = await forwardTask(authedUserID, taskID, parsedBody, logCtx);
         } else if (path.match(/^\/api\/tasks\/[^/]+\/deadline$/) && httpMethod === 'PUT') {
             const taskID = pathParameters?.taskID || path.split('/')[3];
             log.info('Routing to updateTaskDeadline', { ...logCtx, taskID });
             routeMatched = true;
-            result = await updateTaskDeadline(userID, taskID, parsedBody, logCtx);
+            result = await updateTaskDeadline(authedUserID, taskID, parsedBody, logCtx);
         } else if (path.match(/^\/api\/tasks$/) && httpMethod === 'POST') {
             log.info('Routing to createTask', logCtx);
             routeMatched = true;
-            result = await createTask(userID, parsedBody, logCtx);
+            result = await createTask(authedUserID, parsedBody, logCtx);
         }
 
         // Meetings endpoints
-        else if (path.match(/^\/api\/meetings\/[^/]+$/) && httpMethod === 'PUT') {
+        else if (path.match(/^\/api\/meetings\/[^/]+\/join$/) && httpMethod === 'POST') {
+            const meetingID = pathParameters?.meetingID || path.split('/')[3];
+            log.info('Routing to joinMeeting', { ...logCtx, meetingID });
+            routeMatched = true;
+            result = await joinMeeting(authedUserID, meetingID, parsedBody, logCtx);
+        } else if (path.match(/^\/api\/meetings\/[^/]+$/) && httpMethod === 'PUT') {
             const meetingID = pathParameters?.meetingID || path.split('/')[3];
             log.info('Routing to updateMeeting', { ...logCtx, meetingID });
             routeMatched = true;
-            result = await updateMeeting(userID, meetingID, parsedBody, logCtx);
+            result = await updateMeeting(authedUserID, meetingID, parsedBody, logCtx);
         } else if (path.match(/^\/api\/meetings\/[^/]+$/) && httpMethod === 'DELETE') {
             const meetingID = pathParameters?.meetingID || path.split('/')[3];
             log.info('Routing to deleteMeeting', { ...logCtx, meetingID });
             routeMatched = true;
-            result = await deleteMeeting(userID, meetingID, queryStringParameters, logCtx);
+            result = await deleteMeeting(authedUserID, meetingID, queryStringParameters, logCtx);
         } else if (path.match(/^\/api\/meetings$/) && httpMethod === 'POST') {
             log.info('Routing to createMeeting', logCtx);
             routeMatched = true;
-            result = await createMeeting(userID, parsedBody, logCtx);
+            result = await createMeeting(authedUserID, parsedBody, logCtx);
         } else if (path.match(/^\/api\/meetings$/) && httpMethod === 'GET') {
             log.info('Routing to getMeetings', logCtx);
             routeMatched = true;
-            result = await getMeetings(userID, queryStringParameters, logCtx);
+            result = await getMeetings(authedUserID, queryStringParameters, logCtx);
         }
 
         // Groups endpoints
@@ -423,30 +518,30 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             const memberUserID = parts[5];
             log.info('Routing to removeGroupMember', { ...logCtx, teamID, memberUserID });
             routeMatched = true;
-            result = await removeGroupMember(userID, teamID, memberUserID, logCtx);
+            result = await removeGroupMember(authedUserID, teamID, memberUserID, logCtx);
         } else if (path.match(/^\/api\/groups\/[^/]+\/members$/) && httpMethod === 'POST') {
             const teamID = pathParameters?.teamID || path.split('/')[3];
             log.info('Routing to addGroupMember', { ...logCtx, teamID });
             routeMatched = true;
-            result = await addGroupMember(userID, teamID, parsedBody, logCtx);
+            result = await addGroupMember(authedUserID, teamID, parsedBody, logCtx);
         } else if (path.match(/^\/api\/groups\/[^/]+$/) && httpMethod === 'GET') {
             const teamID = pathParameters?.teamID || path.split('/')[3];
             log.info('Routing to getGroupDetails', { ...logCtx, teamID });
             routeMatched = true;
-            result = await getGroupDetails(userID, teamID, logCtx);
+            result = await getGroupDetails(authedUserID, teamID, logCtx);
         } else if (path.match(/^\/api\/groups\/[^/]+$/) && httpMethod === 'PUT') {
             const teamID = pathParameters?.teamID || path.split('/')[3];
             log.info('Routing to updateGroup', { ...logCtx, teamID });
             routeMatched = true;
-            result = await updateGroup(userID, teamID, parsedBody, logCtx);
+            result = await updateGroup(authedUserID, teamID, parsedBody, logCtx);
         } else if (path.match(/^\/api\/groups$/) && httpMethod === 'POST') {
             log.info('Routing to createGroup', logCtx);
             routeMatched = true;
-            result = await createGroup(userID, parsedBody, logCtx);
+            result = await createGroup(authedUserID, parsedBody, logCtx);
         } else if (path.match(/^\/api\/groups$/) && httpMethod === 'GET') {
             log.info('Routing to getGroups', logCtx);
             routeMatched = true;
-            result = await getGroups(userID, queryStringParameters, logCtx);
+            result = await getGroups(authedUserID, queryStringParameters, logCtx);
         }
 
         if (!routeMatched) {
@@ -1401,19 +1496,76 @@ async function createGroupTask(userID: string, body: any, logCtx?: LogContext): 
 async function createMeeting(userID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
     const fnStart = Date.now();
     const fnCtx = { ...logCtx, function: 'createMeeting' };
-    const { conversationID, title, description, startTime, endTime, location, meetingLink, participants, reminder } = body;
+    const { conversationID, title, description, startTime, endTime, location, participants } = body;
 
     log.debug('Create meeting params', { ...fnCtx, conversationID, hasStartTime: !!startTime, participantCount: participants?.length || 0 });
 
-    if (!conversationID || !description || !meetingLink) {
-        log.validation('conversationID/description/meetingLink', 'required fields missing', fnCtx);
-        return response(400, { success: false, message: 'conversationID, description, and meetingLink are required' });
+    if (!MEETINGS_TABLE || !FAVORS_TABLE) {
+        log.error('Meetings/Favors table not configured', { ...fnCtx, hasMeetingsTable: !!MEETINGS_TABLE, hasFavorsTable: !!FAVORS_TABLE });
+        return response(500, { success: false, message: 'Server error: Meetings/Favors table not configured' });
     }
+
+    if (!conversationID || !description) {
+        log.validation('conversationID/description', 'required fields missing', fnCtx);
+        return response(400, { success: false, message: 'conversationID and description are required' });
+    }
+
+    // 1) Verify the conversation exists and caller is a participant
+    const favorDbStart = Date.now();
+    log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID: conversationID }, fnCtx);
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID: conversationID },
+    }));
+    log.dbResult('GetItem', FAVORS_TABLE, favorResult.Item ? 1 : 0, Date.now() - favorDbStart, fnCtx);
+    const favor = favorResult.Item as FavorRequest;
+
+    if (!favor) {
+        log.warn('Conversation not found for meeting creation', fnCtx);
+        return response(404, { success: false, message: 'Conversation not found' });
+    }
+
+    let team: Team | null = null;
+    const directParticipant = isUserDirectConversationParticipant(favor, userID);
+    if (!directParticipant) {
+        log.debug('User not direct participant, checking team membership', { ...fnCtx, teamID: favor.teamID });
+        if (favor.teamID) {
+            team = await getTeamById(favor.teamID, fnCtx);
+            if (!team?.members?.includes(userID)) {
+                log.warn('Unauthorized meeting creation attempt (not in team)', { ...fnCtx, teamID: favor.teamID });
+                return response(403, { success: false, message: 'Unauthorized' });
+            }
+        } else {
+            log.warn('Unauthorized meeting creation attempt', fnCtx);
+            return response(403, { success: false, message: 'Unauthorized' });
+        }
+    } else if (favor.teamID) {
+        // Load team for participant list (optional)
+        team = await getTeamById(favor.teamID, fnCtx);
+    }
+
+    const conversationParticipants = uniqStrings([
+        favor.senderID,
+        favor.receiverID,
+        favor.currentAssigneeID,
+        ...(team?.members || []),
+    ]);
+
+    const meetingParticipants =
+        Array.isArray(participants) && participants.length > 0
+            ? uniqStrings([...(participants as any[]).map(String), userID])
+            : uniqStrings([...conversationParticipants, userID]);
 
     const meetingID = uuidv4();
     const nowIso = new Date().toISOString();
 
-    const meeting: Meeting = {
+    // 2) Generate secure guest join token + link
+    const guestJoinToken = makeGuestJoinToken();
+    const guestJoinTokenHash = hashGuestJoinToken(guestJoinToken);
+    const guestJoinExpiresAt = computeGuestJoinExpiresAtSeconds(startTime, endTime);
+    const generatedMeetingLink = `${PUBLIC_APP_BASE_URL}/#/meet/${encodeURIComponent(meetingID)}?t=${encodeURIComponent(guestJoinToken)}`;
+
+    const meetingRecord: MeetingRecord = {
         meetingID,
         conversationID,
         title: title || description.substring(0, 50),
@@ -1421,21 +1573,39 @@ async function createMeeting(userID: string, body: any, logCtx?: LogContext): Pr
         startTime: startTime || nowIso,
         endTime,
         location,
-        meetingLink,
+        meetingLink: generatedMeetingLink,
         organizerID: userID,
-        participants: participants || [],
+        participants: meetingParticipants,
         status: 'scheduled',
         createdAt: nowIso,
         updatedAt: nowIso,
+        guestJoinTokenHash,
+        guestJoinExpiresAt,
     };
 
     const dbStart = Date.now();
     log.dbOperation('PutItem', MEETINGS_TABLE, { meetingID, conversationID }, fnCtx);
     await ddb.send(new PutCommand({
         TableName: MEETINGS_TABLE,
-        Item: meeting,
+        Item: meetingRecord,
     }));
     log.dbResult('PutItem', MEETINGS_TABLE, 1, Date.now() - dbStart, fnCtx);
+
+    const meeting: Meeting = {
+        meetingID: meetingRecord.meetingID,
+        conversationID: meetingRecord.conversationID,
+        title: meetingRecord.title,
+        description: meetingRecord.description,
+        startTime: meetingRecord.startTime,
+        endTime: meetingRecord.endTime,
+        location: meetingRecord.location,
+        meetingLink: meetingRecord.meetingLink,
+        organizerID: meetingRecord.organizerID,
+        participants: meetingRecord.participants,
+        status: meetingRecord.status,
+        createdAt: meetingRecord.createdAt,
+        updatedAt: meetingRecord.updatedAt,
+    };
 
     log.info('createMeeting completed', { ...fnCtx, meetingID, conversationID, participantCount: meeting.participants.length, durationMs: Date.now() - fnStart });
 
@@ -1444,6 +1614,271 @@ async function createMeeting(userID: string, body: any, logCtx?: LogContext): Pr
         meetingID,
         message: 'Meeting scheduled successfully',
         meeting,
+    });
+}
+
+function sanitizeMeeting(meetingRecord: MeetingRecord): Meeting {
+    return {
+        meetingID: meetingRecord.meetingID,
+        conversationID: meetingRecord.conversationID,
+        title: meetingRecord.title,
+        description: meetingRecord.description,
+        startTime: meetingRecord.startTime,
+        endTime: meetingRecord.endTime,
+        location: meetingRecord.location,
+        meetingLink: meetingRecord.meetingLink,
+        organizerID: meetingRecord.organizerID,
+        participants: Array.isArray(meetingRecord.participants) ? meetingRecord.participants : [],
+        status: meetingRecord.status,
+        createdAt: meetingRecord.createdAt,
+        updatedAt: meetingRecord.updatedAt,
+    };
+}
+
+async function joinMeeting(userID: string, meetingID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'joinMeeting', meetingID };
+
+    if (!MEETINGS_TABLE) {
+        log.error('Meetings table not configured', fnCtx);
+        return response(500, { success: false, message: 'Server error: Meetings table not configured' });
+    }
+
+    if (!meetingID) {
+        log.validation('meetingID', 'missing', fnCtx);
+        return response(400, { success: false, message: 'meetingID is required' });
+    }
+
+    // 1) Load meeting record
+    const dbStart = Date.now();
+    log.dbOperation('GetItem', MEETINGS_TABLE, { meetingID }, fnCtx);
+    const meetingResult = await ddb.send(new GetCommand({
+        TableName: MEETINGS_TABLE,
+        Key: { meetingID },
+    }));
+    log.dbResult('GetItem', MEETINGS_TABLE, meetingResult.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
+
+    const meetingRecord = meetingResult.Item as MeetingRecord;
+    if (!meetingRecord) {
+        log.warn('Meeting not found', fnCtx);
+        return response(404, { success: false, message: 'Meeting not found' });
+    }
+
+    if (meetingRecord.status === 'cancelled') {
+        return response(410, { success: false, message: 'Meeting cancelled' });
+    }
+
+    // 2) Authorization: organizer or listed participant (fallback to conversation membership for older records)
+    const inMeetingParticipants =
+        meetingRecord.organizerID === userID ||
+        (Array.isArray(meetingRecord.participants) && meetingRecord.participants.includes(userID));
+
+    if (!inMeetingParticipants) {
+        log.debug('User not in meeting participants, checking conversation membership', fnCtx);
+        if (meetingRecord.conversationID && FAVORS_TABLE) {
+            const favorDbStart = Date.now();
+            log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID: meetingRecord.conversationID }, fnCtx);
+            const favorResult = await ddb.send(new GetCommand({
+                TableName: FAVORS_TABLE,
+                Key: { favorRequestID: meetingRecord.conversationID },
+            }));
+            log.dbResult('GetItem', FAVORS_TABLE, favorResult.Item ? 1 : 0, Date.now() - favorDbStart, fnCtx);
+            const favor = favorResult.Item as FavorRequest;
+
+            if (favor) {
+                let authorized = isUserDirectConversationParticipant(favor, userID);
+                if (!authorized && favor.teamID) {
+                    const team = await getTeamById(favor.teamID, fnCtx);
+                    authorized = !!team?.members?.includes(userID);
+                }
+                if (!authorized) {
+                    log.warn('Unauthorized meeting join attempt', fnCtx);
+                    return response(403, { success: false, message: 'Unauthorized' });
+                }
+            } else {
+                log.warn('Conversation missing for meeting; denying join', fnCtx);
+                return response(403, { success: false, message: 'Unauthorized' });
+            }
+        } else {
+            log.warn('Unauthorized meeting join attempt (no conversation)', fnCtx);
+            return response(403, { success: false, message: 'Unauthorized' });
+        }
+    }
+
+    // 3) Ensure Chime meeting exists + create attendee
+    const displayName = typeof body?.displayName === 'string' ? body.displayName.trim().slice(0, 80) : undefined;
+    const nowIso = new Date().toISOString();
+
+    let joinInfo: any;
+    let createdNewMeeting = false;
+
+    if (meetingRecord.chimeMeetingId) {
+        try {
+            joinInfo = await joinChimeMeeting(meetingRecord.chimeMeetingId, userID, displayName);
+        } catch (err: any) {
+            if (err?.name === 'NotFoundException') {
+                log.warn('Stored Chime meeting not found; recreating', { ...fnCtx, chimeMeetingId: meetingRecord.chimeMeetingId });
+            } else {
+                log.error('Failed to join existing Chime meeting', { ...fnCtx, errorName: err?.name, errorMessage: err?.message });
+                throw err;
+            }
+        }
+    }
+
+    if (!joinInfo) {
+        const chimeMeeting = await createMeetingForScheduledMeeting(meetingID);
+        const attendee = await createAttendee(chimeMeeting.MeetingId, userID, displayName);
+        joinInfo = { meeting: chimeMeeting, attendee };
+        createdNewMeeting = true;
+
+        // Persist meeting mapping for future joins
+        const updateStart = Date.now();
+        log.dbOperation('UpdateItem', MEETINGS_TABLE, { meetingID, action: 'set-chime-meeting' }, fnCtx);
+        await ddb.send(new UpdateCommand({
+            TableName: MEETINGS_TABLE,
+            Key: { meetingID },
+            UpdateExpression: 'SET chimeMeetingId = :mid, chimeExternalMeetingId = :eid, chimeMediaRegion = :mr, updatedAt = :ua',
+            ExpressionAttributeValues: {
+                ':mid': chimeMeeting.MeetingId,
+                ':eid': chimeMeeting.ExternalMeetingId || `meeting-${meetingID}`.slice(0, 64),
+                ':mr': chimeMeeting.MediaRegion,
+                ':ua': nowIso,
+            },
+        }));
+        log.dbResult('UpdateItem', MEETINGS_TABLE, 1, Date.now() - updateStart, fnCtx);
+    }
+
+    log.info('joinMeeting completed', { ...fnCtx, createdNewMeeting, durationMs: Date.now() - fnStart });
+
+    return response(200, {
+        success: true,
+        meetingID,
+        meeting: sanitizeMeeting(meetingRecord),
+        joinInfo,
+    });
+}
+
+async function publicJoinMeeting(meetingID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'publicJoinMeeting', meetingID };
+
+    if (!MEETINGS_TABLE) {
+        log.error('Meetings table not configured', fnCtx);
+        return response(500, { success: false, message: 'Server error: Meetings table not configured' });
+    }
+
+    if (!meetingID) {
+        log.validation('meetingID', 'missing', fnCtx);
+        return response(400, { success: false, message: 'meetingID is required' });
+    }
+
+    const tokenRaw =
+        (typeof body?.token === 'string' && body.token) ||
+        (typeof body?.t === 'string' && body.t) ||
+        (typeof body?.guestJoinToken === 'string' && body.guestJoinToken) ||
+        '';
+    const token = tokenRaw.trim();
+
+    const nameRaw =
+        (typeof body?.name === 'string' && body.name) ||
+        (typeof body?.displayName === 'string' && body.displayName) ||
+        'Guest';
+    const displayName = nameRaw.trim().slice(0, 80) || 'Guest';
+
+    if (!token) {
+        log.validation('token', 'missing', fnCtx);
+        return response(400, { success: false, message: 'token is required' });
+    }
+
+    // 1) Load meeting record
+    const dbStart = Date.now();
+    log.dbOperation('GetItem', MEETINGS_TABLE, { meetingID }, fnCtx);
+    const meetingResult = await ddb.send(new GetCommand({
+        TableName: MEETINGS_TABLE,
+        Key: { meetingID },
+    }));
+    log.dbResult('GetItem', MEETINGS_TABLE, meetingResult.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
+
+    const meetingRecord = meetingResult.Item as MeetingRecord;
+    if (!meetingRecord) {
+        log.warn('Meeting not found', fnCtx);
+        return response(404, { success: false, message: 'Meeting not found' });
+    }
+
+    if (meetingRecord.status === 'cancelled') {
+        return response(410, { success: false, message: 'Meeting cancelled' });
+    }
+
+    // 2) Validate guest token
+    const storedHash = typeof meetingRecord.guestJoinTokenHash === 'string' ? meetingRecord.guestJoinTokenHash : '';
+    if (!storedHash) {
+        log.warn('Guest join not enabled for meeting (no token hash)', fnCtx);
+        return response(403, { success: false, message: 'Guest join not enabled' });
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (typeof meetingRecord.guestJoinExpiresAt === 'number' && meetingRecord.guestJoinExpiresAt > 0) {
+        if (nowSeconds > meetingRecord.guestJoinExpiresAt) {
+            log.warn('Guest join link expired', { ...fnCtx, guestJoinExpiresAt: meetingRecord.guestJoinExpiresAt, nowSeconds });
+            return response(410, { success: false, message: 'Guest link expired' });
+        }
+    }
+
+    const providedHash = hashGuestJoinToken(token);
+    if (!timingSafeEqualUtf8(providedHash, storedHash)) {
+        log.warn('Invalid guest token', fnCtx);
+        return response(403, { success: false, message: 'Invalid token' });
+    }
+
+    // 3) Ensure Chime meeting exists + create attendee
+    const guestUserIDBase = `guest_${displayName}`.replace(/\s+/g, '_').slice(0, 64);
+    const nowIso = new Date().toISOString();
+
+    let joinInfo: any;
+    let createdNewMeeting = false;
+
+    if (meetingRecord.chimeMeetingId) {
+        try {
+            joinInfo = await joinChimeMeeting(meetingRecord.chimeMeetingId, guestUserIDBase, displayName);
+        } catch (err: any) {
+            if (err?.name === 'NotFoundException') {
+                log.warn('Stored Chime meeting not found; recreating', { ...fnCtx, chimeMeetingId: meetingRecord.chimeMeetingId });
+            } else {
+                log.error('Failed to join existing Chime meeting', { ...fnCtx, errorName: err?.name, errorMessage: err?.message });
+                throw err;
+            }
+        }
+    }
+
+    if (!joinInfo) {
+        const chimeMeeting = await createMeetingForScheduledMeeting(meetingID);
+        const attendee = await createAttendee(chimeMeeting.MeetingId, guestUserIDBase, displayName);
+        joinInfo = { meeting: chimeMeeting, attendee };
+        createdNewMeeting = true;
+
+        const updateStart = Date.now();
+        log.dbOperation('UpdateItem', MEETINGS_TABLE, { meetingID, action: 'set-chime-meeting' }, fnCtx);
+        await ddb.send(new UpdateCommand({
+            TableName: MEETINGS_TABLE,
+            Key: { meetingID },
+            UpdateExpression: 'SET chimeMeetingId = :mid, chimeExternalMeetingId = :eid, chimeMediaRegion = :mr, updatedAt = :ua',
+            ExpressionAttributeValues: {
+                ':mid': chimeMeeting.MeetingId,
+                ':eid': chimeMeeting.ExternalMeetingId || `meeting-${meetingID}`.slice(0, 64),
+                ':mr': chimeMeeting.MediaRegion,
+                ':ua': nowIso,
+            },
+        }));
+        log.dbResult('UpdateItem', MEETINGS_TABLE, 1, Date.now() - updateStart, fnCtx);
+    }
+
+    log.info('publicJoinMeeting completed', { ...fnCtx, createdNewMeeting, durationMs: Date.now() - fnStart });
+
+    return response(200, {
+        success: true,
+        meetingID,
+        guest: { displayName },
+        joinInfo,
     });
 }
 

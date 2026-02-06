@@ -209,7 +209,12 @@ export async function sendIncomingCallNotification(
     callPayload: IncomingCallPushPayload
 ): Promise<boolean> {
     const callTypeEmoji = callPayload.callType === 'video' ? '📹' : '📞';
-    const idempotencyKey = `call:${callPayload.callID}:${callPayload.callerID}`;
+    const now = Date.now();
+    // Match Chime stack’s “push-first” idempotency pattern
+    const idempotencyKey = `incoming_call:${callPayload.callID}:${now}`;
+
+    // Web SW defaults to /call-center; provide an explicit deep-link for comm calls
+    const url = `/#/communication?callId=${encodeURIComponent(callPayload.callID)}&favorRequestID=${encodeURIComponent(callPayload.favorRequestID)}`;
 
     const result = await invokeSendPushLambdaWithRetry({
         userId: recipientUserID,
@@ -217,16 +222,21 @@ export async function sendIncomingCallNotification(
             title: `${callTypeEmoji} Incoming ${callPayload.callType} call`,
             body: `${callPayload.callerName} is calling you`,
             type: 'incoming_call',
-            sound: 'ringtone.mp3',
+            sound: 'ringtone.caf',
+            category: 'INCOMING_CALL',
             idempotencyKey,
             data: {
                 type: 'incoming_call',
-                callID: callPayload.callID,
+                source: 'comm',
+                callId: callPayload.callID,
                 callerID: callPayload.callerID,
                 callerName: callPayload.callerName,
                 callType: callPayload.callType,
                 favorRequestID: callPayload.favorRequestID,
                 meetingId: callPayload.meetingId || '',
+                url,
+                action: 'answer_call',
+                timestamp: now,
             },
         },
     }, {

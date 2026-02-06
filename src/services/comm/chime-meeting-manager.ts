@@ -89,7 +89,7 @@ export async function createMeeting(
     callID: string,
     callType: 'voice' | 'video'
 ): Promise<ChimeMeetingInfo> {
-    const externalMeetingId = `call-${callID}`;
+    const externalMeetingId = `call-${callID}`.slice(0, 64);
 
     try {
         const response = await chimeClient.send(new CreateMeetingCommand({
@@ -110,6 +110,35 @@ export async function createMeeting(
         return response.Meeting as unknown as ChimeMeetingInfo;
     } catch (error) {
         console.error('[ChimeMeetingManager] Error creating meeting:', error);
+        throw error;
+    }
+}
+
+/**
+ * Create a new Chime SDK meeting for a scheduled meeting link.
+ * Uses a distinct ExternalMeetingId prefix to avoid mixing with call meetings.
+ */
+export async function createMeetingForScheduledMeeting(meetingID: string): Promise<ChimeMeetingInfo> {
+    const externalMeetingId = `meeting-${meetingID}`.slice(0, 64);
+
+    try {
+        const response = await chimeClient.send(new CreateMeetingCommand({
+            ClientRequestToken: uuidv4(),
+            ExternalMeetingId: externalMeetingId,
+            MediaRegion: CHIME_MEDIA_REGION,
+            MeetingFeatures: {
+                Audio: { EchoReduction: 'AVAILABLE' },
+                Video: { MaxResolution: 'HD' },
+            },
+        }));
+
+        if (!response.Meeting?.MeetingId || !response.Meeting?.MediaPlacement || !response.Meeting?.MediaRegion) {
+            throw new Error('Failed to create scheduled meeting - no meeting data returned');
+        }
+
+        return response.Meeting as unknown as ChimeMeetingInfo;
+    } catch (error) {
+        console.error('[ChimeMeetingManager] Error creating scheduled meeting:', error);
         throw error;
     }
 }

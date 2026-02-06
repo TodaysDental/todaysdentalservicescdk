@@ -503,6 +503,21 @@ export class CommStack extends Stack {
     this.meetingsTable.grantReadWriteData(restApiHandler);
     this.auditLogsTable.grantReadWriteData(restApiHandler);
 
+    // ========================================
+    // CHIME SDK MEETINGS PERMISSIONS (MEETINGS JOIN)
+    // ========================================
+    // Required for scheduled meeting joins via REST (services/comm/chime-meeting-manager.ts)
+    restApiHandler.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'chime:CreateMeeting',
+        'chime:CreateAttendee',
+        'chime:GetMeeting',
+        'chime:ListAttendees',
+        'chime:DeleteMeeting',
+      ],
+      resources: ['*'],
+    }));
+
     // Grant push notification permissions to REST API handler
     if (props.deviceTokensTableArn) {
       restApiHandler.addToRolePolicy(new iam.PolicyStatement({
@@ -620,6 +635,15 @@ export class CommStack extends Stack {
     const meetingById = meetings.addResource('{meetingID}');
     meetingById.addMethod('PUT', restIntegration, { authorizer });
     meetingById.addMethod('DELETE', restIntegration, { authorizer });
+    const meetingJoin = meetingById.addResource('join');
+    meetingJoin.addMethod('POST', restIntegration, { authorizer });
+
+    // /api/public/meetings/{meetingID}/join (guest join, no authorizer)
+    const publicApi = api.addResource('public');
+    const publicMeetings = publicApi.addResource('meetings');
+    const publicMeetingById = publicMeetings.addResource('{meetingID}');
+    const publicMeetingJoin = publicMeetingById.addResource('join');
+    publicMeetingJoin.addMethod('POST', restIntegration);
 
     // /api/groups endpoints
     const groups = api.addResource('groups');
