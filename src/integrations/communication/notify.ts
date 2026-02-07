@@ -15,10 +15,10 @@ import {
   PermissionType,
   UserPermissions,
 } from '../../shared/utils/permissions-helper';
-import { 
-  getClinicConfig, 
-  getAllClinicConfigs, 
-  ClinicConfig 
+import {
+  getClinicConfig,
+  getAllClinicConfigs,
+  ClinicConfig
 } from '../../shared/utils/secrets-helper';
 import { renderTemplate, buildTemplateContext } from '../../shared/utils/clinic-placeholders';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
@@ -154,7 +154,7 @@ async function processNotification(event: APIGatewayProxyEvent, body: any, clini
   // Required field validation
   if (!input.patNum) errors.push('PatNum is required');
   if (input.notificationTypes.length === 0) errors.push('At least one notification type is required');
-  
+
   // Validate content - either template or custom content is required
   if (!hasTemplateOrCustom) {
     errors.push('Either templateMessage or custom content (customEmailSubject/customEmailHtml/customSmsText) is required');
@@ -165,7 +165,7 @@ async function processNotification(event: APIGatewayProxyEvent, body: any, clini
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(input.email)) errors.push('Invalid email format');
   }
-  
+
   if (input.notificationTypes.includes('SMS') && input.phone) {
     if (input.phone.length < 10) errors.push('Invalid phone number format');
   }
@@ -185,8 +185,8 @@ async function processNotification(event: APIGatewayProxyEvent, body: any, clini
     sentBy: sentBy,
     notificationTypes: input.notificationTypes,
     templateName: input.templateName || 'custom',
-    recipient: { 
-      firstName: input.firstName, 
+    recipient: {
+      firstName: input.firstName,
       lastName: input.lastName,
       email: input.email,
       phone: input.phone
@@ -319,11 +319,11 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
         const unsubscribeFooter = generateEmailUnsubscribeFooter(unsubscribeLink, clinicName);
         htmlStr = htmlStr + unsubscribeFooter;
 
-        await sendEmail({ 
-          clinicId, 
-          to: email, 
-          subject: subjectStr, 
-          html: htmlStr || textAltStr, 
+        await sendEmail({
+          clinicId,
+          to: email,
+          subject: subjectStr,
+          html: htmlStr || textAltStr,
           text: textAltStr || htmlStr,
           patNum,
           templateName: templateMessage || 'custom',
@@ -345,8 +345,15 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
           sentBy,
           status: 'SENT'
         });
-      } catch (error) {
-        console.error('Failed to send email:', error);
+      } catch (error: any) {
+        console.error('Failed to send email:', {
+          clinicId,
+          to: email,
+          errorName: error?.name,
+          errorMessage: error?.message,
+          errorCode: error?.$metadata?.httpStatusCode,
+          requestId: error?.$metadata?.requestId,
+        });
         await storeNotification({
           patNum,
           clinicId,
@@ -356,7 +363,7 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
           sentBy,
           status: 'FAILED'
         });
-        return http(500, { error: 'Failed to send email notification' }, event);
+        return http(500, { error: 'Failed to send email notification', details: error?.message || 'Unknown error' }, event);
       }
     }
   }
@@ -796,6 +803,11 @@ function extractEmailAndPhone(row: any): { email?: string; phone?: string } {
   return { email, phone };
 }
 
+// SES tag values only allow alphanumeric ASCII, '_', '-', '.', '@'
+function sanitizeTagValue(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_\-\.@]/g, '_');
+}
+
 interface SendEmailOptions {
   clinicId: string;
   to: string;
@@ -817,11 +829,11 @@ async function sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
   const { clinicId, to, subject, html, text, patNum, templateName, sentBy, unsubscribeLink } = options;
   const identityArn = await getClinicSesIdentityArn(clinicId);
   if (!identityArn) return { success: false };
-  
+
   // Use the clinic's verified email address instead of no-reply
   const clinicEmail = await getClinicEmail(clinicId);
   let from: string;
-  
+
   if (!clinicEmail) {
     // Fallback to no-reply if clinic email is not found
     const fromDomain = identityArn.split(':identity/')[1] || 'todaysdentalinsights.com';
@@ -829,7 +841,7 @@ async function sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
   } else {
     from = clinicEmail;
   }
-  
+
   const configurationSetName = process.env.SES_CONFIGURATION_SET_NAME;
 
   // Generate List-Unsubscribe headers if unsubscribe link is provided
@@ -839,38 +851,67 @@ async function sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
     listUnsubscribeHeaders['List-Unsubscribe'] = listUnsubscribe;
     listUnsubscribeHeaders['List-Unsubscribe-Post'] = listUnsubscribePost;
   }
-  
+
+  // Build the SendEmailCommand
+  const simpleContent: any = {
+    Subject: { Data: subject },
+    Body: {
+      Html: { Data: html },
+      Text: { Data: text || html.replace(/<[^>]+>/g, ' ') }
+    },
+  };
+
+  // Only include Headers if there are unsubscribe headers
+  // Note: SES v2 'Headers' in Simple content requires SES v2 API support
+  if (Object.keys(listUnsubscribeHeaders).length > 0) {
+    simpleContent.Headers = Object.entries(listUnsubscribeHeaders).map(([name, value]) => ({
+      Name: name,
+      Value: value,
+    }));
+  }
+
   const cmd = new SendEmailCommand({
     FromEmailAddress: from,
     FromEmailAddressIdentityArn: identityArn,
     Destination: { ToAddresses: [to] },
-    Content: { 
-      Simple: { 
-        Subject: { Data: subject }, 
-        Body: { 
-          Html: { Data: html }, 
-          Text: { Data: text || html.replace(/<[^>]+>/g, ' ') } 
-        },
-        // Add List-Unsubscribe headers for RFC 8058 compliance
-        Headers: Object.entries(listUnsubscribeHeaders).map(([name, value]) => ({
-          Name: name,
-          Value: value,
-        })),
-      } 
-    },
+    Content: { Simple: simpleContent },
     // Add configuration set for event tracking
     ConfigurationSetName: configurationSetName,
     // Add tags for tracking context
     EmailTags: [
-      { Name: 'clinicId', Value: clinicId },
-      ...(patNum ? [{ Name: 'patNum', Value: patNum }] : []),
-      ...(templateName ? [{ Name: 'templateName', Value: templateName }] : []),
+      { Name: 'clinicId', Value: sanitizeTagValue(clinicId) },
+      ...(patNum ? [{ Name: 'patNum', Value: sanitizeTagValue(patNum) }] : []),
+      ...(templateName ? [{ Name: 'templateName', Value: sanitizeTagValue(templateName) }] : []),
     ],
   });
-  
-  const response = await ses.send(cmd);
+
+  let response;
+  try {
+    response = await ses.send(cmd);
+  } catch (err: any) {
+    // If the error is due to unsupported Headers field, retry without it
+    if (err?.name === 'ValidationException' && simpleContent.Headers) {
+      console.warn('[sendEmail] SES rejected Headers field, retrying without List-Unsubscribe headers');
+      delete simpleContent.Headers;
+      const retryCmd = new SendEmailCommand({
+        FromEmailAddress: from,
+        FromEmailAddressIdentityArn: identityArn,
+        Destination: { ToAddresses: [to] },
+        Content: { Simple: simpleContent },
+        ConfigurationSetName: configurationSetName,
+        EmailTags: [
+          { Name: 'clinicId', Value: sanitizeTagValue(clinicId) },
+          ...(patNum ? [{ Name: 'patNum', Value: sanitizeTagValue(patNum) }] : []),
+          ...(templateName ? [{ Name: 'templateName', Value: sanitizeTagValue(templateName) }] : []),
+        ],
+      });
+      response = await ses.send(retryCmd);
+    } else {
+      throw err;
+    }
+  }
   const messageId = response.MessageId;
-  
+
   // Create initial tracking record in email analytics table
   if (messageId) {
     await createEmailTrackingRecord({
@@ -883,7 +924,7 @@ async function sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
       sentBy,
     });
   }
-  
+
   return { messageId, success: true };
 }
 
@@ -898,10 +939,10 @@ async function createEmailTrackingRecord(record: {
 }): Promise<void> {
   const EMAIL_ANALYTICS_TABLE = process.env.EMAIL_ANALYTICS_TABLE;
   if (!EMAIL_ANALYTICS_TABLE) return;
-  
+
   const now = new Date();
   const ttl = Math.floor(now.getTime() / 1000) + (365 * 24 * 60 * 60); // 1 year TTL
-  
+
   try {
     await ddb.send(new PutCommand({
       TableName: EMAIL_ANALYTICS_TABLE,

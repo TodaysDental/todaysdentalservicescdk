@@ -1263,17 +1263,32 @@ export async function handleJoinCall(
             return;
         }
 
-        // Update call status if this is the first join
+        // Join Chime SDK meeting and get attendee credentials (required for media to work)
+        if (!call.meetingId) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Call is missing meeting information' });
+            return;
+        }
+
+        let meetingJoinInfo: any;
+        try {
+            const { joinMeeting } = await import('./chime-meeting-manager');
+            meetingJoinInfo = await joinMeeting(call.meetingId, senderID);
+            console.log(`[Call] User ${senderID} joined Chime meeting: ${meetingJoinInfo.meeting.MeetingId}`);
+        } catch (chimeError) {
+            console.error('[Call] Failed to join Chime meeting:', chimeError);
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to join call media session' });
+            return;
+        }
+
+        // Update call status only after a successful media join (first join transitions ringing -> connected)
         if (call.status === 'ringing') {
-            if (CALLS_TABLE) {
-                await ddb.send(new UpdateCommand({
-                    TableName: CALLS_TABLE,
-                    Key: { callID },
-                    UpdateExpression: 'SET #status = :status',
-                    ExpressionAttributeNames: { '#status': 'status' },
-                    ExpressionAttributeValues: { ':status': 'connected' },
-                }));
-            }
+            await ddb.send(new UpdateCommand({
+                TableName: CALLS_TABLE,
+                Key: { callID },
+                UpdateExpression: 'SET #status = :status',
+                ExpressionAttributeNames: { '#status': 'status' },
+                ExpressionAttributeValues: { ':status': 'connected' },
+            }));
 
             // Notify all participants that call is connected
             for (const participantID of call.participantIDs) {
@@ -1289,29 +1304,16 @@ export async function handleJoinCall(
             }
         }
 
-        // Join Chime SDK meeting and get attendee credentials
-        let meetingJoinInfo: any | null = null;
-        if (call.meetingId) {
-            try {
-                const { joinMeeting } = await import('./chime-meeting-manager');
-                const result = await joinMeeting(call.meetingId, senderID);
-                meetingJoinInfo = result;
-                console.log(`[Call] User ${senderID} joined Chime meeting: ${meetingJoinInfo.meeting.MeetingId}`);
-            } catch (chimeError) {
-                console.error('[Call] Failed to join Chime meeting:', chimeError);
-            }
-        }
-
-        // Return Chime SDK meeting join info
+        // Return Chime SDK meeting join info (must include meeting + attendee)
         await sendToClient(apiGwManagement, connectionId, {
             type: 'callJoinInfo',
             callID,
-            meetingId: meetingJoinInfo?.meeting?.MeetingId || call.meetingId || callID,
-            meetingToken: meetingJoinInfo?.attendee?.JoinToken || '',
-            attendeeId: meetingJoinInfo?.attendee?.AttendeeId || senderID,
-            externalMeetingId: meetingJoinInfo?.meeting?.ExternalMeetingId,
-            meeting: meetingJoinInfo?.meeting,
-            attendee: meetingJoinInfo?.attendee,
+            meetingId: meetingJoinInfo.meeting.MeetingId,
+            meetingToken: meetingJoinInfo.attendee.JoinToken,
+            attendeeId: meetingJoinInfo.attendee.AttendeeId,
+            externalMeetingId: meetingJoinInfo.meeting.ExternalMeetingId,
+            meeting: meetingJoinInfo.meeting,
+            attendee: meetingJoinInfo.attendee,
         });
 
     } catch (e) {
@@ -1569,6 +1571,19 @@ export async function handleDeclineCall(
             call = callResult.Item as Call;
         }
 
+        // Guard: only decline calls still in 'ringing' state.
+        // If someone already answered or the call ended, don't blow away the session.
+        if (call && call.status !== 'ringing') {
+            console.log(`[Call] Decline ignored for call ${callID} — already in '${call.status}' state`);
+            await sendToClient(apiGwManagement, connectionId, {
+                type: 'callStatusUpdate',
+                callID,
+                status: call.status,
+                updatedBy: 'system',
+            });
+            return;
+        }
+
         // Update call status
         if (CALLS_TABLE) {
             await ddb.send(new UpdateCommand({
@@ -1621,9 +1636,209 @@ export async function handleDeclineCall(
     }
 }
 
-// ========================================
-// LINK PREVIEW HANDLER
-// ========================================
+
+/**
+ * Accept an incoming call (explicit ringing → connected transition)
+ * This notifies all participants that the call was accepted before media setup.
+ */
+export async function handleAcceptCall(
+    senderID: string,
+    payload: { callID: string },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { callID } = payload;
+
+    if (!callID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing callID' });
+        return;
+    }
+
+    if (!CALLS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Calls table not configured.' });
+        return;
+    }
+
+    try {
+        const callResult = await ddb.send(new GetCommand({
+            TableName: CALLS_TABLE,
+            Key: { callID },
+        }));
+        const call = callResult.Item as Call | undefined;
+
+        if (!call) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Call not found or expired' });
+            return;
+        }
+
+        if (call.status !== 'ringing') {
+            await sendToClient(apiGwManagement, connectionId, {
+                type: 'error',
+                message: `Cannot accept call in '${call.status}' state`,
+            });
+            return;
+        }
+
+        // Transition ringing → connected
+        await ddb.send(new UpdateCommand({
+            TableName: CALLS_TABLE,
+            Key: { callID },
+            UpdateExpression: 'SET #status = :status, acceptedAt = :acceptedAt, acceptedBy = :acceptedBy',
+            ExpressionAttributeNames: { '#status': 'status' },
+            ExpressionAttributeValues: {
+                ':status': 'connected',
+                ':acceptedAt': new Date().toISOString(),
+                ':acceptedBy': senderID,
+            },
+        }));
+
+        // Notify ALL participants about acceptance (stops ringing on other devices)
+        for (const participantID of call.participantIDs) {
+            const pConnectionIds = await getConnectionIdsForUser(participantID);
+            for (const pConnectionId of pConnectionIds) {
+                await sendToClient(apiGwManagement, pConnectionId, {
+                    type: 'callStatusUpdate',
+                    callID,
+                    status: 'connected',
+                    updatedBy: senderID,
+                });
+            }
+        }
+
+        console.log(`[Call] Call ${callID} accepted by ${senderID}`);
+    } catch (e) {
+        console.error('Error accepting call:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to accept call' });
+    }
+}
+
+/**
+ * Handle call timeout — auto-end a ringing call that wasn't answered.
+ * The caller's frontend triggers this after the timeout elapses (default 30s).
+ */
+export async function handleCallTimeout(
+    senderID: string,
+    payload: { callID: string },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { callID } = payload;
+
+    if (!callID || !CALLS_TABLE) return;
+
+    try {
+        const callResult = await ddb.send(new GetCommand({
+            TableName: CALLS_TABLE,
+            Key: { callID },
+        }));
+        const call = callResult.Item as Call | undefined;
+
+        if (!call || call.status !== 'ringing') {
+            // Already answered, declined, or expired — nothing to do
+            return;
+        }
+
+        const now = new Date().toISOString();
+
+        // Mark as missed
+        await ddb.send(new UpdateCommand({
+            TableName: CALLS_TABLE,
+            Key: { callID },
+            UpdateExpression: 'SET #status = :status, endedAt = :endedAt',
+            ExpressionAttributeNames: { '#status': 'status' },
+            ExpressionAttributeValues: {
+                ':status': 'missed',
+                ':endedAt': now,
+            },
+        }));
+
+        // Clean up Chime meeting
+        if (call.meetingId) {
+            try {
+                const { endMeeting } = await import('./chime-meeting-manager');
+                await endMeeting(call.meetingId);
+            } catch (chimeError) {
+                console.warn('[Call] Failed to end Chime meeting on timeout:', chimeError);
+            }
+        }
+
+        // Notify all participants that the call timed out
+        for (const participantID of call.participantIDs) {
+            const pConnectionIds = await getConnectionIdsForUser(participantID);
+            for (const pConnectionId of pConnectionIds) {
+                await sendToClient(apiGwManagement, pConnectionId, {
+                    type: 'callStatusUpdate',
+                    callID,
+                    status: 'missed',
+                    updatedBy: 'system',
+                    endedAt: now,
+                });
+            }
+        }
+
+        // Send missed call push notifications to non-caller participants
+        for (const participantID of call.participantIDs) {
+            if (participantID === call.callerID) continue;
+            try {
+                const { sendMissedCallNotification } = await import('./push-notifications');
+                await sendMissedCallNotification(ddb, participantID, call.callerName, call.callType);
+            } catch (pushError) {
+                console.warn(`[Call] Failed to send missed call push to ${participantID}:`, pushError);
+            }
+        }
+
+        console.log(`[Call] Call ${callID} timed out after no answer`);
+    } catch (e) {
+        console.error('Error handling call timeout:', e);
+    }
+}
+
+/**
+ * Fetch call history for the current user (optionally filtered by conversation)
+ */
+export async function handleGetCallHistory(
+    senderID: string,
+    payload: { favorRequestID?: string; limit?: number },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    if (!CALLS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Calls table not configured' });
+        return;
+    }
+
+    const { favorRequestID, limit = 50 } = payload;
+
+    try {
+        const { ScanCommand } = await import('@aws-sdk/lib-dynamodb');
+        const filterExpression = favorRequestID
+            ? 'favorRequestID = :frid AND contains(participantIDs, :uid)'
+            : 'contains(participantIDs, :uid)';
+        const expressionValues: Record<string, any> = { ':uid': senderID };
+        if (favorRequestID) expressionValues[':frid'] = favorRequestID;
+
+        const scanResult = await ddb.send(new ScanCommand({
+            TableName: CALLS_TABLE,
+            FilterExpression: filterExpression,
+            ExpressionAttributeValues: expressionValues,
+        }));
+
+        const calls = (scanResult.Items || []) as Call[];
+        // Sort by startedAt descending (newest first)
+        calls.sort((a, b) => new Date(b.startedAt || '').getTime() - new Date(a.startedAt || '').getTime());
+
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'callHistory',
+            calls: calls.slice(0, limit),
+            favorRequestID: favorRequestID || null,
+        });
+    } catch (e) {
+        console.error('Error fetching call history:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to fetch call history' });
+    }
+}
+
+
 
 /**
  * Fetch link preview metadata

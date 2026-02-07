@@ -104,16 +104,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // ==================================================================
-    // 2. Admin gatekeeper - All other routes require admin privileges
-    // ==================================================================
-    const isAdmin = isAdminUser(callerClinicRoles, callerIsSuperAdmin, callerIsGlobalSuperAdmin);
-
-    if (!isAdmin) {
-      return httpErr(403, 'forbidden: admin or super admin required');
-    }
-
-    // ==================================================================
-    // 3. GET /users - List all users (admin only)
+    // 2. GET /users - List all users (any authenticated user)
     // Supports optional:
     // - ?clinicId=X   (single clinic minimal response)
     // - ?clinicIds=a,b,c (multi-clinic minimal response; scan once)
@@ -123,9 +114,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const filterClinicIdsRaw = event.queryStringParameters?.clinicIds;
       const filterClinicIds = filterClinicIdsRaw
         ? filterClinicIdsRaw
-            .split(',')
-            .map((id) => id.trim())
-            .filter(Boolean)
+          .split(',')
+          .map((id) => id.trim())
+          .filter(Boolean)
         : undefined;
 
       return await handleListUsers(
@@ -135,6 +126,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         filterClinicId,
         filterClinicIds
       );
+    }
+
+    // ==================================================================
+    // 3. Admin gatekeeper - All other routes require admin privileges
+    // ==================================================================
+    const isAdmin = isAdminUser(callerClinicRoles, callerIsSuperAdmin, callerIsGlobalSuperAdmin);
+
+    if (!isAdmin) {
+      return httpErr(403, 'forbidden: admin or super admin required');
     }
 
     // ==================================================================

@@ -30,6 +30,33 @@ const CHIME_MEDIA_REGION =
 
 const chimeClient = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isNotFoundException(err: any): boolean {
+    const name = err?.name || err?.Code || err?.code;
+    if (name === 'NotFoundException') return true;
+    const msg = String(err?.message || '').toLowerCase();
+    return msg.includes('meeting not found');
+}
+
+function isRetryableChimeError(err: any): boolean {
+    const name = err?.name || err?.Code || err?.code;
+    return (
+        isNotFoundException(err) ||
+        name === 'ThrottlingException' ||
+        name === 'TooManyRequestsException' ||
+        name === 'ServiceUnavailableException'
+    );
+}
+
+function makeNotFoundError(message: string): Error {
+    const e: any = new Error(message);
+    e.name = 'NotFoundException';
+    return e as Error;
+}
+
 // ========================================
 // TYPES
 // ========================================
@@ -151,27 +178,50 @@ export async function createAttendee(
     userID: string,
     userName?: string
 ): Promise<ChimeAttendeeInfo> {
-    try {
-        const response = await chimeClient.send(new CreateAttendeeCommand({
-            MeetingId: meetingId,
-            // Use a safe, <=64-char external user id (email can be too long)
-            ExternalUserId: makeExternalUserId(userID),
-            Capabilities: {
-                Audio: 'SendReceive',
-                Video: 'SendReceive',
-                Content: 'SendReceive',
-            },
-        }));
+    const maxAttempts = 5;
+    let lastError: any = null;
 
-        if (!response.Attendee?.AttendeeId || !response.Attendee?.ExternalUserId || !response.Attendee?.JoinToken) {
-            throw new Error('Failed to create attendee - no attendee data returned');
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+            const response = await chimeClient.send(new CreateAttendeeCommand({
+                MeetingId: meetingId,
+                // Use a safe, <=64-char external user id (email can be too long)
+                ExternalUserId: makeExternalUserId(userID),
+                Capabilities: {
+                    Audio: 'SendReceive',
+                    Video: 'SendReceive',
+                    Content: 'SendReceive',
+                },
+            }));
+
+            if (!response.Attendee?.AttendeeId || !response.Attendee?.ExternalUserId || !response.Attendee?.JoinToken) {
+                throw new Error('Failed to create attendee - no attendee data returned');
+            }
+
+            return response.Attendee as unknown as ChimeAttendeeInfo;
+        } catch (error: any) {
+            lastError = error;
+            if (!isRetryableChimeError(error) || attempt === maxAttempts - 1) {
+                console.error('[ChimeMeetingManager] Error creating attendee:', error);
+                throw error;
+            }
+
+            const base = 150 * 2 ** attempt;
+            const jitter = Math.floor(Math.random() * 120);
+            const delayMs = Math.min(base + jitter, 1500);
+            console.warn('[ChimeMeetingManager] createAttendee retrying after error:', {
+                attempt: attempt + 1,
+                maxAttempts,
+                delayMs,
+                errorName: error?.name,
+                errorMessage: error?.message,
+            });
+            await sleep(delayMs);
         }
-
-        return response.Attendee as unknown as ChimeAttendeeInfo;
-    } catch (error) {
-        console.error('[ChimeMeetingManager] Error creating attendee:', error);
-        throw error;
     }
+
+    // Should never reach here, but keep TS happy.
+    throw lastError || new Error('Failed to create attendee');
 }
 
 /**
@@ -203,22 +253,50 @@ export async function joinMeeting(
 ): Promise<MeetingJoinInfo> {
     console.log(`[ChimeMeetingManager] User ${userID} joining meeting ${meetingId}`);
 
-    // Get meeting info
-    const meetingResponse = await chimeClient.send(new GetMeetingCommand({
-        MeetingId: meetingId,
-    }));
+    const maxAttempts = 6;
+    let lastError: any = null;
 
-    if (!meetingResponse.Meeting?.MeetingId || !meetingResponse.Meeting?.MediaPlacement || !meetingResponse.Meeting?.MediaRegion) {
-        throw new Error('Meeting not found');
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+            // Get meeting info
+            const meetingResponse = await chimeClient.send(new GetMeetingCommand({
+                MeetingId: meetingId,
+            }));
+
+            if (!meetingResponse.Meeting?.MeetingId || !meetingResponse.Meeting?.MediaPlacement || !meetingResponse.Meeting?.MediaRegion) {
+                throw makeNotFoundError('Meeting not found');
+            }
+
+            // Create attendee for this user
+            const attendee = await createAttendee(meetingId, userID, userName);
+
+            return {
+                meeting: meetingResponse.Meeting as unknown as ChimeMeetingInfo,
+                attendee,
+            };
+        } catch (error: any) {
+            lastError = error;
+
+            if (!isRetryableChimeError(error) || attempt === maxAttempts - 1) {
+                console.error('[ChimeMeetingManager] Error joining meeting:', error);
+                throw error;
+            }
+
+            const base = 200 * 2 ** attempt;
+            const jitter = Math.floor(Math.random() * 150);
+            const delayMs = Math.min(base + jitter, 2000);
+            console.warn('[ChimeMeetingManager] joinMeeting retrying after error:', {
+                attempt: attempt + 1,
+                maxAttempts,
+                delayMs,
+                errorName: error?.name,
+                errorMessage: error?.message,
+            });
+            await sleep(delayMs);
+        }
     }
 
-    // Create attendee for this user
-    const attendee = await createAttendee(meetingId, userID, userName);
-
-    return {
-        meeting: meetingResponse.Meeting as unknown as ChimeMeetingInfo,
-        attendee,
-    };
+    throw lastError || new Error('Failed to join meeting');
 }
 
 /**

@@ -29,7 +29,7 @@ import {
     handleGetConversationAnalytics,
     handleSearchGifs, handleGetTrendingGifs, handleSendGif,
     handleGetStickerPacks, handleGetStickers, handleSendSticker,
-    handleInitiateCall, handleJoinCall, handleLeaveCall, handleEndCall, handleDeclineCall, handleMuteCall, handleToggleVideo,
+    handleInitiateCall, handleJoinCall, handleLeaveCall, handleEndCall, handleDeclineCall, handleAcceptCall, handleCallTimeout, handleGetCallHistory, handleMuteCall, handleToggleVideo,
     handleFetchLinkPreview, handleGetConversationFiles,
 } from './enhanced-messaging-handlers';
 
@@ -454,6 +454,15 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 break;
             case 'declineCall':
                 await handleDeclineCall(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'acceptCall':
+                await handleAcceptCall(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'callTimeout':
+                await handleCallTimeout(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getCallHistory':
+                await handleGetCallHistory(senderID, payload, connectionId, apiGwManagement);
                 break;
             case 'muteCall':
                 await handleMuteCall(senderID, payload, connectionId, apiGwManagement);
@@ -1915,44 +1924,52 @@ async function fetchHistory(
         return;
     }
 
-    // 1. Fetch the favor request to validate authorization
-    const favorResult = await ddb.send(new GetCommand({
-        TableName: FAVORS_TABLE,
-        Key: { favorRequestID },
-    }));
-    const favor = favorResult.Item as FavorRequest;
+    try {
+        // 1. Fetch the favor request to validate authorization
+        const favorResult = await ddb.send(new GetCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+        }));
+        const favor = favorResult.Item as FavorRequest;
 
-    if (!favor) {
-        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Favor request not found.' });
-        return;
+        if (!favor) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Favor request not found.' });
+            return;
+        }
+
+        // 2. Verify the caller is a participant (works for both 1-to-1 and group requests)
+        const isParticipant = await isUserParticipant(favor, callerID);
+        if (!isParticipant) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this request.' });
+            return;
+        }
+
+        // 3. Query the MessagesTable (PK: favorRequestID, SK: timestamp)
+        const queryInput = {
+            TableName: MESSAGES_TABLE,
+            KeyConditionExpression: 'favorRequestID = :id',
+            ExpressionAttributeValues: { ':id': favorRequestID },
+            ScanIndexForward: true, // Chronological order (oldest first)
+            Limit: limit,
+            // Optional: Use ExclusiveStartKey for pagination (not fully implemented here, just lastTimestamp as anchor)
+        };
+
+        const historyResult = await ddb.send(new QueryCommand(queryInput));
+
+        // 4. Send history back to the client
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'favorHistory',
+            favorRequestID,
+            messages: historyResult.Items || [],
+            // nextToken: historyResult.LastEvaluatedKey // To implement robust pagination
+        });
+    } catch (error: any) {
+        console.error(`[fetchHistory] Error fetching history for favorRequestID=${favorRequestID}, callerID=${callerID}:`, error);
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error',
+            message: `Failed to fetch message history: ${error.message || 'Unknown error'}`
+        });
     }
-
-    // 2. Verify the caller is a participant (works for both 1-to-1 and group requests)
-    const isParticipant = await isUserParticipant(favor, callerID);
-    if (!isParticipant) {
-        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this request.' });
-        return;
-    }
-
-    // 3. Query the MessagesTable (PK: favorRequestID, SK: timestamp)
-    const queryInput = {
-        TableName: MESSAGES_TABLE,
-        KeyConditionExpression: 'favorRequestID = :id',
-        ExpressionAttributeValues: { ':id': favorRequestID },
-        ScanIndexForward: true, // Chronological order (oldest first)
-        Limit: limit,
-        // Optional: Use ExclusiveStartKey for pagination (not fully implemented here, just lastTimestamp as anchor)
-    };
-
-    const historyResult = await ddb.send(new QueryCommand(queryInput));
-
-    // 4. Send history back to the client
-    await sendToClient(apiGwManagement, connectionId, {
-        type: 'favorHistory',
-        favorRequestID,
-        messages: historyResult.Items || [],
-        // nextToken: historyResult.LastEvaluatedKey // To implement robust pagination
-    });
 }
 /** Sends a JSON payload back to a specific client. */
 async function sendToClient(apiGwManagement: ApiGatewayManagementApiClient, connectionId: string, data: any): Promise<void> {
