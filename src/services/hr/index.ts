@@ -1566,7 +1566,7 @@ function normalizeToUtcIso(dateTime: string, clinicTimeZone: string): string {
   return utc.toISOString();
 }
 
-// SES Email Function
+// SES Email Function — Apple-inspired black & white theme
 async function sendShiftNotificationEmail(recipientEmail: string, shiftDetails: any, staffName: string, clinicTimezone: string) {
   if (!FROM_EMAIL || !recipientEmail) {
     console.warn('Skipping shift notification: Missing FROM_EMAIL or recipientEmail.');
@@ -1576,72 +1576,106 @@ async function sendShiftNotificationEmail(recipientEmail: string, shiftDetails: 
   const tz = normalizeTimeZoneOrUtc(clinicTimezone);
 
   const startTimeLocal = new Date(shiftDetails.startTime).toLocaleTimeString('en-US', {
-    timeZone: tz,
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
+    timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true
   });
   const endTimeLocal = new Date(shiftDetails.endTime).toLocaleTimeString('en-US', {
-    timeZone: tz,
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
+    timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true
   });
   const shiftDate = new Date(shiftDetails.startTime).toLocaleDateString('en-US', {
-    timeZone: tz,
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
+    timeZone: tz, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
   });
-  // --- START UPDATE HERE ---
-  // Ensure estimated pay and hourly rate are formatted safely
+
   const hourlyRate = typeof shiftDetails.hourlyRate === 'number' ? shiftDetails.hourlyRate : 0;
   const estimatedPay = typeof shiftDetails.pay === 'number' ? shiftDetails.pay : 0;
-  // --- END UPDATE HERE ---
-  const subject = `New Shift Scheduled at ${shiftDetails.clinicId} for ${shiftDate}`;
+  const totalHours = typeof shiftDetails.totalHours === 'number' ? shiftDetails.totalHours : 0;
+
+  const subject = `Shift Scheduled — ${shiftDate}`;
 
   const bodyHtml = `
-        <html>
-        <head>
-            <style>
-                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-                .container { max-width: 600px; margin: 20px auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px; }
-                .header { background-color: #f4f4f4; padding: 10px; text-align: center; border-radius: 6px 6px 0 0; }
-                .details { margin-top: 20px; border-top: 2px solid #333; padding-top: 15px; }
-                .detail-row { margin-bottom: 10px; }
-                .label { font-weight: bold; display: inline-block; width: 150px; }
-                .footer { margin-top: 30px; text-align: center; font-size: 0.8em; color: #777; }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h2>Shift Schedule Notification</h2>
-                </div>
-                <p>Dear ${staffName || shiftDetails.staffId},</p>
-                <p>A new shift has been scheduled for you. Please check the details below:</p>
-                
-                <div class="details">
-                    <div class="detail-row"><span class="label">Office:</span> ${shiftDetails.clinicId}</div>
-                    <div class="detail-row"><span class="label">Date:</span> ${shiftDate}</div>
-                    <div class="detail-row"><span class="label">Start Time:</span> ${startTimeLocal}</div>
-                    <div class="detail-row"><span class="label">End Time:</span> ${endTimeLocal}</div>
-                    <div class="detail-row"><span class="label">Role:</span> ${shiftDetails.role || 'N/A'}</div>
-                    <div class="detail-row"><span class="label">Hours:</span> ${shiftDetails.totalHours}</div>
-<div class="detail-row"><span class="label">Hourly Rate:</span> $${hourlyRate.toFixed(2)}</div>
-                    <div class="detail-row"><span class="label">Estimated Pay:</span> $${estimatedPay.toFixed(2)}</div>
-                </div>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin:0; padding:0; background-color:#f5f5f7; font-family:-apple-system, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7; padding:40px 20px;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+        <!-- Header -->
+        <tr>
+          <td style="background:#1d1d1f; padding:32px 40px; text-align:center;">
+            <h1 style="margin:0; color:#ffffff; font-size:22px; font-weight:600; letter-spacing:-0.3px;">Shift Scheduled</h1>
+            <p style="margin:6px 0 0; color:rgba(255,255,255,0.6); font-size:13px; font-weight:400;">Today's Dental Insights</p>
+          </td>
+        </tr>
+        <!-- Body -->
+        <tr>
+          <td style="padding:32px 40px;">
+            <p style="margin:0 0 20px; color:#1d1d1f; font-size:16px; line-height:1.5;">Hello <strong>${staffName || shiftDetails.staffId}</strong>,</p>
+            <p style="margin:0 0 24px; color:#1d1d1f; font-size:16px; line-height:1.5;">A new shift has been scheduled for you. Here are the details:</p>
 
-                <p>You can view and manage your shifts in the ${APP_NAME} portal.</p>
+            <!-- Details Card -->
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f7; border-radius:12px; margin:0 0 24px;">
+              <tr><td style="padding:24px;">
+                <table width="100%" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px; width:140px;">Office</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">${shiftDetails.clinicId}</td>
+                  </tr>
+                  <tr><td colspan="2" style="border-bottom:1px solid #e5e5e7; padding:0; height:1px;"></td></tr>
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px;">Date</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">${shiftDate}</td>
+                  </tr>
+                  <tr><td colspan="2" style="border-bottom:1px solid #e5e5e7; padding:0; height:1px;"></td></tr>
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px;">Time</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">${startTimeLocal} – ${endTimeLocal}</td>
+                  </tr>
+                  <tr><td colspan="2" style="border-bottom:1px solid #e5e5e7; padding:0; height:1px;"></td></tr>
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px;">Role</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">${shiftDetails.role || 'N/A'}</td>
+                  </tr>
+                  <tr><td colspan="2" style="border-bottom:1px solid #e5e5e7; padding:0; height:1px;"></td></tr>
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px;">Hours</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">${totalHours.toFixed(2)}</td>
+                  </tr>
+                  <tr><td colspan="2" style="border-bottom:1px solid #e5e5e7; padding:0; height:1px;"></td></tr>
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px;">Hourly Rate</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">$${hourlyRate.toFixed(2)}</td>
+                  </tr>
+                  <tr><td colspan="2" style="border-bottom:1px solid #e5e5e7; padding:0; height:1px;"></td></tr>
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px;">Estimated Pay</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:22px; font-weight:600;">$${estimatedPay.toFixed(2)}</td>
+                  </tr>
+                </table>
+              </td></tr>
+            </table>
 
-                <div class="footer">
-                    This is an automated notification. Please do not reply.
-                </div>
-            </div>
-        </body>
-        </html>
-    `;
+            <!-- CTA Button -->
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr><td align="center" style="padding:8px 0 0;">
+                <a href="https://todaysdentalinsights.com/" style="display:inline-block; background:#1d1d1f; color:#ffffff; text-decoration:none; padding:14px 32px; border-radius:980px; font-size:15px; font-weight:500; letter-spacing:-0.2px;">View Your Schedule</a>
+              </td></tr>
+            </table>
+          </td>
+        </tr>
+        <!-- Footer -->
+        <tr>
+          <td style="padding:20px 40px 28px; border-top:1px solid #e5e5e7; text-align:center;">
+            <p style="margin:0; color:#86868b; font-size:12px; line-height:1.6;">This is an automated notification from ${APP_NAME}.<br>Please do not reply to this email.</p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
 
   const command = new SendEmailCommand({
     Destination: { ToAddresses: [recipientEmail] },
@@ -1651,7 +1685,7 @@ async function sendShiftNotificationEmail(recipientEmail: string, shiftDetails: 
         Body: {
           Html: { Data: bodyHtml },
           Text: {
-            Data: `A new shift has been scheduled for you on ${shiftDate} at ${shiftDetails.clinicId} from ${startTimeLocal} to ${endTimeLocal}. Estimated Pay: $${shiftDetails.pay.toFixed(2)}.`
+            Data: `Shift Scheduled\n\nHello ${staffName || shiftDetails.staffId},\n\nA new shift has been scheduled for you.\n\nOffice: ${shiftDetails.clinicId}\nDate: ${shiftDate}\nTime: ${startTimeLocal} – ${endTimeLocal}\nRole: ${shiftDetails.role || 'N/A'}\nHours: ${totalHours.toFixed(2)}\nHourly Rate: $${hourlyRate.toFixed(2)}\nEstimated Pay: $${estimatedPay.toFixed(2)}\n\nView your schedule: https://todaysdentalinsights.com/\n\nThis is an automated notification from ${APP_NAME}.`
           }
         }
       }
@@ -1956,14 +1990,14 @@ async function getDashboard(userPerms: any, isAdmin: boolean, queryParams?: any)
 
     // Get all admin's clinics
     const allAdminClinics: string[] = userPerms.clinicRoles.map((cr: any) => cr.clinicId);
-    
+
     // Parse clinicIds filter from query params
     let targetClinics = allAdminClinics;
     if (queryParams?.clinicIds) {
       const requestedClinicIds = queryParams.clinicIds.split(',').map((id: string) => id.trim()).filter(Boolean);
       // Only include clinics that the user has access to
       targetClinics = requestedClinicIds.filter((id: string) => allAdminClinics.includes(id));
-      
+
       // If all requested clinics are invalid, return error
       if (targetClinics.length === 0 && requestedClinicIds.length > 0) {
         return httpErr(403, "No access to any of the requested clinics");
@@ -2621,112 +2655,118 @@ async function sendMultiShiftNotificationEmail(
 
   const tz = normalizeTimeZoneOrUtc(clinicTimezone);
 
-  // Build shift rows for the HTML table
+  // Build shift rows
   let totalHoursAll = 0;
   let totalPayAll = 0;
   const shiftRows = shifts.map((s: any) => {
     const shiftDate = new Date(s.startTime).toLocaleDateString('en-US', {
-      timeZone: tz,
-      weekday: 'short',
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
+      timeZone: tz, weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
     });
     const startLocal = new Date(s.startTime).toLocaleTimeString('en-US', {
-      timeZone: tz,
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
+      timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true,
     });
     const endLocal = new Date(s.endTime).toLocaleTimeString('en-US', {
-      timeZone: tz,
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
+      timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true,
     });
 
     totalHoursAll += s.totalHours || 0;
     totalPayAll += s.pay || 0;
 
     return `
-      <tr>
-        <td style="padding:8px 12px; border-bottom:1px solid #eee;">${shiftDate}</td>
-        <td style="padding:8px 12px; border-bottom:1px solid #eee;">${startLocal} – ${endLocal}</td>
-        <td style="padding:8px 12px; border-bottom:1px solid #eee; text-align:right;">${(s.totalHours || 0).toFixed(2)}</td>
-        <td style="padding:8px 12px; border-bottom:1px solid #eee; text-align:right;">$${(s.pay || 0).toFixed(2)}</td>
-      </tr>`;
+              <tr>
+                <td style="padding:12px 16px; border-bottom:1px solid #e5e5e7; color:#1d1d1f; font-size:14px;">${shiftDate}</td>
+                <td style="padding:12px 16px; border-bottom:1px solid #e5e5e7; color:#1d1d1f; font-size:14px;">${startLocal} – ${endLocal}</td>
+                <td style="padding:12px 16px; border-bottom:1px solid #e5e5e7; color:#1d1d1f; font-size:14px; text-align:right;">${(s.totalHours || 0).toFixed(2)}</td>
+                <td style="padding:12px 16px; border-bottom:1px solid #e5e5e7; color:#1d1d1f; font-size:14px; text-align:right;">$${(s.pay || 0).toFixed(2)}</td>
+              </tr>`;
   }).join('');
 
   const hourlyRate = shifts[0]?.hourlyRate || 0;
 
-  const subject = `${shifts.length} New Shift(s) Scheduled at ${clinicId}`;
+  const subject = `${shifts.length} Shift${shifts.length > 1 ? 's' : ''} Scheduled — ${clinicId}`;
 
   const bodyHtml = `
-    <html>
-    <head>
-      <style>
-        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; }
-        .container { max-width: 650px; margin: 20px auto; border: 1px solid #ddd; padding: 0; border-radius: 10px; overflow: hidden; background: #fff; }
-        .header { background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%); color: white; padding: 24px 20px; text-align: center; }
-        .header h2 { margin: 0; font-size: 1.4rem; font-weight: 600; }
-        .body-content { padding: 24px 20px; }
-        table { width: 100%; border-collapse: collapse; margin: 16px 0; }
-        th { background: #f8f9fa; padding: 10px 12px; text-align: left; font-size: 0.85rem; color: #555; border-bottom: 2px solid #ddd; }
-        .totals td { font-weight: bold; border-top: 2px solid #333; background: #f0f0f0; }
-        .meta { background: #f8f9fa; border-radius: 8px; padding: 14px 16px; margin: 16px 0; }
-        .meta-row { display: flex; margin-bottom: 6px; }
-        .meta-label { font-weight: bold; width: 130px; color: #555; }
-        .meta-value { flex: 1; color: #333; }
-        .footer { text-align: center; font-size: 0.8em; color: #777; padding: 16px 20px; border-top: 1px solid #eee; }
-        .cta-btn { display: inline-block; background: #8b5cf6; color: white; text-decoration: none; padding: 12px 28px; border-radius: 6px; margin-top: 16px; font-weight: 600; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <div class="header">
-          <h2>Shift Schedule Notification</h2>
-        </div>
-        <div class="body-content">
-          <p>Dear ${staffName},</p>
-          <p>${shifts.length > 1 ? `<strong>${shifts.length} shifts</strong> have been scheduled for you.` : 'A new shift has been scheduled for you.'} Please review the details below:</p>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin:0; padding:0; background-color:#f5f5f7; font-family:-apple-system, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7; padding:40px 20px;">
+    <tr><td align="center">
+      <table width="640" cellpadding="0" cellspacing="0" style="background:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+        <!-- Header -->
+        <tr>
+          <td style="background:#1d1d1f; padding:32px 40px; text-align:center;">
+            <h1 style="margin:0; color:#ffffff; font-size:22px; font-weight:600; letter-spacing:-0.3px;">Shift Schedule</h1>
+            <p style="margin:6px 0 0; color:rgba(255,255,255,0.6); font-size:13px; font-weight:400;">Today's Dental Insights</p>
+          </td>
+        </tr>
+        <!-- Body -->
+        <tr>
+          <td style="padding:32px 40px;">
+            <p style="margin:0 0 20px; color:#1d1d1f; font-size:16px; line-height:1.5;">Hello <strong>${staffName}</strong>,</p>
+            <p style="margin:0 0 24px; color:#1d1d1f; font-size:16px; line-height:1.5;">${shifts.length > 1 ? `<strong>${shifts.length} shifts</strong> have` : 'A new shift has'} been scheduled for you. Review the details below.</p>
 
-          <div class="meta">
-            <div class="meta-row"><span class="meta-label">Office:</span><span class="meta-value">${clinicId}</span></div>
-            <div class="meta-row"><span class="meta-label">Hourly Rate:</span><span class="meta-value">$${hourlyRate.toFixed(2)}</span></div>
-            <div class="meta-row"><span class="meta-label">Total Shifts:</span><span class="meta-value">${shifts.length}</span></div>
-          </div>
+            <!-- Summary Card -->
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f7; border-radius:12px; margin:0 0 24px;">
+              <tr><td style="padding:20px 24px;">
+                <table width="100%" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td style="color:#86868b; font-size:12px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px;">Office</td>
+                    <td style="color:#86868b; font-size:12px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px; text-align:center;">Hourly Rate</td>
+                    <td style="color:#86868b; font-size:12px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px; text-align:right;">Total Shifts</td>
+                  </tr>
+                  <tr>
+                    <td style="color:#1d1d1f; font-size:17px; font-weight:600; padding-top:4px;">${clinicId}</td>
+                    <td style="color:#1d1d1f; font-size:17px; font-weight:600; padding-top:4px; text-align:center;">$${hourlyRate.toFixed(2)}</td>
+                    <td style="color:#1d1d1f; font-size:17px; font-weight:600; padding-top:4px; text-align:right;">${shifts.length}</td>
+                  </tr>
+                </table>
+              </td></tr>
+            </table>
 
-          <table>
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Time</th>
-                <th style="text-align:right;">Hours</th>
-                <th style="text-align:right;">Pay</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${shiftRows}
-              <tr class="totals">
-                <td style="padding:10px 12px;" colspan="2"><strong>TOTALS</strong></td>
-                <td style="padding:10px 12px; text-align:right;">${totalHoursAll.toFixed(2)}</td>
-                <td style="padding:10px 12px; text-align:right;">$${totalPayAll.toFixed(2)}</td>
-              </tr>
-            </tbody>
-          </table>
+            <!-- Shifts Table -->
+            <table width="100%" cellpadding="0" cellspacing="0" style="border-radius:12px; overflow:hidden; border:1px solid #e5e5e7;">
+              <thead>
+                <tr style="background:#f5f5f7;">
+                  <th style="padding:10px 16px; text-align:left; font-size:12px; font-weight:600; color:#86868b; text-transform:uppercase; letter-spacing:0.5px; border-bottom:1px solid #e5e5e7;">Date</th>
+                  <th style="padding:10px 16px; text-align:left; font-size:12px; font-weight:600; color:#86868b; text-transform:uppercase; letter-spacing:0.5px; border-bottom:1px solid #e5e5e7;">Time</th>
+                  <th style="padding:10px 16px; text-align:right; font-size:12px; font-weight:600; color:#86868b; text-transform:uppercase; letter-spacing:0.5px; border-bottom:1px solid #e5e5e7;">Hours</th>
+                  <th style="padding:10px 16px; text-align:right; font-size:12px; font-weight:600; color:#86868b; text-transform:uppercase; letter-spacing:0.5px; border-bottom:1px solid #e5e5e7;">Pay</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${shiftRows}
+                <!-- Totals Row -->
+                <tr style="background:#1d1d1f;">
+                  <td colspan="2" style="padding:14px 16px; color:#ffffff; font-size:14px; font-weight:600;">TOTAL</td>
+                  <td style="padding:14px 16px; color:#ffffff; font-size:14px; font-weight:600; text-align:right;">${totalHoursAll.toFixed(2)}</td>
+                  <td style="padding:14px 16px; color:#ffffff; font-size:16px; font-weight:700; text-align:right;">$${totalPayAll.toFixed(2)}</td>
+                </tr>
+              </tbody>
+            </table>
 
-          <p style="text-align:center;">
-            <a href="https://todaysdentalinsights.com/" class="cta-btn" style="color: white;">View Your Schedule</a>
-          </p>
-        </div>
-        <div class="footer">
-          <p>This is an automated notification from ${APP_NAME}.</p>
-          <p>Please do not reply to this email.</p>
-        </div>
-      </div>
-    </body>
-    </html>
-  `;
+            <!-- CTA Button -->
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr><td align="center" style="padding:28px 0 8px;">
+                <a href="https://todaysdentalinsights.com/" style="display:inline-block; background:#1d1d1f; color:#ffffff; text-decoration:none; padding:14px 32px; border-radius:980px; font-size:15px; font-weight:500; letter-spacing:-0.2px;">View Your Schedule</a>
+              </td></tr>
+            </table>
+          </td>
+        </tr>
+        <!-- Footer -->
+        <tr>
+          <td style="padding:20px 40px 28px; border-top:1px solid #e5e5e7; text-align:center;">
+            <p style="margin:0; color:#86868b; font-size:12px; line-height:1.6;">This is an automated notification from ${APP_NAME}.<br>Please do not reply to this email.</p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
 
   // Plain text fallback
   const shiftLines = shifts.map((s: any) => {
@@ -2736,22 +2776,7 @@ async function sendMultiShiftNotificationEmail(
     return `  ${shiftDate}: ${startLocal} – ${endLocal} (${(s.totalHours || 0).toFixed(2)} hrs, $${(s.pay || 0).toFixed(2)})`;
   }).join('\n');
 
-  const textBody = `New Shifts Scheduled
-
-Dear ${staffName},
-
-${shifts.length} shift(s) have been scheduled for you at ${clinicId}.
-
-Shift Details:
-${shiftLines}
-
-Total Hours: ${totalHoursAll.toFixed(2)}
-Total Pay: $${totalPayAll.toFixed(2)}
-Hourly Rate: $${hourlyRate.toFixed(2)}
-
-View your schedule at: https://todaysdentalinsights.com/
-
-This is an automated notification from ${APP_NAME}.`;
+  const textBody = `Shifts Scheduled\n\nHello ${staffName},\n\n${shifts.length} shift(s) have been scheduled for you at ${clinicId}.\n\nShift Details:\n${shiftLines}\n\nTotal Hours: ${totalHoursAll.toFixed(2)}\nTotal Pay: $${totalPayAll.toFixed(2)}\nHourly Rate: $${hourlyRate.toFixed(2)}\n\nView your schedule: https://todaysdentalinsights.com/\n\nThis is an automated notification from ${APP_NAME}.`;
 
   const command = new SendEmailCommand({
     Destination: { ToAddresses: [recipientEmail] },

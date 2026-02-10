@@ -487,7 +487,7 @@ async function handleUpdateUser(
     Item: updatedUser,
   }));
 
-  // Update staff clinic info if provided
+  // Update staff clinic info if staffDetails or openDentalPerClinic provided explicitly
   if (STAFF_INFO_TABLE && (body.staffDetails || body.openDentalPerClinic)) {
     const detailsToSave = body.openDentalPerClinic || body.staffDetails || [];
 
@@ -496,6 +496,56 @@ async function handleUpdateUser(
 
     // Then save new staff info
     await saveStaffInfoToDynamoDB(username, detailsToSave);
+  }
+  // FIX: When clinicRoles is updated (e.g. hourlyPay changed), sync shared fields
+  // to StaffClinicInfo even if staffDetails/openDentalPerClinic wasn't explicitly provided.
+  // This ensures StaffClinicInfo stays in sync with StaffUser.clinicRoles.
+  else if (STAFF_INFO_TABLE && body.clinicRoles && Array.isArray(body.clinicRoles)) {
+    const SHARED_FIELDS = [
+      'hourlyPay', 'role', 'workLocation',
+      'UserNum', 'UserName', 'EmployeeNum', 'employeeName',
+      'ProviderNum', 'providerName', 'ClinicNum', 'emailAddress',
+      'IsHidden', 'UserNumCEMT', 'userGroupNums',
+    ];
+
+    for (const clinicRole of body.clinicRoles) {
+      if (!clinicRole.clinicId) continue;
+
+      // Build partial update with only the shared fields that are present
+      const updateFields: Record<string, any> = {};
+      for (const field of SHARED_FIELDS) {
+        if ((clinicRole as any)[field] !== undefined) {
+          updateFields[field] = (clinicRole as any)[field];
+        }
+      }
+
+      // Skip if no shared fields to sync
+      if (Object.keys(updateFields).length === 0) continue;
+
+      try {
+        // Get existing StaffClinicInfo record (if any)
+        const { Item: existingInfo } = await ddb.send(new GetCommand({
+          TableName: STAFF_INFO_TABLE!,
+          Key: { email: username.toLowerCase(), clinicId: String(clinicRole.clinicId) },
+        }));
+
+        // Merge: existing record + updated shared fields
+        const mergedItem = {
+          ...(existingInfo || {}),
+          ...updateFields,
+          email: username.toLowerCase(),
+          clinicId: String(clinicRole.clinicId),
+          updatedAt: new Date().toISOString(),
+        };
+
+        await ddb.send(new PutCommand({
+          TableName: STAFF_INFO_TABLE!,
+          Item: mergedItem,
+        }));
+      } catch (err) {
+        console.error(`Failed to sync clinicRole to StaffClinicInfo for ${username} at ${clinicRole.clinicId}:`, err);
+      }
+    }
   }
 
   // Get updated staff details
