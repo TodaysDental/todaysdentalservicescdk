@@ -191,11 +191,12 @@ function buildContactFlowContent(params: {
 
   return {
     Version: '2019-10-30',
-    StartAction: 'welcome-message',
+    StartAction: 'set-recording',
     Metadata: {
       entryPointPosition: { x: 20, y: 20 },
       ActionMetadata: {
         'welcome-message': { position: { x: 160, y: 20 } },
+        'set-recording': { position: { x: 260, y: 20 } },
         'set-contact-attrs': { position: { x: 360, y: 20 } },
         'set-disconnect-flow': { position: { x: 560, y: 20 } },
         'lex-asr': { position: { x: 760, y: 20 } },
@@ -216,6 +217,25 @@ function buildContactFlowContent(params: {
         Transitions: {
           NextAction: 'set-contact-attrs',
           Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 2) Enable call recording (captures both sides of the automated interaction)
+      // Requires the Connect instance to have CALL_RECORDINGS storage configured.
+      {
+        Identifier: 'set-recording',
+        Type: 'UpdateContactRecordingBehavior',
+        Parameters: {
+          RecordingBehavior: {
+            // Record both directions so the recording includes the system/AI prompts and the caller.
+            RecordedParticipants: ['Agent', 'Customer'],
+          },
+        },
+        Transitions: {
+          NextAction: 'welcome-message',
+          // This action does not define error branches in flow language; keep empty arrays (matches Connect sample flows).
+          Errors: [],
+          Conditions: [],
         },
       },
 

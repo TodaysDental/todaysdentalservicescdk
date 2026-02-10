@@ -1,0 +1,1546 @@
+{
+ "Resources": {
+  "ConsentFormDataTable416994B0": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "consent_form_id",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "KeySchema": [
+     {
+      "AttributeName": "consent_form_id",
+      "KeyType": "HASH"
+     }
+    ],
+    "TableName": "TodaysDentalInsightsConsentFormDataN1-ConsentFormData",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConsentFormData"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConsentFormDataN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "consent-form-data"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataTable/Resource"
+   }
+  },
+  "ConsentFormDataApi75362F8D": {
+   "Type": "AWS::ApiGateway::RestApi",
+   "Properties": {
+    "Description": "Consent Form Data service API",
+    "Name": "ConsentFormDataApi",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConsentFormData"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConsentFormDataN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Resource"
+   }
+  },
+  "ConsentFormDataApiCloudWatchRoleED367518": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "apigateway.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConsentFormData"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConsentFormDataN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/CloudWatchRole/Resource"
+   }
+  },
+  "ConsentFormDataApiAccount9AA65125": {
+   "Type": "AWS::ApiGateway::Account",
+   "Properties": {
+    "CloudWatchRoleArn": {
+     "Fn::GetAtt": [
+      "ConsentFormDataApiCloudWatchRoleED367518",
+      "Arn"
+     ]
+    }
+   },
+   "DependsOn": [
+    "ConsentFormDataApi75362F8D"
+   ],
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Account"
+   }
+  },
+  "ConsentFormDataApiDeploymentF2139D17ff112620d2a0f51525a306f69e92f64d": {
+   "Type": "AWS::ApiGateway::Deployment",
+   "Properties": {
+    "Description": "Consent Form Data service API",
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    }
+   },
+   "DependsOn": [
+    "ConsentFormDataApiconsentformsconsentFormIdDELETEDED652D4",
+    "ConsentFormDataApiconsentformsconsentFormIdGETBB866EAD",
+    "ConsentFormDataApiconsentformsconsentFormIdOPTIONSA8F4F609",
+    "ConsentFormDataApiconsentformsconsentFormIdPUT77B2E51B",
+    "ConsentFormDataApiconsentformsconsentFormId2246EB7D",
+    "ConsentFormDataApiconsentformsGETAECCE8C0",
+    "ConsentFormDataApiconsentformsOPTIONSB7AACEB2",
+    "ConsentFormDataApiconsentformsPOST18DA8D96",
+    "ConsentFormDataApiconsentformsA0F74DE2",
+    "ConsentFormDataApiOPTIONSC1F6EE41",
+    "GatewayResponseDefault4XXC22BF2A7",
+    "GatewayResponseDefault5XX28177100",
+    "GatewayResponseUnauthorized78FCB15B"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Deployment/Resource",
+    "aws:cdk:do-not-refactor": true
+   }
+  },
+  "ConsentFormDataApiDeploymentStageprodE96BCBD0": {
+   "Type": "AWS::ApiGateway::Stage",
+   "Properties": {
+    "DeploymentId": {
+     "Ref": "ConsentFormDataApiDeploymentF2139D17ff112620d2a0f51525a306f69e92f64d"
+    },
+    "MethodSettings": [
+     {
+      "DataTraceEnabled": false,
+      "HttpMethod": "*",
+      "LoggingLevel": "INFO",
+      "MetricsEnabled": true,
+      "ResourcePath": "/*"
+     }
+    ],
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    },
+    "StageName": "prod",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConsentFormData"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConsentFormDataN1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "ConsentFormDataApiAccount9AA65125"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/DeploymentStage.prod/Resource"
+   }
+  },
+  "ConsentFormDataApiOPTIONSC1F6EE41": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Fn::GetAtt": [
+      "ConsentFormDataApi75362F8D",
+      "RootResourceId"
+     ]
+    },
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/OPTIONS/Resource"
+   }
+  },
+  "ConsentFormDataApiconsentformsA0F74DE2": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "ConsentFormDataApi75362F8D",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "consent-forms",
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/Resource"
+   }
+  },
+  "ConsentFormDataApiconsentformsOPTIONSB7AACEB2": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ConsentFormDataApiconsentformsA0F74DE2"
+    },
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/OPTIONS/Resource"
+   }
+  },
+  "ConsentFormDataApiconsentformsGETApiPermissionTodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1DGETconsentforms948E49F8": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ConsentFormDataFn5B668422",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ConsentFormDataApi75362F8D"
+       },
+       "/",
+       {
+        "Ref": "ConsentFormDataApiDeploymentStageprodE96BCBD0"
+       },
+       "/GET/consent-forms"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/GET/ApiPermission.TodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1D.GET..consent-forms"
+   }
+  },
+  "ConsentFormDataApiconsentformsGETApiPermissionTestTodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1DGETconsentforms0A11BA69": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ConsentFormDataFn5B668422",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ConsentFormDataApi75362F8D"
+       },
+       "/test-invoke-stage/GET/consent-forms"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/GET/ApiPermission.Test.TodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1D.GET..consent-forms"
+   }
+  },
+  "ConsentFormDataApiconsentformsGETAECCE8C0": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ConsentFormDataAuthorizerD19F6FB2"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ConsentFormDataFn5B668422",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ConsentFormDataApiconsentformsA0F74DE2"
+    },
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/GET/Resource"
+   }
+  },
+  "ConsentFormDataApiconsentformsPOSTApiPermissionTodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1DPOSTconsentformsEC96E12C": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ConsentFormDataFn5B668422",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ConsentFormDataApi75362F8D"
+       },
+       "/",
+       {
+        "Ref": "ConsentFormDataApiDeploymentStageprodE96BCBD0"
+       },
+       "/POST/consent-forms"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/POST/ApiPermission.TodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1D.POST..consent-forms"
+   }
+  },
+  "ConsentFormDataApiconsentformsPOSTApiPermissionTestTodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1DPOSTconsentformsFA4FB8F7": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ConsentFormDataFn5B668422",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ConsentFormDataApi75362F8D"
+       },
+       "/test-invoke-stage/POST/consent-forms"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/POST/ApiPermission.Test.TodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1D.POST..consent-forms"
+   }
+  },
+  "ConsentFormDataApiconsentformsPOST18DA8D96": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ConsentFormDataAuthorizerD19F6FB2"
+    },
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ConsentFormDataFn5B668422",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "201"
+     },
+     {
+      "StatusCode": "400"
+     },
+     {
+      "StatusCode": "403"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ConsentFormDataApiconsentformsA0F74DE2"
+    },
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/POST/Resource"
+   }
+  },
+  "ConsentFormDataApiconsentformsconsentFormId2246EB7D": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "ConsentFormDataApiconsentformsA0F74DE2"
+    },
+    "PathPart": "{consentFormId}",
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/{consentFormId}/Resource"
+   }
+  },
+  "ConsentFormDataApiconsentformsconsentFormIdOPTIONSA8F4F609": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ConsentFormDataApiconsentformsconsentFormId2246EB7D"
+    },
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/{consentFormId}/OPTIONS/Resource"
+   }
+  },
+  "ConsentFormDataApiconsentformsconsentFormIdGETApiPermissionTodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1DGETconsentformsconsentFormId0B2852CF": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ConsentFormDataFn5B668422",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ConsentFormDataApi75362F8D"
+       },
+       "/",
+       {
+        "Ref": "ConsentFormDataApiDeploymentStageprodE96BCBD0"
+       },
+       "/GET/consent-forms/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/{consentFormId}/GET/ApiPermission.TodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1D.GET..consent-forms.{consentFormId}"
+   }
+  },
+  "ConsentFormDataApiconsentformsconsentFormIdGETApiPermissionTestTodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1DGETconsentformsconsentFormId153148EE": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ConsentFormDataFn5B668422",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ConsentFormDataApi75362F8D"
+       },
+       "/test-invoke-stage/GET/consent-forms/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/{consentFormId}/GET/ApiPermission.Test.TodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1D.GET..consent-forms.{consentFormId}"
+   }
+  },
+  "ConsentFormDataApiconsentformsconsentFormIdGETBB866EAD": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ConsentFormDataAuthorizerD19F6FB2"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ConsentFormDataFn5B668422",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "404"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ConsentFormDataApiconsentformsconsentFormId2246EB7D"
+    },
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/{consentFormId}/GET/Resource"
+   }
+  },
+  "ConsentFormDataApiconsentformsconsentFormIdPUTApiPermissionTodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1DPUTconsentformsconsentFormIdCF26B736": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ConsentFormDataFn5B668422",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ConsentFormDataApi75362F8D"
+       },
+       "/",
+       {
+        "Ref": "ConsentFormDataApiDeploymentStageprodE96BCBD0"
+       },
+       "/PUT/consent-forms/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/{consentFormId}/PUT/ApiPermission.TodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1D.PUT..consent-forms.{consentFormId}"
+   }
+  },
+  "ConsentFormDataApiconsentformsconsentFormIdPUTApiPermissionTestTodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1DPUTconsentformsconsentFormIdB6431625": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ConsentFormDataFn5B668422",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ConsentFormDataApi75362F8D"
+       },
+       "/test-invoke-stage/PUT/consent-forms/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/{consentFormId}/PUT/ApiPermission.Test.TodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1D.PUT..consent-forms.{consentFormId}"
+   }
+  },
+  "ConsentFormDataApiconsentformsconsentFormIdPUT77B2E51B": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ConsentFormDataAuthorizerD19F6FB2"
+    },
+    "HttpMethod": "PUT",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ConsentFormDataFn5B668422",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "400"
+     },
+     {
+      "StatusCode": "403"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ConsentFormDataApiconsentformsconsentFormId2246EB7D"
+    },
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/{consentFormId}/PUT/Resource"
+   }
+  },
+  "ConsentFormDataApiconsentformsconsentFormIdDELETEApiPermissionTodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1DDELETEconsentformsconsentFormIdBF936494": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ConsentFormDataFn5B668422",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ConsentFormDataApi75362F8D"
+       },
+       "/",
+       {
+        "Ref": "ConsentFormDataApiDeploymentStageprodE96BCBD0"
+       },
+       "/DELETE/consent-forms/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/{consentFormId}/DELETE/ApiPermission.TodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1D.DELETE..consent-forms.{consentFormId}"
+   }
+  },
+  "ConsentFormDataApiconsentformsconsentFormIdDELETEApiPermissionTestTodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1DDELETEconsentformsconsentFormId23F23E95": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ConsentFormDataFn5B668422",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ConsentFormDataApi75362F8D"
+       },
+       "/test-invoke-stage/DELETE/consent-forms/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/{consentFormId}/DELETE/ApiPermission.Test.TodaysDentalInsightsConsentFormDataN1ConsentFormDataApiFD598D1D.DELETE..consent-forms.{consentFormId}"
+   }
+  },
+  "ConsentFormDataApiconsentformsconsentFormIdDELETEDED652D4": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "ConsentFormDataAuthorizerD19F6FB2"
+    },
+    "HttpMethod": "DELETE",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ConsentFormDataFn5B668422",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "403"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "ConsentFormDataApiconsentformsconsentFormId2246EB7D"
+    },
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApi/Default/consent-forms/{consentFormId}/DELETE/Resource"
+   }
+  },
+  "GatewayResponseDefault4XXC22BF2A7": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_4XX",
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/GatewayResponseDefault4XX/Resource"
+   }
+  },
+  "GatewayResponseDefault5XX28177100": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_5XX",
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/GatewayResponseDefault5XX/Resource"
+   }
+  },
+  "GatewayResponseUnauthorized78FCB15B": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "UNAUTHORIZED",
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/GatewayResponseUnauthorized/Resource"
+   }
+  },
+  "ConsentFormDataAuthorizerD19F6FB2": {
+   "Type": "AWS::ApiGateway::Authorizer",
+   "Properties": {
+    "AuthorizerResultTtlInSeconds": 300,
+    "AuthorizerUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Fn::Select": [
+         1,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":apigateway:",
+       {
+        "Fn::Select": [
+         3,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":lambda:path/2015-03-31/functions/",
+       {
+        "Fn::ImportValue": "AuthorizerFunctionArnN1"
+       },
+       "/invocations"
+      ]
+     ]
+    },
+    "IdentitySource": "method.request.header.Authorization",
+    "Name": "TodaysDentalInsightsConsentFormDataN1ConsentFormDataAuthorizer740C37D7",
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    },
+    "Type": "REQUEST"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataAuthorizer/Resource"
+   }
+  },
+  "AuthorizerInvokePermission": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::ImportValue": "AuthorizerFunctionArnN1"
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "ConsentFormDataApi75362F8D"
+       },
+       "/authorizers/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/AuthorizerInvokePermission"
+   }
+  },
+  "ConsentFormDataFnServiceRoleDCE23B75": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "consent-form-data"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConsentFormData"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConsentFormDataN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataFn/ServiceRole/Resource"
+   }
+  },
+  "ConsentFormDataFnServiceRoleDefaultPolicyFC7C3876": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ConsentFormDataTable416994B0",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ConsentFormDataFnServiceRoleDefaultPolicyFC7C3876",
+    "Roles": [
+     {
+      "Ref": "ConsentFormDataFnServiceRoleDCE23B75"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ConsentFormDataFn5B668422": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "22bb2ce09bb78285bff1690855fc15ef5e6f14239ae7c905c0b4a8025c1c78e3.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "TABLE_NAME": {
+       "Ref": "ConsentFormDataTable416994B0"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "ConsentFormDataFnServiceRoleDCE23B75",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "consent-form-data"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConsentFormData"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConsentFormDataN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "ConsentFormDataFnServiceRoleDefaultPolicyFC7C3876",
+    "ConsentFormDataFnServiceRoleDCE23B75"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataFn/Resource",
+    "aws:asset:path": "asset.22bb2ce09bb78285bff1690855fc15ef5e6f14239ae7c905c0b4a8025c1c78e3",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ConsentFormDataFnErrorAlarmE6A1B9D5": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when consent-form-data Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ConsentFormDataFn5B668422"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConsentFormData"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConsentFormDataN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataFnErrorAlarm/Resource"
+   }
+  },
+  "ConsentFormDataFnThrottleAlarm8731179F": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when consent-form-data Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ConsentFormDataFn5B668422"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConsentFormData"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConsentFormDataN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataFnThrottleAlarm/Resource"
+   }
+  },
+  "ConsentFormDataFnDurationAlarmF571CE4A": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when consent-form-data Lambda p99 duration exceeds 24000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ConsentFormDataFn5B668422"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConsentFormData"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConsentFormDataN1"
+     }
+    ],
+    "Threshold": 24000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataFnDurationAlarm/Resource"
+   }
+  },
+  "ConsentFormDataTableThrottleAlarm40549B24": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "ConsentFormDataTable416994B0"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "ConsentFormDataTable416994B0"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConsentFormData"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConsentFormDataN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataTableThrottleAlarm/Resource"
+   }
+  },
+  "ConsentFormDataApiBasePathMapping": {
+   "Type": "AWS::ApiGateway::BasePathMapping",
+   "Properties": {
+    "BasePath": "consent-forms",
+    "DomainName": "apig.todaysdentalinsights.com",
+    "RestApiId": {
+     "Ref": "ConsentFormDataApi75362F8D"
+    },
+    "Stage": {
+     "Ref": "ConsentFormDataApiDeploymentStageprodE96BCBD0"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/ConsentFormDataApiBasePathMapping"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/11R21LDIBD9Ft8patQPSHXqU7UTfe9sYW1puRnATMzk311IM9P6tOcCu3ug4lV1z+9uoAsLIU8LrXZ8+IggToyk7SB7C8ZJEj9hp5E9f9kCRgZe7SFiBz0fGgyx9iq7F7AWwiUb2Qt67XqDBEm9YDRnX1pOgK661ApcQkC2xnhwMptnNLvnIRN+nTYg7p0NxfsvNfid8k6JurTqF9uy2hXLAzcQD2vwXtn9yBQYCuWmvKVunFaiz3RCI9NgdhL4kCVsjQpBOctWyYpIoGQga+bz+a11Eo+Bv5Uyuyw8bCEEjIHXuRDnyyROGEsfoV2SHURx4EOtoTUlQgbjePUu7yn6FFnpkd+0hMkT+THc/lRP/JG++hiUWrT0Mcogb6b6BwgEpfAHAgAA"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConsentFormDataN1/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "ConsentFormDataApiEndpointFA0350CC": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "ConsentFormDataApi75362F8D"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "ConsentFormDataApiDeploymentStageprodE96BCBD0"
+      },
+      "/"
+     ]
+    ]
+   }
+  },
+  "ConsentFormDataTableName": {
+   "Description": "Name of the Consent Form Data DynamoDB table",
+   "Value": {
+    "Ref": "ConsentFormDataTable416994B0"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsConsentFormDataN1-ConsentFormDataTableName"
+   }
+  },
+  "ConsentFormDataApiUrl": {
+   "Description": "Consent Form Data API Gateway URL",
+   "Value": "https://apig.todaysdentalinsights.com/consent-forms/",
+   "Export": {
+    "Name": "TodaysDentalInsightsConsentFormDataN1-ConsentFormDataApiUrl"
+   }
+  },
+  "ConsentFormDataApiId": {
+   "Description": "Consent Form Data API Gateway ID",
+   "Value": {
+    "Ref": "ConsentFormDataApi75362F8D"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsConsentFormDataN1-ConsentFormDataApiId"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/tdi3/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

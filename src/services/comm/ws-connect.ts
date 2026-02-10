@@ -15,6 +15,11 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
 export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyResult> => {
     const connectionId = event.requestContext.connectionId;
     const token = event.queryStringParameters?.token || event.queryStringParameters?.idToken;
+    const deviceIdRaw = event.queryStringParameters?.deviceId;
+    const clientRaw = event.queryStringParameters?.client;
+
+    const deviceId = typeof deviceIdRaw === 'string' ? deviceIdRaw.trim().slice(0, 128) : '';
+    const client = typeof clientRaw === 'string' ? clientRaw.trim().slice(0, 32) : '';
 
     if (!token) {
         console.error('Missing access token in query string.');
@@ -46,6 +51,8 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 connectionId: connectionId,
                 userID: userID,
                 email: payload.email,
+                ...(deviceId ? { deviceId } : {}),
+                ...(client ? { client } : {}),
                 // TTL (e.g., 2 hours from now) for automatic cleanup
                 ttl: Math.floor(Date.now() / 1000) + 7200, 
                 connectedAt: new Date().toISOString(),

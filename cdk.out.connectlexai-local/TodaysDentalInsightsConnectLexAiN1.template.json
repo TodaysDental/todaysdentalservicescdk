@@ -1,0 +1,4464 @@
+{
+ "Resources": {
+  "PublicAudioBucket263FAFC0": {
+   "Type": "AWS::S3::Bucket",
+   "Properties": {
+    "BucketEncryption": {
+     "ServerSideEncryptionConfiguration": [
+      {
+       "ServerSideEncryptionByDefault": {
+        "SSEAlgorithm": "AES256"
+       }
+      }
+     ]
+    },
+    "BucketName": "todaysdentalinsightsconnectlexain1-public-audio-851620242036",
+    "PublicAccessBlockConfiguration": {
+     "BlockPublicAcls": true,
+     "IgnorePublicAcls": true
+    },
+    "Tags": [
+     {
+      "Key": "aws-cdk:auto-delete-objects",
+      "Value": "true"
+     },
+     {
+      "Key": "aws-cdk:cr-owned:a08632f5",
+      "Value": "true"
+     },
+     {
+      "Key": "Bucket",
+      "Value": "public-audio"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/PublicAudioBucket/Resource"
+   }
+  },
+  "PublicAudioBucketPolicy49472E75": {
+   "Type": "AWS::S3::BucketPolicy",
+   "Properties": {
+    "Bucket": {
+     "Ref": "PublicAudioBucket263FAFC0"
+    },
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:*",
+       "Condition": {
+        "Bool": {
+         "aws:SecureTransport": "false"
+        }
+       },
+       "Effect": "Deny",
+       "Principal": {
+        "AWS": "*"
+       },
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "PublicAudioBucket263FAFC0",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "PublicAudioBucket263FAFC0",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "s3:GetObject",
+       "Effect": "Allow",
+       "Principal": {
+        "AWS": "*"
+       },
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "PublicAudioBucket263FAFC0",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      },
+      {
+       "Action": [
+        "s3:PutBucketPolicy",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:DeleteObject*"
+       ],
+       "Effect": "Allow",
+       "Principal": {
+        "AWS": {
+         "Fn::GetAtt": [
+          "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+          "Arn"
+         ]
+        }
+       },
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "PublicAudioBucket263FAFC0",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "PublicAudioBucket263FAFC0",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/PublicAudioBucket/Policy/Resource"
+   }
+  },
+  "PublicAudioBucketAutoDeleteObjectsCustomResource151FA6D1": {
+   "Type": "Custom::S3AutoDeleteObjects",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F",
+      "Arn"
+     ]
+    },
+    "BucketName": {
+     "Ref": "PublicAudioBucket263FAFC0"
+    }
+   },
+   "DependsOn": [
+    "PublicAudioBucketPolicy49472E75"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/PublicAudioBucket/AutoDeleteObjectsCustomResource/Default"
+   }
+  },
+  "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ]
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/Custom::S3AutoDeleteObjectsCustomResourceProvider/Role"
+   }
+  },
+  "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6.zip"
+    },
+    "Timeout": 900,
+    "MemorySize": 128,
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Description": {
+     "Fn::Join": [
+      "",
+      [
+       "Lambda function for auto-deleting objects in ",
+       {
+        "Ref": "PublicAudioBucket263FAFC0"
+       },
+       " S3 bucket."
+      ]
+     ]
+    }
+   },
+   "DependsOn": [
+    "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/Custom::S3AutoDeleteObjectsCustomResourceProvider/Handler",
+    "aws:asset:path": "asset.faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6",
+    "aws:asset:property": "Code"
+   }
+  },
+  "DeployPublicAudioMp3AwsCliLayer6D796404": {
+   "Type": "AWS::Lambda::LayerVersion",
+   "Properties": {
+    "Content": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "c49d356cac773d491c5f7ac148995a1181498a8e289429f8612a7f7e3814f535.zip"
+    },
+    "Description": "/opt/awscli/aws"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/DeployPublicAudioMp3/AwsCliLayer/Resource",
+    "aws:asset:path": "asset.c49d356cac773d491c5f7ac148995a1181498a8e289429f8612a7f7e3814f535.zip",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Content"
+   }
+  },
+  "DeployPublicAudioMp3CustomResource6D401238": {
+   "Type": "Custom::CDKBucketDeployment",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C81C01536",
+      "Arn"
+     ]
+    },
+    "SourceBucketNames": [
+     "cdk-tdi3-assets-851620242036-us-east-1"
+    ],
+    "SourceObjectKeys": [
+     "f4ae2e85ab7d154a8f6174b769cb80dc8071389c8c14186159c8dfaf9dda96bc.zip"
+    ],
+    "DestinationBucketName": {
+     "Ref": "PublicAudioBucket263FAFC0"
+    },
+    "WaitForDistributionInvalidation": true,
+    "Prune": false,
+    "SystemMetadata": {
+     "content-type": "audio/mpeg"
+    },
+    "OutputObjectKeys": true
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/DeployPublicAudioMp3/CustomResource/Default"
+   }
+  },
+  "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/ServiceRole/Resource"
+   }
+  },
+  "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy88902FDF": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":s3:::cdk-tdi3-assets-851620242036-us-east-1"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":s3:::cdk-tdi3-assets-851620242036-us-east-1/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:DeleteObject*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging",
+        "s3:Abort*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "PublicAudioBucket263FAFC0",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "PublicAudioBucket263FAFC0",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:DeleteObject*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging",
+        "s3:Abort*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ConnectPromptsBucket375524D4",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ConnectPromptsBucket375524D4",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy88902FDF",
+    "Roles": [
+     {
+      "Ref": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C81C01536": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "3423a042b818e31c1e34a19d6689ab2e5f9b70fcbe9e71df66f241b20a200bd9.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "AWS_CA_BUNDLE": "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+     }
+    },
+    "Handler": "index.handler",
+    "Layers": [
+     {
+      "Ref": "DeployPublicAudioMp3AwsCliLayer6D796404"
+     }
+    ],
+    "Role": {
+     "Fn::GetAtt": [
+      "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265",
+      "Arn"
+     ]
+    },
+    "Runtime": "python3.13",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ],
+    "Timeout": 900
+   },
+   "DependsOn": [
+    "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy88902FDF",
+    "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/Resource",
+    "aws:asset:path": "asset.3423a042b818e31c1e34a19d6689ab2e5f9b70fcbe9e71df66f241b20a200bd9",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Code"
+   }
+  },
+  "LexBedrockHookFnServiceRoleB3D26C11": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "lex-bedrock-hook"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/LexBedrockHookFn/ServiceRole/Resource"
+   }
+  },
+  "LexBedrockHookFnServiceRoleDefaultPolicyE72D5287": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttAiAgentTable08A482D1Arn213493BF"
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttAiAgentTable08A482D1Arn213493BF"
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttAiAgentSessionsTableFD40A5D8Arn3D9C5E3C"
+       }
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1",
+        "arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1/index/*"
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsAnalyticsN1:ExportsOutputFnGetAttTranscriptBufferTable6B540524Arn0067ECB2"
+       }
+      },
+      {
+       "Action": [
+        "bedrock:InvokeAgent",
+        "bedrock:InvokeModel"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "LexBedrockHookFnServiceRoleDefaultPolicyE72D5287",
+    "Roles": [
+     {
+      "Ref": "LexBedrockHookFnServiceRoleB3D26C11"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/LexBedrockHookFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "LexBedrockHookFn6C573C2E": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "24c13b44781afec7515a4e70f1dc593036236a08117d301bc0c38d5021de3dbc.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "AGENTS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputRefAiAgentTable08A482D1F1FC100B"
+      },
+      "SESSIONS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputRefAiAgentSessionsTableFD40A5D862A0DEC9"
+      },
+      "CALL_ANALYTICS_TABLE": "TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1",
+      "TRANSCRIPT_BUFFER_TABLE_NAME": {
+       "Fn::ImportValue": "TodaysDentalInsightsAnalyticsN1:ExportsOutputRefTranscriptBufferTable6B54052467630EA1"
+      },
+      "AI_PHONE_NUMBERS_JSON": "{\"+14439272295\":\"dentistingreenville\"}",
+      "DEFAULT_CLINIC_ID": "dentistingreenville",
+      "CONNECT_BEDROCK_TIMEOUT_MS": "6500",
+      "HOLD_MUSIC_BUCKET": "",
+      "ENABLE_THINKING_AUDIO": "true",
+      "THINKING_AUDIO_URL": {
+       "Fn::Join": [
+        "",
+        [
+         "https://",
+         {
+          "Ref": "PublicAudioBucket263FAFC0"
+         },
+         ".s3.us-east-1.amazonaws.com/Computer-keyboard-sound-short.mp3"
+        ]
+       ]
+      },
+      "THINKING_AUDIO_MODE": "verbal",
+      "TRANSCRIPTION_CONFIDENCE_THRESHOLD": "0.6"
+     }
+    },
+    "FunctionName": "TodaysDentalInsightsConnectLexAiN1-LexBedrockHook",
+    "Handler": "index.handler",
+    "MemorySize": 1024,
+    "Role": {
+     "Fn::GetAtt": [
+      "LexBedrockHookFnServiceRoleB3D26C11",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "lex-bedrock-hook"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "LexBedrockHookFnServiceRoleDefaultPolicyE72D5287",
+    "LexBedrockHookFnServiceRoleB3D26C11"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/LexBedrockHookFn/Resource",
+    "aws:asset:path": "asset.24c13b44781afec7515a4e70f1dc593036236a08117d301bc0c38d5021de3dbc",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "LexBedrockHookFnLogRetention82723F6A": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "LexBedrockHookFn6C573C2E"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/LexBedrockHookFn/LogRetention/Resource"
+   }
+  },
+  "LexBedrockHookFnConnectInvoke2C837588": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "LexBedrockHookFn6C573C2E",
+      "Arn"
+     ]
+    },
+    "Principal": "connect.amazonaws.com",
+    "SourceArn": "arn:aws:connect:us-east-1:851620242036:instance/0626aa86-d377-44c8-9311-84e4f230cc72"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/LexBedrockHookFn/ConnectInvoke"
+   }
+  },
+  "LexBedrockHookFnLexInvoke32408B88": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "LexBedrockHookFn6C573C2E",
+      "Arn"
+     ]
+    },
+    "Principal": "lexv2.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:lex:us-east-1:851620242036:bot-alias/",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotV3",
+         "Id"
+        ]
+       },
+       "/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/LexBedrockHookFn/LexInvoke"
+   }
+  },
+  "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/ServiceRole/Resource"
+   }
+  },
+  "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRoleDefaultPolicyADDA7DEB": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "logs:PutRetentionPolicy",
+        "logs:DeleteRetentionPolicy"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRoleDefaultPolicyADDA7DEB",
+    "Roles": [
+     {
+      "Ref": "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Handler": "index.handler",
+    "Runtime": "nodejs22.x",
+    "Timeout": 900,
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "2819175352ad1ce0dae768e83fc328fb70fb5f10b4a8ff0ccbcb791f02b0716d.zip"
+    },
+    "Role": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB",
+      "Arn"
+     ]
+    },
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRoleDefaultPolicyADDA7DEB",
+    "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/Resource",
+    "aws:asset:path": "asset.2819175352ad1ce0dae768e83fc328fb70fb5f10b4a8ff0ccbcb791f02b0716d",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Code"
+   }
+  },
+  "AsyncResultsTable92D0F978": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "requestId",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "KeySchema": [
+     {
+      "AttributeName": "requestId",
+      "KeyType": "HASH"
+     }
+    ],
+    "TableName": "TodaysDentalInsightsConnectLexAiN1-AsyncResults",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Resource",
+      "Value": "async-results-table"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ],
+    "TimeToLiveSpecification": {
+     "AttributeName": "ttl",
+     "Enabled": true
+    }
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/AsyncResultsTable/Resource"
+   }
+  },
+  "AsyncBedrockLambdaServiceRole7EC31013": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "async-bedrock"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/AsyncBedrockLambda/ServiceRole/Resource"
+   }
+  },
+  "AsyncBedrockLambdaServiceRoleDefaultPolicy797A3850": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "AsyncResultsTable92D0F978",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttAiAgentTable08A482D1Arn213493BF"
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttAiAgentTable08A482D1Arn213493BF"
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttAiAgentSessionsTableFD40A5D8Arn3D9C5E3C"
+       }
+      },
+      {
+       "Action": [
+        "bedrock:InvokeAgent",
+        "bedrock:InvokeModel"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":lambda:us-east-1:851620242036:function:TodaysDentalInsightsConnectLexAiN1-AsyncBedrock"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":lambda:us-east-1:851620242036:function:TodaysDentalInsightsConnectLexAiN1-AsyncBedrock:*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "AsyncBedrockLambdaServiceRoleDefaultPolicy797A3850",
+    "Roles": [
+     {
+      "Ref": "AsyncBedrockLambdaServiceRole7EC31013"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/AsyncBedrockLambda/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "AsyncBedrockLambda37463299": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "77ee37d8e916f6330a7e3c9110eb85905ee4c0e73bb97b060e11789b63c85a34.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "ASYNC_RESULTS_TABLE": {
+       "Ref": "AsyncResultsTable92D0F978"
+      },
+      "AGENTS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputRefAiAgentTable08A482D1F1FC100B"
+      },
+      "SESSIONS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputRefAiAgentSessionsTableFD40A5D862A0DEC9"
+      },
+      "AI_PHONE_NUMBERS_JSON": "{\"+14439272295\":\"dentistingreenville\"}",
+      "DEFAULT_CLINIC_ID": "dentistingreenville"
+     }
+    },
+    "FunctionName": "TodaysDentalInsightsConnectLexAiN1-AsyncBedrock",
+    "Handler": "index.handler",
+    "MemorySize": 1024,
+    "Role": {
+     "Fn::GetAtt": [
+      "AsyncBedrockLambdaServiceRole7EC31013",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "async-bedrock"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ],
+    "Timeout": 60
+   },
+   "DependsOn": [
+    "AsyncBedrockLambdaServiceRoleDefaultPolicy797A3850",
+    "AsyncBedrockLambdaServiceRole7EC31013"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/AsyncBedrockLambda/Resource",
+    "aws:asset:path": "asset.77ee37d8e916f6330a7e3c9110eb85905ee4c0e73bb97b060e11789b63c85a34",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "AsyncBedrockLambdaLogRetention6D700F55": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "AsyncBedrockLambda37463299"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/AsyncBedrockLambda/LogRetention/Resource"
+   }
+  },
+  "AsyncBedrockLambdaConnectInvokeF2348BFB": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AsyncBedrockLambda37463299",
+      "Arn"
+     ]
+    },
+    "Principal": "connect.amazonaws.com",
+    "SourceArn": "arn:aws:connect:us-east-1:851620242036:instance/0626aa86-d377-44c8-9311-84e4f230cc72"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/AsyncBedrockLambda/ConnectInvoke"
+   }
+  },
+  "LexTranscriptCaptureFnServiceRoleAFFAF41F": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "lex-transcript-capture"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/LexTranscriptCaptureFn/ServiceRole/Resource"
+   }
+  },
+  "LexTranscriptCaptureFnD2E29745": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "94c559b41981d115f64326c1f278175fb5d6cb54ed0a45a1e8aacceb3acc719b.zip"
+    },
+    "FunctionName": "TodaysDentalInsightsConnectLexAiN1-LexTranscriptCapture",
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "LexTranscriptCaptureFnServiceRoleAFFAF41F",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "lex-transcript-capture"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ],
+    "Timeout": 10
+   },
+   "DependsOn": [
+    "LexTranscriptCaptureFnServiceRoleAFFAF41F"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/LexTranscriptCaptureFn/Resource",
+    "aws:asset:path": "asset.94c559b41981d115f64326c1f278175fb5d6cb54ed0a45a1e8aacceb3acc719b",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "LexTranscriptCaptureFnLogRetention9C0AF25D": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "LexTranscriptCaptureFnD2E29745"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/LexTranscriptCaptureFn/LogRetention/Resource"
+   }
+  },
+  "LexTranscriptCaptureFnLexInvokeE20D226E": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "LexTranscriptCaptureFnD2E29745",
+      "Arn"
+     ]
+    },
+    "Principal": "lexv2.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:lex:us-east-1:851620242036:bot-alias/",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotV3",
+         "Id"
+        ]
+       },
+       "/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/LexTranscriptCaptureFn/LexInvoke"
+   }
+  },
+  "ConnectFinalizerFnServiceRole516EFD9D": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "connect-finalizer"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/ConnectFinalizerFn/ServiceRole/Resource"
+   }
+  },
+  "ConnectFinalizerFnServiceRoleDefaultPolicyD40BFD32": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "dynamodb:GetItem",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttAiAgentSessionsTableFD40A5D8Arn3D9C5E3C"
+       }
+      },
+      {
+       "Action": [
+        "dynamodb:Query",
+        "dynamodb:UpdateItem"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1",
+        "arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1/index/*"
+       ]
+      },
+      {
+       "Action": "dynamodb:UpdateItem",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsAnalyticsN1:ExportsOutputFnGetAttTranscriptBufferTable6B540524Arn0067ECB2"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ConnectFinalizerFnServiceRoleDefaultPolicyD40BFD32",
+    "Roles": [
+     {
+      "Ref": "ConnectFinalizerFnServiceRole516EFD9D"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/ConnectFinalizerFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ConnectFinalizerFn6AA80A36": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "a64bbf61f31c42d7d17eed0725ef19762e9cfbdd5ca0d6ea505916e625628c84.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "SESSIONS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputRefAiAgentSessionsTableFD40A5D862A0DEC9"
+      },
+      "CALL_ANALYTICS_TABLE": "TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1",
+      "TRANSCRIPT_BUFFER_TABLE_NAME": {
+       "Fn::ImportValue": "TodaysDentalInsightsAnalyticsN1:ExportsOutputRefTranscriptBufferTable6B54052467630EA1"
+      }
+     }
+    },
+    "FunctionName": "TodaysDentalInsightsConnectLexAiN1-ConnectFinalizer",
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "ConnectFinalizerFnServiceRole516EFD9D",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "connect-finalizer"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ],
+    "Timeout": 10
+   },
+   "DependsOn": [
+    "ConnectFinalizerFnServiceRoleDefaultPolicyD40BFD32",
+    "ConnectFinalizerFnServiceRole516EFD9D"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/ConnectFinalizerFn/Resource",
+    "aws:asset:path": "asset.a64bbf61f31c42d7d17eed0725ef19762e9cfbdd5ca0d6ea505916e625628c84",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ConnectFinalizerFnLogRetentionFD8E9847": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "ConnectFinalizerFn6AA80A36"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/ConnectFinalizerFn/LogRetention/Resource"
+   }
+  },
+  "ConnectFinalizerFnConnectInvoke37202628": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ConnectFinalizerFn6AA80A36",
+      "Arn"
+     ]
+    },
+    "Principal": "connect.amazonaws.com",
+    "SourceArn": "arn:aws:connect:us-east-1:851620242036:instance/0626aa86-d377-44c8-9311-84e4f230cc72"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/ConnectFinalizerFn/ConnectInvoke"
+   }
+  },
+  "LexBotRole0FBFF464": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lexv2.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/AmazonLexFullAccess"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/LexBotRole/Resource"
+   }
+  },
+  "DentalAiBotV3": {
+   "Type": "AWS::Lex::Bot",
+   "Properties": {
+    "AutoBuildBotLocales": true,
+    "BotLocales": [
+     {
+      "Intents": [
+       {
+        "Description": "General intent that routes all caller input to Bedrock",
+        "FulfillmentCodeHook": {
+         "Enabled": true,
+         "PostFulfillmentStatusSpecification": {
+          "FailureNextStep": {
+           "DialogAction": {
+            "Type": "ElicitIntent"
+           }
+          },
+          "SuccessNextStep": {
+           "DialogAction": {
+            "Type": "ElicitIntent"
+           }
+          },
+          "TimeoutNextStep": {
+           "DialogAction": {
+            "Type": "ElicitIntent"
+           }
+          }
+         }
+        },
+        "IntentClosingSetting": {
+         "IsActive": false
+        },
+        "Name": "GeneralIntent",
+        "SampleUtterances": [
+         {
+          "Utterance": "hello"
+         },
+         {
+          "Utterance": "hi"
+         },
+         {
+          "Utterance": "i need help"
+         },
+         {
+          "Utterance": "appointment"
+         },
+         {
+          "Utterance": "schedule an appointment"
+         },
+         {
+          "Utterance": "i have a question"
+         }
+        ]
+       },
+       {
+        "Description": "Catch-all intent that routes to Bedrock",
+        "FulfillmentCodeHook": {
+         "Enabled": true,
+         "PostFulfillmentStatusSpecification": {
+          "FailureNextStep": {
+           "DialogAction": {
+            "Type": "ElicitIntent"
+           }
+          },
+          "SuccessNextStep": {
+           "DialogAction": {
+            "Type": "ElicitIntent"
+           }
+          },
+          "TimeoutNextStep": {
+           "DialogAction": {
+            "Type": "ElicitIntent"
+           }
+          }
+         }
+        },
+        "IntentClosingSetting": {
+         "IsActive": false
+        },
+        "Name": "FallbackIntent",
+        "ParentIntentSignature": "AMAZON.FallbackIntent"
+       }
+      ],
+      "LocaleId": "en_US",
+      "NluConfidenceThreshold": 0.4,
+      "VoiceSettings": {
+       "Engine": "neural",
+       "VoiceId": "Joanna"
+      }
+     }
+    ],
+    "DataPrivacy": {
+     "ChildDirected": false
+    },
+    "Description": "AI voice assistant for dental clinic after-hours calls",
+    "IdleSessionTTLInSeconds": 300,
+    "Name": "TodaysDentalInsightsConnectLexAiN1-DentalAIv3",
+    "RoleArn": {
+     "Fn::GetAtt": [
+      "LexBotRole0FBFF464",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/DentalAiBotV3"
+   }
+  },
+  "DentalAiBotVersion": {
+   "Type": "AWS::Lex::BotVersion",
+   "Properties": {
+    "BotId": {
+     "Fn::GetAtt": [
+      "DentalAiBotV3",
+      "Id"
+     ]
+    },
+    "BotVersionLocaleSpecification": [
+     {
+      "BotVersionLocaleDetails": {
+       "SourceBotVersion": "DRAFT"
+      },
+      "LocaleId": "en_US"
+     }
+    ]
+   },
+   "DependsOn": [
+    "DentalAiBotV3"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/DentalAiBotVersion"
+   }
+  },
+  "DentalAiBotAlias": {
+   "Type": "AWS::Lex::BotAlias",
+   "Properties": {
+    "BotAliasLocaleSettings": [
+     {
+      "BotAliasLocaleSetting": {
+       "CodeHookSpecification": {
+        "LambdaCodeHook": {
+         "CodeHookInterfaceVersion": "1.0",
+         "LambdaArn": {
+          "Fn::GetAtt": [
+           "LexTranscriptCaptureFnD2E29745",
+           "Arn"
+          ]
+         }
+        }
+       },
+       "Enabled": true
+      },
+      "LocaleId": "en_US"
+     }
+    ],
+    "BotAliasName": "prod",
+    "BotId": {
+     "Fn::GetAtt": [
+      "DentalAiBotV3",
+      "Id"
+     ]
+    },
+    "BotVersion": {
+     "Fn::GetAtt": [
+      "DentalAiBotVersion",
+      "BotVersion"
+     ]
+    }
+   },
+   "DependsOn": [
+    "DentalAiBotVersion"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/DentalAiBotAlias"
+   }
+  },
+  "ConnectLexIntegration8F6C281F": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"Connect\",\"action\":\"associateBot\",\"parameters\":{\"InstanceId\":\"0626aa86-d377-44c8-9311-84e4f230cc72\",\"LexV2Bot\":{\"AliasArn\":\"arn:aws:lex:us-east-1:851620242036:bot-alias/",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotV3",
+         "Id"
+        ]
+       },
+       "/",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotAlias",
+         "BotAliasId"
+        ]
+       },
+       "\"}},\"physicalResourceId\":{\"id\":\"lex-integration-",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotV3",
+         "Id"
+        ]
+       },
+       "\"}}"
+      ]
+     ]
+    },
+    "Update": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"Connect\",\"action\":\"associateBot\",\"parameters\":{\"InstanceId\":\"0626aa86-d377-44c8-9311-84e4f230cc72\",\"LexV2Bot\":{\"AliasArn\":\"arn:aws:lex:us-east-1:851620242036:bot-alias/",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotV3",
+         "Id"
+        ]
+       },
+       "/",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotAlias",
+         "BotAliasId"
+        ]
+       },
+       "\"}},\"physicalResourceId\":{\"id\":\"lex-integration-",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotV3",
+         "Id"
+        ]
+       },
+       "\"}}"
+      ]
+     ]
+    },
+    "Delete": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"Connect\",\"action\":\"disassociateBot\",\"parameters\":{\"InstanceId\":\"0626aa86-d377-44c8-9311-84e4f230cc72\",\"LexV2Bot\":{\"AliasArn\":\"arn:aws:lex:us-east-1:851620242036:bot-alias/",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotV3",
+         "Id"
+        ]
+       },
+       "/",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotAlias",
+         "BotAliasId"
+        ]
+       },
+       "\"}},\"ignoreErrorCodesMatching\":\".*NotFound.*|.*ResourceNotFound.*\"}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "ConnectLexIntegrationCustomResourcePolicy90990747",
+    "DentalAiBotAlias"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/ConnectLexIntegration/Resource/Default"
+   }
+  },
+  "ConnectLexIntegrationCustomResourcePolicy90990747": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "connect:AssociateBot",
+        "connect:DisassociateBot",
+        "connect:ListBots"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "lex:DescribeBot",
+        "lex:DescribeBotAlias",
+        "lex:CreateResourcePolicy",
+        "lex:DeleteResourcePolicy",
+        "lex:UpdateResourcePolicy",
+        "lex:DescribeResourcePolicy"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:lex:us-east-1:851620242036:bot/",
+           {
+            "Fn::GetAtt": [
+             "DentalAiBotV3",
+             "Id"
+            ]
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:lex:us-east-1:851620242036:bot-alias/",
+           {
+            "Fn::GetAtt": [
+             "DentalAiBotV3",
+             "Id"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ConnectLexIntegrationCustomResourcePolicy90990747",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "DependsOn": [
+    "DentalAiBotAlias"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/ConnectLexIntegration/CustomResourcePolicy/Resource"
+   }
+  },
+  "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/AWS679f53fac002430cb0da5b7982bd2287/ServiceRole/Resource"
+   }
+  },
+  "AWS679f53fac002430cb0da5b7982bd22872D164C4C": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "8d5e97812d0036272ba1fd5bb8772ff51f4712e58c75507e4a0db242bf680f1d.zip"
+    },
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ],
+    "Timeout": 120
+   },
+   "DependsOn": [
+    "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/AWS679f53fac002430cb0da5b7982bd2287/Resource",
+    "aws:asset:path": "asset.8d5e97812d0036272ba1fd5bb8772ff51f4712e58c75507e4a0db242bf680f1d",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ConnectFinalizerIntegration01D6F55E": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"Connect\",\"action\":\"associateLambdaFunction\",\"parameters\":{\"InstanceId\":\"0626aa86-d377-44c8-9311-84e4f230cc72\",\"FunctionArn\":\"",
+       {
+        "Fn::GetAtt": [
+         "ConnectFinalizerFn6AA80A36",
+         "Arn"
+        ]
+       },
+       "\"},\"physicalResourceId\":{\"id\":\"TodaysDentalInsightsConnectLexAiN1-finalizer-integration\"}}"
+      ]
+     ]
+    },
+    "Delete": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"Connect\",\"action\":\"disassociateLambdaFunction\",\"parameters\":{\"InstanceId\":\"0626aa86-d377-44c8-9311-84e4f230cc72\",\"FunctionArn\":\"",
+       {
+        "Fn::GetAtt": [
+         "ConnectFinalizerFn6AA80A36",
+         "Arn"
+        ]
+       },
+       "\"},\"ignoreErrorCodesMatching\":\".*NotFound.*|.*ResourceNotFound.*\"}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "ConnectFinalizerFnConnectInvoke37202628",
+    "ConnectFinalizerIntegrationCustomResourcePolicy7BB3F2CD"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/ConnectFinalizerIntegration/Resource/Default"
+   }
+  },
+  "ConnectFinalizerIntegrationCustomResourcePolicy7BB3F2CD": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "connect:AssociateLambdaFunction",
+        "connect:DisassociateLambdaFunction",
+        "connect:ListLambdaFunctions"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "lambda:GetFunction",
+        "lambda:GetPolicy",
+        "lambda:AddPermission",
+        "lambda:RemovePermission"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ConnectFinalizerFn6AA80A36",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::GetAtt": [
+          "LexBedrockHookFn6C573C2E",
+          "Arn"
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ConnectFinalizerIntegrationCustomResourcePolicy7BB3F2CD",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "DependsOn": [
+    "ConnectFinalizerFnConnectInvoke37202628"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/ConnectFinalizerIntegration/CustomResourcePolicy/Resource"
+   }
+  },
+  "ConnectLexHookIntegration82325C3F": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"Connect\",\"action\":\"associateLambdaFunction\",\"parameters\":{\"InstanceId\":\"0626aa86-d377-44c8-9311-84e4f230cc72\",\"FunctionArn\":\"",
+       {
+        "Fn::GetAtt": [
+         "LexBedrockHookFn6C573C2E",
+         "Arn"
+        ]
+       },
+       "\"},\"physicalResourceId\":{\"id\":\"TodaysDentalInsightsConnectLexAiN1-lexhook-integration\"}}"
+      ]
+     ]
+    },
+    "Delete": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"Connect\",\"action\":\"disassociateLambdaFunction\",\"parameters\":{\"InstanceId\":\"0626aa86-d377-44c8-9311-84e4f230cc72\",\"FunctionArn\":\"",
+       {
+        "Fn::GetAtt": [
+         "LexBedrockHookFn6C573C2E",
+         "Arn"
+        ]
+       },
+       "\"},\"ignoreErrorCodesMatching\":\".*NotFound.*|.*ResourceNotFound.*\"}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "ConnectFinalizerIntegrationCustomResourcePolicy7BB3F2CD",
+    "ConnectFinalizerIntegration01D6F55E",
+    "ConnectLexHookIntegrationCustomResourcePolicyD466AED8",
+    "LexBedrockHookFnConnectInvoke2C837588"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/ConnectLexHookIntegration/Resource/Default"
+   }
+  },
+  "ConnectLexHookIntegrationCustomResourcePolicyD466AED8": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "connect:AssociateLambdaFunction",
+        "connect:DisassociateLambdaFunction",
+        "connect:ListLambdaFunctions"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "lambda:GetFunction",
+        "lambda:GetPolicy",
+        "lambda:AddPermission",
+        "lambda:RemovePermission"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ConnectFinalizerFn6AA80A36",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::GetAtt": [
+          "LexBedrockHookFn6C573C2E",
+          "Arn"
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ConnectLexHookIntegrationCustomResourcePolicyD466AED8",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "DependsOn": [
+    "ConnectFinalizerIntegrationCustomResourcePolicy7BB3F2CD",
+    "ConnectFinalizerIntegration01D6F55E",
+    "LexBedrockHookFnConnectInvoke2C837588"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/ConnectLexHookIntegration/CustomResourcePolicy/Resource"
+   }
+  },
+  "AsyncLambdaIntegration1818B300": {
+   "Type": "Custom::AWS",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "AWS679f53fac002430cb0da5b7982bd22872D164C4C",
+      "Arn"
+     ]
+    },
+    "Create": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"Connect\",\"action\":\"associateLambdaFunction\",\"parameters\":{\"InstanceId\":\"0626aa86-d377-44c8-9311-84e4f230cc72\",\"FunctionArn\":\"",
+       {
+        "Fn::GetAtt": [
+         "AsyncBedrockLambda37463299",
+         "Arn"
+        ]
+       },
+       "\"},\"physicalResourceId\":{\"id\":\"TodaysDentalInsightsConnectLexAiN1-async-integration\"}}"
+      ]
+     ]
+    },
+    "Delete": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"service\":\"Connect\",\"action\":\"disassociateLambdaFunction\",\"parameters\":{\"InstanceId\":\"0626aa86-d377-44c8-9311-84e4f230cc72\",\"FunctionArn\":\"",
+       {
+        "Fn::GetAtt": [
+         "AsyncBedrockLambda37463299",
+         "Arn"
+        ]
+       },
+       "\"},\"ignoreErrorCodesMatching\":\".*NotFound.*|.*ResourceNotFound.*\"}"
+      ]
+     ]
+    },
+    "InstallLatestAwsSdk": true
+   },
+   "DependsOn": [
+    "AsyncBedrockLambdaConnectInvokeF2348BFB",
+    "AsyncLambdaIntegrationCustomResourcePolicy26AF62E6",
+    "ConnectLexHookIntegrationCustomResourcePolicyD466AED8",
+    "ConnectLexHookIntegration82325C3F"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/AsyncLambdaIntegration/Resource/Default"
+   }
+  },
+  "AsyncLambdaIntegrationCustomResourcePolicy26AF62E6": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "connect:AssociateLambdaFunction",
+        "connect:DisassociateLambdaFunction",
+        "connect:ListLambdaFunctions"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "lambda:GetFunction",
+        "lambda:GetPolicy",
+        "lambda:AddPermission",
+        "lambda:RemovePermission"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "AsyncBedrockLambda37463299",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "AsyncLambdaIntegrationCustomResourcePolicy26AF62E6",
+    "Roles": [
+     {
+      "Ref": "AWS679f53fac002430cb0da5b7982bd2287ServiceRoleC1EA0FF2"
+     }
+    ]
+   },
+   "DependsOn": [
+    "AsyncBedrockLambdaConnectInvokeF2348BFB",
+    "ConnectLexHookIntegrationCustomResourcePolicyD466AED8",
+    "ConnectLexHookIntegration82325C3F"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/AsyncLambdaIntegration/CustomResourcePolicy/Resource"
+   }
+  },
+  "ConnectPromptsBucket375524D4": {
+   "Type": "AWS::S3::Bucket",
+   "Properties": {
+    "BucketEncryption": {
+     "ServerSideEncryptionConfiguration": [
+      {
+       "ServerSideEncryptionByDefault": {
+        "SSEAlgorithm": "AES256"
+       }
+      }
+     ]
+    },
+    "BucketName": "todaysdentalinsightsconnectlexain1-connect-prompts-851620242036",
+    "PublicAccessBlockConfiguration": {
+     "BlockPublicAcls": true,
+     "BlockPublicPolicy": true,
+     "IgnorePublicAcls": true,
+     "RestrictPublicBuckets": true
+    },
+    "Tags": [
+     {
+      "Key": "aws-cdk:auto-delete-objects",
+      "Value": "true"
+     },
+     {
+      "Key": "aws-cdk:cr-owned:b7ea1e61",
+      "Value": "true"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/ConnectPromptsBucket/Resource"
+   }
+  },
+  "ConnectPromptsBucketPolicy5BD542C1": {
+   "Type": "AWS::S3::BucketPolicy",
+   "Properties": {
+    "Bucket": {
+     "Ref": "ConnectPromptsBucket375524D4"
+    },
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "s3:PutBucketPolicy",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:DeleteObject*"
+       ],
+       "Effect": "Allow",
+       "Principal": {
+        "AWS": {
+         "Fn::GetAtt": [
+          "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+          "Arn"
+         ]
+        }
+       },
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ConnectPromptsBucket375524D4",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ConnectPromptsBucket375524D4",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/ConnectPromptsBucket/Policy/Resource"
+   }
+  },
+  "ConnectPromptsBucketAutoDeleteObjectsCustomResourceB1633457": {
+   "Type": "Custom::S3AutoDeleteObjects",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F",
+      "Arn"
+     ]
+    },
+    "BucketName": {
+     "Ref": "ConnectPromptsBucket375524D4"
+    }
+   },
+   "DependsOn": [
+    "ConnectPromptsBucketPolicy5BD542C1"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/ConnectPromptsBucket/AutoDeleteObjectsCustomResource/Default"
+   }
+  },
+  "DeployKeyboardSoundAwsCliLayerF9653488": {
+   "Type": "AWS::Lambda::LayerVersion",
+   "Properties": {
+    "Content": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "c49d356cac773d491c5f7ac148995a1181498a8e289429f8612a7f7e3814f535.zip"
+    },
+    "Description": "/opt/awscli/aws"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/DeployKeyboardSound/AwsCliLayer/Resource",
+    "aws:asset:path": "asset.c49d356cac773d491c5f7ac148995a1181498a8e289429f8612a7f7e3814f535.zip",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Content"
+   }
+  },
+  "DeployKeyboardSoundCustomResource32F92273": {
+   "Type": "Custom::CDKBucketDeployment",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C81C01536",
+      "Arn"
+     ]
+    },
+    "SourceBucketNames": [
+     "cdk-tdi3-assets-851620242036-us-east-1"
+    ],
+    "SourceObjectKeys": [
+     "b4484d1c6c13044738290d37c79eed8f055f4f171869b4507c10838bb7ca8642.zip"
+    ],
+    "DestinationBucketName": {
+     "Ref": "ConnectPromptsBucket375524D4"
+    },
+    "WaitForDistributionInvalidation": true,
+    "Prune": false,
+    "OutputObjectKeys": true
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/DeployKeyboardSound/CustomResource/Default"
+   }
+  },
+  "CreateKeyboardPromptFnServiceRole6C5D8B7A": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "create-keyboard-prompt"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateKeyboardPromptFn/ServiceRole/Resource"
+   }
+  },
+  "CreateKeyboardPromptFnServiceRoleDefaultPolicy109BC9D3": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "connect:CreatePrompt",
+        "connect:UpdatePrompt",
+        "connect:DeletePrompt",
+        "connect:DescribePrompt",
+        "connect:ListPrompts"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:GetBucketLocation"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ConnectPromptsBucket375524D4",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ConnectPromptsBucket375524D4",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "CreateKeyboardPromptFnServiceRoleDefaultPolicy109BC9D3",
+    "Roles": [
+     {
+      "Ref": "CreateKeyboardPromptFnServiceRole6C5D8B7A"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateKeyboardPromptFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "CreateKeyboardPromptFnB25E5324": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "a31a6b8ab7e512e23c0c0d52c6dde1808e494250ba1fa59d04f262875d1a3666.zip"
+    },
+    "FunctionName": "TodaysDentalInsightsConnectLexAiN1-CreateKeyboardPrompt",
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "CreateKeyboardPromptFnServiceRole6C5D8B7A",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "create-keyboard-prompt"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "CreateKeyboardPromptFnServiceRoleDefaultPolicy109BC9D3",
+    "CreateKeyboardPromptFnServiceRole6C5D8B7A"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateKeyboardPromptFn/Resource",
+    "aws:asset:path": "asset.a31a6b8ab7e512e23c0c0d52c6dde1808e494250ba1fa59d04f262875d1a3666",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "CreateKeyboardPromptFnLogRetention6C628D92": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "CreateKeyboardPromptFnB25E5324"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateKeyboardPromptFn/LogRetention/Resource"
+   }
+  },
+  "KeyboardPromptProviderframeworkonEventServiceRoleB3B7D428": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/KeyboardPromptProvider/framework-onEvent/ServiceRole/Resource"
+   }
+  },
+  "KeyboardPromptProviderframeworkonEventServiceRoleDefaultPolicyA55E4ECC": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "CreateKeyboardPromptFnB25E5324",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "CreateKeyboardPromptFnB25E5324",
+             "Arn"
+            ]
+           },
+           ":*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "lambda:GetFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "CreateKeyboardPromptFnB25E5324",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "KeyboardPromptProviderframeworkonEventServiceRoleDefaultPolicyA55E4ECC",
+    "Roles": [
+     {
+      "Ref": "KeyboardPromptProviderframeworkonEventServiceRoleB3B7D428"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/KeyboardPromptProvider/framework-onEvent/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "KeyboardPromptProviderframeworkonEvent06B1A276": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "bdc104ed9cab1b5b6421713c8155f0b753380595356f710400609664d3635eca.zip"
+    },
+    "Description": "AWS CDK resource provider framework - onEvent (TodaysDentalInsightsConnectLexAiN1/KeyboardPromptProvider)",
+    "Environment": {
+     "Variables": {
+      "USER_ON_EVENT_FUNCTION_ARN": {
+       "Fn::GetAtt": [
+        "CreateKeyboardPromptFnB25E5324",
+        "Arn"
+       ]
+      }
+     }
+    },
+    "Handler": "framework.onEvent",
+    "LoggingConfig": {
+     "ApplicationLogLevel": "FATAL",
+     "LogFormat": "JSON"
+    },
+    "Role": {
+     "Fn::GetAtt": [
+      "KeyboardPromptProviderframeworkonEventServiceRoleB3B7D428",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ],
+    "Timeout": 900
+   },
+   "DependsOn": [
+    "KeyboardPromptProviderframeworkonEventServiceRoleDefaultPolicyA55E4ECC",
+    "KeyboardPromptProviderframeworkonEventServiceRoleB3B7D428"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/KeyboardPromptProvider/framework-onEvent/Resource",
+    "aws:asset:path": "asset.bdc104ed9cab1b5b6421713c8155f0b753380595356f710400609664d3635eca",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Code"
+   }
+  },
+  "KeyboardPromptProviderframeworkonEventLogRetentionAC948CCA": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "KeyboardPromptProviderframeworkonEvent06B1A276"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/KeyboardPromptProvider/framework-onEvent/LogRetention/Resource"
+   }
+  },
+  "KeyboardSoundPromptV2": {
+   "Type": "AWS::CloudFormation::CustomResource",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "KeyboardPromptProviderframeworkonEvent06B1A276",
+      "Arn"
+     ]
+    },
+    "InstanceId": "0626aa86-d377-44c8-9311-84e4f230cc72",
+    "PromptName": "TodaysDentalInsightsConnectLexAiN1-KeyboardTyping",
+    "Description": "Keyboard typing sound for AI thinking indicator",
+    "S3Bucket": {
+     "Ref": "ConnectPromptsBucket375524D4"
+    },
+    "S3Key": "Computer-keyboard-short.wav",
+    "UpdateTrigger": "ce3ab80886adcd31"
+   },
+   "DependsOn": [
+    "DeployKeyboardSoundAwsCliLayerF9653488",
+    "DeployKeyboardSoundCustomResource32F92273"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/KeyboardSoundPromptV2/Default"
+   }
+  },
+  "DisconnectFlow": {
+   "Type": "AWS::Connect::ContactFlow",
+   "Properties": {
+    "Content": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"Version\":\"2019-10-30\",\"StartAction\":\"invoke-lambda-action\",\"Metadata\":{\"entryPointPosition\":{\"x\":40,\"y\":40},\"ActionMetadata\":{\"invoke-lambda-action\":{\"position\":{\"x\":160,\"y\":40}},\"disconnect-action\":{\"position\":{\"x\":400,\"y\":40}}}},\"Actions\":[{\"Identifier\":\"invoke-lambda-action\",\"Type\":\"InvokeLambdaFunction\",\"Parameters\":{\"LambdaFunctionARN\":\"",
+       {
+        "Fn::GetAtt": [
+         "ConnectFinalizerFn6AA80A36",
+         "Arn"
+        ]
+       },
+       "\",\"InvocationTimeLimitSeconds\":\"8\"},\"Transitions\":{\"NextAction\":\"disconnect-action\",\"Errors\":[{\"NextAction\":\"disconnect-action\",\"ErrorType\":\"NoMatchingError\"}]}},{\"Identifier\":\"disconnect-action\",\"Type\":\"DisconnectParticipant\",\"Parameters\":{},\"Transitions\":{}}]}"
+      ]
+     ]
+    },
+    "Description": "Finalizes AI call analytics on disconnect",
+    "InstanceArn": "arn:aws:connect:us-east-1:851620242036:instance/0626aa86-d377-44c8-9311-84e4f230cc72",
+    "Name": "TodaysDentalInsightsConnectLexAiN1-DisconnectFlow",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ],
+    "Type": "CONTACT_FLOW"
+   },
+   "DependsOn": [
+    "ConnectFinalizerIntegrationCustomResourcePolicy7BB3F2CD",
+    "ConnectFinalizerIntegration01D6F55E"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/DisconnectFlow"
+   }
+  },
+  "CreateContactFlowFnServiceRoleFD27F0A2": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "create-contact-flow"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateContactFlowFn/ServiceRole/Resource"
+   }
+  },
+  "CreateContactFlowFnServiceRoleDefaultPolicyF300C337": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "connect:CreateContactFlow",
+        "connect:UpdateContactFlowContent",
+        "connect:DescribeContactFlow",
+        "connect:ListContactFlows",
+        "connect:DeleteContactFlow"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "CreateContactFlowFnServiceRoleDefaultPolicyF300C337",
+    "Roles": [
+     {
+      "Ref": "CreateContactFlowFnServiceRoleFD27F0A2"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateContactFlowFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "CreateContactFlowFn603C956B": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "2c220d5be41ad457d45c7f9aa7ad9b42e17a1bbcc0a268054153df601365b94d.zip"
+    },
+    "FunctionName": "TodaysDentalInsightsConnectLexAiN1-CreateContactFlow",
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "CreateContactFlowFnServiceRoleFD27F0A2",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "create-contact-flow"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "CreateContactFlowFnServiceRoleDefaultPolicyF300C337",
+    "CreateContactFlowFnServiceRoleFD27F0A2"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateContactFlowFn/Resource",
+    "aws:asset:path": "asset.2c220d5be41ad457d45c7f9aa7ad9b42e17a1bbcc0a268054153df601365b94d",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "CreateContactFlowFnLogRetentionC4021F22": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "CreateContactFlowFn603C956B"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateContactFlowFn/LogRetention/Resource"
+   }
+  },
+  "CreateContactFlowProviderframeworkonEventServiceRole637BAAB1": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateContactFlowProvider/framework-onEvent/ServiceRole/Resource"
+   }
+  },
+  "CreateContactFlowProviderframeworkonEventServiceRoleDefaultPolicy61A3FBF0": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "CreateContactFlowFn603C956B",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "CreateContactFlowFn603C956B",
+             "Arn"
+            ]
+           },
+           ":*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "lambda:GetFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "CreateContactFlowFn603C956B",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "CreateContactFlowProviderframeworkonEventServiceRoleDefaultPolicy61A3FBF0",
+    "Roles": [
+     {
+      "Ref": "CreateContactFlowProviderframeworkonEventServiceRole637BAAB1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateContactFlowProvider/framework-onEvent/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "CreateContactFlowProviderframeworkonEvent5EB7D198": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "bdc104ed9cab1b5b6421713c8155f0b753380595356f710400609664d3635eca.zip"
+    },
+    "Description": "AWS CDK resource provider framework - onEvent (TodaysDentalInsightsConnectLexAiN1/CreateContactFlowProvider)",
+    "Environment": {
+     "Variables": {
+      "USER_ON_EVENT_FUNCTION_ARN": {
+       "Fn::GetAtt": [
+        "CreateContactFlowFn603C956B",
+        "Arn"
+       ]
+      }
+     }
+    },
+    "Handler": "framework.onEvent",
+    "LoggingConfig": {
+     "ApplicationLogLevel": "FATAL",
+     "LogFormat": "JSON"
+    },
+    "Role": {
+     "Fn::GetAtt": [
+      "CreateContactFlowProviderframeworkonEventServiceRole637BAAB1",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ],
+    "Timeout": 900
+   },
+   "DependsOn": [
+    "CreateContactFlowProviderframeworkonEventServiceRoleDefaultPolicy61A3FBF0",
+    "CreateContactFlowProviderframeworkonEventServiceRole637BAAB1"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateContactFlowProvider/framework-onEvent/Resource",
+    "aws:asset:path": "asset.bdc104ed9cab1b5b6421713c8155f0b753380595356f710400609664d3635eca",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Code"
+   }
+  },
+  "CreateContactFlowProviderframeworkonEventLogRetentionA2EC063A": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "CreateContactFlowProviderframeworkonEvent5EB7D198"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateContactFlowProvider/framework-onEvent/LogRetention/Resource"
+   }
+  },
+  "InboundAiFlowV2": {
+   "Type": "AWS::CloudFormation::CustomResource",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "CreateContactFlowProviderframeworkonEvent5EB7D198",
+      "Arn"
+     ]
+    },
+    "InstanceId": "0626aa86-d377-44c8-9311-84e4f230cc72",
+    "FlowName": "TodaysDentalInsightsConnectLexAiN1-InboundAiFlowV2",
+    "FlowType": "CONTACT_FLOW",
+    "Description": "AI voice assistant using Lex and Bedrock with keyboard sound thinking indicator",
+    "LexBotAliasArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:lex:us-east-1:851620242036:bot-alias/",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotV3",
+         "Id"
+        ]
+       },
+       "/",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotAlias",
+         "BotAliasId"
+        ]
+       }
+      ]
+     ]
+    },
+    "LambdaFunctionArn": {
+     "Fn::GetAtt": [
+      "LexBedrockHookFn6C573C2E",
+      "Arn"
+     ]
+    },
+    "KeyboardPromptId": {
+     "Fn::GetAtt": [
+      "KeyboardSoundPromptV2",
+      "PromptId"
+     ]
+    },
+    "DisconnectFlowArn": {
+     "Fn::GetAtt": [
+      "DisconnectFlow",
+      "ContactFlowArn"
+     ]
+    },
+    "UpdateTrigger": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:lex:us-east-1:851620242036:bot-alias/",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotV3",
+         "Id"
+        ]
+       },
+       "/",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotAlias",
+         "BotAliasId"
+        ]
+       },
+       "|",
+       {
+        "Fn::GetAtt": [
+         "LexBedrockHookFn6C573C2E",
+         "Arn"
+        ]
+       },
+       "|",
+       {
+        "Fn::GetAtt": [
+         "KeyboardSoundPromptV2",
+         "PromptId"
+        ]
+       },
+       "|",
+       {
+        "Fn::GetAtt": [
+         "DisconnectFlow",
+         "ContactFlowArn"
+        ]
+       },
+       "|v8"
+      ]
+     ]
+    }
+   },
+   "DependsOn": [
+    "ConnectLexHookIntegrationCustomResourcePolicyD466AED8",
+    "ConnectLexHookIntegration82325C3F",
+    "ConnectLexIntegrationCustomResourcePolicy90990747",
+    "ConnectLexIntegration8F6C281F",
+    "DisconnectFlow",
+    "KeyboardSoundPromptV2"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/InboundAiFlowV2/Default"
+   }
+  },
+  "CreateAsyncContactFlowFnServiceRoleAEA8DE8A": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "create-async-contact-flow"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateAsyncContactFlowFn/ServiceRole/Resource"
+   }
+  },
+  "CreateAsyncContactFlowFnServiceRoleDefaultPolicyF388D6C1": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "connect:CreateContactFlow",
+        "connect:UpdateContactFlowContent",
+        "connect:DescribeContactFlow",
+        "connect:ListContactFlows",
+        "connect:DeleteContactFlow"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "CreateAsyncContactFlowFnServiceRoleDefaultPolicyF388D6C1",
+    "Roles": [
+     {
+      "Ref": "CreateAsyncContactFlowFnServiceRoleAEA8DE8A"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateAsyncContactFlowFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "CreateAsyncContactFlowFn06D1F184": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "243b957055739598e557aca060c2c0ab17cebc2ffdcf6253eca27315d053cd92.zip"
+    },
+    "FunctionName": "TodaysDentalInsightsConnectLexAiN1-CreateAsyncContactFlow",
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "CreateAsyncContactFlowFnServiceRoleAEA8DE8A",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "create-async-contact-flow"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "CreateAsyncContactFlowFnServiceRoleDefaultPolicyF388D6C1",
+    "CreateAsyncContactFlowFnServiceRoleAEA8DE8A"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateAsyncContactFlowFn/Resource",
+    "aws:asset:path": "asset.243b957055739598e557aca060c2c0ab17cebc2ffdcf6253eca27315d053cd92",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "CreateAsyncContactFlowFnLogRetentionD2C220E6": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "CreateAsyncContactFlowFn06D1F184"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateAsyncContactFlowFn/LogRetention/Resource"
+   }
+  },
+  "CreateAsyncContactFlowProviderframeworkonEventServiceRole26869596": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateAsyncContactFlowProvider/framework-onEvent/ServiceRole/Resource"
+   }
+  },
+  "CreateAsyncContactFlowProviderframeworkonEventServiceRoleDefaultPolicyBE0705D4": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "CreateAsyncContactFlowFn06D1F184",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "CreateAsyncContactFlowFn06D1F184",
+             "Arn"
+            ]
+           },
+           ":*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "lambda:GetFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "CreateAsyncContactFlowFn06D1F184",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "CreateAsyncContactFlowProviderframeworkonEventServiceRoleDefaultPolicyBE0705D4",
+    "Roles": [
+     {
+      "Ref": "CreateAsyncContactFlowProviderframeworkonEventServiceRole26869596"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateAsyncContactFlowProvider/framework-onEvent/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "CreateAsyncContactFlowProviderframeworkonEventFF7C23F0": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "bdc104ed9cab1b5b6421713c8155f0b753380595356f710400609664d3635eca.zip"
+    },
+    "Description": "AWS CDK resource provider framework - onEvent (TodaysDentalInsightsConnectLexAiN1/CreateAsyncContactFlowProvider)",
+    "Environment": {
+     "Variables": {
+      "USER_ON_EVENT_FUNCTION_ARN": {
+       "Fn::GetAtt": [
+        "CreateAsyncContactFlowFn06D1F184",
+        "Arn"
+       ]
+      }
+     }
+    },
+    "Handler": "framework.onEvent",
+    "LoggingConfig": {
+     "ApplicationLogLevel": "FATAL",
+     "LogFormat": "JSON"
+    },
+    "Role": {
+     "Fn::GetAtt": [
+      "CreateAsyncContactFlowProviderframeworkonEventServiceRole26869596",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ],
+    "Timeout": 900
+   },
+   "DependsOn": [
+    "CreateAsyncContactFlowProviderframeworkonEventServiceRoleDefaultPolicyBE0705D4",
+    "CreateAsyncContactFlowProviderframeworkonEventServiceRole26869596"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateAsyncContactFlowProvider/framework-onEvent/Resource",
+    "aws:asset:path": "asset.bdc104ed9cab1b5b6421713c8155f0b753380595356f710400609664d3635eca",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Code"
+   }
+  },
+  "CreateAsyncContactFlowProviderframeworkonEventLogRetention3A8E18EB": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "CreateAsyncContactFlowProviderframeworkonEventFF7C23F0"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateAsyncContactFlowProvider/framework-onEvent/LogRetention/Resource"
+   }
+  },
+  "AsyncInboundAiFlow": {
+   "Type": "AWS::CloudFormation::CustomResource",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "CreateAsyncContactFlowProviderframeworkonEventFF7C23F0",
+      "Arn"
+     ]
+    },
+    "InstanceId": "0626aa86-d377-44c8-9311-84e4f230cc72",
+    "FlowName": "TodaysDentalInsightsConnectLexAiN1-AsyncInboundAiFlow",
+    "FlowType": "CONTACT_FLOW",
+    "Description": "AI voice assistant with async pattern - continuous keyboard sounds during processing",
+    "LexBotAliasArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:lex:us-east-1:851620242036:bot-alias/",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotV3",
+         "Id"
+        ]
+       },
+       "/",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotAlias",
+         "BotAliasId"
+        ]
+       }
+      ]
+     ]
+    },
+    "AsyncLambdaArn": {
+     "Fn::GetAtt": [
+      "AsyncBedrockLambda37463299",
+      "Arn"
+     ]
+    },
+    "KeyboardPromptId": {
+     "Fn::GetAtt": [
+      "KeyboardSoundPromptV2",
+      "PromptId"
+     ]
+    },
+    "DisconnectFlowArn": {
+     "Fn::GetAtt": [
+      "DisconnectFlow",
+      "ContactFlowArn"
+     ]
+    },
+    "MaxPollLoops": "25",
+    "UpdateTrigger": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:lex:us-east-1:851620242036:bot-alias/",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotV3",
+         "Id"
+        ]
+       },
+       "/",
+       {
+        "Fn::GetAtt": [
+         "DentalAiBotAlias",
+         "BotAliasId"
+        ]
+       },
+       "|",
+       {
+        "Fn::GetAtt": [
+         "AsyncBedrockLambda37463299",
+         "Arn"
+        ]
+       },
+       "|",
+       {
+        "Fn::GetAtt": [
+         "KeyboardSoundPromptV2",
+         "PromptId"
+        ]
+       },
+       "|",
+       {
+        "Fn::GetAtt": [
+         "DisconnectFlow",
+         "ContactFlowArn"
+        ]
+       },
+       "|25|v3"
+      ]
+     ]
+    }
+   },
+   "DependsOn": [
+    "AsyncLambdaIntegrationCustomResourcePolicy26AF62E6",
+    "AsyncLambdaIntegration1818B300",
+    "ConnectLexIntegrationCustomResourcePolicy90990747",
+    "ConnectLexIntegration8F6C281F",
+    "DisconnectFlow",
+    "KeyboardSoundPromptV2"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/AsyncInboundAiFlow/Default"
+   }
+  },
+  "PhoneAssociationFnServiceRole1EFE1F59": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/PhoneAssociationFn/ServiceRole/Resource"
+   }
+  },
+  "PhoneAssociationFnServiceRoleDefaultPolicyDF73930E": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "connect:ListPhoneNumbersV2",
+        "connect:AssociatePhoneNumberContactFlow",
+        "connect:DisassociatePhoneNumberContactFlow"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "PhoneAssociationFnServiceRoleDefaultPolicyDF73930E",
+    "Roles": [
+     {
+      "Ref": "PhoneAssociationFnServiceRole1EFE1F59"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/PhoneAssociationFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "PhoneAssociationFn271E05BA": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "dd4b630d77e4d804a73f2d033a3f25254323db73ca0ea22d390d58d82adf41bd.zip"
+    },
+    "FunctionName": "TodaysDentalInsightsConnectLexAiN1-PhoneAssociation",
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "PhoneAssociationFnServiceRole1EFE1F59",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "PhoneAssociationFnServiceRoleDefaultPolicyDF73930E",
+    "PhoneAssociationFnServiceRole1EFE1F59"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/PhoneAssociationFn/Resource",
+    "aws:asset:path": "asset.dd4b630d77e4d804a73f2d033a3f25254323db73ca0ea22d390d58d82adf41bd",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "PhoneAssociationFnLogRetentionC5E3AEC2": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "PhoneAssociationFn271E05BA"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/PhoneAssociationFn/LogRetention/Resource"
+   }
+  },
+  "PhoneAssociationProviderframeworkonEventServiceRole41F78BA4": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/PhoneAssociationProvider/framework-onEvent/ServiceRole/Resource"
+   }
+  },
+  "PhoneAssociationProviderframeworkonEventServiceRoleDefaultPolicy9314EDBC": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "PhoneAssociationFn271E05BA",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "PhoneAssociationFn271E05BA",
+             "Arn"
+            ]
+           },
+           ":*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "lambda:GetFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "PhoneAssociationFn271E05BA",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "PhoneAssociationProviderframeworkonEventServiceRoleDefaultPolicy9314EDBC",
+    "Roles": [
+     {
+      "Ref": "PhoneAssociationProviderframeworkonEventServiceRole41F78BA4"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/PhoneAssociationProvider/framework-onEvent/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "PhoneAssociationProviderframeworkonEvent30B50185": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "bdc104ed9cab1b5b6421713c8155f0b753380595356f710400609664d3635eca.zip"
+    },
+    "Description": "AWS CDK resource provider framework - onEvent (TodaysDentalInsightsConnectLexAiN1/PhoneAssociationProvider)",
+    "Environment": {
+     "Variables": {
+      "USER_ON_EVENT_FUNCTION_ARN": {
+       "Fn::GetAtt": [
+        "PhoneAssociationFn271E05BA",
+        "Arn"
+       ]
+      }
+     }
+    },
+    "Handler": "framework.onEvent",
+    "LoggingConfig": {
+     "ApplicationLogLevel": "FATAL",
+     "LogFormat": "JSON"
+    },
+    "Role": {
+     "Fn::GetAtt": [
+      "PhoneAssociationProviderframeworkonEventServiceRole41F78BA4",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "ConnectLexAI"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsConnectLexAiN1"
+     }
+    ],
+    "Timeout": 900
+   },
+   "DependsOn": [
+    "PhoneAssociationProviderframeworkonEventServiceRoleDefaultPolicy9314EDBC",
+    "PhoneAssociationProviderframeworkonEventServiceRole41F78BA4"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/PhoneAssociationProvider/framework-onEvent/Resource",
+    "aws:asset:path": "asset.bdc104ed9cab1b5b6421713c8155f0b753380595356f710400609664d3635eca",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Code"
+   }
+  },
+  "PhoneAssociationProviderframeworkonEventLogRetentionB3928497": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "PhoneAssociationProviderframeworkonEvent30B50185"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/PhoneAssociationProvider/framework-onEvent/LogRetention/Resource"
+   }
+  },
+  "PhoneNumberAssociation": {
+   "Type": "AWS::CloudFormation::CustomResource",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "PhoneAssociationProviderframeworkonEvent30B50185",
+      "Arn"
+     ]
+    },
+    "InstanceArn": "arn:aws:connect:us-east-1:851620242036:instance/0626aa86-d377-44c8-9311-84e4f230cc72",
+    "PhoneNumber": "+14439272295",
+    "ContactFlowArn": {
+     "Fn::GetAtt": [
+      "AsyncInboundAiFlow",
+      "ContactFlowArn"
+     ]
+    }
+   },
+   "DependsOn": [
+    "AsyncInboundAiFlow"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/PhoneNumberAssociation/Default"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/1VS0U7DMAz8Ft4zAx18wFa0pwmmDvFaZampsqXxFKcbVdV/J2nWDp58PqeXy7kZZNkzPD3IKy9UdVoYfYB+76U6iUCVPS+hX7fqhF7k3/aGUtmR0aq707c+NWvJOAheln2FZ0Ndg9ZDGr3NhJDM6BlWsQzCyOZQSeiD4lZ26L7QsSYr9trWBj3ZTWuVj8wMwtG/eIeu0Rw/GoSWDfQFGYyDsd4NJzTdWFqq8MjwPpZZz1DNsKW6QB+8RqbqrGyoCgl9ykMSHkEQwp/R95pSTuQn86lbGS15EIqsReUhkDnZkLLfGLoOIm/ZU1MgU+tUMjzjf6Odo4uu0MV4xRhb2FUd8pmeYmJwZVidMhpWV86NHrMUs6AaBUt36xn6eOy/gemaIVr5aP25DeuJKcGRHy/ZK7yEX+bIWi9cG6JpEIpUfwHPvlZJTwIAAA=="
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "LexBotId": {
+   "Description": "Lex V2 Bot ID",
+   "Value": {
+    "Fn::GetAtt": [
+     "DentalAiBotV3",
+     "Id"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsConnectLexAiN1-LexBotId"
+   }
+  },
+  "LexBotAliasId": {
+   "Description": "Lex V2 Bot Alias ID",
+   "Value": {
+    "Fn::GetAtt": [
+     "DentalAiBotAlias",
+     "BotAliasId"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsConnectLexAiN1-LexBotAliasId"
+   }
+  },
+  "LexBedrockHookFnArn": {
+   "Description": "Lex Bedrock Hook Lambda ARN",
+   "Value": {
+    "Fn::GetAtt": [
+     "LexBedrockHookFn6C573C2E",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsConnectLexAiN1-LexBedrockHookFnArn"
+   }
+  },
+  "ConnectFinalizerFnArn": {
+   "Description": "Connect Call Finalizer Lambda ARN",
+   "Value": {
+    "Fn::GetAtt": [
+     "ConnectFinalizerFn6AA80A36",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsConnectLexAiN1-ConnectFinalizerFnArn"
+   }
+  },
+  "InboundFlowArn": {
+   "Description": "Active Inbound AI Contact Flow ARN (sync or async based on useAsyncPattern)",
+   "Value": {
+    "Fn::GetAtt": [
+     "AsyncInboundAiFlow",
+     "ContactFlowArn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsConnectLexAiN1-InboundFlowArn"
+   }
+  },
+  "DisconnectFlowArn": {
+   "Description": "Disconnect Contact Flow ARN",
+   "Value": {
+    "Fn::GetAtt": [
+     "DisconnectFlow",
+     "ContactFlowArn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsConnectLexAiN1-DisconnectFlowArn"
+   }
+  },
+  "AsyncBedrockLambdaArn": {
+   "Description": "Async Bedrock Lambda ARN (60s timeout for complex tool calls)",
+   "Value": {
+    "Fn::GetAtt": [
+     "AsyncBedrockLambda37463299",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsConnectLexAiN1-AsyncBedrockLambdaArn"
+   }
+  },
+  "AsyncResultsTableName": {
+   "Description": "DynamoDB table for async results polling",
+   "Value": {
+    "Ref": "AsyncResultsTable92D0F978"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsConnectLexAiN1-AsyncResultsTableName"
+   }
+  },
+  "AsyncPatternEnabled": {
+   "Description": "Async pattern is enabled with continuous keyboard sounds",
+   "Value": "true"
+  },
+  "AssociatedPhoneNumber": {
+   "Description": "Phone number associated with the AI contact flow",
+   "Value": "+14439272295",
+   "Export": {
+    "Name": "TodaysDentalInsightsConnectLexAiN1-AssociatedPhoneNumber"
+   }
+  },
+  "KeyboardSoundPromptId": {
+   "Description": "Connect Prompt ID for keyboard typing sound (thinking indicator)",
+   "Value": {
+    "Fn::GetAtt": [
+     "KeyboardSoundPromptV2",
+     "PromptId"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsConnectLexAiN1-KeyboardSoundPromptId"
+   }
+  },
+  "ConnectPromptsBucketName": {
+   "Description": "S3 bucket containing Connect prompts (audio files)",
+   "Value": {
+    "Ref": "ConnectPromptsBucket375524D4"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsConnectLexAiN1-ConnectPromptsBucketName"
+   }
+  },
+  "DeploymentInfo": {
+   "Description": "Deployment information",
+   "Value": "DEPLOYMENT COMPLETE:\n- Inbound AI Flow: TodaysDentalInsightsConnectLexAiN1-AsyncInboundAiFlow\n- Disconnect Flow: TodaysDentalInsightsConnectLexAiN1-DisconnectFlow  \n- Phone Number: +14439272295 (auto-associated)\n- Lex Bot: TodaysDentalInsightsConnectLexAiN1-DentalAIv3 (alias: prod)\n- Keyboard Sound: Plays during AI thinking\n- Async Pattern: ENABLED (60s timeout, continuous keyboard sounds)\n- Max Poll Loops: 25 (~50s max wait)\n\nThen call +14439272295 to test the AI assistant!"
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/tdi3/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

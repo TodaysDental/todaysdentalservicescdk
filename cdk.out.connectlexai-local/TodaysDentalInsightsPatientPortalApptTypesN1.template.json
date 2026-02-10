@@ -1,0 +1,1550 @@
+{
+ "Resources": {
+  "ApptTypesTableE6CB43B3": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "clinicId",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "label",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "KeySchema": [
+     {
+      "AttributeName": "clinicId",
+      "KeyType": "HASH"
+     },
+     {
+      "AttributeName": "label",
+      "KeyType": "RANGE"
+     }
+    ],
+    "TableName": "TodaysDentalInsightsPatientPortalApptTypesN1-ApptTypes",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "PatientPortalApptTypes"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsPatientPortalApptTypesN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "appt-types"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/ApptTypesTable/Resource"
+   }
+  },
+  "PatientPortalApptTypesApi6D368771": {
+   "Type": "AWS::ApiGateway::RestApi",
+   "Properties": {
+    "Description": "API for OpenDental Patient Portal Appointment Types",
+    "Name": "PatientPortalApptTypesApi",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "PatientPortalApptTypes"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsPatientPortalApptTypesN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Resource"
+   }
+  },
+  "PatientPortalApptTypesApiCloudWatchRoleFB14ED8A": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "apigateway.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "PatientPortalApptTypes"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsPatientPortalApptTypesN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/CloudWatchRole/Resource"
+   }
+  },
+  "PatientPortalApptTypesApiAccount11C978E6": {
+   "Type": "AWS::ApiGateway::Account",
+   "Properties": {
+    "CloudWatchRoleArn": {
+     "Fn::GetAtt": [
+      "PatientPortalApptTypesApiCloudWatchRoleFB14ED8A",
+      "Arn"
+     ]
+    }
+   },
+   "DependsOn": [
+    "PatientPortalApptTypesApi6D368771"
+   ],
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Account"
+   }
+  },
+  "PatientPortalApptTypesApiDeploymentF2E83149190d6624b31ed77ba69f7528364b6370": {
+   "Type": "AWS::ApiGateway::Deployment",
+   "Properties": {
+    "Description": "API for OpenDental Patient Portal Appointment Types",
+    "RestApiId": {
+     "Ref": "PatientPortalApptTypesApi6D368771"
+    }
+   },
+   "DependsOn": [
+    "GatewayResponseAccessDenied94952EFC",
+    "GatewayResponseDefault4XXC22BF2A7",
+    "GatewayResponseDefault5XX28177100",
+    "GatewayResponseUnauthorized78FCB15B",
+    "PatientPortalApptTypesApiidDELETE1DEC8B6F",
+    "PatientPortalApptTypesApiidGET1552BB1C",
+    "PatientPortalApptTypesApiidOPTIONSB797D6A4",
+    "PatientPortalApptTypesApiidPUTC0CE9C23",
+    "PatientPortalApptTypesApiidBC0DF641",
+    "PatientPortalApptTypesApiGET39A25753",
+    "PatientPortalApptTypesApiOPTIONS539F908F",
+    "PatientPortalApptTypesApiPOST79518A58"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Deployment/Resource",
+    "aws:cdk:do-not-refactor": true
+   }
+  },
+  "PatientPortalApptTypesApiDeploymentStageprod72459636": {
+   "Type": "AWS::ApiGateway::Stage",
+   "Properties": {
+    "DeploymentId": {
+     "Ref": "PatientPortalApptTypesApiDeploymentF2E83149190d6624b31ed77ba69f7528364b6370"
+    },
+    "MethodSettings": [
+     {
+      "DataTraceEnabled": false,
+      "HttpMethod": "*",
+      "LoggingLevel": "INFO",
+      "MetricsEnabled": true,
+      "ResourcePath": "/*"
+     }
+    ],
+    "RestApiId": {
+     "Ref": "PatientPortalApptTypesApi6D368771"
+    },
+    "StageName": "prod",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "PatientPortalApptTypes"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsPatientPortalApptTypesN1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "PatientPortalApptTypesApiAccount11C978E6"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/DeploymentStage.prod/Resource"
+   }
+  },
+  "PatientPortalApptTypesApiOPTIONS539F908F": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Fn::GetAtt": [
+      "PatientPortalApptTypesApi6D368771",
+      "RootResourceId"
+     ]
+    },
+    "RestApiId": {
+     "Ref": "PatientPortalApptTypesApi6D368771"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/OPTIONS/Resource"
+   }
+  },
+  "PatientPortalApptTypesApiGETApiPermissionTodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8EGET195E8B58": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ApptTypesHandler0AC28248",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "PatientPortalApptTypesApi6D368771"
+       },
+       "/",
+       {
+        "Ref": "PatientPortalApptTypesApiDeploymentStageprod72459636"
+       },
+       "/GET/"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/GET/ApiPermission.TodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8E.GET.."
+   }
+  },
+  "PatientPortalApptTypesApiGETApiPermissionTestTodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8EGET76A9F717": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ApptTypesHandler0AC28248",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "PatientPortalApptTypesApi6D368771"
+       },
+       "/test-invoke-stage/GET/"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/GET/ApiPermission.Test.TodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8E.GET.."
+   }
+  },
+  "PatientPortalApptTypesApiGET39A25753": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "PatientPortalApptTypesAuthorizer49EA87BF"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ApptTypesHandler0AC28248",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "401"
+     },
+     {
+      "StatusCode": "403"
+     }
+    ],
+    "ResourceId": {
+     "Fn::GetAtt": [
+      "PatientPortalApptTypesApi6D368771",
+      "RootResourceId"
+     ]
+    },
+    "RestApiId": {
+     "Ref": "PatientPortalApptTypesApi6D368771"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/GET/Resource"
+   }
+  },
+  "PatientPortalApptTypesApiPOSTApiPermissionTodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8EPOST21EA9948": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ApptTypesHandler0AC28248",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "PatientPortalApptTypesApi6D368771"
+       },
+       "/",
+       {
+        "Ref": "PatientPortalApptTypesApiDeploymentStageprod72459636"
+       },
+       "/POST/"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/POST/ApiPermission.TodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8E.POST.."
+   }
+  },
+  "PatientPortalApptTypesApiPOSTApiPermissionTestTodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8EPOST0E09429F": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ApptTypesHandler0AC28248",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "PatientPortalApptTypesApi6D368771"
+       },
+       "/test-invoke-stage/POST/"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/POST/ApiPermission.Test.TodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8E.POST.."
+   }
+  },
+  "PatientPortalApptTypesApiPOST79518A58": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "PatientPortalApptTypesAuthorizer49EA87BF"
+    },
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ApptTypesHandler0AC28248",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "201"
+     },
+     {
+      "StatusCode": "400"
+     },
+     {
+      "StatusCode": "401"
+     },
+     {
+      "StatusCode": "403"
+     },
+     {
+      "StatusCode": "409"
+     }
+    ],
+    "ResourceId": {
+     "Fn::GetAtt": [
+      "PatientPortalApptTypesApi6D368771",
+      "RootResourceId"
+     ]
+    },
+    "RestApiId": {
+     "Ref": "PatientPortalApptTypesApi6D368771"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/POST/Resource"
+   }
+  },
+  "PatientPortalApptTypesApiidBC0DF641": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "PatientPortalApptTypesApi6D368771",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "{id}",
+    "RestApiId": {
+     "Ref": "PatientPortalApptTypesApi6D368771"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/{id}/Resource"
+   }
+  },
+  "PatientPortalApptTypesApiidOPTIONSB797D6A4": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "PatientPortalApptTypesApiidBC0DF641"
+    },
+    "RestApiId": {
+     "Ref": "PatientPortalApptTypesApi6D368771"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/{id}/OPTIONS/Resource"
+   }
+  },
+  "PatientPortalApptTypesApiidGETApiPermissionTodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8EGETid3A95F7CE": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ApptTypesHandler0AC28248",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "PatientPortalApptTypesApi6D368771"
+       },
+       "/",
+       {
+        "Ref": "PatientPortalApptTypesApiDeploymentStageprod72459636"
+       },
+       "/GET/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/{id}/GET/ApiPermission.TodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8E.GET..{id}"
+   }
+  },
+  "PatientPortalApptTypesApiidGETApiPermissionTestTodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8EGETid9F4A8DBF": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ApptTypesHandler0AC28248",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "PatientPortalApptTypesApi6D368771"
+       },
+       "/test-invoke-stage/GET/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/{id}/GET/ApiPermission.Test.TodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8E.GET..{id}"
+   }
+  },
+  "PatientPortalApptTypesApiidGET1552BB1C": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "PatientPortalApptTypesAuthorizer49EA87BF"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ApptTypesHandler0AC28248",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "401"
+     },
+     {
+      "StatusCode": "403"
+     },
+     {
+      "StatusCode": "404"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "PatientPortalApptTypesApiidBC0DF641"
+    },
+    "RestApiId": {
+     "Ref": "PatientPortalApptTypesApi6D368771"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/{id}/GET/Resource"
+   }
+  },
+  "PatientPortalApptTypesApiidPUTApiPermissionTodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8EPUTid2BDEDD47": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ApptTypesHandler0AC28248",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "PatientPortalApptTypesApi6D368771"
+       },
+       "/",
+       {
+        "Ref": "PatientPortalApptTypesApiDeploymentStageprod72459636"
+       },
+       "/PUT/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/{id}/PUT/ApiPermission.TodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8E.PUT..{id}"
+   }
+  },
+  "PatientPortalApptTypesApiidPUTApiPermissionTestTodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8EPUTidFBA9B872": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ApptTypesHandler0AC28248",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "PatientPortalApptTypesApi6D368771"
+       },
+       "/test-invoke-stage/PUT/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/{id}/PUT/ApiPermission.Test.TodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8E.PUT..{id}"
+   }
+  },
+  "PatientPortalApptTypesApiidPUTC0CE9C23": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "PatientPortalApptTypesAuthorizer49EA87BF"
+    },
+    "HttpMethod": "PUT",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ApptTypesHandler0AC28248",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "400"
+     },
+     {
+      "StatusCode": "401"
+     },
+     {
+      "StatusCode": "403"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "PatientPortalApptTypesApiidBC0DF641"
+    },
+    "RestApiId": {
+     "Ref": "PatientPortalApptTypesApi6D368771"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/{id}/PUT/Resource"
+   }
+  },
+  "PatientPortalApptTypesApiidDELETEApiPermissionTodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8EDELETEid10A31793": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ApptTypesHandler0AC28248",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "PatientPortalApptTypesApi6D368771"
+       },
+       "/",
+       {
+        "Ref": "PatientPortalApptTypesApiDeploymentStageprod72459636"
+       },
+       "/DELETE/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/{id}/DELETE/ApiPermission.TodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8E.DELETE..{id}"
+   }
+  },
+  "PatientPortalApptTypesApiidDELETEApiPermissionTestTodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8EDELETEid330CCAE1": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ApptTypesHandler0AC28248",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "PatientPortalApptTypesApi6D368771"
+       },
+       "/test-invoke-stage/DELETE/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/{id}/DELETE/ApiPermission.Test.TodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesApi72622E8E.DELETE..{id}"
+   }
+  },
+  "PatientPortalApptTypesApiidDELETE1DEC8B6F": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "PatientPortalApptTypesAuthorizer49EA87BF"
+    },
+    "HttpMethod": "DELETE",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "ApptTypesHandler0AC28248",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "401"
+     },
+     {
+      "StatusCode": "403"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "PatientPortalApptTypesApiidBC0DF641"
+    },
+    "RestApiId": {
+     "Ref": "PatientPortalApptTypesApi6D368771"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesApi/Default/{id}/DELETE/Resource"
+   }
+  },
+  "GatewayResponseDefault4XXC22BF2A7": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_4XX",
+    "RestApiId": {
+     "Ref": "PatientPortalApptTypesApi6D368771"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/GatewayResponseDefault4XX/Resource"
+   }
+  },
+  "GatewayResponseDefault5XX28177100": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_5XX",
+    "RestApiId": {
+     "Ref": "PatientPortalApptTypesApi6D368771"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/GatewayResponseDefault5XX/Resource"
+   }
+  },
+  "GatewayResponseUnauthorized78FCB15B": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "UNAUTHORIZED",
+    "RestApiId": {
+     "Ref": "PatientPortalApptTypesApi6D368771"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/GatewayResponseUnauthorized/Resource"
+   }
+  },
+  "GatewayResponseAccessDenied94952EFC": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "ACCESS_DENIED",
+    "RestApiId": {
+     "Ref": "PatientPortalApptTypesApi6D368771"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/GatewayResponseAccessDenied/Resource"
+   }
+  },
+  "PatientPortalApptTypesAuthorizer49EA87BF": {
+   "Type": "AWS::ApiGateway::Authorizer",
+   "Properties": {
+    "AuthorizerResultTtlInSeconds": 300,
+    "AuthorizerUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Fn::Select": [
+         1,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":apigateway:",
+       {
+        "Fn::Select": [
+         3,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":lambda:path/2015-03-31/functions/",
+       {
+        "Fn::ImportValue": "AuthorizerFunctionArnN1"
+       },
+       "/invocations"
+      ]
+     ]
+    },
+    "IdentitySource": "method.request.header.Authorization",
+    "Name": "TodaysDentalInsightsPatientPortalApptTypesN1PatientPortalApptTypesAuthorizer28999F45",
+    "RestApiId": {
+     "Ref": "PatientPortalApptTypesApi6D368771"
+    },
+    "Type": "REQUEST"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/PatientPortalApptTypesAuthorizer/Resource"
+   }
+  },
+  "AuthorizerInvokePermission": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::ImportValue": "AuthorizerFunctionArnN1"
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "PatientPortalApptTypesApi6D368771"
+       },
+       "/authorizers/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/AuthorizerInvokePermission"
+   }
+  },
+  "ApptTypesHandlerServiceRole69CD5231": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "appt-types"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "PatientPortalApptTypes"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsPatientPortalApptTypesN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/ApptTypesHandler/ServiceRole/Resource"
+   }
+  },
+  "ApptTypesHandlerServiceRoleDefaultPolicy5A326AEA": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ApptTypesTableE6CB43B3",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ApptTypesHandlerServiceRoleDefaultPolicy5A326AEA",
+    "Roles": [
+     {
+      "Ref": "ApptTypesHandlerServiceRole69CD5231"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/ApptTypesHandler/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ApptTypesHandler0AC28248": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "eaa1e15c6ba138bedd935daf89901e7da386860ddd08d1f78d5415f0764c1cc9.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "TABLE_NAME": {
+       "Ref": "ApptTypesTableE6CB43B3"
+      },
+      "PARTITION_KEY": "clinicId",
+      "SORT_KEY": "label"
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "ApptTypesHandlerServiceRole69CD5231",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "appt-types"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "PatientPortalApptTypes"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsPatientPortalApptTypesN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "ApptTypesHandlerServiceRoleDefaultPolicy5A326AEA",
+    "ApptTypesHandlerServiceRole69CD5231"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/ApptTypesHandler/Resource",
+    "aws:asset:path": "asset.eaa1e15c6ba138bedd935daf89901e7da386860ddd08d1f78d5415f0764c1cc9",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ApptTypesHandlerErrorAlarmE6769846": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when appt-types Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ApptTypesHandler0AC28248"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "PatientPortalApptTypes"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsPatientPortalApptTypesN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/ApptTypesHandlerErrorAlarm/Resource"
+   }
+  },
+  "ApptTypesHandlerThrottleAlarm99BA8C08": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when appt-types Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ApptTypesHandler0AC28248"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "PatientPortalApptTypes"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsPatientPortalApptTypesN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/ApptTypesHandlerThrottleAlarm/Resource"
+   }
+  },
+  "ApptTypesHandlerDurationAlarm31EAF803": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when appt-types Lambda p99 duration exceeds 24000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "ApptTypesHandler0AC28248"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "PatientPortalApptTypes"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsPatientPortalApptTypesN1"
+     }
+    ],
+    "Threshold": 24000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/ApptTypesHandlerDurationAlarm/Resource"
+   }
+  },
+  "ApptTypesTableThrottleAlarm3877FD40": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "ApptTypesTableE6CB43B3"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "ApptTypesTableE6CB43B3"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "PatientPortalApptTypes"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsPatientPortalApptTypesN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/ApptTypesTableThrottleAlarm/Resource"
+   }
+  },
+  "ApptTypesBasePathMapping": {
+   "Type": "AWS::ApiGateway::BasePathMapping",
+   "Properties": {
+    "BasePath": "patient-portal-appttypes-v3",
+    "DomainName": "apig.todaysdentalinsights.com",
+    "RestApiId": {
+     "Ref": "PatientPortalApptTypesApi6D368771"
+    },
+    "Stage": {
+     "Ref": "PatientPortalApptTypesApiDeploymentStageprod72459636"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/ApptTypesBasePathMapping"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/11R21LDIBD9Ft8patQPSHXqU7UTfe9sYW1puRnATMzk311IM9P6tOcCu3ug4lV1z+9uoAsLIU8LrXZ8+IggToyk7SB7C8ZJEj9hp5E9f9kCRgZe7SFiBz0fGgyx9iq7F7AWwiUb2Qt67XqDBEm9YDRnX1pOgK661ApcQkC2xnhwMptnNLvnIRN+nTYg7p0NxfsvNfid8k6JurTqF9uy2hXLAzcQD2vwXtn9yBQYCuWmvKVunFaiz3RCI9NgdhL4kCVsjQpBOctWyYpIoGQga+bz+a11Eo+Bv5Uyuyw8bCEEjIHXuRDnyyROGEsfoV2SHURx4EOtoTUlQgbjePUu7yn6FFnpkd+0hMkT+THc/lRP/JG++hiUWrT0Mcogb6b6BwgEpfAHAgAA"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "PatientPortalApptTypesApiEndpoint2F0D1583": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "PatientPortalApptTypesApi6D368771"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "PatientPortalApptTypesApiDeploymentStageprod72459636"
+      },
+      "/"
+     ]
+    ]
+   }
+  },
+  "ApptTypesTableName": {
+   "Value": {
+    "Ref": "ApptTypesTableE6CB43B3"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsPatientPortalApptTypesN1-ApptTypesTableName"
+   }
+  },
+  "ApptTypesApiUrl": {
+   "Description": "Full URL for this service via custom domain",
+   "Value": "https://apig.todaysdentalinsights.com/patient-portal-appttypes-v3",
+   "Export": {
+    "Name": "TodaysDentalInsightsPatientPortalApptTypesN1-ApptTypesApiUrl"
+   }
+  },
+  "ExportsOutputFnGetAttApptTypesTableE6CB43B3ArnF3355FBD": {
+   "Value": {
+    "Fn::GetAtt": [
+     "ApptTypesTableE6CB43B3",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsPatientPortalApptTypesN1:ExportsOutputFnGetAttApptTypesTableE6CB43B3ArnF3355FBD"
+   }
+  },
+  "ExportsOutputRefApptTypesTableE6CB43B32C3C512E": {
+   "Value": {
+    "Ref": "ApptTypesTableE6CB43B3"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsPatientPortalApptTypesN1:ExportsOutputRefApptTypesTableE6CB43B32C3C512E"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/tdi3/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

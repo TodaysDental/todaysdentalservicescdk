@@ -20,10 +20,20 @@ export interface SchedulesStackProps extends StackProps {
   consolidatedTransferServerId: string;
   /** GlobalSecrets DynamoDB table name for retrieving SFTP credentials */
   globalSecretsTableName?: string;
+  /** ClinicSecrets DynamoDB table name for per-clinic credentials */
+  clinicSecretsTableName?: string;
   /** ClinicConfig DynamoDB table name for clinic configuration */
   clinicConfigTableName?: string;
   /** KMS key ARN for decrypting secrets */
   secretsEncryptionKeyArn?: string;
+  /** Consent Form templates table name (ConsentFormData stack) */
+  consentFormTemplatesTableName?: string;
+  /** Consent Form instances table name (ConsentFormData stack) */
+  consentFormInstancesTableName?: string;
+  /** SSM parameter name that stores the per-clinic SMA ID map JSON */
+  smaIdMapParameterName?: string;
+  /** Chime SDK media region to use for Meetings/Voice (default: us-east-1) */
+  chimeMediaRegion?: string;
 }
 
 export class SchedulesStack extends Stack {
@@ -301,11 +311,21 @@ export class SchedulesStack extends Stack {
         CONSOLIDATED_SFTP_HOST: props.consolidatedTransferServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',
         // SFTP password now retrieved from GlobalSecrets table
         GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
+        CLINIC_SECRETS_TABLE: props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets',
         CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
+        // Consent Forms scheduling (instances + templates)
+        CONSENT_FORM_TEMPLATES_TABLE_NAME: props.consentFormTemplatesTableName || '',
+        CONSENT_FORM_INSTANCES_TABLE_NAME: props.consentFormInstancesTableName || '',
+        CONSENT_FORM_DEFAULT_TOKEN_TTL_DAYS: '7',
+        // Chime outbound calling (SMA + Meetings)
+        CHIME_MEDIA_REGION: props.chimeMediaRegion || 'us-east-1',
+        SMA_ID_MAP_PARAMETER_NAME: props.smaIdMapParameterName || '',
         // Email queue for individual email tasks
         EMAIL_QUEUE_URL: emailQueue.queueUrl,
         // Email analytics table for tracking scheduled emails
         EMAIL_ANALYTICS_TABLE: Fn.importValue('TodaysDentalInsightsNotificationsN1-EmailAnalyticsTableName'),
+        // Voice call analytics table for tracking outbound CALL campaigns
+        VOICE_CALL_ANALYTICS_TABLE: Fn.importValue('TodaysDentalInsightsNotificationsN1-VoiceCallAnalyticsTableName'),
         // RCS API base URL for sending RCS messages (via public API Gateway endpoint)
         RCS_API_BASE_URL: 'https://apig.todaysdentalinsights.com/rcs',
       },
@@ -339,6 +359,33 @@ export class SchedulesStack extends Stack {
       sameEnvironment: true,
     });
     rcsSendMessageFn.grantInvoke(this.schedulerQueueConsumerFn);
+
+    // ========================================
+    // CHIME OUTBOUND CALLING INTEGRATION (CALL)
+    // ========================================
+    // The queue consumer can initiate Chime SMA outbound calls for marketing voice campaigns.
+    // It creates a short-lived Chime meeting (for call bridging / optional recording) and
+    // calls the per-clinic SIP Media Application (SMA) using the SMA ID Map stored in SSM.
+    if (props.smaIdMapParameterName) {
+      this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['ssm:GetParameter'],
+        resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter${props.smaIdMapParameterName}`],
+      }));
+    }
+
+    this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        // SIP Media Application outbound call
+        'chime:CreateSipMediaApplicationCall',
+        'chime-sdk-voice:CreateSipMediaApplicationCall',
+        // Ephemeral meeting for outbound voice campaigns
+        'chime:CreateMeeting',
+        'chime:DeleteMeeting',
+        'chime-sdk-meetings:CreateMeeting',
+        'chime-sdk-meetings:DeleteMeeting',
+      ],
+      resources: ['*'],
+    }));
 
     // Email Sender Lambda - processes individual email tasks from the email queue
     // High concurrency to maximize throughput while staying under SES rate limits
@@ -444,12 +491,34 @@ export class SchedulesStack extends Stack {
     templatesTable.grantReadData(this.schedulerQueueConsumerFn);
     queriesTable.grantReadData(this.schedulerQueueConsumerFn);
     clinicHoursTable.grantReadData(this.schedulerQueueConsumerFn);
+
+    // Consent Forms scheduling permissions (optional)
+    if (props.consentFormTemplatesTableName) {
+      const consentFormTemplatesTable = dynamodb.Table.fromTableAttributes(this, 'ConsentFormTemplatesTable', {
+        tableName: props.consentFormTemplatesTableName,
+      });
+      consentFormTemplatesTable.grantReadData(this.schedulerQueueConsumerFn);
+    }
+    if (props.consentFormInstancesTableName) {
+      const consentFormInstancesTable = dynamodb.Table.fromTableAttributes(this, 'ConsentFormInstancesTable', {
+        tableName: props.consentFormInstancesTableName,
+      });
+      consentFormInstancesTable.grantReadWriteData(this.schedulerQueueConsumerFn);
+    }
     
     // Grant email analytics table access for tracking scheduled/sent/failed emails
     // Using IAM policy directly since we import by name from cross-stack
     this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:GetItem'],
       resources: [`arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/TodaysDentalInsightsNotificationsN1-EmailAnalytics`],
+    }));
+
+    // Grant voice call analytics table access for tracking outbound CALL campaigns
+    this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:GetItem'],
+      resources: [
+        `arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/${Fn.importValue('TodaysDentalInsightsNotificationsN1-VoiceCallAnalyticsTableName')}`,
+      ],
     }));
 
     // Add SQS event source for queue consumer
@@ -468,6 +537,7 @@ export class SchedulesStack extends Stack {
         actions: ['dynamodb:GetItem', 'dynamodb:Query'],
         resources: [
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets'}`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig'}`,
         ],
       });

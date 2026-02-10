@@ -530,7 +530,8 @@ async function createProvider(body: any, userPerms: UserPermissions, allowedClin
     }
   }
 
-  // Check for duplicate NPI
+  // Check for duplicate NPI within the same clinic(s)
+  // Allow same NPI across different clinics, but not within the same clinic
   const { Items: existing } = await ddb.send(new QueryCommand({
     TableName: PROVIDERS_TABLE,
     IndexName: 'byNpi',
@@ -539,7 +540,15 @@ async function createProvider(body: any, userPerms: UserPermissions, allowedClin
   }));
 
   if (existing && existing.length > 0) {
-    return httpErr(400, 'A provider with this NPI already exists');
+    // Check if any existing provider with this NPI shares a clinic with the new provider
+    for (const existingProvider of existing) {
+      const existingClinicIds = existingProvider.clinicIds || [];
+      const overlappingClinics = providerClinicIds.filter((cid: string) => existingClinicIds.includes(cid));
+      if (overlappingClinics.length > 0) {
+        return httpErr(400, `A provider with this NPI already exists for clinic(s): ${overlappingClinics.join(', ')}`);
+      }
+    }
+    // No overlapping clinics, so allow the provider creation for different clinics
   }
 
   const providerId = uuidv4();

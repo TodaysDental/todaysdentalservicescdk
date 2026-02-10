@@ -1,6 +1,12 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, CreateSipMediaApplicationCallCommand, CreateSipMediaApplicationCallCommandOutput } from '@aws-sdk/client-chime-sdk-voice';
+import {
+  ChimeSDKMeetingsClient,
+  CreateAttendeeCommand,
+  CreateMeetingCommand,
+  DeleteMeetingCommand,
+} from '@aws-sdk/client-chime-sdk-meetings';
 import { randomUUID } from 'crypto';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
@@ -17,9 +23,10 @@ const ddb = getDynamoDBClient();
 // This ensures all Chime operations use the same region
 const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
 const chimeVoiceClient = new ChimeSDKVoiceClient({ region: CHIME_MEDIA_REGION });
+const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 
 const CLINICS_TABLE_NAME = process.env.CLINICS_TABLE_NAME;
-const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
+const AGENT_ACTIVE_TABLE_NAME = process.env.AGENT_ACTIVE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 const LOCKS_TABLE_NAME = process.env.LOCKS_TABLE_NAME;
 
@@ -48,18 +55,26 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return { statusCode: 200, headers: corsHeaders, body: '' };
   }
 
-  let agentId: string | undefined; // Declared here for use in rollback logic, initialized as undefined
+  let agentId: string | undefined; // Used for rollback logging
+  let meetingId: string | undefined;
+  let meetingInfo: any | undefined;
+  let agentAttendeeInfo: any | undefined;
+  let callReference: string | undefined;
+  let callId: string | undefined;
+  let markedBusyClinicIds: string[] = [];
+  let tempBusyClinicId: string | undefined;
+  let dialLock: DistributedLock | null = null;
 
   try {
     const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
     console.log('[outbound-call] Verifying auth token');
-    
+
     const verifyResult = await verifyIdToken(authz);
     if (!verifyResult.ok) {
       console.warn('[outbound-call] Auth verification failed', { code: verifyResult.code, message: verifyResult.message });
       return { statusCode: verifyResult.code || 401, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
     }
-    
+
     console.log('[outbound-call] Auth verification successful');
 
     agentId = getUserIdFromJwt(verifyResult.payload!); // Assign agentId for outer scope
@@ -67,269 +82,380 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       console.error('[outbound-call] Missing subject claim in token');
       return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'Invalid token: missing subject claim' }) };
     }
-    
+
     // FIX #9: Safe JSON parsing with proper 400 error for malformed input
     let body: { toPhoneNumber: string, fromClinicId: string };
     try {
-        body = JSON.parse(event.body || '{}');
+      body = JSON.parse(event.body || '{}');
     } catch (parseErr) {
-        console.error('[outbound-call] Invalid JSON in request body', { error: (parseErr as Error).message });
-        return { 
-            statusCode: 400, 
-            headers: corsHeaders, 
-            body: JSON.stringify({ message: 'Invalid JSON in request body' }) 
-        };
+      console.error('[outbound-call] Invalid JSON in request body', { error: (parseErr as Error).message });
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({ message: 'Invalid JSON in request body' })
+      };
     }
     console.log('[outbound-call] Parsed request body', { toPhoneNumber: body.toPhoneNumber, fromClinicId: body.fromClinicId });
 
     if (!body.toPhoneNumber || !body.fromClinicId) {
-        console.error('[outbound-call] Missing required parameters');
-        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'toPhoneNumber and fromClinicId are required' }) };
+      console.error('[outbound-call] Missing required parameters');
+      return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'toPhoneNumber and fromClinicId are required' }) };
     }
-    
+
     // Sanitize phone number
     const phoneValidation = sanitizePhoneNumber(body.toPhoneNumber);
     if (!phoneValidation.sanitized) {
-        console.error('[outbound-call] Invalid phone number', { error: phoneValidation.error });
-        return { 
-            statusCode: 400, 
-            headers: corsHeaders, 
-            body: JSON.stringify({ message: phoneValidation.error }) 
-        };
+      console.error('[outbound-call] Invalid phone number', { error: phoneValidation.error });
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({ message: phoneValidation.error })
+      };
     }
     const toPhoneNumber = phoneValidation.sanitized;
 
     // 1. Security Check: Validate clinicId against JWT claims
     const authzCheck = checkClinicAuthorization(verifyResult.payload! as any, body.fromClinicId);
     if (!authzCheck.authorized) {
-        console.warn('[outbound-call] Authorization failed', {
-            agentId,
-            clinic: body.fromClinicId,
-            reason: authzCheck.reason
-        });
-        return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ message: authzCheck.reason }) };
+      console.warn('[outbound-call] Authorization failed', {
+        agentId,
+        clinic: body.fromClinicId,
+        reason: authzCheck.reason
+      });
+      return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ message: authzCheck.reason }) };
     }
     console.log('[outbound-call] Clinic authorization successful');
-    
+
+    if (!AGENT_ACTIVE_TABLE_NAME) {
+      console.error('[outbound-call] AGENT_ACTIVE_TABLE_NAME not configured');
+      return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'System configuration error' }) };
+    }
+
     // 2. Get Clinic's public phone number
     console.log('[outbound-call] Looking up clinic phone number', { clinicId: body.fromClinicId });
     const { Item: clinic } = await ddb.send(new GetCommand({
-        TableName: CLINICS_TABLE_NAME,
-        Key: { clinicId: body.fromClinicId },
+      TableName: CLINICS_TABLE_NAME,
+      Key: { clinicId: body.fromClinicId },
     }));
 
     if (!clinic || !clinic.phoneNumber) {
-        console.error('[outbound-call] Clinic phone number not found', { clinicId: body.fromClinicId });
-        return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ message: 'Clinic phone number not found. Populate ClinicsTable.' }) };
+      console.error('[outbound-call] Clinic phone number not found', { clinicId: body.fromClinicId });
+      return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ message: 'Clinic phone number not found. Populate ClinicsTable.' }) };
     }
     const fromPhoneNumber = clinic.phoneNumber;
     console.log('[outbound-call] Found clinic phone number:', fromPhoneNumber);
 
-    // 3. Check Agent's current presence AND get their meeting info
-    console.log('[outbound-call] Checking agent presence state', { agentId });
-    const { Item: agentPresence } = await ddb.send(new GetCommand({
-        TableName: AGENT_PRESENCE_TABLE_NAME,
-        Key: { agentId },
-    }));
-
-    if (!agentPresence?.meetingInfo?.MeetingId) {
-         console.error('[outbound-call] Agent is online but has no valid meeting info.', { agentId, presence: agentPresence });
-         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: 'Agent session is invalid. Please log out and back in.' }) };
-    }
-
-    if (agentPresence.status !== 'Online') {
-        console.error('[outbound-call] Agent not ready for outbound call', { agentId, status: agentPresence.status });
-        if (agentPresence.status === 'ringing' || agentPresence.status === 'OnCall' || agentPresence.status === 'dialing') {
-             return { statusCode: 409, headers: corsHeaders, body: JSON.stringify({ message: 'Agent is already on another call.' }) };
-        }
-        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ message: `Agent is not Online (status: ${agentPresence.status}).` }) };
-    }
-
-    const agentMeeting = agentPresence.meetingInfo; // This is the agent's existing session
-    console.log('[outbound-call] Agent ready, using existing meeting', { status: agentPresence.status, meetingId: agentMeeting.MeetingId });
-    
-    // FIX #15: Use distributed lock to prevent double-dial race condition
-    // Rapid double-clicks before UI disables could both pass initial status check
     if (!LOCKS_TABLE_NAME) {
-        console.error('[outbound-call] LOCKS_TABLE_NAME not configured');
-        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'System configuration error' }) };
+      console.error('[outbound-call] LOCKS_TABLE_NAME not configured');
+      return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'System configuration error' }) };
     }
 
-    const dialLock = new DistributedLock(ddb, {
-        tableName: LOCKS_TABLE_NAME,
-        lockKey: `outbound-dial-${agentId}`,
-        ttlSeconds: 20, // FIX: Extended TTL to cover full SMA call + DB updates
-        maxRetries: 1,  // Don't retry - if locked, user already has a dial in progress
-        retryDelayMs: 0
+    // FIX #15: Use distributed lock to prevent double-dial race condition
+    // Rapid double-clicks before UI disables could both pass initial status check.
+    dialLock = new DistributedLock(ddb, {
+      tableName: LOCKS_TABLE_NAME,
+      lockKey: `outbound-dial-${agentId}`,
+      ttlSeconds: 20, // FIX: Extended TTL to cover full SMA call + DB updates
+      maxRetries: 1,  // Don't retry - if locked, user already has a dial in progress
+      retryDelayMs: 0
     });
 
     const lockAcquired = await dialLock.acquire();
     if (!lockAcquired) {
-        console.warn('[outbound-call] Failed to acquire dial lock - possible double-click', { agentId });
-        return { 
-            statusCode: 429, 
-            headers: corsHeaders, 
-            body: JSON.stringify({ message: 'Outbound call already in progress. Please wait.' }) 
-        };
+      console.warn('[outbound-call] Failed to acquire dial lock - possible double-click', { agentId });
+      return {
+        statusCode: 429,
+        headers: corsHeaders,
+        body: JSON.stringify({ message: 'Outbound call already in progress. Please wait.' })
+      };
     }
 
-    // 4. Set agent status to "dialing" atomically
-    // This "locks" the agent to prevent them from receiving an inbound call
-    const callReference = `outbound-${Date.now()}-${agentId}`;
-    
-    // FIX: Use try/finally to ensure lock is always released after all operations complete
     try {
-        try {
+      // 3) Concurrency guard: agent cannot start outbound while already busy.
+      // We use AgentActive (agentId-index) as global busy signal.
+      const { Items: agentActiveRows } = await ddb.send(new QueryCommand({
+        TableName: AGENT_ACTIVE_TABLE_NAME,
+        IndexName: 'agentId-index',
+        KeyConditionExpression: 'agentId = :agentId',
+        ExpressionAttributeValues: { ':agentId': agentId },
+        ProjectionExpression: 'clinicId, agentId, #state, currentCallId',
+        ExpressionAttributeNames: { '#state': 'state' },
+      }));
+
+      const rows = (agentActiveRows || []) as any[];
+      const busyRow = rows.find((r) => String(r?.state || '').toLowerCase() === 'busy');
+      if (busyRow) {
+        return {
+          statusCode: 409,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            message: 'Agent is already on another call.',
+            currentCallId: busyRow.currentCallId,
+          }),
+        };
+      }
+
+      const activeClinicIds = rows
+        .filter((r) => String(r?.state || '').toLowerCase() === 'active' && typeof r?.clinicId === 'string' && r.clinicId.length > 0)
+        .map((r) => String(r.clinicId));
+
+      // 4) Mark agent busy to enforce single-call concurrency and prevent inbound offers.
+      // - If agent is Online (has AgentActive rows), mark ALL active clinics busy.
+      // - If agent is Offline (no AgentActive rows), create a temporary busy marker for fromClinicId.
+      callReference = `outbound-${Date.now()}-${randomUUID().slice(0, 8)}`;
+      const nowIso = new Date().toISOString();
+      const markerNowTs = Math.floor(Date.now() / 1000);
+      const tempBusyTtl = markerNowTs + TTL_POLICY.ACTIVE_CALL_SECONDS;
+
+      if (activeClinicIds.length > 0) {
+        const busyResults = await Promise.allSettled(
+          activeClinicIds.map(async (clinicId: string) => {
             await ddb.send(new UpdateCommand({
-                TableName: AGENT_PRESENCE_TABLE_NAME,
-                Key: { agentId },
-                UpdateExpression: 'SET #status = :dialingStatus, currentCallId = :callRef, lastActivityAt = :now',
-                ConditionExpression: '#status = :onlineStatus AND attribute_not_exists(currentCallId) AND attribute_not_exists(ringingCallId)',
-                ExpressionAttributeNames: { '#status': 'status' },
-                ExpressionAttributeValues: {
-                    ':dialingStatus': 'dialing',
-                    ':onlineStatus': 'Online',
-                    ':callRef': callReference,
-                    ':now': new Date().toISOString()
-                }
+              TableName: AGENT_ACTIVE_TABLE_NAME,
+              Key: { clinicId, agentId },
+              UpdateExpression: 'SET #state = :busy, currentCallId = :callRef, updatedAt = :now',
+              ConditionExpression: '#state = :active',
+              ExpressionAttributeNames: { '#state': 'state' },
+              ExpressionAttributeValues: {
+                ':busy': 'busy',
+                ':active': 'active',
+                ':callRef': callReference,
+                ':now': nowIso,
+              },
             }));
-        } catch (err: any) {
-            if (err.name === 'ConditionalCheckFailedException') {
-                console.warn('[outbound-call] Agent status changed, aborting dial', { agentId });
-                return { statusCode: 409, headers: corsHeaders, body: JSON.stringify({ message: 'Agent status changed. Please try again.' }) };
-            }
-            console.error('[outbound-call] Failed to update agent status', { error: err.message });
-            return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'Failed to update agent status' }) };
+          })
+        );
+
+        markedBusyClinicIds = activeClinicIds.filter((_, idx) => busyResults[idx].status === 'fulfilled');
+        if (markedBusyClinicIds.length === 0) {
+          return {
+            statusCode: 409,
+            headers: corsHeaders,
+            body: JSON.stringify({ message: 'Agent status changed. Please try again.' }),
+          };
         }
-    
-        const smaId = getSmaIdForClinic(body.fromClinicId);
-    if (!smaId) {
-        console.error('[outbound-call] Missing SMA mapping for clinic', { clinicId: body.fromClinicId });
-        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ message: 'Outbound calling is not configured for this clinic' }) };
-    }
+      } else {
+        // Offline outbound: create a temp busy marker so:
+        // - Backend enforces single-call concurrency (busyRow check)
+        // - Inbound router will NOT include the agent in offers (it filters state='active')
+        // - On call end, inbound-router will delete tempBusy rows to return agent to Offline
+        const markerClinicId = String(body.fromClinicId || '').trim();
+        if (!markerClinicId) {
+          return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ message: 'fromClinicId is required' }),
+          };
+        }
 
-    // 5. Initiate the outbound call leg to the customer
-    console.log('[outbound-call] Initiating SIP media application call', {
-      fromPhoneNumber,
-      toPhoneNumber: body.toPhoneNumber,
-      smaId,
-      meetingId: agentMeeting.MeetingId
-    });
+        try {
+          await ddb.send(new PutCommand({
+            TableName: AGENT_ACTIVE_TABLE_NAME,
+            Item: {
+              clinicId: markerClinicId,
+              agentId,
+              state: 'busy',
+              currentCallId: callReference,
+              tempBusy: true,
+              updatedAt: nowIso,
+              ttl: tempBusyTtl,
+            },
+            ConditionExpression: 'attribute_not_exists(clinicId)',
+          }));
+          tempBusyClinicId = markerClinicId;
+        } catch (markerErr: any) {
+          if (markerErr?.name === 'ConditionalCheckFailedException') {
+            return {
+              statusCode: 409,
+              headers: corsHeaders,
+              body: JSON.stringify({ message: 'Agent status changed. Please try again.' }),
+            };
+          }
+          throw markerErr;
+        }
+      }
 
-    // CRITICAL FIX #3: Add idempotency token to prevent duplicate calls on Lambda retry
-    const idempotencyKey = randomUUID();
-    
-    const callCommandInput = {
+      // 5) Create per-call meeting + agent attendee
+      const meetingResponse = await chime.send(new CreateMeetingCommand({
+        ClientRequestToken: randomUUID(),
+        MediaRegion: CHIME_MEDIA_REGION,
+        ExternalMeetingId: callReference.slice(0, 64),
+      }));
+      meetingInfo = meetingResponse.Meeting;
+      meetingId = meetingInfo?.MeetingId;
+      if (!meetingId) {
+        throw new Error('Failed to create meeting (missing MeetingId)');
+      }
+
+      const attendeeResponse = await chime.send(new CreateAttendeeCommand({
+        MeetingId: meetingId,
+        ExternalUserId: `agent-${agentId}-${Date.now()}`.slice(0, 64),
+      }));
+      agentAttendeeInfo = attendeeResponse.Attendee;
+      if (!agentAttendeeInfo?.AttendeeId || !agentAttendeeInfo?.JoinToken) {
+        throw new Error('Failed to create agent attendee (missing AttendeeId/JoinToken)');
+      }
+
+      const smaId = getSmaIdForClinic(body.fromClinicId);
+      if (!smaId) {
+        console.error('[outbound-call] ❌ Missing SMA mapping for clinic — outbound calling will fail', {
+          clinicId: body.fromClinicId,
+          hint: 'Ensure getSmaIdForClinic returns a valid SMA ID for this clinic.',
+        });
+        throw new Error('Outbound calling is not configured for this clinic');
+      }
+
+      // 6) Initiate outbound call leg to customer (SMA)
+      console.log('[outbound-call] 📞 Initiating SIP media application call', {
+        fromPhoneNumber,
+        toPhoneNumber: body.toPhoneNumber,
+        smaId,
+        meetingId,
+        agentId,
+        callReference,
+        region: CHIME_MEDIA_REGION,
+      });
+
+      // CRITICAL FIX #3: Add idempotency token to prevent duplicate calls on Lambda retry
+      const idempotencyKey = randomUUID();
+
+      const callCommandInput = {
         FromPhoneNumber: fromPhoneNumber,
         ToPhoneNumber: body.toPhoneNumber,
         SipMediaApplicationId: smaId,
         ClientRequestToken: idempotencyKey, // Prevents duplicate calls if Lambda is retried
         ArgumentsMap: {
-            // Pass all info the inbound-router.ts will need
-            "callType": "Outbound",
-            "agentId": agentId,
-            "meetingId": agentMeeting.MeetingId,
-            "callReference": callReference,
-            "idempotencyKey": idempotencyKey, // Also pass in arguments for logging
-            "toPhoneNumber": body.toPhoneNumber,
-            "fromPhoneNumber": fromPhoneNumber,
-            "fromClinicId": body.fromClinicId,
+          // Pass all info the inbound-router.ts will need
+          callType: 'Outbound',
+          agentId: agentId,
+          meetingId: meetingId,
+          callReference: callReference,
+          idempotencyKey: idempotencyKey, // Also pass in arguments for logging
+          toPhoneNumber: body.toPhoneNumber,
+          fromPhoneNumber: fromPhoneNumber,
+          fromClinicId: body.fromClinicId,
         }
-    };
+      };
 
-    let callResponse: CreateSipMediaApplicationCallCommandOutput | null = null;
-    let lastDialError: any = null;
+      let callResponse: CreateSipMediaApplicationCallCommandOutput | null = null;
+      let lastDialError: any = null;
 
-    for (let attempt = 1; attempt <= OUTBOUND_CALL_MAX_ATTEMPTS; attempt++) {
+      for (let attempt = 1; attempt <= OUTBOUND_CALL_MAX_ATTEMPTS; attempt++) {
         try {
-            callResponse = await chimeVoiceClient.send(new CreateSipMediaApplicationCallCommand(callCommandInput));
-            break;
+          callResponse = await chimeVoiceClient.send(new CreateSipMediaApplicationCallCommand(callCommandInput));
+          break;
         } catch (err: any) {
-            lastDialError = err;
-            if (isConcurrentCallLimitError(err) && attempt < OUTBOUND_CALL_MAX_ATTEMPTS) {
-                const waitTime = OUTBOUND_CALL_RETRY_BASE_DELAY_MS * attempt;
-                console.warn(`[outbound-call] Concurrent call limit reached (attempt ${attempt}/${OUTBOUND_CALL_MAX_ATTEMPTS}). Retrying in ${waitTime}ms.`);
-                await sleep(waitTime);
-                continue;
-            }
-            throw err;
+          lastDialError = err;
+          if (isConcurrentCallLimitError(err) && attempt < OUTBOUND_CALL_MAX_ATTEMPTS) {
+            const waitTime = OUTBOUND_CALL_RETRY_BASE_DELAY_MS * attempt;
+            console.warn(`[outbound-call] Concurrent call limit reached (attempt ${attempt}/${OUTBOUND_CALL_MAX_ATTEMPTS}). Retrying in ${waitTime}ms.`);
+            await sleep(waitTime);
+            continue;
+          }
+          console.error('[outbound-call] ❌ SMA call failed', {
+            attempt,
+            errorName: err?.name,
+            errorMessage: err?.message,
+            smaId,
+            fromPhoneNumber,
+            toPhoneNumber: body.toPhoneNumber,
+          });
+          throw err;
         }
-    }
+      }
 
-    if (!callResponse) {
+      if (!callResponse) {
         throw lastDialError || new Error('Failed to initiate outbound call');
-    }
-    
-    const callId = callResponse.SipMediaApplicationCall?.TransactionId;
-    if (!callId) {
-        throw new Error('CreateSipMediaApplicationCall did not return a TransactionId');
-    }
-    console.log('[outbound-call] SIP call initiated successfully', { transactionId: callId });
+      }
 
-    // 6. Store outbound call in queue table for tracking
-    const now = new Date();
-    const nowTs = Math.floor(now.getTime() / 1000);
-    // CRITICAL FIX #5: Use centralized TTL policy
-    const callTTL = nowTs + TTL_POLICY.ACTIVE_CALL_SECONDS;
-    
-    // FIX #4: Use unique queue position generation
-    const { generateUniqueQueuePosition } = require('../shared/utils/unique-id');
-    const queuePosition = generateUniqueQueuePosition();
-    
-    await ddb.send(new PutCommand({
+      callId = callResponse.SipMediaApplicationCall?.TransactionId;
+      if (!callId) {
+        throw new Error('CreateSipMediaApplicationCall did not return a TransactionId');
+      }
+      console.log('[outbound-call] ✅ SIP call initiated successfully', {
+        transactionId: callId,
+        smaId,
+        meetingId,
+        agentId,
+      });
+
+      // Update AgentActive busy rows to point at real callId (best-effort)
+      const updateNowIso = new Date().toISOString();
+      const busyClinicIdsToUpdate = [
+        ...markedBusyClinicIds,
+        ...(tempBusyClinicId ? [tempBusyClinicId] : []),
+      ];
+
+      await Promise.allSettled(busyClinicIdsToUpdate.map(async (clinicId: string) => {
+        await ddb.send(new UpdateCommand({
+          TableName: AGENT_ACTIVE_TABLE_NAME,
+          Key: { clinicId, agentId },
+          UpdateExpression: 'SET currentCallId = :callId, updatedAt = :ts',
+          ConditionExpression: '#state = :busy AND currentCallId = :callRef',
+          ExpressionAttributeNames: { '#state': 'state' },
+          ExpressionAttributeValues: {
+            ':busy': 'busy',
+            ':callRef': callReference,
+            ':callId': callId,
+            ':ts': updateNowIso,
+          },
+        }));
+      }));
+
+      // 7) Store outbound call in queue table for tracking
+      const now = new Date();
+      const nowTs = Math.floor(now.getTime() / 1000);
+      // CRITICAL FIX #5: Use centralized TTL policy
+      const callTTL = nowTs + TTL_POLICY.ACTIVE_CALL_SECONDS;
+
+      // FIX #4: Use unique queue position generation
+      const { generateUniqueQueuePosition } = require('../shared/utils/unique-id');
+      const queuePosition = generateUniqueQueuePosition();
+
+      await ddb.send(new PutCommand({
         TableName: CALL_QUEUE_TABLE_NAME,
         Item: {
-            clinicId: body.fromClinicId,
-            callId: callId,
-            queuePosition,
-            queueEntryTime: nowTs,
-            queueEntryTimeIso: now.toISOString(),
-            phoneNumber: body.toPhoneNumber,
-            status: 'dialing',
-            direction: 'outbound',
-            assignedAgentId: agentId,
-            callReference: callReference,
-            meetingInfo: agentMeeting,
-            ttl: callTTL
+          clinicId: body.fromClinicId,
+          callId: callId,
+          queuePosition,
+          queueEntryTime: nowTs,
+          queueEntryTimeIso: now.toISOString(),
+          phoneNumber: body.toPhoneNumber,
+          status: 'dialing',
+          direction: 'outbound',
+          assignedAgentId: agentId,
+          callReference: callReference,
+          meetingModel: 'per_call',
+          meetingId,
+          meetingInfo,
+          agentAttendeeInfo,
+          ttl: callTTL
         }
-    }));
-    console.log(`[outbound-call] Call ${callId} added to queue table`);
+      }));
+      console.log(`[outbound-call] Call ${callId} added to queue table`);
 
-    // 7. Update agent presence with the REAL callId (TransactionId)
-    // This overwrites the temporary callReference
-     await ddb.send(new UpdateCommand({
-        TableName: AGENT_PRESENCE_TABLE_NAME,
-        Key: { agentId },
-        UpdateExpression: 'SET currentCallId = :realCallId',
-        ConditionExpression: 'currentCallId = :callRef', // Ensure we are updating the correct call
-        ExpressionAttributeValues: {
-            ':realCallId': callId,
-            ':callRef': callReference
-        }
-    }));
-     console.log(`[outbound-call] Agent presence updated with real callId ${callId}`);
+      // 8) Return meeting credentials for agent to join the per-call meeting
+      const responseBody = {
+        success: true,
+        message: 'Outbound call initiated.',
+        callId: callId,
+        callReference: callReference,
+        meeting: meetingInfo,
+        attendee: agentAttendeeInfo,
+      };
 
-    // 8. Return simple success response
-    // The frontend is already in the meeting and just needs confirmation.
-    const responseBody = {
-      success: true,
-      message: 'Outbound call initiated.',
-      callId: callId,
-      callReference: callReference,
-    };
-    
-    console.log('[outbound-call] Request completed successfully', responseBody);
-    
-    return {
-      statusCode: 200,
-      headers: corsHeaders,
-      body: JSON.stringify(responseBody),
-    };
-    
+      console.log('[outbound-call] Request completed successfully', responseBody);
+
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify(responseBody),
+      };
+
     } finally {
-        // FIX: Always release lock after all operations complete (success or failure within this block)
-        await dialLock.release();
-        console.log('[outbound-call] Released dial lock');
+      // FIX: Always release lock after all operations complete (success or failure within this block)
+      await dialLock.release();
+      console.log('[outbound-call] Released dial lock');
     }
 
   } catch (err: any) {
@@ -341,40 +467,65 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     };
     console.error('[outbound-call] Error making outbound call:', errorContext);
     const concurrentLimitHit = isConcurrentCallLimitError(err);
-    
-    // --- ROLLBACK LOGIC ---
-    // If we failed and have an agentId, try to set the agent's status back to Online
-    if (typeof agentId !== 'undefined') {
+
+    // --- ROLLBACK LOGIC (best-effort) ---
+    // 1) Reset AgentActive busy -> active (only for rows we marked).
+    if (AGENT_ACTIVE_TABLE_NAME && agentId && markedBusyClinicIds.length > 0) {
+      const nowIso = new Date().toISOString();
+      const rollbackCallId = callId || callReference;
+      await Promise.allSettled(markedBusyClinicIds.map(async (clinicId: string) => {
         try {
-            await ddb.send(new UpdateCommand({
-                TableName: AGENT_PRESENCE_TABLE_NAME,
-                Key: { agentId },
-                UpdateExpression: 'SET #status = :onlineStatus, lastActivityAt = :now REMOVE currentCallId',
-                ConditionExpression: '#status = :dialingStatus', // Only rollback if they are still "dialing"
-                ExpressionAttributeNames: { '#status': 'status' },
-                ExpressionAttributeValues: {
-                    ':onlineStatus': 'Online',
-                    ':dialingStatus': 'dialing',
-                    ':now': new Date().toISOString()
-                }
-            }));
-            console.log('[outbound-call] ROLLBACK successful: Agent status set back to Online.', { agentId });
-        } catch (rollbackErr: any) {
-            console.error('[outbound-call] ROLLBACK FAILED: Could not reset agent status.', { agentId, error: rollbackErr.message });
-            // This agent may be stuck in "dialing" state until cleanup-monitor runs
+          await ddb.send(new UpdateCommand({
+            TableName: AGENT_ACTIVE_TABLE_NAME,
+            Key: { clinicId, agentId },
+            UpdateExpression: 'SET #state = :active, updatedAt = :ts REMOVE currentCallId',
+            ConditionExpression: '#state = :busy AND currentCallId = :callId',
+            ExpressionAttributeNames: { '#state': 'state' },
+            ExpressionAttributeValues: {
+              ':active': 'active',
+              ':busy': 'busy',
+              ':callId': rollbackCallId,
+              ':ts': nowIso,
+            },
+          }));
+        } catch (agentErr: any) {
+          if (agentErr?.name !== 'ConditionalCheckFailedException') {
+            console.warn('[outbound-call] AgentActive rollback failed (non-fatal):', agentErr?.message || agentErr);
+          }
         }
+      }));
     }
-    
-    // Note: dialLock.release() is called in finally block above, but if error occurred before lock acquired,
-    // the DistributedLock.release() method safely handles the case where lock wasn't acquired
-    
+
+    // 1b) If we created a temp busy marker (Offline outbound), delete it (do NOT set active).
+    if (AGENT_ACTIVE_TABLE_NAME && agentId && tempBusyClinicId) {
+      const rollbackCallId = callId || callReference;
+      await ddb.send(new DeleteCommand({
+        TableName: AGENT_ACTIVE_TABLE_NAME,
+        Key: { clinicId: tempBusyClinicId, agentId },
+        ConditionExpression: '#state = :busy AND currentCallId = :callId AND tempBusy = :true',
+        ExpressionAttributeNames: { '#state': 'state' },
+        ExpressionAttributeValues: { ':busy': 'busy', ':callId': rollbackCallId, ':true': true },
+      })).catch(() => { });
+    }
+
+    // 2) Delete orphaned meeting (best-effort)
+    if (meetingId) {
+      await chime.send(new DeleteMeetingCommand({ MeetingId: meetingId })).catch(() => { });
+    }
+
+    // Note: dialLock.release() is called in finally block above when acquired.
+    // If error occurred before lock acquisition, dialLock will be null.
+    if (dialLock) {
+      await dialLock.release().catch(() => { });
+    }
+
     return {
       statusCode: concurrentLimitHit ? 429 : 500,
       headers: corsHeaders,
-      body: JSON.stringify({ 
-        message: concurrentLimitHit 
-            ? 'All outbound lines are currently in use. Please wait a moment and try again.' 
-            : 'Failed to make outbound call', 
+      body: JSON.stringify({
+        message: concurrentLimitHit
+          ? 'All outbound lines are currently in use. Please wait a moment and try again.'
+          : 'Failed to make outbound call',
         error: err?.message,
         code: err?.name || err?.code
       }),

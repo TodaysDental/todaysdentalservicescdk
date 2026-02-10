@@ -117,7 +117,8 @@ async function processRecordingEvent(record: S3EventRecord): Promise<void> {
   if (metadata.agentId) {
     try {
       // Get call record to extract full metrics
-      const callRecord = await getCallRecord(metadata.callId);
+      // RecordingMetadata.callId is the analytics TransactionId; CallQueue lookup needs the PSTN leg callId.
+      const callRecord = await getCallRecord(metadata.pstnCallId || metadata.callId);
       
       if (callRecord) {
         const callMetrics = extractCallMetrics(callRecord);

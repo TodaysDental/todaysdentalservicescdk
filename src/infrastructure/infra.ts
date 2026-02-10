@@ -238,6 +238,10 @@ const templatesStack = new TemplatesStack(app, 'TodaysDentalInsightsTemplatesN1'
 // Consent Form Data service
 const consentFormDataStack = new ConsentFormDataStack(app, 'TodaysDentalInsightsConsentFormDataN1', {
   env,
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
 // *** END NEW STACK ***
 
@@ -261,6 +265,7 @@ const openDentalStack = new OpenDentalStack(app, 'TodaysDentalInsightsOpenDental
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
 openDentalStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
+consentFormDataStack.addDependency(openDentalStack); // Explicit - imports consolidated Transfer endpoint/bucket outputs
 
 // Notifications service
 const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNotificationsN1', {
@@ -270,6 +275,11 @@ const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNoti
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  // Chime outbound calling (Marketing voice campaigns)
+  // NOTE: NotificationsStack is instantiated before CHIME_STACK_NAME is declared below,
+  // so we pass the known parameter name explicitly here.
+  smaIdMapParameterName: '/TodaysDentalInsightsChimeN1/SmaIdMap',
+  chimeMediaRegion: process.env.CHIME_MEDIA_REGION || 'us-east-1',
 });
 notificationsStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for unsubscribe secret
 const marketingStack = new MarketingStack(app, 'TodaysDentalInsightsMarketingN1', {
@@ -398,22 +408,45 @@ const ENABLE_AFTER_HOURS_AI = process.env.ENABLE_AFTER_HOURS_AI !== 'false';
 const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
 
 // ========================================
+// AMAZON CONNECT (LEX AI) RECORDINGS (OPTIONAL)
+// ========================================
+// Connect recordings are stored in the Connect-managed S3 bucket configured on the instance.
+// We pass these values to ChimeStack's GetRecording Lambda so /admin/recordings/call/{callId}
+// can also serve recordings for Connect/Lex calls (callId = connect-{ContactId}).
+//
+// NOTE: Override via environment variables if the Connect instance storage config changes.
+const CONNECT_CALL_RECORDINGS_BUCKET_NAME =
+  process.env.CONNECT_CALL_RECORDINGS_BUCKET_NAME || 'amazon-connect-c827a75574aa';
+const CONNECT_CALL_RECORDINGS_PREFIX =
+  process.env.CONNECT_CALL_RECORDINGS_PREFIX || 'connect/todaysdentalcommunications/CallRecordings';
+const CONNECT_CALL_RECORDINGS_KMS_KEY_ARN =
+  process.env.CONNECT_CALL_RECORDINGS_KMS_KEY_ARN || 'arn:aws:kms:us-east-1:851620242036:key/5dae5a1c-2e8f-4157-a04c-20e3293d01a7';
+
+// ========================================
 // PUSH NOTIFICATIONS STACK (must be defined before ChimeStack and CommStack)
 // ========================================
-// Mobile push notifications via SNS (iOS APNs + Android FCM)
-// Prerequisites: Store credentials in Secrets Manager before enabling platform applications:
-// - todaysdentalinsights/push/apns - APNs credentials (signingKey, keyId, teamId, bundleId)
-// - todaysdentalinsights/push/fcm - FCM credentials (serverKey)
+// Mobile push notifications via DIRECT Firebase FCM HTTP v1 API
+// No AWS SNS Platform Applications - all notifications sent directly to Firebase
 //
-// Used by: CommStack (offline messaging), ChimeStack (call notifications)
+// Required GlobalSecrets entries for FCM (Android & iOS):
+// - secretId: fcm, secretType: service_account (Firebase Service Account JSON)
+//
+// For iOS support: Configure APNs key in Firebase Console:
+// 1. Go to Firebase Console > Project Settings > Cloud Messaging
+// 2. Upload your APNs authentication key (.p8 file)
+// 3. Firebase will route iOS notifications to APNs automatically
+//
+// Used by: CommStack (offline messaging), ChimeStack (call notifications), HrStack
 const pushNotificationsStack = new PushNotificationsStack(app, PUSH_NOTIFICATIONS_STACK_NAME, {
   env,
-  // Enable these after creating the Secrets Manager secrets (see docs/PUSH-NOTIFICATIONS-SETUP.md):
-  // apnsSecretName: 'todaysdentalinsights/push/apns',
-  // fcmSecretName: 'todaysdentalinsights/push/fcm',
-  enableApnsSandbox: true,
+  // GlobalSecrets table for FCM service account credentials
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  globalSecretsTableArn: secretsStack.globalSecretsTable.tableArn,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
 pushNotificationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+pushNotificationsStack.addDependency(secretsStack); // Explicit - reads from GlobalSecrets table
+
 
 const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
   env,
@@ -429,22 +462,15 @@ const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
   medicalVocabularyName: analyticsStack.medicalVocabularyName,
   // Chime Media Region - passed to all Lambda functions for consistent region usage
   chimeMediaRegion: CHIME_MEDIA_REGION,
-  // Voice AI integration (from AiAgentsStack)
-  // NOTE: Set ENABLE_AFTER_HOURS_AI=true after AiAgentsStack is deployed
+  // Connect/Lex recordings support (used by GetRecording fallback for connect-{ContactId})
+  connectCallRecordingsBucketName: CONNECT_CALL_RECORDINGS_BUCKET_NAME,
+  connectCallRecordingsPrefix: CONNECT_CALL_RECORDINGS_PREFIX,
+  connectCallRecordingsKmsKeyArn: CONNECT_CALL_RECORDINGS_KMS_KEY_ARN,
+  // After-hours forwarding to Connect/Lex (AI phone number)
   enableAfterHoursAi: ENABLE_AFTER_HOURS_AI,
-  voiceAiLambdaArn: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceAiFunctionArn`) : undefined,
   // CRITICAL FIX: Use ClinicHoursStack table directly - it's the source of truth for clinic hours
   clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
-  aiAgentsTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableName`) : undefined,
   voiceConfigTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceConfigTableName`) : undefined,
-  scheduledCallsTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-ScheduledCallsTableName`) : undefined,
-  // NOTE: ChimeStack creates the recordings bucket - it will be shared with AiAgentsStack
-  // Enable real-time transcription for Voice AI - required for AI to listen to speech
-  // This sets up Media Insights Pipeline + Amazon Transcribe + Kinesis for speech-to-text
-  enableRealTimeTranscription: ENABLE_AFTER_HOURS_AI,
-  // Enable AI phone numbers - creates SIP Rules for aiPhoneNumber entries in clinic-config.json
-  // Calls to AI phone numbers route directly to Voice AI (no business hours check)
-  enableAiPhoneNumbers: ENABLE_AFTER_HOURS_AI,
   // ========================================
   // PUSH NOTIFICATIONS INTEGRATION
   // ========================================
@@ -509,12 +535,19 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
   chatHistoryTableName: CHATBOT_CONVERSATIONS_TABLE_NAME,
   clinicsTableName: chimeStack.clinicsTable.tableName,
   recordingsBucketName: chimeStack.recordingsBucket?.bucketName,
+  // CRITICAL: Add TranscriptBuffers table for LexAI/Voice AI transcript lookup
+  transcriptBufferTableName: analyticsStack.transcriptBufferTable.tableName,
   // Import ARNs exported by the Chime stack
   startSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StartSessionArn`),
   stopSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StopSessionArn`),
+  agentActiveFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-AgentActiveArn`),
+  agentInactiveFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-AgentInactiveArn`),
   outboundCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-OutboundCallArn`),
   transferCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-TransferCallArn`),
   callAcceptedFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallAcceptedArn`),
+  callAcceptedV2FnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallAcceptedV2Arn`),
+  callRejectedV2FnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallRejectedV2Arn`),
+  callHungupV2FnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallHungupV2Arn`),
   callRejectedFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallRejectedArn`),
   callHungupFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallHungupArn`),
   leaveCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-LeaveCallArn`),
@@ -555,8 +588,16 @@ const hrStack = new HrStack(app, 'TodaysDentalInsightsHrN1', {
   env,
   staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
   clinicsTableName: chimeStack.clinicsTable.tableName, // For timezone lookup in shift emails
+  // ========================================
+  // PUSH NOTIFICATIONS INTEGRATION
+  // ========================================
+  // Enables mobile push notifications for HR events (shifts, leave, advance pay)
+  deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
+  deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
+  sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
 });
 // hrStack.addDependency(coreStack); // Implicit
+
 
 // Credentialing Stack - Provider credentialing and payer enrollment management
 const credentialingStack = new CredentialingStack(app, 'TodaysDentalInsightsCredentialingN1', {
@@ -575,10 +616,18 @@ const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesN1'
   consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
   // Pass secrets table names for dynamic SFTP credential retrieval
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  // Consent Forms scheduling (create instances + snapshot template)
+  consentFormTemplatesTableName: consentFormDataStack.consentFormDataTable.tableName,
+  consentFormInstancesTableName: consentFormDataStack.consentFormInstancesTable.tableName,
+  // Chime outbound calling (marketing voice campaigns)
+  smaIdMapParameterName: `/${CHIME_STACK_NAME}/SmaIdMap`,
+  chimeMediaRegion: CHIME_MEDIA_REGION,
 });
 schedulesStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
+schedulesStack.addDependency(consentFormDataStack); // Explicit - reads/writes Consent Forms tables for scheduling
 
 const callbackStack = new CallbackStack(app, 'TodaysDentalInsightsCallbackN1', {
   env,
@@ -746,8 +795,6 @@ const connectLexAiStack = new ConnectLexAiStack(app, 'TodaysDentalInsightsConnec
   // AI phone numbers mapping for clinic detection (built from clinic-config.json)
   aiPhoneNumbersJson: JSON.stringify(aiPhoneNumbersMap),
   defaultClinicId: defaultClinicForAi,
-  // Thinking audio URL from ChimeStack - plays keyboard sounds during AI processing
-  thinkingAudioUrl: chimeStack.thinkingAudioUrl,
   thinkingAudioMode: 'verbal',
   // Enable async pattern for 60s Bedrock timeout (overcomes Connect's 8s sync limit)
   // This allows complex tool calls (patient search, appointment booking) to complete
@@ -757,7 +804,7 @@ const connectLexAiStack = new ConnectLexAiStack(app, 'TodaysDentalInsightsConnec
 });
 connectLexAiStack.addDependency(aiAgentsStack);
 connectLexAiStack.addDependency(analyticsStack);
-connectLexAiStack.addDependency(chimeStack); // Needs public audio bucket from ChimeStack
+// ConnectLexAiStack is standalone for AI calling (no Chime dependency).
 
 // Query Generator Stack - AI-powered SQL query generation using Bedrock
 const queryGeneratorStack = new QueryGeneratorStack(app, 'TodaysDentalInsightsQueryGeneratorN1', {
@@ -802,6 +849,7 @@ clinicBudgetStack.addDependency(coreStack); // Explicit - imports AuthorizerFunc
 openDentalStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 hrStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 hrStack.addDependency(chimeStack); // Explicit - uses Clinics table for timezone lookup
+hrStack.addDependency(pushNotificationsStack); // Explicit - uses push notification Lambda
 
 communicationsStack.addDependency(coreStack); // Explicit - uses JWT secret
 communicationsStack.addDependency(pushNotificationsStack); // Explicit - uses push notification Lambda

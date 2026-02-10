@@ -1,0 +1,36 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "f6cf2bf8defe4b88ffbba44cb3386dba56462019dab9d000068bac8db772a08b": {
+      "displayName": "ClinicPricingCrudFn/Code",
+      "source": {
+        "path": "asset.f6cf2bf8defe4b88ffbba44cb3386dba56462019dab9d000068bac8db772a08b",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-04bd972b": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "f6cf2bf8defe4b88ffbba44cb3386dba56462019dab9d000068bac8db772a08b.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "5ff1817a5fe62f5993119b48a23ec1a731fa9ac40805535584b3f05d09d423ad": {
+      "displayName": "TodaysDentalInsightsClinicPricingN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsClinicPricingN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-018ea567": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "5ff1817a5fe62f5993119b48a23ec1a731fa9ac40805535584b3f05d09d423ad.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

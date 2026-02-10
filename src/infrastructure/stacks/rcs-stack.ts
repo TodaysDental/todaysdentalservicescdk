@@ -34,7 +34,6 @@ export interface RcsStackProps extends StackProps {
 }
 
 export class RcsStack extends Stack {
-  public readonly rcsMessagesTable: dynamodb.Table;
   public readonly rcsTemplatesTable: dynamodb.Table;
   public readonly rcsAnalyticsTable: dynamodb.Table;
   public readonly rcsApi: apigw.RestApi;
@@ -115,40 +114,20 @@ export class RcsStack extends Stack {
     // DYNAMODB TABLE
     // ========================================
 
-    // RCS Messages Table - Stores all RCS message history per clinic
-    this.rcsMessagesTable = new dynamodb.Table(this, 'RcsMessagesTable', {
-      tableName: `${this.stackName}-RcsMessages`,
-      partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING }, // CLINIC#<clinicId>
-      sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING }, // MSG#<timestamp>#<messageSid> or OUTBOUND#<timestamp>#<messageSid>
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: RemovalPolicy.RETAIN,
-      timeToLiveAttribute: 'ttl',
-      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
-    });
-    applyTags(this.rcsMessagesTable, { Table: 'rcs-messages' });
-
-    // GSI for querying by phone number across all clinics
-    this.rcsMessagesTable.addGlobalSecondaryIndex({
-      indexName: 'PhoneIndex',
-      partitionKey: { name: 'from', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // GSI for querying by message SID (for status updates)
-    this.rcsMessagesTable.addGlobalSecondaryIndex({
-      indexName: 'MessageSidIndex',
-      partitionKey: { name: 'messageSid', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // RCS Templates Table - Stores rich message templates per clinic
+    // RCS Templates Table - ALSO stores all RCS message history per clinic
+    // We intentionally keep everything in ONE DynamoDB table and separate item types by `sk` prefix:
+    // - TEMPLATE#<templateId> (RCS templates)
+    // - MSG#<timestamp>#<messageSid> (inbound)
+    // - OUTBOUND#<timestamp>#<messageSid> (outbound)
+    // - STATUS#<messageSid>#<timestamp> (delivery status audit records)
+    // - SMS_FALLBACK#<timestamp>#<originalMessageSid> (SMS fallback audit records)
     this.rcsTemplatesTable = new dynamodb.Table(this, 'RcsTemplatesTable', {
       tableName: `${this.stackName}-RcsTemplates`,
       partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING }, // CLINIC#<clinicId>
       sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING }, // TEMPLATE#<templateId>
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
+      timeToLiveAttribute: 'ttl',
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
     });
     applyTags(this.rcsTemplatesTable, { Table: 'rcs-templates' });
@@ -282,7 +261,8 @@ export class RcsStack extends Stack {
     }
 
     const defaultLambdaEnv = {
-      RCS_MESSAGES_TABLE: this.rcsMessagesTable.tableName,
+      // Messages are stored in the unified RCS templates table
+      RCS_MESSAGES_TABLE: this.rcsTemplatesTable.tableName,
       RCS_TEMPLATES_TABLE: this.rcsTemplatesTable.tableName,
       SKIP_TWILIO_VALIDATION: process.env.SKIP_TWILIO_VALIDATION || 'false',
       // Secrets tables for dynamic credential retrieval (Twilio credentials fetched from GlobalSecrets at runtime)
@@ -317,7 +297,7 @@ export class RcsStack extends Stack {
       environment: defaultLambdaEnv,
     });
     applyTags(this.incomingMessageFn, { Function: 'rcs-incoming' });
-    this.rcsMessagesTable.grantWriteData(this.incomingMessageFn);
+    this.rcsTemplatesTable.grantWriteData(this.incomingMessageFn);
 
     // Fallback Message Handler - Backup webhook for when primary fails
     // Also publishes to SNS topic for async processing (SMS fallback, alerts, etc.)
@@ -334,7 +314,7 @@ export class RcsStack extends Stack {
       },
     });
     applyTags(this.fallbackMessageFn, { Function: 'rcs-fallback' });
-    this.rcsMessagesTable.grantWriteData(this.fallbackMessageFn);
+    this.rcsTemplatesTable.grantWriteData(this.fallbackMessageFn);
     // Grant permission to publish to SNS fallback topic
     this.rcsFallbackTopic.grantPublish(this.fallbackMessageFn);
 
@@ -353,7 +333,7 @@ export class RcsStack extends Stack {
       },
     });
     applyTags(this.statusCallbackFn, { Function: 'rcs-status' });
-    this.rcsMessagesTable.grantReadWriteData(this.statusCallbackFn);
+    this.rcsTemplatesTable.grantReadWriteData(this.statusCallbackFn);
     
     // Grant permissions for analytics publishing
     this.rcsAnalyticsTopic.grantPublish(this.statusCallbackFn);
@@ -380,7 +360,7 @@ export class RcsStack extends Stack {
       environment: sendMessageEnv,
     });
     applyTags(this.sendMessageFn, { Function: 'rcs-send' });
-    this.rcsMessagesTable.grantWriteData(this.sendMessageFn);
+    this.rcsTemplatesTable.grantWriteData(this.sendMessageFn);
 
     // Grant read access to unsubscribe table for checking preferences
     if (unsubscribeTableName) {
@@ -404,7 +384,7 @@ export class RcsStack extends Stack {
       environment: defaultLambdaEnv,
     });
     applyTags(this.getMessagesFn, { Function: 'rcs-get' });
-    this.rcsMessagesTable.grantReadData(this.getMessagesFn);
+    this.rcsTemplatesTable.grantReadData(this.getMessagesFn);
 
     // Templates Handler - CRUD for RCS rich message templates
     this.templatesFn = new lambdaNode.NodejsFunction(this, 'RcsTemplatesFn', {
@@ -434,7 +414,7 @@ export class RcsStack extends Stack {
       timeout: Duration.seconds(30),
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
-        RCS_MESSAGES_TABLE: this.rcsMessagesTable.tableName,
+        RCS_MESSAGES_TABLE: this.rcsTemplatesTable.tableName,
         CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
         GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
       },
@@ -442,7 +422,7 @@ export class RcsStack extends Stack {
     applyTags(smsFallbackProcessorFn, { Function: 'sms-fallback-processor' });
     
     // Grant DynamoDB permissions for storing fallback records
-    this.rcsMessagesTable.grantWriteData(smsFallbackProcessorFn);
+    this.rcsTemplatesTable.grantWriteData(smsFallbackProcessorFn);
     
     // Grant SMS sending permissions via Pinpoint SMS Voice V2
     smsFallbackProcessorFn.addToRolePolicy(new iam.PolicyStatement({
@@ -490,7 +470,7 @@ export class RcsStack extends Stack {
       timeout: Duration.seconds(30),
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
-        RCS_MESSAGES_TABLE: this.rcsMessagesTable.tableName,
+        RCS_MESSAGES_TABLE: this.rcsTemplatesTable.tableName,
         RCS_TEMPLATES_TABLE: this.rcsTemplatesTable.tableName,
         RCS_ANALYTICS_TABLE: this.rcsAnalyticsTable.tableName,
       },
@@ -499,7 +479,6 @@ export class RcsStack extends Stack {
     applyTags(this.analyticsFn, { Function: 'rcs-analytics' });
     
     // Grant read access to all tables for analytics queries
-    this.rcsMessagesTable.grantReadData(this.analyticsFn);
     this.rcsTemplatesTable.grantReadData(this.analyticsFn);
     this.rcsAnalyticsTable.grantReadWriteData(this.analyticsFn);
     
@@ -523,7 +502,7 @@ export class RcsStack extends Stack {
       timeout: Duration.minutes(5),
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
-        RCS_MESSAGES_TABLE: this.rcsMessagesTable.tableName,
+        RCS_MESSAGES_TABLE: this.rcsTemplatesTable.tableName,
         RCS_ANALYTICS_TABLE: this.rcsAnalyticsTable.tableName,
         CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
       },
@@ -532,7 +511,7 @@ export class RcsStack extends Stack {
     applyTags(this.analyticsAggregatorFn, { Function: 'rcs-analytics-aggregator' });
     
     // Grant permissions to aggregator
-    this.rcsMessagesTable.grantReadData(this.analyticsAggregatorFn);
+    this.rcsTemplatesTable.grantReadData(this.analyticsAggregatorFn);
     this.rcsAnalyticsTable.grantReadWriteData(this.analyticsAggregatorFn);
     
     // Grant read access to clinic config table
@@ -837,7 +816,6 @@ export class RcsStack extends Stack {
       createLambdaDurationAlarm(fn, name, durationMs);
     });
 
-    createDynamoThrottleAlarm(this.rcsMessagesTable.tableName, 'RcsMessagesTable');
     createDynamoThrottleAlarm(this.rcsTemplatesTable.tableName, 'RcsTemplatesTable');
 
     // ========================================
@@ -1006,8 +984,8 @@ export class RcsStack extends Stack {
     });
 
     new CfnOutput(this, 'RcsMessagesTableName', {
-      value: this.rcsMessagesTable.tableName,
-      description: 'RCS Messages DynamoDB Table Name',
+      value: this.rcsTemplatesTable.tableName,
+      description: 'RCS Messages DynamoDB Table Name (stored in the unified RCS templates table)',
       exportName: `${Stack.of(this).stackName}-RcsMessagesTableName`,
     });
 

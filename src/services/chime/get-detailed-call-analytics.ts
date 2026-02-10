@@ -27,6 +27,8 @@ const RECORDING_METADATA_TABLE = process.env.RECORDING_METADATA_TABLE_NAME;
 const CHAT_HISTORY_TABLE = process.env.CHAT_HISTORY_TABLE_NAME;
 const CLINICS_TABLE = process.env.CLINICS_TABLE_NAME;
 const CALL_ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE_NAME;
+// TranscriptBuffers table from AnalyticsStack - stores LexAI/Voice AI transcripts
+const TRANSCRIPT_BUFFER_TABLE = process.env.TRANSCRIPT_BUFFER_TABLE_NAME;
 
 interface CallAnalyticsResponse {
   // Header Info
@@ -359,44 +361,120 @@ async function getCallHistory(
 
 /**
  * Get recording data and transcript
+ * Searches multiple sources:
+ * 1. RecordingMetadata table (Chime calls with recordings)
+ * 2. TranscriptBuffers table (LexAI/Voice AI call transcripts)
  */
 async function getRecordingData(callId: string): Promise<{ transcript: TranscriptEntry[] }> {
   try {
-    if (!RECORDING_METADATA_TABLE) {
-      return { transcript: [] };
+    // 1. Try RecordingMetadata table first (Chime calls with recordings)
+    if (RECORDING_METADATA_TABLE) {
+      const result = await ddb.send(new QueryCommand({
+        TableName: RECORDING_METADATA_TABLE,
+        IndexName: 'callId-index',
+        KeyConditionExpression: 'callId = :callId',
+        ExpressionAttributeValues: { ':callId': callId },
+        Limit: 1
+      }));
+
+      const recording = result.Items?.[0];
+      if (recording) {
+        // If transcript is stored in the record, use it
+        if (recording.transcriptText) {
+          return parseTranscriptText(recording.transcriptText);
+        }
+
+        // If transcript is in S3, fetch it
+        if (recording.transcriptS3Key) {
+          const transcriptData = await fetchTranscriptFromS3(recording.transcriptS3Key);
+          return parseTranscriptData(transcriptData);
+        }
+      }
     }
 
-    // Query recordings by callId
-    const result = await ddb.send(new QueryCommand({
-      TableName: RECORDING_METADATA_TABLE,
-      IndexName: 'callId-index',
-      KeyConditionExpression: 'callId = :callId',
-      ExpressionAttributeValues: { ':callId': callId },
-      Limit: 1
-    }));
+    // 2. Try TranscriptBuffers table (LexAI/Voice AI calls)
+    if (TRANSCRIPT_BUFFER_TABLE) {
+      console.log('[getRecordingData] Searching TranscriptBuffers for callId:', callId);
 
-    const recording = result.Items?.[0];
-    if (!recording) {
-      return { transcript: [] };
+      const bufferResult = await ddb.send(new GetCommand({
+        TableName: TRANSCRIPT_BUFFER_TABLE,
+        Key: { callId }
+      }));
+
+      const buffer = bufferResult.Item;
+      if (buffer) {
+        console.log('[getRecordingData] Found transcript in TranscriptBuffers:', {
+          callId,
+          hasSegments: !!buffer.segments,
+          segmentCount: buffer.segments?.length || 0
+        });
+
+        // TranscriptBuffer schema: { callId, segments: [...], transcript: "...", ... }
+        if (buffer.segments && Array.isArray(buffer.segments)) {
+          return parseTranscriptSegments(buffer.segments);
+        }
+
+        // Fallback to full transcript text if available
+        if (buffer.transcript) {
+          return parseTranscriptText(buffer.transcript);
+        }
+      }
     }
 
-    // If transcript is stored in the record, use it
-    if (recording.transcriptText) {
-      return parseTranscriptText(recording.transcriptText);
+    // 3. Check CallAnalytics table for inline transcript (some AI calls store it here)
+    if (CALL_ANALYTICS_TABLE) {
+      const analyticsResult = await ddb.send(new QueryCommand({
+        TableName: CALL_ANALYTICS_TABLE,
+        KeyConditionExpression: 'callId = :callId',
+        ExpressionAttributeValues: { ':callId': callId },
+        Limit: 1
+      }));
+
+      const analytics = analyticsResult.Items?.[0];
+      if (analytics?.transcript) {
+        // Transcript might be stored as array of segments or as text
+        if (Array.isArray(analytics.transcript)) {
+          return { transcript: analytics.transcript as TranscriptEntry[] };
+        } else if (typeof analytics.transcript === 'string') {
+          return parseTranscriptText(analytics.transcript);
+        }
+      }
     }
 
-    // If transcript is in S3, fetch it
-    if (recording.transcriptS3Key) {
-      const transcriptData = await fetchTranscriptFromS3(recording.transcriptS3Key);
-      return parseTranscriptData(transcriptData);
-    }
-
+    console.log('[getRecordingData] No transcript found for callId:', callId);
     return { transcript: [] };
 
   } catch (error) {
     console.error('[getRecordingData] Error:', error);
     return { transcript: [] };
   }
+}
+
+/**
+ * Parse transcript segments from TranscriptBuffers table
+ * Format: [{ speaker: 'agent'|'customer', text: '...', timestamp: number }, ...]
+ */
+function parseTranscriptSegments(segments: any[]): { transcript: TranscriptEntry[] } {
+  const transcript: TranscriptEntry[] = segments.map((seg, idx) => {
+    // Normalize speaker names
+    let speaker: 'AGENT' | 'CUSTOMER' = 'CUSTOMER';
+    if (seg.speaker?.toLowerCase() === 'agent' || seg.speaker?.toLowerCase() === 'assistant') {
+      speaker = 'AGENT';
+    }
+
+    // Format timestamp
+    const timestamp = seg.timestamp
+      ? formatTimestamp(typeof seg.timestamp === 'number' ? seg.timestamp : parseFloat(seg.timestamp) || idx * 5)
+      : formatTimestamp(idx * 5);
+
+    return {
+      timestamp,
+      speaker,
+      text: seg.text || seg.content || seg.message || ''
+    };
+  }).filter(entry => entry.text.trim().length > 0);
+
+  return { transcript };
 }
 
 /**

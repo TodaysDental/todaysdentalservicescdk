@@ -21,7 +21,7 @@
     "phoneNumber": "+18602612866",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/dentistinnewbritain.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-e6d6091484b5474281291379879901b8",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "dentistinnewbritain",
     "hostedZoneId": "Z01685649197DPKW71B2",
     "email": {
@@ -82,7 +82,7 @@
     "phoneNumber": "+18643192704",
     "aiPhoneNumber": "+14439272295",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/dentistingreenville.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-b7576e8cf26a4fd49b8a221fea062922",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "dentistingreenville",
     "hostedZoneId": "Z02737791R5YBM2QQE4CP",
     "email": {
@@ -143,7 +143,7 @@
     "phoneNumber": "+18033027525",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/todaysdentalcayce.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-add5c4f5f7cd489499c8910e3caf8aef",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "todaysdentalcayce",
     "hostedZoneId": "Z0652651QLHSQU2T54IO",
     "email": {
@@ -204,7 +204,7 @@
     "phoneNumber": "+14692250064",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/creekcrossingdentalcare.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-b10bbd82fce94f11968b03a4eec09322",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "creekcrossingdentalcare",
     "hostedZoneId": "Z04673793CNYTEEDV0F48",
     "email": {
@@ -265,7 +265,7 @@
     "phoneNumber": "+13362836627",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/dentistinwinston-salem.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-3e55e6a9e1a14964b8876b8e35411049",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "dentistinwinston-salem",
     "hostedZoneId": "Z0684688QGCIEZOQLTOQ",
     "email": {
@@ -326,7 +326,7 @@
     "phoneNumber": "+17207020009",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/dentistincentennial.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-e7812a96ba4049e288f04b702cd988b9",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "dentistincentennial",
     "hostedZoneId": "Z01521441Y3EX4DY9YZAZ",
     "email": {
@@ -370,7 +370,7 @@
     "microsoftClarityProjectId": "tetwfq1mjm",
     "ga4PropertyId": "479275245",
     "odooCompanyId": 38,
-    "clinicAddress": "8040 S VIRGINIA ST STE 4 RENO NV 89511-8939",
+    "clinicAddress": "8040 S VIRGINIA ST STE 1 RENO NV 89511-8939",
     "clinicCity": "Reno",
     "clinicEmail": "dentalcare@renodentalcareandorthodontics.com",
     "clinicFax": "775-339-9894",
@@ -387,7 +387,7 @@
     "phoneNumber": "+17752538664",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/renodentalcareandorthodontics.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-f097049ff6b947b59e73406acd056faf",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "renodentalcareandorthodontics",
     "hostedZoneId": "Z06718466K032QAKNVB6",
     "email": {
@@ -448,7 +448,7 @@
     "phoneNumber": "+17036728308",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/todaysdentalalexandria.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-5206f38a54434048b08f43bfff0cf933",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "todaysdentalalexandria",
     "hostedZoneId": "Z03912831F1RMPO1B73A1",
     "email": {
@@ -509,7 +509,7 @@
     "phoneNumber": "+18643192662",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/todaysdentalgreenville.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-fbad55ead7554aaaaaffa3400fe73a84",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "todaysdentalgreenville",
     "hostedZoneId": "Z04077501PVREEA4QQROH",
     "email": {
@@ -570,7 +570,7 @@
     "phoneNumber": "+18032988480",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/todaysdentalwestcolumbia.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-c6693db736964c09b670e9ba84735f2b",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "todaysdentalwestcolumbia",
     "hostedZoneId": "Z04061862KUE9GXTYR3B8",
     "email": {
@@ -631,7 +631,7 @@
     "phoneNumber": "+17043682506",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/dentistinconcord.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-d20c3c06affa4114a99d71b60eea87e4",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "dentistinconcord",
     "hostedZoneId": "Z0424286J6ADTB4LRPD5",
     "email": {
@@ -692,7 +692,7 @@
     "phoneNumber": "+14432038433",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/dentistinedgewatermd.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-476b26df530e42bcb55c157f20d5141e",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "dentistinedgewater",
     "hostedZoneId": "Z0681492267AQBV6TNPKG",
     "email": {
@@ -753,7 +753,7 @@
     "phoneNumber": "+17702840555",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/lawrencevilledentistry.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-391fd647103a49c5ad36c38422ea8009",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "lawrencevilledentistry",
     "hostedZoneId": "Z065164017R8THSISNPT8",
     "email": {
@@ -814,7 +814,7 @@
     "phoneNumber": "+15022158254",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/dentistinlouisville.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-a2fe2c95e0254b12a39e7fe1d4359223",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "dentistinlouisville",
     "hostedZoneId": "Z01681663I51Z0MKKI4RU",
     "email": {
@@ -875,7 +875,7 @@
     "phoneNumber": "+18032919970",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/dentistatsaludapointe.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-a7079480e46c41308fdcf855a79a6555",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "dentistatsaludapointe",
     "hostedZoneId": "Z065149151EMKCBPQEVL",
     "email": {
@@ -936,7 +936,7 @@
     "phoneNumber": "+14193183371",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/dentistinoregonoh.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-9039b266b7024aed8a45f3747c511a34",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "dentistinoregonoh",
     "hostedZoneId": "Z0424621RYEA9FEBS0JY",
     "email": {
@@ -997,7 +997,7 @@
     "phoneNumber": "+18032210987",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/todaysdentallexington.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-5d5c8099c6624552a7d779037d702f4b",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "daysdentallexington",
     "hostedZoneId": "Z040331235NMZIX4ZLLGE",
     "email": {
@@ -1058,7 +1058,7 @@
     "phoneNumber": "+13012416572",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/dentistinbowie.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-23cbc8f035e94d7c85a8177361999c75",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "dentistinbowie",
     "hostedZoneId": "Z06428572342W1A3EK5HA",
     "email": {
@@ -1119,7 +1119,7 @@
     "phoneNumber": "+16144898815",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/dentistinpowellohio.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-0a580af9da914a03bb68a715a212848f",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "dentistinpowellohio",
     "hostedZoneId": "Z06449472H2KB1S9FS2K5",
     "email": {
@@ -1180,7 +1180,7 @@
     "phoneNumber": "+14193183386",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/dentistinperrysburg.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-819f553d8d72424a85292eab0e0030ce",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "dentistinperrysburg",
     "hostedZoneId": "Z0190676238ABL9C3TV32",
     "email": {
@@ -1241,7 +1241,7 @@
     "phoneNumber": "+15123095624",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/dentistinaustintx.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd34e09bf3c648848318c031cfeb13b6",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "dentistinaustin",
     "hostedZoneId": "Z039585419DY53TZXW8SA",
     "email": {
@@ -1302,7 +1302,7 @@
     "phoneNumber": "+17262023123",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/therimdentalcare.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-698ca15acec542ba849576b9440ca958",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "therimdentalcare",
     "hostedZoneId": "Z062554333J0IQ9RHN2OP",
     "email": {
@@ -1363,7 +1363,7 @@
     "phoneNumber": "+16302969003",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/dentistinbloomingdaleil.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-b818b4b13ed846529fc08e5a27935ef7",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "dentistinbloomingdale",
     "hostedZoneId": "Z0168184178UA6OJU34E4",
     "email": {
@@ -1424,7 +1424,7 @@
     "phoneNumber": "+18472608875",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/dentistinvernonhills.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-3e30fb6357124b5cb03bfadfc72859ba",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "dentistinvernonhills",
     "hostedZoneId": "Z01676602Q7T5NJOJ0NZU",
     "email": {
@@ -1485,7 +1485,7 @@
     "phoneNumber": "+17372273831",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/themeadowsdentalcare.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-d6087aec7474416a81b800eec92bf33a",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "meadowsdentalcare",
     "hostedZoneId": "Z0228748YTYJQTBTCWH1",
     "email": {
@@ -1546,7 +1546,7 @@
     "phoneNumber": "+12542250133",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/stillwaterdentalcareandortho.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-b34686d575d34041a7dcd5fac6db3369",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "dentistinstillwater",
     "hostedZoneId": "Z029178313VFV0GYWY3NS",
     "email": {
@@ -1607,7 +1607,7 @@
     "phoneNumber": "+18322806867",
     "aiPhoneNumber": "",
     "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/pearlanddentalcare.com",
-    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-e6bc4666724a4e20bdff15017b2c165e",
+    "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
     "sftpFolderPath": "pearlanddentalcare",
     "hostedZoneId": "Z02753391M42GQCRXDDCE",
     "email": {

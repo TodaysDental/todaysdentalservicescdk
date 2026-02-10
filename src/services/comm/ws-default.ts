@@ -1,19 +1,43 @@
 import { APIGatewayEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, BatchGetCommand, DeleteCommand, GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk/client-apigatewaymanagementapi';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { v4 as uuidv4 } from 'uuid';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { CognitoIdentityProviderClient, AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
+import {
+    handleAddReaction, handleRemoveReaction,
+    handleReplyToThread, handleGetThreadReplies,
+    handleEditMessage, handleDeleteMessage,
+    handleTypingStart, handleTypingStop,
+    handleSetPresence, handleGetPresence,
+    handlePinMessage, handleUnpinMessage, handleGetPinnedMessages,
+    handleAddBookmark, handleRemoveBookmark, handleGetBookmarks,
+    handleSearch,
+    handleScheduleMessage, handleCancelScheduledMessage, handleGetScheduledMessages,
+    handleCreateChannel, handleJoinChannel, handleLeaveChannel, handleListChannels, handleArchiveChannel,
+} from './messaging-features-handlers';
+import {
+    handleMarkDelivered, handleMarkMessagesRead,
+    handleGetVoiceUploadUrl, handleSendVoiceMessage,
+    handleUpdateConversationSettings, handleMuteConversation, handleUnmuteConversation,
+    handleArchiveConversation, handlePinConversation,
+    handleGetConversationAnalytics,
+    handleSearchGifs, handleGetTrendingGifs, handleSendGif,
+    handleGetStickerPacks, handleGetStickers, handleSendSticker,
+    handleInitiateCall, handleJoinCall, handleLeaveCall, handleEndCall, handleDeclineCall, handleAcceptCall, handleCallTimeout, handleGetCallHistory, handleMuteCall, handleToggleVideo,
+    handleFetchLinkPreview, handleGetConversationFiles,
+    handleForwardMessage, handleStarMessage, handleUnstarMessage, handleGetStarredMessages, handleGetMessageInfo,
+} from './enhanced-messaging-handlers';
 
 // Environment Variables
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || '';
-const MESSAGES_TABLE = process.env.MESSAGES_TABLE || ''; 
+const MESSAGES_TABLE = process.env.MESSAGES_TABLE || '';
 const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
 const TEAMS_TABLE = process.env.TEAMS_TABLE || '';
 const MEETINGS_TABLE = process.env.MEETINGS_TABLE || '';
@@ -53,7 +77,9 @@ interface Team {
     teamID: string;
     ownerID: string;
     name: string;
+    description?: string;
     members: string[]; // Set of userID strings
+    admins: string[];  // Users with admin privileges (owner is always admin)
     createdAt: string;
     updatedAt: string;
 }
@@ -61,6 +87,25 @@ interface Team {
 // Task status values
 type TaskStatus = 'pending' | 'active' | 'in_progress' | 'completed' | 'rejected' | 'forwarded';
 type TaskPriority = 'Low' | 'Medium' | 'High' | 'Urgent';
+
+/**
+ * Safely fetches a team by teamID using QueryCommand instead of GetCommand.
+ * This handles both cases:
+ *   1. Table has only PK (teamID) — Query works like Get
+ *   2. Table has composite key (teamID + ownerID) — Query still works (only needs PK)
+ * GetCommand would fail with "The provided key element does not match the schema"
+ * if the table has a sort key and we don't provide it.
+ */
+async function getTeamByID(teamID: string): Promise<Team | undefined> {
+    if (!TEAMS_TABLE) return undefined;
+    const result = await ddb.send(new QueryCommand({
+        TableName: TEAMS_TABLE,
+        KeyConditionExpression: 'teamID = :tid',
+        ExpressionAttributeValues: { ':tid': teamID },
+        Limit: 1,
+    }));
+    return (result.Items?.[0] as Team) || undefined;
+}
 
 interface ForwardRecord {
     forwardID: string;
@@ -81,7 +126,7 @@ interface FavorRequest {
     senderID: string;
     receiverID?: string;
     teamID?: string;
-    
+
     // Enhanced task fields
     title?: string;
     description?: string;
@@ -89,18 +134,18 @@ interface FavorRequest {
     priority: TaskPriority;
     category?: SystemModule;
     tags?: string[];
-    
+
     // Forwarding chain
     forwardingChain?: ForwardRecord[];
     currentAssigneeID?: string;
     requiresAcceptance?: boolean;
-    
+
     // Completion/Rejection
     completedAt?: string;
     completionNotes?: string;
     rejectionReason?: string;
     rejectedAt?: string;
-    
+
     // Existing fields
     createdAt: string;
     updatedAt: string;
@@ -109,6 +154,12 @@ interface FavorRequest {
     unreadCount: number;
     initialMessage: string;
     deadline?: string;
+    isMainGroupChat?: boolean; // WhatsApp-style main group chat flag
+
+    // WhatsApp sidebar preview fields
+    lastMessage?: string;
+    lastMessageAt?: string;
+    lastMessageSenderID?: string;
 }
 
 interface Meeting {
@@ -142,7 +193,7 @@ interface MessageData {
     senderID: string;
     content: string;
     timestamp: number;
-    type: 'text' | 'file';
+    type: 'text' | 'file' | 'system';
     fileKey?: string;
     fileDetails?: FileDetails;
 }
@@ -175,6 +226,9 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
         const senderID = senderInfo.userID;
 
         switch (payload.action) {
+            case 'ping':
+                // Heartbeat ping from client. No-op to keep the connection alive.
+                break;
             case 'createTeam': // Create a new team/group
                 await createTeam(senderID, payload, connectionId, apiGwManagement);
                 break;
@@ -199,11 +253,14 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
             case 'getPresignedUrl':
                 await getPresignedUrl(senderID, payload, connectionId, apiGwManagement);
                 break;
+            case 'getPresignedDownloadUrl':
+                await getPresignedDownloadUrl(senderID, payload, connectionId, apiGwManagement);
+                break;
             case 'fetchHistory':
                 await fetchHistory(senderID, payload, connectionId, apiGwManagement);
                 break;
             case 'markRead':
-                await markRead(senderID, payload, connectionId, apiGwManagement); 
+                await markRead(senderID, payload, connectionId, apiGwManagement);
                 break;
             case 'fetchRequests':
                 await fetchRequests(senderID, payload, connectionId, apiGwManagement);
@@ -246,6 +303,258 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
             case 'deleteMeeting':
                 await deleteMeeting(senderID, payload, connectionId, apiGwManagement);
                 break;
+
+            // ======= SLACK-LIKE FEATURES =======
+            // Reactions
+            case 'addReaction':
+                await handleAddReaction(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'removeReaction':
+                await handleRemoveReaction(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Threads
+            case 'replyToThread':
+                await handleReplyToThread(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getThreadReplies':
+                await handleGetThreadReplies(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Edit/Delete
+            case 'editMessage':
+                await handleEditMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'deleteMessage':
+                await handleDeleteMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Typing Indicators
+            case 'typingStart':
+                await handleTypingStart(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'typingStop':
+                await handleTypingStop(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Presence
+            case 'setPresence':
+                await handleSetPresence(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getPresence':
+                await handleGetPresence(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Pinned Messages
+            case 'pinMessage':
+                await handlePinMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'unpinMessage':
+                await handleUnpinMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getPinnedMessages':
+                await handleGetPinnedMessages(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Bookmarks
+            case 'addBookmark':
+                await handleAddBookmark(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'removeBookmark':
+                await handleRemoveBookmark(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getBookmarks':
+                await handleGetBookmarks(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Search
+            case 'search':
+                await handleSearch(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Scheduled Messages
+            case 'scheduleMessage':
+                await handleScheduleMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'cancelScheduledMessage':
+                await handleCancelScheduledMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getScheduledMessages':
+                await handleGetScheduledMessages(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Channels
+            case 'createChannel':
+                await handleCreateChannel(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'joinChannel':
+                await handleJoinChannel(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'leaveChannel':
+                await handleLeaveChannel(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'archiveChannel':
+                await handleArchiveChannel(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'listChannels':
+                await handleListChannels(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Group Chat
+            case 'openGroupChat':
+                await handleOpenGroupChat(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // ======= ENHANCED MESSAGING FEATURES =======
+            // Message Delivery Status
+            case 'markDelivered':
+                await handleMarkDelivered(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'markMessagesRead':
+                await handleMarkMessagesRead(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Voice Messages
+            case 'getVoiceUploadUrl':
+                await handleGetVoiceUploadUrl(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'sendVoiceMessage':
+                await handleSendVoiceMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Conversation Settings (Mute, Archive, Pin, Notifications)
+            case 'updateConversationSettings':
+                await handleUpdateConversationSettings(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'muteConversation':
+                await handleMuteConversation(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'unmuteConversation':
+                await handleUnmuteConversation(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'archiveConversation':
+                await handleArchiveConversation(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'pinConversation':
+                await handlePinConversation(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Disappearing Messages
+            case 'setDisappearingMessages':
+                await handleSetDisappearingMessages(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Analytics & Insights
+            case 'getConversationAnalytics':
+                await handleGetConversationAnalytics(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // GIF Support
+            case 'searchGifs':
+                await handleSearchGifs(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getTrendingGifs':
+                await handleGetTrendingGifs(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'sendGif':
+                await handleSendGif(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Stickers
+            case 'getStickerPacks':
+                await handleGetStickerPacks(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getStickers':
+                await handleGetStickers(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'sendSticker':
+                await handleSendSticker(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Voice/Video Calling
+            case 'initiateCall':
+                await handleInitiateCall(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'joinCall':
+                await handleJoinCall(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'leaveCall':
+                await handleLeaveCall(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'endCall':
+                await handleEndCall(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'declineCall':
+                await handleDeclineCall(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'acceptCall':
+                await handleAcceptCall(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'callTimeout':
+                await handleCallTimeout(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getCallHistory':
+                await handleGetCallHistory(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'muteCall':
+                await handleMuteCall(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'toggleVideo':
+                await handleToggleVideo(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Link Previews
+            case 'fetchLinkPreview':
+                await handleFetchLinkPreview(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Files
+            case 'getConversationFiles':
+                await handleGetConversationFiles(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Heartbeat / keep-alive (sent by Android client every 30s)
+            case 'heartbeat':
+                await sendToClient(apiGwManagement, connectionId, { type: 'heartbeat', status: 'ok' });
+                break;
+
+            // ======= GROUP SETTINGS & PROFILE PICTURE =======
+            // Group Settings (admin controls)
+            case 'updateGroupSettings':
+                await handleUpdateGroupSettings(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'deleteGroup':
+                await handleDeleteGroup(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'leaveGroup':
+                await handleLeaveGroup(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Profile Picture
+            case 'getAvatarUploadUrl':
+                await handleGetAvatarUploadUrl(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'updateAvatarUrl':
+                await handleUpdateAvatarUrl(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // ======= MESSAGE FORWARDING & STARRING =======
+            case 'forwardMessage':
+                await handleForwardMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'starMessage':
+                await handleStarMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'unstarMessage':
+                await handleUnstarMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getStarredMessages':
+                await handleGetStarredMessages(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getMessageInfo':
+                await handleGetMessageInfo(senderID, payload, connectionId, apiGwManagement);
+                break;
+
             default:
                 await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unknown action' });
         }
@@ -257,6 +566,107 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
         return { statusCode: 500, body: 'Error' };
     }
 };
+
+// ========================================
+// DISAPPEARING MESSAGES HANDLER
+// ========================================
+
+async function handleSetDisappearingMessages(
+    senderID: string,
+    payload: { favorRequestID: string; ttlSeconds: number | null },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, ttlSeconds } = payload;
+
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID' });
+        return;
+    }
+
+    // Allowed TTL values: null (off), 86400 (24h), 604800 (7d), 7776000 (90d)
+    const allowedTTLs = [null, 0, 86400, 604800, 7776000];
+    if (!allowedTTLs.includes(ttlSeconds)) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error',
+            message: 'Invalid TTL. Use null (off), 86400 (24h), 604800 (7d), or 7776000 (90d)',
+        });
+        return;
+    }
+
+    const nowIso = new Date().toISOString();
+
+    try {
+        // Update the conversation with disappearing messages TTL
+        if (ttlSeconds && ttlSeconds > 0) {
+            await ddb.send(new UpdateCommand({
+                TableName: FAVORS_TABLE,
+                Key: { favorRequestID },
+                UpdateExpression: 'SET disappearingMessagesTTL = :ttl, updatedAt = :ua',
+                ExpressionAttributeValues: {
+                    ':ttl': ttlSeconds,
+                    ':ua': nowIso,
+                },
+            }));
+        } else {
+            await ddb.send(new UpdateCommand({
+                TableName: FAVORS_TABLE,
+                Key: { favorRequestID },
+                UpdateExpression: 'REMOVE disappearingMessagesTTL SET updatedAt = :ua',
+                ExpressionAttributeValues: {
+                    ':ua': nowIso,
+                },
+            }));
+        }
+
+        // Get participants to broadcast
+        const favorResult = await ddb.send(new GetCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+        }));
+        const favor = favorResult.Item as FavorRequest;
+
+        if (favor) {
+            const recipients = await getRecipientIDs(favor, senderID);
+            const allParticipants = [senderID, ...recipients];
+
+            await sendToAll(apiGwManagement, allParticipants, {
+                type: 'disappearingMessagesUpdated',
+                favorRequestID,
+                ttlSeconds: ttlSeconds || null,
+                updatedBy: senderID,
+                updatedAt: nowIso,
+            }, { notifyOffline: false, senderID });
+        }
+
+        // Send a system message to the conversation
+        const ttlLabel = !ttlSeconds || ttlSeconds === 0 ? 'off'
+            : ttlSeconds === 86400 ? '24 hours'
+                : ttlSeconds === 604800 ? '7 days'
+                    : '90 days';
+
+        const systemMessage = {
+            favorRequestID,
+            senderID: 'system',
+            content: `Disappearing messages turned ${ttlLabel === 'off' ? 'off' : `on (${ttlLabel})`}`,
+            timestamp: Date.now(),
+            type: 'system',
+            messageID: `msg-${Date.now()}-system`,
+        };
+
+        await ddb.send(new PutCommand({
+            TableName: MESSAGES_TABLE,
+            Item: systemMessage,
+        }));
+
+    } catch (e) {
+        console.error('Error setting disappearing messages:', e);
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error',
+            message: 'Failed to update disappearing messages setting',
+        });
+    }
+}
 
 // ========================================
 // NEW CORE LOGIC FUNCTIONS (Teams)
@@ -272,12 +682,12 @@ async function createTeam(
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
     const { name, members } = payload;
-    
+
     if (!name || !Array.isArray(members) || members.length === 0) {
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing team name or members list.' });
         return;
     }
-    
+
     if (!TEAMS_TABLE) {
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Teams table not configured.' });
         return;
@@ -293,7 +703,9 @@ async function createTeam(
         teamID,
         ownerID,
         name: String(name),
+        description: payload.description ? String(payload.description) : undefined,
         members: uniqueMembers,
+        admins: [ownerID], // Creator is always the first admin
         createdAt: nowIso,
         updatedAt: nowIso,
     };
@@ -303,7 +715,7 @@ async function createTeam(
             TableName: TEAMS_TABLE,
             Item: newTeam,
         }));
-        
+
         console.log(`Team created: ${teamID} by ${ownerID}`);
 
         // Notify all team members (including the creator) about the new team
@@ -311,8 +723,8 @@ async function createTeam(
             type: 'teamCreated',
             team: newTeam,
         };
-        await sendToAll(apiGwManagement, uniqueMembers, notificationPayload, { notifyOffline: false }); 
-        
+        await sendToAll(apiGwManagement, uniqueMembers, notificationPayload, { notifyOffline: false });
+
     } catch (e) {
         console.error('Failed to create team:', e);
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to create team.' });
@@ -337,8 +749,6 @@ async function listTeams(
     try {
         // Scan the table and filter for teams where the caller is a member
         // Note: For production with large datasets, use a GSI or inverted index pattern
-        const { ScanCommand } = await import('@aws-sdk/lib-dynamodb');
-        
         const result = await ddb.send(new ScanCommand({
             TableName: TEAMS_TABLE,
             FilterExpression: 'contains(members, :callerID)',
@@ -400,11 +810,7 @@ async function addUserToTeam(
 
     try {
         // 1. Fetch the team to verify ownership
-        const teamResult = await ddb.send(new GetCommand({
-            TableName: TEAMS_TABLE,
-            Key: { teamID },
-        }));
-        const team = teamResult.Item as Team;
+        const team = await getTeamByID(teamID);
 
         if (!team) {
             await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Team not found.' });
@@ -429,7 +835,7 @@ async function addUserToTeam(
 
         await ddb.send(new UpdateCommand({
             TableName: TEAMS_TABLE,
-            Key: { teamID },
+            Key: { teamID, ownerID: team.ownerID },
             UpdateExpression: 'SET members = :members, updatedAt = :updatedAt',
             ExpressionAttributeValues: {
                 ':members': updatedMembers,
@@ -462,8 +868,10 @@ async function addUserToTeam(
 }
 
 /**
- * Removes a user from an existing team. Only the team owner can perform this action.
- * The owner cannot remove themselves from the team.
+ * Removes a user from an existing team.
+ * Allowed when: caller is the team owner removing another member,
+ * OR caller is removing themselves (self-leave, except owner).
+ * The owner cannot remove themselves — they must delete the group instead.
  */
 async function removeUserFromTeam(
     callerID: string,
@@ -484,21 +892,18 @@ async function removeUserFromTeam(
     }
 
     try {
-        // 1. Fetch the team to verify ownership
-        const teamResult = await ddb.send(new GetCommand({
-            TableName: TEAMS_TABLE,
-            Key: { teamID },
-        }));
-        const team = teamResult.Item as Team;
+        // 1. Fetch the team
+        const team = await getTeamByID(teamID);
 
         if (!team) {
             await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Team not found.' });
             return;
         }
 
-        // 2. Check if caller is the owner
-        if (team.ownerID !== callerID) {
-            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the team owner can remove members.' });
+        // 2. Authorization: owner can remove others, any member can remove themselves (self-leave)
+        const isSelfLeave = callerID === userID;
+        if (!isSelfLeave && team.ownerID !== callerID) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the team owner can remove other members.' });
             return;
         }
 
@@ -520,7 +925,7 @@ async function removeUserFromTeam(
 
         await ddb.send(new UpdateCommand({
             TableName: TEAMS_TABLE,
-            Key: { teamID },
+            Key: { teamID, ownerID: team.ownerID },
             UpdateExpression: 'SET members = :members, updatedAt = :updatedAt',
             ExpressionAttributeValues: {
                 ':members': updatedMembers,
@@ -550,6 +955,626 @@ async function removeUserFromTeam(
     } catch (e) {
         console.error('Failed to remove user from team:', e);
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to remove user from team.' });
+    }
+}
+
+// ========================================
+// GROUP SETTINGS HANDLERS
+// ========================================
+
+/**
+ * Updates group/team settings: description, adminOnlyMessages, and admin management.
+ * Only the owner or admins can update settings.
+ */
+async function handleUpdateGroupSettings(
+    callerID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { teamID, description, adminOnlyMessages, makeAdmin, dismissAdmin } = payload;
+
+    if (!teamID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing teamID.' });
+        return;
+    }
+
+    if (!TEAMS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Teams table not configured.' });
+        return;
+    }
+
+    try {
+        // 1. Fetch the team
+        const team = await getTeamByID(teamID);
+
+        if (!team) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Team not found.' });
+            return;
+        }
+
+        // 2. Check if caller is owner or admin
+        const isOwner = team.ownerID === callerID;
+        const isAdmin = (team.admins || []).includes(callerID);
+        if (!isOwner && !isAdmin) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only admins can update group settings.' });
+            return;
+        }
+
+        const nowIso = new Date().toISOString();
+        const updateExprParts: string[] = ['updatedAt = :updatedAt'];
+        const exprValues: Record<string, any> = { ':updatedAt': nowIso };
+        const systemMessages: string[] = [];
+
+        // 3. Update description if provided
+        if (description !== undefined) {
+            updateExprParts.push('description = :desc');
+            exprValues[':desc'] = description || null;
+            systemMessages.push(`Group description updated`);
+        }
+
+        // 4. Update adminOnlyMessages if provided
+        if (adminOnlyMessages !== undefined) {
+            updateExprParts.push('adminOnlyMessages = :adminOnly');
+            exprValues[':adminOnly'] = !!adminOnlyMessages;
+            systemMessages.push(
+                adminOnlyMessages
+                    ? 'Only admins can send messages now'
+                    : 'All members can send messages now'
+            );
+        }
+
+        // 5. Make a member admin (owner-only)
+        let updatedAdmins = [...(team.admins || [team.ownerID])];
+        if (makeAdmin) {
+            if (!isOwner) {
+                await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Only the group owner can make admins.' });
+                return;
+            }
+            if (!team.members.includes(makeAdmin)) {
+                await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'User is not a member of this group.' });
+                return;
+            }
+            if (!updatedAdmins.includes(makeAdmin)) {
+                updatedAdmins.push(makeAdmin);
+                updateExprParts.push('admins = :admins');
+                exprValues[':admins'] = updatedAdmins;
+                systemMessages.push(`A member was made admin`);
+            }
+        }
+
+        // 6. Dismiss an admin (owner-only)
+        if (dismissAdmin) {
+            if (!isOwner) {
+                await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Only the group owner can dismiss admins.' });
+                return;
+            }
+            if (dismissAdmin === team.ownerID) {
+                await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Cannot dismiss the group owner from admin.' });
+                return;
+            }
+            updatedAdmins = updatedAdmins.filter(a => a !== dismissAdmin);
+            updateExprParts.push('admins = :admins');
+            exprValues[':admins'] = updatedAdmins;
+            systemMessages.push(`An admin was dismissed`);
+        }
+
+        // 7. Execute DynamoDB update
+        await ddb.send(new UpdateCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID, ownerID: team.ownerID },
+            UpdateExpression: `SET ${updateExprParts.join(', ')}`,
+            ExpressionAttributeValues: exprValues,
+        }));
+
+        console.log(`Group settings updated for ${teamID} by ${callerID}`);
+
+        // 8. Broadcast updated team to all members
+        const updatedTeam = {
+            ...team,
+            ...(description !== undefined && { description }),
+            ...(adminOnlyMessages !== undefined && { adminOnlyMessages }),
+            admins: updatedAdmins,
+            updatedAt: nowIso,
+        };
+
+        await sendToAll(apiGwManagement, team.members, {
+            type: 'groupSettingsUpdated',
+            team: updatedTeam,
+            updatedBy: callerID,
+        }, { notifyOffline: false });
+
+        // 9. Insert system messages into the team's main group chat
+        if (systemMessages.length > 0 && team.teamID) {
+            // Find the main group chat favorRequestID for this team
+            const favorResult = await ddb.send(new QueryCommand({
+                TableName: FAVORS_TABLE,
+                IndexName: 'teamID-index',
+                KeyConditionExpression: 'teamID = :tid',
+                ExpressionAttributeValues: { ':tid': teamID },
+                FilterExpression: 'isMainGroupChat = :mgc',
+                Limit: 1,
+            })).catch(() => ({ Items: [] }));
+
+            const groupChat = favorResult.Items?.[0];
+            if (groupChat) {
+                for (const msg of systemMessages) {
+                    await ddb.send(new PutCommand({
+                        TableName: MESSAGES_TABLE,
+                        Item: {
+                            favorRequestID: groupChat.favorRequestID,
+                            senderID: 'system',
+                            content: msg,
+                            timestamp: Date.now(),
+                            type: 'system',
+                            messageID: `msg-${Date.now()}-system-${uuidv4().slice(0, 8)}`,
+                        },
+                    }));
+                }
+            }
+        }
+
+    } catch (e) {
+        console.error('Failed to update group settings:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to update group settings.' });
+    }
+}
+
+/**
+ * Deletes a group/team. Only the team owner can delete a group.
+ * Removes the team record and notifies all members.
+ */
+async function handleDeleteGroup(
+    callerID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { teamID } = payload;
+
+    if (!teamID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing teamID.' });
+        return;
+    }
+
+    if (!TEAMS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Teams table not configured.' });
+        return;
+    }
+
+    try {
+        // 1. Fetch the team to verify ownership
+        const team = await getTeamByID(teamID);
+
+        if (!team) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Team not found.' });
+            return;
+        }
+
+        // 2. Only owner can delete the group
+        if (team.ownerID !== callerID) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the group owner can delete the group.' });
+            return;
+        }
+
+        // 3. Delete the team record
+        await ddb.send(new DeleteCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID, ownerID: team.ownerID },
+        }));
+
+        console.log(`Group ${teamID} deleted by ${callerID}`);
+
+        // 4. Notify all members that the group was deleted
+        await sendToAll(apiGwManagement, team.members, {
+            type: 'groupDeleted',
+            teamID,
+            deletedBy: callerID,
+            groupName: team.name,
+        }, { notifyOffline: false });
+
+    } catch (e) {
+        console.error('Failed to delete group:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to delete group.' });
+    }
+}
+
+/**
+ * Handles a member leaving a group. Any non-owner member can leave.
+ * The owner must delete the group instead.
+ */
+async function handleLeaveGroup(
+    callerID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { teamID } = payload;
+
+    if (!teamID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing teamID.' });
+        return;
+    }
+
+    if (!TEAMS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Teams table not configured.' });
+        return;
+    }
+
+    try {
+        // 1. Fetch the team
+        const team = await getTeamByID(teamID);
+
+        if (!team) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Team not found.' });
+            return;
+        }
+
+        // 2. Owner cannot leave — they must delete the group
+        if (team.ownerID === callerID) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Group owner cannot leave. Delete the group instead.' });
+            return;
+        }
+
+        // 3. Must be a member
+        if (!team.members.includes(callerID)) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'You are not a member of this group.' });
+            return;
+        }
+
+        // 4. Remove caller from members and admins
+        const nowIso = new Date().toISOString();
+        const updatedMembers = team.members.filter(m => m !== callerID);
+        const updatedAdmins = (team.admins || []).filter(a => a !== callerID);
+
+        await ddb.send(new UpdateCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID, ownerID: team.ownerID },
+            UpdateExpression: 'SET members = :members, admins = :admins, updatedAt = :ua',
+            ExpressionAttributeValues: {
+                ':members': updatedMembers,
+                ':admins': updatedAdmins,
+                ':ua': nowIso,
+            },
+        }));
+
+        console.log(`User ${callerID} left group ${teamID}`);
+
+        // 5. Send system message to the group
+        const systemMessage = {
+            favorRequestID: team.teamID, // group conversations use teamID as favorRequestID context
+            senderID: 'system',
+            content: 'A member left the group',
+            timestamp: Date.now(),
+            type: 'system',
+            messageID: `msg-${Date.now()}-system`,
+        };
+
+        await ddb.send(new PutCommand({
+            TableName: MESSAGES_TABLE,
+            Item: systemMessage,
+        }));
+
+        // 6. Confirm to the caller
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'leftGroup',
+            teamID,
+        });
+
+        // 7. Notify remaining members
+        await sendToAll(apiGwManagement, updatedMembers, {
+            type: 'teamMemberLeft',
+            teamID,
+            leftUserID: callerID,
+            team: {
+                ...team,
+                members: updatedMembers,
+                admins: updatedAdmins,
+                updatedAt: nowIso,
+            },
+        }, { notifyOffline: false });
+
+    } catch (e) {
+        console.error('Failed to leave group:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to leave group.' });
+    }
+}
+
+// ========================================
+// PROFILE PICTURE HANDLERS
+// ========================================
+
+/**
+ * Returns a presigned S3 PUT URL for uploading a profile picture (avatar).
+ * Key: avatars/{userID}/{UUID}.{ext}
+ */
+async function handleGetAvatarUploadUrl(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { fileName, fileType } = payload;
+
+    if (!fileName || !fileType) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing fileName or fileType.' });
+        return;
+    }
+
+    if (!FILE_BUCKET_NAME) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: File bucket not configured.' });
+        return;
+    }
+
+    // Validate content type is an image
+    if (!fileType.startsWith('image/')) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Invalid file type. Only images are allowed.' });
+        return;
+    }
+
+    const rawName = String(fileName);
+    const ext = rawName.split('.').pop() || 'jpg';
+    const fileKey = `avatars/${senderID}/${uuidv4()}.${ext}`;
+
+    try {
+        const command = new PutObjectCommand({
+            Bucket: FILE_BUCKET_NAME,
+            Key: fileKey,
+            ContentType: fileType,
+        });
+
+        const url = await getSignedUrl(s3, command, { expiresIn: 900 }); // 15 min
+
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'avatarUploadUrl',
+            url,
+            fileKey,
+            fileType,
+        });
+
+        console.log(`Avatar upload URL generated for ${senderID}: ${fileKey}`);
+    } catch (e) {
+        console.error('Error generating avatar upload URL:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to generate avatar upload URL.' });
+    }
+}
+
+/**
+ * After the client has uploaded the avatar to S3, it calls this action to persist
+ * the avatar URL in the connections/user table and broadcasts the update.
+ */
+async function handleUpdateAvatarUrl(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { fileKey } = payload;
+
+    if (!fileKey) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing fileKey.' });
+        return;
+    }
+
+    if (!FILE_BUCKET_NAME) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: File bucket not configured.' });
+        return;
+    }
+
+    // Construct the public/CDN URL for the avatar
+    const avatarUrl = `https://${FILE_BUCKET_NAME}.s3.${REGION}.amazonaws.com/${fileKey}`;
+    const nowIso = new Date().toISOString();
+
+    try {
+        // Update the user's connection record with the avatar URL
+        // (The connections table tracks user metadata including presence)
+        await ddb.send(new UpdateCommand({
+            TableName: CONNECTIONS_TABLE,
+            Key: { connectionId },
+            UpdateExpression: 'SET avatarUrl = :avatarUrl, avatarUpdatedAt = :updatedAt',
+            ExpressionAttributeValues: {
+                ':avatarUrl': avatarUrl,
+                ':updatedAt': nowIso,
+            },
+        }));
+
+        // Broadcast to all connected users so they see the updated avatar
+        // (Get all connections and notify)
+        const allConnections = await ddb.send(new ScanCommand({
+            TableName: CONNECTIONS_TABLE,
+            ProjectionExpression: 'connectionId',
+        }));
+
+        if (allConnections.Items) {
+            const broadcastPayload = {
+                type: 'avatarUpdated',
+                userID: senderID,
+                avatarUrl,
+                updatedAt: nowIso,
+            };
+
+            for (const conn of allConnections.Items) {
+                if (conn.connectionId && conn.connectionId !== connectionId) {
+                    await sendToClient(apiGwManagement, conn.connectionId as string, broadcastPayload).catch(() => { });
+                }
+            }
+        }
+
+        // Confirm to the sender
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'avatarUpdateConfirmed',
+            userID: senderID,
+            avatarUrl,
+        });
+
+        console.log(`Avatar updated for ${senderID}: ${avatarUrl}`);
+    } catch (e) {
+        console.error('Error updating avatar URL:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to update avatar URL.' });
+    }
+}
+
+/**
+ * WhatsApp-style Group Chat: Opens or creates the main conversation for a team.
+ * This allows users to immediately start chatting with a group when they click on it.
+ */
+async function handleOpenGroupChat(
+    callerID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { teamID } = payload;
+
+    if (!teamID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing teamID.' });
+        return;
+    }
+
+    if (!TEAMS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Teams table not configured.' });
+        return;
+    }
+
+    try {
+        // 1. Fetch the team to verify membership
+        const team = await getTeamByID(teamID);
+
+        if (!team) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Team not found.' });
+            return;
+        }
+
+        // 2. Verify caller is a member of the team
+        if (!team.members.includes(callerID)) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a member of this team.' });
+            return;
+        }
+
+        // 3. Check if there's an existing "main" group conversation for this team
+        // Use TeamIndex GSI for efficient lookup instead of ScanCommand
+        const existingConvos = await ddb.send(new QueryCommand({
+            TableName: FAVORS_TABLE,
+            IndexName: 'TeamIndex',
+            KeyConditionExpression: 'teamID = :teamID',
+            ExpressionAttributeValues: {
+                ':teamID': teamID,
+            },
+            ScanIndexForward: false, // Most recent first
+        }));
+
+        const conversations = (existingConvos.Items || []) as FavorRequest[];
+
+        // Find the main group chat (first one marked as main, or fallback to first conversation)
+        const mainConvo = conversations.find(c => (c as any).isMainGroupChat === true)
+            || conversations[0];
+
+        if (mainConvo) {
+            // 4a. Return existing conversation and its history
+            console.log(`Opening existing group chat: ${mainConvo.favorRequestID} for team ${teamID}`);
+
+            // Fetch message history
+            const messagesResult = await ddb.send(new QueryCommand({
+                TableName: MESSAGES_TABLE,
+                KeyConditionExpression: 'favorRequestID = :frid',
+                ExpressionAttributeValues: {
+                    ':frid': mainConvo.favorRequestID,
+                },
+                ScanIndexForward: true, // Oldest first
+                Limit: 100,
+            }));
+
+            const messages = (messagesResult.Items || []) as MessageData[];
+
+            await sendToClient(apiGwManagement, connectionId, {
+                type: 'groupChatOpened',
+                favor: mainConvo,
+                favorRequestID: mainConvo.favorRequestID,
+                teamID,
+                team: {
+                    teamID: team.teamID,
+                    name: team.name,
+                    members: team.members,
+                    ownerID: team.ownerID,
+                },
+                messages,
+                isExisting: true,
+            });
+
+        } else {
+            // 4b. Create a new main group conversation
+            console.log(`Creating new main group chat for team ${teamID}`);
+
+            const favorRequestID = uuidv4();
+            const nowIso = new Date().toISOString();
+
+            const newFavor: FavorRequest = {
+                favorRequestID,
+                senderID: callerID,
+                teamID,
+                title: team.name, // Use team name as conversation title
+                description: `Group chat for ${team.name}`,
+                status: 'active',
+                priority: 'Medium' as TaskPriority,
+                currentAssigneeID: undefined,
+                createdAt: nowIso,
+                updatedAt: nowIso,
+                userID: callerID,
+                requestType: 'General',
+                unreadCount: 0,
+                initialMessage: `Welcome to ${team.name}! 👋`,
+                isMainGroupChat: true, // Mark as the main group chat
+            };
+
+            await ddb.send(new PutCommand({
+                TableName: FAVORS_TABLE,
+                Item: newFavor,
+            }));
+
+            // Create welcome message
+            const welcomeMessage: MessageData = {
+                favorRequestID,
+                senderID: 'system',
+                content: `Welcome to ${team.name}! This is the beginning of your group chat. 🎉`,
+                timestamp: Date.now(),
+                type: 'system',
+            };
+
+            await ddb.send(new PutCommand({
+                TableName: MESSAGES_TABLE,
+                Item: {
+                    ...welcomeMessage,
+                    messageID: uuidv4(),
+                },
+            }));
+
+            // Notify all team members about the new conversation
+            const notificationPayload = {
+                type: 'favorRequestUpdated',
+                favor: newFavor,
+            };
+            await sendToAll(apiGwManagement, team.members, notificationPayload, { notifyOffline: false });
+
+            // Return the new conversation to the caller
+            await sendToClient(apiGwManagement, connectionId, {
+                type: 'groupChatOpened',
+                favor: newFavor,
+                favorRequestID,
+                teamID,
+                team: {
+                    teamID: team.teamID,
+                    name: team.name,
+                    members: team.members,
+                    ownerID: team.ownerID,
+                },
+                messages: [welcomeMessage],
+                isExisting: false,
+            });
+        }
+
+    } catch (e) {
+        console.error('Failed to open group chat:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to open group chat.' });
     }
 }
 
@@ -589,11 +1614,11 @@ async function startFavorRequest(
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
     // Enhanced: Include title, description, priority, category
-    const { 
+    const {
         receiverID, teamID, initialMessage, requestType, deadline,
-        title, description, priority = 'Medium', category, tags 
+        title, description, priority = 'Medium', category, tags
     } = payload;
-    
+
     if (!initialMessage || !requestType || (!receiverID && !teamID)) {
         await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Missing initialMessage, requestType, and recipient (receiverID or teamID).' });
         return;
@@ -608,12 +1633,8 @@ async function startFavorRequest(
             return;
         }
         // Fetch team members for group request
-        const teamResult = await ddb.send(new GetCommand({
-            TableName: TEAMS_TABLE,
-            Key: { teamID },
-        }));
-        const team = teamResult.Item as Team;
-        
+        const team = await getTeamByID(teamID);
+
         if (!team) {
             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: `Team ID ${teamID} not found.` });
             return;
@@ -624,10 +1645,10 @@ async function startFavorRequest(
             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Unauthorized: You are not a member of this team.' });
             return;
         }
-        
+
         // Recipients are all team members except the sender
         recipients = team.members.filter(memberId => memberId !== senderID);
-        
+
         if (recipients.length === 0) {
             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'The team has no other members to assign the task to.' });
             return;
@@ -640,7 +1661,7 @@ async function startFavorRequest(
         }
         recipients = [receiverID as string];
     }
-    
+
     const favorRequestID = uuidv4();
     const timestamp = Date.now();
     const nowIso = new Date().toISOString();
@@ -660,10 +1681,10 @@ async function startFavorRequest(
         currentAssigneeID: isGroupRequest ? undefined : receiverID,
         createdAt: nowIso,
         updatedAt: nowIso,
-        userID: senderID, 
+        userID: senderID,
         requestType,
-        unreadCount: recipients.length, 
-        initialMessage: initialMessage, 
+        unreadCount: recipients.length,
+        initialMessage: initialMessage,
         ...(deadline && { deadline: String(deadline) }),
     };
 
@@ -672,7 +1693,7 @@ async function startFavorRequest(
         TableName: FAVORS_TABLE,
         Item: newFavor,
     }));
-    
+
     // 2. Create the initial message
     const messageData: MessageData = {
         favorRequestID,
@@ -684,16 +1705,16 @@ async function startFavorRequest(
 
     // 3. Save message and broadcast
     await _saveAndBroadcastMessage(messageData, apiGwManagement, isGroupRequest ? recipients : undefined);
-    
+
     // 4. Send email notification (Only for 1-to-1 requests for simplicity)
     if (!isGroupRequest) {
         try {
             await sendNewFavorNotificationEmail(senderID, receiverID as string, initialMessage, requestType, deadline);
-        } catch(e) {
+        } catch (e) {
             console.error("Failed to send SES notification email for 1-to-1:", e);
         }
     }
-    
+
     // 5. Send push notifications to recipients (for offline users)
     const senderDetails = await getUserDetails(senderID);
     await sendTaskPushNotification(
@@ -706,13 +1727,13 @@ async function startFavorRequest(
     );
 
     // 6. Send confirmation back to the sender
-    await sendToClient(apiGwManagement, senderConnectionId, { 
-        type: 'favorRequestStarted', 
+    await sendToClient(apiGwManagement, senderConnectionId, {
+        type: 'favorRequestStarted',
         favorRequestID,
         favor: newFavor,
         receiverID,
         teamID,
-        requestType, 
+        requestType,
         deadline,
         title: newFavor.title,
         priority: newFavor.priority,
@@ -737,7 +1758,7 @@ async function sendMessage(
         }
         return;
     }
-    
+
     const timestamp = Date.now();
 
     // 1. Validate and Update Favor Request (optimistic locking/status check)
@@ -746,7 +1767,7 @@ async function sendMessage(
         Key: { favorRequestID },
     }));
     const favor = favorResult.Item as FavorRequest;
-    
+
     if (!favor) {
         if (senderConnectionId) {
             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Favor request not found.' });
@@ -762,36 +1783,39 @@ async function sendMessage(
         }
         return;
     }
-    
+
     // Determine the list of all non-sending recipients
     const recipientIDs = await getRecipientIDs(favor, senderID);
 
-    if (favor.status !== 'active' || recipientIDs.length === 0) {
+    // Allow messaging for active workflows (pending/active/in_progress/forwarded).
+    // Only block messaging for closed tasks.
+    const isClosed = favor.status === 'completed' || favor.status === 'rejected';
+    if (isClosed || recipientIDs.length === 0) {
         if (senderConnectionId) {
-            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Request is inactive, resolved, or has no recipients.' });
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Request is closed or has no recipients.' });
         }
         return;
     }
 
     // 2. Update the favor's last update time AND increment the unread counter 
     // Increment unread count by the number of recipients.
-    const incrementAmount = recipientIDs.length; 
-    
-    const updateResult = await ddb.send(new UpdateCommand({ 
+    const incrementAmount = recipientIDs.length;
+
+    const updateResult = await ddb.send(new UpdateCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
-        UpdateExpression: 'SET updatedAt = :ua ADD unreadCount :incr', 
-        ExpressionAttributeValues: { 
+        UpdateExpression: 'SET updatedAt = :ua ADD unreadCount :incr',
+        ExpressionAttributeValues: {
             ':ua': new Date().toISOString(),
             ':incr': incrementAmount
         },
-        ReturnValues: 'ALL_NEW', 
+        ReturnValues: 'ALL_NEW',
     }));
-    
+
     // Broadcast the updated favor object to all participants (sender + all recipients)
     const updatedFavor = updateResult.Attributes as FavorRequest;
     const allParticipants = [...recipientIDs, senderID];
-    
+
     const broadcastUpdatePayload = {
         type: 'favorRequestUpdated',
         favor: updatedFavor,
@@ -822,28 +1846,21 @@ async function sendMessage(
  */
 async function getRecipientIDs(favor: FavorRequest, senderID: string): Promise<string[]> {
     if (favor.teamID) {
-        if (!TEAMS_TABLE) {
-            console.error("TEAMS_TABLE not configured for group lookup.");
-            return [];
-        }
-        const teamResult = await ddb.send(new GetCommand({
-            TableName: TEAMS_TABLE,
-            Key: { teamID: favor.teamID },
-        }));
-        const team = teamResult.Item as Team;
-        
+        const team = await getTeamByID(favor.teamID);
+        const members = normalizeMembers(team?.members);
+
         // Recipients are all team members except the sender
-        return team ? team.members.filter(memberId => memberId !== senderID) : [];
-        
+        return members.filter(memberId => memberId !== senderID);
+
     } else if (favor.receiverID) {
         // 1-to-1 chat: Recipient is the person who is not the sender
         const recipientID = favor.senderID === senderID ? favor.receiverID : favor.senderID;
         // Check if the sender is actually a participant before returning the other one
         if (favor.senderID === senderID || favor.receiverID === senderID) {
-             return [recipientID];
+            return [recipientID];
         }
     }
-    
+
     return []; // Request not found, inactive, or unauthorized
 }
 
@@ -857,20 +1874,12 @@ async function isUserParticipant(favor: FavorRequest, userID: string): Promise<b
     if (!favor.teamID) {
         return favor.senderID === userID || favor.receiverID === userID;
     }
-    
+
     // For group requests, check team membership
-    if (!TEAMS_TABLE) {
-        console.error("TEAMS_TABLE not configured for participant check.");
-        return false;
-    }
-    
-    const teamResult = await ddb.send(new GetCommand({
-        TableName: TEAMS_TABLE,
-        Key: { teamID: favor.teamID },
-    }));
-    const team = teamResult.Item as Team;
-    
-    return team ? team.members.includes(userID) : false;
+    const team = await getTeamByID(favor.teamID);
+    const members = normalizeMembers(team?.members);
+
+    return members.includes(userID);
 }
 
 /**
@@ -879,18 +1888,11 @@ async function isUserParticipant(favor: FavorRequest, userID: string): Promise<b
  */
 async function getAllParticipants(favor: FavorRequest): Promise<string[]> {
     if (favor.teamID) {
-        if (!TEAMS_TABLE) {
-            console.error("TEAMS_TABLE not configured for participant lookup.");
-            return [favor.senderID];
-        }
-        const teamResult = await ddb.send(new GetCommand({
-            TableName: TEAMS_TABLE,
-            Key: { teamID: favor.teamID },
-        }));
-        const team = teamResult.Item as Team;
-        return team ? team.members : [favor.senderID];
+        const team = await getTeamByID(favor.teamID);
+        const members = normalizeMembers(team?.members);
+        return members.length > 0 ? members : [favor.senderID];
     }
-    
+
     // For 1-to-1 requests
     const participants = [favor.senderID];
     if (favor.receiverID) {
@@ -898,6 +1900,7 @@ async function getAllParticipants(favor: FavorRequest): Promise<string[]> {
     }
     return participants;
 }
+
 
 
 /**
@@ -941,12 +1944,12 @@ async function markRead(
             TableName: FAVORS_TABLE,
             Key: { favorRequestID },
             UpdateExpression: 'SET unreadCount = :zero',
-            ExpressionAttributeValues: { 
+            ExpressionAttributeValues: {
                 ':zero': 0,
             },
-            ReturnValues: 'ALL_NEW', 
+            ReturnValues: 'ALL_NEW',
         }));
-        
+
         // 4. Send the read status update to the caller
         const updatedFavor = updateResult.Attributes as FavorRequest;
         const broadcastUpdatePayload = {
@@ -955,6 +1958,22 @@ async function markRead(
         };
 
         await sendToClient(apiGwManagement, connectionId, broadcastUpdatePayload);
+
+        // Cross-device sync: clear notifications on the user’s OTHER devices
+        try {
+            const connResult = await ddb.send(new GetCommand({
+                TableName: CONNECTIONS_TABLE,
+                Key: { connectionId },
+            }));
+            const deviceId = (connResult.Item as any)?.deviceId;
+            await sendSyncUnreadToOtherDevices(
+                callerID,
+                favorRequestID,
+                typeof deviceId === 'string' && deviceId ? [deviceId] : undefined
+            );
+        } catch (syncErr) {
+            console.warn('[markRead] Failed to send sync_unread push (non-fatal):', syncErr);
+        }
 
     } catch (e: any) {
         console.error('Error marking read:', e);
@@ -1010,7 +2029,7 @@ async function resolveRequest(
         }
         return;
     }
-    
+
     const nowIso = new Date().toISOString();
 
     // 3. Update Favor Status
@@ -1019,7 +2038,7 @@ async function resolveRequest(
             TableName: FAVORS_TABLE,
             Key: { favorRequestID },
             // Also reset unread count on resolve
-            UpdateExpression: 'SET #s = :resolved, updatedAt = :ua, unreadCount = :zero', 
+            UpdateExpression: 'SET #s = :resolved, updatedAt = :ua, unreadCount = :zero',
             ExpressionAttributeNames: { '#s': 'status' },
             ExpressionAttributeValues: {
                 ':resolved': 'resolved',
@@ -1027,7 +2046,7 @@ async function resolveRequest(
                 ':zero': 0, // Reset unread count
             },
         }));
-        
+
         // Get all participants for the broadcast
         const participants = await getAllParticipants(favor);
 
@@ -1038,9 +2057,9 @@ async function resolveRequest(
             resolvedBy: senderID,
             updatedAt: nowIso
         };
-        
+
         await sendToAll(apiGwManagement, participants, broadcastPayload, { notifyOffline: false });
-        
+
     } catch (e: any) {
         console.error('Error resolving request:', e);
         if (senderConnectionId) {
@@ -1063,7 +2082,7 @@ async function fetchRequests(
 ): Promise<void> {
     // role can be 'sent', 'received', 'group', or 'all'
     const { role = 'all', limit = 50, nextToken } = payload;
-    
+
     const queryLimit = Math.min(limit, 100);
 
     let exclusiveStartKey: any = undefined;
@@ -1084,7 +2103,7 @@ async function fetchRequests(
     ) => {
         return ddb.send(
             new QueryCommand({
-                TableName: FAVORS_TABLE, 
+                TableName: FAVORS_TABLE,
                 IndexName: indexName,
                 KeyConditionExpression: `${keyName} = :uid`,
                 ExpressionAttributeValues: {
@@ -1100,8 +2119,7 @@ async function fetchRequests(
     // Helper to get all team IDs the user is a member of
     const getUserTeamIDs = async (): Promise<string[]> => {
         if (!TEAMS_TABLE) return [];
-        
-        const { ScanCommand } = await import('@aws-sdk/lib-dynamodb');
+
         const result = await ddb.send(new ScanCommand({
             TableName: TEAMS_TABLE,
             FilterExpression: 'contains(members, :callerID)',
@@ -1110,22 +2128,22 @@ async function fetchRequests(
             },
             ProjectionExpression: 'teamID',
         }));
-        
+
         return (result.Items || []).map((item: any) => item.teamID);
     };
 
     // Helper to fetch group requests for given team IDs
     const fetchGroupRequests = async (teamIDs: string[]): Promise<any[]> => {
         if (teamIDs.length === 0) return [];
-        
-        const groupRequestPromises = teamIDs.map(teamID => 
+
+        const groupRequestPromises = teamIDs.map(teamID =>
             queryByIndex('TeamIndex', 'teamID', teamID)
         );
-        
+
         const results = await Promise.all(groupRequestPromises);
         return results.flatMap(r => r.Items || []);
     };
-    
+
     let items: any[] = [];
     let newToken: string | undefined = undefined;
 
@@ -1139,7 +2157,7 @@ async function fetchRequests(
             );
             items = sentResult.Items || [];
             newToken = sentResult.LastEvaluatedKey ? JSON.stringify(sentResult.LastEvaluatedKey) : undefined;
-            
+
         } else if (role === 'received') {
             const recvResult = await queryByIndex(
                 'ReceiverIndex',
@@ -1154,7 +2172,7 @@ async function fetchRequests(
             // Fetch only group requests where the user is a team member
             const teamIDs = await getUserTeamIDs();
             items = await fetchGroupRequests(teamIDs);
-            
+
             // Sort by updatedAt desc
             items.sort((a, b) => {
                 const aTime = a.updatedAt || '';
@@ -1163,10 +2181,10 @@ async function fetchRequests(
                 if (aTime > bTime) return -1;
                 return 0;
             });
-            
+
             items = items.slice(0, queryLimit);
             newToken = undefined;
-            
+
         } else { // role = 'all' -> merge sent, received, and group requests
             // Fetch 1-to-1 requests (sent and received)
             const [sentResult, recvResult, teamIDs] = await Promise.all([
@@ -1179,7 +2197,7 @@ async function fetchRequests(
             const groupItems = await fetchGroupRequests(teamIDs);
 
             const allItems = [
-                ...(sentResult.Items || []), 
+                ...(sentResult.Items || []),
                 ...(recvResult.Items || []),
                 ...groupItems
             ];
@@ -1201,7 +2219,7 @@ async function fetchRequests(
                 if (aTime > bTime) return -1;
                 return 0;
             });
-            
+
             // Limit the result set in-memory
             items = merged.slice(0, queryLimit);
             newToken = undefined; // Merging makes DDB pagination token complex/irrelevant
@@ -1233,7 +2251,7 @@ async function fetchRequests(
  * If undefined, logic falls back to 1-to-1 (favor.senderID/receiverID).
  */
 async function _saveAndBroadcastMessage(
-    messageData: MessageData, 
+    messageData: MessageData,
     apiGwManagement: ApiGatewayManagementApiClient,
     recipientIDs?: string[]
 ): Promise<void> {
@@ -1242,11 +2260,31 @@ async function _saveAndBroadcastMessage(
         TableName: MESSAGES_TABLE,
         Item: messageData,
     }));
-    
+
+    // 1b. Update FavorRequest with lastMessage preview for sidebar
+    const lastMessagePreview = messageData.type === 'file'
+        ? '📎 Attachment'
+        : messageData.content?.substring(0, 100) || '';
+    try {
+        await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID: messageData.favorRequestID },
+            UpdateExpression: 'SET lastMessage = :lm, lastMessageAt = :lma, lastMessageSenderID = :lms, updatedAt = :ua',
+            ExpressionAttributeValues: {
+                ':lm': lastMessagePreview,
+                ':lma': new Date().toISOString(),
+                ':lms': messageData.senderID,
+                ':ua': new Date().toISOString(),
+            },
+        }));
+    } catch (e) {
+        console.warn('Failed to update lastMessage on FavorRequest:', e);
+    }
+
     // 2. Find the request details to identify recipients if not explicitly provided
     let participants = [messageData.senderID];
     let recipients = recipientIDs;
-    
+
     if (!recipients) {
         const favorResult = await ddb.send(new GetCommand({
             TableName: FAVORS_TABLE,
@@ -1256,18 +2294,18 @@ async function _saveAndBroadcastMessage(
         if (!favor) return;
 
         // Use the new helper to get all non-sending participants
-        recipients = await getRecipientIDs(favor, messageData.senderID); 
+        recipients = await getRecipientIDs(favor, messageData.senderID);
         participants = [...participants, ...recipients];
     } else {
         participants = [...participants, ...recipients];
     }
-    
+
     // 3. Broadcast to all participants (sender gets an echo, recipients get the new message)
     const broadcastPayload = {
         type: 'newMessage',
         message: messageData,
     };
-    
+
     // sendToAll will handle real-time and SNS notifications for all users in the 'participants' list
     await sendToAll(apiGwManagement, participants, broadcastPayload, { notifyOffline: true, senderID: messageData.senderID });
 }
@@ -1284,27 +2322,88 @@ async function getSenderInfo(connectionId: string): Promise<SenderInfo | undefin
         Key: { connectionId },
     }));
     const item = result.Item as (SenderInfo & { ttl: number }) | undefined;
-    
+
     if (!item) return undefined;
     return { connectionId: item.connectionId, userID: item.userID };
 }
 
-/** Retrieves connection information by User ID. */
-async function getSenderInfoByUserID(userID: string): Promise<SenderInfo | undefined> {
+/** Retrieves all active connections for a User ID. */
+async function getSenderInfosByUserID(userID: string): Promise<SenderInfo[]> {
     // NOTE: This assumes a Global Secondary Index (GSI) named 'UserIDIndex' exists
     // on the CONNECTIONS_TABLE with 'userID' as the Partition Key.
-    
     const result = await ddb.send(new QueryCommand({
         TableName: CONNECTIONS_TABLE,
-        IndexName: 'UserIDIndex', 
+        IndexName: 'UserIDIndex',
         KeyConditionExpression: 'userID = :uid',
         ExpressionAttributeValues: { ':uid': userID },
-        Limit: 1,
     }));
-    const item = result.Items?.[0] as SenderInfo | undefined;
-    
-    if (!item) return undefined;
-    return { connectionId: item.connectionId, userID: item.userID };
+
+    return (result.Items || [])
+        .map((item: any) => ({
+            connectionId: item?.connectionId,
+            userID: item?.userID,
+        }))
+        .filter((x: any): x is SenderInfo => typeof x.connectionId === 'string' && typeof x.userID === 'string');
+}
+
+/** Retrieves one active connection for a User ID (legacy helper). */
+async function getSenderInfoByUserID(userID: string): Promise<SenderInfo | undefined> {
+    const all = await getSenderInfosByUserID(userID);
+    return all[0];
+}
+
+type ConnectionRecord = SenderInfo & { deviceId?: string; client?: string };
+
+/** Retrieves full connection records (incl. deviceId/client) for a User ID. */
+async function getConnectionRecordsByUserID(userID: string): Promise<ConnectionRecord[]> {
+    const senders = await getSenderInfosByUserID(userID);
+    if (senders.length === 0) return [];
+
+    // Fast path for the common case (single connection)
+    if (senders.length === 1) {
+        const one = senders[0];
+        try {
+            const result = await ddb.send(new GetCommand({
+                TableName: CONNECTIONS_TABLE,
+                Key: { connectionId: one.connectionId },
+            }));
+            const item = result.Item as any;
+            if (!item?.connectionId || !item?.userID) return [one];
+            return [{
+                connectionId: item.connectionId,
+                userID: item.userID,
+                deviceId: typeof item.deviceId === 'string' ? item.deviceId : undefined,
+                client: typeof item.client === 'string' ? item.client : undefined,
+            }];
+        } catch {
+            return [one];
+        }
+    }
+
+    // Batch-get the connection rows to include deviceId/client (GSI is KEYS_ONLY)
+    try {
+        const keys = senders.map(s => ({ connectionId: s.connectionId }));
+        const batch = await ddb.send(new BatchGetCommand({
+            RequestItems: {
+                [CONNECTIONS_TABLE]: {
+                    Keys: keys,
+                },
+            },
+        }));
+
+        const items = (batch.Responses?.[CONNECTIONS_TABLE] as any[]) || [];
+        return items
+            .map((item: any) => ({
+                connectionId: item?.connectionId,
+                userID: item?.userID,
+                deviceId: typeof item?.deviceId === 'string' ? item.deviceId : undefined,
+                client: typeof item?.client === 'string' ? item.client : undefined,
+            }))
+            .filter((x: any): x is ConnectionRecord => typeof x.connectionId === 'string' && typeof x.userID === 'string');
+    } catch (e) {
+        console.warn('[Connections] BatchGet failed, falling back to SenderInfo only:', e);
+        return senders;
+    }
 }
 
 /** Helper function to fetch user's first name and email from Cognito. */
@@ -1319,7 +2418,7 @@ async function getUserDetails(userID: string): Promise<{ email?: string; fullNam
             UserPoolId: USER_POOL_ID,
             Username: userID,
         });
-        
+
         const response = await cognito.send(command);
 
         const emailAttr = response.UserAttributes?.find(attr => attr.Name === 'email')?.Value;
@@ -1340,34 +2439,34 @@ async function getUserDetails(userID: string): Promise<{ email?: string; fullNam
  * Sends an email notification to the receiver about a new favor request via SES.
  */
 async function sendNewFavorNotificationEmail(
-    senderID: string, 
-    receiverID: string, 
-    messageContent: string, 
-    requestType: string, 
+    senderID: string,
+    receiverID: string,
+    messageContent: string,
+    requestType: string,
     deadline?: string
 ): Promise<void> {
     if (!SES_SOURCE_EMAIL) {
         console.warn('SES_SOURCE_EMAIL not configured. Skipping email notification.');
         return;
     }
-    
+
     // 1. Get user details for Sender and Receiver
     const [sender, receiver] = await Promise.all([
         getUserDetails(senderID),
         getUserDetails(receiverID),
     ]);
-    
+
     if (!receiver.email) {
         console.warn(`Receiver ${receiverID} has no email address. Skipping email.`);
         return;
     }
-    
-    const formattedDeadline = deadline ? 
-        new Date(deadline).toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' }) : 
+
+    const formattedDeadline = deadline ?
+        new Date(deadline).toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' }) :
         '';
 
-    const deadlineText = formattedDeadline ? 
-        `\n\n**Deadline:** ${formattedDeadline}` : 
+    const deadlineText = formattedDeadline ?
+        `\n\n**Deadline:** ${formattedDeadline}` :
         '';
 
     const emailHtmlBody = `
@@ -1389,7 +2488,7 @@ async function sendNewFavorNotificationEmail(
             </body>
         </html>
     `;
-    
+
     const emailTextBody = `
         New ${requestType} Notification
         
@@ -1423,7 +2522,7 @@ async function sendNewFavorNotificationEmail(
         // V2 uses FromEmailAddress for the sender address
         FromEmailAddress: SES_SOURCE_EMAIL,
     }));
-    
+
     console.log(`SES Notification sent to ${receiver.email} for favor request from ${sender.fullName}.`);
 }
 
@@ -1435,50 +2534,58 @@ async function fetchHistory(
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
     const { favorRequestID, limit = 100, lastTimestamp } = payload;
-    
+
     if (!favorRequestID) {
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID for history fetch.' });
         return;
     }
 
-    // 1. Fetch the favor request to validate authorization
-    const favorResult = await ddb.send(new GetCommand({
-        TableName: FAVORS_TABLE,
-        Key: { favorRequestID },
-    }));
-    const favor = favorResult.Item as FavorRequest;
+    try {
+        // 1. Fetch the favor request to validate authorization
+        const favorResult = await ddb.send(new GetCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+        }));
+        const favor = favorResult.Item as FavorRequest;
 
-    if (!favor) {
-        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Favor request not found.' });
-        return;
+        if (!favor) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Favor request not found.' });
+            return;
+        }
+
+        // 2. Verify the caller is a participant (works for both 1-to-1 and group requests)
+        const isParticipant = await isUserParticipant(favor, callerID);
+        if (!isParticipant) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this request.' });
+            return;
+        }
+
+        // 3. Query the MessagesTable (PK: favorRequestID, SK: timestamp)
+        const queryInput = {
+            TableName: MESSAGES_TABLE,
+            KeyConditionExpression: 'favorRequestID = :id',
+            ExpressionAttributeValues: { ':id': favorRequestID },
+            ScanIndexForward: true, // Chronological order (oldest first)
+            Limit: limit,
+            // Optional: Use ExclusiveStartKey for pagination (not fully implemented here, just lastTimestamp as anchor)
+        };
+
+        const historyResult = await ddb.send(new QueryCommand(queryInput));
+
+        // 4. Send history back to the client
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'favorHistory',
+            favorRequestID,
+            messages: historyResult.Items || [],
+            // nextToken: historyResult.LastEvaluatedKey // To implement robust pagination
+        });
+    } catch (error: any) {
+        console.error(`[fetchHistory] Error fetching history for favorRequestID=${favorRequestID}, callerID=${callerID}:`, error);
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error',
+            message: `Failed to fetch message history: ${error.message || 'Unknown error'}`
+        });
     }
-
-    // 2. Verify the caller is a participant (works for both 1-to-1 and group requests)
-    const isParticipant = await isUserParticipant(favor, callerID);
-    if (!isParticipant) {
-        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this request.' });
-        return;
-    }
-
-    // 3. Query the MessagesTable (PK: favorRequestID, SK: timestamp)
-    const queryInput = {
-        TableName: MESSAGES_TABLE,
-        KeyConditionExpression: 'favorRequestID = :id',
-        ExpressionAttributeValues: { ':id': favorRequestID },
-        ScanIndexForward: true, // Chronological order (oldest first)
-        Limit: limit,
-        // Optional: Use ExclusiveStartKey for pagination (not fully implemented here, just lastTimestamp as anchor)
-    };
-
-    const historyResult = await ddb.send(new QueryCommand(queryInput));
-    
-    // 4. Send history back to the client
-    await sendToClient(apiGwManagement, connectionId, {
-        type: 'favorHistory',
-        favorRequestID,
-        messages: historyResult.Items || [],
-        // nextToken: historyResult.LastEvaluatedKey // To implement robust pagination
-    });
 }
 /** Sends a JSON payload back to a specific client. */
 async function sendToClient(apiGwManagement: ApiGatewayManagementApiClient, connectionId: string, data: any): Promise<void> {
@@ -1490,7 +2597,17 @@ async function sendToClient(apiGwManagement: ApiGatewayManagementApiClient, conn
     } catch (e) {
         if ((e as any).statusCode === 410) {
             console.warn(`Found stale connection, deleting: ${connectionId}`);
-            // In a real implementation, you would delete the stale connection here.
+            // Clean up stale connections so users don’t get stuck as “online”.
+            if (CONNECTIONS_TABLE) {
+                try {
+                    await ddb.send(new DeleteCommand({
+                        TableName: CONNECTIONS_TABLE,
+                        Key: { connectionId },
+                    }));
+                } catch (deleteErr) {
+                    console.warn(`Failed to delete stale connection ${connectionId}:`, deleteErr);
+                }
+            }
         } else {
             console.error('Failed to send data to connection:', e);
         }
@@ -1499,39 +2616,46 @@ async function sendToClient(apiGwManagement: ApiGatewayManagementApiClient, conn
 
 /** Sends a message to a list of user IDs by finding their active connections. */
 async function sendToAll(
-    apiGwManagement: ApiGatewayManagementApiClient, 
-    userIDs: string[], 
-    data: any, 
+    apiGwManagement: ApiGatewayManagementApiClient,
+    userIDs: string[],
+    data: any,
     options: { notifyOffline: boolean; senderID?: string; senderName?: string }
 ): Promise<void> {
-    const connectionPromises = userIDs.map(id => getSenderInfoByUserID(id));
-    const connections = await Promise.all(connectionPromises);
-    
-    const offlineRecipients: string[] = [];
+    const connectionPromises = userIDs.map(id => getConnectionRecordsByUserID(id));
+    const connectionsByUser = await Promise.all(connectionPromises);
+
+    // Device-aware push: exclude devices that are already connected via WS
+    const excludeDeviceIds = new Set<string>();
+    const pushRecipients = options.notifyOffline
+        ? userIDs.filter(uid => uid && uid !== options.senderID)
+        : [];
 
     for (let i = 0; i < userIDs.length; i++) {
         const userID = userIDs[i];
-        const conn = connections[i];
-        
-        if (conn) {
-            // User is online, send via WebSocket
-            await sendToClient(apiGwManagement, conn.connectionId, data);
-        } else if (options.notifyOffline && userID !== options.senderID) {
-            // User is offline AND is a recipient (not the sender)
-            offlineRecipients.push(userID);
+        const conns = connectionsByUser[i];
+
+        if (conns && conns.length > 0) {
+            // User is online (at least one active WS connection), send via WebSocket to ALL devices/tabs
+            for (const conn of conns) {
+                await sendToClient(apiGwManagement, conn.connectionId, data);
+                if (pushRecipients.includes(userID) && conn.deviceId) {
+                    excludeDeviceIds.add(conn.deviceId);
+                }
+            }
         }
     }
-    
-    // Send push notifications to all offline recipients
-    if (offlineRecipients.length > 0 && options.notifyOffline) {
+
+    // Send push notifications to recipient users' OFFLINE devices (exclude WS-connected deviceIds)
+    if (pushRecipients.length > 0 && options.notifyOffline) {
         const messageData = data.message as MessageData;
-        
+
         if (messageData) {
             // For message notifications, use push notifications if available
             await sendPushNotificationsToOfflineUsers(
-                offlineRecipients,
+                pushRecipients,
                 messageData,
-                options.senderName
+                options.senderName,
+                excludeDeviceIds.size > 0 ? Array.from(excludeDeviceIds) : undefined
             );
         }
     }
@@ -1544,45 +2668,51 @@ async function sendToAll(
 async function sendPushNotificationsToOfflineUsers(
     offlineUserIds: string[],
     messageData: any,
-    senderName?: string
+    senderName?: string,
+    excludeDeviceIds?: string[]
 ): Promise<void> {
     if (offlineUserIds.length === 0) {
         return;
     }
-    
+
     // Use the actual content to create a useful preview
-    const preview = messageData.content && messageData.content.length > 100 
-        ? messageData.content.substring(0, 97) + '...' 
+    const preview = messageData.content && messageData.content.length > 100
+        ? messageData.content.substring(0, 97) + '...'
         : messageData.content || '';
-    
+
     // If push notifications are enabled, use the send-push Lambda
     if (PUSH_NOTIFICATIONS_ENABLED && SEND_PUSH_FUNCTION_ARN) {
-        console.log(`[PushNotifications] Sending to ${offlineUserIds.length} offline users via Lambda`);
-        
+        console.log(`[PushNotifications] Sending to ${offlineUserIds.length} user(s) via Lambda`, {
+            excludeDeviceIdsCount: excludeDeviceIds?.length || 0,
+        });
+
         try {
             const notificationPayload = {
                 _internalCall: true,
                 userIds: offlineUserIds,
+                ...(excludeDeviceIds && excludeDeviceIds.length > 0 ? { excludeDeviceIds } : {}),
                 notification: {
                     title: senderName ? `Message from ${senderName}` : 'New Message',
                     body: preview,
                     type: 'new_message',
                     data: {
                         conversationId: messageData.favorRequestID,
+                        tag: `conversation-${messageData.favorRequestID}`,
                         senderID: messageData.senderID,
                         action: 'open_conversation',
+                        url: `/#/communication?favorRequestID=${encodeURIComponent(messageData.favorRequestID)}`,
                         timestamp: Date.now(),
                     },
                     threadId: `conversation-${messageData.favorRequestID}`,
                 },
             };
-            
+
             const response = await lambdaClient.send(new InvokeCommand({
                 FunctionName: SEND_PUSH_FUNCTION_ARN,
                 Payload: JSON.stringify(notificationPayload),
                 InvocationType: 'Event', // Async invocation - don't wait for response
             }));
-            
+
             console.log(`[PushNotifications] Lambda invoked, StatusCode: ${response.StatusCode}`);
         } catch (error: any) {
             console.error('[PushNotifications] Failed to invoke send-push Lambda:', error.message);
@@ -1595,18 +2725,57 @@ async function sendPushNotificationsToOfflineUsers(
     }
 }
 
+/**
+ * Cross-device sync for unread/notification clearing.
+ * Sent to the same user’s OTHER devices when unread state changes elsewhere.
+ */
+async function sendSyncUnreadToOtherDevices(
+    userId: string,
+    favorRequestID: string,
+    excludeDeviceIds?: string[]
+): Promise<void> {
+    if (!PUSH_NOTIFICATIONS_ENABLED || !SEND_PUSH_FUNCTION_ARN) return;
+
+    try {
+        const payload = {
+            _internalCall: true,
+            userId,
+            skipPreferenceCheck: true,
+            ...(excludeDeviceIds && excludeDeviceIds.length > 0 ? { excludeDeviceIds } : {}),
+            notification: {
+                title: 'Sync',
+                body: 'Unread state updated',
+                type: 'sync_unread',
+                data: {
+                    type: 'sync_unread',
+                    conversationId: favorRequestID,
+                    tag: `conversation-${favorRequestID}`,
+                    timestamp: Date.now(),
+                },
+            },
+        };
+
+        await lambdaClient.send(new InvokeCommand({
+            FunctionName: SEND_PUSH_FUNCTION_ARN,
+            Payload: Buffer.from(JSON.stringify(payload)),
+        }));
+    } catch (e) {
+        console.warn('[PushNotifications] Failed to send sync_unread:', e);
+    }
+}
+
 /** Publishes a push notification to the SNS topic (legacy fallback). */
 async function publishSnsNotification(messageData: any): Promise<void> {
     if (!NOTIFICATIONS_TOPIC_ARN) {
         console.warn('SNS Topic ARN not configured. Skipping notification.');
         return;
     }
-    
+
     // Use the actual content to create a useful preview
-    const preview = messageData.content && messageData.content.length > 100 
-        ? messageData.content.substring(0, 97) + '...' 
+    const preview = messageData.content && messageData.content.length > 100
+        ? messageData.content.substring(0, 97) + '...'
         : messageData.content || '';
-        
+
     await sns.send(new PublishCommand({
         TopicArn: NOTIFICATIONS_TOPIC_ARN,
         Message: JSON.stringify({
@@ -1616,7 +2785,7 @@ async function publishSnsNotification(messageData: any): Promise<void> {
             senderID: messageData.senderID,
             messagePreview: preview,
             // Pass group context if available
-            teamID: messageData.teamID, 
+            teamID: messageData.teamID,
             offlineRecipients: messageData.offlineRecipients, // List of users who should receive the notification
         }),
     }));
@@ -1636,10 +2805,10 @@ async function sendTaskPushNotification(
     if (!PUSH_NOTIFICATIONS_ENABLED || userIds.length === 0) {
         return;
     }
-    
+
     let title: string;
     let body: string;
-    
+
     switch (type) {
         case 'task_assigned':
             title = `New Task: ${taskTitle}`;
@@ -1656,7 +2825,7 @@ async function sendTaskPushNotification(
         default:
             return;
     }
-    
+
     try {
         const notificationPayload = {
             _internalCall: true,
@@ -1672,13 +2841,13 @@ async function sendTaskPushNotification(
                 },
             },
         };
-        
+
         await lambdaClient.send(new InvokeCommand({
             FunctionName: SEND_PUSH_FUNCTION_ARN,
             Payload: JSON.stringify(notificationPayload),
             InvocationType: 'Event',
         }));
-        
+
         console.log(`[PushNotifications] Task notification sent to ${userIds.length} users`);
     } catch (error: any) {
         console.error('[PushNotifications] Failed to send task notification:', error.message);
@@ -1699,20 +2868,20 @@ async function sendMeetingPushNotification(
     if (!PUSH_NOTIFICATIONS_ENABLED || userIds.length === 0) {
         return;
     }
-    
+
     let title: string;
     let body: string;
-    
-    const dateStr = startTime 
-        ? new Date(startTime).toLocaleString('en-US', { 
-            weekday: 'short', 
-            month: 'short', 
+
+    const dateStr = startTime
+        ? new Date(startTime).toLocaleString('en-US', {
+            weekday: 'short',
+            month: 'short',
             day: 'numeric',
             hour: 'numeric',
             minute: '2-digit'
-          })
+        })
         : '';
-    
+
     switch (type) {
         case 'meeting_scheduled':
             title = `Meeting: ${meetingTitle}`;
@@ -1729,7 +2898,7 @@ async function sendMeetingPushNotification(
         default:
             return;
     }
-    
+
     try {
         const notificationPayload = {
             _internalCall: true,
@@ -1745,13 +2914,13 @@ async function sendMeetingPushNotification(
                 },
             },
         };
-        
+
         await lambdaClient.send(new InvokeCommand({
             FunctionName: SEND_PUSH_FUNCTION_ARN,
             Payload: JSON.stringify(notificationPayload),
             InvocationType: 'Event',
         }));
-        
+
         console.log(`[PushNotifications] Meeting notification sent to ${userIds.length} users`);
     } catch (error: any) {
         console.error('[PushNotifications] Failed to send meeting notification:', error.message);
@@ -1767,8 +2936,32 @@ async function getPresignedUrl(senderID: string, payload: any, connectionId: str
         return;
     }
 
+    if (!FILE_BUCKET_NAME) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: File bucket not configured.' });
+        return;
+    }
+
+    // Verify the sender is a participant in this request before issuing an upload URL
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID: payload.favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+    if (!favor) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Favor request not found.' });
+        return;
+    }
+    const isParticipant = await isUserParticipant(favor, senderID);
+    if (!isParticipant) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this request.' });
+        return;
+    }
+
+    const rawName = String(payload.fileName);
+    const safeFileName = rawName.split('/').pop()?.split('\\').pop() || 'file';
+
     // Key structure: favors/{favorRequestID}/{senderID}-{UUID}-{fileName}
-    const fileKey = `favors/${payload.favorRequestID}/${senderID}-${uuidv4()}-${payload.fileName}`;
+    const fileKey = `favors/${payload.favorRequestID}/${senderID}-${uuidv4()}-${safeFileName}`;
 
     const command = new PutObjectCommand({
         Bucket: FILE_BUCKET_NAME,
@@ -1778,7 +2971,7 @@ async function getPresignedUrl(senderID: string, payload: any, connectionId: str
 
     try {
         const url = await getSignedUrl(s3, command, { expiresIn: 900 }); // URL valid for 15 minutes
-        
+
         await sendToClient(apiGwManagement, connectionId, {
             type: 'presignedUrl',
             favorRequestID: payload.favorRequestID,
@@ -1790,6 +2983,87 @@ async function getPresignedUrl(senderID: string, payload: any, connectionId: str
         console.error('Error generating signed URL:', e);
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to generate file upload URL' });
     }
+}
+
+/**
+ * Generates a signed S3 GET URL for an existing file (download/preview).
+ * This is distinct from `getPresignedUrl`, which returns a PUT URL for uploads.
+ */
+async function getPresignedDownloadUrl(
+    requesterID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, fileKey } = payload || {};
+
+    if (!favorRequestID || !fileKey) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID or fileKey.' });
+        return;
+    }
+
+    if (!FILE_BUCKET_NAME) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: File bucket not configured.' });
+        return;
+    }
+
+    // Ensure the request is scoped to the conversation and not an arbitrary S3 key
+    const cleanKey = sanitizeFileKey(String(fileKey));
+    const expectedPrefix = `favors/${favorRequestID}/`;
+    if (!cleanKey.startsWith(expectedPrefix)) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Invalid fileKey for this conversation.' });
+        return;
+    }
+
+    // Validate authorization (must be a participant of the conversation)
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+    if (!favor) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Favor request not found.' });
+        return;
+    }
+
+    const isParticipant = await isUserParticipant(favor, requesterID);
+    if (!isParticipant) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this request.' });
+        return;
+    }
+
+    try {
+        const command = new GetObjectCommand({
+            Bucket: FILE_BUCKET_NAME,
+            Key: cleanKey,
+        });
+
+        const url = await getSignedUrl(s3, command, { expiresIn: 900 }); // URL valid for 15 minutes
+
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'presignedDownloadUrl',
+            favorRequestID,
+            url,
+            fileKey: cleanKey,
+        });
+    } catch (e) {
+        console.error('Error generating signed download URL:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to generate file download URL' });
+    }
+}
+
+/**
+ * Normalizes a DynamoDB "members" attribute to a string[].
+ * Some tables may store members as a List (array) or a String Set (JS Set via DocumentClient).
+ */
+function normalizeMembers(members: unknown): string[] {
+    if (Array.isArray(members)) {
+        return members.filter((m): m is string => typeof m === 'string');
+    }
+    if (members instanceof Set) {
+        return Array.from(members).filter((m): m is string => typeof m === 'string');
+    }
+    return [];
 }
 
 // ========================================
@@ -1925,7 +3199,7 @@ async function respondToForward(
 
     // 2. Find the forward record for this user
     const forwardingChain = favor.forwardingChain || [];
-    const forwardIndex = forwardID 
+    const forwardIndex = forwardID
         ? forwardingChain.findIndex(f => f.forwardID === forwardID)
         : forwardingChain.findIndex(f => f.toUserID === senderID && f.status === 'pending');
 
@@ -1963,7 +3237,7 @@ async function respondToForward(
     await ddb.send(new UpdateCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
-        UpdateExpression: 'SET forwardingChain = :chain, #s = :status, currentAssigneeID = :assignee, updatedAt = :ua' + 
+        UpdateExpression: 'SET forwardingChain = :chain, #s = :status, currentAssigneeID = :assignee, updatedAt = :ua' +
             (action === 'reject' ? ', rejectionReason = :reason, rejectedAt = :rejAt' : ''),
         ExpressionAttributeNames: { '#s': 'status' },
         ExpressionAttributeValues: {
@@ -2093,7 +3367,7 @@ async function updateTaskDeadline(
 
     // 3. Update the deadline
     const nowIso = new Date().toISOString();
-    
+
     if (removeDeadline) {
         await ddb.send(new UpdateCommand({
             TableName: FAVORS_TABLE,

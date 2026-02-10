@@ -231,6 +231,10 @@ import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 export interface HrStackProps extends StackProps {
   staffClinicInfoTableName: string; // from coreStack
   clinicsTableName: string; // from ChimeStack - for timezone lookup
+  // Push Notifications Integration (from PushNotificationsStack)
+  deviceTokensTableName?: string;
+  deviceTokensTableArn?: string;
+  sendPushFunctionArn?: string;
 }
 
 export class HrStack extends Stack {
@@ -496,9 +500,9 @@ export class HrStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'hr', 'index.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X, // Match your admin-stack.ts
-      memorySize: 256,
+      memorySize: 512,
       timeout: Duration.seconds(30),
-      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20', minify: true },
       environment: {
         SHIFTS_TABLE: this.shiftsTable.tableName,
         LEAVE_TABLE: this.leaveTable.tableName,
@@ -514,6 +518,9 @@ export class HrStack extends Stack {
         APP_NAME: 'TodaysDentalInsights',
         FROM_EMAIL: 'no-reply@todaysdentalinsights.com',
         SES_REGION: 'us-east-1',
+        // --- PUSH NOTIFICATIONS ---
+        ...(props.deviceTokensTableName && { DEVICE_TOKENS_TABLE: props.deviceTokensTableName }),
+        ...(props.sendPushFunctionArn && { SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn }),
       },
     });
     applyTags(this.hrFn, { Function: 'hr' });
@@ -562,6 +569,29 @@ export class HrStack extends Stack {
       resources: ['*'],
     }));
     // --- END UPDATED ---
+
+    // --- PUSH NOTIFICATIONS PERMISSIONS ---
+    // Grant permission to query device tokens table for targeted notifications
+    if (props.deviceTokensTableArn) {
+      this.hrFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['dynamodb:Query', 'dynamodb:GetItem'],
+        resources: [
+          props.deviceTokensTableArn,
+          `${props.deviceTokensTableArn}/index/*`, // Include GSIs
+        ],
+      }));
+    }
+
+    // Grant permission to invoke the send-push Lambda
+    if (props.sendPushFunctionArn) {
+      this.hrFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
+    // --- END PUSH NOTIFICATIONS ---
 
     // ========================================
     // API ROUTES - Using Proxy Integration

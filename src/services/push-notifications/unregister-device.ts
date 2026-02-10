@@ -2,13 +2,14 @@
  * Unregister Device Handler for Push Notifications
  * 
  * Handles device token removal from mobile apps.
- * Deletes SNS Platform Endpoints and removes device metadata from DynamoDB.
+ * Removes device metadata from DynamoDB.
+ * 
+ * DIRECT FIREBASE INTEGRATION - No SNS Platform Endpoints to delete
  */
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, DeleteCommand, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { SNSClient, DeleteEndpointCommand } from '@aws-sdk/client-sns';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import {
   getUserPermissions,
@@ -20,7 +21,6 @@ const DEVICE_TOKENS_TABLE = process.env.DEVICE_TOKENS_TABLE || '';
 
 // Clients
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const sns = new SNSClient({});
 
 // Helper functions
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
@@ -69,7 +69,7 @@ async function handleUnregisterByToken(
   const deviceId = createDeviceId(deviceToken);
 
   try {
-    // Get the device record to find the endpoint ARN
+    // Get the device record to verify it exists
     const getResult = await ddb.send(new GetCommand({
       TableName: DEVICE_TOKENS_TABLE,
       Key: {
@@ -80,21 +80,6 @@ async function handleUnregisterByToken(
 
     if (!getResult.Item) {
       return http(404, { error: 'Device not found' }, event);
-    }
-
-    const endpointArn = getResult.Item.endpointArn;
-
-    // Delete SNS endpoint
-    if (endpointArn) {
-      try {
-        await sns.send(new DeleteEndpointCommand({
-          EndpointArn: endpointArn,
-        }));
-        console.log(`[UnregisterDevice] Deleted SNS endpoint: ${endpointArn}`);
-      } catch (snsError: any) {
-        // Log but don't fail if endpoint deletion fails
-        console.warn(`[UnregisterDevice] Failed to delete SNS endpoint: ${snsError.message}`);
-      }
     }
 
     // Delete from DynamoDB
@@ -120,13 +105,14 @@ async function handleUnregisterByToken(
 }
 
 /**
- * Handle device unregistration by device ID
+ * Handle device unregistration by device ID (from path or body)
  */
 async function handleUnregisterById(
   event: APIGatewayProxyEvent,
-  userPerms: UserPermissions
+  userPerms: UserPermissions,
+  bodyDeviceId?: string
 ): Promise<APIGatewayProxyResult> {
-  const deviceId = event.pathParameters?.deviceId;
+  const deviceId = event.pathParameters?.deviceId || bodyDeviceId;
 
   if (!deviceId) {
     return http(400, { error: 'deviceId is required' }, event);
@@ -135,7 +121,7 @@ async function handleUnregisterById(
   const userId = userPerms.email || 'unknown';
 
   try {
-    // Get the device record to find the endpoint ARN
+    // Get the device record to verify it exists
     const getResult = await ddb.send(new GetCommand({
       TableName: DEVICE_TOKENS_TABLE,
       Key: {
@@ -145,21 +131,13 @@ async function handleUnregisterById(
     }));
 
     if (!getResult.Item) {
-      return http(404, { error: 'Device not found' }, event);
-    }
-
-    const endpointArn = getResult.Item.endpointArn;
-
-    // Delete SNS endpoint
-    if (endpointArn) {
-      try {
-        await sns.send(new DeleteEndpointCommand({
-          EndpointArn: endpointArn,
-        }));
-        console.log(`[UnregisterDevice] Deleted SNS endpoint: ${endpointArn}`);
-      } catch (snsError: any) {
-        console.warn(`[UnregisterDevice] Failed to delete SNS endpoint: ${snsError.message}`);
-      }
+      // Device might already be removed — treat as success for idempotency
+      console.log(`[UnregisterDevice] Device ${deviceId} not found for user ${userId}, treating as already unregistered`);
+      return http(200, {
+        success: true,
+        message: 'Device already unregistered or not found',
+        deviceId,
+      }, event);
     }
 
     // Delete from DynamoDB
@@ -206,20 +184,8 @@ async function handleUnregisterAll(
     const devices = queryResult.Items || [];
     let deletedCount = 0;
 
-    // Delete each device
+    // Delete each device from DynamoDB
     for (const device of devices) {
-      // Delete SNS endpoint
-      if (device.endpointArn) {
-        try {
-          await sns.send(new DeleteEndpointCommand({
-            EndpointArn: device.endpointArn,
-          }));
-        } catch (snsError: any) {
-          console.warn(`[UnregisterDevice] Failed to delete SNS endpoint: ${snsError.message}`);
-        }
-      }
-
-      // Delete from DynamoDB
       await ddb.send(new DeleteCommand({
         TableName: DEVICE_TOKENS_TABLE,
         Key: {
@@ -244,6 +210,40 @@ async function handleUnregisterAll(
 }
 
 /**
+ * Smart POST /unregister handler
+ * Routes based on body contents:
+ * - { allDevices: true }           → unregister ALL devices for the user
+ * - { deviceId: "..." }            → unregister specific device by ID
+ * - { deviceToken: "..." }         → unregister device by FCM token
+ * 
+ * This supports both the Android app (sends deviceId + allDevices) and
+ * web frontend (sends deviceToken).
+ */
+async function handleSmartUnregister(
+  event: APIGatewayProxyEvent,
+  userPerms: UserPermissions
+): Promise<APIGatewayProxyResult> {
+  const body = parseBody(event.body);
+
+  // Priority 1: allDevices flag (Android logout sends this)
+  if (body.allDevices === true) {
+    return handleUnregisterAll(event, userPerms);
+  }
+
+  // Priority 2: specific deviceId (Android sends ANDROID_ID)
+  if (body.deviceId && typeof body.deviceId === 'string') {
+    return handleUnregisterById(event, userPerms, body.deviceId);
+  }
+
+  // Priority 3: deviceToken (web frontend sends this)
+  if (body.deviceToken && typeof body.deviceToken === 'string') {
+    return handleUnregisterByToken(event, userPerms);
+  }
+
+  return http(400, { error: 'One of deviceToken, deviceId, or allDevices is required' }, event);
+}
+
+/**
  * Main handler
  */
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
@@ -261,15 +261,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
   // Route based on path and method
   const path = event.path || '';
-  
+
   if (event.httpMethod === 'DELETE') {
     // DELETE /push/devices/{deviceId}
     if (event.pathParameters?.deviceId) {
       return handleUnregisterById(event, userPerms);
     }
-    // DELETE /push/devices (with body containing deviceToken)
+    // DELETE /push/devices (with body containing deviceToken or deviceId)
     if (path.endsWith('/devices')) {
-      return handleUnregisterByToken(event, userPerms);
+      return handleSmartUnregister(event, userPerms);
     }
     // DELETE /push/devices/all
     if (path.endsWith('/all')) {
@@ -277,11 +277,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
   }
 
-  // POST /push/unregister (body with deviceToken)
+  // POST /push/unregister — smart routing based on body fields
   if (event.httpMethod === 'POST' && path.includes('/unregister')) {
-    return handleUnregisterByToken(event, userPerms);
+    return handleSmartUnregister(event, userPerms);
   }
 
   return http(405, { error: 'Method Not Allowed' }, event);
 };
-

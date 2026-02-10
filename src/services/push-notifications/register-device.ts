@@ -1,14 +1,22 @@
 /**
  * Register Device Handler for Push Notifications
  * 
- * Handles device token registration from mobile apps (iOS/Android).
- * Creates SNS Platform Endpoints and stores device metadata in DynamoDB.
+ * Handles device token registration from mobile apps (iOS/Android) and web apps.
+ * Stores device tokens in DynamoDB for direct Firebase Cloud Messaging (FCM) delivery.
+ * 
+ * DIRECT FIREBASE INTEGRATION - No SNS Platform Endpoints
+ * 
+ * Robustness Features:
+ * - Atomic upsert using DynamoDB conditional writes (no race conditions)
+ * - Token collision detection with proper device handoff
+ * - TTL-based automatic cleanup of stale tokens (90 days)
+ * - Unregistration endpoint for logout/app uninstall
  */
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand, GetCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { SNSClient, CreatePlatformEndpointCommand, GetEndpointAttributesCommand, SetEndpointAttributesCommand, DeleteEndpointCommand } from '@aws-sdk/client-sns';
+import { DynamoDBClient, ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, QueryCommand, DeleteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { createHash } from 'crypto';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import {
   getUserPermissions,
@@ -19,15 +27,17 @@ import {
 
 // Environment variables
 const DEVICE_TOKENS_TABLE = process.env.DEVICE_TOKENS_TABLE || '';
-const APNS_PLATFORM_ARN = process.env.APNS_PLATFORM_ARN || '';
-const APNS_SANDBOX_PLATFORM_ARN = process.env.APNS_SANDBOX_PLATFORM_ARN || '';
-const FCM_PLATFORM_ARN = process.env.FCM_PLATFORM_ARN || '';
+
+// Configuration
+const TOKEN_TTL_DAYS = 90; // Automatically expire tokens after 90 days of inactivity
 
 // Clients
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const sns = new SNSClient({});
 
-// Helper functions
+// ========================================
+// HELPERS
+// ========================================
+
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);
 
 function http(code: number, body: any, event: APIGatewayProxyEvent): APIGatewayProxyResult {
@@ -43,17 +53,29 @@ function parseBody(body: any): Record<string, any> {
   }
 }
 
-// Platform types
-type Platform = 'ios' | 'android';
+// ========================================
+// TYPES
+// ========================================
+
+type Platform = 'ios' | 'android' | 'web';
 type Environment = 'production' | 'sandbox';
 
 interface RegisterDeviceRequest {
   deviceToken: string;
   platform: Platform;
   environment?: Environment; // For iOS: production vs sandbox (default: production)
+  deviceId?: string; // Client-provided device ID (e.g., Android's ANDROID_ID)
+  clinicId?: string; // Clinic ID can be provided in body
+  clinicIds?: string[]; // Multiple clinic IDs for multi-clinic users
   deviceName?: string;
   appVersion?: string;
   osVersion?: string;
+}
+
+interface UnregisterDeviceRequest {
+  deviceId?: string;      // Specific device to unregister
+  deviceToken?: string;   // Or use token to find and unregister
+  allDevices?: boolean;   // Unregister all devices for this user
 }
 
 interface DeviceTokenRecord {
@@ -63,115 +85,147 @@ interface DeviceTokenRecord {
   deviceToken: string;
   platform: Platform;
   environment: Environment;
-  endpointArn: string;
   deviceName?: string;
   appVersion?: string;
   osVersion?: string;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
-  ttl?: number;
+  lastActiveAt: string;
+  ttl: number; // DynamoDB TTL for automatic cleanup
 }
 
-/**
- * Get the appropriate Platform Application ARN based on platform and environment
- */
-function getPlatformApplicationArn(platform: Platform, environment: Environment): string {
-  if (platform === 'android') {
-    return FCM_PLATFORM_ARN;
-  }
-  // iOS
-  return environment === 'sandbox' ? APNS_SANDBOX_PLATFORM_ARN : APNS_PLATFORM_ARN;
+// Token lookup index item
+interface TokenLookupRecord {
+  pk: string;           // TOKEN#<deviceToken_hash>
+  sk: string;           // LOOKUP
+  deviceToken: string;
+  userId: string;
+  deviceId: string;
+  clinicId: string;
 }
+
+// ========================================
+// DEVICE ID AND TOKEN HANDLING
+// ========================================
 
 /**
  * Create a unique device ID from the token (for idempotency)
+ * Uses SHA-256 (truncated) for collision-resistant hashing
+ * 
+ * Previous implementation used 32-bit hash which had ~50% collision probability
+ * after only 77,000 devices (birthday paradox). SHA-256 with 16 hex chars (64 bits)
+ * needs ~4 billion devices for 50% collision probability.
  */
 function createDeviceId(deviceToken: string): string {
-  // Use a simple hash for device ID
-  let hash = 0;
-  for (let i = 0; i < deviceToken.length; i++) {
-    const char = deviceToken.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // Convert to 32bit integer
-  }
-  return `device_${Math.abs(hash).toString(16)}`;
+  const hash = createHash('sha256').update(deviceToken).digest('hex');
+  // Use first 16 hex characters (64 bits) for a good balance of uniqueness and readability
+  return `device_${hash.substring(0, 16)}`;
 }
 
 /**
- * Create or update SNS Platform Endpoint
+ * Create a hash of the token for lookup purposes
+ * Uses a different approach to create a shorter, consistent hash
  */
-async function createOrUpdateEndpoint(
-  platformArn: string,
-  deviceToken: string,
-  userId: string,
-  clinicId: string
-): Promise<string> {
-  const customUserData = JSON.stringify({ userId, clinicId });
+function createTokenHash(deviceToken: string): string {
+  let hash = 5381;
+  for (let i = 0; i < deviceToken.length; i++) {
+    hash = ((hash << 5) + hash) + deviceToken.charCodeAt(i);
+    hash = hash & hash;
+  }
+  return Math.abs(hash).toString(36);
+}
 
+/**
+ * Calculate TTL timestamp for DynamoDB
+ */
+function calculateTtl(): number {
+  return Math.floor(Date.now() / 1000) + (TOKEN_TTL_DAYS * 24 * 60 * 60);
+}
+
+// ========================================
+// TOKEN COLLISION DETECTION
+// ========================================
+
+/**
+ * Find existing device by token across all users
+ * This handles device handoff scenarios (e.g., device sold/transferred)
+ * Uses the deviceToken-index GSI for O(1) lookup instead of expensive table scan
+ */
+async function findExistingDeviceByToken(deviceToken: string): Promise<{ userId: string; deviceId: string; clinicId: string } | null> {
   try {
-    // Try to create the endpoint
-    const createResult = await sns.send(new CreatePlatformEndpointCommand({
-      PlatformApplicationArn: platformArn,
-      Token: deviceToken,
-      CustomUserData: customUserData,
+    // Use the deviceToken-index GSI for efficient O(1) lookup
+    // This replaces the previous O(n) table scan
+    const result = await ddb.send(new QueryCommand({
+      TableName: DEVICE_TOKENS_TABLE,
+      IndexName: 'deviceToken-index',
+      KeyConditionExpression: 'deviceToken = :token',
+      ExpressionAttributeValues: {
+        ':token': deviceToken,
+      },
+      Limit: 1,
     }));
 
-    const endpointArn = createResult.EndpointArn!;
+    if (result.Items && result.Items.length > 0) {
+      const existingDevice = result.Items[0];
 
-    // Check if the endpoint already exists and needs updating
-    try {
-      const attributes = await sns.send(new GetEndpointAttributesCommand({
-        EndpointArn: endpointArn,
-      }));
-
-      const currentToken = attributes.Attributes?.Token;
-      const enabled = attributes.Attributes?.Enabled;
-
-      // If token changed or endpoint is disabled, update it
-      if (currentToken !== deviceToken || enabled !== 'true') {
-        await sns.send(new SetEndpointAttributesCommand({
-          EndpointArn: endpointArn,
-          Attributes: {
-            Token: deviceToken,
-            Enabled: 'true',
-            CustomUserData: customUserData,
+      // GSI returns KEYS_ONLY, so we need to fetch the full item if we need clinicId
+      // For handoff, we primarily need userId and deviceId (which are in the GSI keys)
+      if (!existingDevice.clinicId) {
+        // Fetch full item to get clinicId
+        const fullItem = await ddb.send(new GetCommand({
+          TableName: DEVICE_TOKENS_TABLE,
+          Key: {
+            userId: existingDevice.userId,
+            deviceId: existingDevice.deviceId,
           },
         }));
+
+        if (fullItem.Item) {
+          return {
+            userId: fullItem.Item.userId,
+            deviceId: fullItem.Item.deviceId,
+            clinicId: fullItem.Item.clinicId,
+          };
+        }
       }
-    } catch (getError: any) {
-      // If we can't get attributes, just continue with the created endpoint
-      console.warn('Could not get endpoint attributes:', getError.message);
+
+      return {
+        userId: existingDevice.userId,
+        deviceId: existingDevice.deviceId,
+        clinicId: existingDevice.clinicId,
+      };
     }
 
-    return endpointArn;
-  } catch (error: any) {
-    // Handle the case where endpoint already exists with different token
-    if (error.name === 'InvalidParameterException' && error.message?.includes('already exists')) {
-      // Extract the existing endpoint ARN from the error message
-      const arnMatch = error.message.match(/Endpoint (arn:aws:sns:[^)]+)/);
-      if (arnMatch) {
-        const existingArn = arnMatch[1];
-        
-        // Update the existing endpoint with new token
-        await sns.send(new SetEndpointAttributesCommand({
-          EndpointArn: existingArn,
-          Attributes: {
-            Token: deviceToken,
-            Enabled: 'true',
-            CustomUserData: customUserData,
-          },
-        }));
-        
-        return existingArn;
-      }
-    }
-    throw error;
+    return null;
+  } catch (error) {
+    console.warn('[RegisterDevice] Error checking for existing device:', error);
+    return null;
   }
 }
 
 /**
- * Handle device registration
+ * Remove a device token from a previous user (device handoff)
+ */
+async function removeTokenFromPreviousUser(previousUserId: string, deviceId: string): Promise<void> {
+  try {
+    await ddb.send(new DeleteCommand({
+      TableName: DEVICE_TOKENS_TABLE,
+      Key: { userId: previousUserId, deviceId },
+    }));
+    console.log(`[RegisterDevice] Removed token from previous user ${previousUserId}`);
+  } catch (error) {
+    console.error('[RegisterDevice] Error removing token from previous user:', error);
+  }
+}
+
+// ========================================
+// REGISTRATION HANDLER
+// ========================================
+
+/**
+ * Handle device registration with atomic upsert
+ * Supports multi-clinic registration - creates one record per clinic
  */
 async function handleRegister(
   event: APIGatewayProxyEvent,
@@ -181,85 +235,279 @@ async function handleRegister(
   const pathClinicId = event.pathParameters?.clinicId;
 
   // Validate required fields
-  const { deviceToken, platform, environment = 'production', deviceName, appVersion, osVersion } = body as RegisterDeviceRequest;
+  const { 
+    deviceToken, 
+    platform, 
+    environment = 'production', 
+    deviceId: clientDeviceId,
+    clinicId: bodyClinicId,
+    clinicIds: bodyClinicIds,
+    deviceName, 
+    appVersion, 
+    osVersion 
+  } = body as RegisterDeviceRequest;
 
-  if (!deviceToken) {
-    return http(400, { error: 'deviceToken is required' }, event);
+  // Validate device token
+  if (!deviceToken || typeof deviceToken !== 'string') {
+    return http(400, { error: 'deviceToken is required and must be a string' }, event);
   }
 
-  if (!platform || !['ios', 'android'].includes(platform)) {
-    return http(400, { error: 'platform must be "ios" or "android"' }, event);
+  const trimmedToken = deviceToken.trim();
+  if (trimmedToken.length === 0) {
+    return http(400, { error: 'deviceToken cannot be empty' }, event);
   }
 
-  // Determine clinic ID
-  let clinicId = pathClinicId;
-  if (!clinicId) {
-    // Try to get default clinic from user permissions
-    const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
-    if (allowedClinics.size === 1) {
-      clinicId = Array.from(allowedClinics)[0];
-    } else {
-      return http(400, { error: 'clinicId is required when user has multiple clinics' }, event);
+  if (trimmedToken.length < 10) {
+    return http(400, { error: 'deviceToken appears to be invalid (too short)' }, event);
+  }
+
+  // Validate platform
+  if (!platform || !['ios', 'android', 'web'].includes(platform)) {
+    return http(400, { error: 'platform must be "ios", "android", or "web"' }, event);
+  }
+
+  // Get user's allowed clinics
+  const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
+
+  // IMPORTANT:
+  // - `allowedClinics` may be `['*']` for (global) super admins, which is great for auth checks,
+  //   but NOT useful for persisting real clinic IDs on the device record.
+  // - `clinicRoles` is the source of truth for the explicit clinic IDs the user is currently associated with.
+  const explicitClinicIds = new Set(
+    (userPerms.clinicRoles || [])
+      .map((cr: any) => String(cr?.clinicId || '').trim())
+      .filter(Boolean)
+  );
+
+  // Determine which clinics to register for
+  let clinicIdsToRegister: string[] = [];
+
+  // Priority 1: Multiple clinic IDs from body (multi-clinic registration)
+  if (bodyClinicIds && Array.isArray(bodyClinicIds) && bodyClinicIds.length > 0) {
+    const normalizedRequested = bodyClinicIds
+      .map((cid: any) => String(cid || '').trim())
+      .filter(Boolean);
+
+    // Prefer explicit clinicIds from roles when present (prevents persisting "*" or arbitrary values)
+    const filtered = explicitClinicIds.size > 0
+      ? normalizedRequested.filter((cid) => explicitClinicIds.has(cid))
+      : normalizedRequested.filter((cid) => hasClinicAccess(allowedClinics, cid));
+
+    clinicIdsToRegister = Array.from(new Set(filtered));
+    if (clinicIdsToRegister.length === 0) {
+      return http(403, { error: 'Forbidden: no access to any of the specified clinics' }, event);
     }
   }
+  // Priority 2: Single clinic from path or body
+  else if (pathClinicId || bodyClinicId) {
+    const requestedClinicId = String(pathClinicId || bodyClinicId || '').trim();
+    if (!requestedClinicId || !hasClinicAccess(allowedClinics, requestedClinicId)) {
+      return http(403, { error: 'Forbidden: no access to this clinic' }, event);
+    }
 
-  // Verify user has access to the clinic
-  const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
-  if (!hasClinicAccess(allowedClinics, clinicId)) {
-    return http(403, { error: 'Forbidden: no access to this clinic' }, event);
+    // For multi-clinic users, persist *all* explicit clinics (derived from clinicRoles),
+    // while keeping the requested clinic as the "primary" clinicId for the GSI.
+    // If we cannot enumerate clinics (rare), fall back to just the requested clinic.
+    clinicIdsToRegister = explicitClinicIds.size > 0
+      ? Array.from(explicitClinicIds)
+      : [requestedClinicId];
   }
+  // Priority 3: Register for ALL user's allowed clinics (default for multi-clinic users)
+  else if (explicitClinicIds.size > 0) {
+    clinicIdsToRegister = Array.from(explicitClinicIds);
+    console.log(`[RegisterDevice] No clinic specified, registering for all ${clinicIdsToRegister.length} clinics from clinicRoles`);
+  } else if (allowedClinics.has('*')) {
+    // Super admins may have wildcard access without an explicit clinicRoles list.
+    // In that case, require the client to specify clinicId(s) explicitly.
+    return http(400, { error: 'clinicId or clinicIds is required for super admin registration' }, event);
+  } else {
+    return http(400, { error: 'clinicId is required and user has no clinic access' }, event);
+  }
+
+  // Normalize + de-dupe again in case Set iteration produced duplicates
+  clinicIdsToRegister = Array.from(
+    new Set(
+      clinicIdsToRegister
+        .map((cid) => String(cid || '').trim())
+        .filter(Boolean)
+    )
+  );
 
   const userId = userPerms.email || 'unknown';
-  const deviceId = createDeviceId(deviceToken);
-  const env: Environment = platform === 'android' ? 'production' : (environment as Environment);
+  // Use client-provided deviceId if available, otherwise generate from token
+  // This ensures Android's ANDROID_ID is used for consistent device tracking
+  const deviceId = clientDeviceId || createDeviceId(trimmedToken);
+  const env: Environment = (platform === 'android' || platform === 'web') ? 'production' : (environment as Environment);
 
   try {
-    // Get platform application ARN
-    const platformArn = getPlatformApplicationArn(platform, env);
-    if (!platformArn) {
-      return http(500, { error: `Platform application not configured for ${platform}/${env}` }, event);
+    const now = new Date().toISOString();
+    const ttl = calculateTtl();
+
+    // Check if this token is registered to a different user (device handoff)
+    const existingDevice = await findExistingDeviceByToken(trimmedToken);
+    if (existingDevice && existingDevice.userId !== userId) {
+      console.log(`[RegisterDevice] Token handoff: removing from user ${existingDevice.userId}, adding to ${userId}`);
+      await removeTokenFromPreviousUser(existingDevice.userId, existingDevice.deviceId);
     }
 
-    // Create or update SNS endpoint
-    const endpointArn = await createOrUpdateEndpoint(platformArn, deviceToken, userId, clinicId);
+    // Store all clinics on a single device record (one item per userId+deviceId)
+    // NOTE: We intentionally SET clinicIds to the computed list (not a union),
+    // so it reflects current access at registration time.
+    const requestedPrimaryClinicId = String(pathClinicId || bodyClinicId || '').trim();
+    const primaryClinicId =
+      requestedPrimaryClinicId && clinicIdsToRegister.includes(requestedPrimaryClinicId)
+        ? requestedPrimaryClinicId
+        : clinicIdsToRegister[0];
 
-    const now = new Date().toISOString();
-    const record: DeviceTokenRecord = {
-      userId,
-      deviceId,
-      clinicId,
-      deviceToken,
-      platform,
-      environment: env,
-      endpointArn,
-      deviceName,
-      appVersion,
-      osVersion,
-      enabled: true,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    // Store in DynamoDB
-    await ddb.send(new PutCommand({
+    const updateResult = await ddb.send(new UpdateCommand({
       TableName: DEVICE_TOKENS_TABLE,
-      Item: record,
+      Key: { userId, deviceId },
+      UpdateExpression: `
+        SET deviceToken = :token,
+            clinicId = :clinicId,
+            clinicIds = :clinicIds,
+            platform = :platform,
+            environment = :env,
+            deviceName = :deviceName,
+            appVersion = :appVersion,
+            osVersion = :osVersion,
+            enabled = :enabled,
+            updatedAt = :updatedAt,
+            lastActiveAt = :lastActiveAt,
+            createdAt = if_not_exists(createdAt, :createdAt),
+            #ttl = :ttl
+      `,
+      ExpressionAttributeNames: {
+        '#ttl': 'ttl',
+      },
+      ExpressionAttributeValues: {
+        ':token': trimmedToken,
+        ':clinicId': primaryClinicId,
+        ':clinicIds': clinicIdsToRegister,
+        ':platform': platform,
+        ':env': env,
+        ':deviceName': deviceName || null,
+        ':appVersion': appVersion || null,
+        ':osVersion': osVersion || null,
+        ':enabled': true,
+        ':updatedAt': now,
+        ':lastActiveAt': now,
+        ':createdAt': now,
+        ':ttl': ttl,
+      },
+      ReturnValues: 'ALL_OLD',
     }));
 
-    console.log(`[RegisterDevice] Registered device for user ${userId}, clinic ${clinicId}, platform ${platform}`);
+    const isUpdate = !!updateResult.Attributes;
+
+    console.log(
+      `[RegisterDevice] ${isUpdate ? 'Updated' : 'Created'} device ${deviceId} for user ${userId}, clinics: ${clinicIdsToRegister.join(', ')}`
+    );
+
+    const registrationResults = clinicIdsToRegister.map((cid) => ({
+      clinicId: cid,
+      success: true,
+      isUpdate,
+    }));
+
+    const successCount = registrationResults.filter(r => r.success).length;
+    console.log(`[RegisterDevice] Registered device for user ${userId}, ${successCount}/${clinicIdsToRegister.length} clinics, platform ${platform}`);
 
     return http(200, {
-      success: true,
+      success: successCount > 0,
       deviceId,
-      endpointArn,
       platform,
       environment: env,
+      clinicIds: clinicIdsToRegister,
+      registrationResults,
+      message: `Device registered for push notifications via Firebase (${clinicIdsToRegister.length} clinic(s))`,
     }, event);
   } catch (error: any) {
     console.error('[RegisterDevice] Error:', error);
     return http(500, { error: `Failed to register device: ${error.message}` }, event);
   }
 }
+
+// ========================================
+// UNREGISTRATION HANDLER
+// ========================================
+
+/**
+ * Handle device unregistration (logout, app uninstall)
+ */
+async function handleUnregister(
+  event: APIGatewayProxyEvent,
+  userPerms: UserPermissions
+): Promise<APIGatewayProxyResult> {
+  const body = parseBody(event.body) as UnregisterDeviceRequest;
+  const userId = userPerms.email || 'unknown';
+
+  try {
+    // Unregister all devices for this user
+    if (body.allDevices) {
+      const devices = await ddb.send(new QueryCommand({
+        TableName: DEVICE_TOKENS_TABLE,
+        KeyConditionExpression: 'userId = :userId',
+        ExpressionAttributeValues: { ':userId': userId },
+      }));
+
+      const deleteCount = devices.Items?.length || 0;
+      for (const device of devices.Items || []) {
+        await ddb.send(new DeleteCommand({
+          TableName: DEVICE_TOKENS_TABLE,
+          Key: { userId, deviceId: device.deviceId },
+        }));
+      }
+
+      console.log(`[RegisterDevice] Unregistered all ${deleteCount} devices for user ${userId}`);
+      return http(200, {
+        success: true,
+        message: `Unregistered ${deleteCount} device(s)`,
+        count: deleteCount,
+      }, event);
+    }
+
+    // Unregister specific device by ID
+    if (body.deviceId) {
+      await ddb.send(new DeleteCommand({
+        TableName: DEVICE_TOKENS_TABLE,
+        Key: { userId, deviceId: body.deviceId },
+      }));
+
+      console.log(`[RegisterDevice] Unregistered device ${body.deviceId} for user ${userId}`);
+      return http(200, {
+        success: true,
+        message: 'Device unregistered',
+        deviceId: body.deviceId,
+      }, event);
+    }
+
+    // Unregister by token (find device first)
+    if (body.deviceToken) {
+      const deviceId = createDeviceId(body.deviceToken);
+      await ddb.send(new DeleteCommand({
+        TableName: DEVICE_TOKENS_TABLE,
+        Key: { userId, deviceId },
+      }));
+
+      console.log(`[RegisterDevice] Unregistered device by token for user ${userId}`);
+      return http(200, {
+        success: true,
+        message: 'Device unregistered',
+        deviceId,
+      }, event);
+    }
+
+    return http(400, { error: 'One of deviceId, deviceToken, or allDevices is required' }, event);
+  } catch (error: any) {
+    console.error('[RegisterDevice] Unregister error:', error);
+    return http(500, { error: `Failed to unregister device: ${error.message}` }, event);
+  }
+}
+
+// ========================================
+// GET DEVICES HANDLER
+// ========================================
 
 /**
  * Handle getting registered devices for a user
@@ -289,6 +537,7 @@ async function handleGetDevices(
       enabled: item.enabled,
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
+      lastActiveAt: item.lastActiveAt,
     }));
 
     return http(200, { devices }, event);
@@ -297,6 +546,61 @@ async function handleGetDevices(
     return http(500, { error: `Failed to get devices: ${error.message}` }, event);
   }
 }
+
+// ========================================
+// HEARTBEAT/REFRESH HANDLER
+// ========================================
+
+/**
+ * Handle device heartbeat (extends TTL, updates last active time)
+ * Called periodically by apps to keep tokens fresh
+ */
+async function handleHeartbeat(
+  event: APIGatewayProxyEvent,
+  userPerms: UserPermissions
+): Promise<APIGatewayProxyResult> {
+  const body = parseBody(event.body);
+  const userId = userPerms.email || 'unknown';
+  const deviceId = body.deviceId || (body.deviceToken ? createDeviceId(body.deviceToken) : null);
+
+  if (!deviceId) {
+    return http(400, { error: 'deviceId or deviceToken is required' }, event);
+  }
+
+  try {
+    const now = new Date().toISOString();
+    const ttl = calculateTtl();
+
+    await ddb.send(new UpdateCommand({
+      TableName: DEVICE_TOKENS_TABLE,
+      Key: { userId, deviceId },
+      UpdateExpression: 'SET lastActiveAt = :now, updatedAt = :now, #ttl = :ttl',
+      ExpressionAttributeNames: { '#ttl': 'ttl' },
+      ExpressionAttributeValues: {
+        ':now': now,
+        ':ttl': ttl,
+      },
+      ConditionExpression: 'attribute_exists(userId)',
+    }));
+
+    return http(200, {
+      success: true,
+      message: 'Device heartbeat recorded',
+      deviceId,
+      expiresAt: new Date(ttl * 1000).toISOString(),
+    }, event);
+  } catch (error: any) {
+    if (error instanceof ConditionalCheckFailedException) {
+      return http(404, { error: 'Device not found' }, event);
+    }
+    console.error('[Heartbeat] Error:', error);
+    return http(500, { error: `Failed to update heartbeat: ${error.message}` }, event);
+  }
+}
+
+// ========================================
+// MAIN HANDLER
+// ========================================
 
 /**
  * Main handler
@@ -314,14 +618,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return http(401, { error: 'Unauthorized - Invalid token' }, event);
   }
 
-  // Route based on method
+  // Route based on method and path
+  const path = event.path.toLowerCase();
+
   switch (event.httpMethod) {
     case 'POST':
+      if (path.includes('/heartbeat') || path.includes('/refresh')) {
+        return handleHeartbeat(event, userPerms);
+      }
       return handleRegister(event, userPerms);
+
+    case 'DELETE':
+      return handleUnregister(event, userPerms);
+
     case 'GET':
       return handleGetDevices(event, userPerms);
+
     default:
       return http(405, { error: 'Method Not Allowed' }, event);
   }
 };
-

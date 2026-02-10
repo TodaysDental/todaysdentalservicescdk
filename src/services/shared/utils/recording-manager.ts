@@ -32,6 +32,8 @@ export interface RecordingMetadata {
   recordingId: string;
   timestamp: number;
   callId: string;
+  // PSTN leg call ID extracted from the recording S3 key path (used for mapping/diagnostics)
+  pstnCallId?: string;
   clinicId: string;
   s3Bucket: string;
   s3Key: string;
@@ -134,6 +136,31 @@ export function extractCallIdFromKey(key: string): string | null {
 }
 
 /**
+ * Extract the SMA TransactionId (used as analytics callId) from recording filename.
+ *
+ * StartCallRecording appends: <timestamp>_<transactionId>_<callId>.wav
+ * We want the middle token (transactionId).
+ */
+export function extractTransactionIdFromKey(key: string): string | null {
+  const filename = (key.split('/').pop() || '').trim();
+  if (!filename) return null;
+
+  const base = filename.toLowerCase().endsWith('.wav')
+    ? filename.slice(0, -4)
+    : filename;
+
+  const parts = base.split('_');
+  if (parts.length < 3) return null;
+
+  const tx = (parts[parts.length - 2] || '').trim();
+  if (!tx) return null;
+
+  // Basic sanity check (UUID-ish). Keep it permissive for backward compatibility.
+  if (!/^[0-9a-fA-F-]{16,}$/.test(tx)) return null;
+  return tx;
+}
+
+/**
  * FIX #49: Process recording with idempotency
  * Ensures recordings are only processed once even if S3 event triggers multiple times
  */
@@ -144,15 +171,17 @@ export async function processRecordingIdempotent(
   bucket: string,
   key: string
 ): Promise<RecordingMetadata | null> {
-  const callId = extractCallIdFromKey(key);
+  // NOTE: The ID embedded in the S3 key path is the PSTN leg call ID (not always the analytics `callId` / transactionId).
+  const pstnCallId = extractCallIdFromKey(key);
+  const transactionIdFromKey = extractTransactionIdFromKey(key);
   
-  if (!callId) {
+  if (!pstnCallId) {
     console.error('[RecordingManager] Cannot extract callId from key:', key);
     return null;
   }
 
   // Generate deterministic recording ID
-  const recordingId = generateRecordingId(callId, key);
+  const recordingId = generateRecordingId(pstnCallId, key);
 
   // Check if already processed (idempotency check)
   try {
@@ -174,11 +203,10 @@ export async function processRecordingIdempotent(
   const fileSize = headResult.ContentLength || 0;
 
   // Get call record to enrich metadata
-  // NOTE: callId extracted from S3 key is actually the pstnCallId (PSTN leg ID)
-  const callRecord = await findCallByCallId(ddb, callQueueTableName, callId);
+  const callRecord = await findCallByCallId(ddb, callQueueTableName, pstnCallId);
   
   if (!callRecord) {
-    console.warn('[RecordingManager] Call record not found for pstnCallId:', callId);
+    console.warn('[RecordingManager] Call record not found for pstnCallId:', pstnCallId);
     console.warn('[RecordingManager] S3 key:', key);
     console.warn('[RecordingManager] This will cause clinicId to be set as "unknown"');
     console.warn('[RecordingManager] Possible causes: 1) Call record not created yet, 2) pstnCallId not stored in record, 3) Timing issue');
@@ -190,22 +218,35 @@ export async function processRecordingIdempotent(
       phoneNumber: callRecord.phoneNumber
     });
   }
-  
-  const timestamp = callRecord?.queueEntryTime 
-    ? new Date(callRecord.queueEntryTime).getTime()
-    : Date.now();
+
+  // Use a stable, query-friendly numeric timestamp for the RecordingMetadata sort key (seconds).
+  // CallQueue.queueEntryTime is stored in seconds; guard in case any legacy items stored ms.
+  const queueEntryTime = callRecord?.queueEntryTime;
+  const timestamp = typeof queueEntryTime === 'number'
+    ? (queueEntryTime > 2_000_000_000_000 ? Math.floor(queueEntryTime / 1000) : queueEntryTime)
+    : Math.floor(Date.now() / 1000);
 
   // CRITICAL FIX: Extract segment identifier from S3 key for multi-segment recordings
   // Format: recordings/.../timestamp_transactionId_callId.wav
   const segmentMatch = key.match(/(\d+)_([^_]+)_[^/]+\.wav$/);
-  const segmentTimestamp = segmentMatch ? parseInt(segmentMatch[1]) : timestamp;
-  const segmentId = segmentMatch ? segmentMatch[2] : 'unknown';
+  const segmentTimestamp = segmentMatch ? parseInt(segmentMatch[1], 10) : timestamp;
+  const segmentId = transactionIdFromKey || (segmentMatch ? segmentMatch[2] : 'unknown');
+
+  // Resolve the canonical analytics callId to store in RecordingMetadata.callId.
+  // Prefer CallQueue.callId (SMA TransactionId), then filename transactionId, then PSTN leg call id.
+  const resolvedAnalyticsCallId =
+    (typeof callRecord?.callId === 'string' && callRecord.callId.trim())
+      ? callRecord.callId.trim()
+      : (segmentId !== 'unknown' ? segmentId : pstnCallId);
   
   // Store metadata with idempotent put
   const metadata: RecordingMetadata = {
     recordingId,
     timestamp,
-    callId,
+    // Store analytics callId (SMA TransactionId) for primary lookups from the UI.
+    callId: resolvedAnalyticsCallId,
+    // Store PSTN leg callId separately for debugging and backward compatibility.
+    pstnCallId,
     clinicId: callRecord?.clinicId || 'unknown',
     s3Bucket: bucket,
     s3Key: key,

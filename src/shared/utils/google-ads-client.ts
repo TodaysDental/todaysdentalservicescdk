@@ -609,30 +609,56 @@ export async function getSearchQueryReport(
 
 /**
  * Add keywords to an ad group
+ * 
+ * NOTE: The google-ads-api library's create() method expects an array of
+ * resource objects directly (IAdGroupCriterion), NOT wrapped in operation
+ * objects like { create: { ... } }. The library handles operation types internally.
  */
 export async function addKeywords(
   customerId: string,
   adGroupResourceName: string,
   keywords: Array<{ text: string; matchType: string }>
 ): Promise<any> {
-  const client = await getGoogleAdsClient(customerId);
+  console.log(`[GoogleAdsClient] addKeywords called with customerId=${customerId}, adGroup=${adGroupResourceName}, keywordCount=${keywords.length}`);
 
-  const operations = keywords.map(kw => ({
-    create: {
+  try {
+    const client = await getGoogleAdsClient(customerId);
+
+    // The library's create() expects resource objects directly, not operation wrappers
+    const resources = keywords.map(kw => ({
       ad_group: adGroupResourceName,
       status: 'ENABLED',
       keyword: {
         text: kw.text.trim(),
         match_type: kw.matchType,
       },
-    },
-  }));
+    }));
 
-  return (client as any).adGroupCriteria.create(operations);
+    console.log(`[GoogleAdsClient] Creating ${resources.length} keywords`);
+    console.log('[GoogleAdsClient] Resources:', JSON.stringify(resources, null, 2));
+
+    const result = await (client as any).adGroupCriteria.create(resources);
+
+    console.log('[GoogleAdsClient] Successfully created keywords:', JSON.stringify(result, null, 2));
+    return result;
+  } catch (error: any) {
+    console.error('[GoogleAdsClient] Error adding keywords:', error);
+    console.error('[GoogleAdsClient] Error details:', JSON.stringify({
+      message: error.message,
+      code: error.code,
+      errors: error.errors,
+      details: error.details,
+    }, null, 2));
+
+    // Re-throw with more context
+    throw error;
+  }
 }
 
 /**
  * Remove keywords by resource names
+ * 
+ * NOTE: The library's remove() expects an array of resource name strings directly.
  */
 export async function removeKeywords(
   customerId: string,
@@ -640,15 +666,16 @@ export async function removeKeywords(
 ): Promise<any> {
   const client = await getGoogleAdsClient(customerId);
 
-  const operations = keywordResourceNames.map(resourceName => ({
-    remove: resourceName,
-  }));
-
-  return (client as any).adGroupCriteria.remove(operations);
+  // The library's remove() expects resource names directly as strings
+  return (client as any).adGroupCriteria.remove(keywordResourceNames);
 }
 
 /**
  * Add negative keywords to an ad group
+ * 
+ * NOTE: The google-ads-api library's create() method expects an array of
+ * resource objects directly (IAdGroupCriterion), NOT wrapped in operation
+ * objects like { create: { ... } }. The library handles operation types internally.
  */
 export async function addNegativeKeywords(
   customerId: string,
@@ -657,18 +684,111 @@ export async function addNegativeKeywords(
 ): Promise<any> {
   const client = await getGoogleAdsClient(customerId);
 
-  const operations = keywords.map(kw => ({
-    create: {
-      ad_group: adGroupResourceName,
-      negative: true,
-      keyword: {
-        text: kw.text.trim(),
-        match_type: kw.matchType || 'BROAD',
-      },
+  // The library's create() expects resource objects directly, not operation wrappers
+  const resources = keywords.map(kw => ({
+    ad_group: adGroupResourceName,
+    negative: true,
+    keyword: {
+      text: kw.text.trim(),
+      match_type: kw.matchType || 'BROAD',
     },
   }));
 
-  return (client as any).adGroupCriteria.create(operations);
+  return (client as any).adGroupCriteria.create(resources);
+}
+
+/**
+ * Add radius targeting (proximity) to a campaign
+ * Uses Google Ads Proximity criterion for radius-based geotargeting
+ */
+export async function addRadiusTarget(
+  customerId: string,
+  campaignResourceName: string,
+  options: {
+    latitude: number;
+    longitude: number;
+    radius: number;
+    units: 'MILES' | 'KILOMETERS';
+    bidModifier?: number;
+  }
+): Promise<any> {
+  // Validate resource name format
+  if (!validateResourceName(campaignResourceName, RESOURCE_NAME_PATTERNS.campaign)) {
+    throw new Error(`Invalid campaign resource name format: ${campaignResourceName}`);
+  }
+
+  const client = await getGoogleAdsClient(customerId);
+
+  // Google Ads API uses proximity targeting for radius-based geotargeting
+  const operation = {
+    create: {
+      campaign: campaignResourceName,
+      proximity: {
+        geo_point: {
+          latitude_in_micro_degrees: Math.round(options.latitude * 1000000),
+          longitude_in_micro_degrees: Math.round(options.longitude * 1000000),
+        },
+        radius: options.radius,
+        radius_units: options.units,
+      },
+      bid_modifier: options.bidModifier || 1.0,
+    },
+  };
+
+  console.log(`[GoogleAdsClient] Adding radius target: ${options.radius} ${options.units} around (${options.latitude}, ${options.longitude})`);
+
+  return (client as any).campaignCriteria.create([operation]);
+}
+
+/**
+ * Add location targets to a campaign using geo target constants
+ */
+export async function addLocationTargets(
+  customerId: string,
+  campaignResourceName: string,
+  locations: Array<{
+    geoTargetConstant: string; // e.g., 'geoTargetConstants/1014044'
+  }>,
+  options?: {
+    negative?: boolean;
+  }
+): Promise<any> {
+  // Validate resource name format
+  if (!validateResourceName(campaignResourceName, RESOURCE_NAME_PATTERNS.campaign)) {
+    throw new Error(`Invalid campaign resource name format: ${campaignResourceName}`);
+  }
+
+  const client = await getGoogleAdsClient(customerId);
+
+  const operations = locations.map(loc => ({
+    create: {
+      campaign: campaignResourceName,
+      location: {
+        geo_target_constant: loc.geoTargetConstant,
+      },
+      negative: options?.negative || false,
+    },
+  }));
+
+  console.log(`[GoogleAdsClient] Adding ${locations.length} location targets to campaign`);
+
+  return (client as any).campaignCriteria.create(operations);
+}
+
+/**
+ * Remove a campaign criterion (location, radius, device, etc.)
+ */
+export async function removeCampaignCriterion(
+  customerId: string,
+  criterionResourceName: string
+): Promise<any> {
+  const client = await getGoogleAdsClient(customerId);
+
+  const operation = {
+    remove: criterionResourceName,
+  };
+
+  return (client as any).campaignCriteria.remove([operation]);
 }
 
 // ========================================

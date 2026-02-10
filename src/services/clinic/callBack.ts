@@ -2,7 +2,8 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient, PutItemCommand, ScanCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import { buildCorsHeaders, ALLOWED_ORIGINS_LIST } from '../../shared/utils/cors';
+import { getAllClinicConfigs } from '../../shared/utils/secrets-helper';
 import { SYSTEM_MODULES } from '../../shared/types/user';
 import {
   getUserPermissions,
@@ -17,10 +18,41 @@ import {
 
 const REGION = process.env.REGION || process.env.AWS_REGION || 'us-east-1';
 const TABLE_PREFIX = process.env.TABLE_PREFIX || 'RequestCallBacks_';
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://todaysdentalinsights.com').split(',');
 const DEFAULT_TABLE = (process.env.DEFAULT_TABLE || 'todaysdentalinsights-callback-DefaultRequests').trim();
 
 const dynamo = new DynamoDBClient({ region: REGION });
+
+// Allowed origins - loaded on first request and cached
+let allowedOriginsCache: string[] | null = null;
+
+// Initialize allowed origins from DynamoDB config (call this early in handler)
+// Combines DynamoDB data with static list from cors.ts for reliability
+async function initAllowedOrigins(): Promise<void> {
+  if (allowedOriginsCache) return;
+
+  try {
+    const configs = await getAllClinicConfigs();
+    const dynamoOrigins = configs.map(c => c.websiteLink).filter(Boolean);
+
+    // Combine DynamoDB origins with static list for reliability
+    // Use Set to avoid duplicates
+    allowedOriginsCache = [...new Set([
+      'https://todaysdentalinsights.com',
+      ...dynamoOrigins,
+      ...ALLOWED_ORIGINS_LIST
+    ])];
+
+    console.log('[CORS] Loaded allowed origins:', allowedOriginsCache.length, 'origins');
+  } catch (error) {
+    console.warn('[CORS] Failed to load clinic configs from DynamoDB, using static list:', error);
+    // Fall back to static list from cors.ts which is built from clinic-config.json
+    allowedOriginsCache = ALLOWED_ORIGINS_LIST;
+  }
+}
+
+function getAllowedOrigins(): string[] {
+  return allowedOriginsCache || ALLOWED_ORIGINS_LIST;
+}
 
 // Callback interface with module categorization
 interface CallbackRequest {
@@ -43,7 +75,18 @@ interface CallbackRequest {
 }
 
 function getCorsHeaders(origin?: string) {
-  const allowOrigin = origin && ALLOWED_ORIGINS.includes(origin) ? origin : 'https://todaysdentalinsights.com';
+  const allowedOrigins = getAllowedOrigins();
+  const isOriginAllowed = origin && allowedOrigins.includes(origin);
+  const allowOrigin = isOriginAllowed ? origin : 'https://todaysdentalinsights.com';
+
+  if (origin && !isOriginAllowed) {
+    console.warn('[CORS] Origin not in allowed list:', {
+      requestOrigin: origin,
+      allowedCount: allowedOrigins.length,
+      sampleAllowed: allowedOrigins.slice(0, 5)
+    });
+  }
+
   return buildCorsHeaders({ allowOrigin, allowMethods: ['OPTIONS', 'GET', 'POST', 'PUT'] });
 }
 
@@ -52,6 +95,9 @@ function getTableName(clinicId: string): string {
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  // Initialize allowed origins from DynamoDB (first request only, then cached)
+  await initAllowedOrigins();
+
   const method = event.httpMethod || 'GET';
   const origin = event.headers?.origin || event.headers?.Origin;
   const corsHeaders = getCorsHeaders(origin);

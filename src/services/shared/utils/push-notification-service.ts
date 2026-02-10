@@ -4,26 +4,28 @@
  * Shared utility for sending push notifications to mobile devices.
  * Used by Comm Stack (messaging) and Chime Stack (call notifications).
  * 
+ * DIRECT FIREBASE INTEGRATION - Uses FCM HTTP v1 API
+ * 
  * Features:
  * - Send to individual users
  * - Send to multiple users (batch)
  * - Send to clinic staff
- * - Platform-specific payload formatting (iOS APNs, Android FCM)
+ * - Platform-specific payload formatting (iOS APNs via Firebase, Android FCM)
  * 
  * Prerequisites:
  * - PushNotificationsStack must be deployed
  * - Device tokens must be registered via /push/register API
+ * - FCM service account must be configured in GlobalSecrets
  */
 
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 
 // ========================================
 // TYPES
 // ========================================
 
-export type PushNotificationType = 
+export type PushNotificationType =
   | 'new_message'
   | 'task_assigned'
   | 'task_completed'
@@ -36,6 +38,20 @@ export type PushNotificationType =
   | 'queue_update'
   | 'appointment_reminder'
   | 'staff_alert'
+  // HR Module notification types
+  | 'shift_assigned'
+  | 'shift_updated'
+  | 'shift_cancelled'
+  | 'shift_reminder'
+  | 'leave_submitted'
+  | 'leave_approved'
+  | 'leave_denied'
+  | 'advance_pay_submitted'
+  | 'advance_pay_approved'
+  | 'advance_pay_denied'
+  | 'advance_pay_disbursed'
+  | 'calendar_event'
+  | 'hr_alert'
   | 'general';
 
 export interface PushNotificationPayload {
@@ -56,7 +72,7 @@ export interface DeviceRecord {
   userId: string;
   deviceId: string;
   clinicId: string;
-  endpointArn: string;
+  deviceToken: string;
   platform: 'ios' | 'android';
   environment?: 'sandbox' | 'production';
   enabled: boolean;
@@ -86,86 +102,20 @@ export interface BatchSendResult {
 
 export class PushNotificationService {
   private ddb: DynamoDBDocumentClient;
-  private sns: SNSClient;
   private lambda?: LambdaClient;
   private deviceTokensTable: string;
   private sendPushFunctionName?: string;
 
   constructor(config: {
     ddb: DynamoDBDocumentClient;
-    sns: SNSClient;
     deviceTokensTable: string;
     lambda?: LambdaClient;
     sendPushFunctionName?: string;
   }) {
     this.ddb = config.ddb;
-    this.sns = config.sns;
     this.deviceTokensTable = config.deviceTokensTable;
     this.lambda = config.lambda;
     this.sendPushFunctionName = config.sendPushFunctionName;
-  }
-
-  /**
-   * Build platform-specific message payload for SNS
-   */
-  private buildMessage(notification: PushNotificationPayload, platform: 'ios' | 'android'): string {
-    const { title, body, data, badge, sound, imageUrl, category, threadId, type } = notification;
-    
-    // Build APNS payload for iOS
-    const apnsPayload = {
-      aps: {
-        alert: {
-          title,
-          body,
-        },
-        badge: badge ?? 1,
-        sound: sound ?? 'default',
-        'mutable-content': imageUrl ? 1 : 0,
-        'content-available': 1,
-        ...(category && { category }),
-        ...(threadId && { 'thread-id': threadId }),
-      },
-      // Custom data accessible via notification.userInfo
-      ...data,
-      type,
-      timestamp: Date.now(),
-    };
-    
-    // Build FCM payload for Android
-    const fcmPayload = {
-      notification: {
-        title,
-        body,
-        sound: sound ?? 'default',
-        ...(imageUrl && { image: imageUrl }),
-        click_action: 'FLUTTER_NOTIFICATION_CLICK',
-        channel_id: this.getChannelForType(type),
-      },
-      data: {
-        ...data,
-        type,
-        title,
-        body,
-        timestamp: String(Date.now()),
-      },
-      android: {
-        priority: 'high',
-        notification: {
-          click_action: 'FLUTTER_NOTIFICATION_CLICK',
-          channel_id: this.getChannelForType(type),
-        },
-      },
-    };
-    
-    // Return platform-specific message structure for SNS
-    const message: Record<string, string> = {
-      default: body,
-      APNS: JSON.stringify(apnsPayload),
-      APNS_SANDBOX: JSON.stringify(apnsPayload),
-      GCM: JSON.stringify(fcmPayload),
-    };
-    
-    return JSON.stringify(message);
   }
 
   /**
@@ -189,36 +139,6 @@ export class PushNotificationService {
   }
 
   /**
-   * Send push notification to a single SNS endpoint
-   */
-  async sendToEndpoint(
-    endpointArn: string,
-    notification: PushNotificationPayload,
-    platform: 'ios' | 'android'
-  ): Promise<SendPushResult> {
-    try {
-      const message = this.buildMessage(notification, platform);
-      
-      const result = await this.sns.send(new PublishCommand({
-        TargetArn: endpointArn,
-        Message: message,
-        MessageStructure: 'json',
-      }));
-      
-      return {
-        success: true,
-        messageId: result.MessageId,
-      };
-    } catch (error: any) {
-      console.error(`[PushService] Failed to send to ${endpointArn}:`, error.message);
-      return {
-        success: false,
-        error: error.message,
-      };
-    }
-  }
-
-  /**
    * Get all registered devices for a user
    */
   async getDevicesForUser(userId: string): Promise<DeviceRecord[]> {
@@ -232,7 +152,7 @@ export class PushNotificationService {
           ':enabled': true,
         },
       }));
-      
+
       return (result.Items || []) as DeviceRecord[];
     } catch (error: any) {
       console.error(`[PushService] Failed to get devices for user ${userId}:`, error.message);
@@ -255,7 +175,7 @@ export class PushNotificationService {
           ':enabled': true,
         },
       }));
-      
+
       return (result.Items || []) as DeviceRecord[];
     } catch (error: any) {
       console.error(`[PushService] Failed to get devices for clinic ${clinicId}:`, error.message);
@@ -265,42 +185,10 @@ export class PushNotificationService {
 
   /**
    * Send push notification to a user (all their registered devices)
+   * Uses the centralized send-push Lambda which handles FCM delivery
    */
   async sendToUser(userId: string, notification: PushNotificationPayload): Promise<BatchSendResult> {
-    const devices = await this.getDevicesForUser(userId);
-    
-    if (devices.length === 0) {
-      console.log(`[PushService] No devices registered for user ${userId}`);
-      return { sent: 0, failed: 0, results: [] };
-    }
-    
-    const results: SendPushResult[] = [];
-    let sent = 0;
-    let failed = 0;
-    
-    // Send to all devices in parallel
-    const sendPromises = devices.map(async (device) => {
-      const result = await this.sendToEndpoint(device.endpointArn, notification, device.platform);
-      return {
-        ...result,
-        deviceId: device.deviceId,
-        platform: device.platform,
-      };
-    });
-    
-    const sendResults = await Promise.all(sendPromises);
-    
-    for (const result of sendResults) {
-      results.push(result);
-      if (result.success) {
-        sent++;
-      } else {
-        failed++;
-      }
-    }
-    
-    console.log(`[PushService] Sent to user ${userId}: ${sent} success, ${failed} failed`);
-    return { sent, failed, results };
+    return this.invokeSendPushLambda({ userId }, notification);
   }
 
   /**
@@ -310,65 +198,20 @@ export class PushNotificationService {
     if (userIds.length === 0) {
       return { sent: 0, failed: 0, results: [] };
     }
-    
-    const batchResults = await Promise.all(
-      userIds.map(userId => this.sendToUser(userId, notification))
-    );
-    
-    // Aggregate results
-    const aggregated: BatchSendResult = { sent: 0, failed: 0, results: [] };
-    for (const result of batchResults) {
-      aggregated.sent += result.sent;
-      aggregated.failed += result.failed;
-      aggregated.results.push(...result.results);
-    }
-    
-    return aggregated;
+
+    return this.invokeSendPushLambda({ userIds }, notification);
   }
 
   /**
    * Send push notification to all staff in a clinic
    */
   async sendToClinic(clinicId: string, notification: PushNotificationPayload): Promise<BatchSendResult> {
-    const devices = await this.getDevicesForClinic(clinicId);
-    
-    if (devices.length === 0) {
-      console.log(`[PushService] No devices registered for clinic ${clinicId}`);
-      return { sent: 0, failed: 0, results: [] };
-    }
-    
-    const results: SendPushResult[] = [];
-    let sent = 0;
-    let failed = 0;
-    
-    // Send to all devices in parallel
-    const sendPromises = devices.map(async (device) => {
-      const result = await this.sendToEndpoint(device.endpointArn, notification, device.platform);
-      return {
-        ...result,
-        deviceId: device.deviceId,
-        platform: device.platform,
-      };
-    });
-    
-    const sendResults = await Promise.all(sendPromises);
-    
-    for (const result of sendResults) {
-      results.push(result);
-      if (result.success) {
-        sent++;
-      } else {
-        failed++;
-      }
-    }
-    
-    console.log(`[PushService] Sent to clinic ${clinicId}: ${sent} success, ${failed} failed`);
-    return { sent, failed, results };
+    return this.invokeSendPushLambda({ clinicId }, notification);
   }
 
   /**
    * Invoke the send-push Lambda function (for cross-stack invocation)
-   * Use this when you don't have direct SNS access but the Lambda function name is available
+   * This is the primary method for sending notifications
    */
   async invokeSendPushLambda(
     target: { userId?: string; clinicId?: string; userIds?: string[] },
@@ -377,19 +220,20 @@ export class PushNotificationService {
     if (!this.lambda || !this.sendPushFunctionName) {
       throw new Error('[PushService] Lambda client or function name not configured for cross-stack invocation');
     }
-    
+
     const payload = {
+      _internalCall: true,
       ...target,
       notification,
     };
-    
+
     try {
       const response = await this.lambda.send(new InvokeCommand({
         FunctionName: this.sendPushFunctionName,
         Payload: JSON.stringify(payload),
         InvocationType: 'RequestResponse',
       }));
-      
+
       if (response.Payload) {
         const result = JSON.parse(new TextDecoder().decode(response.Payload));
         if (result.statusCode === 200) {
@@ -400,13 +244,53 @@ export class PushNotificationService {
             results: body.results || [],
           };
         }
+
+        // Handle error responses
+        if (result.statusCode === 503) {
+          console.warn('[PushService] Push service not configured');
+          return { sent: 0, failed: 0, results: [] };
+        }
+
         throw new Error(result.body || 'Unknown error from send-push Lambda');
       }
-      
+
       return { sent: 0, failed: 0, results: [] };
     } catch (error: any) {
       console.error('[PushService] Failed to invoke send-push Lambda:', error.message);
       throw error;
+    }
+  }
+
+  /**
+   * Invoke the send-push Lambda asynchronously (fire-and-forget)
+   * Use this for non-critical notifications where you don't need the result
+   */
+  async invokeSendPushLambdaAsync(
+    target: { userId?: string; clinicId?: string; userIds?: string[] },
+    notification: PushNotificationPayload
+  ): Promise<boolean> {
+    if (!this.lambda || !this.sendPushFunctionName) {
+      console.warn('[PushService] Lambda client or function name not configured');
+      return false;
+    }
+
+    const payload = {
+      _internalCall: true,
+      ...target,
+      notification,
+    };
+
+    try {
+      const response = await this.lambda.send(new InvokeCommand({
+        FunctionName: this.sendPushFunctionName,
+        Payload: JSON.stringify(payload),
+        InvocationType: 'Event', // Async invocation
+      }));
+
+      return response.StatusCode === 202;
+    } catch (error: any) {
+      console.error('[PushService] Failed to invoke send-push Lambda async:', error.message);
+      return false;
     }
   }
 }
@@ -539,10 +423,10 @@ export function buildVoicemailNotification(
   voicemailId: string,
   clinicName: string
 ): PushNotificationPayload {
-  const durationStr = durationSeconds > 60 
-    ? `${Math.floor(durationSeconds / 60)}:${String(durationSeconds % 60).padStart(2, '0')}` 
+  const durationStr = durationSeconds > 60
+    ? `${Math.floor(durationSeconds / 60)}:${String(durationSeconds % 60).padStart(2, '0')}`
     : `${durationSeconds}s`;
-  
+
   return {
     title: 'New Voicemail',
     body: `${callerInfo} left a ${durationStr} voicemail for ${clinicName}`,
@@ -569,7 +453,7 @@ export function buildMeetingScheduledNotification(
   const date = new Date(startTime);
   const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
   const dateStr = date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-  
+
   return {
     title: `Meeting: ${meetingTitle}`,
     body: `${organizerName} scheduled for ${dateStr} at ${timeStr}`,
@@ -591,10 +475,10 @@ export function buildQueueUpdateNotification(
   estimatedWaitMinutes?: number,
   clinicName?: string
 ): PushNotificationPayload {
-  const waitText = estimatedWaitMinutes 
-    ? `Estimated wait: ${estimatedWaitMinutes} minutes` 
+  const waitText = estimatedWaitMinutes
+    ? `Estimated wait: ${estimatedWaitMinutes} minutes`
     : '';
-  
+
   return {
     title: 'Queue Update',
     body: `You are #${queuePosition} in queue${clinicName ? ` for ${clinicName}` : ''}. ${waitText}`,

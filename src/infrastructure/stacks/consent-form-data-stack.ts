@@ -6,15 +6,28 @@ import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface ConsentFormDataStackProps extends StackProps {
   // No longer passing authorizerFunction - will import via CloudFormation export
+  /** GlobalSecrets DynamoDB table name for retrieving secrets */
+  globalSecretsTableName?: string;
+  /** ClinicSecrets DynamoDB table name for per-clinic credentials */
+  clinicSecretsTableName?: string;
+  /** ClinicConfig DynamoDB table name for clinic configuration */
+  clinicConfigTableName?: string;
+  /** KMS key ARN for decrypting secrets tables */
+  secretsEncryptionKeyArn?: string;
 }
 
 export class ConsentFormDataStack extends Stack {
   public readonly consentFormDataTable: dynamodb.Table;
+  public readonly consentFormInstancesTable: dynamodb.Table;
   public readonly consentFormDataFn: lambdaNode.NodejsFunction;
+  public readonly consentFormInstancesFn: lambdaNode.NodejsFunction;
+  public readonly consentFormPublicFn: lambdaNode.NodejsFunction;
   public readonly api: apigw.RestApi;
   public readonly authorizer: apigw.RequestAuthorizer;
 
@@ -87,6 +100,29 @@ export class ConsentFormDataStack extends Stack {
       tableName: `${this.stackName}-ConsentFormData`,
     });
     applyTags(this.consentFormDataTable, { Table: 'consent-form-data' });
+
+    // Instances table: one row per sent consent form (token-based public link)
+    this.consentFormInstancesTable = new dynamodb.Table(this, 'ConsentFormInstancesTable', {
+      partitionKey: { name: 'instance_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      pointInTimeRecovery: true,
+      timeToLiveAttribute: 'expires_at',
+      tableName: `${this.stackName}-ConsentFormInstances`,
+    });
+    applyTags(this.consentFormInstancesTable, { Table: 'consent-form-instances' });
+
+    this.consentFormInstancesTable.addGlobalSecondaryIndex({
+      indexName: 'TokenIndex',
+      partitionKey: { name: 'token', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    this.consentFormInstancesTable.addGlobalSecondaryIndex({
+      indexName: 'ClinicCreatedAtIndex',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'created_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
 
     // ========================================
     // API GATEWAY SETUP
@@ -173,6 +209,110 @@ export class ConsentFormDataStack extends Stack {
     // Grant Lambda permissions to R/W from the new table
     this.consentFormDataTable.grantReadWriteData(this.consentFormDataFn);
 
+    const globalSecretsTableName = props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets';
+    const clinicSecretsTableName = props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets';
+    const clinicConfigTableName = props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig';
+
+    // Protected staff endpoints: create instances + list history
+    this.consentFormInstancesFn = new lambdaNode.NodejsFunction(this, 'ConsentFormInstancesFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'consent-form-instances.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        TEMPLATES_TABLE_NAME: this.consentFormDataTable.tableName,
+        INSTANCES_TABLE_NAME: this.consentFormInstancesTable.tableName,
+        INSTANCES_BY_CLINIC_INDEX: 'ClinicCreatedAtIndex',
+        DEFAULT_TOKEN_TTL_DAYS: '7',
+        GLOBAL_SECRETS_TABLE: globalSecretsTableName,
+        CLINIC_SECRETS_TABLE: clinicSecretsTableName,
+        CLINIC_CONFIG_TABLE: clinicConfigTableName,
+      },
+    });
+    applyTags(this.consentFormInstancesFn, { Function: 'consent-form-instances' });
+
+    // Import consolidated Transfer Family endpoint + bucket (from OpenDentalStack outputs)
+    // Used for secure Documents/UploadSftp flow when patients submit signed PDFs.
+    const OPENDENTAL_STACK_NAME = 'TodaysDentalInsightsOpenDentalN1';
+    const consolidatedSftpEndpoint = Fn.importValue(`${OPENDENTAL_STACK_NAME}-ConsolidatedTransferServerEndpoint`).toString();
+    const consolidatedSftpBucketName = Fn.importValue(`${OPENDENTAL_STACK_NAME}-ConsolidatedTransferServerBucket`).toString();
+
+    // Public endpoints: token fetch + submit signed PDF
+    this.consentFormPublicFn = new lambdaNode.NodejsFunction(this, 'ConsentFormPublicFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'public', 'consent-form-public.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 512,
+      // UploadSftp requires OpenDental to pull from our SFTP endpoint; allow extra time.
+      timeout: Duration.seconds(60),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        INSTANCES_TABLE_NAME: this.consentFormInstancesTable.tableName,
+        TOKEN_INDEX_NAME: 'TokenIndex',
+        MAX_PDF_SIZE_MB: '10',
+        GLOBAL_SECRETS_TABLE: globalSecretsTableName,
+        CLINIC_SECRETS_TABLE: clinicSecretsTableName,
+        CLINIC_CONFIG_TABLE: clinicConfigTableName,
+        // Transfer Family SFTP (OpenDental pulls PDFs from this endpoint)
+        CONSOLIDATED_SFTP_HOST: consolidatedSftpEndpoint,
+        CONSOLIDATED_SFTP_BUCKET: consolidatedSftpBucketName,
+        CONSOLIDATED_SFTP_USERNAME: 'sftpuser',
+        CONSENT_FORMS_SFTP_DIR: 'ConsentForms',
+      },
+    });
+    applyTags(this.consentFormPublicFn, { Function: 'consent-form-public' });
+
+    // DynamoDB grants
+    this.consentFormDataTable.grantReadData(this.consentFormInstancesFn);
+    this.consentFormInstancesTable.grantReadWriteData(this.consentFormInstancesFn);
+    this.consentFormInstancesTable.grantReadWriteData(this.consentFormPublicFn);
+
+    // Secrets table read permissions (for clinic website + OpenDental credentials)
+    const globalSecretsArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/${globalSecretsTableName}`;
+    const clinicConfigArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicConfigTableName}`;
+    const clinicSecretsArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicSecretsTableName}`;
+    this.consentFormInstancesFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
+      resources: [
+        clinicConfigArn,
+        `${clinicConfigArn}/index/*`,
+        clinicSecretsArn,
+        `${clinicSecretsArn}/index/*`,
+      ],
+    }));
+    this.consentFormPublicFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
+      resources: [
+        globalSecretsArn,
+        clinicConfigArn,
+        `${clinicConfigArn}/index/*`,
+        clinicSecretsArn,
+        `${clinicSecretsArn}/index/*`,
+      ],
+    }));
+
+    // Allow public consent form lambda to upload temporary PDFs into the consolidated Transfer bucket
+    // under the dedicated sftpuser prefix. OpenDental then pulls the file via Documents/UploadSftp.
+    const consolidatedSftpBucket = s3.Bucket.fromBucketName(this, 'ImportedConsolidatedTransferBucket', consolidatedSftpBucketName);
+    this.consentFormPublicFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:PutObject', 's3:GetObject', 's3:DeleteObject'],
+      resources: [
+        consolidatedSftpBucket.arnForObjects('sftp-home/sftpuser/ConsentForms/*'),
+      ],
+    }));
+
+    // KMS decrypt for customer-managed encrypted secrets tables
+    if (props.secretsEncryptionKeyArn) {
+      [this.consentFormInstancesFn, this.consentFormPublicFn].forEach((fn) => {
+        fn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['kms:Decrypt', 'kms:DescribeKey'],
+          resources: [props.secretsEncryptionKeyArn!],
+        }));
+      });
+    }
+
     // ========================================
     // API ROUTES
     // ========================================
@@ -211,10 +351,46 @@ export class ConsentFormDataStack extends Stack {
     });
 
     // ========================================
+    // INSTANCE ROUTES (send/sign workflow)
+    // ========================================
+
+    // POST /consent-forms/{consentFormId}/instances  (protected)
+    const consentFormInstancesRes = consentFormIdRes.addResource('instances');
+    consentFormInstancesRes.addMethod('POST', new apigw.LambdaIntegration(this.consentFormInstancesFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '201' }, { statusCode: '400' }, { statusCode: '403' }, { statusCode: '404' }],
+    });
+
+    // GET /consent-forms/instances?clinicId=...  (protected)
+    const instancesRes = consentFormsRes.addResource('instances');
+    instancesRes.addMethod('GET', new apigw.LambdaIntegration(this.consentFormInstancesFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }],
+    });
+
+    // GET /consent-forms/instances/{token}  (public)
+    const instanceTokenRes = instancesRes.addResource('{token}');
+    instanceTokenRes.addMethod('GET', new apigw.LambdaIntegration(this.consentFormPublicFn), {
+      authorizationType: apigw.AuthorizationType.NONE,
+      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '404' }, { statusCode: '410' }],
+    });
+
+    // POST /consent-forms/instances/{token}/submit  (public)
+    const instanceSubmitRes = instanceTokenRes.addResource('submit');
+    instanceSubmitRes.addMethod('POST', new apigw.LambdaIntegration(this.consentFormPublicFn), {
+      authorizationType: apigw.AuthorizationType.NONE,
+      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '404' }, { statusCode: '409' }, { statusCode: '410' }],
+    });
+
+    // ========================================
     // CloudWatch Alarms
     // ========================================
     [
       { fn: this.consentFormDataFn, name: 'consent-form-data', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
+      { fn: this.consentFormInstancesFn, name: 'consent-form-instances', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
+      { fn: this.consentFormPublicFn, name: 'consent-form-public', durationMs: Math.floor(Duration.seconds(60).toMilliseconds() * 0.8) },
     ].forEach(({ fn, name, durationMs }) => {
       createLambdaErrorAlarm(fn, name);
       createLambdaThrottleAlarm(fn, name);
@@ -222,6 +398,7 @@ export class ConsentFormDataStack extends Stack {
     });
 
     createDynamoThrottleAlarm(this.consentFormDataTable.tableName, 'ConsentFormDataTable');
+    createDynamoThrottleAlarm(this.consentFormInstancesTable.tableName, 'ConsentFormInstancesTable');
 
     // ========================================
     // DOMAIN MAPPING
@@ -243,6 +420,12 @@ export class ConsentFormDataStack extends Stack {
       value: this.consentFormDataTable.tableName,
       description: 'Name of the Consent Form Data DynamoDB table',
       exportName: `${Stack.of(this).stackName}-ConsentFormDataTableName`,
+    });
+
+    new CfnOutput(this, 'ConsentFormInstancesTableName', {
+      value: this.consentFormInstancesTable.tableName,
+      description: 'Name of the Consent Form Instances DynamoDB table',
+      exportName: `${Stack.of(this).stackName}-ConsentFormInstancesTableName`,
     });
 
     new CfnOutput(this, 'ConsentFormDataApiUrl', {

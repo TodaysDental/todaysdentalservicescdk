@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput, Fn, Tags } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput, Tags, Fn } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -14,7 +14,6 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as kms from 'aws-cdk-lib/aws-kms';
-import * as kinesis from 'aws-cdk-lib/aws-kinesis';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as events from 'aws-cdk-lib/aws-events';
@@ -27,7 +26,7 @@ const clinicsData = clinicConfigData.map((c: any) => ({
   clinicId: c.clinicId,
   clinicName: c.clinicName,
   phoneNumber: c.phoneNumber,
-  aiPhoneNumber: c.aiPhoneNumber || '', // AI-dedicated phone number for Voice Connector routing
+  aiPhoneNumber: c.aiPhoneNumber || '', // AI phone number (Connect/Lex) used for after-hours forwarding
   timezone: c.timezone,
   clinicAddress: c.clinicAddress,
   clinicCity: c.clinicCity,
@@ -78,6 +77,33 @@ export interface ChimeStackProps extends StackProps {
    */
   enableCallRecording?: boolean;
   /**
+   * Optional external recordings bucket name for Chime call recordings.
+   * When provided (with sharedRecordingsBucketArn), ChimeStack will use this bucket
+   * instead of creating a dedicated recordings bucket.
+   */
+  sharedRecordingsBucketName?: string;
+  /**
+   * ARN for the external recordings bucket.
+   * Required when sharedRecordingsBucketName is provided.
+   */
+  sharedRecordingsBucketArn?: string;
+  /**
+   * Optional Amazon Connect call recordings bucket (Connect/Lex AI calls).
+   * When set, the /admin/recordings/call/{callId} endpoint can also serve Connect recordings
+   * for callIds in the form `connect-{ContactId}`.
+   */
+  connectCallRecordingsBucketName?: string;
+  /**
+   * Optional prefix inside the Connect call recordings bucket.
+   * Example: "connect/todaysdentalcommunications/CallRecordings"
+   */
+  connectCallRecordingsPrefix?: string;
+  /**
+   * Optional KMS key ARN used to encrypt Connect call recordings in S3.
+   * If provided, GetRecording will be granted kms:Decrypt on this key.
+   */
+  connectCallRecordingsKmsKeyArn?: string;
+  /**
    * Recording retention period in days (default: 2555 days / ~7 years)
    */
   recordingRetentionDays?: number;
@@ -100,81 +126,26 @@ export interface ChimeStackProps extends StackProps {
   chimeMediaRegion?: string;
 
   // ========================================
-  // VOICE AI INTEGRATION (from AiAgentsStack)
+  // AFTER-HOURS FORWARDING (Connect/Lex AI)
   // ========================================
 
   /**
-   * Voice AI Lambda ARN for after-hours call handling
-   */
-  voiceAiLambdaArn?: string;
-
-  /**
-   * Clinic Hours table name for checking business hours
+   * Clinic Hours table name for checking business hours.
+   * Used by the SMA handler to determine open/closed.
    */
   clinicHoursTableName?: string;
 
   /**
-   * AI Agents table name for getting agent configuration
-   */
-  aiAgentsTableName?: string;
-
-  /**
-   * Voice Config table name for voice agent configuration
+   * Voice Config table name (per-clinic inbound AI toggle).
+   * Used to decide whether after-hours calls should be forwarded.
    */
   voiceConfigTableName?: string;
 
   /**
-   * Scheduled Calls table name for AI outbound calls
-   */
-  scheduledCallsTableName?: string;
-
-  /**
-   * Voice Sessions table name for AI voice call sessions
-   * This is the VoiceAiSessions table from AiAgentsStack, NOT the VoiceConfig table
-   */
-  voiceSessionsTableName?: string;
-
-  /**
-   * Enable after-hours AI routing (default: false)
+   * Enable after-hours forwarding to `clinic.aiPhoneNumber` (Connect/Lex AI).
+   * When false, Chime will not attempt after-hours forwarding.
    */
   enableAfterHoursAi?: boolean;
-
-  /**
-   * Enable real-time transcription for AI calls (default: false)
-   * Requires Media Insights Pipeline to be configured
-   */
-  enableRealTimeTranscription?: boolean;
-
-  /**
-   * Enable AI phone numbers (default: false)
-   * When enabled, creates SIP Rules for aiPhoneNumber entries in clinic-config.json
-   * and routes calls to those numbers directly to Voice AI (no business hours check)
-   */
-  enableAiPhoneNumbers?: boolean;
-
-  /**
-   * External call recordings bucket name from AiAgentsStack.
-   * When provided, ChimeStack will NOT create its own recordings bucket
-   * to avoid data fragmentation between AI and human calls.
-   * All recordings will go to this shared bucket.
-   */
-  sharedRecordingsBucketName?: string;
-
-  /**
-   * External call recordings bucket ARN for IAM permissions.
-   * Required when sharedRecordingsBucketName is provided.
-   */
-  sharedRecordingsBucketArn?: string;
-
-  /**
-   * AiAgentsStack name for dynamic imports.
-   * When provided along with enableAfterHoursAi, ChimeStack can dynamically import
-   * Voice AI resources using Fn.importValue instead of requiring explicit props.
-   * This helps break the circular dependency between stacks.
-   * 
-   * NOTE: AiAgentsStack must be deployed before ChimeStack when using this approach.
-   */
-  aiAgentsStackName?: string;
 
   // ========================================
   // PUSH NOTIFICATIONS INTEGRATION (from PushNotificationsStack)
@@ -200,18 +171,11 @@ export interface ChimeStackProps extends StackProps {
   // ========================================
 
   /**
-   * Enable provisioned concurrency for critical real-time voice AI Lambdas.
-   * This reduces cold start latency but incurs additional cost.
+   * Enable provisioned concurrency for critical Lambdas (e.g., SMA handler).
+   * Reduces cold start latency but incurs additional cost.
    * @default false
    */
   enableProvisionedConcurrency?: boolean;
-
-  /**
-   * Number of provisioned concurrent instances for AI Transcript Bridge Lambda.
-   * Only used when enableProvisionedConcurrency is true.
-   * @default 5
-   */
-  aiTranscriptBridgeProvisionedConcurrency?: number;
 
   /**
    * Number of provisioned concurrent instances for Inbound Router (SMA Handler) Lambda.
@@ -234,87 +198,39 @@ export interface VoiceConnectorOriginationRouteConfig {
 export class ChimeStack extends Stack {
   public readonly clinicsTable: dynamodb.Table;
   public readonly agentPresenceTable: dynamodb.Table;
+  public readonly agentActiveTable: dynamodb.Table;
   public readonly callQueueTable: dynamodb.Table;
   public readonly locksTable: dynamodb.Table;
   public readonly agentPerformanceTable: dynamodb.Table;
   public readonly recordingMetadataTable?: dynamodb.Table;
   public readonly recordingsBucket?: s3.IBucket;
   public readonly holdMusicBucket?: s3.IBucket;
-  public readonly thinkingAudioUrl: string;
 
   constructor(scope: Construct, id: string, props: ChimeStackProps) {
     super(scope, id, props);
 
     // ========================================
-    // VOICE AI INTEGRATION VALIDATION & DYNAMIC IMPORTS
+    // AFTER-HOURS FORWARDING CONFIG (Connect/Lex AI)
     // ========================================
-    // CRITICAL FIX: Support dynamic imports from AiAgentsStack to break circular dependency.
-    // Two modes are supported:
-    // 1. Explicit props (voiceAiLambdaArn, clinicHoursTableName, etc.) - requires AiAgentsStack deployed first
-    // 2. Dynamic imports via aiAgentsStackName - uses Fn.importValue at deploy time
-
-    // Resolve Voice AI integration values (explicit props take precedence over dynamic imports)
-    let resolvedVoiceAiLambdaArn = props.voiceAiLambdaArn;
-    let resolvedClinicHoursTableName = props.clinicHoursTableName;
-    let resolvedAiAgentsTableName = props.aiAgentsTableName;
-    let resolvedVoiceConfigTableName = props.voiceConfigTableName;
-    let resolvedScheduledCallsTableName = props.scheduledCallsTableName;
-    let resolvedVoiceSessionsTableName = props.voiceSessionsTableName;
-
-    // If aiAgentsStackName is provided, use dynamic imports for missing props
-    if (props.aiAgentsStackName && props.enableAfterHoursAi) {
-      console.log(`[ChimeStack] Using dynamic imports from AiAgentsStack: ${props.aiAgentsStackName}`);
-
-      if (!resolvedVoiceAiLambdaArn) {
-        resolvedVoiceAiLambdaArn = Fn.importValue(`${props.aiAgentsStackName}-VoiceAiFunctionArn`);
-      }
-      if (!resolvedClinicHoursTableName) {
-        resolvedClinicHoursTableName = Fn.importValue(`${props.aiAgentsStackName}-ClinicHoursTableName`);
-      }
-      if (!resolvedAiAgentsTableName) {
-        resolvedAiAgentsTableName = Fn.importValue(`${props.aiAgentsStackName}-AiAgentsTableName`);
-      }
-      if (!resolvedVoiceConfigTableName) {
-        resolvedVoiceConfigTableName = Fn.importValue(`${props.aiAgentsStackName}-VoiceConfigTableName`);
-      }
-      if (!resolvedScheduledCallsTableName) {
-        resolvedScheduledCallsTableName = Fn.importValue(`${props.aiAgentsStackName}-ScheduledCallsTableName`);
-      }
-      // CRITICAL FIX: Import VoiceSessionsTableName (NOT VoiceConfigTableName)
-      // VoiceAiSessions table is different from VoiceConfig table
-      if (!resolvedVoiceSessionsTableName) {
-        resolvedVoiceSessionsTableName = Fn.importValue(`${props.aiAgentsStackName}-VoiceSessionsTableName`);
-      }
-    }
+    // Chime does NOT host AI conversations anymore. When enabled, the SIP Media Application
+    // will forward closed-clinic calls to the clinic's `aiPhoneNumber` (handled by Connect/Lex).
+    const resolvedClinicHoursTableName = props.clinicHoursTableName;
+    const resolvedVoiceConfigTableName = props.voiceConfigTableName;
 
     if (props.enableAfterHoursAi) {
-      // Validate that all required values are now available (either from props or imports)
       const missingProps: string[] = [];
-
-      if (!resolvedVoiceAiLambdaArn) {
-        missingProps.push('voiceAiLambdaArn');
-      }
-      if (!resolvedClinicHoursTableName) {
-        missingProps.push('clinicHoursTableName');
-      }
-      if (!resolvedAiAgentsTableName) {
-        missingProps.push('aiAgentsTableName');
-      }
-      if (!resolvedVoiceConfigTableName) {
-        missingProps.push('voiceConfigTableName');
-      }
+      if (!resolvedClinicHoursTableName) missingProps.push('clinicHoursTableName');
+      if (!resolvedVoiceConfigTableName) missingProps.push('voiceConfigTableName');
 
       if (missingProps.length > 0) {
         throw new Error(
           `[ChimeStack] CONFIGURATION ERROR: enableAfterHoursAi is true but required props are missing: ` +
           `${missingProps.join(', ')}. ` +
-          `Either set enableAfterHoursAi to false, provide aiAgentsStackName for dynamic imports, ` +
-          `or provide all required Voice AI integration props explicitly. ` +
-          `Required props: voiceAiLambdaArn, clinicHoursTableName, aiAgentsTableName, voiceConfigTableName.`
+          `Required props: clinicHoursTableName, voiceConfigTableName.`
         );
       }
 
-      console.log('[ChimeStack] Voice AI integration enabled with all required values resolved.');
+      console.log('[ChimeStack] After-hours forwarding enabled (Connect/Lex handles AI calls).');
     }
 
     // ========================================
@@ -468,6 +384,29 @@ export class ChimeStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // Agent Active table (push-first inbound routing source of truth)
+    // PK: clinicId, SK: agentId
+    // Tracks which agents are actively receiving call offers for a clinic.
+    this.agentActiveTable = new dynamodb.Table(this, 'AgentActiveTable', {
+      tableName: `${this.stackName}-AgentActive`,
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'agentId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+      // Optional: TTL can be used later to auto-expire stale active rows
+      timeToLiveAttribute: 'ttl',
+    });
+    applyTags(this.agentActiveTable, { Table: 'agent-active' });
+
+    // GSI to quickly look up all clinics for a given agentId (for global inactivation / diagnostics)
+    this.agentActiveTable.addGlobalSecondaryIndex({
+      indexName: 'agentId-index',
+      partitionKey: { name: 'agentId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
 
     // Call Queue table - V2 with corrected GSI types
     this.callQueueTable = new dynamodb.Table(this, 'CallQueueTable', {
@@ -565,53 +504,40 @@ export class ChimeStack extends Stack {
       environment: {
         CLINICS_TABLE_NAME: this.clinicsTable.tableName,
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         LOCKS_TABLE_NAME: this.locksTable.tableName,
         HOLD_MUSIC_BUCKET: '', // Will be updated after bucket creation
-        CHIME_MEDIA_REGION: 'us-east-1', // Supported Chime SDK media region
-        // Voice AI integration - uses resolved values (explicit props or dynamic imports)
-        VOICE_AI_LAMBDA_ARN: resolvedVoiceAiLambdaArn?.toString() || '',
-        CLINIC_HOURS_TABLE: resolvedClinicHoursTableName?.toString() || '',
-        AI_AGENTS_TABLE: resolvedAiAgentsTableName?.toString() || '',
-        VOICE_CONFIG_TABLE: resolvedVoiceConfigTableName?.toString() || '',
-        SCHEDULED_CALLS_TABLE: resolvedScheduledCallsTableName?.toString() || '',
+        CHIME_MEDIA_REGION: chimeMediaRegion,
+        // Marketing voice call analytics (NotificationsStack export)
+        VOICE_CALL_ANALYTICS_TABLE: Fn.importValue('TodaysDentalInsightsNotificationsN1-VoiceCallAnalyticsTableName'),
+        // After-hours forwarding (Connect/Lex AI)
         ENABLE_AFTER_HOURS_AI: props.enableAfterHoursAi ? 'true' : 'false',
+        CLINIC_HOURS_TABLE: resolvedClinicHoursTableName || '',
+        VOICE_CONFIG_TABLE: resolvedVoiceConfigTableName || '',
         // Push Notifications Integration
         DEVICE_TOKENS_TABLE: props.deviceTokensTableName || '',
         SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
-        // AI Phone Numbers - maps aiPhoneNumber -> clinicId for direct AI routing (no hours check)
-        // Only populated when enableAiPhoneNumbers is true and aiPhoneNumber is configured
-        AI_PHONE_NUMBERS_JSON: props.enableAiPhoneNumbers
-          ? JSON.stringify(
-            clinicsData
-              .filter(c => c.aiPhoneNumber)
-              .reduce((acc, c) => ({ ...acc, [c.aiPhoneNumber]: c.clinicId }), {} as Record<string, string>)
-          )
-          : '{}',
-        ENABLE_AI_PHONE_NUMBERS: props.enableAiPhoneNumbers ? 'true' : 'false',
-        // Real-time meeting transcription for natural language AI conversation
-        ENABLE_MEETING_TRANSCRIPTION: 'true',
-        TRANSCRIPTION_LANGUAGE: 'en-US',
-        MEDICAL_VOCABULARY_NAME: props.medicalVocabularyName || '',
       },
     });
 
     // Grant DynamoDB permissions
     this.clinicsTable.grantReadData(smaHandler);
     this.agentPresenceTable.grantReadWriteData(smaHandler);
+    this.agentActiveTable.grantReadWriteData(smaHandler);
     this.callQueueTable.grantReadWriteData(smaHandler);
     this.locksTable.grantReadWriteData(smaHandler);
 
-    // Voice AI integration permissions - uses resolved values (explicit props or dynamic imports)
-    if (resolvedVoiceAiLambdaArn) {
-      smaHandler.addToRolePolicy(new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: ['lambda:InvokeFunction'],
-        resources: [resolvedVoiceAiLambdaArn.toString()],
-      }));
-    }
+    // Marketing voice call analytics table (in NotificationsStack)
+    smaHandler.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${Fn.importValue('TodaysDentalInsightsNotificationsN1-VoiceCallAnalyticsTableName')}`,
+      ],
+    }));
 
-    // Grant read access to AI-related tables if configured
+    // After-hours forwarding requires reading clinic hours + per-clinic AI inbound toggle.
     if (resolvedClinicHoursTableName) {
       smaHandler.addToRolePolicy(new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
@@ -620,30 +546,11 @@ export class ChimeStack extends Stack {
       }));
     }
 
-    if (resolvedAiAgentsTableName) {
-      smaHandler.addToRolePolicy(new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
-        resources: [
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${resolvedAiAgentsTableName}`,
-          `arn:aws:dynamodb:${this.region}:${this.account}:table/${resolvedAiAgentsTableName}/index/*`,
-        ],
-      }));
-    }
-
     if (resolvedVoiceConfigTableName) {
       smaHandler.addToRolePolicy(new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ['dynamodb:GetItem'],
         resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${resolvedVoiceConfigTableName}`],
-      }));
-    }
-
-    if (resolvedScheduledCallsTableName) {
-      smaHandler.addToRolePolicy(new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],
-        resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${resolvedScheduledCallsTableName}`],
       }));
     }
 
@@ -781,57 +688,6 @@ export class ChimeStack extends Stack {
       // CRITICAL: Set correct content type for Chime SMA compatibility
       // Chime SMA requires 'audio/wav' not 'audio/x-wav'
       contentType: 'audio/wav',
-    });
-
-    // ========================================
-    // PUBLIC AUDIO BUCKET FOR POLLY SSML
-    // ========================================
-    // Separate public bucket for audio files used in Polly SSML <audio> tags
-    // Required for Amazon Connect Lex integration - must be publicly accessible via HTTPS
-    // The thinking audio (keyboard sounds) is played before AI response
-    const publicAudioBucket = new s3.Bucket(this, 'PublicAudioBucket', {
-      bucketName: `${this.stackName.toLowerCase()}-public-audio-${this.account}-${this.region}`,
-      removalPolicy: RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-      // Allow public read access for Polly SSML
-      publicReadAccess: true,
-      blockPublicAccess: new s3.BlockPublicAccess({
-        blockPublicAcls: false,
-        ignorePublicAcls: false,
-        blockPublicPolicy: false,
-        restrictPublicBuckets: false,
-      }),
-      encryption: s3.BucketEncryption.S3_MANAGED,
-    });
-
-    // Deploy the MP3 audio file to the public bucket
-    new s3deploy.BucketDeployment(this, 'DeployPublicAudio', {
-      sources: [
-        // Public bucket is used for SSML-accessible audio files (MP3)
-        s3deploy.Source.asset(path.join(__dirname, '..', '..', '..', 'assets', 'audio'), {
-          exclude: ['*.wav'],
-        })
-      ],
-      destinationBucket: publicAudioBucket,
-      prune: false,
-      // Set correct content type for MP3
-      contentType: 'audio/mpeg',
-    });
-
-    // Build the public S3 HTTPS URL for the thinking audio
-    // IMPORTANT: keep this file short (<= ~5s) for best UX in voice bots
-    this.thinkingAudioUrl = `https://${publicAudioBucket.bucketName}.s3.${this.region}.amazonaws.com/Computer-keyboard-sound-short.mp3`;
-
-    new CfnOutput(this, 'ThinkingAudioUrl', {
-      value: this.thinkingAudioUrl,
-      description: 'Public S3 URL for thinking audio (keyboard sounds) - use in ConnectLexAiStack',
-      exportName: `${this.stackName}-ThinkingAudioUrl`,
-    });
-
-    new CfnOutput(this, 'PublicAudioBucketName', {
-      value: publicAudioBucket.bucketName,
-      description: 'Public S3 bucket for Polly SSML audio files',
-      exportName: `${this.stackName}-PublicAudioBucketName`,
     });
 
     // ========================================
@@ -1396,205 +1252,10 @@ export class ChimeStack extends Stack {
     }
 
     // ========================================
-    // AI PHONE NUMBERS - VOICE CONNECTOR INGRESS FOR DIRECT AI ROUTING
+    // AI PHONE NUMBERS
     // ========================================
-    // AI phone numbers are provisioned as ProductType=VoiceConnector so calls can use
-    // Voice Connector streaming + MediaInsightsConfiguration for low-latency transcription.
-    //
-    // IMPORTANT: SIP rules with TriggerType=ToPhoneNumber do NOT support VoiceConnector product type numbers.
-    // Instead, we route calls coming in via the Voice Connector using a SIP rule with:
-    //   TriggerType: RequestUriHostname
-    //   TriggerValue: <Voice Connector OutboundHostName>
-    //
-    // inbound-router.ts will detect AI numbers via AI_PHONE_NUMBERS_JSON and route directly to Voice AI.
-    if (props.enableAiPhoneNumbers) {
-      const clinicsWithAiPhones = (clinicsData as Clinic[])
-        .filter(c => c.aiPhoneNumber && c.aiPhoneNumber.trim() !== '')
-        .map(c => ({
-          clinicId: c.clinicId,
-          aiPhoneNumber: c.aiPhoneNumber!.trim(),
-          clinicName: c.clinicName || c.clinicId,
-        }));
-
-      if (clinicsWithAiPhones.length > 0) {
-        console.log(`[AI Phone Numbers] Configured ${clinicsWithAiPhones.length} AI phone numbers - enabling Voice Connector ingress routing`);
-
-        // IMPORTANT: AwsCustomResource uses a singleton provider Lambda. In practice, passing `role`
-        // does not reliably grant permissions to that provider. Use an explicit `policy` instead.
-        const vcIngressPolicy = customResources.AwsCustomResourcePolicy.fromStatements([
-          new iam.PolicyStatement({
-            effect: iam.Effect.ALLOW,
-            actions: [
-              // Legacy namespace
-              'chime:CreateSipMediaApplication',
-              'chime:DeleteSipMediaApplication',
-              'chime:GetSipMediaApplication',
-              'chime:CreateSipRule',
-              'chime:UpdateSipRule',
-              'chime:DeleteSipRule',
-              'chime:GetSipRule',
-              'chime:AssociatePhoneNumbersWithVoiceConnector',
-              'chime:DisassociatePhoneNumbersFromVoiceConnector',
-              // New namespace
-              'chime-sdk-voice:CreateSipMediaApplication',
-              'chime-sdk-voice:DeleteSipMediaApplication',
-              'chime-sdk-voice:GetSipMediaApplication',
-              'chime-sdk-voice:CreateSipRule',
-              'chime-sdk-voice:UpdateSipRule',
-              'chime-sdk-voice:DeleteSipRule',
-              'chime-sdk-voice:GetSipRule',
-              'chime-sdk-voice:AssociatePhoneNumbersWithVoiceConnector',
-              'chime-sdk-voice:DisassociatePhoneNumbersFromVoiceConnector',
-            ],
-            resources: ['*'],
-          }),
-          // `createSipMediaApplication` validates the Lambda endpoint permissions by calling
-          // `lambda:GetPolicy` on the target function. Without this, the custom resource fails
-          // even though the Chime SDK call is the only explicit action.
-          new iam.PolicyStatement({
-            effect: iam.Effect.ALLOW,
-            actions: ['lambda:GetPolicy', 'lambda:AddPermission'],
-            resources: [smaHandler.functionArn],
-          }),
-        ]);
-
-        // Create a dedicated SIP Media Application for Voice Connector ingress (all VC calls go to smaHandler).
-        // We still route by dialed number inside inbound-router.ts.
-        const vcIngressSma = new customResources.AwsCustomResource(this, 'SipMediaApp-VoiceConnectorIngress', {
-          onCreate: {
-            service: 'ChimeSDKVoice',
-            action: 'createSipMediaApplication',
-            parameters: {
-              Name: `${this.stackName}-VC-Ingress-SMA`,
-              AwsRegion: this.region,
-              Endpoints: [{
-                LambdaArn: smaHandler.functionArn,
-              }],
-            },
-            physicalResourceId: customResources.PhysicalResourceId.fromResponse('SipMediaApplication.SipMediaApplicationId'),
-          },
-          onDelete: {
-            service: 'ChimeSDKVoice',
-            action: 'deleteSipMediaApplication',
-            parameters: {
-              SipMediaApplicationId: new customResources.PhysicalResourceIdReference(),
-            },
-            // If create never completed we may not have a valid physical ID; treat NotFound/BadRequest as success.
-            ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*|.*DoesNotExist.*|.*BadRequest.*|.*Validation.*',
-          },
-          policy: vcIngressPolicy,
-        });
-
-        // Avoid blasting the Chime API with parallel creates.
-        if (previousClinicResource) {
-          vcIngressSma.node.addDependency(previousClinicResource);
-        }
-        vcIngressSma.node.addDependency(voiceConnector);
-        vcIngressSma.node.addDependency(chimeVoiceInvokePermission);
-
-        const vcIngressSmaId = vcIngressSma.getResponseField('SipMediaApplication.SipMediaApplicationId');
-
-        // Route any SIP traffic hitting this Voice Connector into the SMA.
-        const vcIngressSipRule = new customResources.AwsCustomResource(this, 'SipRule-VoiceConnectorIngress', {
-          onCreate: {
-            service: 'ChimeSDKVoice',
-            action: 'createSipRule',
-            parameters: {
-              Name: `${this.stackName}-VC-Ingress-Rule`,
-              TriggerType: 'RequestUriHostname',
-              TriggerValue: voiceConnectorOutboundHost,
-              TargetApplications: [{
-                SipMediaApplicationId: vcIngressSmaId,
-                Priority: 1,
-                AwsRegion: this.region,
-              }],
-            },
-            physicalResourceId: customResources.PhysicalResourceId.fromResponse('SipRule.SipRuleId'),
-          },
-          onUpdate: {
-            service: 'ChimeSDKVoice',
-            action: 'updateSipRule',
-            parameters: {
-              SipRuleId: new customResources.PhysicalResourceIdReference(),
-              Name: `${this.stackName}-VC-Ingress-Rule`,
-              TriggerType: 'RequestUriHostname',
-              TriggerValue: voiceConnectorOutboundHost,
-              TargetApplications: [{
-                SipMediaApplicationId: vcIngressSmaId,
-                Priority: 1,
-                AwsRegion: this.region,
-              }],
-            },
-            // UpdateSipRule returns SipRule.SipRuleId; keep the physical id stable for delete.
-            physicalResourceId: customResources.PhysicalResourceId.fromResponse('SipRule.SipRuleId'),
-          },
-          onDelete: {
-            service: 'ChimeSDKVoice',
-            action: 'deleteSipRule',
-            parameters: {
-              SipRuleId: new customResources.PhysicalResourceIdReference(),
-            },
-            ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*|.*DoesNotExist.*|.*BadRequest.*|.*Validation.*',
-          },
-          policy: vcIngressPolicy,
-        });
-
-        vcIngressSipRule.node.addDependency(voiceConnector);
-        vcIngressSipRule.node.addDependency(vcIngressSma);
-        if (vcTermination) {
-          vcIngressSipRule.node.addDependency(vcTermination);
-        }
-
-        // Ensure AI phone numbers are associated with the Voice Connector (required for VC media streaming).
-        const aiPhoneNumbers = Array.from(new Set(clinicsWithAiPhones.map(c => c.aiPhoneNumber)));
-        const associateAiPhones = new customResources.AwsCustomResource(this, 'AssociateAiPhoneNumbers', {
-          onCreate: {
-            service: 'ChimeSDKVoice',
-            action: 'associatePhoneNumbersWithVoiceConnector',
-            parameters: {
-              VoiceConnectorId: voiceConnectorId,
-              E164PhoneNumbers: aiPhoneNumbers,
-              ForceAssociate: true,
-            },
-            physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-associate-ai-phones`),
-          },
-          onUpdate: {
-            service: 'ChimeSDKVoice',
-            action: 'associatePhoneNumbersWithVoiceConnector',
-            parameters: {
-              VoiceConnectorId: voiceConnectorId,
-              E164PhoneNumbers: aiPhoneNumbers,
-              ForceAssociate: true,
-            },
-            physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-associate-ai-phones`),
-          },
-          onDelete: {
-            service: 'ChimeSDKVoice',
-            action: 'disassociatePhoneNumbersFromVoiceConnector',
-            parameters: {
-              VoiceConnectorId: voiceConnectorId,
-              E164PhoneNumbers: aiPhoneNumbers,
-            },
-            ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*|.*DoesNotExist.*|.*BadRequest.*|.*Validation.*',
-          },
-          policy: vcIngressPolicy,
-        });
-
-        associateAiPhones.node.addDependency(voiceConnector);
-        associateAiPhones.node.addDependency(vcIngressSipRule);
-
-        // NOTE: SIP rules with TriggerType=ToPhoneNumber do NOT support Voice Connector product type numbers.
-        // Direct inbound calls to AI phone numbers (Voice Connector) are routed via the Voice Connector
-        // RequestUriHostname SIP rule created above. The inbound-router.ts Lambda detects AI numbers
-        // via AI_PHONE_NUMBERS_JSON and routes them directly to Voice AI.
-        //
-        // For a fully serverless direct-dial AI number, use Amazon Connect with Lex instead.
-        // See: connect-lex-ai-stack.ts for that implementation.
-
-      } else {
-        console.log('[AI Phone Numbers] No clinics with aiPhoneNumber configured');
-      }
-    }
+    // AI phone numbers are now handled by Amazon Connect + Lex (ConnectLexAiStack).
+    // ChimeStack no longer provisions Voice Connector ingress SIP rules for `aiPhoneNumber`.
 
     // ========================================
     // 3. Lambda Functions
@@ -1711,6 +1372,59 @@ export class ChimeStack extends Stack {
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
 
+    // Lambda for POST /chime/agent/active
+    // Push-first availability toggle (writes AgentActive table; may also ring queued calls).
+    const agentActiveFn = new lambdaNode.NodejsFunction(this, 'AgentActiveFn', {
+      functionName: `${this.stackName}-AgentActive`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'agent-active.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
+        JWT_SECRET: jwtSecretValue,
+        CHIME_MEDIA_REGION: chimeMediaRegion,
+        // Push Notifications Integration (best-effort dispatch of queued calls)
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
+      },
+    });
+    applyTags(agentActiveFn, { Function: 'agent-active' });
+    this.agentActiveTable.grantReadWriteData(agentActiveFn);
+    this.callQueueTable.grantReadWriteData(agentActiveFn);
+    this.locksTable.grantReadWriteData(agentActiveFn);
+    if (props.sendPushFunctionArn) {
+      agentActiveFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
+    agentActiveFn.addPermission('AdminApiInvokeAgentActive', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
+    // Lambda for POST /chime/agent/inactive
+    const agentInactiveFn = new lambdaNode.NodejsFunction(this, 'AgentInactiveFn', {
+      functionName: `${this.stackName}-AgentInactive`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'agent-inactive.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
+        JWT_SECRET: jwtSecretValue,
+      },
+    });
+    applyTags(agentInactiveFn, { Function: 'agent-inactive' });
+    this.agentActiveTable.grantReadWriteData(agentInactiveFn);
+    agentInactiveFn.addPermission('AdminApiInvokeAgentInactive', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
     // Lambda for POST /chime/outbound-call
     const outboundCallFn = new lambdaNode.NodejsFunction(this, 'OutboundCallFn', {
       functionName: `${this.stackName}-OutboundCall`,
@@ -1720,6 +1434,7 @@ export class ChimeStack extends Stack {
       timeout: Duration.seconds(10),
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
         CLINICS_TABLE_NAME: this.clinicsTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         LOCKS_TABLE_NAME: this.locksTable.tableName,
@@ -1733,6 +1448,7 @@ export class ChimeStack extends Stack {
     });
     outboundCallFn.addToRolePolicy(chimeSdkPolicy);
     this.agentPresenceTable.grantReadWriteData(outboundCallFn);
+    this.agentActiveTable.grantReadWriteData(outboundCallFn);
     this.clinicsTable.grantReadData(outboundCallFn);
     this.callQueueTable.grantReadWriteData(outboundCallFn);
     this.locksTable.grantReadWriteData(outboundCallFn);
@@ -1813,6 +1529,112 @@ export class ChimeStack extends Stack {
       resources: ['*'],
     }));
     callAcceptedFn.addPermission('AdminApiInvokeCallAccepted', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
+    // Lambda for POST /chime/call-accepted-v2
+    // Push-first meeting-per-call acceptance: returns meeting credentials and bridges PSTN leg.
+    const callAcceptedV2Fn = new lambdaNode.NodejsFunction(this, 'CallAcceptedV2Fn', {
+      functionName: `${this.stackName}-CallAcceptedV2`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'call-accepted-v2.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
+        SMA_ID_MAP: smaIdMapJson,
+        CHIME_MEDIA_REGION: chimeMediaRegion,
+        JWT_SECRET: jwtSecretValue,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    applyTags(callAcceptedV2Fn, { Function: 'call-accepted-v2' });
+    this.agentActiveTable.grantReadWriteData(callAcceptedV2Fn);
+    this.callQueueTable.grantReadWriteData(callAcceptedV2Fn);
+    this.locksTable.grantReadWriteData(callAcceptedV2Fn);
+    callAcceptedV2Fn.addToRolePolicy(chimeSdkPolicy);
+    callAcceptedV2Fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'chime:UpdateSipMediaApplicationCall',
+        'chime-sdk-voice:UpdateSipMediaApplicationCall',
+      ],
+      resources: ['*'],
+    }));
+    callAcceptedV2Fn.addPermission('AdminApiInvokeCallAcceptedV2', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
+    // Lambda for POST /chime/call-rejected-v2
+    // Push-first meeting-per-call rejection: remove agent from ring list and re-offer to other active agents.
+    const callRejectedV2Fn = new lambdaNode.NodejsFunction(this, 'CallRejectedV2Fn', {
+      functionName: `${this.stackName}-CallRejectedV2`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'call-rejected-v2.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
+        JWT_SECRET: jwtSecretValue,
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    applyTags(callRejectedV2Fn, { Function: 'call-rejected-v2' });
+    this.agentActiveTable.grantReadWriteData(callRejectedV2Fn);
+    this.callQueueTable.grantReadWriteData(callRejectedV2Fn);
+    this.locksTable.grantReadWriteData(callRejectedV2Fn);
+    if (props.sendPushFunctionArn) {
+      callRejectedV2Fn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
+    callRejectedV2Fn.addPermission('AdminApiInvokeCallRejectedV2', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
+    // Lambda for POST /chime/call-hungup-v2
+    // Push-first meeting-per-call hangup: request SMA hangup and reset AgentActive busy -> active (best-effort).
+    const callHungupV2Fn = new lambdaNode.NodejsFunction(this, 'CallHungupV2Fn', {
+      functionName: `${this.stackName}-CallHungupV2`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'call-hungup-v2.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
+        SMA_ID_MAP: smaIdMapJson,
+        CHIME_MEDIA_REGION: chimeMediaRegion,
+        JWT_SECRET: jwtSecretValue,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    applyTags(callHungupV2Fn, { Function: 'call-hungup-v2' });
+    this.agentActiveTable.grantReadWriteData(callHungupV2Fn);
+    this.callQueueTable.grantReadWriteData(callHungupV2Fn);
+    this.locksTable.grantReadWriteData(callHungupV2Fn);
+    callHungupV2Fn.addToRolePolicy(chimeSdkPolicy);
+    callHungupV2Fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'chime:UpdateSipMediaApplicationCall',
+        'chime-sdk-voice:UpdateSipMediaApplicationCall',
+      ],
+      resources: ['*'],
+    }));
+    callHungupV2Fn.addPermission('AdminApiInvokeCallHungupV2', {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
@@ -2235,6 +2057,18 @@ export class ChimeStack extends Stack {
       exportName: `${this.stackName}-AgentPresenceTableName`,
     });
 
+    new CfnOutput(this, 'AgentActiveTableName', {
+      value: this.agentActiveTable.tableName,
+      description: 'AgentActive table name for push-first call routing',
+      exportName: `${this.stackName}-AgentActiveTableName`,
+    });
+
+    new CfnOutput(this, 'AgentActiveTableArn', {
+      value: this.agentActiveTable.tableArn,
+      description: 'AgentActive table ARN for cross-stack IAM policies',
+      exportName: `${this.stackName}-AgentActiveTableArn`,
+    });
+
     // Export CallQueue table name for AnalyticsStack derived references
     new CfnOutput(this, 'CallQueueTableName', {
       value: this.callQueueTable.tableName,
@@ -2274,6 +2108,14 @@ export class ChimeStack extends Stack {
       value: stopSessionFn.functionArn,
       exportName: `${this.stackName}-StopSessionArn`,
     });
+    new CfnOutput(this, 'AgentActiveFnArn', {
+      value: agentActiveFn.functionArn,
+      exportName: `${this.stackName}-AgentActiveArn`,
+    });
+    new CfnOutput(this, 'AgentInactiveFnArn', {
+      value: agentInactiveFn.functionArn,
+      exportName: `${this.stackName}-AgentInactiveArn`,
+    });
     new CfnOutput(this, 'OutboundCallFnArn', {
       value: outboundCallFn.functionArn,
       exportName: `${this.stackName}-OutboundCallArn`,
@@ -2285,6 +2127,18 @@ export class ChimeStack extends Stack {
     new CfnOutput(this, 'CallAcceptedFnArn', {
       value: callAcceptedFn.functionArn,
       exportName: `${this.stackName}-CallAcceptedArn`,
+    });
+    new CfnOutput(this, 'CallAcceptedV2FnArn', {
+      value: callAcceptedV2Fn.functionArn,
+      exportName: `${this.stackName}-CallAcceptedV2Arn`,
+    });
+    new CfnOutput(this, 'CallRejectedV2FnArn', {
+      value: callRejectedV2Fn.functionArn,
+      exportName: `${this.stackName}-CallRejectedV2Arn`,
+    });
+    new CfnOutput(this, 'CallHungupV2FnArn', {
+      value: callHungupV2Fn.functionArn,
+      exportName: `${this.stackName}-CallHungupV2Arn`,
     });
     new CfnOutput(this, 'CallRejectedFnArn', {
       value: callRejectedFn.functionArn,
@@ -2571,11 +2425,60 @@ export class ChimeStack extends Stack {
       },
     });
 
+    // CRITICAL: Allow API Gateway to invoke GetRecording.
+    // Without this, /admin/recordings/* returns 500 "Invalid permissions on Lambda function".
+    // Use the same broad pattern as other Admin-invoked Chime lambdas (auth is enforced by the Authorizer).
+    getRecordingFn.addPermission('AdminApiInvokeGetRecording', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`,
+    });
+
     // Always export the ARN to prevent CloudFormation import failures
     new CfnOutput(this, 'GetRecordingFnArn', {
       value: getRecordingFn.functionArn,
       exportName: `${this.stackName}-GetRecordingFnArn`,
     });
+
+    // ========================================
+    // Optional: CONNECT CALL RECORDINGS (Connect/Lex AI)
+    // ========================================
+    // Allows the same /admin/recordings/call/{callId} endpoint to serve Connect recordings
+    // for callIds like `connect-{ContactId}` by letting GetRecording:
+    // - Query the unified CallAnalytics table for clinicId/timestamp
+    // - List/presign the recording object in the Connect recordings bucket
+    if (props.analyticsTableName) {
+      getRecordingFn.addEnvironment('CALL_ANALYTICS_TABLE_NAME', props.analyticsTableName);
+      getRecordingFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:Query', 'dynamodb:GetItem'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsTableName}/index/*`,
+        ],
+      }));
+    }
+
+    if (props.connectCallRecordingsBucketName) {
+      getRecordingFn.addEnvironment('CONNECT_RECORDINGS_BUCKET', props.connectCallRecordingsBucketName);
+      getRecordingFn.addEnvironment('CONNECT_RECORDINGS_PREFIX', props.connectCallRecordingsPrefix || '');
+
+      // S3 read/list for Connect recordings bucket
+      getRecordingFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['s3:ListBucket'],
+        resources: [`arn:aws:s3:::${props.connectCallRecordingsBucketName}`],
+      }));
+      getRecordingFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['s3:GetObject'],
+        resources: [`arn:aws:s3:::${props.connectCallRecordingsBucketName}/*`],
+      }));
+
+      // KMS decrypt if Connect recordings are encrypted with a customer-managed key
+      if (props.connectCallRecordingsKmsKeyArn) {
+        getRecordingFn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['kms:Decrypt', 'kms:DescribeKey'],
+          resources: [props.connectCallRecordingsKmsKeyArn],
+        }));
+      }
+    }
 
     if (recordingEnabled) { // Default to enabled
       console.log('[ChimeStack] Setting up call recording infrastructure');
@@ -2770,6 +2673,15 @@ export class ChimeStack extends Stack {
         projectionType: dynamodb.ProjectionType.ALL,
       });
 
+      // GSI: Query by transactionId/segmentId (allows lookups when CallAnalytics uses transactionId
+      // but RecordingMetadata `callId` is the PSTN leg call ID).
+      recordingMetadataTable.addGlobalSecondaryIndex({
+        indexName: 'segmentId-index',
+        partitionKey: { name: 'segmentId', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
+        projectionType: dynamodb.ProjectionType.ALL,
+      });
+
       // GSI: Query by clinic and date
       recordingMetadataTable.addGlobalSecondaryIndex({
         indexName: 'clinicId-timestamp-index',
@@ -2895,10 +2807,13 @@ export class ChimeStack extends Stack {
       // 6. Update getRecordingFn with actual bucket/table names (created outside conditional)
       getRecordingFn.addEnvironment('RECORDINGS_BUCKET', recordingsBucket.bucketName);
       getRecordingFn.addEnvironment('RECORDING_METADATA_TABLE', recordingMetadataTable.tableName);
+      // Optional: allow GetRecording to map analytics callId -> pstnCallId via CallQueue (backward compatibility)
+      getRecordingFn.addEnvironment('CALL_QUEUE_TABLE_NAME', this.callQueueTable.tableName);
 
       // Grant permissions to getRecordingFn
       recordingsBucket.grantRead(getRecordingFn);
       recordingMetadataTable.grantReadData(getRecordingFn);
+      this.callQueueTable.grantReadData(getRecordingFn);
       // Only grant KMS permissions if using own bucket
       if (recordingsKey) {
         recordingsKey.grantDecrypt(getRecordingFn);
@@ -3113,652 +3028,10 @@ export class ChimeStack extends Stack {
     }
 
     // ========================================
-    // AI TRANSCRIPT BRIDGE (for Voice AI real-time conversation)
+    // AI CALLING (REMOVED FROM CHIME)
     // ========================================
-    // Creates a Kinesis Data Stream to receive transcripts from Media Insights Pipeline
-    // and a Lambda to process them and invoke Voice AI handler
-
-    if (props.enableAfterHoursAi && resolvedVoiceAiLambdaArn) {
-      // Create Kinesis Data Stream for real-time transcripts
-      const aiTranscriptStream = new kinesis.Stream(this, 'AiTranscriptStream', {
-        streamName: `${this.stackName}-AiTranscripts`,
-        shardCount: 1, // Start with 1 shard, can auto-scale if needed
-        retentionPeriod: Duration.hours(24),
-      });
-
-      // Create AI Transcript Bridge Lambda
-      const aiTranscriptBridgeFn = new lambdaNode.NodejsFunction(this, 'AiTranscriptBridgeFn', {
-        functionName: `${this.stackName}-AiTranscriptBridge`,
-        entry: path.join(__dirname, '..', '..', 'services', 'chime', 'ai-transcript-bridge.ts'),
-        handler: 'handler',
-        runtime: lambda.Runtime.NODEJS_20_X,
-        timeout: Duration.seconds(60),
-        memorySize: 512,
-        environment: {
-          VOICE_AI_LAMBDA_ARN: resolvedVoiceAiLambdaArn.toString(),
-          CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-          // CRITICAL FIX: Use VoiceSessionsTable (runtime sessions), NOT VoiceConfigTable (configuration)
-          VOICE_SESSIONS_TABLE: resolvedVoiceSessionsTableName?.toString() || '',
-          // CRITICAL FIX: Pass SSM parameter name for SMA ID Map lookup at runtime
-          SMA_ID_MAP_PARAMETER: smaIdMapParameter.parameterName,
-          // FIX: Add VoiceConfig table for clinic-specific voice settings
-          VOICE_CONFIG_TABLE: resolvedVoiceConfigTableName?.toString() || '',
-          CHIME_MEDIA_REGION: chimeMediaRegion,
-        },
-        logRetention: logs.RetentionDays.ONE_WEEK,
-      });
-
-      // CRITICAL FIX: Grant SSM read permissions for SMA ID Map lookup
-      smaIdMapParameter.grantRead(aiTranscriptBridgeFn);
-
-      // Grant permissions to invoke Voice AI Lambda
-      aiTranscriptBridgeFn.addToRolePolicy(new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: ['lambda:InvokeFunction'],
-        resources: [resolvedVoiceAiLambdaArn.toString()],
-      }));
-
-      // CRITICAL FIX: Use chime-sdk-voice namespace for UpdateSipMediaApplicationCall
-      aiTranscriptBridgeFn.addToRolePolicy(new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: [
-          'chime:UpdateSipMediaApplicationCall',
-          'chime-sdk-voice:UpdateSipMediaApplicationCall',
-        ],
-        resources: [`arn:aws:chime:${this.region}:${this.account}:sma/*`],
-      }));
-
-      // Grant read access to CallQueue table
-      this.callQueueTable.grantReadData(aiTranscriptBridgeFn);
-
-      // Grant read access to VoiceSessions table if configured
-      if (resolvedVoiceSessionsTableName) {
-        aiTranscriptBridgeFn.addToRolePolicy(new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: ['dynamodb:GetItem', 'dynamodb:Query'],
-          resources: [
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/${resolvedVoiceSessionsTableName}`,
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/${resolvedVoiceSessionsTableName}/index/*`,
-          ],
-        }));
-      }
-
-      // FIX: Grant read access to VoiceConfig table for clinic-specific voice settings
-      if (resolvedVoiceConfigTableName) {
-        aiTranscriptBridgeFn.addToRolePolicy(new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: ['dynamodb:GetItem'],
-          resources: [
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/${resolvedVoiceConfigTableName}`,
-          ],
-        }));
-      }
-
-      // Add Kinesis Stream event source
-      aiTranscriptBridgeFn.addEventSource(
-        new lambdaEventSources.KinesisEventSource(aiTranscriptStream, {
-          startingPosition: lambda.StartingPosition.LATEST,
-          batchSize: 10,
-          bisectBatchOnError: true,
-          retryAttempts: 3,
-          maxRecordAge: Duration.minutes(5),
-          parallelizationFactor: 1,
-        })
-      );
-
-      // Store Kinesis stream ARN in SSM for Media Insights Pipeline configuration
-      new ssm.StringParameter(this, 'AiTranscriptStreamArnParam', {
-        parameterName: `/${this.stackName}/AiTranscriptStreamArn`,
-        stringValue: aiTranscriptStream.streamArn,
-        description: 'Kinesis stream ARN for AI transcript processing',
-      });
-
-      new CfnOutput(this, 'AiTranscriptStreamArn', {
-        value: aiTranscriptStream.streamArn,
-        description: 'Kinesis Data Stream for AI transcript processing',
-        exportName: `${this.stackName}-AiTranscriptStreamArn`,
-      });
-
-      new CfnOutput(this, 'AiTranscriptBridgeFnArn', {
-        value: aiTranscriptBridgeFn.functionArn,
-        description: 'Lambda that bridges transcripts to Voice AI handler',
-        exportName: `${this.stackName}-AiTranscriptBridgeFnArn`,
-      });
-
-      // ========================================
-      // PROVISIONED CONCURRENCY FOR CRITICAL LAMBDAS
-      // ========================================
-      // Add provisioned concurrency to reduce cold start latency for real-time voice AI
-      // This is enabled via stack props to allow for cost management
-      if (props.enableProvisionedConcurrency) {
-        console.log('[ChimeStack] Configuring provisioned concurrency for real-time voice AI Lambdas');
-
-        // Create alias for AI Transcript Bridge Lambda with provisioned concurrency
-        const aiTranscriptBridgeAlias = new lambda.Alias(this, 'AiTranscriptBridgeAlias', {
-          aliasName: 'live',
-          version: aiTranscriptBridgeFn.currentVersion,
-          provisionedConcurrentExecutions: props.aiTranscriptBridgeProvisionedConcurrency ?? 5,
-        });
-
-        console.log(`[ChimeStack] AI Transcript Bridge: ${props.aiTranscriptBridgeProvisionedConcurrency ?? 5} provisioned instances`);
-
-        new CfnOutput(this, 'AiTranscriptBridgeAliasArn', {
-          value: aiTranscriptBridgeAlias.functionArn,
-          description: 'AI Transcript Bridge Lambda alias with provisioned concurrency',
-          exportName: `${this.stackName}-AiTranscriptBridgeAliasArn`,
-        });
-      }
-
-      // ========================================
-      // TRANSCRIBE AUDIO SEGMENT LAMBDA
-      // ========================================
-      // This Lambda processes audio recordings from AI voice calls
-      // using Amazon Transcribe for speech-to-text conversion.
-      // It's triggered by S3 notifications when recordings are uploaded.
-      if (recordingsBucket) {
-        console.log('[ChimeStack] Creating Transcribe Audio Segment Lambda for AI voice transcription');
-
-        const transcribeAudioSegmentFn = new lambdaNode.NodejsFunction(this, 'TranscribeAudioSegmentFn', {
-          functionName: `${this.stackName}-TranscribeAudioSegment`,
-          entry: path.join(__dirname, '..', '..', 'services', 'chime', 'transcribe-audio-segment.ts'),
-          handler: 'handler',
-          runtime: lambda.Runtime.NODEJS_20_X,
-          timeout: Duration.minutes(2), // Allow time for transcription
-          memorySize: 512,
-          environment: {
-            CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-            VOICE_AI_LAMBDA_ARN: resolvedVoiceAiLambdaArn?.toString() || '',
-            TRANSCRIPTION_OUTPUT_BUCKET: recordingsBucket.bucketName,
-            AI_RECORDINGS_BUCKET: recordingsBucket.bucketName,
-            HOLD_MUSIC_BUCKET: holdMusicBucket.bucketName,
-            VOICE_AI_TIMEOUT_MS: '8000', // Faster feedback (8 seconds)
-            CHIME_MEDIA_REGION: chimeMediaRegion,
-            SMA_ID_MAP_PARAMETER: smaIdMapParameter.parameterName,
-          },
-          logRetention: logs.RetentionDays.ONE_WEEK,
-        });
-
-        // Grant SSM read for SMA ID lookup
-        smaIdMapParameter.grantRead(transcribeAudioSegmentFn);
-
-        // Grant S3 read/write for recordings and transcriptions
-        recordingsBucket.grantRead(transcribeAudioSegmentFn);
-        recordingsBucket.grantPut(transcribeAudioSegmentFn);
-
-        // Grant S3 read/write for TTS audio playback (stored in hold music bucket)
-        holdMusicBucket.grantReadWrite(transcribeAudioSegmentFn);
-
-        // Grant DynamoDB access
-        this.callQueueTable.grantReadWriteData(transcribeAudioSegmentFn);
-
-        // Grant Transcribe permissions (including Streaming API for low-latency)
-        transcribeAudioSegmentFn.addToRolePolicy(new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'transcribe:StartTranscriptionJob',
-            'transcribe:GetTranscriptionJob',
-            'transcribe:StartStreamTranscription', // For Transcribe Streaming API
-          ],
-          resources: ['*'],
-        }));
-
-        // Allow Polly TTS for PlayAudio fallback
-        transcribeAudioSegmentFn.addToRolePolicy(new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: ['polly:SynthesizeSpeech'],
-          resources: ['*'],
-        }));
-
-        // Grant Lambda invoke for Voice AI
-        if (resolvedVoiceAiLambdaArn) {
-          transcribeAudioSegmentFn.addToRolePolicy(new iam.PolicyStatement({
-            effect: iam.Effect.ALLOW,
-            actions: ['lambda:InvokeFunction'],
-            resources: [resolvedVoiceAiLambdaArn.toString()],
-          }));
-        }
-
-        // Grant UpdateSipMediaApplicationCall permissions
-        transcribeAudioSegmentFn.addToRolePolicy(new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'chime:UpdateSipMediaApplicationCall',
-            'chime-sdk-voice:UpdateSipMediaApplicationCall',
-          ],
-          resources: [`arn:aws:chime:${this.region}:${this.account}:sma/*`],
-        }));
-
-        // Add S3 event notification to trigger on AI recording uploads
-        // Only trigger on ai-recordings/ prefix to avoid processing other recordings
-        if (isOwnedBucket && recordingsBucket instanceof s3.Bucket) {
-          recordingsBucket.addEventNotification(
-            s3.EventType.OBJECT_CREATED,
-            new s3n.LambdaDestination(transcribeAudioSegmentFn),
-            { prefix: 'ai-recordings/' }
-          );
-          console.log('[ChimeStack] Added S3 notification for AI recordings');
-        } else {
-          // For imported buckets, event notifications must be configured in the owning stack
-          console.log('[ChimeStack] Using shared recordings bucket - S3 notifications must be configured in AiAgentsStack');
-        }
-
-        new CfnOutput(this, 'TranscribeAudioSegmentFnArn', {
-          value: transcribeAudioSegmentFn.functionArn,
-          description: 'Lambda that transcribes AI voice call audio segments',
-          exportName: `${this.stackName}-TranscribeAudioSegmentFnArn`,
-        });
-      }
-
-      // ========================================
-      // MEDIA INSIGHTS PIPELINE CONFIGURATION
-      // ========================================
-      // Creates a Media Insights Pipeline Configuration for real-time transcription
-      // This enables Amazon Transcribe to process call audio and send transcripts
-      // to the Kinesis stream for the AI Transcript Bridge Lambda
-
-      if (props.enableRealTimeTranscription) {
-        console.log('[ChimeStack] Creating Media Insights Pipeline Configuration for real-time transcription');
-
-        // IAM Role for Media Insights Pipeline to access Kinesis
-        // CRITICAL: Use inlinePolicies to create policies atomically with the role
-        // This avoids IAM eventual consistency issues where the Chime API validates
-        // the role's permissions before IAM has propagated separate policy attachments
-        const mediaPipelineRole = new iam.Role(this, 'MediaInsightsPipelineRole', {
-          assumedBy: new iam.ServicePrincipal('mediapipelines.chime.amazonaws.com'),
-          description: 'Role for Chime Media Insights Pipeline to access Kinesis and Transcribe',
-          inlinePolicies: {
-            KinesisAccess: new iam.PolicyDocument({
-              statements: [
-                new iam.PolicyStatement({
-                  effect: iam.Effect.ALLOW,
-                  actions: [
-                    'kinesis:PutRecord',
-                    'kinesis:PutRecords',
-                    'kinesis:DescribeStream',
-                    'kinesis:DescribeStreamSummary',
-                  ],
-                  resources: [aiTranscriptStream.streamArn],
-                }),
-              ],
-            }),
-            TranscribeAccess: new iam.PolicyDocument({
-              statements: [
-                new iam.PolicyStatement({
-                  effect: iam.Effect.ALLOW,
-                  actions: [
-                    'transcribe:StartStreamTranscription',
-                    'transcribe:StartCallAnalyticsStreamTranscription',
-                  ],
-                  resources: ['*'],
-                }),
-              ],
-            }),
-          },
-        });
-
-        // Create Media Insights Pipeline Configuration using custom resource
-        // Note: CDK doesn't have native L2 constructs for this yet
-        const mediaPipelineConfig = new customResources.AwsCustomResource(this, 'MediaInsightsPipelineConfig', {
-          onCreate: {
-            service: 'ChimeSDKMediaPipelines',
-            action: 'createMediaInsightsPipelineConfiguration',
-            parameters: {
-              MediaInsightsPipelineConfigurationName: `${this.stackName}-AiTranscription`,
-              ResourceAccessRoleArn: mediaPipelineRole.roleArn,
-              RealTimeAlertConfiguration: {
-                Disabled: true, // We handle alerts in our Lambda
-              },
-              Elements: [
-                // Amazon Transcribe Call Analytics processor for real-time speech-to-text
-                // This yields UtteranceEvents with ParticipantRole (AGENT/CUSTOMER) so we can reliably
-                // ignore the non-caller leg and avoid AI responding to itself.
-                {
-                  Type: 'AmazonTranscribeCallAnalyticsProcessor',
-                  AmazonTranscribeCallAnalyticsProcessorConfiguration: {
-                    LanguageCode: 'en-US',
-                    VocabularyName: props.medicalVocabularyName || undefined,
-                    EnablePartialResultsStabilization: true,
-                    PartialResultsStability: 'high',
-                    // Redact PII in transcripts for HIPAA compliance
-                    ContentRedactionType: 'PII',
-                  },
-                },
-                // Kinesis Data Stream sink for transcripts
-                {
-                  Type: 'KinesisDataStreamSink',
-                  KinesisDataStreamSinkConfiguration: {
-                    InsightsTarget: aiTranscriptStream.streamArn,
-                  },
-                },
-              ],
-              Tags: [
-                { Key: 'Stack', Value: this.stackName },
-                { Key: 'Purpose', Value: 'AI Voice Transcription' },
-              ],
-            },
-            physicalResourceId: customResources.PhysicalResourceId.fromResponse(
-              'MediaInsightsPipelineConfiguration.MediaInsightsPipelineConfigurationArn'
-            ),
-          },
-          // IMPORTANT: Update the existing configuration in-place (don't try to create a new one with the same name).
-          onUpdate: {
-            service: 'ChimeSDKMediaPipelines',
-            action: 'updateMediaInsightsPipelineConfiguration',
-            parameters: {
-              Identifier: new customResources.PhysicalResourceIdReference(),
-              ResourceAccessRoleArn: mediaPipelineRole.roleArn,
-              RealTimeAlertConfiguration: {
-                Disabled: true,
-              },
-              Elements: [
-                {
-                  Type: 'AmazonTranscribeCallAnalyticsProcessor',
-                  AmazonTranscribeCallAnalyticsProcessorConfiguration: {
-                    LanguageCode: 'en-US',
-                    VocabularyName: props.medicalVocabularyName || undefined,
-                    EnablePartialResultsStabilization: true,
-                    PartialResultsStability: 'high',
-                    ContentRedactionType: 'PII',
-                  },
-                },
-                {
-                  Type: 'KinesisDataStreamSink',
-                  KinesisDataStreamSinkConfiguration: {
-                    InsightsTarget: aiTranscriptStream.streamArn,
-                  },
-                },
-              ],
-            },
-            // Keep the same physical id (ARN) across updates
-            physicalResourceId: customResources.PhysicalResourceId.fromResponse(
-              'MediaInsightsPipelineConfiguration.MediaInsightsPipelineConfigurationArn'
-            ),
-          },
-          onDelete: {
-            service: 'ChimeSDKMediaPipelines',
-            action: 'deleteMediaInsightsPipelineConfiguration',
-            parameters: {
-              Identifier: new customResources.PhysicalResourceIdReference(),
-            },
-            ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
-          },
-          // IMPORTANT: Use provider role policy so we can broaden permissions without relying on a single custom role
-          policy: customResources.AwsCustomResourcePolicy.fromStatements([
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: [
-                'chime:CreateMediaInsightsPipelineConfiguration',
-                'chime:DeleteMediaInsightsPipelineConfiguration',
-                'chime:GetMediaInsightsPipelineConfiguration',
-                'chime:ListMediaInsightsPipelineConfigurations',
-                'chime:UpdateMediaInsightsPipelineConfiguration',
-                'chime:TagResource',
-                'chime:UntagResource',
-                'chimesdkmediapipelines:CreateMediaInsightsPipelineConfiguration',
-                'chimesdkmediapipelines:DeleteMediaInsightsPipelineConfiguration',
-                'chimesdkmediapipelines:GetMediaInsightsPipelineConfiguration',
-                'chimesdkmediapipelines:ListMediaInsightsPipelineConfigurations',
-                'chimesdkmediapipelines:UpdateMediaInsightsPipelineConfiguration',
-                'chimesdkmediapipelines:TagResource',
-                'chimesdkmediapipelines:UntagResource',
-                // Needed during rollback/cleanup
-                'chime:ListVoiceConnectors',
-                'chime:GetVoiceConnector',
-                'chime:PutVoiceConnectorStreamingConfiguration',
-                'chime:GetVoiceConnectorStreamingConfiguration',
-                'chime:DeleteVoiceConnectorStreamingConfiguration',
-                'chime-sdk-voice:ListVoiceConnectors',
-                'chime-sdk-voice:GetVoiceConnector',
-                'chime-sdk-voice:PutVoiceConnectorStreamingConfiguration',
-                'chime-sdk-voice:GetVoiceConnectorStreamingConfiguration',
-                'chime-sdk-voice:DeleteVoiceConnectorStreamingConfiguration',
-              ],
-              resources: ['*'],
-            }),
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: ['iam:PassRole'],
-              resources: [
-                mediaPipelineRole.roleArn,
-                `arn:aws:iam::${this.account}:role/*MediaInsightsPipelineRole*`,
-              ],
-              conditions: {
-                StringEquals: {
-                  'iam:PassedToService': 'mediapipelines.chime.amazonaws.com',
-                },
-              },
-            }),
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: [
-                'kinesis:DescribeStream',
-                'kinesis:DescribeStreamSummary',
-              ],
-              resources: [aiTranscriptStream.streamArn],
-            }),
-          ]),
-        });
-
-        // Ensure the role and its policies are fully created before the pipeline config
-        // The Media Insights Pipeline validates role permissions at creation time
-        mediaPipelineConfig.node.addDependency(mediaPipelineRole);
-
-        // CRITICAL FIX: Ensure Kinesis stream exists before creating the pipeline configuration
-        // Chime SDK validates access to the stream during creation
-        mediaPipelineConfig.node.addDependency(aiTranscriptStream);
-
-        const mediaPipelineConfigArn = mediaPipelineConfig.getResponseField(
-          'MediaInsightsPipelineConfiguration.MediaInsightsPipelineConfigurationArn'
-        );
-
-        // Store Media Insights Pipeline Configuration ARN in SSM for runtime lookup
-        const mediaPipelineConfigParam = new ssm.StringParameter(this, 'MediaInsightsPipelineConfigParam', {
-          parameterName: `/${this.stackName}/MediaInsightsPipelineConfigArn`,
-          stringValue: mediaPipelineConfigArn,
-          description: 'ARN of Media Insights Pipeline Configuration for AI transcription',
-        });
-
-        // Grant the SMA handler access to read the pipeline config and create pipelines
-        smaHandler.addEnvironment('MEDIA_INSIGHTS_PIPELINE_PARAMETER', mediaPipelineConfigParam.parameterName);
-        // Real-time voice transcription uses RecordAudio + S3 + Amazon Transcribe approach.
-        // This works with SipMediaApplicationDialIn phone numbers (unlike VC streaming).
-        // Flow: RecordAudio captures caller speech → S3 → Lambda → Transcribe → Voice AI
-        // The AI_RECORDINGS_BUCKET enables this approach by providing a destination for recordings.
-        if (recordingsBucket) {
-          smaHandler.addEnvironment('AI_RECORDINGS_BUCKET', recordingsBucket.bucketName);
-        }
-        smaHandler.addEnvironment('ENABLE_REAL_TIME_TRANSCRIPTION', 'true');
-        smaHandler.addEnvironment('ENABLE_KVS_STREAMING', 'true'); // Required for meeting-based real-time transcription
-        // Allow RecordAudio fallback if real-time transcripts are not flowing
-        smaHandler.addEnvironment('ENABLE_RECORD_AUDIO_FALLBACK', 'true');
-        smaHandler.addEnvironment('KVS_STREAM_PREFIX', `${this.stackName.toLowerCase()}-call-`);
-        smaHandler.addEnvironment('AWS_ACCOUNT_ID', this.account);
-        mediaPipelineConfigParam.grantRead(smaHandler);
-
-        // Grant SMA handler permissions to create Media Insights Pipelines
-        smaHandler.addToRolePolicy(new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'chime:CreateMediaInsightsPipeline',
-            'chime:DeleteMediaPipeline',
-            'chimesdkmediapipelines:CreateMediaInsightsPipeline',
-            'chimesdkmediapipelines:DeleteMediaPipeline',
-          ],
-          resources: ['*'],
-        }));
-
-        // Grant Kinesis Video Streams permissions for streaming audio
-        smaHandler.addToRolePolicy(new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            // Needed to resolve the full StreamARN (includes /creationTime suffix) before starting Media Insights Pipeline
-            'kinesisvideo:DescribeStream',
-            'kinesisvideo:CreateStream',
-            'kinesisvideo:GetDataEndpoint',
-            'kinesisvideo:PutMedia',
-            'kinesisvideo:TagStream',
-          ],
-          // Kinesis Video Stream ARN format includes /<creationTime> suffix; use wildcard to match both known/unknown creation times.
-          resources: [
-            `arn:aws:kinesisvideo:${this.region}:${this.account}:stream/${this.stackName.toLowerCase()}-call-*/*`,
-            `arn:aws:kinesisvideo:${this.region}:${this.account}:stream/${this.stackName.toLowerCase()}-call-*`,
-            '*', // DescribeStream/CreateStream are often evaluated against '*'
-          ],
-        }));
-
-        // ========================================
-        // VOICE CONNECTOR STREAMING CONFIGURATION
-        // ========================================
-        // Configure Voice Connector to stream audio for transcription
-
-        const vcStreaming = new customResources.AwsCustomResource(this, 'VCStreamingConfig', {
-          onCreate: {
-            service: 'ChimeSDKVoice',
-            action: 'putVoiceConnectorStreamingConfiguration',
-            parameters: {
-              VoiceConnectorId: voiceConnectorId,
-              StreamingConfiguration: {
-                DataRetentionInHours: 1, // Minimum retention
-                Disabled: false,
-                StreamingNotificationTargets: [
-                  {
-                    NotificationTarget: 'EventBridge', // Send streaming events to EventBridge
-                  },
-                ],
-                MediaInsightsConfiguration: {
-                  // Enable Voice Connector-managed call analytics (VC will invoke CreateMediaInsightsPipeline automatically).
-                  // This is the most reliable path and does not depend on EventBridge delivery of streaming status events.
-                  Disabled: false,
-                  ConfigurationArn: mediaPipelineConfigArn,
-                },
-              },
-            },
-            physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-vc-streaming-config`),
-          },
-          onUpdate: {
-            service: 'ChimeSDKVoice',
-            action: 'putVoiceConnectorStreamingConfiguration',
-            parameters: {
-              VoiceConnectorId: voiceConnectorId,
-              StreamingConfiguration: {
-                DataRetentionInHours: 1,
-                Disabled: false,
-                StreamingNotificationTargets: [
-                  {
-                    NotificationTarget: 'EventBridge',
-                  },
-                ],
-                MediaInsightsConfiguration: {
-                  // Enable Voice Connector-managed call analytics (VC will invoke CreateMediaInsightsPipeline automatically).
-                  // This is the most reliable path and does not depend on EventBridge delivery of streaming status events.
-                  Disabled: false,
-                  ConfigurationArn: mediaPipelineConfigArn,
-                },
-              },
-            },
-            physicalResourceId: customResources.PhysicalResourceId.of(`${this.stackName}-vc-streaming-config`),
-          },
-          onDelete: {
-            service: 'ChimeSDKVoice',
-            action: 'deleteVoiceConnectorStreamingConfiguration',
-            parameters: {
-              VoiceConnectorId: voiceConnectorId,
-            },
-            ignoreErrorCodesMatching: '.*NotFound.*|.*ResourceNotFound.*',
-          },
-          role: chimeCustomResourceRole,
-        });
-
-        vcStreaming.node.addDependency(voiceConnector);
-        vcStreaming.node.addDependency(mediaPipelineConfig);
-        // CRITICAL FIX: Also depend on vcTermination if it exists for proper ordering
-        if (vcTermination) {
-          vcStreaming.node.addDependency(vcTermination);
-        }
-
-        new CfnOutput(this, 'MediaInsightsPipelineConfigArn', {
-          value: mediaPipelineConfigArn,
-          description: 'ARN of Media Insights Pipeline Configuration for AI transcription',
-          exportName: `${this.stackName}-MediaInsightsPipelineConfigArn`,
-        });
-
-        // ========================================
-        // VOICE CONNECTOR STREAMING EVENT HANDLER
-        // ========================================
-        // The Voice Connector publishes EventBridge events containing the KVS Stream ARN and start fragment.
-        // We use that to create a Media Insights Pipeline for AI calls without guessing stream names.
-        const vcStreamingEventFn = new lambdaNode.NodejsFunction(this, 'VcStreamingEventFn', {
-          functionName: `${this.stackName}-VcStreamingEvent`,
-          entry: path.join(__dirname, '..', '..', 'services', 'chime', 'vc-streaming-event.ts'),
-          handler: 'handler',
-          runtime: lambda.Runtime.NODEJS_20_X,
-          timeout: Duration.seconds(30),
-          memorySize: 256,
-          environment: {
-            CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-            CHIME_MEDIA_REGION: 'us-east-1',
-            MEDIA_INSIGHTS_PIPELINE_PARAMETER: mediaPipelineConfigParam.parameterName,
-            // Disabled - VC streaming events won't occur with SipMediaApplicationDialIn routing
-            ENABLE_REAL_TIME_TRANSCRIPTION: 'false',
-            // Telephone audio is typically 8kHz; override via env if needed
-            VC_MEDIA_SAMPLE_RATE: '8000',
-            // Default OFF: Voice Connector is configured to start pipelines automatically via MediaInsightsConfiguration.
-            START_MEDIA_PIPELINE_FROM_STREAMING_EVENT: 'false',
-          },
-          logRetention: logs.RetentionDays.ONE_WEEK,
-        });
-
-        this.callQueueTable.grantReadWriteData(vcStreamingEventFn);
-        mediaPipelineConfigParam.grantRead(vcStreamingEventFn);
-
-        vcStreamingEventFn.addToRolePolicy(new iam.PolicyStatement({
-          effect: iam.Effect.ALLOW,
-          actions: [
-            'chime:CreateMediaInsightsPipeline',
-            'chimesdkmediapipelines:CreateMediaInsightsPipeline',
-          ],
-          resources: ['*'],
-        }));
-
-        // Trigger on Voice Connector streaming STARTED events (see AWS docs: "Chime VoiceConnector Streaming Status")
-        // NOTE: Do not filter by voiceConnectorId at the rule level.
-        // Some accounts/environments have multiple Voice Connectors and we want visibility when debugging.
-        // The Lambda itself gates on "isAiCall" and can safely ignore unrelated calls.
-        // Some AWS accounts/regions emit slightly different EventBridge source/detail-type strings.
-        // Match both to ensure we never miss VC streaming status events.
-        const vcStreamingEventSources = ['aws.chime', 'aws.chime-sdk-voice'];
-        const vcStreamingDetailTypes = ['Chime VoiceConnector Streaming Status', 'Chime Voice Connector Streaming Status'];
-
-        const vcStreamingStartedRule = new events.Rule(this, 'VoiceConnectorStreamingStartedRule', {
-          eventPattern: {
-            source: vcStreamingEventSources,
-            detailType: vcStreamingDetailTypes,
-            detail: {
-              streamingStatus: ['STARTED'],
-            },
-          },
-        });
-
-        vcStreamingStartedRule.addTarget(new targets.LambdaFunction(vcStreamingEventFn));
-
-        // Also capture streaming failures so we can quickly flip AI calls into DTMF fallback instead of silence.
-        const vcStreamingFailedRule = new events.Rule(this, 'VoiceConnectorStreamingFailedRule', {
-          eventPattern: {
-            source: vcStreamingEventSources,
-            detailType: vcStreamingDetailTypes,
-            detail: {
-              streamingStatus: ['FAILED'],
-            },
-          },
-        });
-
-        vcStreamingFailedRule.addTarget(new targets.LambdaFunction(vcStreamingEventFn));
-
-        console.log('[ChimeStack] Media Insights Pipeline and Voice Connector Streaming configured');
-      }
-
-      console.log('[ChimeStack] AI Transcript Bridge configured for Voice AI integration');
-    }
+    // ChimeStack no longer hosts AI voice conversations, AI-number ingress, or real-time transcription pipelines.
+    // AI calling is provided by Amazon Connect + Lex (see connect-lex-ai-stack.ts).
 
     // ========================================
     // 13. CloudWatch Alarms for Monitoring

@@ -1,8 +1,12 @@
 import https from 'https';
+import { randomBytes } from 'crypto';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand, ScanCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { SQSClient, SendMessageBatchCommand } from '@aws-sdk/client-sqs';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { ChimeSDKVoiceClient, CreateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
+import { ChimeSDKMeetingsClient, CreateMeetingCommand, DeleteMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
+import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { v4 as uuidv4 } from 'uuid';
 import { SQSEvent } from 'aws-lambda';
 import { parse as parseCsv } from 'csv-parse/sync';
@@ -55,11 +59,28 @@ const sqsClient = new SQSClient({});
 const lambdaClient = new LambdaClient({});
 const sms = new (PinpointSMSVoiceV2Client as any)({});
 
+// Chime SDK clients (for outbound marketing calls)
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
+const SMA_ID_MAP_PARAMETER_NAME = process.env.SMA_ID_MAP_PARAMETER_NAME || '';
+const chimeMeetingsClient = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
+const chimeVoiceClient = new ChimeSDKVoiceClient({ region: CHIME_MEDIA_REGION });
+const ssmClient = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
+
 const SCHEDULES_TABLE = process.env.SCHEDULES_TABLE || process.env.SCHEDULER || 'SCHEDULER';
 const TEMPLATES_TABLE = process.env.TEMPLATES_TABLE || 'Templates';
 const QUERIES_TABLE = process.env.QUERIES_TABLE || 'SQLQueries-V3';
 const EMAIL_ANALYTICS_TABLE = process.env.EMAIL_ANALYTICS_TABLE || '';
 const EMAIL_QUEUE_URL = process.env.EMAIL_QUEUE_URL || '';
+const VOICE_CALL_ANALYTICS_TABLE = process.env.VOICE_CALL_ANALYTICS_TABLE || '';
+
+// Consent Forms scheduling (requires access to ConsentFormData stack tables)
+const CONSENT_FORM_TEMPLATES_TABLE_NAME = process.env.CONSENT_FORM_TEMPLATES_TABLE_NAME || '';
+const CONSENT_FORM_INSTANCES_TABLE_NAME = process.env.CONSENT_FORM_INSTANCES_TABLE_NAME || '';
+const CONSENT_FORM_DEFAULT_TOKEN_TTL_DAYS = (() => {
+  const n = Number(process.env.CONSENT_FORM_DEFAULT_TOKEN_TTL_DAYS || '7');
+  if (!Number.isFinite(n) || n <= 0) return 7;
+  return Math.min(Math.max(Math.floor(n), 1), 365);
+})();
 
 // Batch size for SQS SendMessageBatch (max 10)
 const SQS_BATCH_SIZE = 10;
@@ -69,6 +90,39 @@ const CONSOLIDATED_SFTP_HOST = process.env.CONSOLIDATED_SFTP_HOST || '';
 
 // Cache for clinic credentials (populated on demand from DynamoDB)
 const clinicCredsCache: Record<string, ClinicCreds> = {};
+
+// SMA ID Map cache (loaded from SSM once per warm Lambda)
+let cachedSmaIdMap: Record<string, string> | null = null;
+
+async function getSmaIdMap(): Promise<Record<string, string>> {
+  if (cachedSmaIdMap) return cachedSmaIdMap;
+
+  if (!SMA_ID_MAP_PARAMETER_NAME) {
+    console.warn('[QueueConsumer/CALL] No SMA_ID_MAP_PARAMETER_NAME configured; CALL notifications will be skipped');
+    cachedSmaIdMap = {};
+    return cachedSmaIdMap;
+  }
+
+  try {
+    const response = await ssmClient.send(new GetParameterCommand({ Name: SMA_ID_MAP_PARAMETER_NAME }));
+    if (response.Parameter?.Value) {
+      cachedSmaIdMap = JSON.parse(response.Parameter.Value);
+      console.log('[QueueConsumer/CALL] Loaded SMA ID Map from SSM:', Object.keys(cachedSmaIdMap || {}).length, 'entries');
+      return cachedSmaIdMap || {};
+    }
+  } catch (error) {
+    console.error('[QueueConsumer/CALL] Failed to load SMA ID Map from SSM:', error);
+  }
+
+  cachedSmaIdMap = {};
+  return cachedSmaIdMap;
+}
+
+async function getSmaIdForClinic(clinicId: string): Promise<string | undefined> {
+  const map = await getSmaIdMap();
+  if (map[clinicId]) return map[clinicId];
+  return map['default'] || Object.values(map)[0];
+}
 
 /**
  * Get clinic credentials from DynamoDB (cached)
@@ -111,6 +165,83 @@ async function fetchTemplateByName(templateName: string): Promise<any | null> {
   const res = await doc.send(new ScanCommand({ TableName: TEMPLATES_TABLE }));
   const items = (res.Items || []) as any[];
   return items.find((t) => String(t.template_name).toLowerCase() === String(templateName).toLowerCase()) || null;
+}
+
+function parseConsentFormIdFromTemplateMessage(templateMessage: string): string | null {
+  const raw = String(templateMessage || '').trim();
+  const m =
+    /^consentform\s*:\s*(.+)$/i.exec(raw) ||
+    /^consent-form\s*:\s*(.+)$/i.exec(raw) ||
+    /^consent_forms\s*:\s*(.+)$/i.exec(raw);
+  const id = String(m?.[1] || '').trim();
+  return id || null;
+}
+
+async function fetchConsentFormTemplateById(consentFormId: string): Promise<any | null> {
+  if (!CONSENT_FORM_TEMPLATES_TABLE_NAME) return null;
+  if (!consentFormId) return null;
+  const res = await doc.send(new GetCommand({
+    TableName: CONSENT_FORM_TEMPLATES_TABLE_NAME,
+    Key: { consent_form_id: consentFormId },
+  }));
+  return (res.Item as any) || null;
+}
+
+function generateConsentFormToken(): string {
+  // URL-safe token for patient-facing links
+  return randomBytes(32).toString('base64url');
+}
+
+function buildConsentFormSigningUrl(websiteLink: string | undefined, token: string): string {
+  const base = String(websiteLink || '').trim().replace(/\/+$/g, '');
+  if (!base) return `https://dentistinconcord.com/consent-form/${token}`;
+  return `${base}/consent-form/${token}`;
+}
+
+async function createConsentFormInstanceForSchedule(args: {
+  clinicId: string;
+  patNum: number;
+  consentFormId: string;
+  template: any;
+  scheduleId?: string;
+}): Promise<{ instanceId: string; token: string; signingUrl: string; expiresAtSeconds: number }> {
+  if (!CONSENT_FORM_INSTANCES_TABLE_NAME) {
+    throw new Error('Missing CONSENT_FORM_INSTANCES_TABLE_NAME');
+  }
+
+  const instanceId = uuidv4();
+  const token = generateConsentFormToken();
+  const nowIso = new Date().toISOString();
+  const expiresAtSeconds =
+    Math.floor(Date.now() / 1000) + CONSENT_FORM_DEFAULT_TOKEN_TTL_DAYS * 24 * 60 * 60;
+
+  const clinicConfig = await getClinicConfig(args.clinicId);
+  const signingUrl = buildConsentFormSigningUrl(clinicConfig?.websiteLink, token);
+
+  const item: any = {
+    instance_id: instanceId,
+    token,
+    clinicId: args.clinicId,
+    patNum: args.patNum,
+    consent_form_id: args.consentFormId,
+    templateName: String(args.template?.templateName || args.template?.template_name || ''),
+    language: String(args.template?.language || 'en'),
+    elements: Array.isArray(args.template?.elements) ? args.template.elements : [],
+    status: 'sent',
+    created_at: nowIso,
+    sent_at: nowIso,
+    expires_at: expiresAtSeconds,
+    created_by: 'schedule',
+    signing_url: signingUrl,
+  };
+  if (args.scheduleId) item.scheduleId = args.scheduleId;
+
+  await doc.send(new PutCommand({
+    TableName: CONSENT_FORM_INSTANCES_TABLE_NAME,
+    Item: item,
+  }));
+
+  return { instanceId, token, signingUrl, expiresAtSeconds };
 }
 
 async function fetchRcsTemplateById(clinicId: string, templateId: string): Promise<any | null> {
@@ -313,11 +444,61 @@ function extractEmailAndPhone(row: any): { email?: string; phone?: string } {
   return { email, phone };
 }
 
+function extractPatNum(row: any): number | undefined {
+  const tryParse = (value: any): number | undefined => {
+    let s = String(value ?? '').trim();
+    if (!s) return undefined;
+    // Strip surrounding quotes (CSV parsing with quote:false keeps them)
+    if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1).trim();
+    const n = Number(s);
+    if (!Number.isFinite(n) || n <= 0) return undefined;
+    return Math.floor(n);
+  };
+
+  // Common field names
+  const directCandidates = [
+    (row as any)?.PatNum,
+    (row as any)?.patNum,
+    (row as any)?.PATNUM,
+    (row as any)?.PatientId,
+    (row as any)?.patientId,
+    (row as any)?.patient_id,
+    (row as any)?.pat_num,
+    (row as any)?.ChartNumber,
+    (row as any)?.chartNumber,
+    (row as any)?.ChartNum,
+    (row as any)?.chartnum,
+  ];
+  for (const c of directCandidates) {
+    const n = tryParse(c);
+    if (n) return n;
+  }
+
+  // Fallback: scan keys
+  for (const [k, v] of Object.entries(row || {})) {
+    const key = String(k).toLowerCase();
+    if (
+      key === 'patnum' ||
+      key.includes('patnum') ||
+      key === 'patientid' ||
+      key.includes('patientid') ||
+      key.includes('chartnumber') ||
+      key.includes('chartnum')
+    ) {
+      const n = tryParse(v);
+      if (n) return n;
+    }
+  }
+
+  return undefined;
+}
+
 function normalizePhone(p: string): string | undefined {
   const digits = (p || '').replace(/[^\d]/g, '');
   if (digits.length === 10) return `+1${digits}`;
   if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (digits.startsWith('+') && digits.length > 8) return digits;
+  // NOTE: `digits` never includes '+'. Keep this for backward compatibility, but it won't be hit.
+  if ((p || '').startsWith('+') && digits.length > 8) return `+${digits}`;
   return undefined;
 }
 
@@ -334,6 +515,114 @@ async function sendSms({ clinicId, to, body }: { clinicId: string; to: string; b
     MessageType: 'TRANSACTIONAL',
   });
   await sms.send(cmd);
+}
+
+type SendMarketingCallArgs = {
+  clinicId: string;
+  fromPhoneNumber: string;
+  toPhoneNumber: string;
+  message: string;
+  voiceId?: string;
+  engine?: 'standard' | 'neural';
+  languageCode?: string;
+  scheduleId?: string;
+  templateName?: string;
+  patNum?: string;
+  patientName?: string;
+};
+
+async function sendMarketingCall(args: SendMarketingCallArgs): Promise<void> {
+  const smaId = await getSmaIdForClinic(args.clinicId);
+  if (!smaId) {
+    throw new Error(`[QueueConsumer/CALL] No SMA ID found for clinic "${args.clinicId}" (and no default SMA configured)`);
+  }
+
+  // Create an ephemeral meeting for this call (required by marketing outbound call flow)
+  const externalMeetingIdBase = `mkt-${args.clinicId}-${Date.now()}`;
+  const externalMeetingId = externalMeetingIdBase.slice(0, 64);
+
+  const meetingRes = await chimeMeetingsClient.send(new CreateMeetingCommand({
+    ClientRequestToken: uuidv4(),
+    MediaRegion: CHIME_MEDIA_REGION,
+    ExternalMeetingId: externalMeetingId,
+  }));
+
+  const meetingId = meetingRes.Meeting?.MeetingId;
+  if (!meetingId) {
+    throw new Error('[QueueConsumer/CALL] Failed to create Chime meeting (missing MeetingId)');
+  }
+
+  try {
+    const callRes = await chimeVoiceClient.send(new CreateSipMediaApplicationCallCommand({
+      FromPhoneNumber: args.fromPhoneNumber,
+      ToPhoneNumber: args.toPhoneNumber,
+      SipMediaApplicationId: smaId,
+      ArgumentsMap: {
+        callType: 'MarketingOutbound',
+        clinicId: String(args.clinicId),
+        fromClinicId: String(args.clinicId),
+        scheduleId: String(args.scheduleId || ''),
+        templateName: String(args.templateName || ''),
+        meetingId: String(meetingId),
+        patNum: String(args.patNum || ''),
+        patientName: String(args.patientName || ''),
+        voice_message: String(args.message || ''),
+        voice_voiceId: String(args.voiceId || ''),
+        voice_engine: String(args.engine || 'neural'),
+        voice_languageCode: String(args.languageCode || 'en-US'),
+        toPhoneNumber: String(args.toPhoneNumber),
+        fromPhoneNumber: String(args.fromPhoneNumber),
+      },
+    }));
+
+    const transactionId = callRes?.SipMediaApplicationCall?.TransactionId;
+    console.log('[QueueConsumer/CALL] Started marketing outbound call', {
+      clinicId: args.clinicId,
+      to: args.toPhoneNumber,
+      from: args.fromPhoneNumber,
+      meetingId,
+      transactionId,
+    });
+
+    // Best-effort: store voice call analytics record for Sent/Analytics tabs
+    if (VOICE_CALL_ANALYTICS_TABLE && transactionId) {
+      try {
+        const now = new Date();
+        const ttl = Math.floor(now.getTime() / 1000) + (365 * 24 * 60 * 60);
+        await doc.send(new PutCommand({
+          TableName: VOICE_CALL_ANALYTICS_TABLE,
+          Item: {
+            callId: transactionId,
+            clinicId: args.clinicId,
+            scheduleId: args.scheduleId || '',
+            templateName: args.templateName || '',
+            patNum: args.patNum || '',
+            patientName: args.patientName || '',
+            recipientPhone: args.toPhoneNumber,
+            fromPhoneNumber: args.fromPhoneNumber,
+            meetingId,
+            status: 'INITIATED',
+            startedAt: now.toISOString(),
+            voiceId: args.voiceId || '',
+            voiceEngine: args.engine || 'neural',
+            voiceLanguageCode: args.languageCode || 'en-US',
+            source: 'schedule',
+            ttl,
+          }
+        }));
+      } catch (analyticsErr) {
+        console.warn('[QueueConsumer/CALL] Failed to store voice call analytics (non-fatal):', analyticsErr);
+      }
+    }
+  } catch (err) {
+    // If call initiation fails, cleanup meeting here since inbound-router won't receive events
+    try {
+      await chimeMeetingsClient.send(new DeleteMeetingCommand({ MeetingId: meetingId }));
+    } catch (cleanupErr) {
+      console.warn('[QueueConsumer/CALL] Failed to cleanup meeting after call initiation failure:', cleanupErr);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -600,15 +889,166 @@ async function enqueueEmailBatch(tasks: EmailQueueTask[]): Promise<void> {
   }));
 }
 
+async function processConsentFormScheduleTask(args: {
+  scheduleId: string;
+  clinicId: string;
+  consentFormId: string;
+  sql: string;
+  hasEmailType: boolean;
+  hasSmsType: boolean;
+}): Promise<void> {
+  const { scheduleId, clinicId, consentFormId, sql, hasEmailType, hasSmsType } = args;
+
+  if (!CONSENT_FORM_TEMPLATES_TABLE_NAME || !CONSENT_FORM_INSTANCES_TABLE_NAME) {
+    console.warn(
+      `[ConsentForms/Schedule] Missing env vars (CONSENT_FORM_TEMPLATES_TABLE_NAME / CONSENT_FORM_INSTANCES_TABLE_NAME). Skipping schedule ${scheduleId}.`
+    );
+    return;
+  }
+
+  if (!hasEmailType && !hasSmsType) {
+    console.warn(
+      `[ConsentForms/Schedule] No supported notificationTypes (EMAIL/SMS) for schedule ${scheduleId}. Skipping.`
+    );
+    return;
+  }
+
+  const cfTemplate = await fetchConsentFormTemplateById(consentFormId);
+  if (!cfTemplate) {
+    console.warn(
+      `[ConsentForms/Schedule] Consent form template not found: consentFormId=${consentFormId} (schedule ${scheduleId}).`
+    );
+    return;
+  }
+
+  const tmplName =
+    String(cfTemplate.templateName || cfTemplate.template_name || 'Consent Form').trim() || 'Consent Form';
+  const lang = String(cfTemplate.language || 'en').trim();
+
+  const rows = await runOpenDentalQuery({ clinicId, sql });
+
+  let instancesCreated = 0;
+  let emailsEnqueued = 0;
+  let smsSent = 0;
+  let skippedNoPatNum = 0;
+  let skippedNoContact = 0;
+  let errors = 0;
+
+  const emailTasksToEnqueue: EmailQueueTask[] = [];
+  const seenPatNums = new Set<number>();
+
+  for (const row of rows) {
+    const patNum = extractPatNum(row);
+    if (!patNum) {
+      skippedNoPatNum++;
+      continue;
+    }
+    if (seenPatNums.has(patNum)) continue;
+    seenPatNums.add(patNum);
+
+    const { email, phone } = extractEmailAndPhone(row);
+    const recipientEmail = hasEmailType ? email : undefined;
+    const recipientPhone = hasSmsType ? phone : undefined;
+
+    if (!recipientEmail && !recipientPhone) {
+      skippedNoContact++;
+      continue;
+    }
+
+    try {
+      const instance = await createConsentFormInstanceForSchedule({
+        clinicId,
+        patNum,
+        consentFormId,
+        template: cfTemplate,
+        scheduleId,
+      });
+      instancesCreated++;
+
+      const signingUrl = instance.signingUrl;
+      const langBadge = lang ? ` (${lang})` : '';
+
+      const smsText = `Please sign your ${tmplName}${langBadge} consent form: ${signingUrl}`;
+      const emailSubject = `Consent Form: ${tmplName}`;
+      const emailText = `Please review and sign your consent form: ${signingUrl}`;
+      const emailHtml = `
+        <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+          <p>Please review and sign your consent form:</p>
+          <p><a href="${signingUrl}" target="_blank" rel="noopener noreferrer">${signingUrl}</a></p>
+          <p>If you have any questions, please contact the office.</p>
+        </div>
+      `.trim();
+
+      if (recipientEmail) {
+        emailTasksToEnqueue.push({
+          trackingId: '',
+          clinicId,
+          recipientEmail,
+          subject: emailSubject,
+          htmlBody: emailHtml,
+          textBody: emailText,
+          templateName: `ConsentForm:${consentFormId}`,
+          scheduleId,
+        });
+
+        if (emailTasksToEnqueue.length >= SQS_BATCH_SIZE) {
+          await enqueueEmailBatch(emailTasksToEnqueue);
+          emailsEnqueued += emailTasksToEnqueue.length;
+          emailTasksToEnqueue.length = 0;
+        }
+      }
+
+      if (recipientPhone) {
+        try {
+          await sendSms({ clinicId, to: recipientPhone, body: smsText });
+          smsSent++;
+        } catch (smsError) {
+          errors++;
+          console.error(
+            `[ConsentForms/Schedule] Failed to send SMS to ${recipientPhone} (patNum=${patNum}, schedule=${scheduleId}):`,
+            smsError
+          );
+        }
+      }
+    } catch (err) {
+      errors++;
+      console.error(
+        `[ConsentForms/Schedule] Failed to create/send for patNum=${patNum} (schedule=${scheduleId}):`,
+        err
+      );
+    }
+  }
+
+  if (emailTasksToEnqueue.length > 0) {
+    await enqueueEmailBatch(emailTasksToEnqueue);
+    emailsEnqueued += emailTasksToEnqueue.length;
+  }
+
+  await markRanForClinic(scheduleId, clinicId);
+
+  console.log(
+    `[ConsentForms/Schedule] Completed schedule ${scheduleId} for clinic ${clinicId}: ` +
+      `${instancesCreated} instances, ${emailsEnqueued} emails enqueued, ${smsSent} SMS sent, ` +
+      `${skippedNoPatNum} skipped(no PatNum), ${skippedNoContact} skipped(no contact), ${errors} errors ` +
+      `from ${rows.length} rows`
+  );
+}
+
 async function processScheduleTask(task: ScheduleTask): Promise<void> {
   const { scheduleId, clinicId, queryTemplate, templateMessage, notificationTypes, timeZone } = task;
   
   console.log(`Processing schedule ${scheduleId} for clinic ${clinicId} (${timeZone})`);
 
   // Determine types once (used for both fetching and sending)
-  const hasEmailType = notificationTypes.includes('EMAIL');
-  const hasSmsType = notificationTypes.includes('SMS');
-  const hasRcsType = notificationTypes.includes('RCS') || notificationTypes.includes('rcs');
+  const normalizedTypes = (notificationTypes || []).map((t) => String(t).toUpperCase());
+  const hasEmailType = normalizedTypes.includes('EMAIL');
+  const hasSmsType = normalizedTypes.includes('SMS');
+  const hasRcsType = normalizedTypes.includes('RCS');
+  const hasCallType =
+    normalizedTypes.includes('CALL') ||
+    normalizedTypes.includes('VOICE') ||
+    normalizedTypes.includes('VOICE_CALL') ||
+    normalizedTypes.includes('PHONE_CALL');
 
   // Fetch the SQL query
   const sql = await fetchQueryByName(queryTemplate);
@@ -617,11 +1057,26 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
     return;
   }
 
+  // Consent Form schedules are encoded via templateMessage prefix:
+  //   templateMessage = "consentForm:<consent_form_id>"
+  const consentFormId = parseConsentFormIdFromTemplateMessage(templateMessage);
+  if (consentFormId) {
+    await processConsentFormScheduleTask({
+      scheduleId,
+      clinicId,
+      consentFormId,
+      sql,
+      hasEmailType,
+      hasSmsType,
+    });
+    return;
+  }
+
   // Fetch templates:
   // - Email/SMS schedules use TemplatesStack (templateMessage = template_name)
   // - RCS schedules prefer RcsStack templates table (templateMessage = templateId)
   let template: any | null = null;
-  if (hasEmailType || hasSmsType) {
+  if (hasEmailType || hasSmsType || hasCallType) {
     template = await fetchTemplateByName(templateMessage);
   }
 
@@ -635,7 +1090,7 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   }
 
   // Validate template availability per notification type
-  if ((hasEmailType || hasSmsType) && !template) {
+  if ((hasEmailType || hasSmsType || hasCallType) && !template) {
     console.warn(`Missing TemplatesStack template for schedule ${scheduleId}: templateMessage=${templateMessage}`);
     return;
   }
@@ -650,12 +1105,24 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
     }
   }
 
+  // Validate voice template content if CALL notifications are enabled
+  const voiceTemplateText: string | undefined = template?.voice_message || template?.text_message;
+  if (hasCallType && !voiceTemplateText) {
+    console.warn(`Missing voice_message/text_message for CALL schedule ${scheduleId}: templateMessage=${templateMessage}`);
+    // If CALL is the only notification type, abort the schedule; otherwise keep processing other channels
+    if (!hasEmailType && !hasSmsType && !hasRcsType) {
+      return;
+    }
+  }
+
   // Run the OpenDental query for this clinic
   const rows = await runOpenDentalQuery({ clinicId, sql });
   
   let emailsEnqueued = 0;
   let smsSent = 0;
   let rcsSent = 0;
+  let callsStarted = 0;
+  let callsFailed = 0;
 
   // Collect email tasks to enqueue in batches
   const emailTasksToEnqueue: EmailQueueTask[] = [];
@@ -720,6 +1187,22 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   }
   
   console.log(`Enqueued ${emailsEnqueued} emails to email queue for ${clinicId}`);
+
+  // Resolve clinic caller ID for outbound CALL notifications (best-effort)
+  let fromPhoneNumber: string | undefined;
+  if (hasCallType && voiceTemplateText) {
+    try {
+      const clinicConfig = await getClinicConfig(clinicId);
+      if (clinicConfig?.phoneNumber) {
+        fromPhoneNumber = normalizePhone(String(clinicConfig.phoneNumber)) || String(clinicConfig.phoneNumber);
+      }
+      if (!fromPhoneNumber) {
+        console.warn(`[QueueConsumer/CALL] Missing clinic phoneNumber for clinic ${clinicId}; skipping CALL notifications`);
+      }
+    } catch (err) {
+      console.warn(`[QueueConsumer/CALL] Failed to load clinic config for caller ID; skipping CALL notifications`, err);
+    }
+  }
 
   // Process SMS and RCS directly (usually lower volume, keep simple)
   const resolvedRcs = hasRcsType
@@ -814,12 +1297,58 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
         console.error(`Failed to send SMS to ${phone}:`, error);
       }
     }
+
+    // Voice marketing calls (CALL/VOICE)
+    if (hasCallType && voiceTemplateText && fromPhoneNumber) {
+      try {
+        const templateContext = await buildTemplateContext(clinicId, row);
+        const patNum =
+          String(
+            (row as any)?.PatNum ??
+              (row as any)?.patNum ??
+              (row as any)?.PATNUM ??
+              (row as any)?.patientId ??
+              (row as any)?.PatientId ??
+              ''
+          ).trim() || undefined;
+        const patientName =
+          (templateContext['patient_name'] || '').trim() ||
+          [templateContext['first_name'], templateContext['last_name']].filter(Boolean).join(' ').trim() ||
+          undefined;
+        const renderedVoice = renderTemplate(voiceTemplateText, templateContext).trim();
+        if (!renderedVoice) {
+          console.warn(`[QueueConsumer/CALL] Rendered voice message is empty; skipping call to ${phone}`);
+        } else {
+          await sendMarketingCall({
+            clinicId,
+            fromPhoneNumber,
+            toPhoneNumber: phone,
+            message: renderedVoice,
+            voiceId: template?.voice_voiceId || 'Joanna',
+            engine: (template?.voice_engine as 'standard' | 'neural') || 'neural',
+            languageCode: template?.voice_languageCode || 'en-US',
+            scheduleId,
+            templateName: templateMessage,
+            patNum,
+            patientName,
+          });
+          callsStarted++;
+        }
+      } catch (error) {
+        callsFailed++;
+        console.error(`Failed to start CALL to ${phone}:`, error);
+      }
+    }
   }
 
   // Mark the schedule as run for this clinic
   await markRanForClinic(scheduleId, clinicId);
   
-  console.log(`Completed schedule ${scheduleId} for clinic ${clinicId}: ${emailsEnqueued} emails enqueued, ${smsSent} SMS sent, ${rcsSent} RCS sent from ${rows.length} rows`);
+  console.log(
+    `Completed schedule ${scheduleId} for clinic ${clinicId}: ` +
+      `${emailsEnqueued} emails enqueued, ${smsSent} SMS sent, ${rcsSent} RCS sent, ` +
+      `${callsStarted} calls started (${callsFailed} failed) from ${rows.length} rows`
+  );
 }
 
 export const handler = async (event: SQSEvent) => {

@@ -59,8 +59,22 @@ function isDueLocal(schedule: any, now: Date, timeZone: string, lastRunAtIso?: s
   if (freq === 'once' && scheduleDate) {
     const dateParts = scheduleDate.split('-').map((x: string) => parseInt(x, 10));
     if (dateParts.length === 3) {
-      // Format is DD-MM-YYYY
-      const [schedDay, schedMonth, schedYear] = dateParts;
+      // Support both:
+      // - YYYY-MM-DD (HTML <input type="date">)
+      // - DD-MM-YYYY (legacy)
+      const firstPart = scheduleDate.split('-')[0] || '';
+      let schedYear: number, schedMonth: number, schedDay: number;
+      if (firstPart.length === 4) {
+        [schedYear, schedMonth, schedDay] = dateParts; // YYYY-MM-DD
+      } else {
+        [schedDay, schedMonth, schedYear] = dateParts; // DD-MM-YYYY
+      }
+
+      if ([schedYear, schedMonth, schedDay].some((n) => Number.isNaN(n))) {
+        console.warn(`[isDueLocal] Invalid "once" schedule date format for ${schedule.id}: "${scheduleDate}"`);
+        return false;
+      }
+
       const scheduledDateKey = schedYear * 10000 + schedMonth * 100 + schedDay;
       const todayKey = nowL.year * 10000 + nowL.month * 100 + nowL.day;
       

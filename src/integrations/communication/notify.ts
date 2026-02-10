@@ -2,6 +2,9 @@ import https from 'https';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, ScanCommand, QueryCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { ChimeSDKVoiceClient, CreateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
+import { ChimeSDKMeetingsClient, CreateMeetingCommand, DeleteMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
+import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import {
   getUserPermissions,
@@ -12,13 +15,14 @@ import {
   PermissionType,
   UserPermissions,
 } from '../../shared/utils/permissions-helper';
-import { 
-  getClinicConfig, 
-  getAllClinicConfigs, 
-  ClinicConfig 
+import {
+  getClinicConfig,
+  getAllClinicConfigs,
+  ClinicConfig
 } from '../../shared/utils/secrets-helper';
 import { renderTemplate, buildTemplateContext } from '../../shared/utils/clinic-placeholders';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
+import { randomUUID } from 'crypto';
 import {
   isUnsubscribed,
   generateUnsubscribeLink,
@@ -44,6 +48,39 @@ const ENV_VARS = REQUIRED_ENV_VARS.reduce((acc, key) => {
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ses = new SESv2Client({});
 const sms = new (PinpointSMSVoiceV2Client as any)({});
+
+// Chime outbound calling (Marketing Voice Calls)
+const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
+const SMA_ID_MAP_PARAMETER_NAME = process.env.SMA_ID_MAP_PARAMETER_NAME || '';
+const VOICE_CALL_ANALYTICS_TABLE = process.env.VOICE_CALL_ANALYTICS_TABLE || '';
+const chimeMeetings = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
+const chimeVoice = new ChimeSDKVoiceClient({ region: CHIME_MEDIA_REGION });
+const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
+
+let cachedSmaIdMap: Record<string, string> | null = null;
+async function getSmaIdMap(): Promise<Record<string, string>> {
+  if (cachedSmaIdMap) return cachedSmaIdMap;
+  if (!SMA_ID_MAP_PARAMETER_NAME) {
+    console.warn('[Notify/CALL] SMA_ID_MAP_PARAMETER_NAME not configured; CALL notifications will fail');
+    cachedSmaIdMap = {};
+    return cachedSmaIdMap;
+  }
+  try {
+    const resp = await ssm.send(new GetParameterCommand({ Name: SMA_ID_MAP_PARAMETER_NAME }));
+    cachedSmaIdMap = resp.Parameter?.Value ? JSON.parse(resp.Parameter.Value) : {};
+    return cachedSmaIdMap || {};
+  } catch (err) {
+    console.error('[Notify/CALL] Failed to load SMA ID map from SSM:', err);
+    cachedSmaIdMap = {};
+    return cachedSmaIdMap;
+  }
+}
+
+async function getSmaIdForClinic(clinicId: string): Promise<string | undefined> {
+  const map = await getSmaIdMap();
+  if (map[clinicId]) return map[clinicId];
+  return map['default'] || Object.values(map)[0];
+}
 
 // Clinic lookup helpers - fetch from DynamoDB via secrets-helper
 async function getClinicSesIdentityArn(clinicId: string): Promise<string | undefined> {
@@ -117,7 +154,7 @@ async function processNotification(event: APIGatewayProxyEvent, body: any, clini
   // Required field validation
   if (!input.patNum) errors.push('PatNum is required');
   if (input.notificationTypes.length === 0) errors.push('At least one notification type is required');
-  
+
   // Validate content - either template or custom content is required
   if (!hasTemplateOrCustom) {
     errors.push('Either templateMessage or custom content (customEmailSubject/customEmailHtml/customSmsText) is required');
@@ -128,7 +165,7 @@ async function processNotification(event: APIGatewayProxyEvent, body: any, clini
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(input.email)) errors.push('Invalid email format');
   }
-  
+
   if (input.notificationTypes.includes('SMS') && input.phone) {
     if (input.phone.length < 10) errors.push('Invalid phone number format');
   }
@@ -148,8 +185,8 @@ async function processNotification(event: APIGatewayProxyEvent, body: any, clini
     sentBy: sentBy,
     notificationTypes: input.notificationTypes,
     templateName: input.templateName || 'custom',
-    recipient: { 
-      firstName: input.firstName, 
+    recipient: {
+      firstName: input.firstName,
       lastName: input.lastName,
       email: input.email,
       phone: input.phone
@@ -193,6 +230,7 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
   const customEmailSubject = String(body.customEmailSubject || '').trim();
   const customEmailHtml = String(body.customEmailHtml || body.customEmailBody || '').trim();
   const customSmsText = String(body.customSmsText || body.textMessage || '').trim();
+  const customVoiceText = String(body.customVoiceText || '').trim();
 
   // Validate required fields
   if (!patNum) return http(400, { error: 'PatNum is required' }, event);
@@ -204,6 +242,7 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
   // Determine if we're using template or custom content
   const isCustomEmail = !templateMessage && (!!customEmailSubject || !!customEmailHtml);
   const isCustomSms = !templateMessage && !!customSmsText;
+  const isCustomCall = !templateMessage && !!customVoiceText;
 
   // Load template if provided (only when not using custom content)
   let template: any = null;
@@ -220,6 +259,9 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
   }
   if (notificationTypes.includes('SMS') && !template && !isCustomSms) {
     return http(400, { error: 'Either templateMessage or customSmsText is required for SMS' }, event);
+  }
+  if (notificationTypes.includes('CALL') && !template && !isCustomCall) {
+    return http(400, { error: 'Either templateMessage or customVoiceText is required for CALL' }, event);
   }
 
   const results: any = { email: null, sms: null, skipped: [] };
@@ -277,11 +319,11 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
         const unsubscribeFooter = generateEmailUnsubscribeFooter(unsubscribeLink, clinicName);
         htmlStr = htmlStr + unsubscribeFooter;
 
-        await sendEmail({ 
-          clinicId, 
-          to: email, 
-          subject: subjectStr, 
-          html: htmlStr || textAltStr, 
+        await sendEmail({
+          clinicId,
+          to: email,
+          subject: subjectStr,
+          html: htmlStr || textAltStr,
           text: textAltStr || htmlStr,
           patNum,
           templateName: templateMessage || 'custom',
@@ -303,8 +345,15 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
           sentBy,
           status: 'SENT'
         });
-      } catch (error) {
-        console.error('Failed to send email:', error);
+      } catch (error: any) {
+        console.error('Failed to send email:', {
+          clinicId,
+          to: email,
+          errorName: error?.name,
+          errorMessage: error?.message,
+          errorCode: error?.$metadata?.httpStatusCode,
+          requestId: error?.$metadata?.requestId,
+        });
         await storeNotification({
           patNum,
           clinicId,
@@ -314,7 +363,7 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
           sentBy,
           status: 'FAILED'
         });
-        return http(500, { error: 'Failed to send email notification' }, event);
+        return http(500, { error: 'Failed to send email notification', details: error?.message || 'Unknown error' }, event);
       }
     }
   }
@@ -388,6 +437,147 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
         });
         return http(500, { error: 'Failed to send SMS notification' }, event);
       }
+    }
+  }
+
+  if (notificationTypes.includes('CALL')) {
+    // Determine recipient phone
+    let phoneRaw = String(body.toPhone || body.phone || body.phoneNumber || body.CALL || '').trim();
+    if (!phoneRaw) {
+      // Best-effort fallback to OpenDental lookup when phone isn't supplied
+      try {
+        const contact = await fetchPatientContact(clinicId, patNum);
+        phoneRaw = String(contact.phone || '').trim();
+      } catch (err) {
+        console.warn('[Notify/CALL] Failed to fetch patient contact (non-fatal):', err);
+      }
+    }
+    const toPhone = normalizePhone(phoneRaw);
+    if (!toPhone) return http(400, { error: 'No phone provided for CALL' }, event);
+
+    // Caller ID (clinic phone number)
+    const clinicConfig = await getClinicConfig(clinicId);
+    const fromPhone = normalizePhone(String(clinicConfig?.phoneNumber || clinicConfig?.clinicPhone || ''));
+    if (!fromPhone) return http(400, { error: `Clinic ${clinicId} does not have a valid outbound phoneNumber configured` }, event);
+
+    // Content (template or custom)
+    let callText: string;
+    if (isCustomCall) {
+      callText = renderTemplateString(customVoiceText, mergedCtx);
+    } else {
+      const tplText = String(template?.voice_message || template?.text_message || '');
+      callText = renderTemplateString(tplText, mergedCtx);
+    }
+    callText = String(callText || '').trim();
+    if (!callText) return http(400, { error: 'No CALL content provided (template.voice_message or customVoiceText)' }, event);
+
+    // Voice selection
+    const voiceId = String(body.voiceId || template?.voice_voiceId || 'Joanna').trim() || 'Joanna';
+    const engineRaw = String(body.voiceEngine || template?.voice_engine || 'neural').toLowerCase();
+    const voiceEngine = engineRaw === 'standard' ? 'standard' : 'neural';
+    const voiceLanguageCode = String(body.voiceLanguageCode || template?.voice_languageCode || 'en-US').trim() || 'en-US';
+
+    const smaId = await getSmaIdForClinic(clinicId);
+    if (!smaId) {
+      return http(500, { error: `No SIP Media Application configured for clinic ${clinicId}` }, event);
+    }
+
+    // Create ephemeral meeting and place SMA outbound call
+    const externalMeetingId = `mkt-call-${clinicId}-${patNum}-${Date.now()}`.slice(0, 64);
+    const meetingRes = await chimeMeetings.send(new CreateMeetingCommand({
+      ClientRequestToken: randomUUID(),
+      MediaRegion: CHIME_MEDIA_REGION,
+      ExternalMeetingId: externalMeetingId,
+    }));
+    const meetingId = meetingRes.Meeting?.MeetingId;
+    if (!meetingId) {
+      return http(500, { error: 'Failed to create meeting for CALL' }, event);
+    }
+
+    try {
+      const callRes = await chimeVoice.send(new CreateSipMediaApplicationCallCommand({
+        FromPhoneNumber: fromPhone,
+        ToPhoneNumber: toPhone,
+        SipMediaApplicationId: smaId,
+        ArgumentsMap: {
+          callType: 'MarketingOutbound',
+          clinicId: String(clinicId),
+          fromClinicId: String(clinicId),
+          meetingId: String(meetingId),
+          patNum: String(patNum),
+          patientName: String([fname, lname].filter(Boolean).join(' ')),
+          templateName: String(templateMessage || 'custom'),
+          sentBy: String(sentBy),
+          voice_message: callText,
+          voice_voiceId: String(voiceId),
+          voice_engine: String(voiceEngine),
+          voice_languageCode: String(voiceLanguageCode),
+          toPhoneNumber: String(toPhone),
+          fromPhoneNumber: String(fromPhone),
+        },
+      }));
+
+      const callId = callRes?.SipMediaApplicationCall?.TransactionId;
+      results.call = { to: toPhone, callId };
+
+      // Store notification record (best-effort)
+      await storeNotification({
+        patNum,
+        clinicId,
+        type: 'CALL',
+        phone: toPhone,
+        message: callText,
+        templateName: templateMessage || 'custom',
+        sentBy,
+        status: 'SENT',
+      }).catch((err) => console.warn('[Notify/CALL] Failed to store notification record (non-fatal):', err));
+
+      // Store analytics record (best-effort)
+      if (VOICE_CALL_ANALYTICS_TABLE && callId) {
+        const now = new Date();
+        const ttl = Math.floor(now.getTime() / 1000) + (365 * 24 * 60 * 60);
+        await ddb.send(new PutCommand({
+          TableName: VOICE_CALL_ANALYTICS_TABLE,
+          Item: {
+            callId,
+            clinicId,
+            patNum,
+            patientName: String([fname, lname].filter(Boolean).join(' ')),
+            recipientPhone: toPhone,
+            fromPhoneNumber: fromPhone,
+            templateName: templateMessage || 'custom',
+            status: 'INITIATED',
+            startedAt: now.toISOString(),
+            voiceId,
+            voiceEngine,
+            voiceLanguageCode,
+            meetingId,
+            sentBy,
+            source: 'send',
+            ttl,
+          }
+        }));
+      }
+    } catch (err: any) {
+      // Cleanup meeting if call initiation fails (SMA won't see it)
+      try {
+        await chimeMeetings.send(new DeleteMeetingCommand({ MeetingId: meetingId }));
+      } catch (cleanupErr) {
+        console.warn('[Notify/CALL] Failed to cleanup meeting after call failure:', cleanupErr);
+      }
+
+      console.error('Failed to start CALL:', err);
+      await storeNotification({
+        patNum,
+        clinicId,
+        type: 'CALL',
+        phone: toPhone,
+        message: callText,
+        templateName: templateMessage || 'custom',
+        sentBy,
+        status: 'FAILED',
+      }).catch(() => undefined);
+      return http(500, { error: 'Failed to start CALL notification' }, event);
     }
   }
 
@@ -613,6 +803,11 @@ function extractEmailAndPhone(row: any): { email?: string; phone?: string } {
   return { email, phone };
 }
 
+// SES tag values only allow alphanumeric ASCII, '_', '-', '.', '@'
+function sanitizeTagValue(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_\-\.@]/g, '_');
+}
+
 interface SendEmailOptions {
   clinicId: string;
   to: string;
@@ -634,11 +829,11 @@ async function sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
   const { clinicId, to, subject, html, text, patNum, templateName, sentBy, unsubscribeLink } = options;
   const identityArn = await getClinicSesIdentityArn(clinicId);
   if (!identityArn) return { success: false };
-  
+
   // Use the clinic's verified email address instead of no-reply
   const clinicEmail = await getClinicEmail(clinicId);
   let from: string;
-  
+
   if (!clinicEmail) {
     // Fallback to no-reply if clinic email is not found
     const fromDomain = identityArn.split(':identity/')[1] || 'todaysdentalinsights.com';
@@ -646,7 +841,7 @@ async function sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
   } else {
     from = clinicEmail;
   }
-  
+
   const configurationSetName = process.env.SES_CONFIGURATION_SET_NAME;
 
   // Generate List-Unsubscribe headers if unsubscribe link is provided
@@ -656,38 +851,67 @@ async function sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
     listUnsubscribeHeaders['List-Unsubscribe'] = listUnsubscribe;
     listUnsubscribeHeaders['List-Unsubscribe-Post'] = listUnsubscribePost;
   }
-  
+
+  // Build the SendEmailCommand
+  const simpleContent: any = {
+    Subject: { Data: subject },
+    Body: {
+      Html: { Data: html },
+      Text: { Data: text || html.replace(/<[^>]+>/g, ' ') }
+    },
+  };
+
+  // Only include Headers if there are unsubscribe headers
+  // Note: SES v2 'Headers' in Simple content requires SES v2 API support
+  if (Object.keys(listUnsubscribeHeaders).length > 0) {
+    simpleContent.Headers = Object.entries(listUnsubscribeHeaders).map(([name, value]) => ({
+      Name: name,
+      Value: value,
+    }));
+  }
+
   const cmd = new SendEmailCommand({
     FromEmailAddress: from,
     FromEmailAddressIdentityArn: identityArn,
     Destination: { ToAddresses: [to] },
-    Content: { 
-      Simple: { 
-        Subject: { Data: subject }, 
-        Body: { 
-          Html: { Data: html }, 
-          Text: { Data: text || html.replace(/<[^>]+>/g, ' ') } 
-        },
-        // Add List-Unsubscribe headers for RFC 8058 compliance
-        Headers: Object.entries(listUnsubscribeHeaders).map(([name, value]) => ({
-          Name: name,
-          Value: value,
-        })),
-      } 
-    },
+    Content: { Simple: simpleContent },
     // Add configuration set for event tracking
     ConfigurationSetName: configurationSetName,
     // Add tags for tracking context
     EmailTags: [
-      { Name: 'clinicId', Value: clinicId },
-      ...(patNum ? [{ Name: 'patNum', Value: patNum }] : []),
-      ...(templateName ? [{ Name: 'templateName', Value: templateName }] : []),
+      { Name: 'clinicId', Value: sanitizeTagValue(clinicId) },
+      ...(patNum ? [{ Name: 'patNum', Value: sanitizeTagValue(patNum) }] : []),
+      ...(templateName ? [{ Name: 'templateName', Value: sanitizeTagValue(templateName) }] : []),
     ],
   });
-  
-  const response = await ses.send(cmd);
+
+  let response;
+  try {
+    response = await ses.send(cmd);
+  } catch (err: any) {
+    // If the error is due to unsupported Headers field, retry without it
+    if (err?.name === 'ValidationException' && simpleContent.Headers) {
+      console.warn('[sendEmail] SES rejected Headers field, retrying without List-Unsubscribe headers');
+      delete simpleContent.Headers;
+      const retryCmd = new SendEmailCommand({
+        FromEmailAddress: from,
+        FromEmailAddressIdentityArn: identityArn,
+        Destination: { ToAddresses: [to] },
+        Content: { Simple: simpleContent },
+        ConfigurationSetName: configurationSetName,
+        EmailTags: [
+          { Name: 'clinicId', Value: sanitizeTagValue(clinicId) },
+          ...(patNum ? [{ Name: 'patNum', Value: sanitizeTagValue(patNum) }] : []),
+          ...(templateName ? [{ Name: 'templateName', Value: sanitizeTagValue(templateName) }] : []),
+        ],
+      });
+      response = await ses.send(retryCmd);
+    } else {
+      throw err;
+    }
+  }
   const messageId = response.MessageId;
-  
+
   // Create initial tracking record in email analytics table
   if (messageId) {
     await createEmailTrackingRecord({
@@ -700,7 +924,7 @@ async function sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
       sentBy,
     });
   }
-  
+
   return { messageId, success: true };
 }
 
@@ -715,10 +939,10 @@ async function createEmailTrackingRecord(record: {
 }): Promise<void> {
   const EMAIL_ANALYTICS_TABLE = process.env.EMAIL_ANALYTICS_TABLE;
   if (!EMAIL_ANALYTICS_TABLE) return;
-  
+
   const now = new Date();
   const ttl = Math.floor(now.getTime() / 1000) + (365 * 24 * 60 * 60); // 1 year TTL
-  
+
   try {
     await ddb.send(new PutCommand({
       TableName: EMAIL_ANALYTICS_TABLE,
@@ -756,7 +980,7 @@ async function sendSms({ clinicId, to, body }: { clinicId: string; to: string; b
 async function storeNotification(notification: {
   patNum: string;
   clinicId: string;
-  type: 'EMAIL' | 'SMS';
+  type: 'EMAIL' | 'SMS' | 'CALL';
   email?: string;
   phone?: string;
   subject?: string;

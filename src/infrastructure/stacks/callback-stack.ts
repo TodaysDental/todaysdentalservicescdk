@@ -7,12 +7,7 @@ import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
-// Use clinic-config.json for CDK synthesis (non-sensitive data only)
-import clinicConfigData from '../configs/clinic-config.json';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
-
-// Alias for backward compatibility
-const clinicsJson = clinicConfigData;
 
 export interface CallbackStackProps extends StackProps {
   // Authorizer imported via CloudFormation export
@@ -108,7 +103,7 @@ export class CallbackStack extends Stack {
     // ===========================================
     // CALLBACK DYNAMODB TABLES
     // ===========================================
-    
+
     // We'll create individual tables for each clinic using the existing pattern
     // Each clinic gets its own todaysdentalinsights-callback-{clinicId} table
     const tablePrefix = 'todaysdentalinsights-callback-';
@@ -136,7 +131,7 @@ export class CallbackStack extends Stack {
 
     // Add GSI for status-based queries
     defaultCallbackTable.addGlobalSecondaryIndex({
-      indexName: 'StatusIndex', 
+      indexName: 'StatusIndex',
       partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'calledBack', type: dynamodb.AttributeType.STRING },
     });
@@ -156,12 +151,8 @@ export class CallbackStack extends Stack {
         REGION: Stack.of(this).region,
         TABLE_PREFIX: tablePrefix,
         DEFAULT_TABLE: defaultCallbackTable.tableName,
-        ALLOWED_ORIGINS: [
-          'https://todaysdentalinsights.com',
-          ...((clinicsJson as any[])
-            .map(c => String((c as any).websiteLink))
-            .filter(Boolean))
-        ].join(','),
+        // CORS origins are now dynamically loaded from DynamoDB via shared/utils/cors.ts
+        // The Lambda uses getAllClinicConfigs() from secrets-helper to fetch clinic websites
       },
     });
     applyTags(callbackLambda, { Function: 'callback' });
@@ -172,7 +163,7 @@ export class CallbackStack extends Stack {
     callbackLambda.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'dynamodb:PutItem',
-        'dynamodb:UpdateItem', 
+        'dynamodb:UpdateItem',
         'dynamodb:GetItem',
         'dynamodb:Scan',
         'dynamodb:Query'
@@ -187,6 +178,15 @@ export class CallbackStack extends Stack {
         // Default table
         defaultCallbackTable.tableArn,
         `${defaultCallbackTable.tableArn}/index/*`,
+      ],
+    }));
+
+    // Grant read access to ClinicConfig table for dynamic CORS origin validation
+    // The Lambda uses getAllClinicConfigs() from secrets-helper to fetch clinic website URLs
+    callbackLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:Scan'],
+      resources: [
+        `arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/TodaysDentalInsights-ClinicConfig`,
       ],
     }));
 
@@ -210,19 +210,19 @@ export class CallbackStack extends Stack {
     });
 
     const corsErrorHeaders = getCorsErrorHeaders();
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
       restApi: callbackApi,
       type: apigw.ResponseType.DEFAULT_4XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault5XX', {
       restApi: callbackApi,
       type: apigw.ResponseType.DEFAULT_5XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseUnauthorized', {
       restApi: callbackApi,
       type: apigw.ResponseType.UNAUTHORIZED,
@@ -232,7 +232,7 @@ export class CallbackStack extends Stack {
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
     const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
-    
+
     // Create authorizer for this stack's API
     const authorizer = new apigw.RequestAuthorizer(this, 'CallbackAuthorizer', {
       handler: authorizerFn,

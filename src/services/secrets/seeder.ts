@@ -26,6 +26,88 @@ const CLINIC_SECRETS_TABLE = process.env.CLINIC_SECRETS_TABLE!;
 const GLOBAL_SECRETS_TABLE = process.env.GLOBAL_SECRETS_TABLE!;
 const CLINIC_CONFIG_TABLE = process.env.CLINIC_CONFIG_TABLE!;
 
+/**
+ * Escape raw control characters that appear inside JSON string literals.
+ *
+ * This repairs common copy/paste issues where a JSON string value (most often
+ * `private_key`) contains literal newlines or other control characters, which
+ * makes `JSON.parse()` throw `Bad control character in string literal`.
+ *
+ * NOTE: This intentionally ONLY escapes control characters while we are inside
+ * a JSON string (between quotes), leaving formatting whitespace (newlines outside
+ * strings) untouched.
+ */
+function escapeControlCharsInJsonStringLiterals(jsonText: string): string {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < jsonText.length; i++) {
+    const ch = jsonText[i]!;
+
+    if (inString) {
+      if (escaped) {
+        out += ch;
+        escaped = false;
+        continue;
+      }
+
+      if (ch === '\\') {
+        out += ch;
+        escaped = true;
+        continue;
+      }
+
+      if (ch === '"') {
+        out += ch;
+        inString = false;
+        continue;
+      }
+
+      // Escape raw control characters inside string literals
+      if (ch === '\n') { out += '\\n'; continue; }
+      if (ch === '\r') { out += '\\r'; continue; }
+      if (ch === '\t') { out += '\\t'; continue; }
+
+      const code = ch.charCodeAt(0);
+      if (code < 0x20) {
+        out += `\\u${code.toString(16).padStart(4, '0')}`;
+        continue;
+      }
+
+      out += ch;
+      continue;
+    }
+
+    // Not in a string
+    if (ch === '"') {
+      out += ch;
+      inString = true;
+      continue;
+    }
+
+    out += ch;
+  }
+
+  return out;
+}
+
+function sanitizeFcmServiceAccountJson(value: string): { value: string; repaired: boolean } {
+  try {
+    JSON.parse(value);
+    return { value, repaired: false };
+  } catch {
+    const repaired = escapeControlCharsInJsonStringLiterals(value);
+    // Validate the repaired JSON; if still invalid, keep original
+    try {
+      JSON.parse(repaired);
+      return { value: repaired, repaired: true };
+    } catch {
+      return { value, repaired: false };
+    }
+  }
+}
+
 interface ClinicSecret {
   clinicId: string;
   openDentalDeveloperKey: string;
@@ -121,13 +203,35 @@ async function seedClinicSecrets(): Promise<number> {
 async function seedGlobalSecrets(): Promise<number> {
   console.log(`[Seeder] Seeding ${globalSecretsData.length} global secrets...`);
 
-  const items = (globalSecretsData as GlobalSecret[]).map(secret => ({
-    secretId: secret.secretId,
-    secretType: secret.secretType,
-    value: secret.value,
-    metadata: secret.metadata || {},
-    updatedAt: new Date().toISOString(),
-  }));
+  const items = (globalSecretsData as GlobalSecret[]).map((secret) => {
+    let value = secret.value;
+
+    // Special-case: FCM service account must be valid JSON (parsed later by push lambdas).
+    // If the config contains a copy/paste newline inside a string literal, repair it here.
+    if (secret.secretId === 'fcm' && secret.secretType === 'service_account') {
+      const sanitized = sanitizeFcmServiceAccountJson(secret.value);
+      value = sanitized.value;
+      if (sanitized.repaired) {
+        console.warn('[Seeder] Repaired invalid fcm/service_account JSON (escaped control characters in string literals)');
+      } else {
+        // If it's still invalid, keep the original but warn loudly (push will be disabled until fixed).
+        try {
+          JSON.parse(secret.value);
+        } catch (e: any) {
+          console.error('[Seeder] fcm/service_account is not valid JSON. Push notifications will be disabled until fixed.');
+          console.error('[Seeder] Parse error:', e?.message || String(e));
+        }
+      }
+    }
+
+    return {
+      secretId: secret.secretId,
+      secretType: secret.secretType,
+      value,
+      metadata: secret.metadata || {},
+      updatedAt: new Date().toISOString(),
+    };
+  });
 
   await batchWriteItems(GLOBAL_SECRETS_TABLE, items);
   return items.length;
