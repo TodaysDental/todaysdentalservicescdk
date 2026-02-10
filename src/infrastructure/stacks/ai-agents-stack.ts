@@ -139,6 +139,14 @@ export interface AiAgentsStackProps extends StackProps {
    */
   bedrockAgentAliasId?: string;
 
+  // ========================================
+  // AMAZON CONNECT AI CALL INTEGRATION
+  // ========================================
+  /** Amazon Connect instance ID for AI outbound calls */
+  connectInstanceId?: string;
+  /** Outbound contact flow ID for AI calls (from ConnectLexAiStack) */
+  outboundContactFlowId?: string;
+
   /**
    * Kinesis stream name for AI transcript analytics.
    */
@@ -1655,6 +1663,9 @@ export class AiAgentsStack extends Stack {
         CLINICS_TABLE: clinicsTableName,
         // SMA ID Map stored in SSM due to CloudFormation 1024 char limit
         SMA_ID_MAP_PARAMETER_NAME: smaIdMapParameterName,
+        // Amazon Connect for AI outbound calls (primary path)
+        CONNECT_INSTANCE_ID: props.connectInstanceId || '',
+        OUTBOUND_CONTACT_FLOW_ID: props.outboundContactFlowId || '',
       },
     });
     applyTags(this.outboundExecutorFn, { Function: 'outbound-executor' });
@@ -1687,6 +1698,18 @@ export class AiAgentsStack extends Stack {
       actions: ['chime:CreateSipMediaApplicationCall'],
       resources: [`arn:aws:chime:${this.region}:${this.account}:sma/*`],
     }));
+
+    // Amazon Connect for AI outbound calls
+    if (props.connectInstanceId) {
+      this.outboundExecutorFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['connect:StartOutboundVoiceContact'],
+        resources: [
+          `arn:aws:connect:${this.region}:${this.account}:instance/${props.connectInstanceId}`,
+          `arn:aws:connect:${this.region}:${this.account}:instance/${props.connectInstanceId}/*`,
+        ],
+      }));
+    }
 
     // Bedrock Agent invocation for outbound calls
     this.outboundExecutorFn.addToRolePolicy(new iam.PolicyStatement({
@@ -1731,8 +1754,14 @@ export class AiAgentsStack extends Stack {
         OUTBOUND_CALL_LAMBDA_ARN: this.outboundExecutorFn.functionArn,
         SCHEDULER_ROLE_ARN: this.schedulerRole.roleArn,
         // Bulk scheduling configuration
-        BULK_SCHEDULE_MAX_CALLS: '500', // Maximum calls per bulk request
-        BULK_SCHEDULE_BATCH_SIZE: '25', // Parallel batch size
+        BULK_SCHEDULE_MAX_CALLS: '500',
+        BULK_SCHEDULE_BATCH_SIZE: '25',
+        // Chime integration (fallback)
+        CLINICS_TABLE: clinicsTableName,
+        SMA_ID_MAP_PARAMETER_NAME: smaIdMapParameterName,
+        // Amazon Connect for AI outbound calls (primary path)
+        CONNECT_INSTANCE_ID: props.connectInstanceId || '',
+        OUTBOUND_CONTACT_FLOW_ID: props.outboundContactFlowId || '',
       },
     });
     applyTags(this.outboundSchedulerFn, { Function: 'outbound-scheduler' });

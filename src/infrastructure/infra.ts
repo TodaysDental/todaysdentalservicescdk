@@ -625,6 +625,13 @@ const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesN1'
   // Chime outbound calling (marketing voice campaigns)
   smaIdMapParameterName: `/${CHIME_STACK_NAME}/SmaIdMap`,
   chimeMediaRegion: CHIME_MEDIA_REGION,
+  // Amazon Connect for AI outbound calls (AI_CALL notification type)
+  // NOTE: outboundContactFlowId is initially set to 'pending' because the Connect stack
+  // deploys after this stack and creates the flow via a custom resource.
+  // Once the Connect stack has deployed and the flow is created, update this to the actual flow ID.
+  // You can find it via: aws cloudformation list-exports | grep OutboundFlowId
+  connectInstanceId: '0626aa86-d377-44c8-9311-84e4f230cc72',
+  outboundContactFlowId: '9a66f56c-0d7d-41ad-9447-dda3cf1699ee',
 });
 schedulesStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
 schedulesStack.addDependency(consentFormDataStack); // Explicit - reads/writes Consent Forms tables for scheduling
@@ -735,6 +742,13 @@ const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   webSocketDomainName: 'ws.todaysdentalinsights.com',
   webSocketRegionalDomainName: 'd-1623htv8c4.execute-api.us-east-1.amazonaws.com',
   webSocketRegionalHostedZoneId: 'Z1UJRXOUMOOFQ8',
+
+  // Amazon Connect for AI outbound calls
+  // NOTE: outboundContactFlowId is initially set to 'pending' because the Connect stack
+  // deploys after this stack and creates the flow via a custom resource.
+  // Once the Connect stack has deployed, update this with the actual flow ID.
+  connectInstanceId: '0626aa86-d377-44c8-9311-84e4f230cc72',
+  outboundContactFlowId: '9a66f56c-0d7d-41ad-9447-dda3cf1699ee',
 });
 
 // Add dependencies so AI Agents stack deploys after Chime, Analytics, Chatbot, and ClinicHours

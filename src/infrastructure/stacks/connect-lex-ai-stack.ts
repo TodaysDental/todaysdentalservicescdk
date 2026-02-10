@@ -157,6 +157,7 @@ export class ConnectLexAiStack extends Stack {
   public readonly lexBotAliasId: string;
   public inboundFlowArn: string = '';
   public disconnectFlowArn: string = '';
+  public outboundFlowId: string = '';
 
   constructor(scope: Construct, id: string, props: ConnectLexAiStackProps) {
     super(scope, id, props);
@@ -1150,6 +1151,61 @@ export class ConnectLexAiStack extends Stack {
     this.disconnectFlowArn = disconnectFlow.attrContactFlowArn;
 
     // ========================================
+    // 8. Outbound AI Contact Flow
+    // ========================================
+    // Separate contact flow for outbound AI calls.
+    // Speaks the dynamic ai_voice_prompt greeting, then enters the same
+    // Lex ASR → typing → Lambda → speak loop as the inbound flow.
+    const createOutboundContactFlowFn = new lambdaNode.NodejsFunction(this, 'CreateOutboundContactFlowFn', {
+      functionName: `${this.stackName}-CreateOutboundContactFlow`,
+      entry: path.join(__dirname, '..', '..', 'services', 'connect', 'create-outbound-contact-flow-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      memorySize: 256,
+      logRetention: logs.RetentionDays.ONE_WEEK,
+    });
+    applyTags(createOutboundContactFlowFn, { Function: 'create-outbound-contact-flow' });
+
+    createOutboundContactFlowFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'connect:CreateContactFlow',
+        'connect:UpdateContactFlowContent',
+        'connect:DescribeContactFlow',
+        'connect:ListContactFlows',
+        'connect:DeleteContactFlow',
+      ],
+      resources: ['*'],
+    }));
+
+    const createOutboundContactFlowProvider = new customResources.Provider(this, 'CreateOutboundContactFlowProvider', {
+      onEventHandler: createOutboundContactFlowFn,
+      logRetention: logs.RetentionDays.ONE_WEEK,
+    });
+
+    const outboundFlow = new CustomResource(this, 'OutboundAiFlow', {
+      serviceToken: createOutboundContactFlowProvider.serviceToken,
+      properties: {
+        InstanceId: props.connectInstanceId,
+        FlowName: `${this.stackName}-OutboundAiFlow`,
+        FlowType: 'CONTACT_FLOW',
+        Description: 'AI outbound voice call flow - speaks dynamic prompt then Lex/Bedrock conversation',
+        LexBotAliasArn: lexBotAliasArn,
+        LambdaFunctionArn: this.lexBedrockHookFn.functionArn,
+        KeyboardPromptId: keyboardPromptId,
+        DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
+        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v1`,
+      },
+    });
+    outboundFlow.node.addDependency(disconnectFlow);
+    outboundFlow.node.addDependency(lexIntegration);
+    outboundFlow.node.addDependency(lexHookIntegration);
+    outboundFlow.node.addDependency(keyboardSoundPrompt);
+
+    this.outboundFlowId = outboundFlow.getAttString('ContactFlowId');
+
+    // ========================================
     // OUTPUTS
     // ========================================
     new CfnOutput(this, 'LexBotId', {
@@ -1186,6 +1242,18 @@ export class ConnectLexAiStack extends Stack {
       value: disconnectFlow.attrContactFlowArn,
       description: 'Disconnect Contact Flow ARN',
       exportName: `${this.stackName}-DisconnectFlowArn`,
+    });
+
+    new CfnOutput(this, 'OutboundFlowId', {
+      value: outboundFlow.getAttString('ContactFlowId'),
+      description: 'Outbound AI Contact Flow ID (for StartOutboundVoiceContact)',
+      exportName: `${this.stackName}-OutboundFlowId`,
+    });
+
+    new CfnOutput(this, 'OutboundFlowArn', {
+      value: outboundFlow.getAttString('ContactFlowArn'),
+      description: 'Outbound AI Contact Flow ARN',
+      exportName: `${this.stackName}-OutboundFlowArn`,
     });
 
     // Async pattern outputs

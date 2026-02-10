@@ -79,8 +79,8 @@ async function generateAiResponse(userMessage: string): Promise<string> {
       ],
       system: [{ text: SYSTEM_PROMPT }],
       inferenceConfig: {
-        maxTokens: 200, // Keep responses short for phone calls
-        temperature: 0.7,
+        maxTokens: 100, // Keep responses short for phone calls
+        temperature: 0.8,
       },
     }), { abortSignal: controller.signal });
 

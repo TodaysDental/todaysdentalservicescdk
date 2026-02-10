@@ -7,17 +7,18 @@ import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { ChimeSDKVoiceClient, CreateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import { ChimeSDKMeetingsClient, CreateMeetingCommand, DeleteMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import { ConnectClient, StartOutboundVoiceContactCommand } from '@aws-sdk/client-connect';
 import { v4 as uuidv4 } from 'uuid';
 import { SQSEvent } from 'aws-lambda';
 import { parse as parseCsv } from 'csv-parse/sync';
 import { Client as SSH2Client } from 'ssh2';
 import { buildTemplateContext, renderTemplate } from '../../shared/utils/clinic-placeholders';
-import { 
-  getClinicConfig, 
-  getClinicSecrets, 
+import {
+  getClinicConfig,
+  getClinicSecrets,
   getGlobalSecret,
-  ClinicConfig, 
-  ClinicSecrets 
+  ClinicConfig,
+  ClinicSecrets
 } from '../../shared/utils/secrets-helper';
 // Use require to avoid type resolution issues if types aren't present
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -72,6 +73,11 @@ const QUERIES_TABLE = process.env.QUERIES_TABLE || 'SQLQueries-V3';
 const EMAIL_ANALYTICS_TABLE = process.env.EMAIL_ANALYTICS_TABLE || '';
 const EMAIL_QUEUE_URL = process.env.EMAIL_QUEUE_URL || '';
 const VOICE_CALL_ANALYTICS_TABLE = process.env.VOICE_CALL_ANALYTICS_TABLE || '';
+
+// Amazon Connect (for AI outbound calls via Connect + Bedrock)
+const CONNECT_INSTANCE_ID = process.env.CONNECT_INSTANCE_ID || '';
+const OUTBOUND_CONTACT_FLOW_ID = process.env.OUTBOUND_CONTACT_FLOW_ID || '';
+const connectClient = CONNECT_INSTANCE_ID ? new ConnectClient({}) : null;
 
 // Consent Forms scheduling (requires access to ConsentFormData stack tables)
 const CONSENT_FORM_TEMPLATES_TABLE_NAME = process.env.CONSENT_FORM_TEMPLATES_TABLE_NAME || '';
@@ -309,9 +315,9 @@ async function runOpenDentalQuery({ clinicId, sql }: { clinicId: string; sql: st
   });
 
   if (csvData.trim() === 'OK') return [];
-  const records = parseCsv(csvData, { 
-    columns: true, 
-    skip_empty_lines: true, 
+  const records = parseCsv(csvData, {
+    columns: true,
+    skip_empty_lines: true,
     trim: true,
     quote: false,  // Disable quote parsing - OpenDental CSV has malformed quotes in patient names
     relax_column_count: true,  // Handle rows with missing/extra columns
@@ -326,12 +332,12 @@ async function httpRequest(opts: { hostname: string; path: string; method: strin
     if (body) {
       requestHeaders['Content-Length'] = Buffer.byteLength(body).toString();
     }
-    
-    const req = https.request({ 
-      hostname: opts.hostname, 
-      path: opts.path, 
-      method: opts.method, 
-      headers: requestHeaders 
+
+    const req = https.request({
+      hostname: opts.hostname,
+      path: opts.path,
+      method: opts.method,
+      headers: requestHeaders
     }, (res) => {
       let data = '';
       res.on('data', (chunk) => { data += chunk; });
@@ -382,7 +388,7 @@ async function downloadSpecificCsvOnce(opts: { host: string; port: number; usern
         setTimeout(() => {
           const filePath = `${remoteDir}/${filename}`;
           console.log(`Downloading specific file: ${filePath}`);
-          
+
           // First check if the file exists
           sftp.stat(filePath, (statErr: any) => {
             if (statErr) {
@@ -393,10 +399,10 @@ async function downloadSpecificCsvOnce(opts: { host: string; port: number; usern
                 // Look for files matching our clinic pattern
                 const pattern = filename.split('_').slice(0, 2).join('_'); // e.g., "query_clinicId"
                 const matchingFiles = list.filter((f: any) => String(f.filename).includes(pattern) && String(f.filename).endsWith('.csv'));
-                if (matchingFiles.length === 0) { 
-                  clearTimeout(timeout); conn.end(); 
-                  reject(new Error(`No matching CSV files found for pattern: ${pattern}`)); 
-                  return; 
+                if (matchingFiles.length === 0) {
+                  clearTimeout(timeout); conn.end();
+                  reject(new Error(`No matching CSV files found for pattern: ${pattern}`));
+                  return;
                 }
                 const latest = matchingFiles.sort((a: any, b: any) => b.attrs.mtime - a.attrs.mtime)[0];
                 const actualPath = `${remoteDir}/${latest.filename}`;
@@ -405,7 +411,7 @@ async function downloadSpecificCsvOnce(opts: { host: string; port: number; usern
               });
               return;
             }
-            
+
             // File exists, download it
             readCsvFile(sftp, filePath, timeout, conn, resolve, reject);
           });
@@ -804,11 +810,11 @@ async function trackEmailStatus(params: {
   errorMessage?: string;
 }): Promise<string> {
   if (!EMAIL_ANALYTICS_TABLE) return '';
-  
+
   const trackingId = params.messageId || uuidv4();
   const now = new Date().toISOString();
   const ttl = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60); // 1 year TTL
-  
+
   try {
     await doc.send(new PutCommand({
       TableName: EMAIL_ANALYTICS_TABLE,
@@ -835,7 +841,7 @@ async function trackEmailStatus(params: {
 async function markRanForClinic(id: string, clinicId: string) {
   if (!id || !clinicId) return;
   const nowIso = new Date().toISOString();
-  
+
   // First, ensure the map exists (creates empty map if it doesn't exist)
   await doc.send(new UpdateCommand({
     TableName: SCHEDULES_TABLE,
@@ -846,7 +852,7 @@ async function markRanForClinic(id: string, clinicId: string) {
     },
     ExpressionAttributeValues: { ':ts': nowIso, ':emptyMap': {} },
   }));
-  
+
   // Then, set the nested clinic value
   await doc.send(new UpdateCommand({
     TableName: SCHEDULES_TABLE,
@@ -875,14 +881,14 @@ interface EmailQueueTask {
 // Send batch of email tasks to SQS (max 10 per batch)
 async function enqueueEmailBatch(tasks: EmailQueueTask[]): Promise<void> {
   if (!EMAIL_QUEUE_URL || tasks.length === 0) return;
-  
+
   const entries = tasks.map((task, index) => ({
     Id: `${index}`,
     MessageBody: JSON.stringify(task),
     // Group by clinic to help with ordering if needed
     MessageGroupId: undefined, // Standard queue, not FIFO
   }));
-  
+
   await sqsClient.send(new SendMessageBatchCommand({
     QueueUrl: EMAIL_QUEUE_URL,
     Entries: entries,
@@ -1028,15 +1034,15 @@ async function processConsentFormScheduleTask(args: {
 
   console.log(
     `[ConsentForms/Schedule] Completed schedule ${scheduleId} for clinic ${clinicId}: ` +
-      `${instancesCreated} instances, ${emailsEnqueued} emails enqueued, ${smsSent} SMS sent, ` +
-      `${skippedNoPatNum} skipped(no PatNum), ${skippedNoContact} skipped(no contact), ${errors} errors ` +
-      `from ${rows.length} rows`
+    `${instancesCreated} instances, ${emailsEnqueued} emails enqueued, ${smsSent} SMS sent, ` +
+    `${skippedNoPatNum} skipped(no PatNum), ${skippedNoContact} skipped(no contact), ${errors} errors ` +
+    `from ${rows.length} rows`
   );
 }
 
 async function processScheduleTask(task: ScheduleTask): Promise<void> {
   const { scheduleId, clinicId, queryTemplate, templateMessage, notificationTypes, timeZone } = task;
-  
+
   console.log(`Processing schedule ${scheduleId} for clinic ${clinicId} (${timeZone})`);
 
   // Determine types once (used for both fetching and sending)
@@ -1049,6 +1055,9 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
     normalizedTypes.includes('VOICE') ||
     normalizedTypes.includes('VOICE_CALL') ||
     normalizedTypes.includes('PHONE_CALL');
+  const hasAiCallType =
+    normalizedTypes.includes('AI_CALL') ||
+    normalizedTypes.includes('AI_VOICE');
 
   // Fetch the SQL query
   const sql = await fetchQueryByName(queryTemplate);
@@ -1076,7 +1085,7 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   // - Email/SMS schedules use TemplatesStack (templateMessage = template_name)
   // - RCS schedules prefer RcsStack templates table (templateMessage = templateId)
   let template: any | null = null;
-  if (hasEmailType || hasSmsType || hasCallType) {
+  if (hasEmailType || hasSmsType || hasCallType || hasAiCallType) {
     template = await fetchTemplateByName(templateMessage);
   }
 
@@ -1090,7 +1099,7 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   }
 
   // Validate template availability per notification type
-  if ((hasEmailType || hasSmsType || hasCallType) && !template) {
+  if ((hasEmailType || hasSmsType || hasCallType || hasAiCallType) && !template) {
     console.warn(`Missing TemplatesStack template for schedule ${scheduleId}: templateMessage=${templateMessage}`);
     return;
   }
@@ -1110,27 +1119,41 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   if (hasCallType && !voiceTemplateText) {
     console.warn(`Missing voice_message/text_message for CALL schedule ${scheduleId}: templateMessage=${templateMessage}`);
     // If CALL is the only notification type, abort the schedule; otherwise keep processing other channels
-    if (!hasEmailType && !hasSmsType && !hasRcsType) {
+    if (!hasEmailType && !hasSmsType && !hasRcsType && !hasAiCallType) {
       return;
     }
   }
 
+  // Validate AI voice prompt if AI_CALL notifications are enabled
+  const aiVoicePromptTemplate: string | undefined = template?.ai_voice_prompt;
+  if (hasAiCallType && !aiVoicePromptTemplate) {
+    console.warn(`Missing ai_voice_prompt for AI_CALL schedule ${scheduleId}: templateMessage=${templateMessage}`);
+    if (!hasEmailType && !hasSmsType && !hasRcsType && !hasCallType) {
+      return;
+    }
+  }
+  if (hasAiCallType && (!CONNECT_INSTANCE_ID || !OUTBOUND_CONTACT_FLOW_ID || !connectClient)) {
+    console.warn(`[QueueConsumer/AI_CALL] CONNECT_INSTANCE_ID or OUTBOUND_CONTACT_FLOW_ID not configured; skipping AI_CALL`);
+  }
+
   // Run the OpenDental query for this clinic
   const rows = await runOpenDentalQuery({ clinicId, sql });
-  
+
   let emailsEnqueued = 0;
   let smsSent = 0;
   let rcsSent = 0;
   let callsStarted = 0;
   let callsFailed = 0;
+  let aiCallsStarted = 0;
+  let aiCallsFailed = 0;
 
   // Collect email tasks to enqueue in batches
   const emailTasksToEnqueue: EmailQueueTask[] = [];
-  
+
   // Debug: Log why emails might not be processed
   const hasEmailBody = !!template?.email_body;
   console.log(`Email processing check: notificationTypes=${JSON.stringify(notificationTypes)}, hasEmailType=${hasEmailType}, hasEmailBody=${hasEmailBody}`);
-  
+
   if (hasEmailType && hasEmailBody) {
     // Debug: Log first row to check CSV parsing
     if (rows.length > 0) {
@@ -1138,12 +1161,12 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
       const sampleEmail = extractEmailAndPhone(rows[0]);
       console.log(`Sample email extraction: ${JSON.stringify(sampleEmail)}`);
     }
-    
+
     for (const row of rows) {
       const { email } = extractEmailAndPhone(row);
       if (email) {
         const templateContext = await buildTemplateContext(clinicId, row);
-        
+
         // Track as SCHEDULED in analytics table
         const trackingId = await trackEmailStatus({
           clinicId,
@@ -1152,12 +1175,12 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
           templateName: templateMessage,
           status: 'SCHEDULED',
         });
-        
+
         // Render template
         const renderedSubject = renderTemplate(template.email_subject || 'Notification', templateContext);
         const renderedHtml = renderTemplate(template.email_body, templateContext);
         const renderedText = template.text_body ? renderTemplate(template.text_body, templateContext) : undefined;
-        
+
         // Add to batch
         emailTasksToEnqueue.push({
           trackingId,
@@ -1169,7 +1192,7 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
           templateName: templateMessage,
           scheduleId,
         });
-        
+
         // Send batch when we reach SQS limit
         if (emailTasksToEnqueue.length >= SQS_BATCH_SIZE) {
           await enqueueEmailBatch(emailTasksToEnqueue);
@@ -1178,51 +1201,51 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
         }
       }
     }
-    
+
     // Send remaining emails
     if (emailTasksToEnqueue.length > 0) {
       await enqueueEmailBatch(emailTasksToEnqueue);
       emailsEnqueued += emailTasksToEnqueue.length;
     }
   }
-  
+
   console.log(`Enqueued ${emailsEnqueued} emails to email queue for ${clinicId}`);
 
-  // Resolve clinic caller ID for outbound CALL notifications (best-effort)
+  // Resolve clinic caller ID for outbound CALL/AI_CALL notifications (best-effort)
   let fromPhoneNumber: string | undefined;
-  if (hasCallType && voiceTemplateText) {
+  if ((hasCallType && voiceTemplateText) || (hasAiCallType && aiVoicePromptTemplate)) {
     try {
       const clinicConfig = await getClinicConfig(clinicId);
       if (clinicConfig?.phoneNumber) {
         fromPhoneNumber = normalizePhone(String(clinicConfig.phoneNumber)) || String(clinicConfig.phoneNumber);
       }
       if (!fromPhoneNumber) {
-        console.warn(`[QueueConsumer/CALL] Missing clinic phoneNumber for clinic ${clinicId}; skipping CALL notifications`);
+        console.warn(`[QueueConsumer/CALL] Missing clinic phoneNumber for clinic ${clinicId}; skipping CALL/AI_CALL notifications`);
       }
     } catch (err) {
-      console.warn(`[QueueConsumer/CALL] Failed to load clinic config for caller ID; skipping CALL notifications`, err);
+      console.warn(`[QueueConsumer/CALL] Failed to load clinic config for caller ID; skipping CALL/AI_CALL notifications`, err);
     }
   }
 
   // Process SMS and RCS directly (usually lower volume, keep simple)
   const resolvedRcs = hasRcsType
     ? (rcsTemplate
+      ? {
+        body: rcsTemplate.body,
+        richCard: rcsTemplate.richCard,
+        carousel: rcsTemplate.carousel,
+        templateId: rcsTemplate.templateId,
+        templateName: rcsTemplate.name,
+      }
+      : template
         ? {
-            body: rcsTemplate.body,
-            richCard: rcsTemplate.richCard,
-            carousel: rcsTemplate.carousel,
-            templateId: rcsTemplate.templateId,
-            templateName: rcsTemplate.name,
-          }
-        : template
-          ? {
-              body: template.rcs_message || template.text_message,
-              richCard: template.rcs_rich_card,
-              carousel: template.rcs_carousel,
-              templateId: template.template_id || template.id,
-              templateName: template.template_name || templateMessage,
-            }
-          : null)
+          body: template.rcs_message || template.text_message,
+          richCard: template.rcs_rich_card,
+          carousel: template.rcs_carousel,
+          templateId: template.template_id || template.id,
+          templateName: template.template_name || templateMessage,
+        }
+        : null)
     : null;
 
   const hasRcsPayload = !!(
@@ -1230,11 +1253,11 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   );
 
   console.log(`Notification types check: SMS=${hasSmsType}, RCS=${hasRcsType}, types=${JSON.stringify(notificationTypes)}`);
-  
+
   for (const row of rows) {
     const { phone } = extractEmailAndPhone(row);
     if (!phone) continue;
-    
+
     // Build patient data for placeholder replacement
     const patientData: Record<string, string> = {};
     for (const [k, v] of Object.entries(row)) {
@@ -1251,13 +1274,13 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
         patientData[k] = val;
       }
     }
-    
+
     // Send RCS if enabled (prioritize RCS over SMS when both are enabled)
     if (hasRcsType && resolvedRcs && hasRcsPayload) {
       try {
-        const rcsResult = await sendRcs({ 
-          clinicId, 
-          to: phone, 
+        const rcsResult = await sendRcs({
+          clinicId,
+          to: phone,
           body: resolvedRcs.body,
           richCard: resolvedRcs.richCard,
           carousel: resolvedRcs.carousel,
@@ -1266,7 +1289,7 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
           patientData,
           scheduleId,
         });
-        
+
         if (rcsResult.success) {
           rcsSent++;
         } else {
@@ -1305,11 +1328,11 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
         const patNum =
           String(
             (row as any)?.PatNum ??
-              (row as any)?.patNum ??
-              (row as any)?.PATNUM ??
-              (row as any)?.patientId ??
-              (row as any)?.PatientId ??
-              ''
+            (row as any)?.patNum ??
+            (row as any)?.PATNUM ??
+            (row as any)?.patientId ??
+            (row as any)?.PatientId ??
+            ''
           ).trim() || undefined;
         const patientName =
           (templateContext['patient_name'] || '').trim() ||
@@ -1339,15 +1362,93 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
         console.error(`Failed to start CALL to ${phone}:`, error);
       }
     }
+
+    // AI Voice calls via Connect + Bedrock (AI_CALL)
+    if (hasAiCallType && aiVoicePromptTemplate && fromPhoneNumber && connectClient && CONNECT_INSTANCE_ID && OUTBOUND_CONTACT_FLOW_ID) {
+      try {
+        const templateContext = await buildTemplateContext(clinicId, row);
+        const patNum =
+          String(
+            (row as any)?.PatNum ??
+            (row as any)?.patNum ??
+            (row as any)?.PATNUM ??
+            (row as any)?.patientId ??
+            (row as any)?.PatientId ??
+            ''
+          ).trim() || undefined;
+        const patientName =
+          (templateContext['patient_name'] || '').trim() ||
+          [templateContext['first_name'], templateContext['last_name']].filter(Boolean).join(' ').trim() ||
+          undefined;
+        const renderedPrompt = renderTemplate(aiVoicePromptTemplate, templateContext).trim();
+        if (!renderedPrompt) {
+          console.warn(`[QueueConsumer/AI_CALL] Rendered AI voice prompt is empty; skipping call to ${phone}`);
+        } else {
+          const contactResponse = await connectClient.send(
+            new StartOutboundVoiceContactCommand({
+              InstanceId: CONNECT_INSTANCE_ID,
+              ContactFlowId: OUTBOUND_CONTACT_FLOW_ID,
+              DestinationPhoneNumber: phone,
+              SourcePhoneNumber: fromPhoneNumber,
+              Attributes: {
+                ai_voice_prompt: renderedPrompt,
+                patientName: patientName || '',
+                clinicId,
+                scheduleId,
+                callDirection: 'outbound',
+              },
+            })
+          );
+          console.log('[QueueConsumer/AI_CALL] Started AI outbound call', {
+            clinicId,
+            to: phone,
+            from: fromPhoneNumber,
+            contactId: contactResponse.ContactId,
+          });
+          // Best-effort analytics
+          if (VOICE_CALL_ANALYTICS_TABLE && contactResponse.ContactId) {
+            try {
+              const now = new Date();
+              const ttl = Math.floor(now.getTime() / 1000) + (365 * 24 * 60 * 60);
+              await doc.send(new PutCommand({
+                TableName: VOICE_CALL_ANALYTICS_TABLE,
+                Item: {
+                  callId: contactResponse.ContactId,
+                  clinicId,
+                  scheduleId,
+                  templateName: templateMessage,
+                  patNum: patNum || '',
+                  patientName: patientName || '',
+                  recipientPhone: phone,
+                  fromPhoneNumber,
+                  status: 'INITIATED',
+                  startedAt: now.toISOString(),
+                  source: 'ai_call_schedule',
+                  callType: 'AI_CALL',
+                  ttl,
+                },
+              }));
+            } catch (analyticsErr) {
+              console.warn('[QueueConsumer/AI_CALL] Failed to store analytics (non-fatal):', analyticsErr);
+            }
+          }
+          aiCallsStarted++;
+        }
+      } catch (error) {
+        aiCallsFailed++;
+        console.error(`Failed to start AI_CALL to ${phone}:`, error);
+      }
+    }
   }
 
   // Mark the schedule as run for this clinic
   await markRanForClinic(scheduleId, clinicId);
-  
+
   console.log(
     `Completed schedule ${scheduleId} for clinic ${clinicId}: ` +
-      `${emailsEnqueued} emails enqueued, ${smsSent} SMS sent, ${rcsSent} RCS sent, ` +
-      `${callsStarted} calls started (${callsFailed} failed) from ${rows.length} rows`
+    `${emailsEnqueued} emails enqueued, ${smsSent} SMS sent, ${rcsSent} RCS sent, ` +
+    `${callsStarted} calls started (${callsFailed} failed), ` +
+    `${aiCallsStarted} AI calls started (${aiCallsFailed} failed) from ${rows.length} rows`
   );
 }
 
