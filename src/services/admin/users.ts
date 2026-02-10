@@ -497,15 +497,17 @@ async function handleUpdateUser(
     // Then save new staff info
     await saveStaffInfoToDynamoDB(username, detailsToSave);
   }
-  // FIX: When clinicRoles is updated (e.g. hourlyPay changed), sync shared fields
-  // to StaffClinicInfo even if staffDetails/openDentalPerClinic wasn't explicitly provided.
-  // This ensures StaffClinicInfo stays in sync with StaffUser.clinicRoles.
-  else if (STAFF_INFO_TABLE && body.clinicRoles && Array.isArray(body.clinicRoles)) {
+
+  // ALWAYS sync clinicRoles shared fields to StaffClinicInfo table.
+  // This ensures hourlyPay, role, workLocation etc. stay in sync between
+  // StaffUser.clinicRoles and StaffClinicInfo records.
+  if (STAFF_INFO_TABLE && body.clinicRoles && Array.isArray(body.clinicRoles)) {
     const SHARED_FIELDS = [
       'hourlyPay', 'role', 'workLocation',
       'UserNum', 'UserName', 'EmployeeNum', 'employeeName',
       'ProviderNum', 'providerName', 'ClinicNum', 'emailAddress',
-      'IsHidden', 'UserNumCEMT', 'userGroupNums',
+      'IsHidden', 'UserNumCEMT', 'userGroupNums', 'moduleAccess',
+      'openDentalUserNum', 'openDentalUsername', 'employeeNum',
     ];
 
     for (const clinicRole of body.clinicRoles) {
@@ -524,14 +526,14 @@ async function handleUpdateUser(
 
       try {
         // Get existing StaffClinicInfo record (if any)
-        const { Item: existingInfo } = await ddb.send(new GetCommand({
+        const existingResult = await ddb.send(new GetCommand({
           TableName: STAFF_INFO_TABLE!,
           Key: { email: username.toLowerCase(), clinicId: String(clinicRole.clinicId) },
         }));
 
         // Merge: existing record + updated shared fields
         const mergedItem = {
-          ...(existingInfo || {}),
+          ...(existingResult.Item || {}),
           ...updateFields,
           email: username.toLowerCase(),
           clinicId: String(clinicRole.clinicId),
@@ -542,6 +544,8 @@ async function handleUpdateUser(
           TableName: STAFF_INFO_TABLE!,
           Item: mergedItem,
         }));
+
+        console.log(`Synced clinicRole → StaffClinicInfo for ${username} at ${clinicRole.clinicId}, hourlyPay=${updateFields.hourlyPay}`);
       } catch (err) {
         console.error(`Failed to sync clinicRole to StaffClinicInfo for ${username} at ${clinicRole.clinicId}:`, err);
       }
