@@ -70,6 +70,8 @@ interface Template {
   voice_voiceId?: string;       // Polly VoiceId (e.g., Joanna)
   voice_engine?: 'standard' | 'neural';
   voice_languageCode?: string;  // e.g., en-US
+  // AI Voice call (Connect + Bedrock)
+  ai_voice_prompt?: string;     // Opening prompt for AI conversation
   modified_at: string;
   modified_by: string;
   created_at: string;
@@ -154,7 +156,7 @@ async function listTemplates(event: APIGatewayProxyEvent, userPerms: UserPermiss
   const filteredTemplates = allTemplates.filter((template: any) => {
     // If no module specified, treat as accessible (legacy templates)
     if (!template.module) return true;
-    
+
     // Check if user has access to this module
     return accessibleModules.includes(template.module);
   });
@@ -200,7 +202,8 @@ async function createTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     (typeof body.rcs_message === 'string' && body.rcs_message.trim().length > 0) ||
     !!body.rcs_rich_card ||
     !!body.rcs_carousel ||
-    (typeof body.voice_message === 'string' && body.voice_message.trim().length > 0);
+    (typeof body.voice_message === 'string' && body.voice_message.trim().length > 0) ||
+    (typeof body.ai_voice_prompt === 'string' && body.ai_voice_prompt.trim().length > 0);
 
   if (!hasAnyContent) {
     return {
@@ -208,7 +211,7 @@ async function createTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
       headers: getCorsHeaders(event),
       body: JSON.stringify({
         error:
-          'At least one template content field is required (email_body, text_message, rcs_message, rcs_rich_card, rcs_carousel, voice_message)',
+          'At least one template content field is required (email_body, text_message, rcs_message, rcs_rich_card, rcs_carousel, voice_message, ai_voice_prompt)',
       }),
     };
   }
@@ -218,7 +221,7 @@ async function createTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     return {
       statusCode: 400,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         error: 'Module is required',
         availableModules: Array.from(SYSTEM_MODULES),
       }),
@@ -229,7 +232,7 @@ async function createTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     return {
       statusCode: 400,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         error: `Invalid module: ${body.module}`,
         availableModules: Array.from(SYSTEM_MODULES),
       }),
@@ -250,7 +253,7 @@ async function createTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     return {
       statusCode: 403,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         error: `You do not have permission to create templates in the ${body.module} module`,
       }),
     };
@@ -307,6 +310,7 @@ async function createTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     voice_voiceId: body.voice_voiceId || '',
     voice_engine: body.voice_engine,
     voice_languageCode: body.voice_languageCode || '',
+    ai_voice_prompt: body.ai_voice_prompt || '',
     created_at: timestamp,
     modified_at: timestamp,
     modified_by: modifiedBy,
@@ -350,7 +354,8 @@ async function updateTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     (typeof body.rcs_message === 'string' && body.rcs_message.trim().length > 0) ||
     !!body.rcs_rich_card ||
     !!body.rcs_carousel ||
-    (typeof body.voice_message === 'string' && body.voice_message.trim().length > 0);
+    (typeof body.voice_message === 'string' && body.voice_message.trim().length > 0) ||
+    (typeof body.ai_voice_prompt === 'string' && body.ai_voice_prompt.trim().length > 0);
 
   if (!hasAnyContent) {
     return {
@@ -358,7 +363,7 @@ async function updateTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
       headers: getCorsHeaders(event),
       body: JSON.stringify({
         error:
-          'At least one template content field is required (email_body, text_message, rcs_message, rcs_rich_card, rcs_carousel, voice_message)',
+          'At least one template content field is required (email_body, text_message, rcs_message, rcs_rich_card, rcs_carousel, voice_message, ai_voice_prompt)',
       }),
     };
   }
@@ -368,7 +373,7 @@ async function updateTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     return {
       statusCode: 400,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         error: `Invalid module: ${body.module}`,
         availableModules: Array.from(SYSTEM_MODULES),
       }),
@@ -389,7 +394,7 @@ async function updateTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     return {
       statusCode: 403,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         error: `You do not have permission to update templates in the ${body.module} module`,
       }),
     };
@@ -445,6 +450,7 @@ async function updateTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     voice_voiceId: body.voice_voiceId || '',
     voice_engine: body.voice_engine,
     voice_languageCode: body.voice_languageCode || '',
+    ai_voice_prompt: body.ai_voice_prompt || '',
     modified_at: timestamp,
     modified_by: modifiedBy,
     clinic_id: body.clinic_id,
@@ -508,7 +514,7 @@ async function deleteTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
     return {
       statusCode: 403,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         error: `You do not have permission to delete templates in the ${template.module} module`,
       }),
     };
@@ -527,7 +533,7 @@ async function deleteTemplate(event: APIGatewayProxyEvent, userPerms: UserPermis
   return {
     statusCode: 200,
     headers: getCorsHeaders(event),
-    body: JSON.stringify({ 
+    body: JSON.stringify({
       message: 'Template deleted successfully',
       template_id: templateId,
       module: template.module,

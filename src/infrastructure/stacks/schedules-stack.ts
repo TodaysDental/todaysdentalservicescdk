@@ -34,6 +34,10 @@ export interface SchedulesStackProps extends StackProps {
   smaIdMapParameterName?: string;
   /** Chime SDK media region to use for Meetings/Voice (default: us-east-1) */
   chimeMediaRegion?: string;
+  /** Amazon Connect instance ID for AI outbound calls */
+  connectInstanceId?: string;
+  /** Amazon Connect outbound contact flow ID for AI calls */
+  outboundContactFlowId?: string;
 }
 
 export class SchedulesStack extends Stack {
@@ -167,7 +171,7 @@ export class SchedulesStack extends Stack {
     // ========================================
 
     const corsConfig = getCdkCorsConfig();
-    
+
     this.api = new apigw.RestApi(this, 'SchedulesApi', {
       restApiName: 'SchedulesApi',
       description: 'Schedules service API',
@@ -185,19 +189,19 @@ export class SchedulesStack extends Stack {
     });
 
     const corsErrorHeaders = getCorsErrorHeaders();
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
       restApi: this.api,
       type: apigw.ResponseType.DEFAULT_4XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault5XX', {
       restApi: this.api,
       type: apigw.ResponseType.DEFAULT_5XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseUnauthorized', {
       restApi: this.api,
       type: apigw.ResponseType.UNAUTHORIZED,
@@ -207,7 +211,7 @@ export class SchedulesStack extends Stack {
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
     const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
-    
+
     // Create authorizer for this stack's API
     this.authorizer = new apigw.RequestAuthorizer(this, 'SchedulesAuthorizer', {
       handler: authorizerFn,
@@ -251,8 +255,8 @@ export class SchedulesStack extends Stack {
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 512,
       timeout: Duration.seconds(120),
-      bundling: { 
-        format: lambdaNode.OutputFormat.CJS, 
+      bundling: {
+        format: lambdaNode.OutputFormat.CJS,
         target: 'node22',
         externalModules: ['ssh2', 'cpu-features'],  // Native .node binaries can't be bundled
         nodeModules: ['ssh2'],  // Include ssh2 in node_modules for Lambda
@@ -297,8 +301,8 @@ export class SchedulesStack extends Stack {
       memorySize: 512,
       timeout: Duration.minutes(5), // Reduced - only queries patients and enqueues, doesn't send emails
       reservedConcurrentExecutions: 3, // Can increase since we're not hitting SES directly
-      bundling: { 
-        format: lambdaNode.OutputFormat.CJS, 
+      bundling: {
+        format: lambdaNode.OutputFormat.CJS,
         target: 'node22',
         externalModules: ['ssh2', 'cpu-features'],  // Native .node binaries can't be bundled
         nodeModules: ['ssh2'],  // Include ssh2 in node_modules for Lambda
@@ -328,6 +332,9 @@ export class SchedulesStack extends Stack {
         VOICE_CALL_ANALYTICS_TABLE: Fn.importValue('TodaysDentalInsightsNotificationsN1-VoiceCallAnalyticsTableName'),
         // RCS API base URL for sending RCS messages (via public API Gateway endpoint)
         RCS_API_BASE_URL: 'https://apig.todaysdentalinsights.com/rcs',
+        // Amazon Connect for AI outbound calls (AI_CALL notification type)
+        CONNECT_INSTANCE_ID: props.connectInstanceId || '',
+        OUTBOUND_CONTACT_FLOW_ID: props.outboundContactFlowId || '',
       },
     });
     applyTags(this.schedulerQueueConsumerFn, { Function: 'scheduler-consumer' });
@@ -387,6 +394,21 @@ export class SchedulesStack extends Stack {
       resources: ['*'],
     }));
 
+    // ========================================
+    // AMAZON CONNECT AI CALL INTEGRATION (AI_CALL)
+    // ========================================
+    // AI outbound calls use Connect StartOutboundVoiceContact to initiate
+    // calls that go through a Lex/Bedrock-powered contact flow.
+    if (props.connectInstanceId) {
+      this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['connect:StartOutboundVoiceContact'],
+        resources: [
+          `arn:aws:connect:${this.region}:${this.account}:instance/${props.connectInstanceId}`,
+          `arn:aws:connect:${this.region}:${this.account}:instance/${props.connectInstanceId}/*`,
+        ],
+      }));
+    }
+
     // Email Sender Lambda - processes individual email tasks from the email queue
     // High concurrency to maximize throughput while staying under SES rate limits
     // 
@@ -419,7 +441,7 @@ export class SchedulesStack extends Stack {
       actions: ['ses:SendEmail', 'ses:SendRawEmail'],
       resources: ['*'],
     }));
-    
+
     // Grant SES Contact List permissions for subscription management
     // This enables automatic unsubscribe handling via SES
     emailSenderFn.addToRolePolicy(new iam.PolicyStatement({
@@ -434,12 +456,12 @@ export class SchedulesStack extends Stack {
         `arn:aws:ses:${Stack.of(this).region}:${Stack.of(this).account}:contact-list/PatientEmails/*`,
       ],
     }));
-    
+
     emailSenderFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:GetItem'],
       resources: [`arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/TodaysDentalInsightsNotificationsN1-EmailAnalytics`],
     }));
-    
+
     // Grant read access to ClinicConfig table for email branding
     emailSenderFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['dynamodb:GetItem', 'dynamodb:Query'],
@@ -460,14 +482,14 @@ export class SchedulesStack extends Stack {
 
     // Grant permissions to scheduler worker (legacy)
     this.schedulesTable.grantReadWriteData(this.schedulerWorkerFn);
-    
+
     // Grant permissions to queue producer
     this.schedulesTable.grantReadData(this.schedulerQueueProducerFn);
     this.schedulerQueue.grantSendMessages(this.schedulerQueueProducerFn);
-    
+
     // Grant permissions to queue consumer
     this.schedulesTable.grantReadWriteData(this.schedulerQueueConsumerFn);
-    
+
     // Grant read access to external tables
     const templatesTable = dynamodb.Table.fromTableAttributes(this, 'TemplatesTable', {
       tableName: props.templatesTableName,
@@ -478,15 +500,15 @@ export class SchedulesStack extends Stack {
     const clinicHoursTable = dynamodb.Table.fromTableAttributes(this, 'SchedulesClinicHoursTable', {
       tableName: props.clinicHoursTableName,
     });
-    
+
     // Legacy worker permissions
     templatesTable.grantReadData(this.schedulerWorkerFn);
     queriesTable.grantReadData(this.schedulerWorkerFn);
     clinicHoursTable.grantReadData(this.schedulerWorkerFn);
-    
+
     // Queue producer permissions
     clinicHoursTable.grantReadData(this.schedulerQueueProducerFn);
-    
+
     // Queue consumer permissions
     templatesTable.grantReadData(this.schedulerQueueConsumerFn);
     queriesTable.grantReadData(this.schedulerQueueConsumerFn);
@@ -505,7 +527,7 @@ export class SchedulesStack extends Stack {
       });
       consentFormInstancesTable.grantReadWriteData(this.schedulerQueueConsumerFn);
     }
-    
+
     // Grant email analytics table access for tracking scheduled/sent/failed emails
     // Using IAM policy directly since we import by name from cross-stack
     this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({
@@ -562,23 +584,23 @@ export class SchedulesStack extends Stack {
     }
 
     // Grant SES and SMS permissions to legacy worker (kept for compatibility)
-    this.schedulerWorkerFn.addToRolePolicy(new iam.PolicyStatement({ 
-      actions: ['ses:SendEmail', 'ses:SendRawEmail'], 
-      resources: ['*'] 
+    this.schedulerWorkerFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:SendEmail', 'ses:SendRawEmail'],
+      resources: ['*']
     }));
-    this.schedulerWorkerFn.addToRolePolicy(new iam.PolicyStatement({ 
-      actions: ['sms-voice:SendTextMessage'], 
-      resources: ['*'] 
+    this.schedulerWorkerFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['sms-voice:SendTextMessage'],
+      resources: ['*']
     }));
 
     // Grant SES and SMS permissions to queue consumer
-    this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({ 
-      actions: ['ses:SendEmail', 'ses:SendRawEmail'], 
-      resources: ['*'] 
+    this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:SendEmail', 'ses:SendRawEmail'],
+      resources: ['*']
     }));
-    this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({ 
-      actions: ['sms-voice:SendTextMessage'], 
-      resources: ['*'] 
+    this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['sms-voice:SendTextMessage'],
+      resources: ['*']
     }));
 
     // Schedule the queue producer to run every 2 minutes (more frequent since it's lighter)

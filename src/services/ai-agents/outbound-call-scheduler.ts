@@ -28,6 +28,7 @@ import {
   ChimeSDKVoiceClient,
   CreateSipMediaApplicationCallCommand,
 } from '@aws-sdk/client-chime-sdk-voice';
+import { ConnectClient, StartOutboundVoiceContactCommand } from '@aws-sdk/client-connect';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { v4 as uuidv4 } from 'uuid';
@@ -72,6 +73,11 @@ const CLINICS_TABLE = process.env.CLINICS_TABLE || 'Clinics';
 const AGENTS_TABLE = process.env.AGENTS_TABLE || 'AiAgents';
 const SMA_ID_MAP_PARAMETER_NAME = process.env.SMA_ID_MAP_PARAMETER_NAME || '';
 
+// Amazon Connect for AI outbound calls
+const CONNECT_INSTANCE_ID = process.env.CONNECT_INSTANCE_ID || '';
+const OUTBOUND_CONTACT_FLOW_ID = process.env.OUTBOUND_CONTACT_FLOW_ID || '';
+const connectClient = CONNECT_INSTANCE_ID ? new ConnectClient({}) : null;
+
 // High-volume scheduling infrastructure
 const OUTBOUND_CALL_QUEUE_URL = process.env.OUTBOUND_CALL_QUEUE_URL || '';
 const BULK_OUTBOUND_JOBS_TABLE = process.env.BULK_OUTBOUND_JOBS_TABLE || 'BulkOutboundJobs';
@@ -84,17 +90,17 @@ async function getSmaIdMap(): Promise<Record<string, string>> {
   if (cachedSmaIdMap) {
     return cachedSmaIdMap;
   }
-  
+
   if (!SMA_ID_MAP_PARAMETER_NAME) {
     console.warn('[SMA] No SMA_ID_MAP_PARAMETER_NAME configured, returning empty map');
     return {};
   }
-  
+
   try {
     const response = await ssmClient.send(new GetParameterCommand({
       Name: SMA_ID_MAP_PARAMETER_NAME,
     }));
-    
+
     if (response.Parameter?.Value) {
       cachedSmaIdMap = JSON.parse(response.Parameter.Value);
       console.log('[SMA] Loaded SMA ID Map from SSM:', Object.keys(cachedSmaIdMap || {}).length, 'entries');
@@ -103,7 +109,7 @@ async function getSmaIdMap(): Promise<Record<string, string>> {
   } catch (error) {
     console.error('[SMA] Failed to load SMA ID Map from SSM:', error);
   }
-  
+
   return {};
 }
 
@@ -136,35 +142,35 @@ export interface ScheduledCall {
   callId: string;
   clinicId: string;
   agentId: string;
-  
+
   // Target information
   phoneNumber: string;
   patientName?: string;
   patientId?: string;
-  
+
   // Schedule information
   scheduledTime: string; // ISO 8601
   timezone: string;
-  
+
   // Call purpose and script
   purpose: 'appointment_reminder' | 'follow_up' | 'payment_reminder' | 'reengagement' | 'custom';
   customMessage?: string;
   appointmentId?: string;
-  
+
   // Status
   status: 'scheduled' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
   attempts: number;
   maxAttempts: number;
-  
+
   // Results
   callDuration?: number;
   outcome?: 'answered' | 'voicemail' | 'no_answer' | 'busy' | 'failed';
   transcriptSummary?: string;
-  
+
   // EventBridge Scheduler
   schedulerArn?: string;
   schedulerName?: string;
-  
+
   // Audit
   createdAt: string;
   createdBy: string;
@@ -228,10 +234,10 @@ function getNextRetryTime(attempts: number): Date {
     RETRY_CONFIG.BASE_DELAY_MS * Math.pow(RETRY_CONFIG.BACKOFF_MULTIPLIER, attempts),
     RETRY_CONFIG.MAX_DELAY_MS
   );
-  
+
   // Add jitter (±10% of delay) to avoid thundering herd
   const jitter = delay * 0.1 * (Math.random() * 2 - 1);
-  
+
   return new Date(Date.now() + delay + jitter);
 }
 
@@ -292,8 +298,8 @@ function validatePhoneNumber(phoneNumber: string): PhoneValidationResult {
   // Check for blocked prefixes
   for (const prefix of BLOCKED_PREFIXES) {
     if (digitsOnly.startsWith(prefix) || digitsOnly.startsWith('1' + prefix)) {
-      return { 
-        valid: false, 
+      return {
+        valid: false,
         error: `This phone number cannot be used for outbound calls (blocked prefix: ${prefix}).`
       };
     }
@@ -315,7 +321,7 @@ function validatePhoneNumber(phoneNumber: string): PhoneValidationResult {
 
   // Basic country code validation (first 1-3 digits after +)
   const countryDigits = digitsOnly.substring(0, 3);
-  const hasValidCountryCode = VALID_COUNTRY_CODE_PREFIXES.some(prefix => 
+  const hasValidCountryCode = VALID_COUNTRY_CODE_PREFIXES.some(prefix =>
     digitsOnly.startsWith(prefix)
   );
 
@@ -367,6 +373,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return await asyncBulkScheduleCalls(event, userPerms);
     }
 
+    // POST /scheduled-calls/send-now - Immediately initiate an AI call (no scheduling)
+    if (path.endsWith('/scheduled-calls/send-now') && httpMethod === 'POST') {
+      return await sendNow(event, userPerms);
+    }
+
     // GET /bulk-jobs - List bulk jobs for a clinic
     if (path.endsWith('/bulk-jobs') && httpMethod === 'GET') {
       return await listBulkJobs(event, userPerms);
@@ -402,7 +413,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 async function listScheduledCalls(event: APIGatewayProxyEvent, userPerms: any): Promise<APIGatewayProxyResult> {
   const clinicId = event.queryStringParameters?.clinicId;
   const status = event.queryStringParameters?.status;
-  
+
   if (!clinicId) {
     return { statusCode: 400, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'clinicId is required' }) };
   }
@@ -507,7 +518,7 @@ async function createScheduledCall(event: APIGatewayProxyEvent, userPerms: any):
     return {
       statusCode: 400,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         error: 'AI outbound calling is not enabled for this clinic',
         message: 'Enable AI outbound calling in Voice Config before scheduling calls.',
       }),
@@ -541,7 +552,7 @@ async function createScheduledCall(event: APIGatewayProxyEvent, userPerms: any):
     return {
       statusCode: 400,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         error: 'Agent is not ready',
         message: `Agent status is "${agent.bedrockAgentStatus}". Please prepare the agent first.`,
         currentStatus: agent.bedrockAgentStatus,
@@ -559,7 +570,7 @@ async function createScheduledCall(event: APIGatewayProxyEvent, userPerms: any):
 
   // Generate idempotency key for duplicate prevention
   const idempotencyKey = generateIdempotencyKey(body.clinicId, body.phoneNumber, body.scheduledTime, body.purpose);
-  
+
   // Use idempotency key as part of callId to enable conditional put
   // This prevents TOCTOU race condition where two concurrent requests both pass duplicate check
   const callId = `${idempotencyKey.slice(0, 16)}-${uuidv4().slice(0, 8)}`;
@@ -687,11 +698,11 @@ async function createScheduledCall(event: APIGatewayProxyEvent, userPerms: any):
       UpdateExpression: 'SET schedulerArn = :arn',
       ExpressionAttributeValues: { ':arn': scheduleResponse.ScheduleArn },
     }));
-    
+
     scheduledCallWithIdempotency.schedulerArn = scheduleResponse.ScheduleArn;
   } catch (error: any) {
     console.error('Failed to create EventBridge schedule:', error);
-    
+
     // FIX: Rollback the DynamoDB record since we couldn't create the schedule
     try {
       await docClient.send(new UpdateCommand({
@@ -708,7 +719,7 @@ async function createScheduledCall(event: APIGatewayProxyEvent, userPerms: any):
     } catch (rollbackError) {
       console.error('Failed to rollback DynamoDB record:', rollbackError);
     }
-    
+
     return {
       statusCode: 500,
       headers: getCorsHeaders(event),
@@ -788,7 +799,7 @@ async function cancelScheduledCall(event: APIGatewayProxyEvent, userPerms: any, 
 
   // FIX: Delete EventBridge schedule AFTER updating DynamoDB status
   // This prevents orphaned schedules if DynamoDB update fails
-  
+
   // First, update status to cancelled (atomic operation)
   try {
     await docClient.send(new UpdateCommand({
@@ -815,16 +826,16 @@ async function cancelScheduledCall(event: APIGatewayProxyEvent, userPerms: any, 
 
   // Now delete EventBridge schedule(s)
   const schedulesToDelete = [call.schedulerName];
-  
+
   // Also try to delete any retry schedulers
   for (let i = 1; i <= call.maxAttempts; i++) {
     schedulesToDelete.push(`outbound-call-retry-${callId}-${i}`);
   }
-  
+
   const deleteErrors: string[] = [];
   for (const scheduleName of schedulesToDelete) {
     if (!scheduleName) continue;
-    
+
     try {
       await schedulerClient.send(new DeleteScheduleCommand({
         Name: scheduleName,
@@ -845,11 +856,112 @@ async function cancelScheduledCall(event: APIGatewayProxyEvent, userPerms: any, 
     body: JSON.stringify({
       message: 'Scheduled call cancelled successfully',
       callId,
-      scheduleCleanup: deleteErrors.length > 0 
+      scheduleCleanup: deleteErrors.length > 0
         ? { warning: 'Some schedules could not be deleted', errors: deleteErrors }
         : { success: true },
     }),
   };
+}
+
+// ========================================================================
+// SEND NOW - Immediately initiate an AI call (no EventBridge scheduling)
+// ========================================================================
+
+async function sendNow(event: APIGatewayProxyEvent, userPerms: any): Promise<APIGatewayProxyResult> {
+  const body = JSON.parse(event.body || '{}');
+  const { clinicId, agentId, phoneNumber, patientName, purpose, customMessage } = body;
+
+  if (!clinicId || !agentId || !phoneNumber || !purpose) {
+    return {
+      statusCode: 400,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({ error: 'clinicId, agentId, phoneNumber, and purpose are required' }),
+    };
+  }
+
+  // Validate phone number
+  const phoneValidation = validatePhoneNumber(phoneNumber);
+  if (!phoneValidation.valid) {
+    return { statusCode: 400, headers: getCorsHeaders(event), body: JSON.stringify({ error: phoneValidation.error }) };
+  }
+  const normalizedPhone = phoneValidation.normalized!;
+
+  // Check permission
+  const canCreate = hasModulePermission(
+    userPerms.clinicRoles,
+    AI_AGENTS_MODULE,
+    'write',
+    userPerms.isSuperAdmin,
+    userPerms.isGlobalSuperAdmin,
+    clinicId
+  );
+
+  if (!canCreate) {
+    return { statusCode: 403, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Permission denied' }) };
+  }
+
+  // Create a call record for tracking
+  const callId = `call-now-${uuidv4().slice(0, 8)}`;
+  const now = new Date().toISOString();
+  const userName = getUserDisplayName(userPerms);
+
+  const callRecord: ScheduledCall = {
+    callId,
+    clinicId,
+    agentId,
+    phoneNumber: normalizedPhone,
+    patientName: patientName || '',
+    purpose,
+    customMessage: customMessage || '',
+    scheduledTime: now,
+    status: 'scheduled',
+    attempts: 0,
+    maxAttempts: 1,
+    schedulerName: '',
+    createdBy: userName,
+    createdAt: now,
+    updatedAt: now,
+    timezone: 'UTC',
+    ttl: Math.floor(Date.now() / 1000) + 90 * 24 * 60 * 60, // 90 day TTL
+  };
+
+  await docClient.send(new PutCommand({
+    TableName: SCHEDULED_CALLS_TABLE,
+    Item: callRecord,
+  }));
+
+  // Directly execute the call (no scheduling delay)
+  try {
+    const result = await executeOutboundCall({
+      callId,
+      clinicId,
+      agentId,
+      phoneNumber: normalizedPhone,
+      patientName,
+      purpose,
+      customMessage,
+    });
+
+    return {
+      statusCode: 200,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({
+        message: 'AI call initiated immediately',
+        callId,
+        ...result,
+      }),
+    };
+  } catch (error: any) {
+    console.error('[sendNow] Failed to initiate call:', error);
+    return {
+      statusCode: 500,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({
+        error: `Failed to initiate call: ${error.message}`,
+        callId,
+      }),
+    };
+  }
 }
 
 // ========================================================================
@@ -1020,7 +1132,7 @@ async function bulkScheduleCalls(event: APIGatewayProxyEvent, userPerms: any): P
     return {
       statusCode: 400,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         error: `Maximum ${BULK_SCHEDULE_MAX_CALLS} calls per bulk request`,
         maxAllowed: BULK_SCHEDULE_MAX_CALLS,
         requested: body.calls.length,
@@ -1048,7 +1160,7 @@ async function bulkScheduleCalls(event: APIGatewayProxyEvent, userPerms: any): P
     return {
       statusCode: 400,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         error: 'AI outbound calling is not enabled for this clinic',
         message: 'Enable AI outbound calling in Voice Config before scheduling calls.',
       }),
@@ -1081,7 +1193,7 @@ async function bulkScheduleCalls(event: APIGatewayProxyEvent, userPerms: any): P
     return {
       statusCode: 400,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         error: 'Agent is not ready',
         message: `Agent status is "${agent.bedrockAgentStatus}". Please prepare the agent first.`,
         currentStatus: agent.bedrockAgentStatus,
@@ -1116,7 +1228,7 @@ async function bulkScheduleCalls(event: APIGatewayProxyEvent, userPerms: any): P
   // Using configurable batch size for better throughput
   for (let i = 0; i < body.calls.length; i += BULK_SCHEDULE_BATCH_SIZE) {
     const batch = body.calls.slice(i, i + BULK_SCHEDULE_BATCH_SIZE);
-    
+
     const batchResults = await Promise.allSettled(
       batch.map(async (call) => {
         const result = await createSingleScheduledCall(
@@ -1192,27 +1304,27 @@ export const executeOutboundCall = async (event: any) => {
   console.log('[ai-outbound] Executing scheduled outbound call:', JSON.stringify(event, null, 2));
 
   const { callId, clinicId, agentId, phoneNumber, patientName, purpose, customMessage, isRetry, retryAttempt, isCleanupCheck } = event;
-  
+
   // FIX: Handle cleanup check for uncertain calls (missing TransactionId)
   // This is triggered by the scheduled cleanup 5 minutes after an uncertain call
   if (isCleanupCheck) {
     console.log('[ai-outbound] Processing cleanup check for uncertain call:', callId);
-    
+
     const callResponse = await docClient.send(new GetCommand({
       TableName: SCHEDULED_CALLS_TABLE,
       Key: { callId },
     }));
     const call = callResponse.Item as ScheduledCall | undefined;
-    
+
     if (!call) {
       console.log('[ai-outbound] Cleanup: Call not found (already deleted):', callId);
       return { success: true, message: 'Call already cleaned up' };
     }
-    
+
     // Only clean up if still in uncertain in_progress state
     if (call.status === 'in_progress' && (call as any).chimeTransactionId === 'UNKNOWN_TXN_ID') {
       console.warn('[ai-outbound] Cleanup: Marking uncertain call as failed (timeout):', callId);
-      
+
       await docClient.send(new UpdateCommand({
         TableName: SCHEDULED_CALLS_TABLE,
         Key: { callId },
@@ -1225,10 +1337,10 @@ export const executeOutboundCall = async (event: any) => {
           ':reason': 'Call was in uncertain state (missing TransactionId) and no update received within timeout period',
         },
       }));
-      
+
       return { success: true, callId, message: 'Uncertain call marked as failed due to timeout' };
     }
-    
+
     // Call was already resolved (completed, failed, etc.) - no action needed
     console.log('[ai-outbound] Cleanup: Call already resolved:', { callId, status: call.status });
     return { success: true, callId, message: `Call already resolved with status: ${call.status}` };
@@ -1251,13 +1363,13 @@ export const executeOutboundCall = async (event: any) => {
     console.warn('[ai-outbound] Call already processed:', { callId, status: scheduledCall.status });
     return { success: false, error: `Call already ${scheduledCall.status}` };
   }
-  
+
   // FIX: Enhanced idempotency check to prevent duplicate execution from EventBridge duplicate delivery
   // Use conditional update to atomically claim this execution
   // FIX: Use UUID instead of Date.now() to prevent collisions during same-millisecond delivery
   const executionId = `exec-${uuidv4().slice(0, 12)}`;
   const executionStartTime = new Date().toISOString();
-  
+
   try {
     await docClient.send(new UpdateCommand({
       TableName: SCHEDULED_CALLS_TABLE,
@@ -1266,7 +1378,7 @@ export const executeOutboundCall = async (event: any) => {
       // FIX: Enhanced condition - check both executionId and a time window
       // Only proceed if no execution is already in progress OR if a stale execution is present
       // Stale execution = started more than 5 minutes ago (Lambda would have timed out)
-      ConditionExpression: isRetry 
+      ConditionExpression: isRetry
         ? '(attribute_not_exists(executionId) OR executionId = :empty OR executionStartedAt < :staleTime) AND attempts = :expectedAttempts'
         : 'attribute_not_exists(executionId) OR executionId = :empty OR executionStartedAt < :staleTime',
       ExpressionAttributeValues: {
@@ -1371,41 +1483,85 @@ export const executeOutboundCall = async (event: any) => {
       throw new Error(`Clinic ${clinicId} does not have a phone number configured`);
     }
 
+    // Use AI phone number for outbound caller ID if configured
+    const fromPhoneNumber = clinic.aiPhoneNumber || clinic.phoneNumber;
+
+    // =====================================================
+    // CONNECT-BASED OUTBOUND AI CALL (primary path)
+    // Falls back to Chime SMA if Connect is not configured
+    // =====================================================
+    if (connectClient && CONNECT_INSTANCE_ID && OUTBOUND_CONTACT_FLOW_ID) {
+      console.log('[ai-outbound] Initiating outbound AI call via Amazon Connect', {
+        fromPhoneNumber,
+        toPhoneNumber: phoneNumber,
+        purpose,
+        callId,
+      });
+
+      const contactResponse = await connectClient.send(
+        new StartOutboundVoiceContactCommand({
+          InstanceId: CONNECT_INSTANCE_ID,
+          ContactFlowId: OUTBOUND_CONTACT_FLOW_ID,
+          DestinationPhoneNumber: phoneNumber,
+          SourcePhoneNumber: fromPhoneNumber,
+          Attributes: {
+            ai_voice_prompt: customMessage || `Hello ${patientName || 'there'}, this is a call from your dental office.`,
+            purpose: purpose || '',
+            patientName: patientName || '',
+            clinicId: clinicId,
+            scheduledCallId: callId,
+            aiAgentId: agentId,
+            callDirection: 'outbound',
+          },
+        })
+      );
+
+      const contactId = contactResponse.ContactId;
+      console.log('[ai-outbound] Connect call initiated', { callId, contactId, phoneNumber });
+
+      // Update with Connect contact ID
+      await docClient.send(new UpdateCommand({
+        TableName: SCHEDULED_CALLS_TABLE,
+        Key: { callId },
+        UpdateExpression: 'SET connectContactId = :cid, chimeTransactionId = :cid, updatedAt = :now',
+        ExpressionAttributeValues: {
+          ':cid': contactId || 'CONNECT_CALL',
+          ':now': new Date().toISOString(),
+        },
+      }));
+
+      return {
+        success: true,
+        callId,
+        contactId,
+        transactionId: contactId, // backwards compat
+        message: 'AI call initiated via Connect',
+      };
+    }
+
+    // =====================================================
+    // CHIME SMA FALLBACK (legacy path)
+    // =====================================================
     // Get SMA ID for this clinic (uses existing Chime infrastructure)
     const smaId = await getSmaIdForClinic(clinicId);
     if (!smaId) {
-      throw new Error(`No SIP Media Application configured for clinic ${clinicId}`);
+      throw new Error(`No SIP Media Application or Connect configured for clinic ${clinicId}`);
     }
 
-    // Use AI phone number for outbound caller ID if configured
-    // This enables Voice Connector streaming for outbound AI calls
-    // Falls back to clinic's main phone number if aiPhoneNumber not set
-    const fromPhoneNumber = clinic.aiPhoneNumber || clinic.phoneNumber;
-
-    console.log('[ai-outbound] Initiating outbound AI call via meetings architecture', {
+    console.log('[ai-outbound] Initiating outbound AI call via Chime SMA (fallback)', {
       fromPhoneNumber,
       toPhoneNumber: phoneNumber,
       smaId,
       purpose,
-      usingAiPhoneNumber: !!clinic.aiPhoneNumber,
       callId,
     });
 
-    // TODO: Create Chime meeting for outbound call (meetings architecture)
-    // For now, use existing direct SMA approach until meeting-manager integration is complete
-    // Future implementation:
-    // 1. const meeting = await createMeetingForCall(clinicId, callId, 'outbound', phoneNumber);
-    // 2. await startMediaPipeline({ callId, meetingId: meeting.meetingId, clinicId, direction: 'outbound' });
-    // 3. Add X-Meeting-Id to SipHeaders below
-
-    // Initiate call using EXISTING Chime SIP Media Application
-    // The SMA's Lambda (inbound-router.ts) will route based on callType: 'AiOutbound'
     const callCommandInput = {
       FromPhoneNumber: fromPhoneNumber,
       ToPhoneNumber: phoneNumber,
       SipMediaApplicationId: smaId,
       ArgumentsMap: {
-        callType: 'AiOutbound', // Tells inbound-router this is an AI-initiated call
+        callType: 'AiOutbound',
         scheduledCallId: callId,
         aiAgentId: agentId,
         clinicId: clinicId,
@@ -1414,11 +1570,11 @@ export const executeOutboundCall = async (event: any) => {
         customMessage: customMessage || '',
       },
     };
-    
+
     const callResponse = await chimeVoiceClient.send(new CreateSipMediaApplicationCallCommand(callCommandInput));
 
     const transactionId = callResponse.SipMediaApplicationCall?.TransactionId;
-    
+
     // FIX: Handle missing transactionId more carefully
     // Chime might have initiated the call but failed to return the ID
     // This is rare but we should track it properly
@@ -1428,11 +1584,11 @@ export const executeOutboundCall = async (event: any) => {
         phoneNumber,
         response: JSON.stringify(callResponse),
       });
-      
+
       // FIX: Set a timeout for uncertain calls - if not resolved within 5 minutes, mark as failed
       // This prevents phantom "in_progress" calls from staying forever
       const uncertainTimeout = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5 minutes
-      
+
       // Update status to indicate uncertain state with timeout
       await docClient.send(new UpdateCommand({
         TableName: SCHEDULED_CALLS_TABLE,
@@ -1448,7 +1604,7 @@ export const executeOutboundCall = async (event: any) => {
           ':empty': '', // Clear executionId so cleanup can mark as failed
         },
       }));
-      
+
       // FIX: Schedule a cleanup check for this uncertain call
       // If the call hasn't been updated by inbound-router (CALL_ENDED), mark it as failed
       try {
@@ -1471,10 +1627,10 @@ export const executeOutboundCall = async (event: any) => {
       } catch (schedulerErr) {
         console.warn('[ai-outbound] Failed to schedule cleanup for uncertain call:', schedulerErr);
       }
-      
-      return { 
+
+      return {
         success: true, // Tentatively successful - Chime accepted the call
-        callId, 
+        callId,
         transactionId: 'unknown',
         message: 'Call initiated but TransactionId not returned - status uncertain',
         warning: 'Chime accepted the call but did not return a TransactionId. A cleanup check is scheduled for 5 minutes.',
@@ -1482,10 +1638,10 @@ export const executeOutboundCall = async (event: any) => {
       };
     }
 
-    console.log('[ai-outbound] Call initiated successfully', { 
-      callId, 
+    console.log('[ai-outbound] Call initiated successfully', {
+      callId,
       transactionId,
-      phoneNumber 
+      phoneNumber
     });
 
     // Update with transaction ID (call is now ringing)
@@ -1502,9 +1658,9 @@ export const executeOutboundCall = async (event: any) => {
     // Note: The actual call outcome (answered, voicemail, no_answer) 
     // will be updated by the Voice AI handler when the call ends
 
-    return { 
-      success: true, 
-      callId, 
+    return {
+      success: true,
+      callId,
       transactionId,
       message: 'Call initiated, awaiting answer',
     };
@@ -1576,9 +1732,9 @@ export const executeOutboundCall = async (event: any) => {
           },
         }));
 
-        return { 
-          success: false, 
-          callId, 
+        return {
+          success: false,
+          callId,
           error: error.message,
           retryable: true,
           nextRetryTime: nextRetryTime.toISOString(),
@@ -1604,9 +1760,9 @@ export const executeOutboundCall = async (event: any) => {
       },
     }));
 
-    return { 
-      success: false, 
-      callId, 
+    return {
+      success: false,
+      callId,
       error: error.message,
       retryable: false,
       reason: canRetry ? 'non_retryable_error' : 'max_attempts_exceeded',
@@ -1659,7 +1815,7 @@ async function asyncBulkScheduleCalls(event: APIGatewayProxyEvent, userPerms: an
     return {
       statusCode: 503,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         error: 'Async bulk scheduling is not configured',
         message: 'OUTBOUND_CALL_QUEUE_URL is not set. Use /scheduled-calls/bulk for smaller batches.',
       }),
@@ -1705,7 +1861,7 @@ async function asyncBulkScheduleCalls(event: APIGatewayProxyEvent, userPerms: an
     return {
       statusCode: 400,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         error: 'AI outbound calling is not enabled for this clinic',
         message: 'Enable AI outbound calling in Voice Config before scheduling calls.',
       }),
@@ -1841,7 +1997,7 @@ async function listBulkJobs(event: APIGatewayProxyEvent, userPerms: any): Promis
   const queryParams: any = {
     TableName: BULK_OUTBOUND_JOBS_TABLE,
     IndexName: 'ClinicStatusIndex',
-    KeyConditionExpression: status 
+    KeyConditionExpression: status
       ? 'clinicId = :clinicId AND #status = :status'
       : 'clinicId = :clinicId',
     ExpressionAttributeValues: {
@@ -1897,8 +2053,8 @@ async function getBulkJob(event: APIGatewayProxyEvent, userPerms: any, jobId: st
   }
 
   // Calculate progress percentage
-  const progress = job.totalCalls > 0 
-    ? Math.round((job.processedCalls / job.totalCalls) * 100) 
+  const progress = job.totalCalls > 0
+    ? Math.round((job.processedCalls / job.totalCalls) * 100)
     : 0;
 
   return {
@@ -1907,8 +2063,8 @@ async function getBulkJob(event: APIGatewayProxyEvent, userPerms: any, jobId: st
     body: JSON.stringify({
       ...job,
       progress: `${progress}%`,
-      successRate: job.processedCalls > 0 
-        ? `${Math.round((job.successfulCalls / job.processedCalls) * 100)}%` 
+      successRate: job.processedCalls > 0
+        ? `${Math.round((job.successfulCalls / job.processedCalls) * 100)}%`
         : 'N/A',
     }),
   };
