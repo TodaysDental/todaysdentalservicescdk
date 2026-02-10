@@ -291,7 +291,11 @@ export class AdminStack extends Stack {
     if (props.staffClinicInfoTableName) {
       this.usersFn.addToRolePolicy(new iam.PolicyStatement({
         actions: [
-          'dynamodb:Query',        // For getStaffInfoFromDynamoDB
+          'dynamodb:GetItem',        // For reading existing StaffClinicInfo records
+          'dynamodb:PutItem',        // For writing/upserting StaffClinicInfo records
+          'dynamodb:UpdateItem',     // For partial updates
+          'dynamodb:DeleteItem',     // For deleteStaffInfoFromDynamoDB
+          'dynamodb:Query',          // For getStaffInfoFromDynamoDB
           'dynamodb:BatchWriteItem'  // For syncStaffInfoInDynamoDB and deleteStaffInfoFromDynamoDB
         ],
         resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${props.staffClinicInfoTableName}`],
