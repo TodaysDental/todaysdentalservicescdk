@@ -31,6 +31,7 @@ import {
     handleGetStickerPacks, handleGetStickers, handleSendSticker,
     handleInitiateCall, handleJoinCall, handleLeaveCall, handleEndCall, handleDeclineCall, handleAcceptCall, handleCallTimeout, handleGetCallHistory, handleMuteCall, handleToggleVideo,
     handleFetchLinkPreview, handleGetConversationFiles,
+    handleForwardMessage, handleStarMessage, handleUnstarMessage, handleGetStarredMessages, handleGetMessageInfo,
 } from './enhanced-messaging-handlers';
 
 // Environment Variables
@@ -76,7 +77,9 @@ interface Team {
     teamID: string;
     ownerID: string;
     name: string;
+    description?: string;
     members: string[]; // Set of userID strings
+    admins: string[];  // Users with admin privileges (owner is always admin)
     createdAt: string;
     updatedAt: string;
 }
@@ -84,6 +87,25 @@ interface Team {
 // Task status values
 type TaskStatus = 'pending' | 'active' | 'in_progress' | 'completed' | 'rejected' | 'forwarded';
 type TaskPriority = 'Low' | 'Medium' | 'High' | 'Urgent';
+
+/**
+ * Safely fetches a team by teamID using QueryCommand instead of GetCommand.
+ * This handles both cases:
+ *   1. Table has only PK (teamID) — Query works like Get
+ *   2. Table has composite key (teamID + ownerID) — Query still works (only needs PK)
+ * GetCommand would fail with "The provided key element does not match the schema"
+ * if the table has a sort key and we don't provide it.
+ */
+async function getTeamByID(teamID: string): Promise<Team | undefined> {
+    if (!TEAMS_TABLE) return undefined;
+    const result = await ddb.send(new QueryCommand({
+        TableName: TEAMS_TABLE,
+        KeyConditionExpression: 'teamID = :tid',
+        ExpressionAttributeValues: { ':tid': teamID },
+        Limit: 1,
+    }));
+    return (result.Items?.[0] as Team) || undefined;
+}
 
 interface ForwardRecord {
     forwardID: string;
@@ -133,6 +155,11 @@ interface FavorRequest {
     initialMessage: string;
     deadline?: string;
     isMainGroupChat?: boolean; // WhatsApp-style main group chat flag
+
+    // WhatsApp sidebar preview fields
+    lastMessage?: string;
+    lastMessageAt?: string;
+    lastMessageSenderID?: string;
 }
 
 interface Meeting {
@@ -412,6 +439,11 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 await handlePinConversation(senderID, payload, connectionId, apiGwManagement);
                 break;
 
+            // Disappearing Messages
+            case 'setDisappearingMessages':
+                await handleSetDisappearingMessages(senderID, payload, connectionId, apiGwManagement);
+                break;
+
             // Analytics & Insights
             case 'getConversationAnalytics':
                 await handleGetConversationAnalytics(senderID, payload, connectionId, apiGwManagement);
@@ -481,6 +513,48 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 await handleGetConversationFiles(senderID, payload, connectionId, apiGwManagement);
                 break;
 
+            // Heartbeat / keep-alive (sent by Android client every 30s)
+            case 'heartbeat':
+                await sendToClient(apiGwManagement, connectionId, { type: 'heartbeat', status: 'ok' });
+                break;
+
+            // ======= GROUP SETTINGS & PROFILE PICTURE =======
+            // Group Settings (admin controls)
+            case 'updateGroupSettings':
+                await handleUpdateGroupSettings(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'deleteGroup':
+                await handleDeleteGroup(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'leaveGroup':
+                await handleLeaveGroup(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // Profile Picture
+            case 'getAvatarUploadUrl':
+                await handleGetAvatarUploadUrl(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'updateAvatarUrl':
+                await handleUpdateAvatarUrl(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // ======= MESSAGE FORWARDING & STARRING =======
+            case 'forwardMessage':
+                await handleForwardMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'starMessage':
+                await handleStarMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'unstarMessage':
+                await handleUnstarMessage(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getStarredMessages':
+                await handleGetStarredMessages(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getMessageInfo':
+                await handleGetMessageInfo(senderID, payload, connectionId, apiGwManagement);
+                break;
+
             default:
                 await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unknown action' });
         }
@@ -492,6 +566,107 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
         return { statusCode: 500, body: 'Error' };
     }
 };
+
+// ========================================
+// DISAPPEARING MESSAGES HANDLER
+// ========================================
+
+async function handleSetDisappearingMessages(
+    senderID: string,
+    payload: { favorRequestID: string; ttlSeconds: number | null },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, ttlSeconds } = payload;
+
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID' });
+        return;
+    }
+
+    // Allowed TTL values: null (off), 86400 (24h), 604800 (7d), 7776000 (90d)
+    const allowedTTLs = [null, 0, 86400, 604800, 7776000];
+    if (!allowedTTLs.includes(ttlSeconds)) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error',
+            message: 'Invalid TTL. Use null (off), 86400 (24h), 604800 (7d), or 7776000 (90d)',
+        });
+        return;
+    }
+
+    const nowIso = new Date().toISOString();
+
+    try {
+        // Update the conversation with disappearing messages TTL
+        if (ttlSeconds && ttlSeconds > 0) {
+            await ddb.send(new UpdateCommand({
+                TableName: FAVORS_TABLE,
+                Key: { favorRequestID },
+                UpdateExpression: 'SET disappearingMessagesTTL = :ttl, updatedAt = :ua',
+                ExpressionAttributeValues: {
+                    ':ttl': ttlSeconds,
+                    ':ua': nowIso,
+                },
+            }));
+        } else {
+            await ddb.send(new UpdateCommand({
+                TableName: FAVORS_TABLE,
+                Key: { favorRequestID },
+                UpdateExpression: 'REMOVE disappearingMessagesTTL SET updatedAt = :ua',
+                ExpressionAttributeValues: {
+                    ':ua': nowIso,
+                },
+            }));
+        }
+
+        // Get participants to broadcast
+        const favorResult = await ddb.send(new GetCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+        }));
+        const favor = favorResult.Item as FavorRequest;
+
+        if (favor) {
+            const recipients = await getRecipientIDs(favor, senderID);
+            const allParticipants = [senderID, ...recipients];
+
+            await sendToAll(apiGwManagement, allParticipants, {
+                type: 'disappearingMessagesUpdated',
+                favorRequestID,
+                ttlSeconds: ttlSeconds || null,
+                updatedBy: senderID,
+                updatedAt: nowIso,
+            }, { notifyOffline: false, senderID });
+        }
+
+        // Send a system message to the conversation
+        const ttlLabel = !ttlSeconds || ttlSeconds === 0 ? 'off'
+            : ttlSeconds === 86400 ? '24 hours'
+                : ttlSeconds === 604800 ? '7 days'
+                    : '90 days';
+
+        const systemMessage = {
+            favorRequestID,
+            senderID: 'system',
+            content: `Disappearing messages turned ${ttlLabel === 'off' ? 'off' : `on (${ttlLabel})`}`,
+            timestamp: Date.now(),
+            type: 'system',
+            messageID: `msg-${Date.now()}-system`,
+        };
+
+        await ddb.send(new PutCommand({
+            TableName: MESSAGES_TABLE,
+            Item: systemMessage,
+        }));
+
+    } catch (e) {
+        console.error('Error setting disappearing messages:', e);
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error',
+            message: 'Failed to update disappearing messages setting',
+        });
+    }
+}
 
 // ========================================
 // NEW CORE LOGIC FUNCTIONS (Teams)
@@ -528,7 +703,9 @@ async function createTeam(
         teamID,
         ownerID,
         name: String(name),
+        description: payload.description ? String(payload.description) : undefined,
         members: uniqueMembers,
+        admins: [ownerID], // Creator is always the first admin
         createdAt: nowIso,
         updatedAt: nowIso,
     };
@@ -633,11 +810,7 @@ async function addUserToTeam(
 
     try {
         // 1. Fetch the team to verify ownership
-        const teamResult = await ddb.send(new GetCommand({
-            TableName: TEAMS_TABLE,
-            Key: { teamID },
-        }));
-        const team = teamResult.Item as Team;
+        const team = await getTeamByID(teamID);
 
         if (!team) {
             await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Team not found.' });
@@ -662,7 +835,7 @@ async function addUserToTeam(
 
         await ddb.send(new UpdateCommand({
             TableName: TEAMS_TABLE,
-            Key: { teamID },
+            Key: { teamID, ownerID: team.ownerID },
             UpdateExpression: 'SET members = :members, updatedAt = :updatedAt',
             ExpressionAttributeValues: {
                 ':members': updatedMembers,
@@ -695,8 +868,10 @@ async function addUserToTeam(
 }
 
 /**
- * Removes a user from an existing team. Only the team owner can perform this action.
- * The owner cannot remove themselves from the team.
+ * Removes a user from an existing team.
+ * Allowed when: caller is the team owner removing another member,
+ * OR caller is removing themselves (self-leave, except owner).
+ * The owner cannot remove themselves — they must delete the group instead.
  */
 async function removeUserFromTeam(
     callerID: string,
@@ -717,21 +892,18 @@ async function removeUserFromTeam(
     }
 
     try {
-        // 1. Fetch the team to verify ownership
-        const teamResult = await ddb.send(new GetCommand({
-            TableName: TEAMS_TABLE,
-            Key: { teamID },
-        }));
-        const team = teamResult.Item as Team;
+        // 1. Fetch the team
+        const team = await getTeamByID(teamID);
 
         if (!team) {
             await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Team not found.' });
             return;
         }
 
-        // 2. Check if caller is the owner
-        if (team.ownerID !== callerID) {
-            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the team owner can remove members.' });
+        // 2. Authorization: owner can remove others, any member can remove themselves (self-leave)
+        const isSelfLeave = callerID === userID;
+        if (!isSelfLeave && team.ownerID !== callerID) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the team owner can remove other members.' });
             return;
         }
 
@@ -753,7 +925,7 @@ async function removeUserFromTeam(
 
         await ddb.send(new UpdateCommand({
             TableName: TEAMS_TABLE,
-            Key: { teamID },
+            Key: { teamID, ownerID: team.ownerID },
             UpdateExpression: 'SET members = :members, updatedAt = :updatedAt',
             ExpressionAttributeValues: {
                 ':members': updatedMembers,
@@ -786,6 +958,462 @@ async function removeUserFromTeam(
     }
 }
 
+// ========================================
+// GROUP SETTINGS HANDLERS
+// ========================================
+
+/**
+ * Updates group/team settings: description, adminOnlyMessages, and admin management.
+ * Only the owner or admins can update settings.
+ */
+async function handleUpdateGroupSettings(
+    callerID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { teamID, description, adminOnlyMessages, makeAdmin, dismissAdmin } = payload;
+
+    if (!teamID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing teamID.' });
+        return;
+    }
+
+    if (!TEAMS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Teams table not configured.' });
+        return;
+    }
+
+    try {
+        // 1. Fetch the team
+        const team = await getTeamByID(teamID);
+
+        if (!team) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Team not found.' });
+            return;
+        }
+
+        // 2. Check if caller is owner or admin
+        const isOwner = team.ownerID === callerID;
+        const isAdmin = (team.admins || []).includes(callerID);
+        if (!isOwner && !isAdmin) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only admins can update group settings.' });
+            return;
+        }
+
+        const nowIso = new Date().toISOString();
+        const updateExprParts: string[] = ['updatedAt = :updatedAt'];
+        const exprValues: Record<string, any> = { ':updatedAt': nowIso };
+        const systemMessages: string[] = [];
+
+        // 3. Update description if provided
+        if (description !== undefined) {
+            updateExprParts.push('description = :desc');
+            exprValues[':desc'] = description || null;
+            systemMessages.push(`Group description updated`);
+        }
+
+        // 4. Update adminOnlyMessages if provided
+        if (adminOnlyMessages !== undefined) {
+            updateExprParts.push('adminOnlyMessages = :adminOnly');
+            exprValues[':adminOnly'] = !!adminOnlyMessages;
+            systemMessages.push(
+                adminOnlyMessages
+                    ? 'Only admins can send messages now'
+                    : 'All members can send messages now'
+            );
+        }
+
+        // 5. Make a member admin (owner-only)
+        let updatedAdmins = [...(team.admins || [team.ownerID])];
+        if (makeAdmin) {
+            if (!isOwner) {
+                await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Only the group owner can make admins.' });
+                return;
+            }
+            if (!team.members.includes(makeAdmin)) {
+                await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'User is not a member of this group.' });
+                return;
+            }
+            if (!updatedAdmins.includes(makeAdmin)) {
+                updatedAdmins.push(makeAdmin);
+                updateExprParts.push('admins = :admins');
+                exprValues[':admins'] = updatedAdmins;
+                systemMessages.push(`A member was made admin`);
+            }
+        }
+
+        // 6. Dismiss an admin (owner-only)
+        if (dismissAdmin) {
+            if (!isOwner) {
+                await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Only the group owner can dismiss admins.' });
+                return;
+            }
+            if (dismissAdmin === team.ownerID) {
+                await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Cannot dismiss the group owner from admin.' });
+                return;
+            }
+            updatedAdmins = updatedAdmins.filter(a => a !== dismissAdmin);
+            updateExprParts.push('admins = :admins');
+            exprValues[':admins'] = updatedAdmins;
+            systemMessages.push(`An admin was dismissed`);
+        }
+
+        // 7. Execute DynamoDB update
+        await ddb.send(new UpdateCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID, ownerID: team.ownerID },
+            UpdateExpression: `SET ${updateExprParts.join(', ')}`,
+            ExpressionAttributeValues: exprValues,
+        }));
+
+        console.log(`Group settings updated for ${teamID} by ${callerID}`);
+
+        // 8. Broadcast updated team to all members
+        const updatedTeam = {
+            ...team,
+            ...(description !== undefined && { description }),
+            ...(adminOnlyMessages !== undefined && { adminOnlyMessages }),
+            admins: updatedAdmins,
+            updatedAt: nowIso,
+        };
+
+        await sendToAll(apiGwManagement, team.members, {
+            type: 'groupSettingsUpdated',
+            team: updatedTeam,
+            updatedBy: callerID,
+        }, { notifyOffline: false });
+
+        // 9. Insert system messages into the team's main group chat
+        if (systemMessages.length > 0 && team.teamID) {
+            // Find the main group chat favorRequestID for this team
+            const favorResult = await ddb.send(new QueryCommand({
+                TableName: FAVORS_TABLE,
+                IndexName: 'teamID-index',
+                KeyConditionExpression: 'teamID = :tid',
+                ExpressionAttributeValues: { ':tid': teamID },
+                FilterExpression: 'isMainGroupChat = :mgc',
+                Limit: 1,
+            })).catch(() => ({ Items: [] }));
+
+            const groupChat = favorResult.Items?.[0];
+            if (groupChat) {
+                for (const msg of systemMessages) {
+                    await ddb.send(new PutCommand({
+                        TableName: MESSAGES_TABLE,
+                        Item: {
+                            favorRequestID: groupChat.favorRequestID,
+                            senderID: 'system',
+                            content: msg,
+                            timestamp: Date.now(),
+                            type: 'system',
+                            messageID: `msg-${Date.now()}-system-${uuidv4().slice(0, 8)}`,
+                        },
+                    }));
+                }
+            }
+        }
+
+    } catch (e) {
+        console.error('Failed to update group settings:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to update group settings.' });
+    }
+}
+
+/**
+ * Deletes a group/team. Only the team owner can delete a group.
+ * Removes the team record and notifies all members.
+ */
+async function handleDeleteGroup(
+    callerID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { teamID } = payload;
+
+    if (!teamID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing teamID.' });
+        return;
+    }
+
+    if (!TEAMS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Teams table not configured.' });
+        return;
+    }
+
+    try {
+        // 1. Fetch the team to verify ownership
+        const team = await getTeamByID(teamID);
+
+        if (!team) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Team not found.' });
+            return;
+        }
+
+        // 2. Only owner can delete the group
+        if (team.ownerID !== callerID) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the group owner can delete the group.' });
+            return;
+        }
+
+        // 3. Delete the team record
+        await ddb.send(new DeleteCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID, ownerID: team.ownerID },
+        }));
+
+        console.log(`Group ${teamID} deleted by ${callerID}`);
+
+        // 4. Notify all members that the group was deleted
+        await sendToAll(apiGwManagement, team.members, {
+            type: 'groupDeleted',
+            teamID,
+            deletedBy: callerID,
+            groupName: team.name,
+        }, { notifyOffline: false });
+
+    } catch (e) {
+        console.error('Failed to delete group:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to delete group.' });
+    }
+}
+
+/**
+ * Handles a member leaving a group. Any non-owner member can leave.
+ * The owner must delete the group instead.
+ */
+async function handleLeaveGroup(
+    callerID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { teamID } = payload;
+
+    if (!teamID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing teamID.' });
+        return;
+    }
+
+    if (!TEAMS_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: Teams table not configured.' });
+        return;
+    }
+
+    try {
+        // 1. Fetch the team
+        const team = await getTeamByID(teamID);
+
+        if (!team) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Team not found.' });
+            return;
+        }
+
+        // 2. Owner cannot leave — they must delete the group
+        if (team.ownerID === callerID) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Group owner cannot leave. Delete the group instead.' });
+            return;
+        }
+
+        // 3. Must be a member
+        if (!team.members.includes(callerID)) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'You are not a member of this group.' });
+            return;
+        }
+
+        // 4. Remove caller from members and admins
+        const nowIso = new Date().toISOString();
+        const updatedMembers = team.members.filter(m => m !== callerID);
+        const updatedAdmins = (team.admins || []).filter(a => a !== callerID);
+
+        await ddb.send(new UpdateCommand({
+            TableName: TEAMS_TABLE,
+            Key: { teamID, ownerID: team.ownerID },
+            UpdateExpression: 'SET members = :members, admins = :admins, updatedAt = :ua',
+            ExpressionAttributeValues: {
+                ':members': updatedMembers,
+                ':admins': updatedAdmins,
+                ':ua': nowIso,
+            },
+        }));
+
+        console.log(`User ${callerID} left group ${teamID}`);
+
+        // 5. Send system message to the group
+        const systemMessage = {
+            favorRequestID: team.teamID, // group conversations use teamID as favorRequestID context
+            senderID: 'system',
+            content: 'A member left the group',
+            timestamp: Date.now(),
+            type: 'system',
+            messageID: `msg-${Date.now()}-system`,
+        };
+
+        await ddb.send(new PutCommand({
+            TableName: MESSAGES_TABLE,
+            Item: systemMessage,
+        }));
+
+        // 6. Confirm to the caller
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'leftGroup',
+            teamID,
+        });
+
+        // 7. Notify remaining members
+        await sendToAll(apiGwManagement, updatedMembers, {
+            type: 'teamMemberLeft',
+            teamID,
+            leftUserID: callerID,
+            team: {
+                ...team,
+                members: updatedMembers,
+                admins: updatedAdmins,
+                updatedAt: nowIso,
+            },
+        }, { notifyOffline: false });
+
+    } catch (e) {
+        console.error('Failed to leave group:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to leave group.' });
+    }
+}
+
+// ========================================
+// PROFILE PICTURE HANDLERS
+// ========================================
+
+/**
+ * Returns a presigned S3 PUT URL for uploading a profile picture (avatar).
+ * Key: avatars/{userID}/{UUID}.{ext}
+ */
+async function handleGetAvatarUploadUrl(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { fileName, fileType } = payload;
+
+    if (!fileName || !fileType) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing fileName or fileType.' });
+        return;
+    }
+
+    if (!FILE_BUCKET_NAME) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: File bucket not configured.' });
+        return;
+    }
+
+    // Validate content type is an image
+    if (!fileType.startsWith('image/')) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Invalid file type. Only images are allowed.' });
+        return;
+    }
+
+    const rawName = String(fileName);
+    const ext = rawName.split('.').pop() || 'jpg';
+    const fileKey = `avatars/${senderID}/${uuidv4()}.${ext}`;
+
+    try {
+        const command = new PutObjectCommand({
+            Bucket: FILE_BUCKET_NAME,
+            Key: fileKey,
+            ContentType: fileType,
+        });
+
+        const url = await getSignedUrl(s3, command, { expiresIn: 900 }); // 15 min
+
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'avatarUploadUrl',
+            url,
+            fileKey,
+            fileType,
+        });
+
+        console.log(`Avatar upload URL generated for ${senderID}: ${fileKey}`);
+    } catch (e) {
+        console.error('Error generating avatar upload URL:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to generate avatar upload URL.' });
+    }
+}
+
+/**
+ * After the client has uploaded the avatar to S3, it calls this action to persist
+ * the avatar URL in the connections/user table and broadcasts the update.
+ */
+async function handleUpdateAvatarUrl(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { fileKey } = payload;
+
+    if (!fileKey) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing fileKey.' });
+        return;
+    }
+
+    if (!FILE_BUCKET_NAME) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: File bucket not configured.' });
+        return;
+    }
+
+    // Construct the public/CDN URL for the avatar
+    const avatarUrl = `https://${FILE_BUCKET_NAME}.s3.${REGION}.amazonaws.com/${fileKey}`;
+    const nowIso = new Date().toISOString();
+
+    try {
+        // Update the user's connection record with the avatar URL
+        // (The connections table tracks user metadata including presence)
+        await ddb.send(new UpdateCommand({
+            TableName: CONNECTIONS_TABLE,
+            Key: { connectionId },
+            UpdateExpression: 'SET avatarUrl = :avatarUrl, avatarUpdatedAt = :updatedAt',
+            ExpressionAttributeValues: {
+                ':avatarUrl': avatarUrl,
+                ':updatedAt': nowIso,
+            },
+        }));
+
+        // Broadcast to all connected users so they see the updated avatar
+        // (Get all connections and notify)
+        const allConnections = await ddb.send(new ScanCommand({
+            TableName: CONNECTIONS_TABLE,
+            ProjectionExpression: 'connectionId',
+        }));
+
+        if (allConnections.Items) {
+            const broadcastPayload = {
+                type: 'avatarUpdated',
+                userID: senderID,
+                avatarUrl,
+                updatedAt: nowIso,
+            };
+
+            for (const conn of allConnections.Items) {
+                if (conn.connectionId && conn.connectionId !== connectionId) {
+                    await sendToClient(apiGwManagement, conn.connectionId as string, broadcastPayload).catch(() => { });
+                }
+            }
+        }
+
+        // Confirm to the sender
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'avatarUpdateConfirmed',
+            userID: senderID,
+            avatarUrl,
+        });
+
+        console.log(`Avatar updated for ${senderID}: ${avatarUrl}`);
+    } catch (e) {
+        console.error('Error updating avatar URL:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to update avatar URL.' });
+    }
+}
+
 /**
  * WhatsApp-style Group Chat: Opens or creates the main conversation for a team.
  * This allows users to immediately start chatting with a group when they click on it.
@@ -810,11 +1438,7 @@ async function handleOpenGroupChat(
 
     try {
         // 1. Fetch the team to verify membership
-        const teamResult = await ddb.send(new GetCommand({
-            TableName: TEAMS_TABLE,
-            Key: { teamID },
-        }));
-        const team = teamResult.Item as Team;
+        const team = await getTeamByID(teamID);
 
         if (!team) {
             await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Team not found.' });
@@ -1009,11 +1633,7 @@ async function startFavorRequest(
             return;
         }
         // Fetch team members for group request
-        const teamResult = await ddb.send(new GetCommand({
-            TableName: TEAMS_TABLE,
-            Key: { teamID },
-        }));
-        const team = teamResult.Item as Team;
+        const team = await getTeamByID(teamID);
 
         if (!team) {
             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: `Team ID ${teamID} not found.` });
@@ -1226,15 +1846,7 @@ async function sendMessage(
  */
 async function getRecipientIDs(favor: FavorRequest, senderID: string): Promise<string[]> {
     if (favor.teamID) {
-        if (!TEAMS_TABLE) {
-            console.error("TEAMS_TABLE not configured for group lookup.");
-            return [];
-        }
-        const teamResult = await ddb.send(new GetCommand({
-            TableName: TEAMS_TABLE,
-            Key: { teamID: favor.teamID },
-        }));
-        const team = teamResult.Item as Team;
+        const team = await getTeamByID(favor.teamID);
         const members = normalizeMembers(team?.members);
 
         // Recipients are all team members except the sender
@@ -1264,16 +1876,7 @@ async function isUserParticipant(favor: FavorRequest, userID: string): Promise<b
     }
 
     // For group requests, check team membership
-    if (!TEAMS_TABLE) {
-        console.error("TEAMS_TABLE not configured for participant check.");
-        return false;
-    }
-
-    const teamResult = await ddb.send(new GetCommand({
-        TableName: TEAMS_TABLE,
-        Key: { teamID: favor.teamID },
-    }));
-    const team = teamResult.Item as Team;
+    const team = await getTeamByID(favor.teamID);
     const members = normalizeMembers(team?.members);
 
     return members.includes(userID);
@@ -1285,15 +1888,7 @@ async function isUserParticipant(favor: FavorRequest, userID: string): Promise<b
  */
 async function getAllParticipants(favor: FavorRequest): Promise<string[]> {
     if (favor.teamID) {
-        if (!TEAMS_TABLE) {
-            console.error("TEAMS_TABLE not configured for participant lookup.");
-            return [favor.senderID];
-        }
-        const teamResult = await ddb.send(new GetCommand({
-            TableName: TEAMS_TABLE,
-            Key: { teamID: favor.teamID },
-        }));
-        const team = teamResult.Item as Team;
+        const team = await getTeamByID(favor.teamID);
         const members = normalizeMembers(team?.members);
         return members.length > 0 ? members : [favor.senderID];
     }
@@ -1305,6 +1900,7 @@ async function getAllParticipants(favor: FavorRequest): Promise<string[]> {
     }
     return participants;
 }
+
 
 
 /**
@@ -1664,6 +2260,26 @@ async function _saveAndBroadcastMessage(
         TableName: MESSAGES_TABLE,
         Item: messageData,
     }));
+
+    // 1b. Update FavorRequest with lastMessage preview for sidebar
+    const lastMessagePreview = messageData.type === 'file'
+        ? '📎 Attachment'
+        : messageData.content?.substring(0, 100) || '';
+    try {
+        await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID: messageData.favorRequestID },
+            UpdateExpression: 'SET lastMessage = :lm, lastMessageAt = :lma, lastMessageSenderID = :lms, updatedAt = :ua',
+            ExpressionAttributeValues: {
+                ':lm': lastMessagePreview,
+                ':lma': new Date().toISOString(),
+                ':lms': messageData.senderID,
+                ':ua': new Date().toISOString(),
+            },
+        }));
+    } catch (e) {
+        console.warn('Failed to update lastMessage on FavorRequest:', e);
+    }
 
     // 2. Find the request details to identify recipients if not explicitly provided
     let participants = [messageData.senderID];

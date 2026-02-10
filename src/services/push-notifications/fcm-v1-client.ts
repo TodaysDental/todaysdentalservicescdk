@@ -501,6 +501,23 @@ function parseFcmError(
         };
     }
 
+    // THIRD_PARTY_AUTH_ERROR - Firebase cannot authenticate with APNs for this token.
+    // This happens when an iOS device token was generated from a different APNs
+    // environment (sandbox vs production), a previous app install, or a different
+    // bundle ID. The token will never succeed, so remove it.
+    const fcmErrorCode = responseData.error?.details?.find(
+        (d: any) => d['@type']?.includes('FcmError')
+    )?.errorCode;
+
+    if (fcmErrorCode === 'THIRD_PARTY_AUTH_ERROR' || errorStatus === 'UNAUTHENTICATED') {
+        return {
+            errorCode: 'THIRD_PARTY_AUTH_ERROR',
+            message: 'APNs authentication failed for this token - stale or mismatched token',
+            shouldRemoveToken: true,
+            retryable: false,
+        };
+    }
+
     // Server errors - retryable
     if (statusCode >= 500 || errorStatus === 'UNAVAILABLE' || errorStatus === 'INTERNAL') {
         return {
@@ -578,6 +595,7 @@ export async function sendFcmV1Notification(
         sound?: string;
         category?: string;
         threadId?: string;
+        dataOnly?: boolean; // When true, send data-only message (no FCM notification payload)
     },
     platform: 'android' | 'ios' | 'web' = 'android'
 ): Promise<FcmV1SendResult> {
@@ -618,18 +636,29 @@ export async function sendFcmV1Notification(
         return { success: false, error: 'Service account not configured' };
     }
 
+    // Determine if this should be a data-only message.
+    // Data-only messages bypass Android's system notification handler and ALWAYS
+    // trigger onMessageReceived() in TDIFirebaseMessagingService, even when the
+    // app is in background. This is critical for incoming_call notifications
+    // that need custom ringtone, vibration, and wake-lock behavior.
+    const isDataOnly = notification.dataOnly === true;
+
     // Build the FCM v1 message with platform-specific configuration
     const message: FcmV1Message = {
         token: deviceToken.trim(),
-        notification: {
-            title: notification.title,
-            body: notification.body,
-        },
     };
 
-    // Add image if provided
-    if (notification.imageUrl) {
-        message.notification!.image = notification.imageUrl;
+    // Only include top-level `notification` for display notifications (not data-only)
+    if (!isDataOnly) {
+        message.notification = {
+            title: notification.title,
+            body: notification.body,
+        };
+
+        // Add image if provided
+        if (notification.imageUrl) {
+            message.notification.image = notification.imageUrl;
+        }
     }
 
     // Add data payload
@@ -637,36 +666,74 @@ export async function sendFcmV1Notification(
         message.data = payloadValidation.data;
     }
 
+    // For data-only messages, ensure title and body are in the data payload
+    // so the app can construct the notification itself
+    if (isDataOnly && message.data) {
+        if (!message.data.title) message.data.title = notification.title;
+        if (!message.data.body) message.data.body = notification.body;
+    }
+
     // Platform-specific configuration
     if (platform === 'android') {
-        message.android = {
-            priority: notification.priority || 'high',
-            notification: {
-                channel_id: notification.channelId || 'default',
-                sound: notification.sound || 'default',
-            },
-        };
+        if (isDataOnly) {
+            // Data-only Android message: high priority to wake the device,
+            // but NO android.notification block — ensures onMessageReceived() fires
+            message.android = {
+                priority: 'high',
+                ttl: '0s', // Deliver immediately, don't store-and-forward
+            };
+        } else {
+            // Display notification: includes android.notification for system tray
+            message.android = {
+                priority: notification.priority || 'high',
+                notification: {
+                    channel_id: notification.channelId || 'default',
+                    sound: notification.sound || 'default',
+                },
+            };
+        }
         if (message.data) {
             message.android.data = message.data;
         }
     } else if (platform === 'ios') {
-        message.apns = {
-            headers: {
-                'apns-priority': notification.priority === 'high' ? '10' : '5',
-            },
-            payload: {
-                aps: {
-                    alert: {
-                        title: notification.title,
-                        body: notification.body,
-                    },
-                    badge: notification.badge ?? 1,
-                    sound: notification.sound || 'default',
-                    'mutable-content': notification.imageUrl ? 1 : 0,
-                    'content-available': 1,
+        if (isDataOnly) {
+            // iOS data-only: use content-available for silent push that wakes the app
+            message.apns = {
+                headers: {
+                    'apns-priority': '10',
+                    'apns-push-type': 'alert', // Still use alert push-type for high priority
                 },
-            },
-        };
+                payload: {
+                    aps: {
+                        alert: {
+                            title: notification.title,
+                            body: notification.body,
+                        },
+                        badge: notification.badge ?? 1,
+                        sound: notification.sound || 'default',
+                        'content-available': 1,
+                    },
+                },
+            };
+        } else {
+            message.apns = {
+                headers: {
+                    'apns-priority': notification.priority === 'high' ? '10' : '5',
+                },
+                payload: {
+                    aps: {
+                        alert: {
+                            title: notification.title,
+                            body: notification.body,
+                        },
+                        badge: notification.badge ?? 1,
+                        sound: notification.sound || 'default',
+                        'mutable-content': notification.imageUrl ? 1 : 0,
+                        'content-available': 1,
+                    },
+                },
+            };
+        }
 
         if (notification.category) {
             message.apns!.payload!.aps!.category = notification.category;
@@ -675,7 +742,7 @@ export async function sendFcmV1Notification(
             message.apns!.payload!.aps!['thread-id'] = notification.threadId;
         }
     } else if (platform === 'web') {
-        // Web push configuration
+        // Web push configuration — always include notification for browser display
         message.webpush = {
             notification: {
                 title: notification.title,
@@ -806,6 +873,7 @@ export async function sendFcmV1NotificationBatch(
         sound?: string;
         category?: string;
         threadId?: string;
+        dataOnly?: boolean; // When true, send data-only message (no FCM notification payload)
     }
 ): Promise<{ sent: number; failed: number; results: Array<{ deviceToken: string; success: boolean; messageId?: string; error?: string; shouldRemoveToken?: boolean }> }> {
     // Filter out invalid devices

@@ -16,7 +16,11 @@ import {
     isPushNotificationsEnabled,
     sendIncomingCallToAgents,
     sendMissedCallNotification,
-    type IncomingCallNotification
+    sendCallEndedToAgent,
+    sendCallAnsweredToAgent,
+    type IncomingCallNotification,
+    type CallEndedNotification,
+    type CallAnsweredNotification
 } from './utils/push-notifications';
 // Import per-clinic AI inbound toggle check
 import { isAiInboundEnabled } from '../ai-agents/voice-agent-config';
@@ -1003,7 +1007,7 @@ export const handler = async (event: any): Promise<any> => {
                     if (!clinicOpen) {
                         // Check per-clinic AI inbound toggle - if disabled, route to agents only
                         const aiInboundEnabledForClinic = await isAiInboundEnabled(clinicId);
-                        
+
                         if (!aiInboundEnabledForClinic) {
                             console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED but AI inbound is DISABLED - routing to human agents`, {
                                 callId,
@@ -1208,6 +1212,15 @@ export const handler = async (event: any): Promise<any> => {
                         activeAgentIds = (activeRows || [])
                             .map((r: any) => r?.agentId)
                             .filter((v: any): v is string => typeof v === 'string' && v.length > 0);
+
+                        console.log('[NEW_INBOUND_CALL] AgentActive lookup result', {
+                            callId,
+                            clinicId,
+                            tableName: AGENT_ACTIVE_TABLE_NAME,
+                            rawRowCount: (activeRows || []).length,
+                            activeAgentIds,
+                            agentCount: activeAgentIds.length,
+                        });
                     } catch (activeErr) {
                         console.warn('[NEW_INBOUND_CALL] Failed querying AgentActive (non-fatal):', activeErr);
                     }
@@ -1690,6 +1703,26 @@ export const handler = async (event: any): Promise<any> => {
                                     }
                                 }));
                                 console.log(`[CALL_ANSWERED] Agent ${assignedAgentId} status updated to OnCall`);
+
+                                // PUSH: Notify agent that outbound call was answered
+                                // This is critical for the push-first mobile architecture:
+                                // without it, the iOS/Android app stays stuck on "Dialing..."
+                                if (isPushNotificationsEnabled()) {
+                                    try {
+                                        await sendCallAnsweredToAgent({
+                                            callId,
+                                            clinicId: callRecords[0].clinicId || clinicId || '',
+                                            clinicName: callRecords[0].clinicName || callRecords[0].clinicId || '',
+                                            callerPhoneNumber: callRecords[0].phoneNumber || callRecords[0].toPhoneNumber || '',
+                                            agentId: assignedAgentId,
+                                            direction: 'outbound',
+                                            meetingId,
+                                            timestamp: new Date().toISOString(),
+                                        });
+                                    } catch (pushErr) {
+                                        console.warn('[CALL_ANSWERED] Failed to send call_answered push (non-fatal):', pushErr);
+                                    }
+                                }
 
                                 // Start Media Insights Pipeline for real-time transcription
                                 if (isRealTimeTranscriptionEnabled()) {
@@ -2512,6 +2545,44 @@ export const handler = async (event: any): Promise<any> => {
                                 }
                             })
                         ));
+
+                        // Also push call_ended to ringing agents so their UI clears
+                        if (isPushNotificationsEnabled()) {
+                            const nowIso = new Date().toISOString();
+                            await Promise.allSettled(agentIds.map((rAgentId: string) =>
+                                sendCallEndedToAgent({
+                                    callId,
+                                    clinicId,
+                                    clinicName: clinicId,
+                                    agentId: rAgentId,
+                                    reason: callEndReason,
+                                    message: callEndUserFriendly,
+                                    direction: direction || 'inbound',
+                                    timestamp: nowIso,
+                                })
+                            ));
+                        }
+                    }
+
+                    // ========== PUSH: Notify assigned agent about call end ==========
+                    // Enables polling-free clients (Android, iOS, Web) to learn
+                    // about call-end events in real-time via FCM push instead of
+                    // polling /admin/me/presence.
+                    if (assignedAgentId && isPushNotificationsEnabled()) {
+                        try {
+                            await sendCallEndedToAgent({
+                                callId,
+                                clinicId,
+                                clinicName: clinicId,
+                                agentId: assignedAgentId,
+                                reason: callEndReason,
+                                message: callEndUserFriendly,
+                                direction: direction || 'inbound',
+                                timestamp: new Date().toISOString(),
+                            });
+                        } catch (pushErr) {
+                            console.warn(`[${eventType}] Failed to send call-ended push to agent ${assignedAgentId} (non-fatal):`, pushErr);
+                        }
                     }
                 }
 

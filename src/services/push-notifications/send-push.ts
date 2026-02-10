@@ -81,6 +81,8 @@ type NotificationType =
   | 'general'
   | 'staff_alert'
   | 'incoming_call'
+  | 'call_ended'
+  | 'call_cancelled'
   | 'missed_call'
   | 'voicemail'
   | 'mention'
@@ -451,10 +453,12 @@ function getChannelForType(type?: NotificationType): string {
   switch (type) {
     // Call-related notifications - high importance
     case 'incoming_call':
+    case 'call_ended':
+    case 'call_cancelled':
     case 'missed_call':
     case 'voicemail':
       return 'tdi_calls_channel';
-    
+
     // HR-related notifications
     case 'shift_assigned':
     case 'shift_updated':
@@ -470,13 +474,13 @@ function getChannelForType(type?: NotificationType): string {
     case 'calendar_event':
     case 'hr_alert':
       return 'tdi_hr_channel';
-    
+
     // Message and task notifications
     case 'new_message':
     case 'mention':
     case 'staff_alert':
       return 'tdi_messages_channel';
-    
+
     // General/default notifications
     case 'appointment_reminder':
     case 'appointment_confirmation':
@@ -493,7 +497,25 @@ function getChannelForType(type?: NotificationType): string {
  * Critical notifications (incoming calls) should always be delivered
  */
 function isCriticalNotification(type?: NotificationType): boolean {
-  return type === 'incoming_call';
+  return type === 'incoming_call' || type === 'call_ended' || type === 'call_cancelled';
+}
+
+/**
+ * Check if notification type should use data-only FCM messages.
+ * 
+ * Data-only messages omit the FCM `notification` field so that on Android,
+ * `onMessageReceived()` in TDIFirebaseMessagingService is ALWAYS called,
+ * even when the app is in the background. This is critical for:
+ * 
+ * - incoming_call: Needs to start IncomingCallService for ringtone, vibration,
+ *   full-screen intent, and device wake-up
+ * - voicemail: Needs deep-link handling and custom notification with playback action
+ * 
+ * Without data-only, Android's system notification handler intercepts the message
+ * and shows a generic notification, bypassing all custom logic.
+ */
+function isDataOnlyNotification(type?: NotificationType): boolean {
+  return type === 'incoming_call' || type === 'call_ended' || type === 'call_cancelled' || type === 'voicemail';
 }
 
 // ========================================
@@ -763,6 +785,7 @@ async function handleSendToUser(
       sound: notification.sound,
       category: notification.category,
       threadId: notification.threadId,
+      dataOnly: isDataOnlyNotification(notification.type),
     }
   );
 
@@ -884,6 +907,7 @@ async function handleSendToClinic(
       sound: notification.sound,
       category: notification.category,
       threadId: notification.threadId,
+      dataOnly: isDataOnlyNotification(notification.type),
     }
   );
 

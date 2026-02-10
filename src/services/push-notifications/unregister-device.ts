@@ -105,13 +105,14 @@ async function handleUnregisterByToken(
 }
 
 /**
- * Handle device unregistration by device ID
+ * Handle device unregistration by device ID (from path or body)
  */
 async function handleUnregisterById(
   event: APIGatewayProxyEvent,
-  userPerms: UserPermissions
+  userPerms: UserPermissions,
+  bodyDeviceId?: string
 ): Promise<APIGatewayProxyResult> {
-  const deviceId = event.pathParameters?.deviceId;
+  const deviceId = event.pathParameters?.deviceId || bodyDeviceId;
 
   if (!deviceId) {
     return http(400, { error: 'deviceId is required' }, event);
@@ -130,7 +131,13 @@ async function handleUnregisterById(
     }));
 
     if (!getResult.Item) {
-      return http(404, { error: 'Device not found' }, event);
+      // Device might already be removed — treat as success for idempotency
+      console.log(`[UnregisterDevice] Device ${deviceId} not found for user ${userId}, treating as already unregistered`);
+      return http(200, {
+        success: true,
+        message: 'Device already unregistered or not found',
+        deviceId,
+      }, event);
     }
 
     // Delete from DynamoDB
@@ -203,6 +210,40 @@ async function handleUnregisterAll(
 }
 
 /**
+ * Smart POST /unregister handler
+ * Routes based on body contents:
+ * - { allDevices: true }           → unregister ALL devices for the user
+ * - { deviceId: "..." }            → unregister specific device by ID
+ * - { deviceToken: "..." }         → unregister device by FCM token
+ * 
+ * This supports both the Android app (sends deviceId + allDevices) and
+ * web frontend (sends deviceToken).
+ */
+async function handleSmartUnregister(
+  event: APIGatewayProxyEvent,
+  userPerms: UserPermissions
+): Promise<APIGatewayProxyResult> {
+  const body = parseBody(event.body);
+
+  // Priority 1: allDevices flag (Android logout sends this)
+  if (body.allDevices === true) {
+    return handleUnregisterAll(event, userPerms);
+  }
+
+  // Priority 2: specific deviceId (Android sends ANDROID_ID)
+  if (body.deviceId && typeof body.deviceId === 'string') {
+    return handleUnregisterById(event, userPerms, body.deviceId);
+  }
+
+  // Priority 3: deviceToken (web frontend sends this)
+  if (body.deviceToken && typeof body.deviceToken === 'string') {
+    return handleUnregisterByToken(event, userPerms);
+  }
+
+  return http(400, { error: 'One of deviceToken, deviceId, or allDevices is required' }, event);
+}
+
+/**
  * Main handler
  */
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
@@ -226,9 +267,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (event.pathParameters?.deviceId) {
       return handleUnregisterById(event, userPerms);
     }
-    // DELETE /push/devices (with body containing deviceToken)
+    // DELETE /push/devices (with body containing deviceToken or deviceId)
     if (path.endsWith('/devices')) {
-      return handleUnregisterByToken(event, userPerms);
+      return handleSmartUnregister(event, userPerms);
     }
     // DELETE /push/devices/all
     if (path.endsWith('/all')) {
@@ -236,9 +277,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
   }
 
-  // POST /push/unregister (body with deviceToken)
+  // POST /push/unregister — smart routing based on body fields
   if (event.httpMethod === 'POST' && path.includes('/unregister')) {
-    return handleUnregisterByToken(event, userPerms);
+    return handleSmartUnregister(event, userPerms);
   }
 
   return http(405, { error: 'Method Not Allowed' }, event);

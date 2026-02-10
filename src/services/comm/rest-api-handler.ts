@@ -214,6 +214,12 @@ interface FavorRequest {
     unreadCount: number;
     initialMessage: string;
     deadline?: string;
+    isMainGroupChat?: boolean;
+
+    // WhatsApp sidebar preview fields
+    lastMessage?: string;
+    lastMessageAt?: string;
+    lastMessageSenderID?: string;
 }
 
 interface Team {
@@ -222,6 +228,7 @@ interface Team {
     name: string;
     description?: string;
     members: string[];
+    admins?: string[];  // Users with admin privileges
     category?: SystemModule;
     createdAt: string;
     updatedAt: string;
@@ -270,28 +277,28 @@ function response(statusCode: number, body: any): APIGatewayProxyResult {
 function getUserIdFromEvent(event: APIGatewayProxyEvent): string | null {
     // Extract user ID from JWT claims (set by authorizer)
     const authorizer = event.requestContext.authorizer;
-    
+
     // Log the full authorizer object for debugging
     console.log('DEBUG: Authorizer object:', JSON.stringify(authorizer, null, 2));
-    
+
     if (!authorizer) {
         console.error('ERROR: No authorizer in request context');
         return null;
     }
-    
+
     const claims = authorizer.claims;
     console.log('DEBUG: Claims from authorizer:', JSON.stringify(claims, null, 2));
-    
+
     // Try multiple ways to extract user ID
     const userID = claims?.sub || claims?.['cognito:username'] || claims?.['sub'] || authorizer?.principalId;
-    
+
     if (!userID) {
         console.error('ERROR: Could not extract userID from claims or principalId');
         console.error('DEBUG: Authorizer keys:', Object.keys(authorizer));
     } else {
         console.log('DEBUG: Successfully extracted userID:', userID);
     }
-    
+
     return userID || null;
 }
 
@@ -348,13 +355,15 @@ function timingSafeEqualUtf8(a: string, b: string): boolean {
 async function getTeamById(teamID: string, fnCtx?: LogContext): Promise<Team | null> {
     if (!teamID || !TEAMS_TABLE) return null;
     const dbStart = Date.now();
-    log.dbOperation('GetItem', TEAMS_TABLE, { teamID }, fnCtx);
-    const result = await ddb.send(new GetCommand({
+    log.dbOperation('Query', TEAMS_TABLE, { teamID }, fnCtx);
+    const result = await ddb.send(new QueryCommand({
         TableName: TEAMS_TABLE,
-        Key: { teamID },
+        KeyConditionExpression: 'teamID = :tid',
+        ExpressionAttributeValues: { ':tid': teamID },
+        Limit: 1,
     }));
-    log.dbResult('GetItem', TEAMS_TABLE, result.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
-    return (result.Item as Team) || null;
+    log.dbResult('Query', TEAMS_TABLE, result.Items?.length ? 1 : 0, Date.now() - dbStart, fnCtx);
+    return (result.Items?.[0] as Team) || null;
 }
 
 function isUserDirectConversationParticipant(favor: FavorRequest, userID: string): boolean {
@@ -369,7 +378,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const handlerStartTime = Date.now();
     const requestId = event.requestContext.requestId;
     const { httpMethod, path, pathParameters, queryStringParameters, body } = event;
-    
+
     // Log full event for debugging
     console.log('=== INCOMING REQUEST ===');
     console.log('RequestID:', requestId);
@@ -377,7 +386,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     console.log('Path:', path);
     console.log('RequestContext:', JSON.stringify(event.requestContext, null, 2));
     console.log('========================');
-    
+
     // Public endpoints (no authorizer)
     const isPublicMeetingJoin = path.match(/^\/api\/public\/meetings\/[^/]+\/join$/) && httpMethod === 'POST';
 
@@ -595,7 +604,7 @@ async function searchConversations(userID: string, params: any, logCtx?: LogCont
 
     let conversations = [...(sentResult.Items || []), ...(recvResult.Items || [])] as FavorRequest[];
     log.flowCount('searchConversations', 'rawResults', conversations.length, fnCtx);
-    
+
     // Deduplicate
     const byId = new Map<string, FavorRequest>();
     for (const conv of conversations) {
@@ -607,8 +616,8 @@ async function searchConversations(userID: string, params: any, logCtx?: LogCont
     // Filter
     if (query) {
         const q = query.toLowerCase();
-        conversations = conversations.filter(c => 
-            c.title?.toLowerCase().includes(q) || 
+        conversations = conversations.filter(c =>
+            c.title?.toLowerCase().includes(q) ||
             c.initialMessage?.toLowerCase().includes(q) ||
             c.description?.toLowerCase().includes(q)
         );
@@ -673,7 +682,7 @@ async function getConversationProfiles(userID: string, params: any, logCtx?: Log
 
     let items = [...(sentResult.Items || []), ...(recvResult.Items || [])] as FavorRequest[];
     log.flowCount('getConversationProfiles', 'rawResults', items.length, fnCtx);
-    
+
     // Deduplicate and filter by tab type
     const byId = new Map<string, FavorRequest>();
     for (const item of items) {
@@ -702,8 +711,9 @@ async function getConversationProfiles(userID: string, params: any, logCtx?: Log
         conversationType: item.teamID ? 'group' : 'single',
         name: item.title || item.initialMessage?.substring(0, 50),
         taskCount: 1,
-        lastMessageTime: item.updatedAt,
-        lastMessagePreview: item.initialMessage?.substring(0, 100),
+        lastMessageTime: item.lastMessageAt || item.updatedAt,
+        lastMessagePreview: item.lastMessage || item.initialMessage?.substring(0, 100),
+        lastMessageSenderID: item.lastMessageSenderID,
         unreadCount: item.unreadCount,
         nearestDeadline: item.deadline,
         category: item.category,
@@ -745,13 +755,15 @@ async function getConversationComplete(userID: string, favorRequestID: string, l
         // Check team membership if group
         if (favor.teamID && TEAMS_TABLE) {
             const teamDbStart = Date.now();
-            log.dbOperation('GetItem', TEAMS_TABLE, { teamID: favor.teamID }, fnCtx);
-            const teamResult = await ddb.send(new GetCommand({
+            log.dbOperation('Query', TEAMS_TABLE, { teamID: favor.teamID }, fnCtx);
+            const teamResult = await ddb.send(new QueryCommand({
                 TableName: TEAMS_TABLE,
-                Key: { teamID: favor.teamID },
+                KeyConditionExpression: 'teamID = :tid',
+                ExpressionAttributeValues: { ':tid': favor.teamID },
+                Limit: 1,
             }));
-            log.dbResult('GetItem', TEAMS_TABLE, teamResult.Item ? 1 : 0, Date.now() - teamDbStart, fnCtx);
-            const team = teamResult.Item as Team;
+            log.dbResult('Query', TEAMS_TABLE, teamResult.Items?.length ? 1 : 0, Date.now() - teamDbStart, fnCtx);
+            const team = teamResult.Items?.[0] as Team;
             if (!team?.members.includes(userID)) {
                 log.warn('User not in team members', { ...fnCtx, teamID: favor.teamID });
                 return response(403, { success: false, message: 'Unauthorized' });
@@ -774,11 +786,11 @@ async function getConversationComplete(userID: string, favorRequestID: string, l
     log.dbResult('Query', MESSAGES_TABLE, messagesResult.Items?.length || 0, Date.now() - msgDbStart, fnCtx);
 
     const files = (messagesResult.Items || []).filter((m: any) => m.type === 'file');
-    log.info('getConversationComplete completed', { 
-        ...fnCtx, 
-        messageCount: messagesResult.Items?.length || 0, 
+    log.info('getConversationComplete completed', {
+        ...fnCtx,
+        messageCount: messagesResult.Items?.length || 0,
         fileCount: files.length,
-        durationMs: Date.now() - fnStart 
+        durationMs: Date.now() - fnStart
     });
 
     return response(200, {
@@ -930,7 +942,7 @@ async function getConversations(userID: string, params: any, logCtx?: LogContext
 
     let conversations = [...(sentResult.Items || []), ...(recvResult.Items || [])] as FavorRequest[];
     log.flowCount('getConversations', 'rawResults', conversations.length, fnCtx);
-    
+
     // Deduplicate
     const byId = new Map<string, FavorRequest>();
     for (const conv of conversations) {
@@ -946,8 +958,12 @@ async function getConversations(userID: string, params: any, logCtx?: LogContext
     if (category) { conversations = conversations.filter(c => c.category === category); }
     log.flowCount('getConversations', 'afterFilters', conversations.length, fnCtx);
 
-    // Sort
-    conversations.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    // Sort by lastMessageAt (WhatsApp-style), falling back to updatedAt
+    conversations.sort((a, b) => {
+        const aTime = a.lastMessageAt || a.updatedAt;
+        const bTime = b.lastMessageAt || b.updatedAt;
+        return bTime.localeCompare(aTime);
+    });
 
     // Paginate
     const total = conversations.length;
@@ -1103,7 +1119,7 @@ async function getForwardHistory(userID: string, params: any, logCtx?: LogContex
     }
 
     // Extract forward history
-    const forwardHistory = items.flatMap(item => 
+    const forwardHistory = items.flatMap(item =>
         (item.forwardingChain || []).map(f => ({
             ...f,
             taskID: item.favorRequestID,
@@ -2211,6 +2227,7 @@ async function createGroup(userID: string, body: any, logCtx?: LogContext): Prom
         name: name.trim(),
         description,
         members: uniqueMembers,
+        admins: [userID], // Creator is always the first admin
         ...(category && { category: category as SystemModule }),
         createdAt: nowIso,
         updatedAt: nowIso,
@@ -2357,13 +2374,15 @@ async function getGroupDetails(userID: string, teamID: string, logCtx?: LogConte
     const fnCtx = { ...logCtx, function: 'getGroupDetails', teamID };
 
     const dbStart = Date.now();
-    log.dbOperation('GetItem', TEAMS_TABLE, { teamID }, fnCtx);
-    const result = await ddb.send(new GetCommand({
+    log.dbOperation('Query', TEAMS_TABLE, { teamID }, fnCtx);
+    const result = await ddb.send(new QueryCommand({
         TableName: TEAMS_TABLE,
-        Key: { teamID },
+        KeyConditionExpression: 'teamID = :tid',
+        ExpressionAttributeValues: { ':tid': teamID },
+        Limit: 1,
     }));
-    log.dbResult('GetItem', TEAMS_TABLE, result.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
-    const team = result.Item as Team;
+    log.dbResult('Query', TEAMS_TABLE, result.Items?.length ? 1 : 0, Date.now() - dbStart, fnCtx);
+    const team = result.Items?.[0] as Team;
 
     if (!team) {
         log.warn('Group not found', fnCtx);
@@ -2407,13 +2426,15 @@ async function updateGroup(userID: string, teamID: string, body: any, logCtx?: L
     // ========================================
 
     const dbStart = Date.now();
-    log.dbOperation('GetItem', TEAMS_TABLE, { teamID }, fnCtx);
-    const result = await ddb.send(new GetCommand({
+    log.dbOperation('Query', TEAMS_TABLE, { teamID }, fnCtx);
+    const result = await ddb.send(new QueryCommand({
         TableName: TEAMS_TABLE,
-        Key: { teamID },
+        KeyConditionExpression: 'teamID = :tid',
+        ExpressionAttributeValues: { ':tid': teamID },
+        Limit: 1,
     }));
-    log.dbResult('GetItem', TEAMS_TABLE, result.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
-    const team = result.Item as Team;
+    log.dbResult('Query', TEAMS_TABLE, result.Items?.length ? 1 : 0, Date.now() - dbStart, fnCtx);
+    const team = result.Items?.[0] as Team;
 
     if (!team) {
         log.warn('Group not found', fnCtx);
@@ -2541,7 +2562,7 @@ async function updateGroup(userID: string, teamID: string, body: any, logCtx?: L
         log.dbOperation('UpdateItem', TEAMS_TABLE, { teamID, fieldsUpdated: updateExpressions.length - 1 }, fnCtx);
         await ddb.send(new UpdateCommand({
             TableName: TEAMS_TABLE,
-            Key: { teamID },
+            Key: { teamID, ownerID: team.ownerID },
             UpdateExpression: 'SET ' + updateExpressions.join(', '),
             ExpressionAttributeNames: name !== undefined ? { '#n': 'name' } : undefined,
             ExpressionAttributeValues: expressionValues,
@@ -2640,13 +2661,15 @@ async function addGroupMember(userID: string, teamID: string, body: any, logCtx?
     // ========================================
 
     const dbStart = Date.now();
-    log.dbOperation('GetItem', TEAMS_TABLE, { teamID }, fnCtx);
-    const result = await ddb.send(new GetCommand({
+    log.dbOperation('Query', TEAMS_TABLE, { teamID }, fnCtx);
+    const result = await ddb.send(new QueryCommand({
         TableName: TEAMS_TABLE,
-        Key: { teamID },
+        KeyConditionExpression: 'teamID = :tid',
+        ExpressionAttributeValues: { ':tid': teamID },
+        Limit: 1,
     }));
-    log.dbResult('GetItem', TEAMS_TABLE, result.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
-    const team = result.Item as Team;
+    log.dbResult('Query', TEAMS_TABLE, result.Items?.length ? 1 : 0, Date.now() - dbStart, fnCtx);
+    const team = result.Items?.[0] as Team;
 
     if (!team) {
         log.warn('Group not found', fnCtx);
@@ -2728,7 +2751,7 @@ async function addGroupMember(userID: string, teamID: string, body: any, logCtx?
         log.dbOperation('UpdateItem', TEAMS_TABLE, { teamID, addingMember: memberUserID }, fnCtx);
         await ddb.send(new UpdateCommand({
             TableName: TEAMS_TABLE,
-            Key: { teamID },
+            Key: { teamID, ownerID: team.ownerID },
             UpdateExpression: 'SET members = :members, updatedAt = :ua',
             ExpressionAttributeValues: { ':members': updatedMembers, ':ua': nowIso },
         }));
@@ -2787,13 +2810,15 @@ async function removeGroupMember(userID: string, teamID: string, memberUserID: s
     // ========================================
 
     const dbStart = Date.now();
-    log.dbOperation('GetItem', TEAMS_TABLE, { teamID }, fnCtx);
-    const result = await ddb.send(new GetCommand({
+    log.dbOperation('Query', TEAMS_TABLE, { teamID }, fnCtx);
+    const result = await ddb.send(new QueryCommand({
         TableName: TEAMS_TABLE,
-        Key: { teamID },
+        KeyConditionExpression: 'teamID = :tid',
+        ExpressionAttributeValues: { ':tid': teamID },
+        Limit: 1,
     }));
-    log.dbResult('GetItem', TEAMS_TABLE, result.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
-    const team = result.Item as Team;
+    log.dbResult('Query', TEAMS_TABLE, result.Items?.length ? 1 : 0, Date.now() - dbStart, fnCtx);
+    const team = result.Items?.[0] as Team;
 
     if (!team) {
         log.warn('Group not found', fnCtx);
@@ -2812,7 +2837,7 @@ async function removeGroupMember(userID: string, teamID: string, memberUserID: s
         return response(404, { success: false, message: 'Group not found' });
     }
 
-    if (team.ownerID !== userID) {
+    if (team.ownerID !== userID && userID !== memberUserID) {
         log.warn('Unauthorized remove member attempt', { ...fnCtx, ownerID: team.ownerID });
         AuditService.logAction({
             userID,
@@ -2823,10 +2848,10 @@ async function removeGroupMember(userID: string, teamID: string, memberUserID: s
             endpoint: `/api/groups/${teamID}/members/${memberUserID}`,
             status: 'failure',
             statusCode: 403,
-            errorMessage: 'Only the group owner can remove members',
+            errorMessage: 'Only the group owner can remove other members',
             durationMs: Date.now() - startTime,
         });
-        return response(403, { success: false, message: 'Only the group owner can remove members' });
+        return response(403, { success: false, message: 'Only the group owner can remove other members' });
     }
 
     // ========================================
@@ -2875,7 +2900,7 @@ async function removeGroupMember(userID: string, teamID: string, memberUserID: s
         log.dbOperation('UpdateItem', TEAMS_TABLE, { teamID, removingMember: memberUserID }, fnCtx);
         await ddb.send(new UpdateCommand({
             TableName: TEAMS_TABLE,
-            Key: { teamID },
+            Key: { teamID, ownerID: team.ownerID },
             UpdateExpression: 'SET members = :members, updatedAt = :ua',
             ExpressionAttributeValues: { ':members': updatedMembers, ':ua': nowIso },
         }));

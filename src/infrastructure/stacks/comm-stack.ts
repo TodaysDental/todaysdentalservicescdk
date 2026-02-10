@@ -3,8 +3,8 @@ import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
-import * as apigw2 from 'aws-cdk-lib/aws-apigatewayv2'; 
-import * as apigw2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations'; 
+import * as apigw2 from 'aws-cdk-lib/aws-apigatewayv2';
+import * as apigw2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -15,12 +15,12 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 export interface CommStackProps extends StackProps {
   // Authorizer imported via CloudFormation export
   jwtSecret: string;
-  
+
   /**
    * ARN of the shared Lambda authorizer function for REST API authentication
    */
   authorizerFunctionArn: string;
-  
+
   // ========================================
   // PUSH NOTIFICATIONS INTEGRATION (from PushNotificationsStack)
   // ========================================
@@ -28,12 +28,12 @@ export interface CommStackProps extends StackProps {
    * Device tokens table name for looking up registered mobile devices
    */
   deviceTokensTableName?: string;
-  
+
   /**
    * Device tokens table ARN for IAM permissions
    */
   deviceTokensTableArn?: string;
-  
+
   /**
    * Send push Lambda function ARN for invoking push notifications
    */
@@ -124,7 +124,7 @@ export class CommStack extends Stack {
       removalPolicy: RemovalPolicy.DESTROY,
     });
     applyTags(this.connectionsTable, { Table: 'ws-connections' });
-    
+
     // FIX: Add GSI for efficient user lookup by userID (required by ws-default.ts)
     this.connectionsTable.addGlobalSecondaryIndex({
       indexName: 'UserIDIndex',
@@ -141,7 +141,7 @@ export class CommStack extends Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
     });
     applyTags(this.favorsTable, { Table: 'favor-requests' });
-    
+
     this.favorsTable.addGlobalSecondaryIndex({
       indexName: 'UserIndex',
       partitionKey: { name: 'userID', type: dynamodb.AttributeType.STRING },
@@ -149,37 +149,37 @@ export class CommStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
     this.favorsTable.addGlobalSecondaryIndex({
-        indexName: 'SenderIndex',
-        partitionKey: { name: 'senderID', type: dynamodb.AttributeType.STRING },
-        sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
-        projectionType: dynamodb.ProjectionType.ALL,
+      indexName: 'SenderIndex',
+      partitionKey: { name: 'senderID', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
     this.favorsTable.addGlobalSecondaryIndex({
-        indexName: 'ReceiverIndex',
-        partitionKey: { name: 'receiverID', type: dynamodb.AttributeType.STRING },
-        sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
-        projectionType: dynamodb.ProjectionType.ALL,
+      indexName: 'ReceiverIndex',
+      partitionKey: { name: 'receiverID', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
     // GSI for team-based favor requests lookup
     this.favorsTable.addGlobalSecondaryIndex({
-        indexName: 'TeamIndex',
-        partitionKey: { name: 'teamID', type: dynamodb.AttributeType.STRING },
-        sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
-        projectionType: dynamodb.ProjectionType.ALL,
+      indexName: 'TeamIndex',
+      partitionKey: { name: 'teamID', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
     // GSI for status-based queries (e.g., get all pending/completed tasks)
     this.favorsTable.addGlobalSecondaryIndex({
-        indexName: 'StatusIndex',
-        partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
-        sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
-        projectionType: dynamodb.ProjectionType.ALL,
+      indexName: 'StatusIndex',
+      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
     // GSI for category-based queries (uses SYSTEM_MODULES: HR, Accounting, Operations, Finance, Marketing, Legal, IT)
     this.favorsTable.addGlobalSecondaryIndex({
-        indexName: 'CategoryIndex',
-        partitionKey: { name: 'category', type: dynamodb.AttributeType.STRING },
-        sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
-        projectionType: dynamodb.ProjectionType.ALL,
+      indexName: 'CategoryIndex',
+      partitionKey: { name: 'category', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
     // GSI for current assignee lookup (for forwarded tasks)
     this.favorsTable.addGlobalSecondaryIndex({
@@ -187,14 +187,14 @@ export class CommStack extends Stack {
       partitionKey: { name: 'currentAssigneeID', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'updatedAt', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
-  });
-  // GSI for efficient main group chat lookup by teamID (fixes ScanCommand performance issue)
-  this.favorsTable.addGlobalSecondaryIndex({
+    });
+    // GSI for efficient main group chat lookup by teamID (fixes ScanCommand performance issue)
+    this.favorsTable.addGlobalSecondaryIndex({
       indexName: 'MainGroupChatIndex',
       partitionKey: { name: 'teamID', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'isMainGroupChat', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
-  });  
+    });
 
     // 3. Messages Table (Stores each message in a separate row)
     this.messagesTable = new dynamodb.Table(this, 'MessagesTableV4', {
@@ -213,43 +213,46 @@ export class CommStack extends Stack {
     });
 
     // 4. Teams Table (Stores Group/Team Metadata)
+    // NOTE: The table has a composite key (teamID + ownerID). Handler code uses
+    // QueryCommand (not GetCommand) to look up teams by teamID alone, and includes
+    // ownerID in UpdateCommand/DeleteCommand keys after fetching the team first.
     this.teamsTable = new dynamodb.Table(this, 'TeamsTableV4', {
-        tableName: `${this.stackName}-TeamsV4`,
-        partitionKey: { name: 'teamID', type: dynamodb.AttributeType.STRING },
-        sortKey: { name: 'ownerID', type: dynamodb.AttributeType.STRING }, 
-        removalPolicy: RemovalPolicy.RETAIN,
-        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      tableName: `${this.stackName}-TeamsV4`,
+      partitionKey: { name: 'teamID', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'ownerID', type: dynamodb.AttributeType.STRING },
+      removalPolicy: RemovalPolicy.RETAIN,
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
     });
     applyTags(this.teamsTable, { Table: 'teams' });
 
     // 5. Meetings Table (Stores scheduled meetings for tasks/conversations)
     this.meetingsTable = new dynamodb.Table(this, 'MeetingsTableV4', {
-        tableName: `${this.stackName}-MeetingsV4`,
-        partitionKey: { name: 'meetingID', type: dynamodb.AttributeType.STRING },
-        removalPolicy: RemovalPolicy.RETAIN,
-        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      tableName: `${this.stackName}-MeetingsV4`,
+      partitionKey: { name: 'meetingID', type: dynamodb.AttributeType.STRING },
+      removalPolicy: RemovalPolicy.RETAIN,
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
     });
     applyTags(this.meetingsTable, { Table: 'meetings' });
     // GSI: Lookup meetings by conversation/favor request
     this.meetingsTable.addGlobalSecondaryIndex({
-        indexName: 'ConversationIndex',
-        partitionKey: { name: 'conversationID', type: dynamodb.AttributeType.STRING },
-        sortKey: { name: 'startTime', type: dynamodb.AttributeType.STRING },
-        projectionType: dynamodb.ProjectionType.ALL,
+      indexName: 'ConversationIndex',
+      partitionKey: { name: 'conversationID', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'startTime', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
     // GSI: Lookup meetings by organizer
     this.meetingsTable.addGlobalSecondaryIndex({
-        indexName: 'OrganizerIndex',
-        partitionKey: { name: 'organizerID', type: dynamodb.AttributeType.STRING },
-        sortKey: { name: 'startTime', type: dynamodb.AttributeType.STRING },
-        projectionType: dynamodb.ProjectionType.ALL,
+      indexName: 'OrganizerIndex',
+      partitionKey: { name: 'organizerID', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'startTime', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
     // GSI: Lookup meetings by status (scheduled, completed, cancelled)
     this.meetingsTable.addGlobalSecondaryIndex({
-        indexName: 'StatusIndex',
-        partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
-        sortKey: { name: 'startTime', type: dynamodb.AttributeType.STRING },
-        projectionType: dynamodb.ProjectionType.ALL,
+      indexName: 'StatusIndex',
+      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'startTime', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     // 5b. Calls Table (Stores active/recent voice/video calls for in-app calling)
@@ -265,37 +268,37 @@ export class CommStack extends Stack {
 
     // 6. Audit Logs Table (for tracking all user actions)
     this.auditLogsTable = new dynamodb.Table(this, 'AuditLogsTableV1', {
-        tableName: `${this.stackName}-AuditLogsV1`,
-        partitionKey: { name: 'auditID', type: dynamodb.AttributeType.STRING },
-        sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
-        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-        removalPolicy: RemovalPolicy.RETAIN,
-        timeToLiveAttribute: 'expiryDate', // Auto-delete after 90 days
+      tableName: `${this.stackName}-AuditLogsV1`,
+      partitionKey: { name: 'auditID', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      timeToLiveAttribute: 'expiryDate', // Auto-delete after 90 days
     });
     applyTags(this.auditLogsTable, { Table: 'audit-logs' });
 
     // GSI: Lookup audit logs by user
     this.auditLogsTable.addGlobalSecondaryIndex({
-        indexName: 'UserIDIndex',
-        partitionKey: { name: 'userID', type: dynamodb.AttributeType.STRING },
-        sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
-        projectionType: dynamodb.ProjectionType.ALL,
+      indexName: 'UserIDIndex',
+      partitionKey: { name: 'userID', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     // GSI: Lookup audit logs by resource
     this.auditLogsTable.addGlobalSecondaryIndex({
-        indexName: 'ResourceIndex',
-        partitionKey: { name: 'resourceID', type: dynamodb.AttributeType.STRING },
-        sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
-        projectionType: dynamodb.ProjectionType.ALL,
+      indexName: 'ResourceIndex',
+      partitionKey: { name: 'resourceID', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     // GSI: Lookup audit logs by action type
     this.auditLogsTable.addGlobalSecondaryIndex({
-        indexName: 'ActionIndex',
-        partitionKey: { name: 'action', type: dynamodb.AttributeType.STRING },
-        sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
-        projectionType: dynamodb.ProjectionType.ALL,
+      indexName: 'ActionIndex',
+      partitionKey: { name: 'action', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
 
@@ -312,7 +315,7 @@ export class CommStack extends Stack {
           exposedHeaders: ['ETag', 'Content-Length', 'Content-Type'],
         },
       ],
-      removalPolicy: RemovalPolicy.DESTROY, 
+      removalPolicy: RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       // Enable public read access - objects can be accessed without authentication
       blockPublicAccess: new s3.BlockPublicAccess({
@@ -329,7 +332,7 @@ export class CommStack extends Stack {
     // PUSH NOTIFICATIONS (SNS Topic)
     // ========================================
     this.notificationsTopic = new sns.Topic(this, 'NewMessageNotificationsTopic', {
-        topicName: `${this.stackName}-NewMessageNotifications`
+      topicName: `${this.stackName}-NewMessageNotifications`
     });
     applyTags(this.notificationsTopic, { Topic: 'comm-notifications' });
 
@@ -351,18 +354,18 @@ export class CommStack extends Stack {
       ...(props.deviceTokensTableName && { DEVICE_TOKENS_TABLE: props.deviceTokensTableName }),
       ...(props.sendPushFunctionArn && { SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn }),
     };
-    
+
     // ** S3 File Download Lambda Deployment (MOVED TO COMM/get-file.ts) **
     this.getFileFn = new lambdaNode.NodejsFunction(this, 'GetFileFn', {
-        entry: path.join(__dirname, '..', '..', 'services', 'comm', 'get-file.ts'),
-        handler: 'handler',
-        runtime: lambda.Runtime.NODEJS_20_X,
-        memorySize: 128,
-        timeout: Duration.seconds(10),
-        bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
-        environment: {
-            FILE_BUCKET_NAME: this.fileBucket.bucketName, 
-        },
+      entry: path.join(__dirname, '..', '..', 'services', 'comm', 'get-file.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      memorySize: 128,
+      timeout: Duration.seconds(10),
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      environment: {
+        FILE_BUCKET_NAME: this.fileBucket.bucketName,
+      },
     });
     applyTags(this.getFileFn, { Function: 'get-file' });
 
@@ -385,17 +388,24 @@ export class CommStack extends Stack {
     applyTags(connectFn, { Function: 'ws-connect' });
     this.connectionsTable.grantWriteData(connectFn);
 
-    // $disconnect handler
+    // $disconnect handler (also cleans up active calls for disconnected users)
     const disconnectFn = new lambdaNode.NodejsFunction(this, 'WsDisconnectFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'comm', 'ws-disconnect.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
-      memorySize: 128,
-      timeout: Duration.seconds(5),
+      memorySize: 256,
+      timeout: Duration.seconds(10),
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: defaultLambdaEnv,
     });
     applyTags(disconnectFn, { Function: 'ws-disconnect' });
-    this.connectionsTable.grantWriteData(disconnectFn);
+    this.connectionsTable.grantReadWriteData(disconnectFn);
+    this.callsTable.grantReadWriteData(disconnectFn);
+    // Chime SDK permission to delete meetings on abrupt disconnect
+    disconnectFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['chime:DeleteMeeting'],
+      resources: ['*'],
+    }));
 
     // $default handler (main logic: send/receive messages, resolve)
     const defaultFn = new lambdaNode.NodejsFunction(this, 'WsDefaultFn', {
@@ -404,11 +414,11 @@ export class CommStack extends Stack {
       runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 512,
       timeout: Duration.seconds(30),
-      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' }, 
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
-          ...defaultLambdaEnv,
-          SES_SOURCE_EMAIL: 'no-reply@todaysdentalinsights.com',
-          STAFF_USER_TABLE: 'StaffUser', // For looking up user emails
+        ...defaultLambdaEnv,
+        SES_SOURCE_EMAIL: 'no-reply@todaysdentalinsights.com',
+        STAFF_USER_TABLE: 'StaffUser', // For looking up user emails
       },
     });
     applyTags(defaultFn, { Function: 'ws-default' });
@@ -422,17 +432,17 @@ export class CommStack extends Stack {
     this.callsTable.grantReadWriteData(defaultFn);
     this.fileBucket.grantReadWrite(defaultFn);
     this.notificationsTopic.grantPublish(defaultFn);
-    
+
     // CRITICAL NEW FEATURE: Grant SES SendEmail permissions
     defaultFn.addToRolePolicy(new iam.PolicyStatement({
-        actions: ['ses:SendEmail', 'ses:SendRawEmail'],
-        resources: ['*'], 
+      actions: ['ses:SendEmail', 'ses:SendRawEmail'],
+      resources: ['*'],
     }));
-    
+
     // CRITICAL NEW FEATURE: Grant DynamoDB Read access to StaffUser table for email lookups
     defaultFn.addToRolePolicy(new iam.PolicyStatement({
-        actions: ['dynamodb:GetItem', 'dynamodb:Query'],
-        resources: ['arn:aws:dynamodb:*:*:table/StaffUser'],
+      actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+      resources: ['arn:aws:dynamodb:*:*:table/StaffUser'],
     }));
 
     // ========================================
@@ -459,10 +469,10 @@ export class CommStack extends Stack {
 
     // Grant Lambda permission to use the AWS API Gateway Management API (for sending messages back to client)
     const apiGatewayManagementPolicy = new iam.PolicyStatement({
-        actions: ['execute-api:ManageConnections'],
-        resources: [
-            `arn:aws:execute-api:${this.region}:${this.account}:*/@connections/*`,
-        ],
+      actions: ['execute-api:ManageConnections'],
+      resources: [
+        `arn:aws:execute-api:${this.region}:${this.account}:*/@connections/*`,
+      ],
     });
     defaultFn.addToRolePolicy(apiGatewayManagementPolicy);
 
@@ -680,7 +690,7 @@ export class CommStack extends Stack {
       },
     });
 
-    new apigw2.WebSocketStage(this, this.stackName + 'ProdStage', { 
+    new apigw2.WebSocketStage(this, this.stackName + 'ProdStage', {
       webSocketApi: this.websocketApi,
       stageName: 'prod',
       autoDeploy: true,
@@ -737,16 +747,16 @@ export class CommStack extends Stack {
     // OUTPUTS
     // ========================================
     new CfnOutput(this, 'TeamsTableName', {
-        value: this.teamsTable.tableName,
-        exportName: `${this.stackName}-TeamsTableName`,
+      value: this.teamsTable.tableName,
+      exportName: `${this.stackName}-TeamsTableName`,
     });
     new CfnOutput(this, 'MeetingsTableName', {
-        value: this.meetingsTable.tableName,
-        exportName: `${this.stackName}-MeetingsTableName`,
+      value: this.meetingsTable.tableName,
+      exportName: `${this.stackName}-MeetingsTableName`,
     });
     new CfnOutput(this, 'AuditLogsTableName', {
-        value: this.auditLogsTable.tableName,
-        exportName: `${this.stackName}-AuditLogsTableName`,
+      value: this.auditLogsTable.tableName,
+      exportName: `${this.stackName}-AuditLogsTableName`,
     });
     new CfnOutput(this, 'WebSocketApiUrl', {
       value: this.websocketApi.apiEndpoint,
@@ -776,13 +786,13 @@ export class CommStack extends Stack {
       exportName: `${this.stackName}-FileBucketPublicUrl`
     });
     new CfnOutput(this, 'NotificationsTopicArn', {
-        value: this.notificationsTopic.topicArn,
-        exportName: `${this.stackName}-NotificationsTopicArn`,
+      value: this.notificationsTopic.topicArn,
+      exportName: `${this.stackName}-NotificationsTopicArn`,
     });
-    new CfnOutput(this, 'FileDownloadFnArn', { 
-        value: this.getFileFn.functionArn,
-        description: 'ARN of the S3 Get File Download Lambda',
-        exportName: `${this.stackName}-FileDownloadFnArn`,
+    new CfnOutput(this, 'FileDownloadFnArn', {
+      value: this.getFileFn.functionArn,
+      description: 'ARN of the S3 Get File Download Lambda',
+      exportName: `${this.stackName}-FileDownloadFnArn`,
     });
   }
 }

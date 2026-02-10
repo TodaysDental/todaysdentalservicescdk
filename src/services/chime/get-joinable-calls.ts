@@ -62,10 +62,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const corsHeaders = buildCorsHeaders({}, requestOrigin);
 
   try {
-    const authContext = JSON.parse(event.requestContext.authorizer?.context || '{}');
-    const userId = authContext.email;
-    const roles = authContext.roles || [];
-    const payload = authContext;
+    // JWT authorizer places claims as flat properties on event.requestContext.authorizer
+    const authorizer = event.requestContext.authorizer || {};
+    const userId = authorizer.email || authorizer.sub || '';
+    const rolesRaw = authorizer.roles || authorizer.clinicRoles || '';
+    const roles = typeof rolesRaw === 'string' ? (rolesRaw ? rolesRaw.split(',') : []) : (Array.isArray(rolesRaw) ? rolesRaw : []);
+    const isSuperAdmin = authorizer.isSuperAdmin === 'true' || authorizer.isGlobalSuperAdmin === 'true';
+    const activeClinicIdsRaw = authorizer.activeClinicIds || '';
+    const activeClinicIds = typeof activeClinicIdsRaw === 'string' ? (activeClinicIdsRaw ? activeClinicIdsRaw.split(',') : []) : (Array.isArray(activeClinicIdsRaw) ? activeClinicIdsRaw : []);
 
     if (!userId) {
       return {
@@ -78,7 +82,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const queryParams = event.queryStringParameters || {};
     const requestedClinicId = queryParams.clinicId;
     const includeQueued = queryParams.includeQueued !== 'false'; // Default true
-    const isSupervisor = roles.includes('supervisor') || roles.includes('admin');
+    const isSupervisor = isSuperAdmin || roles.includes('supervisor') || roles.includes('admin');
     const includeActive = queryParams.includeActive === 'true' || isSupervisor; // Default true for supervisors
 
     console.log('[get-joinable-calls] Request from user:', {
@@ -90,7 +94,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     });
 
     // Get user's accessible clinics
-    const agentClinicIds = payload.activeClinicIds || [];
+    const agentClinicIds = activeClinicIds;
     const clinicIdsToQuery = requestedClinicId ? [requestedClinicId] : agentClinicIds;
 
     if (clinicIdsToQuery.length === 0) {
@@ -139,7 +143,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           // Add to queued calls list
           if (includeQueued && call.status === 'queued') {
             const waitTime = call.queuedAt ? Math.floor((now - call.queuedAt) / 1000) : 0;
-            
+
             queuedCalls.push({
               callId: call.callId,
               clinicId: call.clinicId,
@@ -159,7 +163,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           // Add to active calls list (for supervisors)
           if (includeActive && ['connected', 'on-hold', 'ringing'].includes(call.status)) {
             const duration = call.connectedAt ? Math.floor((now - call.connectedAt) / 1000) : 0;
-            
+
             // Get agent name if possible
             let agentName;
             if (call.assignedAgentId) {

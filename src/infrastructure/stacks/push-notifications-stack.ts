@@ -236,7 +236,7 @@ export class PushNotificationsStack extends Stack {
     // DynamoDB permissions for device tokens
     this.deviceTokensTable.grantReadWriteData(this.registerDeviceFn);
     this.deviceTokensTable.grantReadWriteData(this.unregisterDeviceFn);
-    this.deviceTokensTable.grantReadData(this.sendPushFn);
+    this.deviceTokensTable.grantReadWriteData(this.sendPushFn);
 
     // GlobalSecrets table permissions (for FCM credential access)
     globalSecretsTable.grantReadData(this.sendPushFn);

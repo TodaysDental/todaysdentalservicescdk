@@ -64,6 +64,19 @@ export interface VoicemailNotification extends CallNotificationData {
   s3Key?: string;
 }
 
+export interface CallEndedNotification extends CallNotificationData {
+  agentId: string;
+  reason: string;
+  message: string;
+  direction?: string;
+}
+
+export interface CallAnsweredNotification extends CallNotificationData {
+  agentId: string;
+  direction?: string;
+  meetingId?: string;
+}
+
 export interface SendPushResult {
   success: boolean;
   sent?: number;
@@ -313,7 +326,25 @@ export async function sendIncomingCallToAgents(
   agentUserIds: string[],
   notification: IncomingCallNotification
 ): Promise<void> {
-  if (!PUSH_NOTIFICATIONS_ENABLED || agentUserIds.length === 0) return;
+  if (!PUSH_NOTIFICATIONS_ENABLED || agentUserIds.length === 0) {
+    console.log('[ChimePush] sendIncomingCallToAgents skipped', {
+      pushEnabled: PUSH_NOTIFICATIONS_ENABLED,
+      agentCount: agentUserIds.length,
+      callId: notification.callId,
+    });
+    return;
+  }
+
+  console.log('[ChimePush] 📞 Sending incoming-call push notification', {
+    callId: notification.callId,
+    clinicId: notification.clinicId,
+    clinicName: notification.clinicName,
+    callerPhoneNumber: notification.callerPhoneNumber,
+    targetAgentIds: agentUserIds,
+    agentCount: agentUserIds.length,
+    timestamp: notification.timestamp,
+    sendPushArn: process.env.SEND_PUSH_FUNCTION_ARN?.substring(0, 60) + '...',
+  });
 
   const callerDisplay = getCallerDisplay(notification);
   const idempotencyKey = `incoming_call:${notification.callId}:agents:${notification.timestamp}`;
@@ -343,9 +374,19 @@ export async function sendIncomingCallToAgents(
   });
 
   if (result.success) {
-    console.log(`[ChimePush] Sent incoming call notification to ${agentUserIds.length} agents`);
+    console.log(`[ChimePush] ✅ Incoming call push delivered`, {
+      callId: notification.callId,
+      agentCount: agentUserIds.length,
+      agents: agentUserIds,
+      response: `sent=${result.sent ?? '?'}, failed=${result.failed ?? '?'}`,
+    });
   } else {
-    console.error(`[ChimePush] Failed to send incoming call to agents: ${result.error}`);
+    console.error(`[ChimePush] ❌ Failed to push incoming call notification`, {
+      callId: notification.callId,
+      error: result.error,
+      agents: agentUserIds,
+      clinicId: notification.clinicId,
+    });
   }
 }
 
@@ -642,4 +683,125 @@ export async function sendNotificationWithDetails(
     ...target,
     notification,
   }, { ...options, sync: true });
+}
+
+// ========================================
+// CALL ENDED NOTIFICATIONS
+// ========================================
+
+/**
+ * Send call-ended push notification to the assigned agent.
+ *
+ * This enables a polling-free architecture: the mobile/web clients no longer
+ * need to poll /admin/me/presence every N seconds. Instead, the backend pushes
+ * call state transitions (incoming, ended, cancelled) via FCM.
+ *
+ * The notification is sent as data-only so that on Android the custom
+ * `onMessageReceived()` handler fires even when the app is in the background.
+ */
+export async function sendCallEndedToAgent(
+  notification: CallEndedNotification
+): Promise<void> {
+  if (!PUSH_NOTIFICATIONS_ENABLED) return;
+
+  const callerDisplay = getCallerDisplay(notification);
+  const notificationType = notification.reason === 'cancelled' ? 'call_cancelled' : 'call_ended';
+  const idempotencyKey = `${notificationType}:${notification.callId}:${notification.agentId}:${notification.timestamp}`;
+
+  console.log(`[ChimePush] 📴 Sending ${notificationType} push to agent ${notification.agentId}`, {
+    callId: notification.callId,
+    reason: notification.reason,
+    direction: notification.direction,
+  });
+
+  const result = await invokeSendPushLambdaWithRetry({
+    userId: notification.agentId,
+    notification: {
+      title: 'Call Ended',
+      body: `${callerDisplay}${notification.message ? ` — ${notification.message}` : ''}`,
+      type: notificationType,
+      idempotencyKey,
+      data: {
+        callId: notification.callId,
+        clinicId: notification.clinicId,
+        clinicName: notification.clinicName,
+        reason: notification.reason,
+        message: notification.message,
+        direction: notification.direction || 'inbound',
+        action: 'call_ended',
+        timestamp: notification.timestamp,
+      },
+      category: 'CALL_ENDED',
+    },
+  }, {
+    sync: false,            // fire-and-forget (best-effort)
+    skipPreferenceCheck: true,
+    maxRetries: 1,
+  });
+
+  if (result.success) {
+    console.log(`[ChimePush] ✅ Call-ended push sent to agent ${notification.agentId}`);
+  } else {
+    console.error(`[ChimePush] ❌ Failed to send call-ended push to agent ${notification.agentId}:`, result.error);
+  }
+}
+
+// ========================================
+// CALL ANSWERED NOTIFICATIONS
+// ========================================
+
+/**
+ * Send call-answered push notification to the assigned agent.
+ *
+ * When a customer answers an outbound call, this push tells the mobile app
+ * to transition from the "Dialing..." overlay to the active "In Call" UI.
+ * Without this, the app stays stuck on "Dialing..." indefinitely because
+ * the push-first architecture has no other signal for this state change.
+ *
+ * Sent as data-only so Android/iOS background handlers fire correctly.
+ */
+export async function sendCallAnsweredToAgent(
+  notification: CallAnsweredNotification
+): Promise<void> {
+  if (!PUSH_NOTIFICATIONS_ENABLED) return;
+
+  const callerDisplay = getCallerDisplay(notification);
+  const idempotencyKey = `call_answered:${notification.callId}:${notification.agentId}:${notification.timestamp}`;
+
+  console.log(`[ChimePush] 📞 Sending call_answered push to agent ${notification.agentId}`, {
+    callId: notification.callId,
+    direction: notification.direction,
+  });
+
+  const result = await invokeSendPushLambdaWithRetry({
+    userId: notification.agentId,
+    notification: {
+      title: 'Call Connected',
+      body: `${callerDisplay} answered`,
+      type: 'call_answered',
+      idempotencyKey,
+      data: {
+        callId: notification.callId,
+        clinicId: notification.clinicId,
+        clinicName: notification.clinicName,
+        callerPhoneNumber: notification.callerPhoneNumber,
+        callerName: notification.callerName,
+        direction: notification.direction || 'outbound',
+        meetingId: notification.meetingId || '',
+        action: 'call_answered',
+        timestamp: notification.timestamp,
+      },
+      category: 'CALL_ANSWERED',
+    },
+  }, {
+    sync: false,
+    skipPreferenceCheck: true,
+    maxRetries: 1,
+  });
+
+  if (result.success) {
+    console.log(`[ChimePush] ✅ Call-answered push sent to agent ${notification.agentId}`);
+  } else {
+    console.error(`[ChimePush] ❌ Failed to send call-answered push to agent ${notification.agentId}:`, result.error);
+  }
 }

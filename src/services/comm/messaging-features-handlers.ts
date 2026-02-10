@@ -241,21 +241,24 @@ export async function handleAddReaction(
     const reactionKey = `${messageID}#${emojiCode}`;
 
     try {
-        // Try to update existing reaction
-        const updateResult = await ddb.send(new UpdateCommand({
+        // First, find the message by querying all messages in this conversation
+        const queryResult = await ddb.send(new QueryCommand({
             TableName: MESSAGES_TABLE,
-            Key: { favorRequestID, timestamp: parseInt(messageID.split('-')[0]) || Date.now() },
-            UpdateExpression: `
-        SET reactions = if_not_exists(reactions, :emptyList)
-      `,
-            ExpressionAttributeValues: {
-                ':emptyList': [],
-            },
-            ReturnValues: 'ALL_NEW',
+            KeyConditionExpression: 'favorRequestID = :fid',
+            ExpressionAttributeValues: { ':fid': favorRequestID },
         }));
 
+        const message = queryResult.Items?.find((m: any) => m.messageID === messageID) as MessageData;
+
+        if (!message) {
+            await sendToClient(apiGwManagement, connectionId, {
+                type: 'error',
+                message: 'Message not found',
+            });
+            return;
+        }
+
         // Get existing reactions and update
-        const message = updateResult.Attributes as MessageData;
         let reactions = message.reactions || [];
 
         const existingIndex = reactions.findIndex(r => r.emojiCode === emojiCode);
@@ -304,6 +307,7 @@ export async function handleAddReaction(
         });
     }
 }
+
 
 export async function handleRemoveReaction(
     senderID: string,

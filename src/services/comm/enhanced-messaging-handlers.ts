@@ -186,11 +186,13 @@ async function broadcastToConversation(
     const teamID = (favorResult.Item as any).teamID as string | undefined;
     if (teamID && TEAMS_TABLE) {
         try {
-            const teamResult = await ddb.send(new GetCommand({
+            const teamResult = await ddb.send(new QueryCommand({
                 TableName: TEAMS_TABLE,
-                Key: { teamID },
+                KeyConditionExpression: 'teamID = :tid',
+                ExpressionAttributeValues: { ':tid': teamID },
+                Limit: 1,
             }));
-            const members = (teamResult.Item as any)?.members;
+            const members = (teamResult.Items?.[0] as any)?.members;
             if (Array.isArray(members)) {
                 for (const m of members) {
                     if (m) participants.add(String(m));
@@ -1323,7 +1325,9 @@ export async function handleJoinCall(
 }
 
 /**
- * Leave an ongoing call (does not end the meeting for others)
+ * Leave an ongoing call.
+ * For 2-party calls this automatically ends the call for everyone.
+ * For multi-party calls it removes the leaver and ends the call only when nobody is left.
  */
 export async function handleLeaveCall(
     senderID: string,
@@ -1353,7 +1357,7 @@ export async function handleLeaveCall(
             return;
         }
 
-        // Notify participants (UI-only; media is handled client-side by Chime SDK)
+        // Notify participants that this user left (UI-only; media is handled client-side by Chime SDK)
         for (const participantID of call.participantIDs || []) {
             const pConnectionIds = await getConnectionIdsForUser(participantID);
             for (const pConnectionId of pConnectionIds) {
@@ -1364,6 +1368,57 @@ export async function handleLeaveCall(
                     participantID: senderID,
                     participantName: senderID,
                 });
+            }
+        }
+
+        // Auto-end the call if this is a 2-party call or if everyone has left.
+        // For a standard 2-party call, leaving = ending for both sides.
+        const totalParticipants = (call.participantIDs || []).length;
+        const shouldAutoEnd = totalParticipants <= 2 || call.status === 'connected';
+
+        if (shouldAutoEnd && (call.status === 'connected' || call.status === 'ringing')) {
+            console.log(`[Call] Auto-ending call ${callID} — participant ${senderID} left a ${totalParticipants}-party call`);
+
+            const now = new Date().toISOString();
+            const startTime = new Date(call.startedAt || now).getTime();
+            const endTime = new Date(now).getTime();
+            const duration = Math.floor((endTime - startTime) / 1000);
+
+            await ddb.send(new UpdateCommand({
+                TableName: CALLS_TABLE,
+                Key: { callID },
+                UpdateExpression: 'SET #status = :status, endedAt = :endedAt, #duration = :duration',
+                ExpressionAttributeNames: { '#status': 'status', '#duration': 'duration' },
+                ExpressionAttributeValues: {
+                    ':status': 'ended',
+                    ':endedAt': now,
+                    ':duration': duration,
+                },
+            }));
+
+            // End Chime SDK meeting
+            if (call.meetingId) {
+                try {
+                    const { endMeeting } = await import('./chime-meeting-manager');
+                    await endMeeting(call.meetingId);
+                    console.log(`[Call] Ended Chime meeting on leave: ${call.meetingId}`);
+                } catch (chimeError) {
+                    console.warn('[Call] Failed to end Chime meeting on leave:', chimeError);
+                }
+            }
+
+            // Notify all participants that call has ended
+            for (const participantID of call.participantIDs || []) {
+                const pConnectionIds = await getConnectionIdsForUser(participantID);
+                for (const pConnectionId of pConnectionIds) {
+                    await sendToClient(apiGwManagement, pConnectionId, {
+                        type: 'callStatusUpdate',
+                        callID,
+                        status: 'ended',
+                        updatedBy: senderID,
+                        endedAt: now,
+                    });
+                }
             }
         }
     } catch (e) {
@@ -1982,5 +2037,385 @@ export async function handleGetConversationFiles(
     } catch (e) {
         console.error('Error getting conversation files:', e);
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to get files' });
+    }
+}
+
+// ========================================
+// MESSAGE FORWARDING HANDLERS
+// ========================================
+
+/**
+ * Forward one or more messages to one or more conversations.
+ * Creates a copy of each message in each target conversation with `forwardedFrom` metadata.
+ */
+export async function handleForwardMessage(
+    senderID: string,
+    payload: {
+        sourceMessages: { favorRequestID: string; timestamp: number }[];
+        targetFavorRequestIDs: string[];
+    },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { sourceMessages, targetFavorRequestIDs } = payload;
+
+    if (!sourceMessages?.length || !targetFavorRequestIDs?.length) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error',
+            message: 'Missing sourceMessages or targetFavorRequestIDs',
+        });
+        return;
+    }
+
+    const forwardedMessages: any[] = [];
+
+    for (const src of sourceMessages) {
+        // 1. Fetch the original message
+        let originalMessage: any;
+        try {
+            const result = await ddb.send(new GetCommand({
+                TableName: MESSAGES_TABLE,
+                Key: { favorRequestID: src.favorRequestID, timestamp: src.timestamp },
+            }));
+            originalMessage = result.Item;
+        } catch (e) {
+            console.error('Error fetching source message:', e);
+            continue;
+        }
+
+        if (!originalMessage) continue;
+
+        // 2. For each target conversation, create a forwarded copy
+        for (const targetFavorRequestID of targetFavorRequestIDs) {
+            const newTimestamp = Date.now();
+            const forwardedMessage = {
+                favorRequestID: targetFavorRequestID,
+                senderID,
+                content: originalMessage.content || '',
+                timestamp: newTimestamp,
+                type: originalMessage.type || 'text',
+                fileKey: originalMessage.fileKey,
+                fileDetails: originalMessage.fileDetails,
+                voiceKey: originalMessage.voiceKey,
+                voiceDetails: originalMessage.voiceDetails,
+                deliveryStatus: 'sent',
+                forwardedFrom: {
+                    originalSenderID: originalMessage.senderID,
+                    originalFavorRequestID: src.favorRequestID,
+                    originalTimestamp: src.timestamp,
+                    originalContent: originalMessage.content?.substring(0, 200),
+                },
+            };
+
+            try {
+                await ddb.send(new PutCommand({
+                    TableName: MESSAGES_TABLE,
+                    Item: forwardedMessage,
+                }));
+
+                // Update lastMessage on target conversation
+                const lastPreview = originalMessage.type === 'file'
+                    ? '↪ Forwarded: 📎 Attachment'
+                    : `↪ Forwarded: ${(originalMessage.content || '').substring(0, 80)}`;
+
+                await ddb.send(new UpdateCommand({
+                    TableName: FAVORS_TABLE,
+                    Key: { favorRequestID: targetFavorRequestID },
+                    UpdateExpression: 'SET lastMessage = :lm, lastMessageAt = :lma, lastMessageSenderID = :lms, updatedAt = :ua',
+                    ExpressionAttributeValues: {
+                        ':lm': lastPreview,
+                        ':lma': new Date().toISOString(),
+                        ':lms': senderID,
+                        ':ua': new Date().toISOString(),
+                    },
+                }));
+
+                // Broadcast to target conversation participants
+                await broadcastToConversation(apiGwManagement, targetFavorRequestID, {
+                    type: 'newMessage',
+                    message: forwardedMessage,
+                });
+
+                forwardedMessages.push(forwardedMessage);
+            } catch (e) {
+                console.error(`Error forwarding message to ${targetFavorRequestID}:`, e);
+            }
+        }
+    }
+
+    // Confirm forwarding to the sender
+    await sendToClient(apiGwManagement, connectionId, {
+        type: 'messagesForwarded',
+        count: forwardedMessages.length,
+        targetFavorRequestIDs,
+    });
+}
+
+// ========================================
+// STAR / UNSTAR MESSAGE HANDLERS
+// ========================================
+
+/**
+ * Star a message (saves a starredMessages attribute directly on the message).
+ */
+export async function handleStarMessage(
+    senderID: string,
+    payload: { favorRequestID: string; timestamp: number },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, timestamp } = payload;
+
+    if (!favorRequestID || !timestamp) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error',
+            message: 'Missing favorRequestID or timestamp',
+        });
+        return;
+    }
+
+    try {
+        await ddb.send(new UpdateCommand({
+            TableName: MESSAGES_TABLE,
+            Key: { favorRequestID, timestamp },
+            ConditionExpression: 'attribute_exists(favorRequestID) AND attribute_exists(#ts)',
+            ExpressionAttributeNames: { '#ts': 'timestamp' },
+            UpdateExpression: 'ADD starredBy :userSet',
+            ExpressionAttributeValues: {
+                ':userSet': new Set([senderID]),
+            },
+        }));
+
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'messageStarred',
+            favorRequestID,
+            timestamp,
+        });
+    } catch (e) {
+        console.error('Error starring message:', e);
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error',
+            message: 'Failed to star message',
+        });
+    }
+}
+
+/**
+ * Unstar a message.
+ */
+export async function handleUnstarMessage(
+    senderID: string,
+    payload: { favorRequestID: string; timestamp: number },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, timestamp } = payload;
+
+    if (!favorRequestID || !timestamp) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error',
+            message: 'Missing favorRequestID or timestamp',
+        });
+        return;
+    }
+
+    try {
+        await ddb.send(new UpdateCommand({
+            TableName: MESSAGES_TABLE,
+            Key: { favorRequestID, timestamp },
+            ConditionExpression: 'attribute_exists(favorRequestID) AND attribute_exists(#ts)',
+            ExpressionAttributeNames: { '#ts': 'timestamp' },
+            UpdateExpression: 'DELETE starredBy :userSet',
+            ExpressionAttributeValues: {
+                ':userSet': new Set([senderID]),
+            },
+        }));
+
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'messageUnstarred',
+            favorRequestID,
+            timestamp,
+        });
+    } catch (e) {
+        console.error('Error unstarring message:', e);
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error',
+            message: 'Failed to unstar message',
+        });
+    }
+}
+
+/**
+ * Get all starred messages for the current user across all conversations (or for a specific conversation).
+ */
+export async function handleGetStarredMessages(
+    senderID: string,
+    payload: { favorRequestID?: string; limit?: number },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, limit = 50 } = payload;
+
+    try {
+        let starredMessages: any[] = [];
+
+        if (favorRequestID) {
+            // Get starred messages for a specific conversation
+            const result = await ddb.send(new QueryCommand({
+                TableName: MESSAGES_TABLE,
+                KeyConditionExpression: 'favorRequestID = :frid',
+                FilterExpression: 'contains(starredBy, :userID)',
+                ExpressionAttributeValues: {
+                    ':frid': favorRequestID,
+                    ':userID': senderID,
+                },
+            }));
+            starredMessages = result.Items || [];
+        } else {
+            // Scan all messages for this user's stars (less efficient, but necessary for cross-conversation)
+            const result = await ddb.send(new ScanCommand({
+                TableName: MESSAGES_TABLE,
+                FilterExpression: 'contains(starredBy, :userID)',
+                ExpressionAttributeValues: {
+                    ':userID': senderID,
+                },
+                Limit: limit * 3, // Over-fetch since Scan limit applies before filter
+            }));
+            starredMessages = result.Items || [];
+        }
+
+        // Sort by timestamp descending
+        starredMessages.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        starredMessages = starredMessages.slice(0, limit);
+
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'starredMessagesList',
+            messages: starredMessages,
+            total: starredMessages.length,
+        });
+    } catch (e) {
+        console.error('Error getting starred messages:', e);
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error',
+            message: 'Failed to get starred messages',
+        });
+    }
+}
+
+// ========================================
+// MESSAGE INFO HANDLER
+// ========================================
+
+/**
+ * Get detailed delivery info for a message (sent, delivered, read times per recipient).
+ * WhatsApp-style "Message Info" screen.
+ */
+export async function handleGetMessageInfo(
+    senderID: string,
+    payload: { favorRequestID: string; timestamp: number },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, timestamp } = payload;
+
+    if (!favorRequestID || !timestamp) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error',
+            message: 'Missing favorRequestID or timestamp',
+        });
+        return;
+    }
+
+    try {
+        // Get the message
+        const msgResult = await ddb.send(new GetCommand({
+            TableName: MESSAGES_TABLE,
+            Key: { favorRequestID, timestamp },
+        }));
+
+        const message = msgResult.Item;
+        if (!message) {
+            await sendToClient(apiGwManagement, connectionId, {
+                type: 'error',
+                message: 'Message not found',
+            });
+            return;
+        }
+
+        // Get conversation participants
+        const favorResult = await ddb.send(new GetCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+        }));
+        const favor = favorResult.Item;
+        if (!favor) {
+            await sendToClient(apiGwManagement, connectionId, {
+                type: 'error',
+                message: 'Conversation not found',
+            });
+            return;
+        }
+
+        // Build participant list
+        const participants = new Set<string>();
+        if ((favor as any).senderID) participants.add(String((favor as any).senderID));
+        if ((favor as any).receiverID) participants.add(String((favor as any).receiverID));
+
+        const teamID = (favor as any).teamID as string | undefined;
+        if (teamID && TEAMS_TABLE) {
+            try {
+                const teamResult = await ddb.send(new QueryCommand({
+                    TableName: TEAMS_TABLE,
+                    KeyConditionExpression: 'teamID = :tid',
+                    ExpressionAttributeValues: { ':tid': teamID },
+                    Limit: 1,
+                }));
+                const members = (teamResult.Items?.[0] as any)?.members;
+                if (Array.isArray(members)) {
+                    for (const m of members) {
+                        if (m) participants.add(String(m));
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to load team for message info:', e);
+            }
+        }
+
+        // Build per-recipient delivery info
+        const readByMap = new Map<string, number>();
+        if (Array.isArray(message.readBy)) {
+            for (const receipt of message.readBy) {
+                readByMap.set(receipt.userID, receipt.readAt);
+            }
+        }
+
+        const recipientInfo = Array.from(participants)
+            .filter(uid => uid !== message.senderID)
+            .map(uid => ({
+                userID: uid,
+                sentAt: message.timestamp,
+                deliveredAt: message.deliveredAt || null,
+                readAt: readByMap.get(uid) || null,
+            }));
+
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'messageInfo',
+            favorRequestID,
+            timestamp,
+            senderID: message.senderID,
+            content: message.content,
+            messageType: message.type || 'text',
+            sentAt: message.timestamp,
+            deliveryStatus: message.deliveryStatus || 'sent',
+            recipients: recipientInfo,
+            starredBy: message.starredBy ? Array.from(message.starredBy) : [],
+            forwardedFrom: message.forwardedFrom || null,
+        });
+    } catch (e) {
+        console.error('Error getting message info:', e);
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error',
+            message: 'Failed to get message info',
+        });
     }
 }
