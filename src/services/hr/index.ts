@@ -1720,6 +1720,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return createShift(parsedBody, allowedClinics, userPerms, event);
     }
 
+    // --- BATCH SHIFTS (multiday / multi-staff → one consolidated email per staff) ---
+    if (method === 'POST' && path === '/shifts/batch') {
+      if (!isAdmin) return httpErr(403, "Forbidden");
+      const parsedBody = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+      return createBatchShifts(parsedBody, allowedClinics, userPerms, event);
+    }
+
     if (method === 'PUT' && path.startsWith('/shifts/')) {
       const shiftId = path.split('/')[2];
       const parsedBody = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
@@ -2390,6 +2397,330 @@ async function createShift(body: any, allowedClinics: Set<string>, userPerms?: U
   await sendShiftNotificationEmail(email, shift, staffName || staffId, clinicTimezone);
 
   return httpOk({ shiftId, message: "Shift created successfully" });
+}
+
+// ========================================
+// BATCH SHIFTS — Create multiple shifts, send ONE consolidated email per staff
+// ========================================
+
+async function createBatchShifts(body: any, allowedClinics: Set<string>, userPerms?: UserPermissions, event?: APIGatewayProxyEvent) {
+  const { shifts: shiftPayloads } = body;
+  if (!Array.isArray(shiftPayloads) || shiftPayloads.length === 0) {
+    return httpErr(400, "shifts array is required and must not be empty");
+  }
+
+  // Group payloads by staffId so each staff gets ONE consolidated email
+  const byStaff: Record<string, typeof shiftPayloads> = {};
+  for (const sp of shiftPayloads) {
+    if (!sp.staffId || !sp.clinicId || !sp.startTime || !sp.endTime) {
+      return httpErr(400, "Each shift must have staffId, clinicId, startTime, and endTime");
+    }
+    if (!hasClinicAccess(allowedClinics, sp.clinicId)) {
+      return httpErr(403, `Forbidden: no access to clinic ${sp.clinicId}`);
+    }
+    const key = sp.staffId.toLowerCase();
+    if (!byStaff[key]) byStaff[key] = [];
+    byStaff[key].push(sp);
+  }
+
+  let totalCreated = 0;
+  let totalFailed = 0;
+
+  for (const [staffKey, staffShifts] of Object.entries(byStaff)) {
+    // Look up staff user info once per staff
+    let email: string;
+    let staffName: string | undefined;
+    try {
+      const { Item: staffUser } = await ddb.send(new GetCommand({
+        TableName: STAFF_USER_TABLE,
+        Key: { email: staffKey },
+      }));
+
+      if (!staffUser) {
+        console.error("Staff user not found for batch:", staffKey);
+        totalFailed += staffShifts.length;
+        continue;
+      }
+
+      email = staffUser.email?.toLowerCase();
+      const givenName = staffUser.givenName;
+      const familyName = staffUser.familyName;
+      staffName = `${givenName || ''} ${familyName || ''}`.trim();
+    } catch (err) {
+      console.error("StaffUser lookup failed for batch:", err);
+      totalFailed += staffShifts.length;
+      continue;
+    }
+
+    if (!email) {
+      totalFailed += staffShifts.length;
+      continue;
+    }
+
+    // Fetch hourly rate ONCE per staff+clinic (all shifts in a batch share the same clinic)
+    const clinicId = staffShifts[0].clinicId;
+    let hourlyRate = 0;
+    try {
+      const { Item: staffInfo } = await ddb.send(new GetCommand({
+        TableName: STAFF_INFO_TABLE,
+        Key: { email: email, clinicId },
+      }));
+      if (staffInfo) {
+        hourlyRate = parseFloat(String(staffInfo.hourlyPay || staffInfo.hourlyRate || 0));
+      }
+    } catch (err) {
+      console.error("StaffClinicInfo lookup failed for batch:", err);
+    }
+
+    const clinicTimezone = await getClinicTimezone(clinicId);
+    const createdShifts: any[] = [];
+
+    for (const sp of staffShifts) {
+      try {
+        const startTime = normalizeToUtcIso(sp.startTime, clinicTimezone);
+        const endTime = normalizeToUtcIso(sp.endTime, clinicTimezone);
+
+        const shiftDate = new Date(startTime);
+        const isBlocked = await isDateBlocked(sp.staffId, shiftDate);
+        if (isBlocked) {
+          console.warn(`Skipping shift on blocked date for ${sp.staffId}`);
+          totalFailed++;
+          continue;
+        }
+
+        const shiftId = uuidv4();
+        const startMs = new Date(startTime).getTime();
+        const endMs = new Date(endTime).getTime();
+        const totalHours = parseFloat(((endMs - startMs) / (1000 * 60 * 60)).toFixed(2));
+        const pay = parseFloat((totalHours * hourlyRate).toFixed(2));
+
+        const shift = {
+          shiftId,
+          staffId: sp.staffId,
+          clinicId: sp.clinicId,
+          startTime,
+          endTime,
+          timezone: clinicTimezone,
+          totalHours,
+          pay,
+          hourlyRate,
+          role: sp.role || '',
+          status: 'scheduled',
+        };
+
+        await ddb.send(new PutCommand({ TableName: SHIFTS_TABLE, Item: shift }));
+
+        if (userPerms) {
+          await auditLogger.log({
+            userId: userPerms.email,
+            userName: `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email,
+            userRole: AuditLogger.getUserRole(userPerms),
+            action: 'CREATE',
+            resource: 'SHIFT',
+            resourceId: shiftId,
+            clinicId: sp.clinicId,
+            after: AuditLogger.sanitizeForAudit(shift),
+            metadata: {
+              ...AuditLogger.createShiftMetadata(shift),
+              assignedTo: sp.staffId,
+              assignedToName: staffName,
+              actionType: 'Shift Created (Batch)',
+            },
+            ...AuditLogger.extractRequestContext(event),
+          });
+        }
+
+        createdShifts.push(shift);
+        totalCreated++;
+      } catch (err) {
+        console.error("Failed to create shift in batch:", err);
+        totalFailed++;
+      }
+    }
+
+    // Send ONE consolidated email for all shifts created for this staff member
+    if (createdShifts.length > 0) {
+      await sendMultiShiftNotificationEmail(email, createdShifts, staffName || staffKey, clinicTimezone, clinicId);
+    }
+  }
+
+  return httpOk({
+    message: `Batch complete: ${totalCreated} shift(s) created, ${totalFailed} failed.`,
+    totalCreated,
+    totalFailed,
+  });
+}
+
+// ========================================
+// CONSOLIDATED MULTI-SHIFT EMAIL
+// ========================================
+
+async function sendMultiShiftNotificationEmail(
+  recipientEmail: string,
+  shifts: any[],
+  staffName: string,
+  clinicTimezone: string,
+  clinicId: string,
+) {
+  if (!FROM_EMAIL || !recipientEmail || shifts.length === 0) {
+    console.warn('Skipping multi-shift notification: Missing data.');
+    return;
+  }
+
+  const tz = normalizeTimeZoneOrUtc(clinicTimezone);
+
+  // Build shift rows for the HTML table
+  let totalHoursAll = 0;
+  let totalPayAll = 0;
+  const shiftRows = shifts.map((s: any) => {
+    const shiftDate = new Date(s.startTime).toLocaleDateString('en-US', {
+      timeZone: tz,
+      weekday: 'short',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+    const startLocal = new Date(s.startTime).toLocaleTimeString('en-US', {
+      timeZone: tz,
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+    const endLocal = new Date(s.endTime).toLocaleTimeString('en-US', {
+      timeZone: tz,
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+
+    totalHoursAll += s.totalHours || 0;
+    totalPayAll += s.pay || 0;
+
+    return `
+      <tr>
+        <td style="padding:8px 12px; border-bottom:1px solid #eee;">${shiftDate}</td>
+        <td style="padding:8px 12px; border-bottom:1px solid #eee;">${startLocal} – ${endLocal}</td>
+        <td style="padding:8px 12px; border-bottom:1px solid #eee; text-align:right;">${(s.totalHours || 0).toFixed(2)}</td>
+        <td style="padding:8px 12px; border-bottom:1px solid #eee; text-align:right;">$${(s.pay || 0).toFixed(2)}</td>
+      </tr>`;
+  }).join('');
+
+  const hourlyRate = shifts[0]?.hourlyRate || 0;
+
+  const subject = `${shifts.length} New Shift(s) Scheduled at ${clinicId}`;
+
+  const bodyHtml = `
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; }
+        .container { max-width: 650px; margin: 20px auto; border: 1px solid #ddd; padding: 0; border-radius: 10px; overflow: hidden; background: #fff; }
+        .header { background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%); color: white; padding: 24px 20px; text-align: center; }
+        .header h2 { margin: 0; font-size: 1.4rem; font-weight: 600; }
+        .body-content { padding: 24px 20px; }
+        table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+        th { background: #f8f9fa; padding: 10px 12px; text-align: left; font-size: 0.85rem; color: #555; border-bottom: 2px solid #ddd; }
+        .totals td { font-weight: bold; border-top: 2px solid #333; background: #f0f0f0; }
+        .meta { background: #f8f9fa; border-radius: 8px; padding: 14px 16px; margin: 16px 0; }
+        .meta-row { display: flex; margin-bottom: 6px; }
+        .meta-label { font-weight: bold; width: 130px; color: #555; }
+        .meta-value { flex: 1; color: #333; }
+        .footer { text-align: center; font-size: 0.8em; color: #777; padding: 16px 20px; border-top: 1px solid #eee; }
+        .cta-btn { display: inline-block; background: #8b5cf6; color: white; text-decoration: none; padding: 12px 28px; border-radius: 6px; margin-top: 16px; font-weight: 600; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h2>Shift Schedule Notification</h2>
+        </div>
+        <div class="body-content">
+          <p>Dear ${staffName},</p>
+          <p>${shifts.length > 1 ? `<strong>${shifts.length} shifts</strong> have been scheduled for you.` : 'A new shift has been scheduled for you.'} Please review the details below:</p>
+
+          <div class="meta">
+            <div class="meta-row"><span class="meta-label">Office:</span><span class="meta-value">${clinicId}</span></div>
+            <div class="meta-row"><span class="meta-label">Hourly Rate:</span><span class="meta-value">$${hourlyRate.toFixed(2)}</span></div>
+            <div class="meta-row"><span class="meta-label">Total Shifts:</span><span class="meta-value">${shifts.length}</span></div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Time</th>
+                <th style="text-align:right;">Hours</th>
+                <th style="text-align:right;">Pay</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${shiftRows}
+              <tr class="totals">
+                <td style="padding:10px 12px;" colspan="2"><strong>TOTALS</strong></td>
+                <td style="padding:10px 12px; text-align:right;">${totalHoursAll.toFixed(2)}</td>
+                <td style="padding:10px 12px; text-align:right;">$${totalPayAll.toFixed(2)}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <p style="text-align:center;">
+            <a href="https://todaysdentalinsights.com/" class="cta-btn" style="color: white;">View Your Schedule</a>
+          </p>
+        </div>
+        <div class="footer">
+          <p>This is an automated notification from ${APP_NAME}.</p>
+          <p>Please do not reply to this email.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  // Plain text fallback
+  const shiftLines = shifts.map((s: any) => {
+    const shiftDate = new Date(s.startTime).toLocaleDateString('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric' });
+    const startLocal = new Date(s.startTime).toLocaleTimeString('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true });
+    const endLocal = new Date(s.endTime).toLocaleTimeString('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true });
+    return `  ${shiftDate}: ${startLocal} – ${endLocal} (${(s.totalHours || 0).toFixed(2)} hrs, $${(s.pay || 0).toFixed(2)})`;
+  }).join('\n');
+
+  const textBody = `New Shifts Scheduled
+
+Dear ${staffName},
+
+${shifts.length} shift(s) have been scheduled for you at ${clinicId}.
+
+Shift Details:
+${shiftLines}
+
+Total Hours: ${totalHoursAll.toFixed(2)}
+Total Pay: $${totalPayAll.toFixed(2)}
+Hourly Rate: $${hourlyRate.toFixed(2)}
+
+View your schedule at: https://todaysdentalinsights.com/
+
+This is an automated notification from ${APP_NAME}.`;
+
+  const command = new SendEmailCommand({
+    Destination: { ToAddresses: [recipientEmail] },
+    Content: {
+      Simple: {
+        Subject: { Data: subject },
+        Body: {
+          Html: { Data: bodyHtml },
+          Text: { Data: textBody },
+        },
+      },
+    },
+    FromEmailAddress: FROM_EMAIL,
+  });
+
+  try {
+    await ses.send(command);
+    console.log(`Multi-shift email sent to ${recipientEmail} for ${shifts.length} shifts`);
+  } catch (e) {
+    console.error(`Failed to send multi-shift email to ${recipientEmail}:`, e);
+  }
 }
 
 async function updateShift(shiftId: string, body: any, allowedClinics: Set<string>, userPerms?: UserPermissions, event?: APIGatewayProxyEvent) {
