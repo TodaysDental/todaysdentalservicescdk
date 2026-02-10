@@ -16,7 +16,9 @@ import { getClinicConfig } from '../../shared/utils/secrets-helper';
 import { renderConsentFormElements } from '../../shared/utils/consent-form-renderer';
 
 const client = new DynamoDBClient({});
-const docClient = DynamoDBDocumentClient.from(client);
+const docClient = DynamoDBDocumentClient.from(client, {
+  marshallOptions: { removeUndefinedValues: true },
+});
 
 const TEMPLATES_TABLE_NAME = process.env.TEMPLATES_TABLE_NAME || '';
 const INSTANCES_TABLE_NAME = process.env.INSTANCES_TABLE_NAME || '';

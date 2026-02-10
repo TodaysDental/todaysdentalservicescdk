@@ -9,7 +9,9 @@ import { getGlobalSecret } from '../../shared/utils/secrets-helper';
 import { renderConsentFormElements } from '../../shared/utils/consent-form-renderer';
 
 const client = new DynamoDBClient({});
-const docClient = DynamoDBDocumentClient.from(client);
+const docClient = DynamoDBDocumentClient.from(client, {
+  marshallOptions: { removeUndefinedValues: true },
+});
 const s3 = new S3Client({});
 
 const INSTANCES_TABLE_NAME = process.env.INSTANCES_TABLE_NAME || '';
