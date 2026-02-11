@@ -458,7 +458,7 @@ export class SchedulesStack extends Stack {
     }));
 
     emailSenderFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:GetItem'],
+      actions: ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:GetItem', 'dynamodb:DeleteItem'],
       resources: [`arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/TodaysDentalInsightsNotificationsN1-EmailAnalytics`],
     }));
 

@@ -129,7 +129,7 @@ export class ConsentFormDataStack extends Stack {
     // ========================================
 
     const corsConfig = getCdkCorsConfig();
-    
+
     this.api = new apigw.RestApi(this, 'ConsentFormDataApi', {
       restApiName: 'ConsentFormDataApi',
       description: 'Consent Form Data service API',
@@ -147,20 +147,20 @@ export class ConsentFormDataStack extends Stack {
     });
 
     const corsErrorHeaders = getCorsErrorHeaders();
-    
+
     // Add Gateway Responses for 4XX, 5XX, and UNAUTHORIZED
     new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
       restApi: this.api,
       type: apigw.ResponseType.DEFAULT_4XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault5XX', {
       restApi: this.api,
       type: apigw.ResponseType.DEFAULT_5XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseUnauthorized', {
       restApi: this.api,
       type: apigw.ResponseType.UNAUTHORIZED,
@@ -170,7 +170,7 @@ export class ConsentFormDataStack extends Stack {
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
     const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
-    
+
     // Create authorizer for this stack's API
     this.authorizer = new apigw.RequestAuthorizer(this, 'ConsentFormDataAuthorizer', {
       handler: authorizerFn,
@@ -360,6 +360,13 @@ export class ConsentFormDataStack extends Stack {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '201' }, { statusCode: '400' }, { statusCode: '403' }, { statusCode: '404' }],
+    });
+
+    // PATCH /consent-forms/{consentFormId}/instances  (protected: update instance status)
+    consentFormInstancesRes.addMethod('PATCH', new apigw.LambdaIntegration(this.consentFormInstancesFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '403' }, { statusCode: '404' }, { statusCode: '409' }],
     });
 
     // GET /consent-forms/instances?clinicId=...  (protected)

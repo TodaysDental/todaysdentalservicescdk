@@ -1,5 +1,5 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { randomBytes } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
@@ -249,6 +249,70 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       });
 
       return json(event, 200, { instances });
+    }
+
+    // PATCH /consent-forms/{consentFormId}/instances — update instance status
+    // Route: consentFormId is actually the instance_id in this context
+    if (httpMethod === 'PATCH' && consentFormId) {
+      const body = safeParseJson(event.body || null);
+      const instanceId = consentFormId;
+      const newStatus = String(body?.status || '').trim().toLowerCase();
+
+      const VALID_STATUSES = ['sent', 'voided', 'resent'];
+      if (!newStatus || !VALID_STATUSES.includes(newStatus)) {
+        return err(event, 400, `status is required and must be one of: ${VALID_STATUSES.join(', ')}`);
+      }
+
+      // Load instance to verify ownership
+      const getResp = await docClient.send(new GetCommand({
+        TableName: INSTANCES_TABLE_NAME,
+        Key: { instance_id: instanceId },
+      }));
+      const existing = getResp.Item as any;
+      if (!existing) return err(event, 404, 'Instance not found');
+
+      const clinicId = String(existing.clinicId || '').trim();
+      if (!clinicId) return err(event, 500, 'Instance is missing clinicId');
+
+      // Permissions: write for this clinic
+      const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
+      if (!hasClinicAccess(allowedClinics, clinicId)) {
+        return err(event, 403, 'Forbidden: no access to this clinic');
+      }
+      const permErr = requireModulePermission(event, userPerms, 'write', clinicId);
+      if (permErr) return permErr;
+
+      // Cannot change status of already-signed forms
+      if (String(existing.status || '').toLowerCase() === 'signed') {
+        return err(event, 409, 'Cannot update status of a signed consent form');
+      }
+
+      const updateExprParts = ['#status = :newStatus', 'updated_at = :now', 'updated_by = :user'];
+      const exprValues: Record<string, any> = {
+        ':newStatus': newStatus,
+        ':now': new Date().toISOString(),
+        ':user': getUserDisplayName(userPerms),
+      };
+
+      // If voiding, also remove the TTL so the record is preserved for analytics
+      let removeExpr = '';
+      if (newStatus === 'voided') {
+        removeExpr = ' REMOVE expires_at';
+      }
+
+      await docClient.send(new UpdateCommand({
+        TableName: INSTANCES_TABLE_NAME,
+        Key: { instance_id: instanceId },
+        UpdateExpression: `SET ${updateExprParts.join(', ')}${removeExpr}`,
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: exprValues,
+      }));
+
+      return json(event, 200, {
+        instance_id: instanceId,
+        status: newStatus,
+        updated_at: exprValues[':now'],
+      });
     }
 
     return err(event, 404, 'Not Found');
