@@ -113,6 +113,14 @@ export class NotificationsStack extends Stack {
     });
     applyTags(this.notificationsTable, { Table: 'notifications' });
 
+    // GSI for querying notifications by clinicId and sentAt (for SMS analytics & inbox)
+    this.notificationsTable.addGlobalSecondaryIndex({
+      indexName: 'clinicId-sentAt-index',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'sentAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // ========================================
     // EMAIL ANALYTICS TABLES
     // ========================================
@@ -568,7 +576,7 @@ export class NotificationsStack extends Stack {
       resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${props.templatesTableName}`],
     }));
 
-    // Grant read/write access to notifications table
+    // Grant read/write access to notifications table (including GSI for SMS analytics)
     this.notifyFn.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'dynamodb:GetItem',
@@ -576,7 +584,10 @@ export class NotificationsStack extends Stack {
         'dynamodb:Query',
         'dynamodb:Scan'
       ],
-      resources: [this.notificationsTable.tableArn],
+      resources: [
+        this.notificationsTable.tableArn,
+        `${this.notificationsTable.tableArn}/index/*`,
+      ],
     }));
 
     // Grant write access to email analytics table for tracking
@@ -723,6 +734,62 @@ export class NotificationsStack extends Stack {
           }
         })
       }
+    });
+
+    // ========================================
+    // SMS ANALYTICS API ROUTES (handled by notifyFn)
+    // ========================================
+
+    const smsAnalyticsIntegration = new apigw.LambdaIntegration(this.notifyFn);
+    const smsAnalyticsResource = this.notificationsApi.root.addResource('sms-analytics');
+
+    // GET /sms-analytics/dashboard
+    const smsDashboardResource = smsAnalyticsResource.addResource('dashboard');
+    smsDashboardResource.addMethod('GET', smsAnalyticsIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      requestParameters: {
+        'method.request.querystring.clinicId': true,
+        'method.request.querystring.period': false,
+      },
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Access-Control-Allow-Origin': true,
+            'method.response.header.Access-Control-Allow-Headers': true,
+            'method.response.header.Access-Control-Allow-Methods': true
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' }
+      ],
+    });
+
+    // GET /sms-analytics/messages
+    const smsMessagesResource = smsAnalyticsResource.addResource('messages');
+    smsMessagesResource.addMethod('GET', smsAnalyticsIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      requestParameters: {
+        'method.request.querystring.clinicId': true,
+        'method.request.querystring.status': false,
+        'method.request.querystring.limit': false,
+      },
+      methodResponses: [
+        {
+          statusCode: '200',
+          responseParameters: {
+            'method.response.header.Access-Control-Allow-Origin': true,
+            'method.response.header.Access-Control-Allow-Headers': true,
+            'method.response.header.Access-Control-Allow-Methods': true
+          }
+        },
+        { statusCode: '400' },
+        { statusCode: '401' },
+        { statusCode: '403' }
+      ],
     });
 
     // ========================================
@@ -1203,6 +1270,12 @@ export class NotificationsStack extends Stack {
       value: 'https://apig.todaysdentalinsights.com/notifications/call-analytics/',
       description: 'Voice Call Analytics API Endpoint (authenticated)',
       exportName: `${Stack.of(this).stackName}-CallAnalyticsApiEndpoint`,
+    });
+
+    new CfnOutput(this, 'SmsAnalyticsApiEndpoint', {
+      value: 'https://apig.todaysdentalinsights.com/notifications/sms-analytics/',
+      description: 'SMS Analytics API Endpoint (authenticated)',
+      exportName: `${Stack.of(this).stackName}-SmsAnalyticsApiEndpoint`,
     });
   }
 }

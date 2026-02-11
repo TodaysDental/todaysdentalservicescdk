@@ -47,7 +47,7 @@ const statusPriority: Record<EmailStatus, number> = {
 
 export const handler = async (event: SNSEvent): Promise<void> => {
   console.log('Processing SES events:', JSON.stringify(event));
-  
+
   const promises = event.Records.map(processRecord);
   await Promise.allSettled(promises);
 };
@@ -56,7 +56,7 @@ async function processRecord(record: SNSEventRecord): Promise<void> {
   try {
     const message = JSON.parse(record.Sns.Message) as SESEventNotification;
     console.log('Processing event:', message.eventType, 'MessageId:', message.mail.messageId);
-    
+
     await updateEmailTracking(message);
     await updateAggregateStats(message);
   } catch (error) {
@@ -69,7 +69,7 @@ async function updateEmailTracking(event: SESEventNotification): Promise<void> {
   const messageId = event.mail.messageId;
   const eventType = event.eventType;
   const timestamp = new Date().toISOString();
-  
+
   // Get existing record or create new one
   let existingRecord: EmailTrackingRecord | undefined;
   try {
@@ -81,29 +81,29 @@ async function updateEmailTracking(event: SESEventNotification): Promise<void> {
   } catch (error) {
     console.error('Error getting existing record:', error);
   }
-  
+
   // Determine new status based on event
   const newStatus = eventStatusMap[eventType];
   const currentPriority = existingRecord ? statusPriority[existingRecord.status] : 0;
   const newPriority = statusPriority[newStatus];
-  
+
   // Build update expression based on event type
   const updateExpressions: string[] = [];
   const expressionNames: Record<string, string> = {};
   const expressionValues: Record<string, any> = {};
-  
+
   // Always update lastEventAt
   updateExpressions.push('#lastEventAt = :lastEventAt');
   expressionNames['#lastEventAt'] = 'lastEventAt';
   expressionValues[':lastEventAt'] = timestamp;
-  
+
   // Update status if new event has higher priority
   if (newPriority >= currentPriority) {
     updateExpressions.push('#status = :status');
     expressionNames['#status'] = 'status';
     expressionValues[':status'] = newStatus;
   }
-  
+
   // Add event-specific timestamp and data
   switch (eventType) {
     case 'Send':
@@ -115,13 +115,13 @@ async function updateEmailTracking(event: SESEventNotification): Promise<void> {
         updateExpressions.push('sentAt = :sentAt');
         expressionValues[':recipient'] = event.mail.destination[0];
         expressionValues[':sentAt'] = event.mail.timestamp;
-        
+
         // Extract clinicId from tags if available
         if (event.mail.tags?.clinicId) {
           updateExpressions.push('clinicId = :clinicId');
           expressionValues[':clinicId'] = event.mail.tags.clinicId[0];
         }
-        
+
         // Extract subject from common headers
         if (event.mail.commonHeaders?.subject) {
           updateExpressions.push('subject = :subject');
@@ -129,12 +129,12 @@ async function updateEmailTracking(event: SESEventNotification): Promise<void> {
         }
       }
       break;
-      
+
     case 'Delivery':
       updateExpressions.push('deliveryTimestamp = :deliveryTs');
       expressionValues[':deliveryTs'] = event.delivery?.timestamp;
       break;
-      
+
     case 'Bounce':
       updateExpressions.push('bounceTimestamp = :bounceTs');
       updateExpressions.push('bounceType = :bounceType');
@@ -147,7 +147,7 @@ async function updateEmailTracking(event: SESEventNotification): Promise<void> {
         expressionValues[':bounceReason'] = event.bounce.bouncedRecipients[0].diagnosticCode;
       }
       break;
-      
+
     case 'Complaint':
       updateExpressions.push('complaintTimestamp = :complaintTs');
       expressionValues[':complaintTs'] = event.complaint?.timestamp;
@@ -156,7 +156,7 @@ async function updateEmailTracking(event: SESEventNotification): Promise<void> {
         expressionValues[':feedbackType'] = event.complaint.complaintFeedbackType;
       }
       break;
-      
+
     case 'Open':
       updateExpressions.push('openTimestamp = if_not_exists(openTimestamp, :openTs)');
       updateExpressions.push('openCount = if_not_exists(openCount, :zero) + :one');
@@ -168,7 +168,7 @@ async function updateEmailTracking(event: SESEventNotification): Promise<void> {
         expressionValues[':userAgent'] = event.open.userAgent;
       }
       break;
-      
+
     case 'Click':
       updateExpressions.push('clickTimestamp = if_not_exists(clickTimestamp, :clickTs)');
       expressionValues[':clickTs'] = event.click?.timestamp;
@@ -178,18 +178,18 @@ async function updateEmailTracking(event: SESEventNotification): Promise<void> {
         expressionValues[':newLink'] = [event.click.link];
       }
       break;
-      
+
     case 'Reject':
       updateExpressions.push('bounceReason = :rejectReason');
       expressionValues[':rejectReason'] = event.reject?.reason || 'Rejected by SES';
       break;
-      
+
     case 'RenderingFailure':
       updateExpressions.push('bounceReason = :renderError');
       expressionValues[':renderError'] = event.renderingFailure?.errorMessage || 'Template rendering failed';
       break;
   }
-  
+
   // Execute update
   try {
     await ddb.send(new UpdateCommand({
@@ -212,11 +212,11 @@ async function updateAggregateStats(event: SESEventNotification): Promise<void> 
   const eventType = event.eventType;
   const now = new Date();
   const monthKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-  
+
   // Build the attribute to increment based on event type
   let attributeToIncrement: string | null = null;
   let additionalUpdates: Record<string, any> = {};
-  
+
   switch (eventType) {
     case 'Send':
       attributeToIncrement = 'totalSent';
@@ -245,10 +245,15 @@ async function updateAggregateStats(event: SESEventNotification): Promise<void> 
     case 'RenderingFailure':
       attributeToIncrement = 'totalFailed';
       break;
+    case 'DeliveryDelay':
+      // DeliveryDelay is informational only — delivery hasn't failed yet,
+      // so we don't increment any counter. The email will eventually
+      // resolve to 'Delivery' or 'Bounce'.
+      break;
   }
-  
+
   if (!attributeToIncrement) return;
-  
+
   // Build update expression
   const updates = [
     `${attributeToIncrement} = if_not_exists(${attributeToIncrement}, :zero) + :one`,
@@ -259,17 +264,17 @@ async function updateAggregateStats(event: SESEventNotification): Promise<void> 
     ':one': 1,
     ':now': now.toISOString(),
   };
-  
+
   // Add any additional bounce type updates
   for (const [attr, inc] of Object.entries(additionalUpdates)) {
     updates.push(`${attr} = if_not_exists(${attr}, :zero) + :inc${attr}`);
     values[`:inc${attr}`] = inc;
   }
-  
+
   try {
     await ddb.send(new UpdateCommand({
       TableName: EMAIL_STATS_TABLE,
-      Key: { 
+      Key: {
         clinicId,
         period: monthKey,
       },

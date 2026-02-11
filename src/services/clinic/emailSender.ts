@@ -17,7 +17,7 @@
  */
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, UpdateCommand, PutCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { SESv2Client, SendEmailCommand, CreateContactCommand, GetContactCommand } from '@aws-sdk/client-sesv2';
 import { SQSEvent } from 'aws-lambda';
 import { getClinicConfig, ClinicConfig } from '../../shared/utils/secrets-helper';
@@ -108,16 +108,16 @@ async function ensureContactExists(email: string, clinicId: string): Promise<boo
 
 async function sendEmail(task: EmailTask): Promise<string | undefined> {
   const { clinicId, recipientEmail, subject, htmlBody, textBody, templateName } = task;
-  
+
   const config = await getCachedClinicConfig(clinicId);
   if (!config?.sesIdentityArn) {
     throw new Error(`No SES identity configured for clinic: ${clinicId}`);
   }
-  
+
   // Use the clinic's verified email address
   let from: string;
   let fromName: string;
-  
+
   if (!config.clinicEmail) {
     const fromDomain = config.sesIdentityArn.split(':identity/')[1] || 'todaysdentalinsights.com';
     from = `no-reply@${fromDomain}`;
@@ -126,11 +126,11 @@ async function sendEmail(task: EmailTask): Promise<string | undefined> {
     from = config.clinicEmail;
     fromName = config.clinicName || 'Today\'s Dental';
   }
-  
+
   // Format From address with display name for clear sender identification
   // e.g., "Today's Dental Cayce <cayce@todaysdental.com>"
   const fromWithName = `"${fromName}" <${from}>`;
-  
+
   // Wrap email content with branding, unsubscribe link, and disclaimer
   // This ensures CAN-SPAM/GDPR compliance and AWS SES best practices
   const { html: brandedHtml, text: brandedText } = await ensureEmailBranding(
@@ -138,11 +138,11 @@ async function sendEmail(task: EmailTask): Promise<string | undefined> {
     clinicId,
     undefined // Patient name extracted from template context if available
   );
-  
+
   // Ensure contact exists in SES Contact List for subscription management
   // This enables automatic unsubscribe link handling
   const contactExists = await ensureContactExists(recipientEmail, clinicId);
-  
+
   // Build the send command with or without subscription management
   // If contact list operations fail, we still send the email but without SES-managed unsubscribe
   const cmd = new SendEmailCommand({
@@ -152,9 +152,9 @@ async function sendEmail(task: EmailTask): Promise<string | undefined> {
     Content: {
       Simple: {
         Subject: { Data: subject },
-        Body: { 
-          Html: { Data: brandedHtml }, 
-          Text: { Data: textBody || brandedText } 
+        Body: {
+          Html: { Data: brandedHtml },
+          Text: { Data: textBody || brandedText }
         },
         // Add List-Unsubscribe headers for email clients
         // These enable one-click unsubscribe in Gmail, Outlook, etc.
@@ -182,29 +182,76 @@ async function sendEmail(task: EmailTask): Promise<string | undefined> {
       ...(templateName ? [{ Name: 'templateName', Value: templateName }] : []),
     ],
   });
-  
+
   const response = await ses.send(cmd);
   return response.MessageId;
 }
 
-async function updateEmailStatus(trackingId: string, status: string, sesMessageId?: string, errorMessage?: string): Promise<void> {
-  if (!EMAIL_ANALYTICS_TABLE || !trackingId) return;
-  
+/**
+ * Write the canonical tracking record using the SES messageId as the DynamoDB key.
+ * This ensures the SES event processor (which also uses SES messageId) updates the
+ * same record instead of creating a separate orphan.
+ */
+async function writeCanonicalTrackingRecord(
+  task: EmailTask,
+  sesMessageId: string
+): Promise<void> {
+  if (!EMAIL_ANALYTICS_TABLE) return;
+
+  const now = new Date().toISOString();
   try {
-    const updateExpr = errorMessage 
-      ? 'SET #status = :status, sentAt = :now, errorMessage = :err' + (sesMessageId ? ', sesMessageId = :sesId' : '')
-      : 'SET #status = :status, sentAt = :now' + (sesMessageId ? ', sesMessageId = :sesId' : '');
-    
+    await doc.send(new PutCommand({
+      TableName: EMAIL_ANALYTICS_TABLE,
+      Item: {
+        messageId: sesMessageId,  // Canonical key — matches SES event processor
+        clinicId: task.clinicId,
+        recipientEmail: task.recipientEmail,
+        subject: task.subject,
+        templateName: task.templateName || undefined,
+        status: 'SENT',
+        sentAt: now,
+        sendTimestamp: now,
+      },
+    }));
+    console.log(`Wrote canonical tracking record for SES messageId: ${sesMessageId}`);
+  } catch (err) {
+    console.warn(`Failed to write canonical tracking record for ${sesMessageId}:`, err);
+  }
+
+  // Remove the old temporary record keyed by internal trackingId (if different)
+  if (task.trackingId && task.trackingId !== sesMessageId) {
+    try {
+      await doc.send(new DeleteCommand({
+        TableName: EMAIL_ANALYTICS_TABLE,
+        Key: { messageId: task.trackingId },
+      }));
+    } catch (err) {
+      // Non-critical — the orphan will be cleaned up by TTL eventually
+      console.warn(`Could not delete temp tracking record ${task.trackingId}:`, err);
+    }
+  }
+}
+
+/**
+ * Write a FAILED tracking record. Uses task.trackingId as key since we don't
+ * have a SES messageId in this case.
+ */
+async function writeFailedTrackingRecord(
+  trackingId: string,
+  errorMessage: string
+): Promise<void> {
+  if (!EMAIL_ANALYTICS_TABLE || !trackingId) return;
+
+  try {
     await doc.send(new UpdateCommand({
       TableName: EMAIL_ANALYTICS_TABLE,
       Key: { messageId: trackingId },
-      UpdateExpression: updateExpr,
+      UpdateExpression: 'SET #status = :status, sentAt = :now, errorMessage = :err',
       ExpressionAttributeNames: { '#status': 'status' },
       ExpressionAttributeValues: {
-        ':status': status,
+        ':status': 'FAILED',
         ':now': new Date().toISOString(),
-        ...(sesMessageId && { ':sesId': sesMessageId }),
-        ...(errorMessage && { ':err': errorMessage }),
+        ':err': errorMessage,
       },
     }));
   } catch (err) {
@@ -215,19 +262,22 @@ async function updateEmailStatus(trackingId: string, status: string, sesMessageI
 async function processEmailTask(task: EmailTask): Promise<void> {
   try {
     console.log(`Sending email to ${task.recipientEmail} for clinic ${task.clinicId}`);
-    
+
     const sesMessageId = await sendEmail(task);
-    
-    // Update tracking to SENT
-    await updateEmailStatus(task.trackingId, 'SENT', sesMessageId);
-    
+
+    // Write the canonical tracking record keyed by SES messageId so that
+    // SES event notifications (Send, Delivery, Open, etc.) update the same record.
+    if (sesMessageId) {
+      await writeCanonicalTrackingRecord(task, sesMessageId);
+    }
+
     console.log(`Successfully sent email to ${task.recipientEmail}, SES ID: ${sesMessageId}`);
   } catch (error: any) {
     console.error(`Failed to send email to ${task.recipientEmail}:`, error);
-    
-    // Update tracking to FAILED
-    await updateEmailStatus(task.trackingId, 'FAILED', undefined, error.message);
-    
+
+    // For failures we don't have a SES messageId, use trackingId
+    await writeFailedTrackingRecord(task.trackingId, error.message || 'Send failed');
+
     // Re-throw to trigger SQS retry
     throw error;
   }
@@ -235,7 +285,7 @@ async function processEmailTask(task: EmailTask): Promise<void> {
 
 export const handler = async (event: SQSEvent) => {
   const failedRecords: { itemIdentifier: string }[] = [];
-  
+
   for (const record of event.Records) {
     try {
       const task: EmailTask = JSON.parse(record.body);
@@ -245,9 +295,9 @@ export const handler = async (event: SQSEvent) => {
       failedRecords.push({ itemIdentifier: record.messageId });
     }
   }
-  
+
   console.log(`Email sender completed: ${event.Records.length - failedRecords.length} sent, ${failedRecords.length} failed`);
-  
+
   return {
     batchItemFailures: failedRecords,
   };
