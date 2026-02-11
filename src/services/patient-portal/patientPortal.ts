@@ -534,6 +534,115 @@ async function createPayment(paymentData: PaymentData, clinicConfig: ClinicConfi
     }
 }
 
+// Receipt data interfaces
+interface ReceiptItem {
+    date: string;
+    provider: string;
+    code: string;
+    tooth: string;
+    description: string;
+    paid: number;
+}
+
+interface ReceiptData {
+    payNum: number;
+    paymentDate: string;
+    transactionId?: string;
+    patientName: string;
+    totalPaid: number;
+    items: ReceiptItem[];
+}
+
+// Get receipt data for a specific payment
+async function getReceiptData(payNum: number, patientName: string, transactionId: string | undefined, clinicConfig: ClinicConfig): Promise<ReceiptData> {
+    const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
+    const headers = { 'Authorization': AUTH_HEADER };
+    
+    try {
+        // Step 1: Get paysplits for this payment
+        const splitsResponse = await axios.get(`${API_BASE_URL}/paysplits?PayNum=${payNum}`, { headers });
+        const splits = splitsResponse.data || [];
+        
+        // Step 2: For each split with a ProcNum, get procedure and provider details
+        const items: ReceiptItem[] = [];
+        const providerCache: Record<number, string> = {};
+        
+        for (const split of splits) {
+            if (split.ProcNum && split.ProcNum > 0) {
+                try {
+                    // Get procedure details
+                    const procResponse = await axios.get(`${API_BASE_URL}/procedurelogs/${split.ProcNum}`, { headers });
+                    const proc = procResponse.data;
+                    
+                    // Get provider name (with caching)
+                    let providerName = 'Unknown';
+                    if (proc.ProvNum && proc.ProvNum > 0) {
+                        if (providerCache[proc.ProvNum]) {
+                            providerName = providerCache[proc.ProvNum];
+                        } else {
+                            try {
+                                const provResponse = await axios.get(`${API_BASE_URL}/providers/${proc.ProvNum}`, { headers });
+                                const prov = provResponse.data;
+                                providerName = `${prov.FName || ''} ${prov.LName || ''}`.trim() || prov.Abbr || 'Unknown';
+                                providerCache[proc.ProvNum] = providerName;
+                            } catch (provErr) {
+                                console.error(`Error fetching provider ${proc.ProvNum}:`, provErr);
+                            }
+                        }
+                    }
+                    
+                    items.push({
+                        date: proc.ProcDate || new Date().toISOString().split('T')[0],
+                        provider: providerName,
+                        code: proc.ProcCode || '-',
+                        tooth: proc.ToothNum || '-',
+                        description: proc.Descript || proc.ProcCode || 'Procedure',
+                        paid: parseFloat(split.SplitAmt) || 0
+                    });
+                } catch (procErr) {
+                    console.error(`Error fetching procedure ${split.ProcNum}:`, procErr);
+                    // Add a generic item if we can't fetch procedure details
+                    items.push({
+                        date: new Date().toISOString().split('T')[0],
+                        provider: 'Unknown',
+                        code: '-',
+                        tooth: '-',
+                        description: 'Payment applied',
+                        paid: parseFloat(split.SplitAmt) || 0
+                    });
+                }
+            } else if (split.SplitAmt && parseFloat(split.SplitAmt) > 0) {
+                // Unallocated payment split (prepayment or general payment)
+                items.push({
+                    date: new Date().toISOString().split('T')[0],
+                    provider: '-',
+                    code: '-',
+                    tooth: '-',
+                    description: 'Unallocated payment',
+                    paid: parseFloat(split.SplitAmt) || 0
+                });
+            }
+        }
+        
+        const totalPaid = items.reduce((sum, item) => sum + item.paid, 0);
+        
+        return {
+            payNum,
+            paymentDate: new Date().toISOString().split('T')[0],
+            transactionId,
+            patientName,
+            totalPaid: parseFloat(totalPaid.toFixed(2)),
+            items
+        };
+    } catch (error: any) {
+        console.error('Error fetching receipt data:', error);
+        throw {
+            status: error.response?.status || 500,
+            message: error.response?.data?.message || 'Error fetching receipt data'
+        };
+    }
+}
+
 async function getAppointmentById(aptNum: number, patNum: number, clinicConfig: ClinicConfig) {
     const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
     const url = `${API_BASE_URL}/appointments?PatNum=${patNum}`;
@@ -1933,6 +2042,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     await recordPortalMetric(clinicId, 'paymentFailures');
                     throw err;
                 }
+                break;
+            }
+            case normalizedResource === '/receipt' && httpMethod === 'GET': {
+                patient = await validateSession(event, clinicId);
+                const payNum = queryParams.PayNum;
+                if (!payNum || Number.isNaN(Number(payNum))) {
+                    throw { status: 400, message: 'Valid PayNum must be provided as query parameter.' };
+                }
+                
+                const patientName = `${patient.FName || ''} ${patient.LName || ''}`.trim();
+                const transactionId = queryParams.transactionId;
+                
+                response = await getReceiptData(Number(payNum), patientName, transactionId, clinicConfig);
                 break;
             }
             case /\/documents\/\d+\/download$/.test(normalizedResource) && httpMethod === 'GET': {
