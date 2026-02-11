@@ -224,7 +224,8 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
   const notificationTypes = Array.isArray(body.notificationTypes) ? body.notificationTypes : ['EMAIL'];
   const fname = String(body.FName || '').trim();
   const lname = String(body.LName || '').trim();
-  const email = String(body.email || body.toEmail || body.Email || '').trim();
+  let email = String(body.email || body.toEmail || body.Email || '').trim();
+  let phone = String(body.toPhone || body.phone || body.phoneNumber || body.SMS || '').trim();
 
   // Custom content fields (when not using a template)
   const customEmailSubject = String(body.customEmailSubject || '').trim();
@@ -234,6 +235,19 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
 
   // Validate required fields
   if (!patNum) return http(400, { error: 'PatNum is required' }, event);
+
+  // Best-effort: if email or phone is missing, try to fetch from OpenDental patient record
+  const needEmail = notificationTypes.includes('EMAIL') && (!email || !email.includes('@'));
+  const needPhone = notificationTypes.includes('SMS') && !phone;
+  if (needEmail || needPhone) {
+    try {
+      const contact = await fetchPatientContact(clinicId, patNum);
+      if (needEmail && contact.email) email = contact.email;
+      if (needPhone && contact.phone) phone = contact.phone;
+    } catch (lookupErr) {
+      console.warn('[Notify] Best-effort patient contact lookup failed (non-fatal):', lookupErr);
+    }
+  }
 
   if (notificationTypes.includes('EMAIL') && (!email || !email.includes('@'))) {
     return http(400, { error: 'Valid email is required for EMAIL notification type' }, event);
@@ -369,8 +383,7 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
   }
 
   if (notificationTypes.includes('SMS')) {
-    const phoneRaw = String(body.toPhone || body.phone || body.phoneNumber || body.SMS || '').trim();
-    const normalizedPhone = normalizePhone(phoneRaw);
+    const normalizedPhone = normalizePhone(phone);
     if (!normalizedPhone) return http(400, { error: 'No phone provided for SMS' }, event);
 
     // Check if recipient has unsubscribed from SMS
