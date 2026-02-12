@@ -2057,6 +2057,75 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 response = await getReceiptData(Number(payNum), patientName, transactionId, clinicConfig);
                 break;
             }
+            case normalizedResource === '/unpaid-procedures' && httpMethod === 'GET': {
+                patient = await validateSession(event, clinicId);
+                const patNum = queryParams.PatNum || patient.PatNum;
+                if (!patNum || Number.isNaN(Number(patNum))) {
+                    throw { status: 400, message: 'Valid PatNum must be provided.' };
+                }
+                
+                // Fetch service date view which includes all charges and credits
+                const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
+                const headers = { 'Authorization': AUTH_HEADER };
+                
+                try {
+                    const serviceViewResponse = await axios.get(
+                        `${API_BASE_URL}/accountmodules/${patNum}/ServiceDateView`,
+                        { headers }
+                    );
+                    
+                    const serviceData = serviceViewResponse.data || [];
+                    const providerCache: Record<number, string> = {};
+                    const unpaidItems = [];
+                    
+                    // Filter and enrich with provider names
+                    for (const item of serviceData) {
+                        // Only include items with outstanding balance
+                        if (item.AmountEnd && parseFloat(item.AmountEnd) > 0) {
+                            let providerName = '-';
+                            
+                            if (item.ProvNum && item.ProvNum > 0) {
+                                if (providerCache[item.ProvNum]) {
+                                    providerName = providerCache[item.ProvNum];
+                                } else {
+                                    try {
+                                        const provResponse = await axios.get(
+                                            `${API_BASE_URL}/providers/${item.ProvNum}`,
+                                            { headers }
+                                        );
+                                        const prov = provResponse.data;
+                                        providerName = `${prov.FName || ''} ${prov.LName || ''}`.trim() || prov.Abbr || '-';
+                                        providerCache[item.ProvNum] = providerName;
+                                    } catch (err) {
+                                        console.error(`Error fetching provider ${item.ProvNum}:`, err);
+                                    }
+                                }
+                            }
+                            
+                            unpaidItems.push({
+                                date: item.DateTime || item.ProcDate || '-',
+                                provider: providerName,
+                                code: item.ProcCode || '-',
+                                tooth: item.ToothNum || '-',
+                                description: item.Descript || item.ProcCode || 'Charge',
+                                amount: parseFloat(item.AmountEnd) || 0
+                            });
+                        }
+                    }
+                    
+                    response = {
+                        items: unpaidItems,
+                        totalDue: unpaidItems.reduce((sum, item) => sum + item.amount, 0)
+                    };
+                } catch (error: any) {
+                    console.error('Error fetching unpaid procedures:', error);
+                    throw {
+                        status: error.response?.status || 500,
+                        message: error.response?.data?.message || 'Error fetching unpaid procedures'
+                    };
+                }
+                break;
+            }
             case /\/documents\/\d+\/download$/.test(normalizedResource) && httpMethod === 'GET': {
                 patient = await validateSession(event, clinicId);
                 const docNum = parseInt(normalizedResource.split('/')[2]);
