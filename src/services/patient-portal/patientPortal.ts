@@ -2095,6 +2095,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     }
                     
                     const providerCache: Record<number, string> = {};
+                    const codeCache: Record<number, { ProcCode: string; Descript: string }> = {};
                     const unpaidItems = [];
                     
                     // Find unpaid procedures (only completed ones)
@@ -2126,12 +2127,36 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                                 }
                             }
                             
+                            // Look up procedure code details (ProcCode like D0120, and description)
+                            let procCode = proc.ProcCode || '-';
+                            let procDescript = proc.Descript || 'Procedure';
+                            
+                            if (proc.CodeNum && proc.CodeNum > 0) {
+                                if (codeCache[proc.CodeNum]) {
+                                    procCode = codeCache[proc.CodeNum].ProcCode;
+                                    procDescript = codeCache[proc.CodeNum].Descript;
+                                } else {
+                                    try {
+                                        const codeResponse = await axios.get(
+                                            `${API_BASE_URL}/procedurecodes/${proc.CodeNum}`,
+                                            { headers }
+                                        );
+                                        const codeData = codeResponse.data;
+                                        procCode = codeData.ProcCode || procCode;
+                                        procDescript = codeData.Descript || procDescript;
+                                        codeCache[proc.CodeNum] = { ProcCode: procCode, Descript: procDescript };
+                                    } catch (err) {
+                                        console.error(`Error fetching procedure code ${proc.CodeNum}:`, err);
+                                    }
+                                }
+                            }
+                            
                             unpaidItems.push({
                                 date: proc.ProcDate || '-',
                                 provider: providerName,
-                                code: proc.ProcCode || proc.CodeNum || '-',
+                                code: procCode,
                                 tooth: proc.ToothNum || '-',
-                                description: proc.Descript || proc.ProcCode || 'Procedure',
+                                description: procDescript,
                                 amount: remaining
                             });
                         }
