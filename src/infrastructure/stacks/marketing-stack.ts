@@ -121,6 +121,22 @@ export class MarketingStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
+    // Table 6: DesignTemplates - Saved design editor templates
+    const designTemplatesTable = new dynamodb.Table(this, 'DesignTemplatesTable', {
+      tableName: 'DesignTemplates',
+      partitionKey: { name: 'templateId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    // GSI: ByCreator - Query templates by creator
+    designTemplatesTable.addGlobalSecondaryIndex({
+      indexName: 'ByCreator',
+      partitionKey: { name: 'createdBy', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // ============================================
     // 1b. Meta Ads DynamoDB Tables
     // ============================================
@@ -278,7 +294,7 @@ export class MarketingStack extends Stack {
     // ============================================
     // 5. Environment Variables
     // ============================================
-    
+
     // Ayrshare credentials are now stored in GlobalSecrets DynamoDB table
     // Lambda functions will retrieve them at runtime using secrets-helper utility
     // This removes hardcoded secrets from the codebase
@@ -410,6 +426,19 @@ export class MarketingStack extends Stack {
       environment: envVars,
     });
 
+    // Templates Lambda (Design Editor template CRUD)
+    const templatesFn = new lambdaNode.NodejsFunction(this, 'MarketingTemplatesFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'templates.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      memorySize: 256,
+      environment: {
+        ...envVars,
+        DESIGN_TEMPLATES_TABLE: designTemplatesTable.tableName,
+      },
+    });
+
     // Meta Ads environment variables
     const metaAdsEnvVars = {
       ...envVars,
@@ -470,7 +499,7 @@ export class MarketingStack extends Stack {
       memorySize: 256,
       environment: publisherEnvVars,
     });
-    
+
     // Update publisher with image generator function name and grant invoke permission
     publisherFn.addEnvironment('IMAGE_GENERATOR_FUNCTION', imageGeneratorFn.functionName);
     imageGeneratorFn.grantInvoke(publisherFn);
@@ -542,6 +571,10 @@ export class MarketingStack extends Stack {
     // Validate Lambda permissions (only needs profiles for API key)
     this.marketingProfilesTable.grantReadData(validateFn);
 
+    // Templates Lambda permissions
+    designTemplatesTable.grantReadWriteData(templatesFn);
+    this.mediaBucket.grantReadWrite(templatesFn);
+
     // Ads Lambda permissions
     this.marketingProfilesTable.grantReadData(adsFn);
     this.marketingPostsTable.grantReadData(adsFn);
@@ -557,7 +590,7 @@ export class MarketingStack extends Stack {
 
     // Image Generator Lambda permissions
     this.mediaBucket.grantReadWrite(imageGeneratorFn);
-    
+
     // Grant access to Images Stack bucket if specified
     if (props.imagesBucketName) {
       const imagesBucket = s3.Bucket.fromBucketName(this, 'ImagesBucket', props.imagesBucketName);
@@ -575,7 +608,7 @@ export class MarketingStack extends Stack {
     // NOTE: Google Ads Lambdas have been moved to GoogleAdsStack
     const allLambdas = [
       profilesFn, postsFn, commentsFn, analyticsFn, mediaFn, webhooksFn,
-      analyticsSyncFn, autoScheduleFn, hashtagsFn, historyFn, messagesFn, validateFn, adsFn,
+      analyticsSyncFn, autoScheduleFn, hashtagsFn, historyFn, messagesFn, validateFn, templatesFn, adsFn,
       imageGeneratorFn, publisherFn,
     ];
 
@@ -817,6 +850,22 @@ export class MarketingStack extends Stack {
     validateContentModerationRes.addMethod('POST', new apigw.LambdaIntegration(validateFn), { authorizer });
 
     // -----------------------------------------
+    // Design Template Routes (/templates)
+    // -----------------------------------------
+    const templatesRes = root.addResource('templates');
+
+    // POST /templates - Save/create a design template
+    // GET  /templates - List all templates
+    templatesRes.addMethod('POST', new apigw.LambdaIntegration(templatesFn), { authorizer });
+    templatesRes.addMethod('GET', new apigw.LambdaIntegration(templatesFn), { authorizer });
+
+    // GET    /templates/{templateId} - Get full template data
+    // DELETE /templates/{templateId} - Delete template
+    const templateByIdRes = templatesRes.addResource('{templateId}');
+    templateByIdRes.addMethod('GET', new apigw.LambdaIntegration(templatesFn), { authorizer });
+    templateByIdRes.addMethod('DELETE', new apigw.LambdaIntegration(templatesFn), { authorizer });
+
+    // -----------------------------------------
     // Webhook Routes (/webhooks)
     // -----------------------------------------
     const webhooksRes = root.addResource('webhooks');
@@ -839,7 +888,7 @@ export class MarketingStack extends Stack {
     // -----------------------------------------
     const imagesGenRes = root.addResource('images');
     const generateRes = imagesGenRes.addResource('generate');
-    
+
     // POST /images/generate - Generate personalized images for multiple clinics
     generateRes.addMethod('POST', new apigw.LambdaIntegration(imageGeneratorFn), { authorizer });
 
@@ -926,7 +975,7 @@ export class MarketingStack extends Stack {
     // The adsFn Lambda handles all path-based routing internally
     // -----------------------------------------
     const metaRes = root.addResource('meta');
-    
+
     // Catch-all proxy: /meta/{proxy+} handles all Meta Ads routes
     // Including: /meta/ads/drafts, /meta/ads/bulk/jobs, /meta/ads/scheduled, 
     //           /meta/ads/{clinicId}/lead-forms, /meta/ads/{clinicId}/leads, etc.
