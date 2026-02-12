@@ -58,6 +58,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "6882337378"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -119,6 +127,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "2978902821"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -180,6 +196,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "1505658809"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -241,6 +265,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "6327290560"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -302,6 +334,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "8916450096"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -363,6 +403,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "8705012352"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -424,6 +472,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "8844529656"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -485,6 +541,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "5285406194"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -546,6 +610,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "3865885156"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -607,6 +679,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "6830227762"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -668,6 +748,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "1771094795"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -729,6 +817,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "6571919715"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -790,6 +886,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "9954954552"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -851,6 +955,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "9277361743"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -912,6 +1024,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "9490955129"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -973,6 +1093,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "2121863652"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -1034,6 +1162,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "9085359447"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -1095,6 +1231,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "4551655949"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -1156,6 +1300,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "4638071933"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -1217,6 +1369,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "7421865491"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -1278,6 +1438,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "5770542490"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -1339,6 +1507,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "5001733364"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -1400,6 +1576,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "5553837131"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -1461,6 +1645,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "4656582027"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -1522,6 +1714,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "7115897921"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -1583,6 +1783,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "9116392960"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   },
   {
@@ -1644,6 +1852,14 @@
     "googleAds": {
       "enabled": true,
       "customerId": "8278105993"
+    },
+    "geofence": {
+      "enabled": true,
+      "latitude": 0,
+      "longitude": 0,
+      "radiusMeters": 150,
+      "wifiSSIDs": [],
+      "lateThresholdMinutes": 10
     }
   }
 ]

@@ -28,6 +28,7 @@ import { OpenDentalStack } from './stacks/opendental-stack';
 import { NotificationsStack } from './stacks/notifications-stack';
 import { ChimeStack, type VoiceConnectorOriginationRouteConfig } from './stacks/chime-stack';
 import { HrStack } from './stacks/hr-stack';
+import { AttendanceStack } from './stacks/attendance-stack';
 import { PatientPortalApptTypesStack } from './stacks/patient-portal-appttypes-stack';
 import { FluorideAutomationStack } from './stacks/fluoride-automation-stack';
 import { MarketingStack } from './stacks/marketing-stack';
@@ -597,6 +598,22 @@ const hrStack = new HrStack(app, 'TodaysDentalInsightsHrN1', {
   sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
 });
 // hrStack.addDependency(coreStack); // Implicit
+
+// Attendance Stack - Staff geofence + WiFi attendance tracking
+const attendanceStack = new AttendanceStack(app, 'TodaysDentalInsightsAttendanceN1', {
+  env,
+  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+  clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
+  shiftsTableName: hrStack.shiftsTable.tableName,
+  // Push Notifications Integration
+  deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
+  deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
+  sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
+});
+attendanceStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+attendanceStack.addDependency(clinicHoursStack); // Explicit - reads clinic hours
+attendanceStack.addDependency(hrStack); // Explicit - reads shifts table
+attendanceStack.addDependency(pushNotificationsStack); // Explicit - push notifications
 
 
 // Credentialing Stack - Provider credentialing and payer enrollment management
