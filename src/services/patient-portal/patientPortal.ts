@@ -2064,60 +2064,80 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     throw { status: 400, message: 'Valid PatNum must be provided.' };
                 }
                 
-                // Fetch service date view which includes all charges and credits
                 const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
                 const headers = { 'Authorization': AUTH_HEADER };
                 
                 try {
-                    const serviceViewResponse = await axios.get(
-                        `${API_BASE_URL}/accountmodules/${patNum}/ServiceDateView`,
+                    // Get all procedures for patient
+                    const procLogsResponse = await axios.get(
+                        `${API_BASE_URL}/procedurelogs?PatNum=${patNum}`,
                         { headers }
                     );
                     
-                    const serviceData = serviceViewResponse.data || [];
-                    console.log('ServiceDateView response:', JSON.stringify(serviceData, null, 2));
-                    console.log('ServiceDateView item count:', serviceData.length);
-                    if (serviceData.length > 0) {
-                        console.log('First item structure:', JSON.stringify(serviceData[0], null, 2));
+                    const procedures = procLogsResponse.data || [];
+                    console.log(`Found ${procedures.length} total procedures for PatNum ${patNum}`);
+                    
+                    // Get all payments for patient
+                    const paysplitsResponse = await axios.get(
+                        `${API_BASE_URL}/paysplits?PatNum=${patNum}`,
+                        { headers }
+                    );
+                    
+                    const paysplits = paysplitsResponse.data || [];
+                    console.log(`Found ${paysplits.length} payment splits for PatNum ${patNum}`);
+                    
+                    // Calculate paid amount for each procedure
+                    const paidAmounts: Record<number, number> = {};
+                    for (const split of paysplits) {
+                        if (split.ProcNum && split.SplitAmt) {
+                            paidAmounts[split.ProcNum] = (paidAmounts[split.ProcNum] || 0) + parseFloat(split.SplitAmt);
+                        }
                     }
                     
                     const providerCache: Record<number, string> = {};
                     const unpaidItems = [];
                     
-                    // Filter and enrich with provider names
-                    for (const item of serviceData) {
-                        // Only include items with outstanding balance
-                        if (item.AmountEnd && parseFloat(item.AmountEnd) > 0) {
+                    // Find unpaid procedures (only completed ones)
+                    for (const proc of procedures) {
+                        const procFee = parseFloat(proc.ProcFee || '0');
+                        const paidAmount = paidAmounts[proc.ProcNum] || 0;
+                        const remaining = procFee - paidAmount;
+                        
+                        // ProcStatus "C" = Complete, "TP" = Treatment Plan
+                        // Only include completed procedures with outstanding balance
+                        if (remaining > 0.01 && (proc.ProcStatus === 'C' || proc.ProcStatus === 2)) {
                             let providerName = '-';
                             
-                            if (item.ProvNum && item.ProvNum > 0) {
-                                if (providerCache[item.ProvNum]) {
-                                    providerName = providerCache[item.ProvNum];
+                            if (proc.ProvNum && proc.ProvNum > 0) {
+                                if (providerCache[proc.ProvNum]) {
+                                    providerName = providerCache[proc.ProvNum];
                                 } else {
                                     try {
                                         const provResponse = await axios.get(
-                                            `${API_BASE_URL}/providers/${item.ProvNum}`,
+                                            `${API_BASE_URL}/providers/${proc.ProvNum}`,
                                             { headers }
                                         );
                                         const prov = provResponse.data;
                                         providerName = `${prov.FName || ''} ${prov.LName || ''}`.trim() || prov.Abbr || '-';
-                                        providerCache[item.ProvNum] = providerName;
+                                        providerCache[proc.ProvNum] = providerName;
                                     } catch (err) {
-                                        console.error(`Error fetching provider ${item.ProvNum}:`, err);
+                                        console.error(`Error fetching provider ${proc.ProvNum}:`, err);
                                     }
                                 }
                             }
                             
                             unpaidItems.push({
-                                date: item.DateTime || item.ProcDate || '-',
+                                date: proc.ProcDate || '-',
                                 provider: providerName,
-                                code: item.ProcCode || '-',
-                                tooth: item.ToothNum || '-',
-                                description: item.Descript || item.ProcCode || 'Charge',
-                                amount: parseFloat(item.AmountEnd) || 0
+                                code: proc.ProcCode || proc.CodeNum || '-',
+                                tooth: proc.ToothNum || '-',
+                                description: proc.Descript || proc.ProcCode || 'Procedure',
+                                amount: remaining
                             });
                         }
                     }
+                    
+                    console.log(`Returning ${unpaidItems.length} unpaid procedures`);
                     
                     response = {
                         items: unpaidItems,
