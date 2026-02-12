@@ -2075,6 +2075,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     );
                     
                     const serviceData = serviceViewResponse.data || [];
+                    console.log('ServiceDateView response:', JSON.stringify(serviceData, null, 2));
+                    console.log('ServiceDateView item count:', serviceData.length);
+                    if (serviceData.length > 0) {
+                        console.log('First item structure:', JSON.stringify(serviceData[0], null, 2));
+                    }
+                    
                     const providerCache: Record<number, string> = {};
                     const unpaidItems = [];
                     
