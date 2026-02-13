@@ -3,6 +3,70 @@ import axios from 'axios';
 // Use the correct Ayrshare API base URL (api.ayrshare.com, not app.ayrshare.com)
 const AYRSHARE_URL = 'https://api.ayrshare.com/api';
 
+// Prevent hanging requests that can trigger API Gateway 504s.
+// NOTE: Keep this comfortably under API Gateway's ~29s max integration timeout.
+const AYRSHARE_HTTP_TIMEOUT_MS = (() => {
+  const raw = Number.parseInt(process.env.AYRSHARE_HTTP_TIMEOUT_MS || '12000', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 12000;
+})();
+
+// Posting can take longer than other validate/analytics calls, especially with media.
+// Keep safely below API Gateway's ~29s max integration timeout.
+const AYRSHARE_POST_TIMEOUT_MS = (() => {
+  const raw = Number.parseInt(process.env.AYRSHARE_POST_TIMEOUT_MS || '25000', 10);
+  const parsed = Number.isFinite(raw) && raw > 0 ? raw : 25000;
+  return Math.min(parsed, 25000);
+})();
+
+// Dedicated HTTP client for Ayrshare (avoid mutating global axios defaults).
+const ayrshareHttp = axios.create({ timeout: AYRSHARE_HTTP_TIMEOUT_MS });
+
+function extractAyrshareErrorMessage(errorData: any): string | undefined {
+  if (!errorData) return undefined;
+
+  if (typeof errorData === 'string') return errorData;
+  if (typeof errorData?.message === 'string') return errorData.message;
+  if (typeof errorData?.error === 'string') return errorData.error;
+
+  // Common: { errors: [{ message }] }
+  if (Array.isArray(errorData?.errors)) {
+    const msgs = errorData.errors
+      .map((e: any) => e?.message || e?.error)
+      .filter(Boolean)
+      .map((m: any) => String(m));
+    if (msgs.length > 0) return Array.from(new Set(msgs)).join(' | ');
+  }
+
+  // Ayrshare Post errors often come back as:
+  // { status: "error", posts: [{ errors: [{ platform, code, message, details }] }] }
+  if (Array.isArray(errorData?.posts)) {
+    const msgs: string[] = [];
+    for (const post of errorData.posts) {
+      const errors = Array.isArray(post?.errors) ? post.errors : [];
+      for (const e of errors) {
+        const platform = e?.platform ? String(e.platform) : '';
+        const message = e?.message || e?.error;
+        const details = e?.details;
+
+        if (!message) continue;
+
+        let line = platform ? `${platform}: ${String(message)}` : String(message);
+        if (details) line += ` (${String(details)})`;
+        msgs.push(line);
+      }
+    }
+
+    const unique = Array.from(new Set(msgs));
+    if (unique.length > 0) return unique.join(' | ');
+  }
+
+  try {
+    return JSON.stringify(errorData);
+  } catch {
+    return undefined;
+  }
+}
+
 // ============================================
 // PROFILE MANAGEMENT
 // ============================================
@@ -11,7 +75,7 @@ export async function ayrshareCreateProfile(apiKey: string, title: string) {
   try {
     // Correct endpoint: POST /profiles (not /profiles/profile)
     // Available on Business, Enterprise plans
-    const res = await axios.post(`${AYRSHARE_URL}/profiles`,
+    const res = await ayrshareHttp.post(`${AYRSHARE_URL}/profiles`,
       { title },
       {
         headers: {
@@ -29,7 +93,7 @@ export async function ayrshareCreateProfile(apiKey: string, title: string) {
 
 export async function ayrshareGetProfile(apiKey: string, profileKey: string) {
   try {
-    const res = await axios.get(`${AYRSHARE_URL}/user`, {
+    const res = await ayrshareHttp.get(`${AYRSHARE_URL}/user`, {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Profile-Key': profileKey
@@ -45,7 +109,7 @@ export async function ayrshareDeleteProfile(apiKey: string, profileKey: string) 
   try {
     // Correct endpoint: DELETE /profiles (not /profiles/profile)
     // Available on Business, Enterprise plans
-    const res = await axios.delete(`${AYRSHARE_URL}/profiles`, {
+    const res = await ayrshareHttp.delete(`${AYRSHARE_URL}/profiles`, {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Profile-Key': profileKey,
@@ -74,7 +138,7 @@ export async function ayrshareGenerateJWT(
       throw new Error('AYRSHARE_PRIVATE_KEY is not configured. Please set the private key in environment variables.');
     }
 
-    const res = await axios.post(`${AYRSHARE_URL}/profiles/generateJWT`,
+    const res = await ayrshareHttp.post(`${AYRSHARE_URL}/profiles/generateJWT`,
       {
         domain,
         profileKey,
@@ -114,13 +178,14 @@ export async function ayrsharePost(apiKey: string, profileKey: string, postData:
       hasMediaUrls: !!(postData.mediaUrls?.length)
     });
 
-    const res = await axios.post(`${AYRSHARE_URL}/post`,
+    const res = await ayrshareHttp.post(`${AYRSHARE_URL}/post`,
       postData,
       {
         headers: {
           'Authorization': `Bearer ${apiKey}`,
           'Profile-Key': profileKey
-        }
+        },
+        timeout: AYRSHARE_POST_TIMEOUT_MS,
       }
     );
     console.log('[ayrsharePost] Success:', res.data?.id || res.data?.status);
@@ -130,15 +195,26 @@ export async function ayrsharePost(apiKey: string, profileKey: string, postData:
     console.error('[ayrsharePost] Error response:', JSON.stringify(errorData || err.message));
     console.error('[ayrsharePost] Status:', err.response?.status);
 
+    const isTimeout = err?.code === 'ECONNABORTED' || String(err?.message || '').toLowerCase().includes('timeout');
+    if (isTimeout) {
+      throw new Error(
+        `Ayrshare request timed out after ${AYRSHARE_POST_TIMEOUT_MS}ms. ` +
+        `The post may still have been processed—check History before retrying.`
+      );
+    }
+
     // Extract more specific error message from Ayrshare response
-    const errorMessage = errorData?.message || errorData?.error || errorData?.errors?.[0]?.message || 'Failed to post';
+    const errorMessage =
+      extractAyrshareErrorMessage(errorData) ||
+      err.message ||
+      'Failed to post';
     throw new Error(errorMessage);
   }
 }
 
 export async function ayrshareDeletePost(apiKey: string, profileKey: string, postId: string) {
   try {
-    const res = await axios.delete(`${AYRSHARE_URL}/post`,
+    const res = await ayrshareHttp.delete(`${AYRSHARE_URL}/post`,
       {
         headers: {
           'Authorization': `Bearer ${apiKey}`,
@@ -162,7 +238,7 @@ export async function ayrshareGetHistory(apiKey: string, profileKey: string, par
   lastDays?: number;
 }) {
   try {
-    const res = await axios.get(`${AYRSHARE_URL}/history`, {
+    const res = await ayrshareHttp.get(`${AYRSHARE_URL}/history`, {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Profile-Key': profileKey
@@ -177,7 +253,7 @@ export async function ayrshareGetHistory(apiKey: string, profileKey: string, par
 
 export async function ayrshareGetAnalytics(apiKey: string, profileKey: string, postId: string) {
   try {
-    const res = await axios.get(`${AYRSHARE_URL}/analytics/post`, {
+    const res = await ayrshareHttp.get(`${AYRSHARE_URL}/analytics/post`, {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Profile-Key': profileKey
@@ -192,7 +268,7 @@ export async function ayrshareGetAnalytics(apiKey: string, profileKey: string, p
 
 export async function ayrshareGetSocialStats(apiKey: string, profileKey: string, platforms: string[]) {
   try {
-    const res = await axios.get(`${AYRSHARE_URL}/analytics/social`, {
+    const res = await ayrshareHttp.get(`${AYRSHARE_URL}/analytics/social`, {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Profile-Key': profileKey
@@ -211,7 +287,7 @@ export async function ayrshareGetSocialStats(apiKey: string, profileKey: string,
 
 export async function ayrshareGetComments(apiKey: string, profileKey: string, postId: string) {
   try {
-    const res = await axios.get(`${AYRSHARE_URL}/comments`, {
+    const res = await ayrshareHttp.get(`${AYRSHARE_URL}/comments`, {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Profile-Key': profileKey
@@ -232,7 +308,7 @@ export async function ayrshareReplyToComment(
   platform: string
 ) {
   try {
-    const res = await axios.post(`${AYRSHARE_URL}/comments`,
+    const res = await ayrshareHttp.post(`${AYRSHARE_URL}/comments`,
       {
         commentId,
         comment: replyText,
@@ -261,7 +337,7 @@ export async function ayrshareUploadMedia(apiKey: string, profileKey: string, fi
     // Convert Buffer to Uint8Array for Blob compatibility
     formData.append('file', new Blob([new Uint8Array(file)]), fileName);
 
-    const res = await axios.post(`${AYRSHARE_URL}/upload`, formData, {
+    const res = await ayrshareHttp.post(`${AYRSHARE_URL}/upload`, formData, {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Profile-Key': profileKey,
@@ -288,7 +364,7 @@ export async function ayrshareSetAutoSchedule(
   }
 ) {
   try {
-    const res = await axios.post(`${AYRSHARE_URL}/auto-schedule/set`,
+    const res = await ayrshareHttp.post(`${AYRSHARE_URL}/auto-schedule/set`,
       schedule,
       {
         headers: {
@@ -305,7 +381,7 @@ export async function ayrshareSetAutoSchedule(
 
 export async function ayrshareGetAutoSchedule(apiKey: string, profileKey: string) {
   try {
-    const res = await axios.get(`${AYRSHARE_URL}/auto-schedule/list`, {
+    const res = await ayrshareHttp.get(`${AYRSHARE_URL}/auto-schedule/list`, {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Profile-Key': profileKey
@@ -319,7 +395,7 @@ export async function ayrshareGetAutoSchedule(apiKey: string, profileKey: string
 
 export async function ayrshareDeleteAutoSchedule(apiKey: string, profileKey: string, title: string) {
   try {
-    const res = await axios.delete(`${AYRSHARE_URL}/auto-schedule`, {
+    const res = await ayrshareHttp.delete(`${AYRSHARE_URL}/auto-schedule`, {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Profile-Key': profileKey,
@@ -356,7 +432,7 @@ export async function ayrshareRegisterWebhook(
       headers['Profile-Key'] = profileKey;
     }
 
-    const res = await axios.post(`${AYRSHARE_URL}/hook/webhook`,
+    const res = await ayrshareHttp.post(`${AYRSHARE_URL}/hook/webhook`,
       { action, url, secret },
       { headers }
     );
@@ -382,7 +458,7 @@ export async function ayrshareUnregisterWebhook(
       headers['Profile-Key'] = profileKey;
     }
 
-    const res = await axios.delete(`${AYRSHARE_URL}/hook/webhook`,
+    const res = await ayrshareHttp.delete(`${AYRSHARE_URL}/hook/webhook`,
       {
         headers,
         data: { action }
@@ -405,7 +481,7 @@ export async function ayrshareGetWebhooks(apiKey: string, profileKey?: string) {
       headers['Profile-Key'] = profileKey;
     }
 
-    const res = await axios.get(`${AYRSHARE_URL}/hook/webhook`, { headers });
+    const res = await ayrshareHttp.get(`${AYRSHARE_URL}/hook/webhook`, { headers });
     return res.data;
   } catch (err: any) {
     console.error('Get Webhooks Error:', err.response?.data || err.message);
@@ -424,7 +500,7 @@ export async function ayrshareAutoHashtag(
   position: 'start' | 'end' | 'auto' = 'end'
 ) {
   try {
-    const res = await axios.post(`${AYRSHARE_URL}/hashtags/auto`,
+    const res = await ayrshareHttp.post(`${AYRSHARE_URL}/hashtags/auto`,
       { post: text, max, position },
       { headers: { 'Authorization': `Bearer ${apiKey}` } }
     );
@@ -440,7 +516,7 @@ export async function ayrshareRecommendHashtags(
   limit: number = 10
 ) {
   try {
-    const res = await axios.get(`${AYRSHARE_URL}/hashtags/recommend`, {
+    const res = await ayrshareHttp.get(`${AYRSHARE_URL}/hashtags/recommend`, {
       headers: { 'Authorization': `Bearer ${apiKey}` },
       params: { keyword, limit }
     });
@@ -456,7 +532,7 @@ export async function ayrshareSearchHashtags(
   platform: string = 'instagram'
 ) {
   try {
-    const res = await axios.get(`${AYRSHARE_URL}/hashtags/search`, {
+    const res = await ayrshareHttp.get(`${AYRSHARE_URL}/hashtags/search`, {
       headers: { 'Authorization': `Bearer ${apiKey}` },
       params: { query, platform }
     });
@@ -468,7 +544,7 @@ export async function ayrshareSearchHashtags(
 
 export async function ayrshareCheckBannedHashtags(apiKey: string, hashtags: string[]) {
   try {
-    const res = await axios.get(`${AYRSHARE_URL}/hashtags/check-banned`, {
+    const res = await ayrshareHttp.get(`${AYRSHARE_URL}/hashtags/check-banned`, {
       headers: { 'Authorization': `Bearer ${apiKey}` },
       params: { hashtags: hashtags.join(',') }
     });
@@ -536,7 +612,7 @@ export async function ayrshareValidatePost(
   mediaUrls?: string[]
 ) {
   try {
-    const res = await axios.post(`${AYRSHARE_URL}/validate/post`,
+    const res = await ayrshareHttp.post(`${AYRSHARE_URL}/validate/post`,
       { post: content, platforms, mediaUrls },
       { headers: { 'Authorization': `Bearer ${apiKey}` } }
     );
@@ -552,7 +628,7 @@ export async function ayrshareValidateMedia(
   platforms: string[]
 ) {
   try {
-    const res = await axios.post(`${AYRSHARE_URL}/media/verifyUrl`,
+    const res = await ayrshareHttp.post(`${AYRSHARE_URL}/media/verifyUrl`,
       { mediaUrls, platforms },
       { headers: { 'Authorization': `Bearer ${apiKey}` } }
     );
@@ -564,7 +640,9 @@ export async function ayrshareValidateMedia(
 
 export async function ayrshareContentModeration(apiKey: string, content: string) {
   try {
-    const res = await axios.post(`${AYRSHARE_URL}/validate/contentModeration`,
+    // Docs: POST /validate/moderation with { text }
+    // https://www.ayrshare.com/docs/apis/validate/moderation
+    const res = await ayrshareHttp.post(`${AYRSHARE_URL}/validate/moderation`,
       { text: content },
       { headers: { 'Authorization': `Bearer ${apiKey}` } }
     );
@@ -585,7 +663,7 @@ export async function ayrshareResizeImage(
   height: number
 ) {
   try {
-    const res = await axios.post(`${AYRSHARE_URL}/media/resize`,
+    const res = await ayrshareHttp.post(`${AYRSHARE_URL}/media/resize`,
       { imageUrl, width, height },
       { headers: { 'Authorization': `Bearer ${apiKey}` } }
     );
@@ -597,7 +675,7 @@ export async function ayrshareResizeImage(
 
 export async function ayrshareVerifyMediaUrl(apiKey: string, url: string) {
   try {
-    const res = await axios.post(`${AYRSHARE_URL}/media/verifyUrl`,
+    const res = await ayrshareHttp.post(`${AYRSHARE_URL}/media/verifyUrl`,
       { url },
       { headers: { 'Authorization': `Bearer ${apiKey}` } }
     );
@@ -620,7 +698,7 @@ export async function ayrshareGetLinkAnalytics(
     const params: any = {};
     if (postId) params.id = postId;
 
-    const res = await axios.get(`${AYRSHARE_URL}/analytics/links`, {
+    const res = await ayrshareHttp.get(`${AYRSHARE_URL}/analytics/links`, {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Profile-Key': profileKey

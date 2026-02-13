@@ -36,14 +36,19 @@ const lambda = new LambdaClient({});
 const TABLE_NAME = process.env.MARKETING_CONFIG_TABLE!;
 const POSTS_TABLE = process.env.MARKETING_POSTS_TABLE || 'MarketingPosts';
 const IMAGE_GENERATOR_FUNCTION = process.env.IMAGE_GENERATOR_FUNCTION || 'ImageGeneratorFn';
+const CLINIC_CONFIG_TABLE = process.env.CLINIC_CONFIG_TABLE;
 
 // ============================================
 // Rate Limiting Constants for Ayrshare Business Plan
 // ============================================
 const BATCH_SIZE = 3; // Max clinics to post to in parallel
 const DELAY_BETWEEN_BATCHES_MS = 2000; // 2 second delay between batches
-const MAX_RETRIES = 2; // Retry failed posts up to 2 times
+const MAX_RETRIES = 1; // Keep bounded to avoid API Gateway 504s
 const RETRY_DELAY_MS = 1000; // 1 second before retry
+const MAX_SYNC_CLINICS = (() => {
+  const raw = Number.parseInt(process.env.PUBLISHER_MAX_SYNC_CLINICS || String(BATCH_SIZE), 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : BATCH_SIZE;
+})();
 
 // ============================================
 // Ayrshare API Key (cached from GlobalSecrets)
@@ -145,11 +150,13 @@ async function postToClinicWithRetry(
  */
 function isRetryableError(error: any): boolean {
   const message = error.message?.toLowerCase() || '';
+  // Timeouts are ambiguous for posting: the request may have succeeded upstream,
+  // so retrying can trigger duplicate-content errors (or accidental duplicates).
+  if (message.includes('timeout')) return false;
   return (
     message.includes('rate limit') ||
     message.includes('too many requests') ||
     message.includes('429') ||
-    message.includes('timeout') ||
     message.includes('network')
   );
 }
@@ -201,8 +208,34 @@ function resolvePostPlaceholders(postData: any, clinicData: any): any {
   return resolvedPost;
 }
 
+async function getClinicConfigMap(clinicIds: string[]): Promise<Record<string, any>> {
+  if (!CLINIC_CONFIG_TABLE) return {};
+  if (!Array.isArray(clinicIds) || clinicIds.length === 0) return {};
+
+  try {
+    const keys = clinicIds.map(id => ({ clinicId: String(id) }));
+    const response = await ddb.send(new BatchGetCommand({
+      RequestItems: {
+        [CLINIC_CONFIG_TABLE]: { Keys: keys }
+      }
+    }));
+    const items = response.Responses?.[CLINIC_CONFIG_TABLE] || [];
+    const map: Record<string, any> = {};
+    for (const item of items) {
+      if (item?.clinicId) {
+        map[String(item.clinicId)] = item;
+      }
+    }
+    return map;
+  } catch (err: any) {
+    console.warn('[publisher] Failed to load clinic config table data; falling back to marketing profile fields only.', err?.message || err);
+    return {};
+  }
+}
+
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'] });
+  const origin = event.headers?.origin || event.headers?.Origin;
+  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'] }, origin);
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
@@ -224,8 +257,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'targetClinicIds array required' }) };
       }
 
+      // IMPORTANT: API Gateway has a ~29s max integration timeout. Large multi-clinic
+      // publishes should be chunked client-side (or moved to an async job).
+      if (targetClinicIds.length > MAX_SYNC_CLINICS) {
+        return {
+          statusCode: 413,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            error: `Too many clinics for synchronous publish: ${targetClinicIds.length}. Please publish in chunks of ${MAX_SYNC_CLINICS} (or fewer) to avoid gateway timeouts.`,
+            maxClinicsPerRequest: MAX_SYNC_CLINICS,
+          }),
+        };
+      }
+
       // Get Profile Keys for all requested clinics
-      const keys = targetClinicIds.map(id => ({ clinicId: String(id) }));
+      const requestedClinicIds = targetClinicIds.map((id: any) => String(id));
+      const keys = requestedClinicIds.map(id => ({ clinicId: id }));
 
       const dbRes = await ddb.send(new BatchGetCommand({
         RequestItems: {
@@ -234,19 +281,39 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }));
 
       const configs = dbRes.Responses?.[TABLE_NAME] || [];
+      const configByClinicId: Record<string, any> = {};
+      for (const cfg of configs) {
+        if (cfg?.clinicId) {
+          configByClinicId[String(cfg.clinicId)] = cfg;
+        }
+      }
+      const missingClinicIds = requestedClinicIds.filter(id => !configByClinicId[id]);
+      const orderedConfigs = requestedClinicIds.map(id => configByClinicId[id]).filter(Boolean);
 
-      if (configs.length === 0) {
+      if (orderedConfigs.length === 0) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'No marketing profiles found for selected clinics' }) };
       }
 
       // Get Ayrshare API key from GlobalSecrets
       const apiKey = await getApiKey();
 
-      // Batch clinics for rate limiting (Ayrshare Business Plan)
-      const batches = chunkArray(configs, BATCH_SIZE);
-      const allResults: Array<{ clinicId: string; status: 'success' | 'failed'; id?: string; refId?: string; error?: string }> = [];
+      // If placeholder resolution is requested, load canonical clinic config (address/phone/etc.)
+      // from CLINIC_CONFIG_TABLE to keep placeholders consistent with the editor.
+      const clinicConfigMap = resolvePlaceholders
+        ? await getClinicConfigMap(requestedClinicIds)
+        : {};
 
-      console.log(`Publishing to ${configs.length} clinics in ${batches.length} batches`);
+      // Batch clinics for rate limiting (Ayrshare Business Plan)
+      const batches = chunkArray(orderedConfigs, BATCH_SIZE);
+      const allResults: Array<{ clinicId: string; status: 'success' | 'failed'; id?: string; refId?: string; error?: string }> = [
+        ...missingClinicIds.map(clinicId => ({
+          clinicId,
+          status: 'failed' as const,
+          error: 'No marketing profile found for clinic',
+        })),
+      ];
+
+      console.log(`Publishing to ${orderedConfigs.length} clinics in ${batches.length} batches`);
 
       for (let i = 0; i < batches.length; i++) {
         const batch = batches[i];
@@ -256,8 +323,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const batchResults = await Promise.all(
           batch.map(async (config) => {
             // Resolve placeholders if requested
+            const clinicDataForPlaceholders = clinicConfigMap[String(config?.clinicId)] || config;
             const resolvedPostData = resolvePlaceholders
-              ? resolvePostPlaceholders(postData, config)
+              ? resolvePostPlaceholders(postData, clinicDataForPlaceholders)
               : postData;
 
             return postToClinicWithRetry(apiKey, config, resolvedPostData, saveHistory);
@@ -413,8 +481,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'targetClinicIds array required' }) };
       }
 
+      // Same API Gateway timeout constraint as /post.
+      if (targetClinicIds.length > MAX_SYNC_CLINICS) {
+        return {
+          statusCode: 413,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            error: `Too many clinics for synchronous bulk publish: ${targetClinicIds.length}. Please publish in chunks of ${MAX_SYNC_CLINICS} (or fewer) to avoid gateway timeouts.`,
+            maxClinicsPerRequest: MAX_SYNC_CLINICS,
+          }),
+        };
+      }
+
       // Get clinic configs
-      const keys = targetClinicIds.map(id => ({ clinicId: String(id) }));
+      const requestedClinicIds = targetClinicIds.map((id: any) => String(id));
+      const keys = requestedClinicIds.map(id => ({ clinicId: id }));
 
       const dbRes = await ddb.send(new BatchGetCommand({
         RequestItems: {
@@ -423,13 +504,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }));
 
       const configs = dbRes.Responses?.[TABLE_NAME] || [];
+      const configByClinicId: Record<string, any> = {};
+      for (const cfg of configs) {
+        if (cfg?.clinicId) {
+          configByClinicId[String(cfg.clinicId)] = cfg;
+        }
+      }
+      const missingClinicIds = requestedClinicIds.filter(id => !configByClinicId[id]);
+      const orderedConfigs = requestedClinicIds.map(id => configByClinicId[id]).filter(Boolean);
 
-      if (configs.length === 0) {
+      if (orderedConfigs.length === 0) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'No marketing profiles found for selected clinics' }) };
       }
 
       // Get Ayrshare API key from GlobalSecrets
       const apiKey = await getApiKey();
+
+      const clinicConfigMap = await getClinicConfigMap(requestedClinicIds);
 
       // If canvasJson is provided, generate images for each clinic using image-generator Lambda
       let generatedImages: Record<string, string> = {};
@@ -470,8 +561,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
 
       // Batch processing for Business Plan rate limits
-      const batches = chunkArray(configs, BATCH_SIZE);
-      const allResults: Array<{ clinicId: string; status: 'success' | 'failed'; id?: string; error?: string }> = [];
+      const batches = chunkArray(orderedConfigs, BATCH_SIZE);
+      const allResults: Array<{ clinicId: string; status: 'success' | 'failed'; id?: string; refId?: string; error?: string }> = [
+        ...missingClinicIds.map(clinicId => ({
+          clinicId,
+          status: 'failed' as const,
+          error: 'No marketing profile found for clinic',
+        })),
+      ];
 
       for (let i = 0; i < batches.length; i++) {
         const batch = batches[i];
@@ -480,7 +577,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           batch.map(async (config) => {
             try {
               // For bulk posts, always resolve placeholders
-              const resolvedPostData = resolvePostPlaceholders(postData, config);
+              const clinicDataForPlaceholders = clinicConfigMap[String(config?.clinicId)] || config;
+              const resolvedPostData = resolvePostPlaceholders(postData, clinicDataForPlaceholders);
 
               // If we have generated images for this clinic, add them to mediaUrls
               if (generatedImages[config.clinicId]) {
@@ -511,7 +609,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 }));
               }
 
-              return { clinicId: config.clinicId, status: 'success' as const, id: res.id };
+              return { clinicId: config.clinicId, status: 'success' as const, id: res.id, refId: res.refId };
             } catch (error: any) {
               console.error(`Bulk post failed for clinic ${config.clinicId}:`, error);
               return { clinicId: config.clinicId, status: 'failed' as const, error: error.message };
@@ -735,11 +833,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         headers: corsHeaders,
         body: JSON.stringify({
           plan: 'business',
+          maxSyncClinicsPerRequest: MAX_SYNC_CLINICS,
           batchSize: BATCH_SIZE,
           delayBetweenBatchesMs: DELAY_BETWEEN_BATCHES_MS,
           maxRetries: MAX_RETRIES,
           retryDelayMs: RETRY_DELAY_MS,
           recommendations: {
+            // API Gateway REST APIs have a hard ~29s integration timeout.
+            // Keep each publish request to a small number of clinics (preferably 1).
+            maxClinicsPerRequest: MAX_SYNC_CLINICS,
             maxClinicsPerMinute: Math.floor(60000 / DELAY_BETWEEN_BATCHES_MS) * BATCH_SIZE,
             optimalBatchSize: BATCH_SIZE
           }
@@ -894,9 +996,39 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       try {
         const apiKey = await getApiKey();
         const result = await ayrshareContentModeration(apiKey, content);
-        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+
+        // Ayrshare returns: { status, text, moderation: [{ flagged, categories, categoryScores }] }
+        // Frontend expects: { flagged, categories, ... }
+        const first = Array.isArray((result as any)?.moderation) ? (result as any).moderation[0] : undefined;
+        const flagged = Boolean(first?.flagged ?? (result as any)?.flagged ?? false);
+        const categories = (first?.categories ?? (result as any)?.categories ?? {}) as Record<string, boolean>;
+        const categoryScores = first?.categoryScores ?? (result as any)?.categoryScores;
+
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            status: (result as any)?.status || 'success',
+            text: (result as any)?.text || content,
+            flagged,
+            categories,
+            ...(categoryScores ? { categoryScores } : {}),
+          }),
+        };
       } catch (error: any) {
-        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: error.message }) };
+        console.error('Content moderation failed:', error?.response?.data || error?.message || error);
+        return {
+          // Don't throw 500 for a non-critical feature; the UI should not be blocked.
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            status: 'unavailable',
+            flagged: false,
+            categories: {},
+            serviceUnavailable: true,
+            error: error?.message || 'Content moderation unavailable',
+          }),
+        };
       }
     }
 

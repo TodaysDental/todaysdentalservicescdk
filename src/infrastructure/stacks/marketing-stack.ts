@@ -306,6 +306,13 @@ export class MarketingStack extends Stack {
       MARKETING_MEDIA_TABLE: this.marketingMediaTable.tableName,
       MARKETING_ANALYTICS_TABLE: this.marketingAnalyticsTable.tableName,
       MEDIA_BUCKET: this.mediaBucket.bucketName,
+      // Keep external API calls bounded so API Gateway doesn't 504.
+      AYRSHARE_HTTP_TIMEOUT_MS: '12000',
+      // Ayrshare posting can be slower; keep below API Gateway's ~29s cap.
+      AYRSHARE_POST_TIMEOUT_MS: '25000',
+      // API Gateway REST APIs have ~29s max integration timeout; keep publishes small per request.
+      // Enforce 1 clinic per publish request to prevent 504s/timeouts.
+      PUBLISHER_MAX_SYNC_CLINICS: '1',
       // Secrets tables for dynamic credential retrieval
       GLOBAL_SECRETS_TABLE: props.globalSecretsTableName,
       CLINIC_SECRETS_TABLE: props.clinicSecretsTableName,
@@ -615,7 +622,7 @@ export class MarketingStack extends Stack {
     // IAM policy for reading from secrets tables
     // Note: Scan is required for /profiles/sync which calls getAllClinicConfigs() and getAllClinicSecrets()
     const secretsReadPolicy = new iam.PolicyStatement({
-      actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
+      actions: ['dynamodb:GetItem', 'dynamodb:BatchGetItem', 'dynamodb:Query', 'dynamodb:Scan'],
       resources: [
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName}`,
@@ -935,6 +942,49 @@ export class MarketingStack extends Stack {
     // GET /publisher/scheduled - Get scheduled posts for calendar
     const publisherScheduledRes = publisherRes.addResource('scheduled');
     publisherScheduledRes.addMethod('GET', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/post/validate - Pre-publish validation
+    const publisherPostValidateRes = publisherPostRes.addResource('validate');
+    publisherPostValidateRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/hashtags - Auto-generate hashtags
+    const publisherHashtagsRes = publisherRes.addResource('hashtags');
+    publisherHashtagsRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/hashtags/recommend - Recommend hashtags by keyword
+    const publisherHashtagsRecommendRes = publisherHashtagsRes.addResource('recommend');
+    publisherHashtagsRecommendRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/hashtags/search - Search hashtags on a platform
+    const publisherHashtagsSearchRes = publisherHashtagsRes.addResource('search');
+    publisherHashtagsSearchRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/hashtags/banned - Check if hashtags are banned
+    const publisherHashtagsBannedRes = publisherHashtagsRes.addResource('banned');
+    publisherHashtagsBannedRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/moderate - AI content moderation
+    const publisherModerateRes = publisherRes.addResource('moderate');
+    publisherModerateRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // Publisher media sub-routes (/publisher/media/...)
+    const publisherMediaRes = publisherRes.addResource('media');
+
+    // POST /publisher/media/resize - Resize images for platform
+    const publisherMediaResizeRes = publisherMediaRes.addResource('resize');
+    publisherMediaResizeRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/media/validate - Validate media for platform compatibility
+    const publisherMediaValidateRes = publisherMediaRes.addResource('validate');
+    publisherMediaValidateRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/media/verify - Verify media URL is accessible
+    const publisherMediaVerifyRes = publisherMediaRes.addResource('verify');
+    publisherMediaVerifyRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // GET /publisher/analytics/links - Link click analytics
+    const publisherAnalyticsLinksRes = publisherAnalyticsRes.addResource('links');
+    publisherAnalyticsLinksRes.addMethod('GET', new apigw.LambdaIntegration(publisherFn), { authorizer });
 
     // -----------------------------------------
     // Ads Routes (/ads) - Meta Ads via Ayrshare
