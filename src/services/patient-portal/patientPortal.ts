@@ -560,18 +560,27 @@ async function getReceiptData(payNum: number, patientName: string, transactionId
     
     try {
         // Step 1: Get paysplits for this payment
-        const splitsResponse = await axios.get(`${API_BASE_URL}/paysplits?PayNum=${payNum}`, { headers });
+        console.log(`Fetching paysplits for PayNum=${payNum}`);
+        const splitsResponse = await axios.get(`${API_BASE_URL}/paysplits?PayNum=${payNum}`, { 
+            headers,
+            timeout: 10000 // 10 second timeout
+        });
         const splits = splitsResponse.data || [];
+        console.log(`Found ${splits.length} paysplits for PayNum=${payNum}`);
         
         // Step 2: For each split with a ProcNum, get procedure and provider details
         const items: ReceiptItem[] = [];
         const providerCache: Record<number, string> = {};
+        const codeCache: Record<number, { ProcCode: string; Descript: string }> = {};
         
         for (const split of splits) {
             if (split.ProcNum && split.ProcNum > 0) {
                 try {
                     // Get procedure details
-                    const procResponse = await axios.get(`${API_BASE_URL}/procedurelogs/${split.ProcNum}`, { headers });
+                    const procResponse = await axios.get(`${API_BASE_URL}/procedurelogs/${split.ProcNum}`, { 
+                        headers,
+                        timeout: 10000
+                    });
                     const proc = procResponse.data;
                     
                     // Get provider name (with caching)
@@ -581,7 +590,10 @@ async function getReceiptData(payNum: number, patientName: string, transactionId
                             providerName = providerCache[proc.ProvNum];
                         } else {
                             try {
-                                const provResponse = await axios.get(`${API_BASE_URL}/providers/${proc.ProvNum}`, { headers });
+                                const provResponse = await axios.get(`${API_BASE_URL}/providers/${proc.ProvNum}`, { 
+                                    headers,
+                                    timeout: 10000
+                                });
                                 const prov = provResponse.data;
                                 providerName = `${prov.FName || ''} ${prov.LName || ''}`.trim() || prov.Abbr || 'Unknown';
                                 providerCache[proc.ProvNum] = providerName;
@@ -591,12 +603,36 @@ async function getReceiptData(payNum: number, patientName: string, transactionId
                         }
                     }
                     
+                    // Look up procedure code details (ProcCode like D0120, and description)
+                    let procCode = proc.ProcCode || '-';
+                    let procDescript = proc.Descript || 'Procedure';
+                    
+                    if (proc.CodeNum && proc.CodeNum > 0) {
+                        if (codeCache[proc.CodeNum]) {
+                            procCode = codeCache[proc.CodeNum].ProcCode;
+                            procDescript = codeCache[proc.CodeNum].Descript;
+                        } else {
+                            try {
+                                const codeResponse = await axios.get(
+                                    `${API_BASE_URL}/procedurecodes/${proc.CodeNum}`,
+                                    { headers, timeout: 10000 }
+                                );
+                                const codeData = codeResponse.data;
+                                procCode = codeData.ProcCode || procCode;
+                                procDescript = codeData.Descript || procDescript;
+                                codeCache[proc.CodeNum] = { ProcCode: procCode, Descript: procDescript };
+                            } catch (codeErr) {
+                                console.error(`Error fetching procedure code ${proc.CodeNum}:`, codeErr);
+                            }
+                        }
+                    }
+                    
                     items.push({
                         date: proc.ProcDate || new Date().toISOString().split('T')[0],
                         provider: providerName,
-                        code: proc.ProcCode || '-',
+                        code: procCode,
                         tooth: proc.ToothNum || '-',
-                        description: proc.Descript || proc.ProcCode || 'Procedure',
+                        description: procDescript,
                         paid: parseFloat(split.SplitAmt) || 0
                     });
                 } catch (procErr) {
@@ -636,9 +672,16 @@ async function getReceiptData(payNum: number, patientName: string, transactionId
         };
     } catch (error: any) {
         console.error('Error fetching receipt data:', error);
+        console.error('Error details:', {
+            payNum,
+            status: error.response?.status,
+            statusText: error.response?.statusText,
+            data: error.response?.data,
+            message: error.message
+        });
         throw {
             status: error.response?.status || 500,
-            message: error.response?.data?.message || 'Error fetching receipt data'
+            message: error.response?.data?.message || error.message || 'Error fetching receipt data'
         };
     }
 }

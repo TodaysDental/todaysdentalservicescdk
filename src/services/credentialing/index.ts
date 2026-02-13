@@ -17,6 +17,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { v4 as uuidv4 } from 'uuid';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { ClinicRoleMap } from '../../shared/utils/jwt';
 import {
   getUserPermissions,
   hasModulePermission,
@@ -47,6 +48,7 @@ import {
 // Environment Variables
 const PROVIDERS_TABLE = process.env.PROVIDERS_TABLE!;
 const PROVIDER_CREDENTIALS_TABLE = process.env.PROVIDER_CREDENTIALS_TABLE!;
+const PROVIDER_STAFF_LINK_TABLE = process.env.PROVIDER_STAFF_LINK_TABLE!;
 const PAYER_ENROLLMENTS_TABLE = process.env.PAYER_ENROLLMENTS_TABLE!;
 const TASKS_TABLE = process.env.TASKS_TABLE!;
 const DOCUMENTS_TABLE = process.env.DOCUMENTS_TABLE!;
@@ -79,7 +81,7 @@ type EnrollmentStatus = 'not-started' | 'in-progress' | 'approved' | 'rejected' 
 type TaskStatus = 'pending' | 'in-progress' | 'completed' | 'overdue';
 type TaskPriority = 'high' | 'medium' | 'low';
 type TaskCategory = 'verification' | 'documentation' | 'enrollment' | 'follow-up';
-type CredentialType = 'identity' | 'education' | 'license' | 'workHistory' | 'insurance' | 'sanctions';
+type CredentialType = 'identity' | 'education' | 'license' | 'workHistory' | 'insurance' | 'sanctions' | 'clinicInfo';
 
 // Available Payers
 const AVAILABLE_PAYERS = [
@@ -323,6 +325,33 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return runStateBoardCheck(JSON.parse(event.body), allowedClinics);
     }
 
+    // Provider Self-Service (MY endpoints - requires clinical role)
+    const hasProviderRole = isProviderUser(userPerms.clinicRoles);
+    
+    if (path.startsWith('/me')) {
+      if (!hasProviderRole) {
+        return httpErr(403, 'Provider role required to access this endpoint');
+      }
+
+      if (method === 'GET' && path === '/me') {
+        return getMyProviderProfile(userPerms);
+      }
+      if (method === 'POST' && path === '/me/profile') {
+        if (!event.body) return httpErr(400, 'Missing request body');
+        return createMyProviderProfile(userPerms, JSON.parse(event.body));
+      }
+      if (method === 'GET' && path === '/me/credentials') {
+        return getMyCredentials(userPerms);
+      }
+      if (method === 'POST' && path === '/me/credentials') {
+        if (!event.body) return httpErr(400, 'Missing request body');
+        return updateMyCredentials(userPerms, JSON.parse(event.body));
+      }
+      if (method === 'GET' && path === '/me/documents') {
+        return getMyDocuments(userPerms);
+      }
+    }
+
     // Analytics
     if (method === 'GET' && path === '/analytics') {
       return getAnalytics(queryParams, allowedClinics);
@@ -516,7 +545,7 @@ async function listProviders(queryParams: any, allowedClinics: Set<string>) {
 }
 
 async function createProvider(body: any, userPerms: UserPermissions, allowedClinics: Set<string>) {
-  const { name, npi, specialty, clinicIds, email, tempProviderId } = body;
+  const { name, npi, specialty, clinicIds, email, tempProviderId, linkedStaffEmail } = body;
 
   if (!name || !npi || !specialty) {
     return httpErr(400, 'name, npi, and specialty are required');
@@ -571,6 +600,32 @@ async function createProvider(body: any, userPerms: UserPermissions, allowedClin
   };
 
   await ddb.send(new PutCommand({ TableName: PROVIDERS_TABLE, Item: provider }));
+
+  // Create staff link if linkedStaffEmail is provided
+  if (linkedStaffEmail) {
+    try {
+      const link = {
+        providerId,
+        staffEmail: linkedStaffEmail.toLowerCase(),
+        relationshipType: 'owner',
+        linkedAt: now,
+        linkedBy: userPerms.email,
+        isActive: true,
+        createdAt: now,
+        updatedAt: now,
+      };
+      
+      await ddb.send(new PutCommand({
+        TableName: PROVIDER_STAFF_LINK_TABLE,
+        Item: link,
+      }));
+      
+      console.log(`Created staff link: ${providerId} -> ${linkedStaffEmail}`);
+    } catch (err) {
+      console.error('Error creating staff link:', err);
+      // Don't fail provider creation if link creation fails
+    }
+  }
 
   // If a tempProviderId was provided, link any documents uploaded during wizard flow
   let linkedDocuments = 0;
@@ -762,7 +817,7 @@ async function upsertProviderCredential(providerId: string, body: any, allowedCl
     return httpErr(400, 'credentialType is required');
   }
 
-  const validTypes: CredentialType[] = ['identity', 'education', 'license', 'workHistory', 'insurance', 'sanctions'];
+  const validTypes: CredentialType[] = ['identity', 'education', 'license', 'workHistory', 'insurance', 'sanctions', 'clinicInfo'];
   if (!validTypes.includes(credentialType)) {
     return httpErr(400, `Invalid credentialType. Must be one of: ${validTypes.join(', ')}`);
   }
@@ -1973,5 +2028,264 @@ async function getAnalytics(queryParams: any, allowedClinics: Set<string>) {
       // In a real implementation, this would include historical data
       message: 'Historical trend data would be included here',
     },
+  });
+}
+
+// ========================================
+// PROVIDER SELF-SERVICE (PORTAL ACCESS)
+// ========================================
+
+/**
+ * Check if user has a provider/clinical role
+ */
+function isProviderUser(clinicRoles: ClinicRoleMap[]): boolean {
+  const CLINICAL_ROLES = [
+    'Dentist',
+    'Dental Hygienist',
+    'Dental Assistant',
+    'DOCTOR',
+    'HYGIENIST',
+    'DENTAL_ASSISTANT',
+    'PROVIDER'
+  ];
+  
+  return clinicRoles.some(cr => CLINICAL_ROLES.includes(cr.role));
+}
+
+/**
+ * GET /me - Get my provider profile
+ */
+async function getMyProviderProfile(userPerms: UserPermissions) {
+  const { Items: links } = await ddb.send(new QueryCommand({
+    TableName: PROVIDER_STAFF_LINK_TABLE,
+    IndexName: 'byStaffEmail',
+    KeyConditionExpression: 'staffEmail = :email',
+    ExpressionAttributeValues: {
+      ':email': userPerms.email.toLowerCase(),
+    },
+  }));
+
+  if (!links || links.length === 0) {
+    return httpErr(404, 'No provider profile linked to your account');
+  }
+
+  const link = links[0];
+  const { Item: provider } = await ddb.send(new GetCommand({
+    TableName: PROVIDERS_TABLE,
+    Key: { providerId: link.providerId },
+  }));
+
+  if (!provider) {
+    return httpErr(404, 'Provider profile not found');
+  }
+
+  return httpOk({ 
+    provider,
+    link: {
+      linkedAt: link.linkedAt,
+      relationshipType: link.relationshipType,
+    }
+  });
+}
+
+/**
+ * POST /me/profile - Create my provider profile (self-service)
+ */
+async function createMyProviderProfile(userPerms: UserPermissions, body: any) {
+  const { name, npi, specialty, email, clinicIds } = body;
+
+  if (!npi || !specialty) {
+    return httpErr(400, 'npi and specialty are required');
+  }
+
+  // Check if link already exists
+  const { Items: existingLinks } = await ddb.send(new QueryCommand({
+    TableName: PROVIDER_STAFF_LINK_TABLE,
+    IndexName: 'byStaffEmail',
+    KeyConditionExpression: 'staffEmail = :email',
+    ExpressionAttributeValues: {
+      ':email': userPerms.email.toLowerCase(),
+    },
+  }));
+
+  if (existingLinks && existingLinks.length > 0) {
+    return httpErr(400, 'You already have a provider profile');
+  }
+
+  // Derive clinic IDs from user's roles if not provided
+  const providerClinicIds = clinicIds || userPerms.clinicRoles.map(cr => cr.clinicId).filter(Boolean);
+  
+  // Check for duplicate NPI
+  const { Items: existing } = await ddb.send(new QueryCommand({
+    TableName: PROVIDERS_TABLE,
+    IndexName: 'byNpi',
+    KeyConditionExpression: 'npi = :npi',
+    ExpressionAttributeValues: { ':npi': npi },
+  }));
+
+  if (existing && existing.length > 0) {
+    for (const existingProvider of existing) {
+      const existingClinicIds = existingProvider.clinicIds || [];
+      const overlappingClinics = providerClinicIds.filter((cid: string) => existingClinicIds.includes(cid));
+      if (overlappingClinics.length > 0) {
+        return httpErr(400, `A provider with this NPI already exists for clinic(s): ${overlappingClinics.join(', ')}`);
+      }
+    }
+  }
+
+  const providerId = uuidv4();
+  const now = new Date().toISOString();
+  const providerName = name || `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || 'Provider';
+
+  const provider = {
+    providerId,
+    name: providerName,
+    npi,
+    specialty,
+    status: 'draft' as ProviderStatus,
+    credentialingProgress: 0,
+    enrollmentProgress: 0,
+    clinicIds: providerClinicIds,
+    primaryClinicId: providerClinicIds[0] || null,
+    email: email || userPerms.email,
+    createdAt: now,
+    createdBy: 'SELF_CREATED',
+    updatedAt: now,
+  };
+
+  await ddb.send(new PutCommand({ TableName: PROVIDERS_TABLE, Item: provider }));
+
+  // Auto-create link
+  const link = {
+    providerId,
+    staffEmail: userPerms.email.toLowerCase(),
+    relationshipType: 'owner',
+    linkedAt: now,
+    linkedBy: 'SELF',
+    isActive: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await ddb.send(new PutCommand({
+    TableName: PROVIDER_STAFF_LINK_TABLE,
+    Item: link,
+  }));
+
+  return httpCreated({
+    providerId,
+    message: 'Provider profile created successfully',
+    provider,
+  });
+}
+
+/**
+ * GET /me/credentials - Get my credentials
+ */
+async function getMyCredentials(userPerms: UserPermissions) {
+  const { Items: links } = await ddb.send(new QueryCommand({
+    TableName: PROVIDER_STAFF_LINK_TABLE,
+    IndexName: 'byStaffEmail',
+    KeyConditionExpression: 'staffEmail = :email',
+    ExpressionAttributeValues: {
+      ':email': userPerms.email.toLowerCase(),
+    },
+  }));
+
+  if (!links || links.length === 0) {
+    return httpErr(404, 'No provider profile linked to your account');
+  }
+
+  const providerId = links[0].providerId;
+  const { Items: credentials } = await ddb.send(new QueryCommand({
+    TableName: PROVIDER_CREDENTIALS_TABLE,
+    KeyConditionExpression: 'providerId = :pid',
+    ExpressionAttributeValues: {
+      ':pid': providerId,
+    },
+  }));
+
+  return httpOk({
+    providerId,
+    credentials: credentials || [],
+  });
+}
+
+/**
+ * POST /me/credentials - Update my credentials
+ */
+async function updateMyCredentials(userPerms: UserPermissions, body: any) {
+  const { Items: links } = await ddb.send(new QueryCommand({
+    TableName: PROVIDER_STAFF_LINK_TABLE,
+    IndexName: 'byStaffEmail',
+    KeyConditionExpression: 'staffEmail = :email',
+    ExpressionAttributeValues: {
+      ':email': userPerms.email.toLowerCase(),
+    },
+  }));
+
+  if (!links || links.length === 0) {
+    return httpErr(404, 'No provider profile linked to your account');
+  }
+
+  const providerId = links[0].providerId;
+  const { credentialType, ...data } = body;
+
+  if (!credentialType) {
+    return httpErr(400, 'credentialType is required');
+  }
+
+  const now = new Date().toISOString();
+  const credential = {
+    providerId,
+    credentialType,
+    ...data,
+    updatedAt: now,
+    updatedBy: userPerms.email,
+  };
+
+  await ddb.send(new PutCommand({
+    TableName: PROVIDER_CREDENTIALS_TABLE,
+    Item: credential,
+  }));
+
+  await updateCredentialingProgress(providerId);
+
+  return httpOk({
+    message: 'Credential updated successfully',
+    credential,
+  });
+}
+
+/**
+ * GET /me/documents - Get my documents
+ */
+async function getMyDocuments(userPerms: UserPermissions) {
+  const { Items: links } = await ddb.send(new QueryCommand({
+    TableName: PROVIDER_STAFF_LINK_TABLE,
+    IndexName: 'byStaffEmail',
+    KeyConditionExpression: 'staffEmail = :email',
+    ExpressionAttributeValues: {
+      ':email': userPerms.email.toLowerCase(),
+    },
+  }));
+
+  if (!links || links.length === 0) {
+    return httpErr(404, 'No provider profile linked to your account');
+  }
+
+  const providerId = links[0].providerId;
+  const { Items: documents } = await ddb.send(new QueryCommand({
+    TableName: DOCUMENTS_TABLE,
+    IndexName: 'byProvider',
+    KeyConditionExpression: 'providerId = :pid',
+    ExpressionAttributeValues: {
+      ':pid': providerId,
+    },
+  }));
+
+  return httpOk({
+    providerId,
+    documents: documents || [],
   });
 }

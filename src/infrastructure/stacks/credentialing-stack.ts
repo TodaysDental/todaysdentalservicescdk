@@ -31,6 +31,7 @@ export class CredentialingStack extends Stack {
   // DynamoDB Tables
   public readonly providersTable: dynamodb.Table;
   public readonly providerCredentialsTable: dynamodb.Table;
+  public readonly providerStaffLinkTable: dynamodb.Table;
   public readonly payerEnrollmentsTable: dynamodb.Table;
   public readonly credentialingTasksTable: dynamodb.Table;
   public readonly credentialingDocumentsTable: dynamodb.Table;
@@ -857,6 +858,7 @@ export class CredentialingStack extends Stack {
       environment: {
         PROVIDERS_TABLE: this.providersTable.tableName,
         PROVIDER_CREDENTIALS_TABLE: this.providerCredentialsTable.tableName,
+        PROVIDER_STAFF_LINK_TABLE: this.providerStaffLinkTable.tableName,
         PAYER_ENROLLMENTS_TABLE: this.payerEnrollmentsTable.tableName,
         TASKS_TABLE: this.credentialingTasksTable.tableName,
         DOCUMENTS_TABLE: this.credentialingDocumentsTable.tableName,
@@ -875,6 +877,7 @@ export class CredentialingStack extends Stack {
     // Grant Lambda permissions to DynamoDB tables
     this.providersTable.grantReadWriteData(this.credentialingFn);
     this.providerCredentialsTable.grantReadWriteData(this.credentialingFn);
+    this.providerStaffLinkTable.grantReadWriteData(this.credentialingFn);
     this.payerEnrollmentsTable.grantReadWriteData(this.credentialingFn);
     this.credentialingTasksTable.grantReadWriteData(this.credentialingFn);
     this.credentialingDocumentsTable.grantReadWriteData(this.credentialingFn);
