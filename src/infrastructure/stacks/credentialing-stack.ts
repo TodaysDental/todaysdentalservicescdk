@@ -32,6 +32,8 @@ export class CredentialingStack extends Stack {
   public readonly providersTable: dynamodb.Table;
   public readonly providerCredentialsTable: dynamodb.Table;
   public readonly providerStaffLinkTable: dynamodb.Table;
+  public readonly credentialingUsersTable: dynamodb.Table;
+  public readonly providerUserLinkTable: dynamodb.Table;
   public readonly payerEnrollmentsTable: dynamodb.Table;
   public readonly credentialingTasksTable: dynamodb.Table;
   public readonly credentialingDocumentsTable: dynamodb.Table;
@@ -228,6 +230,49 @@ export class CredentialingStack extends Stack {
     this.providerStaffLinkTable.addGlobalSecondaryIndex({
       indexName: 'byStaffUser',
       partitionKey: { name: 'staffUserId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'providerId', type: dynamodb.AttributeType.STRING },
+    });
+
+    // Credentialing Users Table - Credentialing's own user identity model
+    // Decouples credentialing from TDI HR for standalone/outsourced use
+    this.credentialingUsersTable = new dynamodb.Table(this, 'CredentialingUsersTable', {
+      tableName: `${this.stackName}-CredentialingUsers`,
+      partitionKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      pointInTimeRecovery: true,
+    });
+    applyTags(this.credentialingUsersTable, { Table: 'credentialing-users' });
+
+    // GSI: resolve email → userId (for login/self-service)
+    this.credentialingUsersTable.addGlobalSecondaryIndex({
+      indexName: 'byEmail',
+      partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
+    });
+
+    // GSI: list users by org (multi-tenant)
+    this.credentialingUsersTable.addGlobalSecondaryIndex({
+      indexName: 'byOrgId',
+      partitionKey: { name: 'orgId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'name', type: dynamodb.AttributeType.STRING },
+    });
+
+    // Provider-User Link Table - Links providers to credentialing users
+    // Replaces ProviderStaffLinkTable with proper schema (userId instead of staffEmail)
+    this.providerUserLinkTable = new dynamodb.Table(this, 'ProviderUserLinkTable', {
+      tableName: `${this.stackName}-ProviderUserLink`,
+      partitionKey: { name: 'providerId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      pointInTimeRecovery: true,
+    });
+    applyTags(this.providerUserLinkTable, { Table: 'credentialing-provider-user-link' });
+
+    // GSI: reverse lookup userId → linked providers
+    this.providerUserLinkTable.addGlobalSecondaryIndex({
+      indexName: 'byUserId',
+      partitionKey: { name: 'userId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'providerId', type: dynamodb.AttributeType.STRING },
     });
 
@@ -876,14 +921,17 @@ export class CredentialingStack extends Stack {
       environment: {
         PROVIDERS_TABLE: this.providersTable.tableName,
         PROVIDER_CREDENTIALS_TABLE: this.providerCredentialsTable.tableName,
-        PROVIDER_STAFF_LINK_TABLE: this.providerStaffLinkTable.tableName,
+        PROVIDER_STAFF_LINK_TABLE: this.providerStaffLinkTable.tableName, // Legacy — kept for backward compat
+        CREDENTIALING_USERS_TABLE: this.credentialingUsersTable.tableName,
+        PROVIDER_USER_LINK_TABLE: this.providerUserLinkTable.tableName,
         PAYER_ENROLLMENTS_TABLE: this.payerEnrollmentsTable.tableName,
         TASKS_TABLE: this.credentialingTasksTable.tableName,
         DOCUMENTS_TABLE: this.credentialingDocumentsTable.tableName,
         DOCUMENTS_BUCKET: this.documentsBucket.bucketName,
-        EXTRACTED_DATA_TABLE: this.extractedDataTable.tableName,  // For document processing
+        EXTRACTED_DATA_TABLE: this.extractedDataTable.tableName,
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName,
         STAFF_USER_TABLE: staffUserTableName,
+        CREDENTIALING_MODE: 'internal', // 'internal' (TDI) or 'public' (standalone)
         // SES for notifications
         APP_NAME: 'TodaysDentalInsights',
         FROM_EMAIL: 'no-reply@todaysdentalinsights.com',
@@ -896,10 +944,12 @@ export class CredentialingStack extends Stack {
     this.providersTable.grantReadWriteData(this.credentialingFn);
     this.providerCredentialsTable.grantReadWriteData(this.credentialingFn);
     this.providerStaffLinkTable.grantReadWriteData(this.credentialingFn);
+    this.credentialingUsersTable.grantReadWriteData(this.credentialingFn);
+    this.providerUserLinkTable.grantReadWriteData(this.credentialingFn);
     this.payerEnrollmentsTable.grantReadWriteData(this.credentialingFn);
     this.credentialingTasksTable.grantReadWriteData(this.credentialingFn);
     this.credentialingDocumentsTable.grantReadWriteData(this.credentialingFn);
-    this.extractedDataTable.grantReadWriteData(this.credentialingFn);  // For document processing
+    this.extractedDataTable.grantReadWriteData(this.credentialingFn);
 
     // Grant Lambda permissions to S3 bucket
     this.documentsBucket.grantReadWrite(this.credentialingFn);
