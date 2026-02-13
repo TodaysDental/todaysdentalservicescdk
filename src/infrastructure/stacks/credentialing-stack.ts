@@ -213,6 +213,24 @@ export class CredentialingStack extends Stack {
       sortKey: { name: 'expirationDate', type: dynamodb.AttributeType.STRING },
     });
 
+    // Provider-Staff Link Table - Links providers to staff users
+    this.providerStaffLinkTable = new dynamodb.Table(this, 'ProviderStaffLinkTable', {
+      tableName: `${this.stackName}-ProviderStaffLink`,
+      partitionKey: { name: 'providerId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'staffUserId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      pointInTimeRecovery: true,
+    });
+    applyTags(this.providerStaffLinkTable, { Table: 'credentialing-provider-staff-link' });
+
+    // GSI for querying by staff user
+    this.providerStaffLinkTable.addGlobalSecondaryIndex({
+      indexName: 'byStaffUser',
+      partitionKey: { name: 'staffUserId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'providerId', type: dynamodb.AttributeType.STRING },
+    });
+
     // Payer Enrollments Table - Provider-Payer enrollment tracking
     // Stores: enrollmentId, providerId, payerId, payerName, status, applicationDate, approvalDate, notes
     this.payerEnrollmentsTable = new dynamodb.Table(this, 'PayerEnrollmentsTable', {
