@@ -13,6 +13,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand, PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { v4 as uuidv4 } from 'uuid';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import {
@@ -34,10 +35,11 @@ const CLINIC_HOURS_TABLE = process.env.CLINIC_HOURS_TABLE!;
 const SHIFTS_TABLE = process.env.SHIFTS_TABLE!;
 const DEVICE_TOKENS_TABLE = process.env.DEVICE_TOKENS_TABLE || '';
 const SEND_PUSH_FUNCTION_ARN = process.env.SEND_PUSH_FUNCTION_ARN || '';
-const GEOFENCE_CONFIG_RAW = process.env.GEOFENCE_CONFIG || '{}';
+const GEOFENCE_CONFIG_PARAM = process.env.GEOFENCE_CONFIG_PARAM || '';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const lambdaClient = new LambdaClient({});
+const ssmClient = new SSMClient({});
 const MODULE_NAME = 'HR'; // Attendance is part of the HR module
 const METHOD_PERMISSIONS: Record<string, PermissionType> = {
     GET: 'read',
@@ -47,7 +49,7 @@ const METHOD_PERMISSIONS: Record<string, PermissionType> = {
 };
 
 // ========================================
-// GEOFENCE CONFIG (from CDK env var)
+// GEOFENCE CONFIG (loaded from SSM at cold start)
 // ========================================
 interface GeofenceConfigEntry {
     enabled: boolean;
@@ -58,7 +60,26 @@ interface GeofenceConfigEntry {
     lateThresholdMinutes: number;
     timezone: string;
 }
-const GEOFENCE_CONFIG: Record<string, GeofenceConfigEntry> = JSON.parse(GEOFENCE_CONFIG_RAW);
+
+let _geofenceConfigCache: Record<string, GeofenceConfigEntry> | null = null;
+
+async function getGeofenceConfig(): Promise<Record<string, GeofenceConfigEntry>> {
+    if (_geofenceConfigCache) return _geofenceConfigCache;
+    if (!GEOFENCE_CONFIG_PARAM) {
+        _geofenceConfigCache = {};
+        return _geofenceConfigCache;
+    }
+    try {
+        const result = await ssmClient.send(new GetParameterCommand({
+            Name: GEOFENCE_CONFIG_PARAM,
+        }));
+        _geofenceConfigCache = JSON.parse(result.Parameter?.Value || '{}');
+    } catch (err) {
+        console.error('Failed to load geofence config from SSM:', err);
+        _geofenceConfigCache = {};
+    }
+    return _geofenceConfigCache!;
+}
 
 // ========================================
 // HELPERS
@@ -208,13 +229,12 @@ async function hasShiftToday(userId: string, clinicId: string, tz: string): Prom
     }
 }
 
-/** Validate GPS coordinates against geofence */
-function validateGeofence(clinicId: string, latitude: number, longitude: number): {
+function validateGeofence(clinicId: string, latitude: number, longitude: number, gcfg: Record<string, GeofenceConfigEntry>): {
     ok: boolean;
     distanceMeters: number | undefined;
     anomalies: string[];
 } {
-    const config = GEOFENCE_CONFIG[clinicId];
+    const config = gcfg[clinicId];
     if (!config || !config.enabled) return { ok: true, distanceMeters: undefined, anomalies: [] };
     if (config.latitude === 0 && config.longitude === 0) return { ok: true, distanceMeters: undefined, anomalies: [] };
 
@@ -233,13 +253,12 @@ function validateGeofence(clinicId: string, latitude: number, longitude: number)
     return { ok: true, distanceMeters: Math.round(distance), anomalies };
 }
 
-/** Determine detection method and anomalies */
-function classifyDetection(body: any, clinicId: string): {
+function classifyDetection(body: any, clinicId: string, gcfg: Record<string, GeofenceConfigEntry>): {
     method: 'wifi' | 'geofence' | 'gps' | 'manual';
     anomalies: string[];
 } {
     const anomalies: string[] = [];
-    const config = GEOFENCE_CONFIG[clinicId];
+    const config = gcfg[clinicId];
 
     // Manual override (admin)
     if (body.manual) return { method: 'manual', anomalies: [] };
@@ -262,12 +281,11 @@ function classifyDetection(body: any, clinicId: string): {
     return { method: 'gps', anomalies };
 }
 
-/** Check if staff is late relative to their shift */
-function checkLateStatus(shift: any, clinicId: string, checkinTimestamp: string): {
+function checkLateStatus(shift: any, clinicId: string, checkinTimestamp: string, gcfg: Record<string, GeofenceConfigEntry>): {
     isLate: boolean;
     lateMinutes: number;
 } {
-    const config = GEOFENCE_CONFIG[clinicId];
+    const config = gcfg[clinicId];
     const threshold = config?.lateThresholdMinutes || 10;
     if (!shift?.startTime) return { isLate: false, lateMinutes: 0 };
 
@@ -315,7 +333,8 @@ async function handleCheckin(event: APIGatewayProxyEvent, perms: UserPermissions
 
     if (!clinicId) return httpBad('clinicId is required');
 
-    const geoConfig = GEOFENCE_CONFIG[clinicId];
+    const gcfg = await getGeofenceConfig();
+    const geoConfig = gcfg[clinicId];
     const tz = geoConfig?.timezone || 'America/New_York';
     const now = new Date().toISOString();
     const today = todayInTimezone(tz);
@@ -339,21 +358,21 @@ async function handleCheckin(event: APIGatewayProxyEvent, perms: UserPermissions
         ok: true, distanceMeters: undefined, anomalies: [],
     };
     if (latitude !== undefined && longitude !== undefined) {
-        geoResult = validateGeofence(clinicId, latitude, longitude);
+        geoResult = validateGeofence(clinicId, latitude, longitude, gcfg);
         if (!geoResult.ok) {
             return httpForbidden(`Outside clinic geofence (${geoResult.distanceMeters}m away)`);
         }
     }
 
     // 5. Classify detection method and collect anomalies
-    const detection = classifyDetection(body, clinicId);
+    const detection = classifyDetection(body, clinicId, gcfg);
     const allAnomalies = [...new Set([...geoResult.anomalies, ...detection.anomalies])];
 
     // No shift → anomaly
     if (!shiftCheck.shift) allAnomalies.push('no_shift');
 
     // 6. Late check
-    const lateStatus = checkLateStatus(shiftCheck.shift, clinicId, now);
+    const lateStatus = checkLateStatus(shiftCheck.shift, clinicId, now, gcfg);
 
     // ---- Write attendance record ----
     const recordId = uuidv4();
@@ -411,7 +430,8 @@ async function handleCheckout(event: APIGatewayProxyEvent, perms: UserPermission
 
     if (!clinicId) return httpBad('clinicId is required');
 
-    const geoConfig = GEOFENCE_CONFIG[clinicId];
+    const gcfg = await getGeofenceConfig();
+    const geoConfig = gcfg[clinicId];
     const tz = geoConfig?.timezone || 'America/New_York';
     const now = new Date().toISOString();
     const today = todayInTimezone(tz);
@@ -484,10 +504,12 @@ async function handleGetConfig(event: APIGatewayProxyEvent, perms: UserPermissio
         return httpOk({ clinics: [] });
     }
 
+    const gcfg = await getGeofenceConfig();
+
     const clinicConfigs = [];
     for (const assignment of staffResult.Items) {
         const cid = assignment.clinicId;
-        const geoConfig = GEOFENCE_CONFIG[cid];
+        const geoConfig = gcfg[cid];
         if (!geoConfig || !geoConfig.enabled) continue;
 
         // Only include if staff is on-premises
@@ -601,7 +623,8 @@ async function handleDaily(event: APIGatewayProxyEvent, perms: UserPermissions):
     if (!clinicId) return httpBad('clinicId is required');
     if (!userHasClinicAccess(perms, clinicId)) return httpForbidden('No access to this clinic');
 
-    const targetDate = date || todayInTimezone(GEOFENCE_CONFIG[clinicId]?.timezone || 'America/New_York');
+    const gcfg = await getGeofenceConfig();
+    const targetDate = date || todayInTimezone(gcfg[clinicId]?.timezone || 'America/New_York');
 
     const result = await ddb.send(new QueryCommand({
         TableName: ATTENDANCE_TABLE,
@@ -657,7 +680,8 @@ async function handleAdminOverride(event: APIGatewayProxyEvent, perms: UserPermi
     if (!userHasClinicAccess(perms, clinicId)) return httpForbidden('No access to this clinic');
     if (!['checkin', 'checkout'].includes(type)) return httpBad('type must be checkin or checkout');
 
-    const tz = GEOFENCE_CONFIG[clinicId]?.timezone || 'America/New_York';
+    const gcfg = await getGeofenceConfig();
+    const tz = gcfg[clinicId]?.timezone || 'America/New_York';
     const now = timestamp || new Date().toISOString();
     const today = todayInTimezone(tz);
     const recordId = uuidv4();

@@ -9,7 +9,22 @@ import {
   ayrshareGetAnalytics,
   ayrshareGetComments,
   ayrshareReplyToComment,
-  ayrshareGetSocialStats
+  ayrshareGetSocialStats,
+  ayrshareAutoHashtag,
+  ayrshareRecommendHashtags,
+  ayrshareSearchHashtags,
+  ayrshareCheckBannedHashtags,
+  ayrshareContentModeration,
+  ayrshareResizeImage,
+  ayrshareSetAutoSchedule,
+  ayrshareGetAutoSchedule,
+  ayrshareDeleteAutoSchedule,
+  ayrshareRegisterWebhook,
+  ayrshareUnregisterWebhook,
+  ayrshareGetWebhooks,
+  ayrshareGetLinkAnalytics,
+  ayrshareValidateMedia,
+  ayrshareVerifyMediaUrl,
 } from './ayrshare-client';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import { getAyrshareApiKey } from '../../shared/utils/secrets-helper';
@@ -200,7 +215,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (event.path.endsWith('/post') && event.httpMethod === 'POST') {
       const body = JSON.parse(event.body || '{}');
       const { targetClinicIds, postData, saveHistory = true, resolvePlaceholders = false } = body;
-      // postData: { post: "text", platforms: ["facebook"], mediaUrls: [], scheduleDate?: "..." }
+      // Fix #14: Normalize scheduleDate/scheduledDate — accept both field names
+      if (postData) {
+        postData.scheduleDate = postData.scheduledDate || postData.scheduleDate;
+      }
 
       if (!targetClinicIds || !Array.isArray(targetClinicIds) || targetClinicIds.length === 0) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'targetClinicIds array required' }) };
@@ -274,6 +292,109 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       console.log(`Publishing complete: ${successCount} success, ${failedCount} failed`);
 
       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(summary) };
+    }
+
+    // ============================================
+    // 1b. POST VALIDATE - Pre-publish validation (Fix #3)
+    // ============================================
+    if (event.path.endsWith('/post/validate') && event.httpMethod === 'POST') {
+      const body = JSON.parse(event.body || '{}');
+      const { postData } = body;
+
+      const warnings: string[] = [];
+      const errors: string[] = [];
+
+      if (!postData) {
+        errors.push('postData is required');
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ valid: false, warnings, errors }) };
+      }
+
+      // Platform constraints
+      const PLATFORM_LIMITS: Record<string, { maxCaption?: number; maxImages?: number; videoOnly?: boolean; requiresField?: string }> = {
+        twitter: { maxCaption: 280, maxImages: 4 },
+        tiktok: { videoOnly: true },
+        youtube: { videoOnly: true },
+        pinterest: { requiresField: 'link' },
+        reddit: { maxCaption: 300, requiresField: 'subreddit' },
+        instagram: { maxImages: 10 },
+        facebook: { maxImages: 10 },
+        linkedin: { maxImages: 9 },
+      };
+
+      const platforms = postData.platforms || [];
+      const captionLength = (postData.post || '').length;
+      const mediaCount = (postData.mediaUrls || []).length;
+
+      for (const platform of platforms) {
+        const limits = PLATFORM_LIMITS[platform];
+        if (!limits) continue;
+
+        if (limits.videoOnly) {
+          errors.push(`${platform}: Only supports video content, not images`);
+        }
+        if (limits.maxCaption && captionLength > limits.maxCaption) {
+          warnings.push(`${platform}: Caption (${captionLength} chars) exceeds ${limits.maxCaption} character limit`);
+        }
+        if (limits.maxImages && mediaCount > limits.maxImages) {
+          warnings.push(`${platform}: ${mediaCount} images exceeds max of ${limits.maxImages}`);
+        }
+        if (limits.requiresField) {
+          if (!postData[limits.requiresField]) {
+            warnings.push(`${platform}: Missing required field "${limits.requiresField}"`);
+          }
+        }
+      }
+
+      // Validate schedule date format if provided
+      const scheduleDate = postData.scheduledDate || postData.scheduleDate;
+      if (scheduleDate) {
+        const parsed = new Date(scheduleDate);
+        if (isNaN(parsed.getTime())) {
+          errors.push('Invalid schedule date format. Use ISO 8601 (e.g. 2026-02-14T09:00:00-05:00)');
+        } else if (parsed <= new Date()) {
+          warnings.push('Schedule date is in the past');
+        }
+      }
+
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          valid: errors.length === 0,
+          warnings,
+          errors,
+        }),
+      };
+    }
+
+    // ============================================
+    // 1c. POST HASHTAGS - Auto-generate hashtags (Fix #8)
+    // ============================================
+    if (event.path.endsWith('/hashtags') && event.httpMethod === 'POST') {
+      const body = JSON.parse(event.body || '{}');
+      const { post } = body;
+
+      if (!post) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'post text required' }) };
+      }
+
+      try {
+        const apiKey = await getApiKey();
+        const hashtagResult = await ayrshareAutoHashtag(apiKey, post);
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({ hashtags: hashtagResult.hashtags || [] }),
+        };
+      } catch (error: any) {
+        console.error('Failed to generate hashtags:', error.message);
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          // Return empty hashtags instead of error — this is a non-critical feature
+          body: JSON.stringify({ hashtags: [], error: error.message }),
+        };
+      }
     }
 
     // ============================================
@@ -696,6 +817,279 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           headers: corsHeaders,
           body: JSON.stringify({ error: error.message })
         };
+      }
+    }
+
+    // ============================================
+    // 11. POST HASHTAGS RECOMMEND - Get hashtag recommendations
+    // ============================================
+    if (event.path.endsWith('/hashtags/recommend') && event.httpMethod === 'POST') {
+      const body = JSON.parse(event.body || '{}');
+      const { keyword, limit = 10 } = body;
+
+      if (!keyword) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'keyword required' }) };
+      }
+
+      try {
+        const apiKey = await getApiKey();
+        const result = await ayrshareRecommendHashtags(apiKey, keyword, limit);
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+      } catch (error: any) {
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ hashtags: [], error: error.message }) };
+      }
+    }
+
+    // ============================================
+    // 12. POST HASHTAGS SEARCH - Search hashtags on a platform
+    // ============================================
+    if (event.path.endsWith('/hashtags/search') && event.httpMethod === 'POST') {
+      const body = JSON.parse(event.body || '{}');
+      const { query, platform = 'instagram' } = body;
+
+      if (!query) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'query required' }) };
+      }
+
+      try {
+        const apiKey = await getApiKey();
+        const result = await ayrshareSearchHashtags(apiKey, query, platform);
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+      } catch (error: any) {
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ hashtags: [], error: error.message }) };
+      }
+    }
+
+    // ============================================
+    // 13. POST HASHTAGS BANNED - Check if hashtags are banned
+    // ============================================
+    if (event.path.endsWith('/hashtags/banned') && event.httpMethod === 'POST') {
+      const body = JSON.parse(event.body || '{}');
+      const { hashtags } = body;
+
+      if (!hashtags || !Array.isArray(hashtags) || hashtags.length === 0) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'hashtags array required' }) };
+      }
+
+      try {
+        const apiKey = await getApiKey();
+        const result = await ayrshareCheckBannedHashtags(apiKey, hashtags);
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+      } catch (error: any) {
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ banned: [], error: error.message }) };
+      }
+    }
+
+    // ============================================
+    // 14. POST MODERATE - AI content moderation
+    // ============================================
+    if (event.path.endsWith('/moderate') && event.httpMethod === 'POST') {
+      const body = JSON.parse(event.body || '{}');
+      const { content } = body;
+
+      if (!content) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'content required' }) };
+      }
+
+      try {
+        const apiKey = await getApiKey();
+        const result = await ayrshareContentModeration(apiKey, content);
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+      } catch (error: any) {
+        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: error.message }) };
+      }
+    }
+
+    // ============================================
+    // 15. POST MEDIA RESIZE - Resize image for platform
+    // ============================================
+    if (event.path.endsWith('/media/resize') && event.httpMethod === 'POST') {
+      const body = JSON.parse(event.body || '{}');
+      const { imageUrl, width, height } = body;
+
+      if (!imageUrl || !width || !height) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'imageUrl, width, and height required' }) };
+      }
+
+      try {
+        const apiKey = await getApiKey();
+        const result = await ayrshareResizeImage(apiKey, imageUrl, width, height);
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+      } catch (error: any) {
+        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: error.message }) };
+      }
+    }
+
+    // ============================================
+    // 16. AUTO-SCHEDULE - Manage auto-scheduling rules
+    // ============================================
+    if (event.path.endsWith('/auto-schedule')) {
+      const clinicId = event.httpMethod === 'GET'
+        ? event.queryStringParameters?.clinicId
+        : JSON.parse(event.body || '{}').clinicId;
+
+      if (!clinicId) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'clinicId required' }) };
+      }
+
+      // Get profile key
+      const dbRes = await ddb.send(new GetCommand({ TableName: TABLE_NAME, Key: { clinicId } }));
+      if (!dbRes.Item?.ayrshareProfileKey) {
+        return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Clinic not found' }) };
+      }
+      const apiKey = await getApiKey();
+      const profileKey = dbRes.Item.ayrshareProfileKey;
+
+      // GET - Retrieve current auto-schedule
+      if (event.httpMethod === 'GET') {
+        try {
+          const result = await ayrshareGetAutoSchedule(apiKey, profileKey);
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+        } catch (error: any) {
+          return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: error.message }) };
+        }
+      }
+
+      // POST - Set auto-schedule
+      if (event.httpMethod === 'POST') {
+        const body = JSON.parse(event.body || '{}');
+        const { schedule } = body;
+        if (!schedule || !schedule.scheduleDate || !schedule.scheduleTime || !schedule.title) {
+          return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'schedule with scheduleDate[], scheduleTime[], and title required' }) };
+        }
+        try {
+          const result = await ayrshareSetAutoSchedule(apiKey, profileKey, schedule);
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+        } catch (error: any) {
+          return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: error.message }) };
+        }
+      }
+
+      // DELETE - Remove auto-schedule by title
+      if (event.httpMethod === 'DELETE') {
+        const body = JSON.parse(event.body || '{}');
+        const { title } = body;
+        if (!title) {
+          return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'title required' }) };
+        }
+        try {
+          const result = await ayrshareDeleteAutoSchedule(apiKey, profileKey, title);
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+        } catch (error: any) {
+          return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: error.message }) };
+        }
+      }
+    }
+
+    // ============================================
+    // 17. WEBHOOKS - Manage webhook subscriptions
+    // ============================================
+    if (event.path.endsWith('/webhooks')) {
+      const apiKey = await getApiKey();
+
+      // GET - List registered webhooks
+      if (event.httpMethod === 'GET') {
+        const profileKey = event.queryStringParameters?.profileKey;
+        try {
+          const result = await ayrshareGetWebhooks(apiKey, profileKey);
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+        } catch (error: any) {
+          return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: error.message }) };
+        }
+      }
+
+      // POST - Register a webhook
+      if (event.httpMethod === 'POST') {
+        const body = JSON.parse(event.body || '{}');
+        const { action, url, secret, profileKey } = body;
+        if (!action || !url || !secret) {
+          return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'action, url, and secret required' }) };
+        }
+        try {
+          const result = await ayrshareRegisterWebhook(apiKey, action, url, secret, profileKey);
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+        } catch (error: any) {
+          return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: error.message }) };
+        }
+      }
+
+      // DELETE - Unregister a webhook
+      if (event.httpMethod === 'DELETE') {
+        const body = JSON.parse(event.body || '{}');
+        const { action, profileKey } = body;
+        if (!action) {
+          return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'action required' }) };
+        }
+        try {
+          const result = await ayrshareUnregisterWebhook(apiKey, action, profileKey);
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+        } catch (error: any) {
+          return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: error.message }) };
+        }
+      }
+    }
+
+    // ============================================
+    // 18. GET LINK ANALYTICS - Click/link tracking
+    // ============================================
+    if (event.path.endsWith('/analytics/links') && event.httpMethod === 'GET') {
+      const clinicId = event.queryStringParameters?.clinicId;
+      const postId = event.queryStringParameters?.postId;
+
+      if (!clinicId) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'clinicId required' }) };
+      }
+
+      try {
+        const dbRes = await ddb.send(new GetCommand({ TableName: TABLE_NAME, Key: { clinicId } }));
+        if (!dbRes.Item?.ayrshareProfileKey) {
+          return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Clinic not found' }) };
+        }
+        const apiKey = await getApiKey();
+        const result = await ayrshareGetLinkAnalytics(apiKey, dbRes.Item.ayrshareProfileKey, postId);
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+      } catch (error: any) {
+        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: error.message }) };
+      }
+    }
+
+    // ============================================
+    // 19. POST MEDIA VALIDATE - Validate media for platform compatibility
+    // ============================================
+    if (event.path.endsWith('/media/validate') && event.httpMethod === 'POST') {
+      const body = JSON.parse(event.body || '{}');
+      const { mediaUrls, platforms } = body;
+
+      if (!mediaUrls || !Array.isArray(mediaUrls) || !platforms || !Array.isArray(platforms)) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'mediaUrls[] and platforms[] required' }) };
+      }
+
+      try {
+        const apiKey = await getApiKey();
+        const result = await ayrshareValidateMedia(apiKey, mediaUrls, platforms);
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+      } catch (error: any) {
+        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: error.message }) };
+      }
+    }
+
+    // ============================================
+    // 20. POST MEDIA VERIFY - Verify a media URL is accessible
+    // ============================================
+    if (event.path.endsWith('/media/verify') && event.httpMethod === 'POST') {
+      const body = JSON.parse(event.body || '{}');
+      const { url } = body;
+
+      if (!url) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'url required' }) };
+      }
+
+      try {
+        const apiKey = await getApiKey();
+        const result = await ayrshareVerifyMediaUrl(apiKey, url);
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+      } catch (error: any) {
+        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: error.message }) };
       }
     }
 

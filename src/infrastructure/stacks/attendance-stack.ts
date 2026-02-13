@@ -12,6 +12,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 // Import clinic config for geofence data (bundled at CDK synthesis time)
@@ -47,6 +48,14 @@ export class AttendanceStack extends Stack {
             }
         });
         const geofenceConfigStr = JSON.stringify(geofenceConfigMap);
+
+        // Store geofence config in SSM Parameter Store (env vars limited to 4KB)
+        const geofenceParam = new ssm.StringParameter(this, 'GeofenceConfigParam', {
+            parameterName: `/${this.stackName}/geofence-config`,
+            stringValue: geofenceConfigStr,
+            description: 'Geofence configuration for all clinics (clinic ID → lat/lng/radius/wifi/timezone)',
+            tier: geofenceConfigStr.length > 4096 ? ssm.ParameterTier.ADVANCED : ssm.ParameterTier.STANDARD,
+        });
 
         // Tags & alarm helpers
         const baseTags: Record<string, string> = {
@@ -201,13 +210,16 @@ export class AttendanceStack extends Stack {
                 CLINIC_HOURS_TABLE: props.clinicHoursTableName,
                 SHIFTS_TABLE: props.shiftsTableName,
                 STAFF_USER_TABLE: staffUserTableName,
-                GEOFENCE_CONFIG: geofenceConfigStr,
+                GEOFENCE_CONFIG_PARAM: geofenceParam.parameterName,
                 // Push notifications
                 ...(props.deviceTokensTableName && { DEVICE_TOKENS_TABLE: props.deviceTokensTableName }),
                 ...(props.sendPushFunctionArn && { SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn }),
             },
         });
         applyTags(this.attendanceFn, { Function: 'attendance' });
+
+        // Grant SSM read access for geofence config
+        geofenceParam.grantRead(this.attendanceFn);
 
         // Grant permissions
         this.attendanceTable.grantReadWriteData(this.attendanceFn);
