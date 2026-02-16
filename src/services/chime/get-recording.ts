@@ -596,6 +596,10 @@ async function getRecording(
       fileSize: recording.fileSize,
       format: recording.format,
       transcriptionStatus: recording.transcriptionStatus,
+      // Include transcript text and sentiment from post-call transcription
+      transcriptionText: recording.transcriptText || recording.transcriptionText || undefined,
+      sentiment: recording.sentiment || undefined,
+      sentimentScore: typeof recording.sentimentScore === 'number' ? recording.sentimentScore : undefined,
       downloadUrl: presignedUrl,
       downloadUrlExpiresAt: new Date(Date.now() + 3600000).toISOString()
     })
@@ -777,6 +781,10 @@ async function getRecordingsForCall(
           uploadedAt: recording.uploadedAt,
           fileSize: recording.fileSize,
           transcriptionStatus: recording.transcriptionStatus,
+          // Include transcript text and sentiment from post-call transcription
+          transcriptionText: recording.transcriptText || recording.transcriptionText || undefined,
+          sentiment: recording.sentiment || undefined,
+          sentimentScore: typeof recording.sentimentScore === 'number' ? recording.sentimentScore : undefined,
           downloadUrl: presignedUrl
         };
       } catch (err: any) {
@@ -796,6 +804,9 @@ async function getRecordingsForCall(
     uploadedAt?: string;
     fileSize?: number;
     transcriptionStatus?: string;
+    transcriptionText?: string;
+    sentiment?: string;
+    sentimentScore?: number;
     downloadUrl: string;
   }>;
 

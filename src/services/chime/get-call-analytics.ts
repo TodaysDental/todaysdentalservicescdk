@@ -303,23 +303,75 @@ async function getCallAnalytics(
     };
   }
   
-  // Query analytics for this call
+  // Query ALL analytics records for this call (there may be multiple from different processors)
+  // e.g., process-call-analytics.ts writes sentiment/category, process-call-analytics-stream.ts writes durations
   const queryResult = await ddb.send(new QueryCommand({
     TableName: ANALYTICS_TABLE_NAME,
     KeyConditionExpression: 'callId = :callId',
     ExpressionAttributeValues: { ':callId': callId },
-    ScanIndexForward: false, // Get most recent record first (callId is PK, timestamp is SK)
-    Limit: 1
+    ScanIndexForward: false, // Most recent first
   }));
 
-  const analytics = queryResult.Items?.[0];
+  const allRecords = queryResult.Items || [];
   
-  if (!analytics) {
+  if (allRecords.length === 0) {
     return {
       statusCode: 404,
       headers: corsHeaders,
       body: JSON.stringify({ message: 'Call analytics not found' })
     };
+  }
+
+  // Merge all records for the same callId, preferring non-null/non-default values
+  // Start with the most recent record as the base, then backfill from older records
+  const analytics: Record<string, any> = { ...allRecords[0] };
+
+  if (allRecords.length > 1) {
+    console.log(`[getCallAnalytics] Merging ${allRecords.length} records for callId: ${callId}`);
+    
+    // Fields that should prefer non-null/non-default values from any record
+    const sentinelDefaults: Record<string, any> = {
+      overallSentiment: undefined,
+      sentimentScore: 0,
+      callCategory: 'uncategorized',
+      fullTranscript: undefined,
+      transcriptCount: 0,
+      analyticsState: undefined,
+      speakerMetrics: undefined,
+      detectedIssues: undefined,
+      keyPhrases: undefined,
+      entities: undefined,
+      categoryScores: undefined,
+      audioQuality: undefined,
+    };
+
+    for (let i = 1; i < allRecords.length; i++) {
+      const older = allRecords[i];
+      for (const [field, defaultVal] of Object.entries(sentinelDefaults)) {
+        const currentVal = analytics[field];
+        const olderVal = older[field];
+
+        // Skip if current already has a meaningful value
+        const currentIsDefault =
+          currentVal === undefined || currentVal === null ||
+          currentVal === defaultVal ||
+          (Array.isArray(currentVal) && currentVal.length === 0) ||
+          (typeof currentVal === 'object' && !Array.isArray(currentVal) && currentVal !== null && Object.keys(currentVal).length === 0);
+
+        if (currentIsDefault && olderVal !== undefined && olderVal !== null && olderVal !== defaultVal) {
+          analytics[field] = olderVal;
+        }
+      }
+
+      // Also merge latestTranscripts and latestSentiment arrays (prefer non-empty)
+      for (const arrayField of ['latestTranscripts', 'latestSentiment']) {
+        const currentArr = Array.isArray(analytics[arrayField]) ? analytics[arrayField] : [];
+        const olderArr = Array.isArray(older[arrayField]) ? older[arrayField] : [];
+        if (currentArr.length === 0 && olderArr.length > 0) {
+          analytics[arrayField] = olderArr;
+        }
+      }
+    }
   }
   
   // Check authorization using authorizer context
@@ -416,6 +468,63 @@ async function getCallAnalytics(
       analytics.fullTranscript = fullText;
       // Extra field (not required by clients) to indicate truncation.
       (analytics as any).fullTranscriptTruncated = truncated;
+    }
+  }
+
+  // ----------------------------------------
+  // RecordingMetadata hydration (post-call transcription & sentiment)
+  // ----------------------------------------
+  // If transcript and sentiment are still missing after TranscriptBuffers hydration,
+  // check RecordingMetadata table (populated by process-recording.ts / process-transcription.ts)
+  const RECORDING_METADATA_TABLE = process.env.RECORDING_METADATA_TABLE_NAME;
+  const hasTranscriptNow = (typeof analytics.fullTranscript === 'string' && analytics.fullTranscript.trim().length > 0) ||
+                           (Array.isArray(analytics.latestTranscripts) && analytics.latestTranscripts.length > 0);
+  const hasSentimentNow = analytics.overallSentiment && analytics.overallSentiment !== 'NEUTRAL' && analytics.overallSentiment !== 'uncategorized';
+
+  if (RECORDING_METADATA_TABLE && (!hasTranscriptNow || !hasSentimentNow)) {
+    try {
+      // Query RecordingMetadata by callId-index GSI
+      const recResult = await ddb.send(new QueryCommand({
+        TableName: RECORDING_METADATA_TABLE,
+        IndexName: 'callId-index',
+        KeyConditionExpression: 'callId = :callId',
+        ExpressionAttributeValues: { ':callId': callId },
+        Limit: 5,
+      }));
+
+      const recordings = recResult.Items || [];
+      if (recordings.length > 0) {
+        // Pick the recording with the most data (longest transcript or has sentiment)
+        const best = recordings.reduce((a: any, b: any) => {
+          const aLen = (a.transcriptText || '').length;
+          const bLen = (b.transcriptText || '').length;
+          return bLen > aLen ? b : a;
+        });
+
+        // Hydrate transcript from recording metadata
+        if (!hasTranscriptNow && best.transcriptText && best.transcriptText.trim().length > 0) {
+          analytics.fullTranscript = best.transcriptText.trim();
+          analytics._transcriptSource = 'recording_metadata';
+          console.log(`[getCallAnalytics] Hydrated transcript from RecordingMetadata for callId: ${callId}`);
+        }
+
+        // Hydrate sentiment from recording metadata (Comprehend analysis)
+        // Normalize to uppercase (Comprehend returns "Positive"/"Negative" but frontend expects "POSITIVE"/"NEGATIVE")
+        if (!hasSentimentNow && best.sentiment) {
+          analytics.overallSentiment = String(best.sentiment).toUpperCase();
+          if (typeof best.sentimentScore === 'number') {
+            analytics.sentimentScore = best.sentimentScore;
+          }
+          analytics._sentimentSource = 'recording_metadata';
+          console.log(`[getCallAnalytics] Hydrated sentiment from RecordingMetadata for callId: ${callId}, value: ${analytics.overallSentiment}`);
+        }
+      }
+    } catch (err: any) {
+      console.warn('[getCallAnalytics] Failed to fetch RecordingMetadata (non-fatal):', {
+        callId,
+        errorName: err?.name,
+        errorMessage: err?.message,
+      });
     }
   }
 
@@ -1587,14 +1696,31 @@ function calculateSummaryMetrics(analytics: any[]): any {
   if (totalCalls === 0) {
     return {
       totalCalls: 0,
+      inboundCalls: 0,
+      outboundCalls: 0,
       averageDuration: 0,
+      averageHandleTime: 0,
+      averageSentiment: 0,
       sentimentBreakdown: {},
       categoryBreakdown: {},
+      callsByCategory: {},
       topIssues: [],
       averageQualityScore: 0,
       callVolumeByHour: new Array(24).fill(0).map((count, hour) => ({ hour, count }))
     };
   }
+  
+  // Count inbound/outbound calls
+  let inboundCalls = 0;
+  let outboundCalls = 0;
+  analytics.forEach(a => {
+    const dir = (a.direction || 'inbound').toLowerCase();
+    if (dir === 'outbound') {
+      outboundCalls++;
+    } else {
+      inboundCalls++;
+    }
+  });
   
   // Reuse agent metrics calculation
   const baseMetrics = calculateAgentMetrics(analytics);
@@ -1741,7 +1867,17 @@ function calculateSummaryMetrics(analytics: any[]): any {
   
   return {
     totalCalls,
+    // FIX: Add inbound/outbound counts (expected by frontend)
+    inboundCalls,
+    outboundCalls,
     ...baseMetrics,
+    // FIX: Add aliases so both old and new field names work
+    // Frontend expects averageHandleTime, backend had averageDuration
+    averageHandleTime: baseMetrics.averageDuration,
+    // Frontend expects averageSentiment, backend had weightedSentimentScore
+    averageSentiment: baseMetrics.weightedSentimentScore,
+    // Frontend expects callsByCategory, backend had categoryBreakdown
+    callsByCategory: baseMetrics.categoryBreakdown,
     topIssues,
     callVolumeByHour: volumeByHour.map((count, hour) => ({ hour, count })),
     // CRITICAL FIX: Include DST metadata for accurate client-side interpretation

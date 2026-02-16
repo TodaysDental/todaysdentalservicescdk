@@ -21,6 +21,7 @@ const RECORDING_METADATA_TABLE = process.env.RECORDING_METADATA_TABLE_NAME!;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME!;
 const AGENT_PERFORMANCE_TABLE_NAME = process.env.AGENT_PERFORMANCE_TABLE_NAME!;
 const RECORDINGS_BUCKET = process.env.RECORDINGS_BUCKET_NAME!;
+const CALL_ANALYTICS_TABLE_NAME = process.env.CALL_ANALYTICS_TABLE_NAME || '';
 
 interface TranscribeEvent {
   TranscriptionJobName: string;
@@ -104,6 +105,13 @@ export const handler = async (event: EventBridgeEvent<'Transcribe Job State Chan
     console.log('[TranscriptionComplete] Updating call record...');
     await updateCallRecord(recordingMetadata.callId, sentimentResult);
     console.log('[TranscriptionComplete] ✅ Call record updated');
+
+    // Update CallAnalytics table with sentiment and transcript
+    if (CALL_ANALYTICS_TABLE_NAME) {
+      console.log('[TranscriptionComplete] Updating CallAnalytics table...');
+      await updateCallAnalytics(recordingMetadata.callId, transcript, sentimentResult);
+      console.log('[TranscriptionComplete] ✅ CallAnalytics table updated');
+    }
 
     // Update agent performance metrics
     if (recordingMetadata.agentId) {
@@ -305,10 +313,10 @@ async function analyzeSentiment(transcript: string): Promise<{
       Mixed: aggregateScores.Mixed / count,
     };
 
-    // Determine overall sentiment
+    // Determine overall sentiment (normalize to uppercase for consistency)
     const sentiment = Object.entries(scores).reduce((a, b) => 
       scores[a[0] as keyof typeof scores] > scores[b[0] as keyof typeof scores] ? a : b
-    )[0] as 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' | 'MIXED';
+    )[0].toUpperCase() as 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' | 'MIXED';
 
     // Calculate sentiment score (0-100, where 100 is most positive)
     const sentimentScore = Math.round(
@@ -426,6 +434,106 @@ async function updateCallRecord(callId: string, sentimentResult: any): Promise<v
   } catch (error) {
     console.error('[TranscriptionComplete] Error updating call record:', error);
   }
+}
+
+/**
+ * Update CallAnalytics table with sentiment and transcript from post-call transcription.
+ * Finds the analytics record for the call and enriches it with data from Comprehend/Transcribe.
+ */
+async function updateCallAnalytics(
+  callId: string,
+  transcript: string,
+  sentimentResult: { sentiment: string; sentimentScore: number; scores: Record<string, number> }
+): Promise<void> {
+  if (!CALL_ANALYTICS_TABLE_NAME) return;
+
+  try {
+    // Find the analytics record for this call
+    const queryResult = await ddb.send(new QueryCommand({
+      TableName: CALL_ANALYTICS_TABLE_NAME,
+      KeyConditionExpression: 'callId = :callId',
+      ExpressionAttributeValues: { ':callId': callId },
+      ScanIndexForward: false,
+      Limit: 1,
+    }));
+
+    const record = queryResult.Items?.[0];
+    if (!record) {
+      console.warn('[TranscriptionComplete] No CallAnalytics record found for callId:', callId);
+      return;
+    }
+
+    // Determine category from transcript content
+    const category = categorizeFromTranscript(transcript);
+
+    // Update the analytics record with sentiment, category, and transcript
+    await ddb.send(new UpdateCommand({
+      TableName: CALL_ANALYTICS_TABLE_NAME,
+      Key: { callId: record.callId, timestamp: record.timestamp },
+      UpdateExpression: `
+        SET overallSentiment = :sentiment,
+            sentimentScore = :sentimentScore,
+            callCategory = if_not_exists(callCategory, :category),
+            fullTranscript = :transcript,
+            transcriptCount = if_not_exists(transcriptCount, :one),
+            updatedAt = :now
+      `,
+      ExpressionAttributeValues: {
+        ':sentiment': sentimentResult.sentiment,
+        ':sentimentScore': sentimentResult.sentimentScore,
+        ':category': category,
+        ':transcript': transcript.substring(0, 20000), // Limit to 20KB
+        ':one': 1,
+        ':now': new Date().toISOString(),
+      },
+      // Only update sentiment/category if they are missing or default
+      ConditionExpression: 'attribute_exists(callId)',
+    }));
+
+    console.log(`[TranscriptionComplete] Updated CallAnalytics for ${callId}: sentiment=${sentimentResult.sentiment}, category=${category}`);
+  } catch (error: any) {
+    // ConditionalCheckFailed means record doesn't exist - that's fine
+    if (error?.name === 'ConditionalCheckFailedException') {
+      console.warn('[TranscriptionComplete] CallAnalytics record not found (condition failed):', callId);
+      return;
+    }
+    console.error('[TranscriptionComplete] Error updating CallAnalytics:', error);
+  }
+}
+
+/**
+ * Simple rule-based categorization from transcript content.
+ * Used as fallback when no real-time category was assigned.
+ */
+function categorizeFromTranscript(transcript: string): string {
+  const lower = transcript.toLowerCase();
+  
+  const categories: Array<{ keywords: string[]; category: string }> = [
+    { keywords: ['appointment', 'schedule', 'book', 'reschedule', 'cancel appointment', 'available time'], category: 'scheduling' },
+    { keywords: ['insurance', 'coverage', 'copay', 'deductible', 'claim', 'in-network', 'out-of-network'], category: 'insurance' },
+    { keywords: ['bill', 'payment', 'charge', 'balance', 'invoice', 'pay', 'cost', 'price', 'fee'], category: 'billing' },
+    { keywords: ['emergency', 'pain', 'urgent', 'swelling', 'bleeding', 'broken tooth', 'toothache'], category: 'emergency' },
+    { keywords: ['cleaning', 'checkup', 'exam', 'x-ray', 'filling', 'crown', 'root canal', 'extraction'], category: 'treatment' },
+    { keywords: ['new patient', 'first visit', 'registration', 'new here'], category: 'new-patient' },
+    { keywords: ['prescription', 'medication', 'antibiotic', 'pain medication'], category: 'prescription' },
+    { keywords: ['referral', 'specialist', 'orthodontist', 'oral surgeon', 'periodontist'], category: 'referral' },
+  ];
+
+  let bestCategory = 'general-inquiry';
+  let bestScore = 0;
+
+  for (const { keywords, category } of categories) {
+    let score = 0;
+    for (const kw of keywords) {
+      if (lower.includes(kw)) score++;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestCategory = category;
+    }
+  }
+
+  return bestCategory;
 }
 
 /**

@@ -41,6 +41,39 @@ const AGENTS_TABLE = process.env.AGENTS_TABLE || 'AiAgents';
 const RESULT_TTL_SECONDS = 300; // 5 minutes
 const DEFAULT_CLINIC_ID = process.env.DEFAULT_CLINIC_ID || 'dentistingreenville';
 
+type SpeakingRate = 'x-slow' | 'slow' | 'medium' | 'fast' | 'x-fast';
+type Pitch = 'x-low' | 'low' | 'medium' | 'high' | 'x-high';
+type Volume = 'silent' | 'x-soft' | 'soft' | 'medium' | 'loud' | 'x-loud';
+
+interface ProsodySettings {
+  speakingRate: SpeakingRate;
+  pitch: Pitch;
+  volume: Volume;
+}
+
+const DEFAULT_PROSODY: ProsodySettings = {
+  speakingRate: 'medium',
+  pitch: 'medium',
+  volume: 'medium',
+};
+
+const ALLOWED_SPEAKING_RATES = new Set<SpeakingRate>(['x-slow', 'slow', 'medium', 'fast', 'x-fast']);
+const ALLOWED_PITCH = new Set<Pitch>(['x-low', 'low', 'medium', 'high', 'x-high']);
+const ALLOWED_VOLUME = new Set<Volume>(['silent', 'x-soft', 'soft', 'medium', 'loud', 'x-loud']);
+
+function normalizeProsody<T extends string>(value: unknown, allowed: Set<T>, fallback: T): T {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  return (raw && allowed.has(raw as T)) ? (raw as T) : fallback;
+}
+
+function getProsodyFromContactAttributes(attrs: Record<string, string>): ProsodySettings {
+  return {
+    speakingRate: normalizeProsody(attrs.ttsSpeakingRate, ALLOWED_SPEAKING_RATES, DEFAULT_PROSODY.speakingRate),
+    pitch: normalizeProsody(attrs.ttsPitch, ALLOWED_PITCH, DEFAULT_PROSODY.pitch),
+    volume: normalizeProsody(attrs.ttsVolume, ALLOWED_VOLUME, DEFAULT_PROSODY.volume),
+  };
+}
+
 // AI phone numbers mapping: aiPhoneNumber -> clinicId
 const AI_PHONE_NUMBERS_JSON = process.env.AI_PHONE_NUMBERS_JSON || '{}';
 let aiPhoneNumberMap: Record<string, string> = {};
@@ -77,6 +110,7 @@ interface AsyncResult {
   contactId: string;
   status: 'pending' | 'completed' | 'error';
   response?: string;
+  ssmlResponse?: string;
   errorMessage?: string;
   toolsUsed?: string[];
   startedAt: string;
@@ -259,6 +293,8 @@ async function startAsync(event: any): Promise<{ requestId: string; status: stri
     clinicId = DEFAULT_CLINIC_ID;
   }
 
+  const prosody = getProsodyFromContactAttributes(contactAttributes);
+
   // Store pending status immediately (so polling can start)
   const pendingResult: AsyncResult = {
     requestId,
@@ -279,9 +315,11 @@ async function startAsync(event: any): Promise<{ requestId: string; status: stri
   // which is not a safe assumption for Lambda runtimes.
   if (!ASYNC_WORKER_FUNCTION_NAME) {
     console.error('[AsyncBedrock] Missing ASYNC_WORKER_FUNCTION_NAME/AWS_LAMBDA_FUNCTION_NAME');
+    const response = "I'm sorry, the AI assistant is not available right now. Please try again.";
     await updateResult(requestId, {
       status: 'error',
-      response: "I'm sorry, the AI assistant is not available right now. Please try again.",
+      response,
+      ssmlResponse: buildProsodySsml(response, prosody),
       errorMessage: 'Missing ASYNC_WORKER_FUNCTION_NAME',
     });
     throw new Error('Missing ASYNC_WORKER_FUNCTION_NAME');
@@ -296,6 +334,9 @@ async function startAsync(event: any): Promise<{ requestId: string; status: stri
           contactId,
           inputText: inputTranscript.trim(),
           clinicId,
+          ttsSpeakingRate: prosody.speakingRate,
+          ttsPitch: prosody.pitch,
+          ttsVolume: prosody.volume,
         },
       },
     };
@@ -307,9 +348,11 @@ async function startAsync(event: any): Promise<{ requestId: string; status: stri
     }));
   } catch (err: any) {
     console.error('[AsyncBedrock] Failed to invoke async worker:', err);
+    const response = "I'm sorry, I'm having trouble right now. Please try again.";
     await updateResult(requestId, {
       status: 'error',
-      response: "I'm sorry, I'm having trouble right now. Please try again.",
+      response,
+      ssmlResponse: buildProsodySsml(response, prosody),
       errorMessage: err?.message || 'Failed to invoke async worker',
     });
     throw err;
@@ -330,15 +373,25 @@ async function processBedrockInvocation(params: {
   contactId: string;
   inputText: string;
   clinicId: string;
+  ttsSpeakingRate?: string;
+  ttsPitch?: string;
+  ttsVolume?: string;
 }): Promise<void> {
   const { requestId, contactId, inputText, clinicId } = params;
+  const prosody: ProsodySettings = {
+    speakingRate: normalizeProsody(params.ttsSpeakingRate, ALLOWED_SPEAKING_RATES, DEFAULT_PROSODY.speakingRate),
+    pitch: normalizeProsody(params.ttsPitch, ALLOWED_PITCH, DEFAULT_PROSODY.pitch),
+    volume: normalizeProsody(params.ttsVolume, ALLOWED_VOLUME, DEFAULT_PROSODY.volume),
+  };
 
   try {
     // Handle empty input
     if (!inputText) {
+      const response = "I'm sorry, I didn't catch that. Could you please repeat what you said?";
       await updateResult(requestId, {
         status: 'completed',
-        response: "I'm sorry, I didn't catch that. Could you please repeat what you said?",
+        response,
+        ssmlResponse: buildProsodySsml(response, prosody),
       });
       return;
     }
@@ -348,10 +401,12 @@ async function processBedrockInvocation(params: {
     const agent = await getAgentForClinic(session.clinicId);
 
     if (!agent) {
+      const response = "I'm sorry, the AI assistant is not available right now. Please call back during office hours.";
       await updateResult(requestId, {
         status: 'error',
         errorMessage: `No Bedrock agent configured for clinic: ${clinicId}`,
-        response: "I'm sorry, the AI assistant is not available right now. Please call back during office hours.",
+        response,
+        ssmlResponse: buildProsodySsml(response, prosody),
       });
       return;
     }
@@ -405,17 +460,23 @@ async function processBedrockInvocation(params: {
 
     await updateResult(requestId, {
       status: 'completed',
-      response: fullResponse.trim() || "I'm sorry, I couldn't process that. How else can I help you?",
+      response: (fullResponse.trim() || "I'm sorry, I couldn't process that. How else can I help you?"),
+      ssmlResponse: buildProsodySsml(
+        (fullResponse.trim() || "I'm sorry, I couldn't process that. How else can I help you?"),
+        prosody
+      ),
       toolsUsed: [...new Set(toolsUsed)],
     });
 
   } catch (error: any) {
     console.error('[AsyncBedrock] Bedrock invocation error:', error);
 
+    const response = "I'm sorry, I had trouble processing that. Could you please try again?";
     await updateResult(requestId, {
       status: 'error',
       errorMessage: error.message || 'Unknown error',
-      response: "I'm sorry, I had trouble processing that. Could you please try again?",
+      response,
+      ssmlResponse: buildProsodySsml(response, prosody),
     });
   }
 }
@@ -429,6 +490,7 @@ async function updateResult(
   result: {
     status: 'completed' | 'error';
     response?: string;
+    ssmlResponse?: string;
     errorMessage?: string;
     toolsUsed?: string[];
   }
@@ -442,6 +504,7 @@ async function updateResult(
     UpdateExpression: [
       'SET #status = :status',
       '#response = :response',
+      '#ssmlResponse = :ssmlResponse',
       '#completedAt = :completedAt',
       '#ttl = :ttl',
       '#errorMessage = :errorMessage',
@@ -450,6 +513,7 @@ async function updateResult(
     ExpressionAttributeNames: {
       '#status': 'status',
       '#response': 'response',
+      '#ssmlResponse': 'ssmlResponse',
       '#completedAt': 'completedAt',
       '#ttl': 'ttl',
       '#errorMessage': 'errorMessage',
@@ -458,6 +522,7 @@ async function updateResult(
     ExpressionAttributeValues: {
       ':status': result.status,
       ':response': result.response || '',
+      ':ssmlResponse': result.ssmlResponse || '',
       ':completedAt': now,
       ':ttl': ttl,
       ':errorMessage': result.errorMessage || '',
@@ -481,12 +546,16 @@ async function checkResult(event: any): Promise<{
 }> {
   const params = event.Details?.Parameters || {};
   const requestId = params.requestId || '';
+  const contactAttributes = event.Details?.ContactData?.Attributes || {};
+  const prosody = getProsodyFromContactAttributes(contactAttributes);
 
   if (!requestId) {
     console.warn('[AsyncBedrock] checkResult called without requestId');
+    const aiResponse = "I'm sorry, there was an error. Please try again.";
     return {
       status: 'error',
-      aiResponse: "I'm sorry, there was an error. Please try again.",
+      aiResponse,
+      ssmlResponse: buildProsodySsml(aiResponse, prosody),
     };
   }
 
@@ -515,7 +584,7 @@ async function checkResult(event: any): Promise<{
       return {
         status: 'completed',
         aiResponse: item.response || '',
-        ssmlResponse: `<speak>${escapeSSML(item.response || '')}</speak>`,
+        ssmlResponse: item.ssmlResponse || buildProsodySsml(item.response || '', prosody),
       };
     }
 
@@ -523,9 +592,11 @@ async function checkResult(event: any): Promise<{
       console.warn('[AsyncBedrock] Result has error:', { requestId, error: item.errorMessage });
 
       // Return the fallback response
+      const aiResponse = item.response || "I'm sorry, I had trouble processing that. Could you please try again?";
       return {
         status: 'completed', // Still "completed" so Connect plays the message
-        aiResponse: item.response || "I'm sorry, I had trouble processing that. Could you please try again?",
+        aiResponse,
+        ssmlResponse: item.ssmlResponse || buildProsodySsml(aiResponse, prosody),
       };
     }
 
@@ -534,9 +605,11 @@ async function checkResult(event: any): Promise<{
 
   } catch (error) {
     console.error('[AsyncBedrock] checkResult error:', error);
+    const aiResponse = "I'm sorry, something went wrong. Please try again.";
     return {
       status: 'error',
-      aiResponse: "I'm sorry, something went wrong. Please try again.",
+      aiResponse,
+      ssmlResponse: buildProsodySsml(aiResponse, prosody),
     };
   }
 }
@@ -559,6 +632,8 @@ async function pollResult(event: any): Promise<{
   const params = event.Details?.Parameters || {};
   const requestId = params.requestId || '';
   const maxPollLoopsRaw = params.maxPollLoops || '';
+  const contactAttributes = event.Details?.ContactData?.Attributes || {};
+  const prosody = getProsodyFromContactAttributes(contactAttributes);
   const maxPollLoops = (() => {
     const n = parseInt(String(maxPollLoopsRaw || '20'), 10);
     return Number.isFinite(n) && n > 0 ? n : 20;
@@ -566,9 +641,11 @@ async function pollResult(event: any): Promise<{
 
   if (!requestId) {
     console.warn('[AsyncBedrock] pollResult called without requestId');
+    const aiResponse = "I'm sorry, there was an error. Please try again.";
     return {
       status: 'error',
-      aiResponse: "I'm sorry, there was an error. Please try again.",
+      aiResponse,
+      ssmlResponse: buildProsodySsml(aiResponse, prosody),
     };
   }
 
@@ -596,7 +673,7 @@ async function pollResult(event: any): Promise<{
     return {
       status: 'completed',
       aiResponse,
-      ssmlResponse: `<speak>${escapeSSML(aiResponse)}</speak>`,
+      ssmlResponse: item.ssmlResponse || buildProsodySsml(aiResponse, prosody),
     };
   }
 
@@ -611,7 +688,7 @@ async function pollResult(event: any): Promise<{
     return {
       status: 'completed',
       aiResponse,
-      ssmlResponse: `<speak>${escapeSSML(aiResponse)}</speak>`,
+      ssmlResponse: item.ssmlResponse || buildProsodySsml(aiResponse, prosody),
     };
   }
 
@@ -657,7 +734,7 @@ async function pollResult(event: any): Promise<{
         return {
           status: 'completed',
           aiResponse,
-          ssmlResponse: `<speak>${escapeSSML(aiResponse)}</speak>`,
+          ssmlResponse: current.ssmlResponse || buildProsodySsml(aiResponse, prosody),
         };
       }
       if (current && current.status === 'error') {
@@ -669,7 +746,7 @@ async function pollResult(event: any): Promise<{
         return {
           status: 'completed',
           aiResponse,
-          ssmlResponse: `<speak>${escapeSSML(aiResponse)}</speak>`,
+          ssmlResponse: current.ssmlResponse || buildProsodySsml(aiResponse, prosody),
         };
       }
     } catch {
@@ -680,6 +757,7 @@ async function pollResult(event: any): Promise<{
     await updateResult(requestId, {
       status: 'completed',
       response: aiResponse,
+      ssmlResponse: buildProsodySsml(aiResponse, prosody),
       errorMessage: 'Polling timeout',
     });
     // Clean up (fire and forget)
@@ -691,7 +769,7 @@ async function pollResult(event: any): Promise<{
     return {
       status: 'completed',
       aiResponse,
-      ssmlResponse: `<speak>${escapeSSML(aiResponse)}</speak>`,
+      ssmlResponse: buildProsodySsml(aiResponse, prosody),
     };
   }
 
@@ -709,6 +787,11 @@ function escapeSSML(text: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+function buildProsodySsml(text: string, prosody: ProsodySettings): string {
+  const escaped = escapeSSML(text || '');
+  return `<speak><prosody rate="${prosody.speakingRate}" pitch="${prosody.pitch}" volume="${prosody.volume}">${escaped}</prosody></speak>`;
 }
 
 // ========================================================================
@@ -736,6 +819,9 @@ export const handler = async (event: any): Promise<any> => {
       const contactId = params.contactId || '';
       const inputText = (params.inputText || '').toString();
       const clinicId = params.clinicId || DEFAULT_CLINIC_ID;
+      const ttsSpeakingRate = params.ttsSpeakingRate;
+      const ttsPitch = params.ttsPitch;
+      const ttsVolume = params.ttsVolume;
 
       if (!requestId) {
         console.error('[AsyncBedrock] process called without requestId');
@@ -747,6 +833,9 @@ export const handler = async (event: any): Promise<any> => {
         contactId,
         inputText: inputText.trim(),
         clinicId,
+        ttsSpeakingRate,
+        ttsPitch,
+        ttsVolume,
       });
       return { status: 'processing_complete' };
     }

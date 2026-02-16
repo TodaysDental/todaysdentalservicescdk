@@ -31,6 +31,15 @@ export interface RcsStackProps extends StackProps {
   clinicConfigTableName?: string;
   /** KMS key ARN for decrypting secrets */
   secretsEncryptionKeyArn?: string;
+
+  /**
+   * AI Agents stack integration (Bedrock Agents) for RCS auto-replies.
+   * If provided, inbound RCS messages can be replied to by a Bedrock Agent.
+   */
+  aiAgentsTableName?: string;
+  aiAgentsTableArn?: string;
+  aiAgentConversationsTableName?: string;
+  aiAgentConversationsTableArn?: string;
 }
 
 export class RcsStack extends Stack {
@@ -41,6 +50,8 @@ export class RcsStack extends Stack {
   public readonly fallbackMessageFn: lambdaNode.NodejsFunction;
   public readonly statusCallbackFn: lambdaNode.NodejsFunction;
   public readonly sendMessageFn: lambdaNode.NodejsFunction;
+  public readonly rcsAutoReplyFn: lambdaNode.NodejsFunction;
+  public readonly rcsAutoReplyConfigFn: lambdaNode.NodejsFunction;
   public readonly getMessagesFn: lambdaNode.NodejsFunction;
   public readonly templatesFn: lambdaNode.NodejsFunction;
   public readonly analyticsFn: lambdaNode.NodejsFunction;
@@ -361,6 +372,102 @@ export class RcsStack extends Stack {
     });
     applyTags(this.sendMessageFn, { Function: 'rcs-send' });
     this.rcsTemplatesTable.grantWriteData(this.sendMessageFn);
+
+    // ========================================
+    // RCS AUTO-REPLY (AI AGENTS)
+    // ========================================
+    // Asynchronously replies to inbound customer RCS messages using a Bedrock Agent
+    // from the AiAgents stack (3-level prompt system with userPrompt customization).
+    this.rcsAutoReplyFn = new lambdaNode.NodejsFunction(this, 'RcsAutoReplyFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'rcs', 'rcs-auto-reply.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 1024,
+      timeout: Duration.seconds(90),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        RCS_MESSAGES_TABLE: this.rcsTemplatesTable.tableName,
+        RCS_SEND_MESSAGE_FUNCTION_ARN: this.sendMessageFn.functionArn,
+        // AI Agents tables (passed from infra.ts)
+        AI_AGENTS_TABLE: props.aiAgentsTableName || '',
+        AI_AGENT_CONVERSATIONS_TABLE: props.aiAgentConversationsTableName || '',
+        // Optional routing/config (set at deploy time)
+        RCS_REPLY_ENABLED: process.env.RCS_REPLY_ENABLED || 'true',
+        RCS_REPLY_AGENT_ID: process.env.RCS_REPLY_AGENT_ID || '',
+        RCS_REPLY_AGENT_TAG: process.env.RCS_REPLY_AGENT_TAG || 'rcs',
+        RCS_REPLY_AGENT_ID_MAP_JSON: process.env.RCS_REPLY_AGENT_ID_MAP_JSON || '',
+      },
+      logRetention: logs.RetentionDays.ONE_WEEK,
+    });
+    applyTags(this.rcsAutoReplyFn, { Function: 'rcs-auto-reply' });
+
+    // Allow the incoming webhook to invoke the auto-reply processor
+    this.rcsAutoReplyFn.grantInvoke(this.incomingMessageFn);
+
+    // Allow the auto-reply processor to send messages through the standard sender
+    this.sendMessageFn.grantInvoke(this.rcsAutoReplyFn);
+
+    // Auto-reply needs idempotency records in the unified table
+    this.rcsTemplatesTable.grantReadWriteData(this.rcsAutoReplyFn);
+
+    // Bedrock Agent invocation permissions
+    this.rcsAutoReplyFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock:InvokeAgent',
+        'bedrock:GetAgent',
+        'bedrock:GetAgentAlias',
+      ],
+      resources: ['*'],
+    }));
+
+    // AI Agents DynamoDB permissions (read agent config + write conversation logs)
+    // Prefer ARNs if provided to include index ARNs.
+    if (props.aiAgentsTableName || props.aiAgentsTableArn) {
+      const agentsTableArn =
+        props.aiAgentsTableArn ||
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.aiAgentsTableName}`;
+      const agentsTable = dynamodb.Table.fromTableArn(this, 'ImportedAiAgentsTableForRcs', agentsTableArn);
+      agentsTable.grantReadData(this.rcsAutoReplyFn);
+    }
+
+    if (props.aiAgentConversationsTableName || props.aiAgentConversationsTableArn) {
+      const convTableArn =
+        props.aiAgentConversationsTableArn ||
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.aiAgentConversationsTableName}`;
+      const convTable = dynamodb.Table.fromTableArn(this, 'ImportedAiAgentConversationsForRcs', convTableArn);
+      convTable.grantWriteData(this.rcsAutoReplyFn);
+    }
+
+    // Wire the auto-reply Lambda ARN into the incoming webhook env
+    this.incomingMessageFn.addEnvironment('RCS_AUTO_REPLY_FUNCTION_ARN', this.rcsAutoReplyFn.functionArn);
+    this.incomingMessageFn.addEnvironment('ENABLE_RCS_AUTO_REPLY', process.env.ENABLE_RCS_AUTO_REPLY || 'true');
+
+    // ========================================
+    // RCS AUTO-REPLY CONFIG API (Protected)
+    // ========================================
+    this.rcsAutoReplyConfigFn = new lambdaNode.NodejsFunction(this, 'RcsAutoReplyConfigFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'rcs', 'rcs-auto-reply-config.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        RCS_MESSAGES_TABLE: this.rcsTemplatesTable.tableName,
+        AI_AGENTS_TABLE: props.aiAgentsTableName || '',
+      },
+      logRetention: logs.RetentionDays.ONE_WEEK,
+    });
+    applyTags(this.rcsAutoReplyConfigFn, { Function: 'rcs-auto-reply-config' });
+    this.rcsTemplatesTable.grantReadWriteData(this.rcsAutoReplyConfigFn);
+    if (props.aiAgentsTableArn || props.aiAgentsTableName) {
+      const agentsTableArn =
+        props.aiAgentsTableArn ||
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.aiAgentsTableName}`;
+      const agentsTable = dynamodb.Table.fromTableArn(this, 'ImportedAiAgentsTableForRcsConfig', agentsTableArn);
+      agentsTable.grantReadData(this.rcsAutoReplyConfigFn);
+    }
 
     // Grant read access to unsubscribe table for checking preferences
     if (unsubscribeTableName) {
@@ -736,6 +843,19 @@ export class RcsStack extends Stack {
       methodResponses: [{ statusCode: '200' }],
     });
 
+    // GET/PUT /{clinicId}/ai/auto-reply - Configure AI auto-replies for inbound RCS
+    const aiAutoReplyResource = aiResource.addResource('auto-reply');
+    aiAutoReplyResource.addMethod('GET', new apigw.LambdaIntegration(this.rcsAutoReplyConfigFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }],
+    });
+    aiAutoReplyResource.addMethod('PUT', new apigw.LambdaIntegration(this.rcsAutoReplyConfigFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }],
+    });
+
     // GET /{clinicId}/config - Check RCS sender configuration status
     const configResource = clinicResource.addResource('config');
     configResource.addMethod('GET', new apigw.LambdaIntegration(this.rcsAiFn), {
@@ -807,6 +927,8 @@ export class RcsStack extends Stack {
       { fn: this.fallbackMessageFn, name: 'rcs-fallback', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
       { fn: this.statusCallbackFn, name: 'rcs-status', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
       { fn: this.sendMessageFn, name: 'rcs-send', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
+      { fn: this.rcsAutoReplyFn, name: 'rcs-auto-reply', durationMs: Math.floor(Duration.seconds(90).toMilliseconds() * 0.8) },
+      { fn: this.rcsAutoReplyConfigFn, name: 'rcs-auto-reply-config', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
       { fn: this.getMessagesFn, name: 'rcs-get', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
       { fn: this.templatesFn, name: 'rcs-templates', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
       { fn: this.rcsAiFn, name: 'rcs-ai', durationMs: Math.floor(Duration.seconds(60).toMilliseconds() * 0.8) },

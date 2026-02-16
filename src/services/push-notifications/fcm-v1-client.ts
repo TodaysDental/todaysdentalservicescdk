@@ -501,19 +501,21 @@ function parseFcmError(
         };
     }
 
-    // THIRD_PARTY_AUTH_ERROR - Firebase cannot authenticate with APNs for this token.
-    // This happens when an iOS device token was generated from a different APNs
-    // environment (sandbox vs production), a previous app install, or a different
-    // bundle ID. The token will never succeed, so remove it.
+    // THIRD_PARTY_AUTH_ERROR - Firebase cannot authenticate with APNs.
+    // This is almost always a Firebase Console configuration issue (missing/expired
+    // APNs auth key), NOT a problem with the individual device token. Deleting the
+    // token would force users to re-register even after the APNs key is fixed, so
+    // we keep the token and treat it as non-retryable for the current attempt only.
     const fcmErrorCode = responseData.error?.details?.find(
         (d: any) => d['@type']?.includes('FcmError')
     )?.errorCode;
 
     if (fcmErrorCode === 'THIRD_PARTY_AUTH_ERROR' || errorStatus === 'UNAUTHENTICATED') {
+        console.warn('[FCM-v1] APNs authentication failed — check that the APNs key (.p8) is uploaded and valid in Firebase Console > Project Settings > Cloud Messaging');
         return {
             errorCode: 'THIRD_PARTY_AUTH_ERROR',
-            message: 'APNs authentication failed for this token - stale or mismatched token',
-            shouldRemoveToken: true,
+            message: 'APNs authentication failed - check Firebase Console APNs key configuration',
+            shouldRemoveToken: false,
             retryable: false,
         };
     }
@@ -649,7 +651,11 @@ export async function sendFcmV1Notification(
     };
 
     // Only include top-level `notification` for display notifications (not data-only)
-    if (!isDataOnly) {
+    // EXCEPTION: Web platform ALWAYS needs the top-level notification field, because
+    // Firebase Web SDK's onMessage() only fires for foreground messages when
+    // `message.notification` is present. Without it, data-only pushes go straight
+    // to the service worker's push event and never reach onMessage().
+    if (!isDataOnly || platform === 'web') {
         message.notification = {
             title: notification.title,
             body: notification.body,
@@ -696,12 +702,31 @@ export async function sendFcmV1Notification(
             message.android.data = message.data;
         }
     } else if (platform === 'ios') {
-        if (isDataOnly) {
-            // iOS data-only: use content-available for silent push that wakes the app
+        const dataType = typeof message.data?.type === 'string' ? message.data.type : '';
+        const silentDataOnlyTypes = new Set(['call_ended', 'call_cancelled', 'call_answered', 'sync_unread']);
+        const shouldUseSilentApns = isDataOnly && silentDataOnlyTypes.has(dataType);
+
+        if (shouldUseSilentApns) {
+            // Silent background push (no alert/sound). Used for call state transitions that should NOT
+            // generate user-visible notifications but must still reach the app to clear UI state.
+            message.apns = {
+                headers: {
+                    'apns-priority': '5',
+                    'apns-push-type': 'background',
+                },
+                payload: {
+                    aps: {
+                        'content-available': 1,
+                    },
+                },
+            };
+        } else if (isDataOnly) {
+            // High-priority alert push (no top-level FCM notification) — ensures Android handlers fire
+            // while still presenting an alert on iOS (e.g., incoming_call).
             message.apns = {
                 headers: {
                     'apns-priority': '10',
-                    'apns-push-type': 'alert', // Still use alert push-type for high priority
+                    'apns-push-type': 'alert',
                 },
                 payload: {
                     aps: {
@@ -719,6 +744,7 @@ export async function sendFcmV1Notification(
             message.apns = {
                 headers: {
                     'apns-priority': notification.priority === 'high' ? '10' : '5',
+                    'apns-push-type': 'alert',
                 },
                 payload: {
                     aps: {
@@ -735,10 +761,10 @@ export async function sendFcmV1Notification(
             };
         }
 
-        if (notification.category) {
+        if (!shouldUseSilentApns && notification.category) {
             message.apns!.payload!.aps!.category = notification.category;
         }
-        if (notification.threadId) {
+        if (!shouldUseSilentApns && notification.threadId) {
             message.apns!.payload!.aps!['thread-id'] = notification.threadId;
         }
     } else if (platform === 'web') {

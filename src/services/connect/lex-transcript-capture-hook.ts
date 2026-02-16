@@ -85,8 +85,11 @@ export const handler = async (event: LexV2Event): Promise<LexV2Response> => {
 
   const sessionAttributes = event.sessionState?.sessionAttributes || {};
 
-  const rawTranscript = event.inputTranscript || event.transcriptions?.[0]?.transcription || '';
-  const trimmed = cleanTranscript(rawTranscript);
+  // Lex sometimes provides the speech transcript in `transcriptions[0].transcription` while
+  // `inputTranscript` may be empty/whitespace. Prefer the first non-empty cleaned value.
+  const fromInput = cleanTranscript(event.inputTranscript);
+  const fromTranscriptions = cleanTranscript(event.transcriptions?.[0]?.transcription);
+  const trimmed = fromInput || fromTranscriptions || '';
   const confidence = clampConfidence(event.transcriptions?.[0]?.transcriptionConfidence);
 
   const nextSessionAttributes: Record<string, string> = {

@@ -1,0 +1,51 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "56178ae5ea71a93ad495ac3026b521de5435deb1d3c9e65a669d46da4221fa57": {
+      "displayName": "AnalyticsDashboardFunction/Code",
+      "source": {
+        "path": "asset.56178ae5ea71a93ad495ac3026b521de5435deb1d3c9e65a669d46da4221fa57",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-3b6b9f84": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "56178ae5ea71a93ad495ac3026b521de5435deb1d3c9e65a669d46da4221fa57.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "2819175352ad1ce0dae768e83fc328fb70fb5f10b4a8ff0ccbcb791f02b0716d": {
+      "displayName": "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/Code",
+      "source": {
+        "path": "asset.2819175352ad1ce0dae768e83fc328fb70fb5f10b4a8ff0ccbcb791f02b0716d",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-14bcd243": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "2819175352ad1ce0dae768e83fc328fb70fb5f10b4a8ff0ccbcb791f02b0716d.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "b6ee670eb952c3be6230c7971cb94bcc5edecb5960a26394fd0dacdde536aaaa": {
+      "displayName": "TodaysDentalInsightsAnalyticsDashboardN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsAnalyticsDashboardN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-9d177be8": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "b6ee670eb952c3be6230c7971cb94bcc5edecb5960a26394fd0dacdde536aaaa.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

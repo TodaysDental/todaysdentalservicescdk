@@ -1523,9 +1523,10 @@ export const executeOutboundCall = async (event: any) => {
       await docClient.send(new UpdateCommand({
         TableName: SCHEDULED_CALLS_TABLE,
         Key: { callId },
-        UpdateExpression: 'SET connectContactId = :cid, chimeTransactionId = :cid, updatedAt = :now',
+        UpdateExpression: 'SET connectContactId = :cid, chimeTransactionId = :cid, analyticsCallId = :analyticsCallId, updatedAt = :now',
         ExpressionAttributeValues: {
           ':cid': contactId || 'CONNECT_CALL',
+          ':analyticsCallId': contactId ? `connect-${contactId}` : 'CONNECT_CALL',
           ':now': new Date().toISOString(),
         },
       }));

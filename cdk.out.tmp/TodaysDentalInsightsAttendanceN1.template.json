@@ -1,0 +1,1733 @@
+{
+ "Resources": {
+  "GeofenceConfigParam547607C8": {
+   "Type": "AWS::SSM::Parameter",
+   "Properties": {
+    "Description": "Geofence configuration for all clinics (clinic ID → lat/lng/radius/wifi/timezone)",
+    "Name": "/TodaysDentalInsightsAttendanceN1/geofence-config",
+    "Tags": {
+     "ManagedBy": "cdk",
+     "Service": "Attendance",
+     "Stack": "TodaysDentalInsightsAttendanceN1"
+    },
+    "Tier": "Advanced",
+    "Type": "String",
+    "Value": "{\"dentistinnewbritain\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"dentistingreenville\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"todaysdentalcayce\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"creekcrossingdentalcare\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/Chicago\"},\"dentistinwinston-salem\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"dentistincentennial\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/Denver\"},\"renodentalcareandorthodontics\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/Los_Angeles\"},\"todaysdentalalexandria\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"todaysdentalgreenville\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"todaysdentalwestcolumbia\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"dentistinconcord\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"dentistinedgewater\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"lawrencevilledentistry\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"dentistinlouisville\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"dentistatsaludapointe\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"dentistinoregonoh\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"todaysdentallexington\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"dentistinbowie\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"dentistinpowellohio\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"dentistinperrysburg\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/New_York\"},\"dentistinaustin\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/Chicago\"},\"therimdentalcare\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/Chicago\"},\"dentistinbloomingdale\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/Chicago\"},\"dentistinvernonhills\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/Chicago\"},\"meadowsdentalcare\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/Chicago\"},\"dentistinstillwater\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/Chicago\"},\"pearlanddentalcare\":{\"enabled\":true,\"latitude\":0,\"longitude\":0,\"radiusMeters\":150,\"wifiSSIDs\":[],\"lateThresholdMinutes\":10,\"timezone\":\"America/Chicago\"}}"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/GeofenceConfigParam/Resource"
+   }
+  },
+  "AttendanceTableF45072D1": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "clinicId",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "userId#timestamp",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "userId",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "timestamp",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "date",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "GlobalSecondaryIndexes": [
+     {
+      "IndexName": "byUser",
+      "KeySchema": [
+       {
+        "AttributeName": "userId",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "timestamp",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "byDate",
+      "KeySchema": [
+       {
+        "AttributeName": "clinicId",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "date",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     }
+    ],
+    "KeySchema": [
+     {
+      "AttributeName": "clinicId",
+      "KeyType": "HASH"
+     },
+     {
+      "AttributeName": "userId#timestamp",
+      "KeyType": "RANGE"
+     }
+    ],
+    "PointInTimeRecoverySpecification": {
+     "PointInTimeRecoveryEnabled": true
+    },
+    "TableName": "TodaysDentalInsightsAttendanceN1-Attendance",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Attendance"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAttendanceN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "attendance"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceTable/Resource"
+   }
+  },
+  "AttendanceApi48B64048": {
+   "Type": "AWS::ApiGateway::RestApi",
+   "Properties": {
+    "Description": "Staff Attendance Tracking API (Geofence + WiFi)",
+    "Name": "AttendanceApi",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Attendance"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAttendanceN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceApi/Resource"
+   }
+  },
+  "AttendanceApiCloudWatchRole6FFA68A2": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "apigateway.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Attendance"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAttendanceN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceApi/CloudWatchRole/Resource"
+   }
+  },
+  "AttendanceApiAccount1554AC51": {
+   "Type": "AWS::ApiGateway::Account",
+   "Properties": {
+    "CloudWatchRoleArn": {
+     "Fn::GetAtt": [
+      "AttendanceApiCloudWatchRole6FFA68A2",
+      "Arn"
+     ]
+    }
+   },
+   "DependsOn": [
+    "AttendanceApi48B64048"
+   ],
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceApi/Account"
+   }
+  },
+  "AttendanceApiDeployment3E34F1D4ac18ee6d244661628db69475aaf4f63a": {
+   "Type": "AWS::ApiGateway::Deployment",
+   "Properties": {
+    "Description": "Staff Attendance Tracking API (Geofence + WiFi)",
+    "RestApiId": {
+     "Ref": "AttendanceApi48B64048"
+    }
+   },
+   "DependsOn": [
+    "AttendanceApiproxyANY0F763DB9",
+    "AttendanceApiproxyOPTIONS81432ADE",
+    "AttendanceApiproxy55C19AC6",
+    "AttendanceApiOPTIONS8BA97264",
+    "GatewayResponseAccessDenied94952EFC",
+    "GatewayResponseDefault4XXC22BF2A7",
+    "GatewayResponseDefault5XX28177100",
+    "GatewayResponseUnauthorized78FCB15B"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceApi/Deployment/Resource",
+    "aws:cdk:do-not-refactor": true
+   }
+  },
+  "AttendanceApiDeploymentStageprod2EBC8C1D": {
+   "Type": "AWS::ApiGateway::Stage",
+   "Properties": {
+    "DeploymentId": {
+     "Ref": "AttendanceApiDeployment3E34F1D4ac18ee6d244661628db69475aaf4f63a"
+    },
+    "MethodSettings": [
+     {
+      "DataTraceEnabled": false,
+      "HttpMethod": "*",
+      "LoggingLevel": "INFO",
+      "MetricsEnabled": true,
+      "ResourcePath": "/*"
+     }
+    ],
+    "RestApiId": {
+     "Ref": "AttendanceApi48B64048"
+    },
+    "StageName": "prod",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Attendance"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAttendanceN1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "AttendanceApiAccount1554AC51"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceApi/DeploymentStage.prod/Resource"
+   }
+  },
+  "AttendanceApiOPTIONS8BA97264": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Fn::GetAtt": [
+      "AttendanceApi48B64048",
+      "RootResourceId"
+     ]
+    },
+    "RestApiId": {
+     "Ref": "AttendanceApi48B64048"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceApi/Default/OPTIONS/Resource"
+   }
+  },
+  "AttendanceApiproxy55C19AC6": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "AttendanceApi48B64048",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "{proxy+}",
+    "RestApiId": {
+     "Ref": "AttendanceApi48B64048"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceApi/Default/{proxy+}/Resource"
+   }
+  },
+  "AttendanceApiproxyOPTIONS81432ADE": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "AttendanceApiproxy55C19AC6"
+    },
+    "RestApiId": {
+     "Ref": "AttendanceApi48B64048"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceApi/Default/{proxy+}/OPTIONS/Resource"
+   }
+  },
+  "AttendanceApiproxyANYApiPermissionTodaysDentalInsightsAttendanceN1AttendanceApi0269A184ANYproxy29CED910": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AttendanceFn2A95A0FF",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "AttendanceApi48B64048"
+       },
+       "/",
+       {
+        "Ref": "AttendanceApiDeploymentStageprod2EBC8C1D"
+       },
+       "/*/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceApi/Default/{proxy+}/ANY/ApiPermission.TodaysDentalInsightsAttendanceN1AttendanceApi0269A184.ANY..{proxy+}"
+   }
+  },
+  "AttendanceApiproxyANY0F763DB9": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "AttendanceAuthorizer5EB43C31"
+    },
+    "HttpMethod": "ANY",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "AttendanceFn2A95A0FF",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "201"
+     },
+     {
+      "StatusCode": "204"
+     },
+     {
+      "StatusCode": "400"
+     },
+     {
+      "StatusCode": "401"
+     },
+     {
+      "StatusCode": "403"
+     },
+     {
+      "StatusCode": "404"
+     },
+     {
+      "StatusCode": "500"
+     }
+    ],
+    "RequestParameters": {
+     "method.request.path.proxy": true
+    },
+    "ResourceId": {
+     "Ref": "AttendanceApiproxy55C19AC6"
+    },
+    "RestApiId": {
+     "Ref": "AttendanceApi48B64048"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceApi/Default/{proxy+}/ANY/Resource"
+   }
+  },
+  "GatewayResponseDefault4XXC22BF2A7": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_4XX",
+    "RestApiId": {
+     "Ref": "AttendanceApi48B64048"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/GatewayResponseDefault4XX/Resource"
+   }
+  },
+  "GatewayResponseDefault5XX28177100": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "DEFAULT_5XX",
+    "RestApiId": {
+     "Ref": "AttendanceApi48B64048"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/GatewayResponseDefault5XX/Resource"
+   }
+  },
+  "GatewayResponseUnauthorized78FCB15B": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "UNAUTHORIZED",
+    "RestApiId": {
+     "Ref": "AttendanceApi48B64048"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/GatewayResponseUnauthorized/Resource"
+   }
+  },
+  "GatewayResponseAccessDenied94952EFC": {
+   "Type": "AWS::ApiGateway::GatewayResponse",
+   "Properties": {
+    "ResponseParameters": {
+     "gatewayresponse.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+     "gatewayresponse.header.Access-Control-Allow-Methods": "'GET, POST, PUT, DELETE, OPTIONS'",
+     "gatewayresponse.header.Access-Control-Allow-Headers": "'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id'",
+     "gatewayresponse.header.Access-Control-Allow-Credentials": "'true'",
+     "gatewayresponse.header.Access-Control-Max-Age": "'86400'"
+    },
+    "ResponseType": "ACCESS_DENIED",
+    "RestApiId": {
+     "Ref": "AttendanceApi48B64048"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/GatewayResponseAccessDenied/Resource"
+   }
+  },
+  "AttendanceAuthorizer5EB43C31": {
+   "Type": "AWS::ApiGateway::Authorizer",
+   "Properties": {
+    "AuthorizerResultTtlInSeconds": 300,
+    "AuthorizerUri": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Fn::Select": [
+         1,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":apigateway:",
+       {
+        "Fn::Select": [
+         3,
+         {
+          "Fn::Split": [
+           ":",
+           {
+            "Fn::ImportValue": "AuthorizerFunctionArnN1"
+           }
+          ]
+         }
+        ]
+       },
+       ":lambda:path/2015-03-31/functions/",
+       {
+        "Fn::ImportValue": "AuthorizerFunctionArnN1"
+       },
+       "/invocations"
+      ]
+     ]
+    },
+    "IdentitySource": "method.request.header.Authorization",
+    "Name": "TodaysDentalInsightsAttendanceN1AttendanceAuthorizer275C0821",
+    "RestApiId": {
+     "Ref": "AttendanceApi48B64048"
+    },
+    "Type": "REQUEST"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceAuthorizer/Resource"
+   }
+  },
+  "AuthorizerInvokePermission": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::ImportValue": "AuthorizerFunctionArnN1"
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "AttendanceApi48B64048"
+       },
+       "/authorizers/*"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AuthorizerInvokePermission"
+   }
+  },
+  "AttendanceFnServiceRole70DBBF97": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "attendance"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Attendance"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAttendanceN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceFn/ServiceRole/Resource"
+   }
+  },
+  "AttendanceFnServiceRoleDefaultPolicyC5E2F590": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "ssm:DescribeParameters",
+        "ssm:GetParameters",
+        "ssm:GetParameter",
+        "ssm:GetParameterHistory"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:",
+          {
+           "Ref": "AWS::Partition"
+          },
+          ":ssm:us-east-1:851620242036:parameter",
+          {
+           "Ref": "GeofenceConfigParam547607C8"
+          }
+         ]
+        ]
+       }
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "AttendanceTableF45072D1",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "AttendanceTableF45072D1",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:Scan"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsCoreN1:ExportsOutputRefStaffClinicInfoTable4B91FB4DCCB11AA1"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsCoreN1:ExportsOutputRefStaffClinicInfoTable4B91FB4DCCB11AA1"
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:Scan"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:Scan"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsHrN1:ExportsOutputRefShiftsTableE701653AD5B3BE30"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsHrN1:ExportsOutputRefShiftsTableE701653AD5B3BE30"
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:Scan"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:dynamodb:us-east-1:851620242036:table/*-StaffUser",
+        "arn:aws:dynamodb:us-east-1:851620242036:table/*-StaffUser/index/*"
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:Query",
+        "dynamodb:GetItem"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttDeviceTokensTableC4110EBFArn85135A93"
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttDeviceTokensTableC4110EBFArn85135A93"
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "AttendanceFnServiceRoleDefaultPolicyC5E2F590",
+    "Roles": [
+     {
+      "Ref": "AttendanceFnServiceRole70DBBF97"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "AttendanceFn2A95A0FF": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "bce5007feda858563bb4e1f363bf1685ac809aadcf7259bce04b9166cb5776d0.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "ATTENDANCE_TABLE": {
+       "Ref": "AttendanceTableF45072D1"
+      },
+      "STAFF_CLINIC_INFO_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsCoreN1:ExportsOutputRefStaffClinicInfoTable4B91FB4DCCB11AA1"
+      },
+      "CLINIC_HOURS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+      },
+      "SHIFTS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsHrN1:ExportsOutputRefShiftsTableE701653AD5B3BE30"
+      },
+      "STAFF_USER_TABLE": {
+       "Fn::ImportValue": "CoreStack-StaffUserTableName"
+      },
+      "GEOFENCE_CONFIG_PARAM": {
+       "Ref": "GeofenceConfigParam547607C8"
+      },
+      "DEVICE_TOKENS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputRefDeviceTokensTableC4110EBF3068AC31"
+      },
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "AttendanceFnServiceRole70DBBF97",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "attendance"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Attendance"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAttendanceN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "AttendanceFnServiceRoleDefaultPolicyC5E2F590",
+    "AttendanceFnServiceRole70DBBF97"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceFn/Resource",
+    "aws:asset:path": "asset.bce5007feda858563bb4e1f363bf1685ac809aadcf7259bce04b9166cb5776d0",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "AttendanceDigestFnServiceRole033C6434": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "attendance-digest"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Attendance"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAttendanceN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceDigestFn/ServiceRole/Resource"
+   }
+  },
+  "AttendanceDigestFnServiceRoleDefaultPolicy6C45B5CB": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "AttendanceTableF45072D1",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "AttendanceTableF45072D1",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:Scan"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsCoreN1:ExportsOutputRefStaffClinicInfoTable4B91FB4DCCB11AA1"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsCoreN1:ExportsOutputRefStaffClinicInfoTable4B91FB4DCCB11AA1"
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:Scan"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsClinicHoursN1:ExportsOutputRefClinicHoursTableFF29B4D3E4840A64"
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:Scan"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsHrN1:ExportsOutputRefShiftsTableE701653AD5B3BE30"
+           }
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsHrN1:ExportsOutputRefShiftsTableE701653AD5B3BE30"
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:Scan"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:dynamodb:us-east-1:851620242036:table/*-StaffUser",
+        "arn:aws:dynamodb:us-east-1:851620242036:table/*-StaffUser/index/*"
+       ]
+      },
+      {
+       "Action": "ses:SendEmail",
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "AttendanceDigestFnServiceRoleDefaultPolicy6C45B5CB",
+    "Roles": [
+     {
+      "Ref": "AttendanceDigestFnServiceRole033C6434"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceDigestFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "AttendanceDigestFn2C38C12F": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "06c4d25543a1529652a184031be237fdcf0728408c33987d98fa2efff2799f2f.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "ATTENDANCE_TABLE": {
+       "Ref": "AttendanceTableF45072D1"
+      },
+      "SHIFTS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsHrN1:ExportsOutputRefShiftsTableE701653AD5B3BE30"
+      },
+      "STAFF_CLINIC_INFO_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsCoreN1:ExportsOutputRefStaffClinicInfoTable4B91FB4DCCB11AA1"
+      },
+      "APP_NAME": "TodaysDentalInsights",
+      "FROM_EMAIL": "no-reply@todaysdentalinsights.com",
+      "SES_REGION": "us-east-1"
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "AttendanceDigestFnServiceRole033C6434",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "attendance-digest"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Attendance"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAttendanceN1"
+     }
+    ],
+    "Timeout": 60
+   },
+   "DependsOn": [
+    "AttendanceDigestFnServiceRoleDefaultPolicy6C45B5CB",
+    "AttendanceDigestFnServiceRole033C6434"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceDigestFn/Resource",
+    "aws:asset:path": "asset.06c4d25543a1529652a184031be237fdcf0728408c33987d98fa2efff2799f2f",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "WeeklyDigestRule6A5FB1B2": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "ScheduleExpression": "cron(0 13 ? * MON *)",
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Attendance"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAttendanceN1"
+     }
+    ],
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "AttendanceDigestFn2C38C12F",
+        "Arn"
+       ]
+      },
+      "Id": "Target0"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/WeeklyDigestRule/Resource"
+   }
+  },
+  "WeeklyDigestRuleAllowEventRuleTodaysDentalInsightsAttendanceN1AttendanceDigestFn158DCA2718E75D21": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AttendanceDigestFn2C38C12F",
+      "Arn"
+     ]
+    },
+    "Principal": "events.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "WeeklyDigestRule6A5FB1B2",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/WeeklyDigestRule/AllowEventRuleTodaysDentalInsightsAttendanceN1AttendanceDigestFn158DCA27"
+   }
+  },
+  "AttendanceFnErrorAlarmE891AB7D": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when attendance Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "AttendanceFn2A95A0FF"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Attendance"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAttendanceN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceFnErrorAlarm/Resource"
+   }
+  },
+  "AttendanceFnThrottleAlarmFF0CBC6A": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when attendance Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "AttendanceFn2A95A0FF"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Attendance"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAttendanceN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceFnThrottleAlarm/Resource"
+   }
+  },
+  "AttendanceFnDurationAlarm1A6AB6ED": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when attendance Lambda p99 duration exceeds 24000ms",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "AttendanceFn2A95A0FF"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Attendance"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAttendanceN1"
+     }
+    ],
+    "Threshold": 24000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceFnDurationAlarm/Resource"
+   }
+  },
+  "AttendanceDigestFnErrorAlarmD1006FBA": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when attendance-digest Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "AttendanceDigestFn2C38C12F"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Attendance"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAttendanceN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceDigestFnErrorAlarm/Resource"
+   }
+  },
+  "AttendanceDigestFnThrottleAlarm3745C4FC": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when attendance-digest Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "AttendanceDigestFn2C38C12F"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Attendance"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAttendanceN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceDigestFnThrottleAlarm/Resource"
+   }
+  },
+  "AttendanceDigestFnDurationAlarm88B6ADEE": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when attendance-digest Lambda p99 duration exceeds 48000ms",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "AttendanceDigestFn2C38C12F"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Attendance"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAttendanceN1"
+     }
+    ],
+    "Threshold": 48000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceDigestFnDurationAlarm/Resource"
+   }
+  },
+  "AttendanceTableThrottleAlarm9A8623F0": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": {
+     "Fn::Join": [
+      "",
+      [
+       "Alert when DynamoDB table ",
+       {
+        "Ref": "AttendanceTableF45072D1"
+       },
+       " is throttled"
+      ]
+     ]
+    },
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "TableName",
+      "Value": {
+       "Ref": "AttendanceTableF45072D1"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ThrottledRequests",
+    "Namespace": "AWS/DynamoDB",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Attendance"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsAttendanceN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceTableThrottleAlarm/Resource"
+   }
+  },
+  "AttendanceApiBasePathMapping": {
+   "Type": "AWS::ApiGateway::BasePathMapping",
+   "Properties": {
+    "BasePath": "attendance",
+    "DomainName": "apig.todaysdentalinsights.com",
+    "RestApiId": {
+     "Ref": "AttendanceApi48B64048"
+    },
+    "Stage": {
+     "Ref": "AttendanceApiDeploymentStageprod2EBC8C1D"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/AttendanceApiBasePathMapping"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/11S0VLCMBD8Ft9D1KofUHTwCWWq78yRnhBokppLYGqn/+4lpQ74dLu3zWVv00IWxb28u4ETzVR9mDV6I/uPAOoguLXuiUziXtvtCjwYDOjF85f9I4OoOwvG1XzuEzYNJjWDQUCrtxDwBJ3sK6RQtjqpF7BUykUbxAu2jesMMuTuBWMr2zxyBHzURa9wDoRiiWHn6iSe0aSeLxnx6+iAeessZe1/q8LvmDxFnuL1z7jhNUsXriDsltC2nMUgNHAwlRv3zXXlGq26HE5Gg2jAbGqQfWqhN5pIOysW0arAIO/A0sSn79fW1bgn+ZbLpAp6WAMRBpJlKszlPKoDhjwHj5wWsaN4dhTTA6jGxfoEQe1kXzbgTV4sgWG4Sus9hjYGkSenpPOKyYfc0+2xeJKP/I/sSeuZ5+fSBmU11l/VObiHQAIAAA=="
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAttendanceN1/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "AttendanceApiEndpoint4E1C3CCE": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "https://",
+      {
+       "Ref": "AttendanceApi48B64048"
+      },
+      ".execute-api.us-east-1.",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/",
+      {
+       "Ref": "AttendanceApiDeploymentStageprod2EBC8C1D"
+      },
+      "/"
+     ]
+    ]
+   }
+  },
+  "ApiUrl": {
+   "Description": "Attendance API URL",
+   "Value": "https://apig.todaysdentalinsights.com/attendance/",
+   "Export": {
+    "Name": "TodaysDentalInsightsAttendanceN1-ApiUrl"
+   }
+  },
+  "AttendanceTableName": {
+   "Description": "Attendance DynamoDB Table Name",
+   "Value": {
+    "Ref": "AttendanceTableF45072D1"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsAttendanceN1-AttendanceTableName"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/tdi3/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}
