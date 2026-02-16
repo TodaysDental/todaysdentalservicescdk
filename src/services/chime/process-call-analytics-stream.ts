@@ -13,7 +13,7 @@
  */
 
 import { DynamoDBStreamEvent, DynamoDBRecord, AttributeValue } from 'aws-lambda';
-import { DynamoDBDocumentClient, PutCommand, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, UpdateCommand, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { unmarshall } from '@aws-sdk/util-dynamodb';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { checkAndMarkProcessed, getDedupTableName, shouldProcessAnalytics } from '../shared/utils/analytics-deduplication';
@@ -595,15 +595,107 @@ async function storeAnalyticsWithDedup(
     }
 
     try {
-        // Store the actual analytics with callStatus
+        // ---------------------------------------------------------------
+        // Preserve sentiment, category, and transcript from any existing 
+        // record (may have been written by process-call-analytics.ts
+        // real-time processor at a different timestamp).
+        // ---------------------------------------------------------------
+        let preservedFields: Record<string, any> = {};
+        try {
+            const existingQuery = await ddb.send(new QueryCommand({
+                TableName: ANALYTICS_TABLE,
+                KeyConditionExpression: 'callId = :callId',
+                ExpressionAttributeValues: { ':callId': analytics.callId },
+                Limit: 5, // Bounded scan
+            }));
+
+            for (const rec of (existingQuery.Items || [])) {
+                // Preserve sentiment if present and meaningful
+                if (rec.overallSentiment && rec.overallSentiment !== 'uncategorized' && !preservedFields.overallSentiment) {
+                    preservedFields.overallSentiment = rec.overallSentiment;
+                }
+                if (typeof rec.sentimentScore === 'number' && rec.sentimentScore > 0 && !preservedFields.sentimentScore) {
+                    preservedFields.sentimentScore = rec.sentimentScore;
+                }
+                // Preserve category if not default
+                if (rec.callCategory && rec.callCategory !== 'uncategorized' && !preservedFields.callCategory) {
+                    preservedFields.callCategory = rec.callCategory;
+                }
+                if (rec.categoryScores && Object.keys(rec.categoryScores).length > 0 && !preservedFields.categoryScores) {
+                    preservedFields.categoryScores = rec.categoryScores;
+                }
+                // Preserve speaker metrics
+                if (rec.speakerMetrics && !preservedFields.speakerMetrics) {
+                    preservedFields.speakerMetrics = rec.speakerMetrics;
+                }
+                // Preserve transcript data
+                if (rec.fullTranscript && rec.fullTranscript.trim().length > 0 && !preservedFields.fullTranscript) {
+                    preservedFields.fullTranscript = rec.fullTranscript;
+                }
+                if (Array.isArray(rec.latestTranscripts) && rec.latestTranscripts.length > 0 && !preservedFields.latestTranscripts) {
+                    preservedFields.latestTranscripts = rec.latestTranscripts;
+                }
+                if (typeof rec.transcriptCount === 'number' && rec.transcriptCount > 0 && !preservedFields.transcriptCount) {
+                    preservedFields.transcriptCount = rec.transcriptCount;
+                }
+                // Preserve sentiment timeline
+                if (Array.isArray(rec.latestSentiment) && rec.latestSentiment.length > 0 && !preservedFields.latestSentiment) {
+                    preservedFields.latestSentiment = rec.latestSentiment;
+                }
+                if (typeof rec.sentimentDataPoints === 'number' && rec.sentimentDataPoints > 0 && !preservedFields.sentimentDataPoints) {
+                    preservedFields.sentimentDataPoints = rec.sentimentDataPoints;
+                }
+                // Preserve detected issues and key phrases
+                if (Array.isArray(rec.detectedIssues) && rec.detectedIssues.length > 0 && !preservedFields.detectedIssues) {
+                    preservedFields.detectedIssues = rec.detectedIssues;
+                }
+                if (Array.isArray(rec.keyPhrases) && rec.keyPhrases.length > 0 && !preservedFields.keyPhrases) {
+                    preservedFields.keyPhrases = rec.keyPhrases;
+                }
+                // Preserve audio quality
+                if (rec.audioQuality && !preservedFields.audioQuality) {
+                    preservedFields.audioQuality = rec.audioQuality;
+                }
+            }
+
+            if (Object.keys(preservedFields).length > 0) {
+                console.log(`[AnalyticsStream] Preserving ${Object.keys(preservedFields).length} fields from existing records:`,
+                    Object.keys(preservedFields));
+            }
+        } catch (queryErr: any) {
+            console.warn('[AnalyticsStream] Non-fatal error querying existing records for merge:', queryErr.message);
+        }
+
+        // Store the actual analytics with callStatus, merging preserved fields.
+        // Use Record<string, any> to allow dynamic field assignment.
+        const mergedItem: Record<string, any> = {
+            ...preservedFields,
+            ...analytics,
+            callStatus: analytics.status === 'completed' ? 'completed' 
+                : analytics.status === 'abandoned' ? 'abandoned' 
+                : 'failed'
+        };
+
+        // Restore preserved fields that are missing/default in the new analytics
+        if ((!mergedItem.overallSentiment || mergedItem.overallSentiment === 'uncategorized') && preservedFields.overallSentiment) {
+            mergedItem.overallSentiment = preservedFields.overallSentiment;
+        }
+        if ((!mergedItem.sentimentScore || mergedItem.sentimentScore === 0) && preservedFields.sentimentScore) {
+            mergedItem.sentimentScore = preservedFields.sentimentScore;
+        }
+        if ((!mergedItem.callCategory || mergedItem.callCategory === 'uncategorized') && preservedFields.callCategory) {
+            mergedItem.callCategory = preservedFields.callCategory;
+        }
+        if ((!mergedItem.fullTranscript || String(mergedItem.fullTranscript).trim().length === 0) && preservedFields.fullTranscript) {
+            mergedItem.fullTranscript = preservedFields.fullTranscript;
+        }
+        if ((!Array.isArray(mergedItem.latestTranscripts) || mergedItem.latestTranscripts.length === 0) && preservedFields.latestTranscripts) {
+            mergedItem.latestTranscripts = preservedFields.latestTranscripts;
+        }
+
         await ddb.send(new PutCommand({
             TableName: ANALYTICS_TABLE,
-            Item: {
-                ...analytics,
-                callStatus: analytics.status === 'completed' ? 'completed' 
-                    : analytics.status === 'abandoned' ? 'abandoned' 
-                    : 'failed'
-            }
+            Item: mergedItem
         }));
 
         console.log('[AnalyticsStream] Stored post-call analytics for call:', analytics.callId);

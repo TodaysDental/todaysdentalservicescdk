@@ -81,6 +81,7 @@ type NotificationType =
   | 'general'
   | 'staff_alert'
   | 'incoming_call'
+  | 'call_answered'
   | 'call_ended'
   | 'call_cancelled'
   | 'missed_call'
@@ -225,8 +226,10 @@ function generateDeduplicationKey(
   notification: PushNotificationPayload
 ): string {
   // Use provided idempotency key if available (highest priority)
+  // IMPORTANT: Always include targetType:targetId to prevent false deduplication
+  // when the same notification (e.g. incoming_call) is sent to multiple users
   if (notification.idempotencyKey) {
-    return `idem:${notification.idempotencyKey}`;
+    return `idem:${targetType}:${targetId}:${notification.idempotencyKey}`;
   }
 
   // Create a more unique key including data hash to prevent content collisions
@@ -453,6 +456,7 @@ function getChannelForType(type?: NotificationType): string {
   switch (type) {
     // Call-related notifications - high importance
     case 'incoming_call':
+    case 'call_answered':
     case 'call_ended':
     case 'call_cancelled':
     case 'missed_call':
@@ -497,7 +501,12 @@ function getChannelForType(type?: NotificationType): string {
  * Critical notifications (incoming calls) should always be delivered
  */
 function isCriticalNotification(type?: NotificationType): boolean {
-  return type === 'incoming_call' || type === 'call_ended' || type === 'call_cancelled';
+  return (
+    type === 'incoming_call' ||
+    type === 'call_answered' ||
+    type === 'call_ended' ||
+    type === 'call_cancelled'
+  );
 }
 
 /**
@@ -515,7 +524,13 @@ function isCriticalNotification(type?: NotificationType): boolean {
  * and shows a generic notification, bypassing all custom logic.
  */
 function isDataOnlyNotification(type?: NotificationType): boolean {
-  return type === 'incoming_call' || type === 'call_ended' || type === 'call_cancelled' || type === 'voicemail';
+  return (
+    type === 'incoming_call' ||
+    type === 'call_answered' ||
+    type === 'call_ended' ||
+    type === 'call_cancelled' ||
+    type === 'voicemail'
+  );
 }
 
 // ========================================

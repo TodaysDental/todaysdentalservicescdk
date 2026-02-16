@@ -31,6 +31,10 @@ const docClient = DynamoDBDocumentClient.from(dynamoClient);
 const CALL_ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE || '';
 const TRANSCRIPT_BUFFER_TABLE = process.env.TRANSCRIPT_BUFFER_TABLE_NAME || '';
 const SESSIONS_TABLE = process.env.SESSIONS_TABLE || 'AiAgentSessions';
+const SCHEDULED_CALLS_TABLE = process.env.SCHEDULED_CALLS_TABLE || '';
+
+type ScheduledCallFinalStatus = 'completed' | 'failed';
+type ScheduledCallOutcome = 'answered' | 'voicemail' | 'no_answer' | 'busy' | 'failed';
 
 // ========================================================================
 // TYPES - Connect Lambda Event
@@ -179,6 +183,95 @@ async function shortenTranscriptTTL(callId: string): Promise<void> {
   }
 }
 
+function mapDisconnectReasonToScheduledCall(disconnectReasonRaw: string | undefined): {
+  status: ScheduledCallFinalStatus;
+  outcome: ScheduledCallOutcome;
+} {
+  const reason = String(disconnectReasonRaw || '').trim().toUpperCase();
+
+  if (reason.includes('BUSY')) {
+    return { status: 'completed', outcome: 'busy' };
+  }
+  if (reason.includes('NO_ANSWER') || reason.includes('NOANSWER') || reason.includes('TIMEOUT')) {
+    return { status: 'completed', outcome: 'no_answer' };
+  }
+  if (reason.includes('VOICEMAIL') || reason.includes('ANSWERING_MACHINE')) {
+    return { status: 'completed', outcome: 'voicemail' };
+  }
+  if (reason.includes('ERROR') || reason.includes('FAILED')) {
+    return { status: 'failed', outcome: 'failed' };
+  }
+
+  // Default: the customer answered and the conversation ended normally.
+  return { status: 'completed', outcome: 'answered' };
+}
+
+async function finalizeScheduledCall(params: {
+  scheduledCallId: string;
+  connectContactId: string;
+  analyticsCallId: string;
+  durationSec: number;
+  disconnectReason?: string;
+}): Promise<void> {
+  if (!SCHEDULED_CALLS_TABLE) return;
+
+  const { scheduledCallId, connectContactId, analyticsCallId, durationSec, disconnectReason } = params;
+  const nowIso = new Date().toISOString();
+  const mapped = mapDisconnectReasonToScheduledCall(disconnectReason);
+
+  try {
+    await docClient.send(new UpdateCommand({
+      TableName: SCHEDULED_CALLS_TABLE,
+      Key: { callId: scheduledCallId },
+      UpdateExpression: `
+        SET #status = :status,
+            outcome = :outcome,
+            endedAt = :endedAt,
+            durationSec = :duration,
+            disconnectReason = :reason,
+            connectContactId = :contactId,
+            analyticsCallId = :analyticsCallId,
+            updatedAt = :now
+      `,
+      ExpressionAttributeNames: { '#status': 'status' },
+      ExpressionAttributeValues: {
+        ':status': mapped.status,
+        ':outcome': mapped.outcome,
+        ':endedAt': nowIso,
+        ':duration': durationSec,
+        ':reason': disconnectReason || 'unknown',
+        ':contactId': connectContactId,
+        ':analyticsCallId': analyticsCallId,
+        ':now': nowIso,
+        ':in_progress': 'in_progress',
+        ':scheduled': 'scheduled',
+      },
+      // Avoid overwriting terminal statuses (idempotency + safety)
+      ConditionExpression: 'attribute_exists(callId) AND (#status = :in_progress OR #status = :scheduled)',
+    }));
+
+    console.log('[ConnectFinalizer] ScheduledCalls updated:', {
+      scheduledCallId,
+      status: mapped.status,
+      outcome: mapped.outcome,
+      durationSec,
+      disconnectReason,
+    });
+  } catch (error: any) {
+    if (error?.name === 'ConditionalCheckFailedException') {
+      // Record does not exist or is already terminal/cancelled; ignore.
+      console.log('[ConnectFinalizer] ScheduledCalls not updated (already final or missing):', {
+        scheduledCallId,
+      });
+      return;
+    }
+    console.warn('[ConnectFinalizer] Failed to update ScheduledCalls:', {
+      scheduledCallId,
+      error: error?.message || String(error),
+    });
+  }
+}
+
 /**
  * Get session to retrieve call start time
  */
@@ -217,44 +310,67 @@ export const handler = async (event: ConnectLambdaEvent): Promise<ConnectLambdaR
   const contactId = contactData.ContactId;
   const callId = `connect-${contactId}`;
   const disconnectReason = event.Details?.Parameters?.disconnectReason || 'unknown';
+  const contactAttributes = contactData.Attributes || {};
+  const scheduledCallId = typeof contactAttributes.scheduledCallId === 'string'
+    ? contactAttributes.scheduledCallId.trim()
+    : '';
 
-  // Find the analytics record
-  const analyticsInfo = await findAnalyticsRecord(callId);
-  if (!analyticsInfo) {
-    console.warn('[ConnectFinalizer] No analytics record found for call:', callId);
-    return { status: 'no_record', callId };
-  }
-
-  // Check if already finalized
-  if (analyticsInfo.record.callStatus === 'completed') {
-    console.log('[ConnectFinalizer] Call already finalized:', callId);
-    return { status: 'already_finalized', callId };
-  }
-
-  // Get session for call start time
+  // Compute start/end timestamps (prefer session; fall back to Connect timestamps)
   const session = await getSession(contactId);
-  const callStartMs = session?.callStartMs || analyticsInfo.record.timestamp;
+  const initiationMs = contactData.InitiationTimestamp ? new Date(contactData.InitiationTimestamp).getTime() : NaN;
+  const disconnectMs = contactData.DisconnectTimestamp ? new Date(contactData.DisconnectTimestamp).getTime() : NaN;
+  const startMs = session?.callStartMs
+    || (Number.isFinite(initiationMs) ? initiationMs : Date.now());
+  const endMs = Number.isFinite(disconnectMs) ? disconnectMs : Date.now();
+  const durationSec = Math.max(0, Math.round((endMs - startMs) / 1000));
 
-  // Finalize the analytics
-  await finalizeAnalytics({
-    callId,
-    timestamp: analyticsInfo.timestamp,
-    callStartMs,
-    disconnectReason,
-  });
+  // Find the analytics record (optional; may not exist for busy/no-answer calls)
+  const analyticsInfo = await findAnalyticsRecord(callId);
 
-  // Optionally shorten transcript buffer TTL
-  await shortenTranscriptTTL(callId);
+  if (analyticsInfo) {
+    // Check if already finalized
+    if (analyticsInfo.record.callStatus === 'completed') {
+      console.log('[ConnectFinalizer] Call already finalized:', callId);
+      // Still ensure ScheduledCalls is finalized (idempotent update)
+    } else {
+      // Finalize the analytics
+      await finalizeAnalytics({
+        callId,
+        timestamp: analyticsInfo.timestamp,
+        callStartMs: startMs,
+        disconnectReason,
+      });
+
+      // Optionally shorten transcript buffer TTL
+      await shortenTranscriptTTL(callId);
+    }
+  } else {
+    console.warn('[ConnectFinalizer] No analytics record found for call (non-fatal):', callId);
+  }
+
+  // If this was an AI outbound scheduled call, finalize the ScheduledCalls record too.
+  // Scheduler passes scheduledCallId as a Connect contact attribute.
+  if (scheduledCallId) {
+    await finalizeScheduledCall({
+      scheduledCallId,
+      connectContactId: contactId,
+      analyticsCallId: callId,
+      durationSec,
+      disconnectReason,
+    });
+  }
 
   console.log('[ConnectFinalizer] Call finalized successfully:', {
     callId,
-    durationSec: Math.round((Date.now() - callStartMs) / 1000),
+    durationSec,
     disconnectReason,
+    scheduledCallId: scheduledCallId || undefined,
+    hadAnalyticsRecord: !!analyticsInfo,
   });
 
   return {
     status: 'success',
     callId,
-    duration: String(Math.round((Date.now() - callStartMs) / 1000)),
+    duration: String(durationSec),
   };
 };

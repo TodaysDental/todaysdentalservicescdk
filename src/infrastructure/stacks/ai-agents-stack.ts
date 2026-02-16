@@ -1380,6 +1380,13 @@ export class AiAgentsStack extends Stack {
     this.voiceConfigTable.grantReadWriteData(this.voiceConfigFn);
     this.clinicHoursTable.grantReadWriteData(this.voiceConfigFn);
 
+    // Polly - dynamically list valid voices per engine (DescribeVoices)
+    this.voiceConfigFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['polly:DescribeVoices'],
+      resources: ['*'],
+    }));
+
     // ========================================
     // CONVERSATION HISTORY HANDLER
     // ========================================
@@ -2033,6 +2040,16 @@ export class AiAgentsStack extends Stack {
       authorizationType: apigw.AuthorizationType.CUSTOM,
     });
     voiceConfigClinicRes.addMethod('PUT', new apigw.LambdaIntegration(this.voiceConfigFn), {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // /voices - List valid Amazon Polly voices for an engine (dynamic)
+    // Query params:
+    // - engine=standard|neural|generative|long-form
+    // - languageCode=en-US (optional)
+    const voicesRes = this.api.root.addResource('voices');
+    voicesRes.addMethod('GET', new apigw.LambdaIntegration(this.voiceConfigFn), {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
     });

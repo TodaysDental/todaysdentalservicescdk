@@ -36,12 +36,12 @@ async function getCachedTwilioCredentials(): Promise<{ accountSid: string; authT
   if (twilioCredentialsCache && Date.now() < twilioCredentialsCacheExpiry) {
     return twilioCredentialsCache;
   }
-  
+
   const creds = await getTwilioCredentials();
   if (!creds) {
     throw new Error('Twilio credentials not found in GlobalSecrets table');
   }
-  
+
   twilioCredentialsCache = creds;
   twilioCredentialsCacheExpiry = Date.now() + TWILIO_CACHE_TTL_MS;
   return creds;
@@ -146,21 +146,27 @@ interface SendRcsMessageRequest {
   messagingServiceSid?: string;
   patientId?: string;         // Optional patient ID for unsubscribe checking
   skipUnsubscribeCheck?: boolean;  // Optional flag to bypass unsubscribe check
-  
+
   // Rich media additions
   richCard?: RCSRichCard;     // Single rich card
   carousel?: RCSCarousel;     // Multiple rich cards in a carousel
   contentSid?: string;        // Twilio Content Template SID (pre-registered template)
   contentVariables?: Record<string, string>;  // Variables for Twilio Content template
-  
+
   // Placeholder data
   patientData?: PatientData;  // Patient data for placeholder replacement
-  
+
   // Analytics tracking
   templateId?: string;        // Internal template ID for analytics tracking
   templateName?: string;      // Template name for analytics
   campaignId?: string;        // Campaign ID for campaign analytics
   campaignName?: string;      // Campaign name for analytics
+
+  // AI auto-reply metadata (optional)
+  aiAgentId?: string;
+  aiAgentName?: string;
+  aiSessionId?: string;
+  inReplyToSid?: string; // inbound Twilio MessageSid we are replying to
 }
 
 interface TwilioMessageResponse {
@@ -200,7 +206,7 @@ async function renderRichCardPlaceholders(
     renderPlaceholders(card.title, clinicId, patientData),
     renderPlaceholders(card.description, clinicId, patientData)
   ]);
-  
+
   let buttons = card.buttons;
   if (card.buttons) {
     buttons = await Promise.all(card.buttons.map(async btn => ({
@@ -209,7 +215,7 @@ async function renderRichCardPlaceholders(
       value: btn.type === 'url' ? await renderPlaceholders(btn.value, clinicId, patientData) : btn.value
     })));
   }
-  
+
   return {
     ...card,
     title,
@@ -373,17 +379,21 @@ async function sendTwilioRcsMessage(
 ): Promise<TwilioMessageResponse> {
   // Get Twilio credentials from DynamoDB
   const twilioCreds = await getCachedTwilioCredentials();
-  
+
   return new Promise((resolve, reject) => {
     const data = new URLSearchParams();
-    data.append('To', to);
-    
+    // Twilio requires both From and To to use the same channel prefix (rcs:)
+    const rcsTo = to.startsWith('rcs:') ? to : `rcs:${to}`;
+    data.append('To', rcsTo);
+
     if (messagingServiceSid) {
       data.append('MessagingServiceSid', messagingServiceSid);
     } else if (rcsSenderId) {
-      data.append('From', rcsSenderId);
+      // Ensure From also has the rcs: prefix (it should already from ClinicSecrets)
+      const rcsFrom = rcsSenderId.startsWith('rcs:') ? rcsSenderId : `rcs:${rcsSenderId}`;
+      data.append('From', rcsFrom);
     }
-    
+
     if (statusCallbackUrl) {
       data.append('StatusCallback', statusCallbackUrl);
     }
@@ -420,7 +430,7 @@ async function sendTwilioRcsMessage(
     }
 
     const postData = data.toString();
-    
+
     const options = {
       hostname: 'api.twilio.com',
       port: 443,
@@ -435,11 +445,11 @@ async function sendTwilioRcsMessage(
 
     const req = https.request(options, (res) => {
       let responseBody = '';
-      
+
       res.on('data', (chunk) => {
         responseBody += chunk;
       });
-      
+
       res.on('end', () => {
         try {
           const response = JSON.parse(responseBody);
@@ -479,14 +489,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
   try {
     const requestBody: SendRcsMessageRequest = JSON.parse(event.body || '{}');
-    const { 
-      clinicId, 
-      to, 
-      body: messageBody, 
-      mediaUrl, 
-      rcsSenderId, 
-      messagingServiceSid, 
-      patientId, 
+    const {
+      clinicId,
+      to,
+      body: messageBody,
+      mediaUrl,
+      rcsSenderId,
+      messagingServiceSid,
+      patientId,
       skipUnsubscribeCheck,
       richCard,
       carousel,
@@ -497,6 +507,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       templateName,
       campaignId,
       campaignName,
+      aiAgentId,
+      aiAgentName,
+      aiSessionId,
+      inReplyToSid,
     } = requestBody;
 
     // Validate required fields
@@ -523,7 +537,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
       if (rcsUnsubscribed) {
         console.log(`Skipping RCS message for ${to} - unsubscribed`);
-        
+
         // Store skipped message for audit
         const timestamp = Date.now();
         await ddb.send(new PutCommand({
@@ -583,7 +597,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // Apply placeholder rendering
     const renderedBody = await renderPlaceholders(messageBody, clinicId, patientData);
-    
+
     // Render placeholders in rich card if present
     let renderedRichCard: RCSRichCard | undefined;
     if (richCard) {
@@ -653,6 +667,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         templateName: templateName || undefined,
         campaignId: campaignId || undefined,
         campaignName: campaignName || undefined,
+        // AI metadata (optional)
+        aiAgentId: aiAgentId || undefined,
+        aiAgentName: aiAgentName || undefined,
+        aiSessionId: aiSessionId || undefined,
+        inReplyToSid: inReplyToSid || undefined,
         // Date fields for efficient analytics queries
         dateKey: new Date(timestamp).toISOString().split('T')[0], // YYYY-MM-DD for daily aggregation
         hourKey: new Date(timestamp).getUTCHours(), // 0-23 for hourly distribution

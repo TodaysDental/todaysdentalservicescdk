@@ -1,0 +1,51 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "bce5007feda858563bb4e1f363bf1685ac809aadcf7259bce04b9166cb5776d0": {
+      "displayName": "AttendanceFn/Code",
+      "source": {
+        "path": "asset.bce5007feda858563bb4e1f363bf1685ac809aadcf7259bce04b9166cb5776d0",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-8105e3da": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "bce5007feda858563bb4e1f363bf1685ac809aadcf7259bce04b9166cb5776d0.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "06c4d25543a1529652a184031be237fdcf0728408c33987d98fa2efff2799f2f": {
+      "displayName": "AttendanceDigestFn/Code",
+      "source": {
+        "path": "asset.06c4d25543a1529652a184031be237fdcf0728408c33987d98fa2efff2799f2f",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-51801811": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "06c4d25543a1529652a184031be237fdcf0728408c33987d98fa2efff2799f2f.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "0ac302423aa15357e7f29a03f4824b31f11527a0689cfbe8426ca6fbbd293f86": {
+      "displayName": "TodaysDentalInsightsAttendanceN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsAttendanceN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-61448860": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "0ac302423aa15357e7f29a03f4824b31f11527a0689cfbe8426ca6fbbd293f86.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

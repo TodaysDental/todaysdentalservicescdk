@@ -1,0 +1,36 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "7bd54126d47a15bdf9410ddeeb22d64a92cc784787a77545be0072fd6add0d20": {
+      "displayName": "InsurancePlanSyncFn/Code",
+      "source": {
+        "path": "asset.7bd54126d47a15bdf9410ddeeb22d64a92cc784787a77545be0072fd6add0d20",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-b540ee65": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "7bd54126d47a15bdf9410ddeeb22d64a92cc784787a77545be0072fd6add0d20.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "c74a30a7da1334a215e1179a0056a43a9d471d462eccc9c60a7693e7a1a45d5f": {
+      "displayName": "TodaysDentalInsightsInsurancePlanSyncN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsInsurancePlanSyncN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-49990dfd": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "c74a30a7da1334a215e1179a0056a43a9d471d462eccc9c60a7693e7a1a45d5f.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

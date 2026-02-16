@@ -50,6 +50,9 @@ const MAX_SYNC_CLINICS = (() => {
   return Number.isFinite(raw) && raw > 0 ? raw : BATCH_SIZE;
 })();
 
+// Async worker gets a generous timeout (not constrained by API Gateway's ~29 s limit).
+const ASYNC_POST_TIMEOUT_MS = 55_000;
+
 // ============================================
 // Ayrshare API Key (cached from GlobalSecrets)
 // ============================================
@@ -95,7 +98,7 @@ async function postToClinicWithRetry(
   postData: any,
   saveHistory: boolean,
   retries: number = 0
-): Promise<{ clinicId: string; status: 'success' | 'failed'; id?: string; refId?: string; error?: string }> {
+): Promise<{ clinicId: string; status: 'success' | 'failed'; id?: string; refId?: string; error?: string; platformResults?: any[]; platformErrors?: any[] }> {
   try {
     if (!config.ayrshareProfileKey) {
       throw new Error('Missing Ayrshare profile key');
@@ -116,16 +119,33 @@ async function postToClinicWithRetry(
           mediaUrls: postData.mediaUrls || [],
           scheduledDate: postData.scheduleDate || null,
           status: res.status || 'success',
+          platformResults: res.platformResults,
+          platformErrors: res.platformErrors,
           createdAt: new Date().toISOString()
         }
       }));
+    }
+
+    // If some platforms failed but at least one succeeded, report partial success
+    // so the user knows which platforms worked.
+    if (res.platformErrors?.length) {
+      return {
+        clinicId: config.clinicId,
+        status: 'success',
+        id: res.id,
+        refId: res.refId,
+        platformResults: res.platformResults,
+        platformErrors: res.platformErrors,
+        error: res.partialFailureMessage,
+      };
     }
 
     return {
       clinicId: config.clinicId,
       status: 'success',
       id: res.id,
-      refId: res.refId
+      refId: res.refId,
+      platformResults: res.platformResults,
     };
   } catch (error: any) {
     console.error(`Post failed for clinic ${config.clinicId}:`, error.message);
@@ -233,20 +253,102 @@ async function getClinicConfigMap(clinicIds: string[]): Promise<Record<string, a
   }
 }
 
-export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const origin = event.headers?.origin || event.headers?.Origin;
+// ============================================
+// Async publish worker — invoked directly by Lambda (not via API Gateway)
+// with a generous timeout so Ayrshare can take as long as it needs.
+// ============================================
+async function handleAsyncPublishWorker(payload: {
+  profileKey: string;
+  postData: any;
+  clinicId: string;
+  saveHistory: boolean;
+  publishJobId: string;
+  bulkJobId?: string;
+}): Promise<{ status: string; clinicId: string; id?: string; error?: string }> {
+  const { profileKey, postData, clinicId, saveHistory, publishJobId, bulkJobId } = payload;
+
+  // Fetch API key at runtime (never passed in the invocation payload for security).
+  const apiKey = await getApiKey();
+
+  try {
+    const res = await ayrsharePost(apiKey, profileKey, postData, ASYNC_POST_TIMEOUT_MS);
+
+    if (saveHistory && res.id) {
+      await ddb.send(new PutCommand({
+        TableName: POSTS_TABLE,
+        Item: {
+          postId: res.id,
+          clinicId,
+          refId: res.refId,
+          postContent: postData.post,
+          platforms: postData.platforms,
+          mediaUrls: postData.mediaUrls || [],
+          scheduledDate: postData.scheduleDate || null,
+          status: res.status || 'success',
+          publishJobId,
+          bulkJobId: bulkJobId || null,
+          platformResults: res.platformResults,
+          platformErrors: res.platformErrors,
+          createdAt: new Date().toISOString(),
+        },
+      }));
+    }
+
+    console.log(`[asyncWorker] Published for ${clinicId}: postId=${res.id}`);
+    return { status: 'success', clinicId, id: res.id };
+  } catch (err: any) {
+    console.error(`[asyncWorker] Failed for ${clinicId}:`, err.message);
+
+    // Persist failure so the user can see it in History.
+    try {
+      await ddb.send(new PutCommand({
+        TableName: POSTS_TABLE,
+        Item: {
+          postId: `failed-${publishJobId}-${clinicId}`,
+          clinicId,
+          postContent: postData.post,
+          platforms: postData.platforms,
+          mediaUrls: postData.mediaUrls || [],
+          status: 'failed',
+          error: err.message,
+          publishJobId,
+          bulkJobId: bulkJobId || null,
+          createdAt: new Date().toISOString(),
+        },
+      }));
+    } catch (dbErr: any) {
+      console.error(`[asyncWorker] Also failed to save failure record:`, dbErr.message);
+    }
+
+    return { status: 'failed', clinicId, error: err.message };
+  }
+}
+
+export const handler = async (event: any): Promise<any> => {
+  // ============================================
+  // ASYNC WORKER MODE — direct Lambda invocation (not via API Gateway)
+  // ============================================
+  if (event.__asyncPublishWorker) {
+    return handleAsyncPublishWorker(event);
+  }
+
+  // ============================================
+  // API GATEWAY MODE — normal HTTP request handling
+  // ============================================
+  const apiGwEvent = event as APIGatewayProxyEvent;
+  const origin = apiGwEvent.headers?.origin || apiGwEvent.headers?.Origin;
   const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'] }, origin);
 
-  if (event.httpMethod === 'OPTIONS') {
+  if (apiGwEvent.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
   }
 
   try {
     // ============================================
-    // 1. POST - Create & Publish Posts (with rate limiting)
+    // 1. POST - Create & Publish Posts (async fire-and-forget)
     // ============================================
-    if (event.path.endsWith('/post') && event.httpMethod === 'POST') {
-      const body = JSON.parse(event.body || '{}');
+    if (apiGwEvent.path.endsWith('/post') && apiGwEvent.httpMethod === 'POST') {
+      const body = JSON.parse(apiGwEvent.body || '{}');
       const { targetClinicIds, postData, saveHistory = true, resolvePlaceholders = false } = body;
       // Fix #14: Normalize scheduleDate/scheduledDate — accept both field names
       if (postData) {
@@ -255,19 +357,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
       if (!targetClinicIds || !Array.isArray(targetClinicIds) || targetClinicIds.length === 0) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'targetClinicIds array required' }) };
-      }
-
-      // IMPORTANT: API Gateway has a ~29s max integration timeout. Large multi-clinic
-      // publishes should be chunked client-side (or moved to an async job).
-      if (targetClinicIds.length > MAX_SYNC_CLINICS) {
-        return {
-          statusCode: 413,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            error: `Too many clinics for synchronous publish: ${targetClinicIds.length}. Please publish in chunks of ${MAX_SYNC_CLINICS} (or fewer) to avoid gateway timeouts.`,
-            maxClinicsPerRequest: MAX_SYNC_CLINICS,
-          }),
-        };
       }
 
       // Get Profile Keys for all requested clinics
@@ -294,18 +383,71 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'No marketing profiles found for selected clinics' }) };
       }
 
-      // Get Ayrshare API key from GlobalSecrets
-      const apiKey = await getApiKey();
-
       // If placeholder resolution is requested, load canonical clinic config (address/phone/etc.)
       // from CLINIC_CONFIG_TABLE to keep placeholders consistent with the editor.
       const clinicConfigMap = resolvePlaceholders
         ? await getClinicConfigMap(requestedClinicIds)
         : {};
 
-      // Batch clinics for rate limiting (Ayrshare Business Plan)
-      const batches = chunkArray(orderedConfigs, BATCH_SIZE);
-      const allResults: Array<{ clinicId: string; status: 'success' | 'failed'; id?: string; refId?: string; error?: string }> = [
+      // Generate a unique publish job ID so all async invocations can be correlated.
+      const publishJobId = `pub_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      const selfFunctionName = process.env.AWS_LAMBDA_FUNCTION_NAME;
+
+      if (!selfFunctionName) {
+        // Fallback: if we can't self-invoke, fall back to synchronous posting
+        console.warn('[publisher] AWS_LAMBDA_FUNCTION_NAME not set; falling back to synchronous publish');
+        const apiKey = await getApiKey();
+        const batches = chunkArray(orderedConfigs, BATCH_SIZE);
+        const allResults: Array<{ clinicId: string; status: 'success' | 'failed'; id?: string; error?: string }> = [
+          ...missingClinicIds.map(clinicId => ({ clinicId, status: 'failed' as const, error: 'No marketing profile found for clinic' })),
+        ];
+        for (const batch of batches) {
+          const batchResults = await Promise.all(
+            batch.map(config => {
+              const clinicData = clinicConfigMap[String(config?.clinicId)] || config;
+              const resolved = resolvePlaceholders ? resolvePostPlaceholders(postData, clinicData) : postData;
+              return postToClinicWithRetry(apiKey, config, resolved, saveHistory);
+            })
+          );
+          allResults.push(...batchResults);
+        }
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ total: allResults.length, success: allResults.filter(r => r.status === 'success').length, failed: allResults.filter(r => r.status === 'failed').length, results: allResults }) };
+      }
+
+      // ---- ASYNC FIRE-AND-FORGET ----
+      // Invoke self asynchronously for each clinic. The async worker has a
+      // generous 55 s timeout per platform, well beyond API Gateway's ~29 s cap.
+      console.log(`[publisher] Dispatching async publish for ${orderedConfigs.length} clinics (jobId=${publishJobId})`);
+
+      const invokePromises = orderedConfigs.map(config => {
+        const clinicData = clinicConfigMap[String(config?.clinicId)] || config;
+        const resolvedPostData = resolvePlaceholders
+          ? resolvePostPlaceholders(postData, clinicData)
+          : postData;
+
+        return lambda.send(new InvokeCommand({
+          FunctionName: selfFunctionName,
+          InvocationType: 'Event', // Fire-and-forget
+          Payload: JSON.stringify({
+            __asyncPublishWorker: true,
+            profileKey: config.ayrshareProfileKey,
+            postData: resolvedPostData,
+            clinicId: config.clinicId,
+            saveHistory,
+            publishJobId,
+          }),
+        }));
+      });
+
+      // Wait for all invoke calls to be accepted (this is fast — just the SDK call, not the actual posting).
+      await Promise.all(invokePromises);
+
+      // Return immediately — the actual Ayrshare posting happens in the background.
+      const allResults = [
+        ...orderedConfigs.map(config => ({
+          clinicId: config.clinicId,
+          status: 'success' as const,
+        })),
         ...missingClinicIds.map(clinicId => ({
           clinicId,
           status: 'failed' as const,
@@ -313,60 +455,25 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         })),
       ];
 
-      console.log(`Publishing to ${orderedConfigs.length} clinics in ${batches.length} batches`);
-
-      for (let i = 0; i < batches.length; i++) {
-        const batch = batches[i];
-        console.log(`Processing batch ${i + 1}/${batches.length} (${batch.length} clinics)`);
-
-        // Process batch in parallel
-        const batchResults = await Promise.all(
-          batch.map(async (config) => {
-            // Resolve placeholders if requested
-            const clinicDataForPlaceholders = clinicConfigMap[String(config?.clinicId)] || config;
-            const resolvedPostData = resolvePlaceholders
-              ? resolvePostPlaceholders(postData, clinicDataForPlaceholders)
-              : postData;
-
-            return postToClinicWithRetry(apiKey, config, resolvedPostData, saveHistory);
-          })
-        );
-
-        allResults.push(...batchResults);
-
-        // Delay between batches (except for the last batch)
-        if (i < batches.length - 1) {
-          console.log(`Waiting ${DELAY_BETWEEN_BATCHES_MS}ms before next batch...`);
-          await delay(DELAY_BETWEEN_BATCHES_MS);
-        }
-      }
-
-      // Summarize results
-      const successCount = allResults.filter(r => r.status === 'success').length;
-      const failedCount = allResults.filter(r => r.status === 'failed').length;
-
       const summary = {
         total: allResults.length,
-        success: successCount,
-        failed: failedCount,
+        success: orderedConfigs.length,
+        failed: missingClinicIds.length,
         results: allResults,
-        batchInfo: {
-          batchSize: BATCH_SIZE,
-          totalBatches: batches.length,
-          delayMs: DELAY_BETWEEN_BATCHES_MS
-        }
+        publishJobId,
+        async: true,
       };
 
-      console.log(`Publishing complete: ${successCount} success, ${failedCount} failed`);
+      console.log(`[publisher] Async publish dispatched: ${orderedConfigs.length} clinics`);
 
-      return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(summary) };
+      return { statusCode: 202, headers: corsHeaders, body: JSON.stringify(summary) };
     }
 
     // ============================================
     // 1b. POST VALIDATE - Pre-publish validation (Fix #3)
     // ============================================
-    if (event.path.endsWith('/post/validate') && event.httpMethod === 'POST') {
-      const body = JSON.parse(event.body || '{}');
+    if (apiGwEvent.path.endsWith('/post/validate') && apiGwEvent.httpMethod === 'POST') {
+      const body = JSON.parse(apiGwEvent.body || '{}');
       const { postData } = body;
 
       const warnings: string[] = [];
@@ -438,8 +545,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 1c. POST HASHTAGS - Auto-generate hashtags (Fix #8)
     // ============================================
-    if (event.path.endsWith('/hashtags') && event.httpMethod === 'POST') {
-      const body = JSON.parse(event.body || '{}');
+    if (apiGwEvent.path.endsWith('/hashtags') && apiGwEvent.httpMethod === 'POST') {
+      const body = JSON.parse(apiGwEvent.body || '{}');
       const { post } = body;
 
       if (!post) {
@@ -466,10 +573,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // ============================================
-    // 2. POST BULK - Enhanced Bulk Publishing with Image Generation
+    // 2. POST BULK - Enhanced Bulk Publishing with Image Generation (async)
     // ============================================
-    if (event.path.endsWith('/post/bulk') && event.httpMethod === 'POST') {
-      const body = JSON.parse(event.body || '{}');
+    if (apiGwEvent.path.endsWith('/post/bulk') && apiGwEvent.httpMethod === 'POST') {
+      const body = JSON.parse(apiGwEvent.body || '{}');
       const {
         targetClinicIds,
         postData,
@@ -479,18 +586,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
       if (!targetClinicIds || !Array.isArray(targetClinicIds) || targetClinicIds.length === 0) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'targetClinicIds array required' }) };
-      }
-
-      // Same API Gateway timeout constraint as /post.
-      if (targetClinicIds.length > MAX_SYNC_CLINICS) {
-        return {
-          statusCode: 413,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            error: `Too many clinics for synchronous bulk publish: ${targetClinicIds.length}. Please publish in chunks of ${MAX_SYNC_CLINICS} (or fewer) to avoid gateway timeouts.`,
-            maxClinicsPerRequest: MAX_SYNC_CLINICS,
-          }),
-        };
       }
 
       // Get clinic configs
@@ -517,12 +612,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'No marketing profiles found for selected clinics' }) };
       }
 
-      // Get Ayrshare API key from GlobalSecrets
-      const apiKey = await getApiKey();
-
       const clinicConfigMap = await getClinicConfigMap(requestedClinicIds);
 
-      // If canvasJson is provided, generate images for each clinic using image-generator Lambda
+      // If canvasJson is provided, generate images SYNCHRONOUSLY first (we need the URLs for the post).
       let generatedImages: Record<string, string> = {};
       if (canvasJson && canvasJson.objects && canvasJson.objects.length > 0) {
         try {
@@ -542,8 +634,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           }));
 
           if (invokeRes.Payload) {
-            const payload = JSON.parse(Buffer.from(invokeRes.Payload).toString());
-            const imageGenResponse = JSON.parse(payload.body || '{}');
+            const payloadStr = Buffer.from(invokeRes.Payload).toString();
+            const imgPayload = JSON.parse(payloadStr);
+            const imageGenResponse = JSON.parse(imgPayload.body || '{}');
 
             if (imageGenResponse.images) {
               for (const img of imageGenResponse.images) {
@@ -551,7 +644,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
               }
               console.log('Generated', Object.keys(generatedImages).length, 'images');
             } else if (imageGenResponse.canvases) {
-              // Fallback: If only resolution mode available, log it
               console.log('Image generator in resolve mode - canvasJson resolved for', imageGenResponse.canvases?.length, 'clinics');
             }
           }
@@ -560,9 +652,64 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
       }
 
-      // Batch processing for Business Plan rate limits
-      const batches = chunkArray(orderedConfigs, BATCH_SIZE);
-      const allResults: Array<{ clinicId: string; status: 'success' | 'failed'; id?: string; refId?: string; error?: string }> = [
+      // ---- ASYNC FIRE-AND-FORGET (same pattern as /post) ----
+      const publishJobId = `bulk_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      const selfFunctionName = process.env.AWS_LAMBDA_FUNCTION_NAME;
+
+      if (!selfFunctionName) {
+        // Fallback to synchronous (shouldn't happen in production)
+        console.warn('[publisher] AWS_LAMBDA_FUNCTION_NAME not set; falling back to synchronous bulk publish');
+        const apiKey = await getApiKey();
+        const allResults: Array<any> = [...missingClinicIds.map(clinicId => ({ clinicId, status: 'failed' as const, error: 'No marketing profile found for clinic' }))];
+        for (const config of orderedConfigs) {
+          try {
+            const clinicData = clinicConfigMap[String(config?.clinicId)] || config;
+            const resolved = resolvePostPlaceholders(postData, clinicData);
+            if (generatedImages[config.clinicId]) {
+              resolved.mediaUrls = [generatedImages[config.clinicId], ...(resolved.mediaUrls || [])];
+            }
+            const res = await ayrsharePost(apiKey, config.ayrshareProfileKey, resolved);
+            allResults.push({ clinicId: config.clinicId, status: 'success', id: res.id });
+          } catch (e: any) {
+            allResults.push({ clinicId: config.clinicId, status: 'failed', error: e.message });
+          }
+        }
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ total: allResults.length, success: allResults.filter(r => r.status === 'success').length, failed: allResults.filter(r => r.status === 'failed').length, results: allResults }) };
+      }
+
+      console.log(`[publisher] Dispatching async bulk publish for ${orderedConfigs.length} clinics (jobId=${publishJobId})`);
+
+      const invokePromises = orderedConfigs.map(config => {
+        const clinicData = clinicConfigMap[String(config?.clinicId)] || config;
+        const resolvedPostData = resolvePostPlaceholders(postData, clinicData);
+
+        // Attach generated image if available
+        if (generatedImages[config.clinicId]) {
+          resolvedPostData.mediaUrls = [generatedImages[config.clinicId], ...(resolvedPostData.mediaUrls || [])];
+        }
+
+        return lambda.send(new InvokeCommand({
+          FunctionName: selfFunctionName,
+          InvocationType: 'Event',
+          Payload: JSON.stringify({
+            __asyncPublishWorker: true,
+            profileKey: config.ayrshareProfileKey,
+            postData: resolvedPostData,
+            clinicId: config.clinicId,
+            saveHistory,
+            publishJobId,
+            bulkJobId: body.bulkJobId || null,
+          }),
+        }));
+      });
+
+      await Promise.all(invokePromises);
+
+      const allResults = [
+        ...orderedConfigs.map(config => ({
+          clinicId: config.clinicId,
+          status: 'success' as const,
+        })),
         ...missingClinicIds.map(clinicId => ({
           clinicId,
           status: 'failed' as const,
@@ -570,76 +717,25 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         })),
       ];
 
-      for (let i = 0; i < batches.length; i++) {
-        const batch = batches[i];
-
-        const batchResults = await Promise.all(
-          batch.map(async (config) => {
-            try {
-              // For bulk posts, always resolve placeholders
-              const clinicDataForPlaceholders = clinicConfigMap[String(config?.clinicId)] || config;
-              const resolvedPostData = resolvePostPlaceholders(postData, clinicDataForPlaceholders);
-
-              // If we have generated images for this clinic, add them to mediaUrls
-              if (generatedImages[config.clinicId]) {
-                resolvedPostData.mediaUrls = [generatedImages[config.clinicId], ...(resolvedPostData.mediaUrls || [])];
-              }
-
-              if (!config.ayrshareProfileKey) {
-                throw new Error('Missing Ayrshare profile key');
-              }
-
-              const res = await ayrsharePost(apiKey, config.ayrshareProfileKey, resolvedPostData);
-
-              if (saveHistory && res.id) {
-                await ddb.send(new PutCommand({
-                  TableName: POSTS_TABLE,
-                  Item: {
-                    postId: res.id,
-                    clinicId: config.clinicId,
-                    refId: res.refId,
-                    postContent: resolvedPostData.post,
-                    platforms: resolvedPostData.platforms,
-                    mediaUrls: resolvedPostData.mediaUrls || [],
-                    scheduledDate: resolvedPostData.scheduleDate || null,
-                    status: res.status || 'success',
-                    bulkJobId: body.bulkJobId || null,
-                    createdAt: new Date().toISOString()
-                  }
-                }));
-              }
-
-              return { clinicId: config.clinicId, status: 'success' as const, id: res.id, refId: res.refId };
-            } catch (error: any) {
-              console.error(`Bulk post failed for clinic ${config.clinicId}:`, error);
-              return { clinicId: config.clinicId, status: 'failed' as const, error: error.message };
-            }
-          })
-        );
-
-        allResults.push(...batchResults);
-
-        // Rate limit delay between batches
-        if (i < batches.length - 1) {
-          await delay(DELAY_BETWEEN_BATCHES_MS);
-        }
-      }
-
       const summary = {
         total: allResults.length,
-        success: allResults.filter(r => r.status === 'success').length,
-        failed: allResults.filter(r => r.status === 'failed').length,
-        results: allResults
+        success: orderedConfigs.length,
+        failed: missingClinicIds.length,
+        results: allResults,
+        publishJobId,
+        async: true,
       };
 
-      return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(summary) };
+      console.log(`[publisher] Async bulk publish dispatched: ${orderedConfigs.length} clinics`);
+
+      return { statusCode: 202, headers: corsHeaders, body: JSON.stringify(summary) };
     }
 
     // ============================================
     // 3. DELETE POST - Remove published post
     // ============================================
-    if (event.path.endsWith('/post') && event.httpMethod === 'DELETE') {
-      const { clinicId, postId } = JSON.parse(event.body || '{}');
+    if (apiGwEvent.path.endsWith('/post') && apiGwEvent.httpMethod === 'DELETE') {
+      const { clinicId, postId } = JSON.parse(apiGwEvent.body || '{}');
 
       if (!clinicId || !postId) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'clinicId and postId required' }) };
@@ -667,10 +763,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 4. GET HISTORY - Fetch posting history
     // ============================================
-    if (event.path.endsWith('/history') && event.httpMethod === 'GET') {
-      const clinicId = event.queryStringParameters?.clinicId;
-      const lastRecords = event.queryStringParameters?.lastRecords;
-      const lastDays = event.queryStringParameters?.lastDays;
+    if (apiGwEvent.path.endsWith('/history') && apiGwEvent.httpMethod === 'GET') {
+      const clinicId = apiGwEvent.queryStringParameters?.clinicId;
+      const lastRecords = apiGwEvent.queryStringParameters?.lastRecords;
+      const lastDays = apiGwEvent.queryStringParameters?.lastDays;
 
       if (!clinicId) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'clinicId required' }) };
@@ -701,9 +797,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 5. GET ANALYTICS - Post performance metrics
     // ============================================
-    if (event.path.endsWith('/analytics') && event.httpMethod === 'GET') {
-      const clinicId = event.queryStringParameters?.clinicId;
-      const postId = event.queryStringParameters?.postId;
+    if (apiGwEvent.path.endsWith('/analytics') && apiGwEvent.httpMethod === 'GET') {
+      const clinicId = apiGwEvent.queryStringParameters?.clinicId;
+      const postId = apiGwEvent.queryStringParameters?.postId;
 
       if (!clinicId || !postId) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'clinicId and postId required' }) };
@@ -731,9 +827,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 6. GET COMMENTS - Fetch post comments
     // ============================================
-    if (event.path.endsWith('/comments') && event.httpMethod === 'GET') {
-      const clinicId = event.queryStringParameters?.clinicId;
-      const postId = event.queryStringParameters?.postId;
+    if (apiGwEvent.path.endsWith('/comments') && apiGwEvent.httpMethod === 'GET') {
+      const clinicId = apiGwEvent.queryStringParameters?.clinicId;
+      const postId = apiGwEvent.queryStringParameters?.postId;
 
       if (!clinicId || !postId) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'clinicId and postId required' }) };
@@ -761,8 +857,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 7. REPLY TO COMMENT - Post comment response
     // ============================================
-    if (event.path.endsWith('/comments/reply') && event.httpMethod === 'POST') {
-      const { clinicId, commentId, replyText, platform } = JSON.parse(event.body || '{}');
+    if (apiGwEvent.path.endsWith('/comments/reply') && apiGwEvent.httpMethod === 'POST') {
+      const { clinicId, commentId, replyText, platform } = JSON.parse(apiGwEvent.body || '{}');
 
       if (!clinicId || !commentId || !replyText || !platform) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'clinicId, commentId, replyText, platform required' }) };
@@ -796,9 +892,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 8. GET SOCIAL STATS - Overall platform metrics
     // ============================================
-    if (event.path.endsWith('/stats') && event.httpMethod === 'GET') {
-      const clinicId = event.queryStringParameters?.clinicId;
-      const platforms = event.queryStringParameters?.platforms?.split(',') || ['facebook', 'instagram', 'x', 'threads', 'gbusiness'];
+    if (apiGwEvent.path.endsWith('/stats') && apiGwEvent.httpMethod === 'GET') {
+      const clinicId = apiGwEvent.queryStringParameters?.clinicId;
+      const platforms = apiGwEvent.queryStringParameters?.platforms?.split(',') || ['facebook', 'instagram', 'x', 'threads', 'gbusiness'];
 
       if (!clinicId) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'clinicId required' }) };
@@ -826,7 +922,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 9. GET RATE LIMIT INFO - Check current rate limit status
     // ============================================
-    if (event.path.endsWith('/rate-limit') && event.httpMethod === 'GET') {
+    if (apiGwEvent.path.endsWith('/rate-limit') && apiGwEvent.httpMethod === 'GET') {
       // Return rate limiting configuration
       return {
         statusCode: 200,
@@ -852,10 +948,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 10. GET SCHEDULED POSTS - For calendar integration
     // ============================================
-    if (event.path.endsWith('/scheduled') && event.httpMethod === 'GET') {
-      const clinicId = event.queryStringParameters?.clinicId;
-      const startDate = event.queryStringParameters?.startDate;
-      const endDate = event.queryStringParameters?.endDate;
+    if (apiGwEvent.path.endsWith('/scheduled') && apiGwEvent.httpMethod === 'GET') {
+      const clinicId = apiGwEvent.queryStringParameters?.clinicId;
+      const startDate = apiGwEvent.queryStringParameters?.startDate;
+      const endDate = apiGwEvent.queryStringParameters?.endDate;
 
       try {
         let posts: any[] = [];
@@ -925,8 +1021,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 11. POST HASHTAGS RECOMMEND - Get hashtag recommendations
     // ============================================
-    if (event.path.endsWith('/hashtags/recommend') && event.httpMethod === 'POST') {
-      const body = JSON.parse(event.body || '{}');
+    if (apiGwEvent.path.endsWith('/hashtags/recommend') && apiGwEvent.httpMethod === 'POST') {
+      const body = JSON.parse(apiGwEvent.body || '{}');
       const { keyword, limit = 10 } = body;
 
       if (!keyword) {
@@ -945,8 +1041,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 12. POST HASHTAGS SEARCH - Search hashtags on a platform
     // ============================================
-    if (event.path.endsWith('/hashtags/search') && event.httpMethod === 'POST') {
-      const body = JSON.parse(event.body || '{}');
+    if (apiGwEvent.path.endsWith('/hashtags/search') && apiGwEvent.httpMethod === 'POST') {
+      const body = JSON.parse(apiGwEvent.body || '{}');
       const { query, platform = 'instagram' } = body;
 
       if (!query) {
@@ -965,8 +1061,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 13. POST HASHTAGS BANNED - Check if hashtags are banned
     // ============================================
-    if (event.path.endsWith('/hashtags/banned') && event.httpMethod === 'POST') {
-      const body = JSON.parse(event.body || '{}');
+    if (apiGwEvent.path.endsWith('/hashtags/banned') && apiGwEvent.httpMethod === 'POST') {
+      const body = JSON.parse(apiGwEvent.body || '{}');
       const { hashtags } = body;
 
       if (!hashtags || !Array.isArray(hashtags) || hashtags.length === 0) {
@@ -985,8 +1081,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 14. POST MODERATE - AI content moderation
     // ============================================
-    if (event.path.endsWith('/moderate') && event.httpMethod === 'POST') {
-      const body = JSON.parse(event.body || '{}');
+    if (apiGwEvent.path.endsWith('/moderate') && apiGwEvent.httpMethod === 'POST') {
+      const body = JSON.parse(apiGwEvent.body || '{}');
       const { content } = body;
 
       if (!content) {
@@ -1035,8 +1131,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 15. POST MEDIA RESIZE - Resize image for platform
     // ============================================
-    if (event.path.endsWith('/media/resize') && event.httpMethod === 'POST') {
-      const body = JSON.parse(event.body || '{}');
+    if (apiGwEvent.path.endsWith('/media/resize') && apiGwEvent.httpMethod === 'POST') {
+      const body = JSON.parse(apiGwEvent.body || '{}');
       const { imageUrl, width, height } = body;
 
       if (!imageUrl || !width || !height) {
@@ -1055,10 +1151,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 16. AUTO-SCHEDULE - Manage auto-scheduling rules
     // ============================================
-    if (event.path.endsWith('/auto-schedule')) {
-      const clinicId = event.httpMethod === 'GET'
-        ? event.queryStringParameters?.clinicId
-        : JSON.parse(event.body || '{}').clinicId;
+    if (apiGwEvent.path.endsWith('/auto-schedule')) {
+      const clinicId = apiGwEvent.httpMethod === 'GET'
+        ? apiGwEvent.queryStringParameters?.clinicId
+        : JSON.parse(apiGwEvent.body || '{}').clinicId;
 
       if (!clinicId) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'clinicId required' }) };
@@ -1073,7 +1169,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const profileKey = dbRes.Item.ayrshareProfileKey;
 
       // GET - Retrieve current auto-schedule
-      if (event.httpMethod === 'GET') {
+      if (apiGwEvent.httpMethod === 'GET') {
         try {
           const result = await ayrshareGetAutoSchedule(apiKey, profileKey);
           return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
@@ -1083,8 +1179,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
 
       // POST - Set auto-schedule
-      if (event.httpMethod === 'POST') {
-        const body = JSON.parse(event.body || '{}');
+      if (apiGwEvent.httpMethod === 'POST') {
+        const body = JSON.parse(apiGwEvent.body || '{}');
         const { schedule } = body;
         if (!schedule || !schedule.scheduleDate || !schedule.scheduleTime || !schedule.title) {
           return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'schedule with scheduleDate[], scheduleTime[], and title required' }) };
@@ -1098,8 +1194,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
 
       // DELETE - Remove auto-schedule by title
-      if (event.httpMethod === 'DELETE') {
-        const body = JSON.parse(event.body || '{}');
+      if (apiGwEvent.httpMethod === 'DELETE') {
+        const body = JSON.parse(apiGwEvent.body || '{}');
         const { title } = body;
         if (!title) {
           return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'title required' }) };
@@ -1116,12 +1212,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 17. WEBHOOKS - Manage webhook subscriptions
     // ============================================
-    if (event.path.endsWith('/webhooks')) {
+    if (apiGwEvent.path.endsWith('/webhooks')) {
       const apiKey = await getApiKey();
 
       // GET - List registered webhooks
-      if (event.httpMethod === 'GET') {
-        const profileKey = event.queryStringParameters?.profileKey;
+      if (apiGwEvent.httpMethod === 'GET') {
+        const profileKey = apiGwEvent.queryStringParameters?.profileKey;
         try {
           const result = await ayrshareGetWebhooks(apiKey, profileKey);
           return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
@@ -1131,8 +1227,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
 
       // POST - Register a webhook
-      if (event.httpMethod === 'POST') {
-        const body = JSON.parse(event.body || '{}');
+      if (apiGwEvent.httpMethod === 'POST') {
+        const body = JSON.parse(apiGwEvent.body || '{}');
         const { action, url, secret, profileKey } = body;
         if (!action || !url || !secret) {
           return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'action, url, and secret required' }) };
@@ -1146,8 +1242,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
 
       // DELETE - Unregister a webhook
-      if (event.httpMethod === 'DELETE') {
-        const body = JSON.parse(event.body || '{}');
+      if (apiGwEvent.httpMethod === 'DELETE') {
+        const body = JSON.parse(apiGwEvent.body || '{}');
         const { action, profileKey } = body;
         if (!action) {
           return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'action required' }) };
@@ -1164,9 +1260,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 18. GET LINK ANALYTICS - Click/link tracking
     // ============================================
-    if (event.path.endsWith('/analytics/links') && event.httpMethod === 'GET') {
-      const clinicId = event.queryStringParameters?.clinicId;
-      const postId = event.queryStringParameters?.postId;
+    if (apiGwEvent.path.endsWith('/analytics/links') && apiGwEvent.httpMethod === 'GET') {
+      const clinicId = apiGwEvent.queryStringParameters?.clinicId;
+      const postId = apiGwEvent.queryStringParameters?.postId;
 
       if (!clinicId) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'clinicId required' }) };
@@ -1188,8 +1284,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 19. POST MEDIA VALIDATE - Validate media for platform compatibility
     // ============================================
-    if (event.path.endsWith('/media/validate') && event.httpMethod === 'POST') {
-      const body = JSON.parse(event.body || '{}');
+    if (apiGwEvent.path.endsWith('/media/validate') && apiGwEvent.httpMethod === 'POST') {
+      const body = JSON.parse(apiGwEvent.body || '{}');
       const { mediaUrls, platforms } = body;
 
       if (!mediaUrls || !Array.isArray(mediaUrls) || !platforms || !Array.isArray(platforms)) {
@@ -1208,8 +1304,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ============================================
     // 20. POST MEDIA VERIFY - Verify a media URL is accessible
     // ============================================
-    if (event.path.endsWith('/media/verify') && event.httpMethod === 'POST') {
-      const body = JSON.parse(event.body || '{}');
+    if (apiGwEvent.path.endsWith('/media/verify') && apiGwEvent.httpMethod === 'POST') {
+      const body = JSON.parse(apiGwEvent.body || '{}');
       const { url } = body;
 
       if (!url) {

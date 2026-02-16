@@ -1,0 +1,261 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "1881df5bdfe5c215eabad3332a9347baf685915269555fd241bb7ff6470ccdb8": {
+      "displayName": "MarketingProfilesFn/Code",
+      "source": {
+        "path": "asset.1881df5bdfe5c215eabad3332a9347baf685915269555fd241bb7ff6470ccdb8",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-c9a5b0b4": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "1881df5bdfe5c215eabad3332a9347baf685915269555fd241bb7ff6470ccdb8.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "a7de3b07616564b86c9acfc43949ce07fbbd7b4e548be337d4f6dc4a7e455d61": {
+      "displayName": "MarketingPostsFn/Code",
+      "source": {
+        "path": "asset.a7de3b07616564b86c9acfc43949ce07fbbd7b4e548be337d4f6dc4a7e455d61",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-26cf77a2": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "a7de3b07616564b86c9acfc43949ce07fbbd7b4e548be337d4f6dc4a7e455d61.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "942165900dbce32f5752b15455cfe8db86b097a34a8e9a38c1c10cf3f41fb35e": {
+      "displayName": "MarketingCommentsFn/Code",
+      "source": {
+        "path": "asset.942165900dbce32f5752b15455cfe8db86b097a34a8e9a38c1c10cf3f41fb35e",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-973e9e89": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "942165900dbce32f5752b15455cfe8db86b097a34a8e9a38c1c10cf3f41fb35e.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "0217d4a4e46d80a7504b135c4daab20cf610b6088f7779b2ad9876329667109b": {
+      "displayName": "MarketingAnalyticsFn/Code",
+      "source": {
+        "path": "asset.0217d4a4e46d80a7504b135c4daab20cf610b6088f7779b2ad9876329667109b",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-e84ef08b": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "0217d4a4e46d80a7504b135c4daab20cf610b6088f7779b2ad9876329667109b.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "c680d1b94cae3a4ff6c4c8e3e84bed7c7aaa87447bbad25b9bfb36e7e1a0c07a": {
+      "displayName": "MarketingMediaFn/Code",
+      "source": {
+        "path": "asset.c680d1b94cae3a4ff6c4c8e3e84bed7c7aaa87447bbad25b9bfb36e7e1a0c07a",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-5d61acf9": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "c680d1b94cae3a4ff6c4c8e3e84bed7c7aaa87447bbad25b9bfb36e7e1a0c07a.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "82cdb6ac94c6ba5e48aaf78ca43fca1e7c864ef9c051797571d4ef1fde65e013": {
+      "displayName": "MarketingWebhooksFn/Code",
+      "source": {
+        "path": "asset.82cdb6ac94c6ba5e48aaf78ca43fca1e7c864ef9c051797571d4ef1fde65e013",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-58ce2216": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "82cdb6ac94c6ba5e48aaf78ca43fca1e7c864ef9c051797571d4ef1fde65e013.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "a208782ff3c08b904a8192438957ad35d7264971129846ab137c5472f517028e": {
+      "displayName": "MarketingAnalyticsSyncFn/Code",
+      "source": {
+        "path": "asset.a208782ff3c08b904a8192438957ad35d7264971129846ab137c5472f517028e",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-7c218d7d": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "a208782ff3c08b904a8192438957ad35d7264971129846ab137c5472f517028e.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "1bad3c82da4cb7ce837d4d965b2408b48335f7a5441756b4e6593885f2686f07": {
+      "displayName": "MarketingAutoScheduleFn/Code",
+      "source": {
+        "path": "asset.1bad3c82da4cb7ce837d4d965b2408b48335f7a5441756b4e6593885f2686f07",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-d1784772": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "1bad3c82da4cb7ce837d4d965b2408b48335f7a5441756b4e6593885f2686f07.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "c100f6e8129ce4e6f4d43eb679b522f977021783e3eae63802f43cb25ba8dfe7": {
+      "displayName": "MarketingHashtagsFn/Code",
+      "source": {
+        "path": "asset.c100f6e8129ce4e6f4d43eb679b522f977021783e3eae63802f43cb25ba8dfe7",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-a6979278": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "c100f6e8129ce4e6f4d43eb679b522f977021783e3eae63802f43cb25ba8dfe7.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "661ad9d79da79b549472c26c9f15f8ea2153031fd619d7a403b5c7e9dce6bb96": {
+      "displayName": "MarketingHistoryFn/Code",
+      "source": {
+        "path": "asset.661ad9d79da79b549472c26c9f15f8ea2153031fd619d7a403b5c7e9dce6bb96",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-92644f18": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "661ad9d79da79b549472c26c9f15f8ea2153031fd619d7a403b5c7e9dce6bb96.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "32717f27a7a43cd728e51b49b264a6f51e31f6528e67d19ff303d6afe0755de0": {
+      "displayName": "MarketingMessagesFn/Code",
+      "source": {
+        "path": "asset.32717f27a7a43cd728e51b49b264a6f51e31f6528e67d19ff303d6afe0755de0",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-3ea48686": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "32717f27a7a43cd728e51b49b264a6f51e31f6528e67d19ff303d6afe0755de0.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "7f827ba38b302c9c2a0bc5f1e6a7ee31b644d0c691015406814d5247206bf12c": {
+      "displayName": "MarketingValidateFn/Code",
+      "source": {
+        "path": "asset.7f827ba38b302c9c2a0bc5f1e6a7ee31b644d0c691015406814d5247206bf12c",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-db2c75fe": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "7f827ba38b302c9c2a0bc5f1e6a7ee31b644d0c691015406814d5247206bf12c.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "7aafd141be01c0c740105e142c0a7b8a3c6d40acb21fb4a5fc2210ad866676b1": {
+      "displayName": "MarketingTemplatesFn/Code",
+      "source": {
+        "path": "asset.7aafd141be01c0c740105e142c0a7b8a3c6d40acb21fb4a5fc2210ad866676b1",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-ff9196cd": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "7aafd141be01c0c740105e142c0a7b8a3c6d40acb21fb4a5fc2210ad866676b1.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "5c5a14395c8a8a7a9e81d384e1c97c44cdf5e41678720784360a50da61689bb7": {
+      "displayName": "MarketingAdsFn/Code",
+      "source": {
+        "path": "asset.5c5a14395c8a8a7a9e81d384e1c97c44cdf5e41678720784360a50da61689bb7",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-171dd4a1": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "5c5a14395c8a8a7a9e81d384e1c97c44cdf5e41678720784360a50da61689bb7.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "61c81e610bec520ef9ad22e13a32e8c7e177206d78c57e32d35777c1204402e7": {
+      "displayName": "ImageGeneratorFn/Code",
+      "source": {
+        "path": "asset.61c81e610bec520ef9ad22e13a32e8c7e177206d78c57e32d35777c1204402e7",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-9548d306": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "61c81e610bec520ef9ad22e13a32e8c7e177206d78c57e32d35777c1204402e7.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "de55ca61279df25ec46d4fb803a15d120247a4a9ba4316f27b8c53fd4cebaedf": {
+      "displayName": "PublisherFn/Code",
+      "source": {
+        "path": "asset.de55ca61279df25ec46d4fb803a15d120247a4a9ba4316f27b8c53fd4cebaedf",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-56c05959": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "de55ca61279df25ec46d4fb803a15d120247a4a9ba4316f27b8c53fd4cebaedf.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "d208915d9bfdd7ddac0613f52706e4b154a3c209fad27cb6f40d61efb19e26da": {
+      "displayName": "TodaysDentalInsightsMarketingN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsMarketingN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-09ff3d40": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "d208915d9bfdd7ddac0613f52706e4b154a3c209fad27cb6f40d61efb19e26da.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

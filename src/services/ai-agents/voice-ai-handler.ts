@@ -414,7 +414,9 @@ async function textToSpeech(text: string, clinicId?: string): Promise<Buffer> {
     Text: text,
     OutputFormat: CONFIG.OUTPUT_FORMAT,
     VoiceId: voiceSettings.voiceId as VoiceId,
-    Engine: voiceSettings.engine === 'neural' ? Engine.NEURAL : Engine.STANDARD,
+    // NOTE: We intentionally pass through the configured engine (standard/neural/generative/long-form).
+    // Availability depends on voice + region; Polly will reject unsupported combinations.
+    Engine: (voiceSettings.engine || 'neural') as unknown as Engine,
     SampleRate: CONFIG.SAMPLE_RATE,
   });
 

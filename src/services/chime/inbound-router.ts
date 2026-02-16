@@ -22,8 +22,8 @@ import {
     type CallEndedNotification,
     type CallAnsweredNotification
 } from './utils/push-notifications';
-// Import per-clinic AI inbound toggle check
-import { isAiInboundEnabled } from '../ai-agents/voice-agent-config';
+// Import per-clinic after-hours routing mode
+import { getAfterHoursCallingMode } from '../ai-agents/voice-agent-config';
 
 // ========================================
 // NEW ADVANCED FEATURES - Chime Stack Improvements
@@ -73,6 +73,7 @@ const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME!;
 // Push-first routing source of truth (agents explicitly toggle active)
 const AGENT_ACTIVE_TABLE_NAME = process.env.AGENT_ACTIVE_TABLE_NAME || '';
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME!;
+const CALL_AUDIT_TABLE_NAME = process.env.CALL_AUDIT_TABLE_NAME || '';
 const LOCKS_TABLE_NAME = process.env.LOCKS_TABLE_NAME!;
 const VOICE_CALL_ANALYTICS_TABLE = process.env.VOICE_CALL_ANALYTICS_TABLE;
 const HOLD_MUSIC_BUCKET = process.env.HOLD_MUSIC_BUCKET;
@@ -95,6 +96,8 @@ const QUEUE_TIMEOUT = 24 * 60 * 60;
 const AVG_CALL_DURATION = 300;
 // Max agents to ring for an inbound call offer (push-first + call-queue agentIds)
 const MAX_RING_AGENTS = Math.max(1, Number.parseInt(process.env.MAX_RING_AGENTS || '25', 10));
+
+let didWarnMissingAuditTable = false;
 
 // Call states
 type CallStatus =
@@ -998,26 +1001,45 @@ export const handler = async (event: any): Promise<any> => {
                 const aiPhoneNumber = typeof clinic.aiPhoneNumber === 'string' ? clinic.aiPhoneNumber.trim() : '';
                 console.log(`[NEW_INBOUND_CALL] Call is for clinic ${clinicId}`);
 
-                // ========== AFTER-HOURS FORWARDING CHECK ==========
-                // If the clinic is closed, optionally forward the call to `clinic.aiPhoneNumber` (Connect/Lex).
-                // Uses both global toggle (ENABLE_AFTER_HOURS_AI) and per-clinic toggle (aiInboundEnabled)
+                // ========== AFTER-HOURS ROUTING CHECK ==========
+                // When the clinic is closed, apply the configured after-hours behavior:
+                // - OFF: ignore clinic hours and always route to human agents
+                // - FORWARD_TO_AI: forward to `clinic.aiPhoneNumber`
+                // - PLAY_CLOSED_MESSAGE: play "clinic is closed" message and hang up
+                //
+                // Global toggle (ENABLE_AFTER_HOURS_AI) is a master switch.
                 if (ENABLE_AFTER_HOURS_AI) {
-                    const clinicOpen = await isClinicOpen(clinicId);
+                    const afterHoursMode = await getAfterHoursCallingMode(clinicId);
 
-                    if (!clinicOpen) {
-                        // Check per-clinic AI inbound toggle - if disabled, route to agents only
-                        const aiInboundEnabledForClinic = await isAiInboundEnabled(clinicId);
+                    if (afterHoursMode === 'OFF') {
+                        console.log(`[NEW_INBOUND_CALL] After-hours calling is OFF - routing to human agents regardless of clinic hours`, {
+                            callId,
+                            clinicId,
+                            callerNumber: fromPhoneNumber,
+                        });
+                        // Fall through to normal agent routing below (no hours gating)
+                    } else {
+                        const clinicOpen = await isClinicOpen(clinicId);
 
-                        if (!aiInboundEnabledForClinic) {
-                            console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED but AI inbound is DISABLED - routing to human agents`, {
-                                callId,
-                                clinicId,
-                                callerNumber: fromPhoneNumber,
-                            });
-                            // Fall through to normal agent routing below
-                        } else {
-                            // AI After-Hours is ENABLED for this clinic
-                            // Check if clinic has a dedicated AI phone number to forward to
+                        if (!clinicOpen) {
+                            const clinicName = clinic.clinicName || 'our dental office';
+
+                            if (afterHoursMode === 'PLAY_CLOSED_MESSAGE') {
+                                console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED - playing closed message (after-hours mode)`, {
+                                    callId,
+                                    clinicId,
+                                    callerNumber: fromPhoneNumber,
+                                });
+                                return buildActions([
+                                    buildSpeakAction(
+                                        `Thank you for calling ${clinicName}. We are currently closed. ` +
+                                        `Please call back during business hours.`
+                                    ),
+                                    { Type: 'Hangup', Parameters: { SipResponseCode: '0' } },
+                                ]);
+                            }
+
+                            // afterHoursMode === 'FORWARD_TO_AI'
                             if (aiPhoneNumber) {
                                 console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED - forwarding to AI phone number`, {
                                     callId,
@@ -1027,7 +1049,6 @@ export const handler = async (event: any): Promise<any> => {
                                 });
 
                                 // Forward call to the AI phone number via PSTN CallAndBridge
-                                // The AI phone number is handled by Amazon Connect + Lex.
                                 return buildActions([
                                     buildSpeakAction('Please hold while we connect you to our after-hours assistant.'),
                                     buildCallAndBridgeAction(
@@ -1042,13 +1063,12 @@ export const handler = async (event: any): Promise<any> => {
                                 ]);
                             }
 
-                            // No AI phone number configured - inform caller and end the call (no Chime-side AI).
-                            console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED - no aiPhoneNumber configured; ending call`, {
+                            // No AI phone number configured - inform caller and end the call.
+                            console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is CLOSED - after-hours mode is FORWARD_TO_AI but no aiPhoneNumber configured; ending call`, {
                                 callId,
                                 clinicId,
                                 callerNumber: fromPhoneNumber,
                             });
-                            const clinicName = clinic.clinicName || 'our dental office';
                             return buildActions([
                                 buildSpeakAction(
                                     `Thank you for calling ${clinicName}. We are currently closed. ` +
@@ -1056,9 +1076,9 @@ export const handler = async (event: any): Promise<any> => {
                                 ),
                                 { Type: 'Hangup', Parameters: { SipResponseCode: '0' } },
                             ]);
+                        } else {
+                            console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is OPEN - proceeding with human agent routing`);
                         }
-                    } else {
-                        console.log(`[NEW_INBOUND_CALL] Clinic ${clinicId} is OPEN - proceeding with human agent routing`);
                     }
                 }
 
@@ -1117,9 +1137,9 @@ export const handler = async (event: any): Promise<any> => {
                         TableName: CALL_QUEUE_TABLE_NAME,
                         Key: { clinicId, queuePosition: queueEntry.queuePosition },
                         UpdateExpression: `SET ${routingUpdateParts.join(', ')}`,
-                        ExpressionAttributeNames: {
-                            ...(typeof callContext.language === 'string' && callContext.language.length > 0 ? { '#language': 'language' } : {}),
-                        },
+                        ...(typeof callContext.language === 'string' && callContext.language.length > 0
+                            ? { ExpressionAttributeNames: { '#language': 'language' } }
+                            : {}),
                         ExpressionAttributeValues: routingValues,
                     }));
                 } catch (metaErr) {
@@ -2291,6 +2311,12 @@ export const handler = async (event: any): Promise<any> => {
                         // Log call completion for HIPAA compliance audit trail
                         if (CHIME_CONFIG.AUDIT.ENABLED) {
                             try {
+                                if (!CALL_AUDIT_TABLE_NAME) {
+                                    if (!didWarnMissingAuditTable) {
+                                        console.warn('[AUDIT] Audit logging enabled but CALL_AUDIT_TABLE_NAME not set; skipping DynamoDB audit writes.');
+                                        didWarnMissingAuditTable = true;
+                                    }
+                                } else {
                                 const auditEvent = createAuditEvent(
                                     AuditEventType.CALL_ENDED,
                                     { type: 'agent', id: assignedAgentId || 'system', name: undefined },
@@ -2305,7 +2331,8 @@ export const handler = async (event: any): Promise<any> => {
                                     },
                                     { callId }
                                 );
-                                await logAuditEvent(ddb, auditEvent, CALL_QUEUE_TABLE_NAME).catch(() => { });
+                                await logAuditEvent(ddb, auditEvent, CALL_AUDIT_TABLE_NAME).catch(() => { });
+                                }
                             } catch (auditErr) {
                                 console.warn(`[${eventType}] Audit logging failed (non-fatal):`, auditErr);
                             }

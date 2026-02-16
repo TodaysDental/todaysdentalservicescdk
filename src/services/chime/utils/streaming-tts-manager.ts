@@ -141,7 +141,7 @@ function cleanExpiredCache(): void {
 
 export interface TTSOptions {
     voiceId?: string;
-    engine?: 'neural' | 'standard';
+    engine?: 'neural' | 'standard' | 'generative' | 'long-form';
     sampleRate?: string;
     /** Use SSML for enhanced prosody and natural speech */
     useSSML?: boolean;

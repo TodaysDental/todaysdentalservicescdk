@@ -11,6 +11,7 @@ import {
   PutCommand,
   GetCommand,
 } from '@aws-sdk/lib-dynamodb';
+import { PollyClient, DescribeVoicesCommand, type DescribeVoicesCommandOutput, type Voice } from '@aws-sdk/client-polly';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { buildCorsHeaders } from '../../shared/utils/cors';
 import {
@@ -25,6 +26,7 @@ import {
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
+const pollyClient = new PollyClient({});
 
 const VOICE_CONFIG_TABLE = process.env.VOICE_CONFIG_TABLE || 'VoiceAgentConfig';
 const AGENTS_TABLE = process.env.AGENTS_TABLE || 'AiAgents';
@@ -42,10 +44,32 @@ const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, eve
  */
 export interface VoiceSettings {
   voiceId: string;           // Polly voice ID: "Joanna", "Matthew", "Ivy", etc.
-  engine: 'neural' | 'standard';
+  /**
+   * Amazon Polly engine.
+   * Note: Availability depends on voice + region + account.
+   */
+  engine: 'neural' | 'standard' | 'generative' | 'long-form';
   speakingRate?: 'x-slow' | 'slow' | 'medium' | 'fast' | 'x-fast';
   pitch?: 'x-low' | 'low' | 'medium' | 'high' | 'x-high';
   volume?: 'silent' | 'x-soft' | 'soft' | 'medium' | 'loud' | 'x-loud';
+}
+
+/**
+ * After-hours call routing behavior for the clinic's MAIN phone number.
+ *
+ * IMPORTANT:
+ * - This impacts `chime/inbound-router.ts` (clinic main line routing)
+ * - It is NOT the same as "voice AI is available" — it is "what to do when CLOSED"
+ */
+export type AfterHoursCallingMode =
+  | 'OFF'                 // Ignore clinic hours; always route to human agents
+  | 'FORWARD_TO_AI'       // When CLOSED, forward to clinic.aiPhoneNumber
+  | 'PLAY_CLOSED_MESSAGE' // When CLOSED, play "clinic is closed" message and hang up
+  ;
+
+function normalizeAfterHoursCallingMode(value: unknown): AfterHoursCallingMode | undefined {
+  if (value === 'OFF' || value === 'FORWARD_TO_AI' || value === 'PLAY_CLOSED_MESSAGE') return value;
+  return undefined;
 }
 
 /**
@@ -77,6 +101,14 @@ export interface VoiceAgentConfig {
    * Default: true (enabled) if inboundAgentId is set.
    */
   aiInboundEnabled?: boolean;
+
+  /**
+   * After-hours routing mode.
+   *
+   * Backwards compatibility:
+   * - If this field is missing, routing derives a mode from `aiInboundEnabled` and `inboundAgentId`.
+   */
+  afterHoursCallingMode?: AfterHoursCallingMode;
   
   // Current agent for after-hours inbound calls
   inboundAgentId: string;
@@ -131,6 +163,91 @@ export interface ClinicHours {
   updatedBy: string;
 }
 
+type PollyEngine = 'standard' | 'neural' | 'generative' | 'long-form';
+
+function normalizePollyEngine(value: unknown): PollyEngine | null {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (raw === 'standard' || raw === 'neural' || raw === 'generative') return raw;
+  if (raw === 'long-form' || raw === 'longform' || raw === 'long_form') return 'long-form';
+  return null;
+}
+
+type PollyVoiceSummary = {
+  id: string;
+  name?: string;
+  gender?: string;
+  languageCode?: string;
+  languageName?: string;
+  additionalLanguageCodes?: string[];
+  supportedEngines?: string[];
+};
+
+type PollyVoicesResponse = {
+  engine: PollyEngine;
+  languageCode?: string;
+  voices: PollyVoiceSummary[];
+  region?: string;
+  cached?: boolean;
+};
+
+const VOICES_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const voicesCache: Map<string, { cachedAt: number; response: PollyVoicesResponse }> = new Map();
+
+async function listPollyVoices(event: APIGatewayProxyEvent): Promise<PollyVoicesResponse> {
+  const qs = event.queryStringParameters || {};
+  const engine = normalizePollyEngine(qs.engine || 'neural') || 'neural';
+  const languageCodeRaw = typeof qs.languageCode === 'string' ? qs.languageCode.trim() : '';
+  const languageCode = languageCodeRaw || undefined;
+
+  const cacheKey = `${engine}|${languageCode || '*'}`;
+  const cached = voicesCache.get(cacheKey);
+  if (cached && (Date.now() - cached.cachedAt) < VOICES_CACHE_TTL_MS) {
+    return { ...cached.response, cached: true };
+  }
+
+  const voices: Voice[] = [];
+  let nextToken: string | undefined = undefined;
+
+  do {
+    const resp: DescribeVoicesCommandOutput = await pollyClient.send(new DescribeVoicesCommand({
+      Engine: engine as any,
+      ...(languageCode ? { LanguageCode: languageCode as any } : {}),
+      ...(nextToken ? { NextToken: nextToken } : {}),
+    }));
+
+    if (Array.isArray(resp.Voices)) {
+      voices.push(...resp.Voices);
+    }
+    nextToken = resp.NextToken;
+  } while (nextToken);
+
+  const response: PollyVoicesResponse = {
+    engine,
+    languageCode,
+    region: process.env.AWS_REGION,
+    voices: voices
+      .map((v) => ({
+        id: v.Id || '',
+        name: v.Name || v.Id || undefined,
+        gender: v.Gender,
+        languageCode: v.LanguageCode,
+        languageName: v.LanguageName,
+        additionalLanguageCodes: v.AdditionalLanguageCodes,
+        supportedEngines: v.SupportedEngines,
+      }))
+      .filter((v) => !!v.id)
+      .sort((a, b) => {
+        const langA = a.languageCode || '';
+        const langB = b.languageCode || '';
+        if (langA !== langB) return langA.localeCompare(langB);
+        return a.id.localeCompare(b.id);
+      }),
+  };
+
+  voicesCache.set(cacheKey, { cachedAt: Date.now(), response });
+  return response;
+}
+
 // ========================================================================
 // HANDLER
 // ========================================================================
@@ -149,6 +266,30 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 
   try {
+    // GET /voices - dynamic voice list from Polly (no clinicId required)
+    if (path.includes('/voices')) {
+      if (httpMethod !== 'GET') {
+        return { statusCode: 405, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Method not allowed' }) };
+      }
+
+      const engineParam = event.queryStringParameters?.engine;
+      const normalizedEngine = normalizePollyEngine(engineParam || 'neural');
+      if (!normalizedEngine) {
+        return {
+          statusCode: 400,
+          headers: getCorsHeaders(event),
+          body: JSON.stringify({ error: 'Invalid engine. Must be one of: standard, neural, generative, long-form' }),
+        };
+      }
+
+      const resp = await listPollyVoices(event);
+      return {
+        statusCode: 200,
+        headers: getCorsHeaders(event),
+        body: JSON.stringify(resp),
+      };
+    }
+
     const clinicId = event.pathParameters?.clinicId;
 
     if (!clinicId) {
@@ -213,6 +354,7 @@ async function getConfig(
       body: JSON.stringify({
         clinicId,
         aiInboundEnabled: false,
+        afterHoursCallingMode: 'OFF',
         aiOutboundEnabled: false,
         inboundAgentId: null,
         outboundAgentId: null,
@@ -220,6 +362,20 @@ async function getConfig(
       }),
     };
   }
+
+  // Ensure UI gets a stable after-hours mode even for legacy configs
+  const derivedAfterHoursMode: AfterHoursCallingMode =
+    normalizeAfterHoursCallingMode(config.afterHoursCallingMode) ??
+    (config.aiInboundEnabled === false
+      ? 'OFF'
+      : (config.aiInboundEnabled === true || !!config.inboundAgentId)
+        ? 'FORWARD_TO_AI'
+        : 'OFF');
+
+  const configForResponse: VoiceAgentConfig = {
+    ...config,
+    afterHoursCallingMode: derivedAfterHoursMode,
+  };
 
   // Add computed status for convenience
   const status = {
@@ -231,7 +387,7 @@ async function getConfig(
     statusCode: 200,
     headers: getCorsHeaders(event),
     body: JSON.stringify({ 
-      config,
+      config: configForResponse,
       status, // Computed active states (enabled AND agent configured)
     }),
   };
@@ -258,10 +414,24 @@ async function updateConfig(
 
   const body = JSON.parse(event.body || '{}');
 
+  // Validate after-hours mode if provided
+  const requestedAfterHoursMode = body.afterHoursCallingMode;
+  const normalizedAfterHoursMode = normalizeAfterHoursCallingMode(requestedAfterHoursMode);
+  if (requestedAfterHoursMode !== undefined && normalizedAfterHoursMode === undefined) {
+    return {
+      statusCode: 400,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({
+        error: 'Invalid afterHoursCallingMode. Must be one of: OFF, FORWARD_TO_AI, PLAY_CLOSED_MESSAGE',
+      }),
+    };
+  }
+
   // Check if this is just a toggle update (no agent change)
   const isToggleOnly = (
     typeof body.aiInboundEnabled === 'boolean' || 
-    typeof body.aiOutboundEnabled === 'boolean'
+    typeof body.aiOutboundEnabled === 'boolean' ||
+    typeof body.afterHoursCallingMode === 'string'
   ) && !body.inboundAgentId && !body.outboundAgentId;
 
   // If not a toggle-only update, require at least one agent ID
@@ -270,7 +440,7 @@ async function updateConfig(
       statusCode: 400,
       headers: getCorsHeaders(event),
       body: JSON.stringify({ 
-        error: 'At least inboundAgentId, outboundAgentId, aiInboundEnabled, or aiOutboundEnabled is required' 
+        error: 'At least inboundAgentId, outboundAgentId, aiInboundEnabled, aiOutboundEnabled, or afterHoursCallingMode is required' 
       }),
     };
   }
@@ -330,18 +500,28 @@ async function updateConfig(
 
   // Determine enabled states
   // If explicitly provided, use that. Otherwise, preserve existing or default to true if agent is set.
-  const aiInboundEnabled = typeof body.aiInboundEnabled === 'boolean' 
-    ? body.aiInboundEnabled 
-    : (existing?.aiInboundEnabled ?? true);
+  const aiInboundEnabled =
+    typeof body.aiInboundEnabled === 'boolean'
+      ? body.aiInboundEnabled
+      : (normalizedAfterHoursMode
+        ? normalizedAfterHoursMode === 'FORWARD_TO_AI'
+        : (existing?.aiInboundEnabled ?? true));
   
   const aiOutboundEnabled = typeof body.aiOutboundEnabled === 'boolean'
     ? body.aiOutboundEnabled
     : (existing?.aiOutboundEnabled ?? true);
 
+  // Determine after-hours routing mode to store
+  const afterHoursCallingMode: AfterHoursCallingMode =
+    normalizedAfterHoursMode ??
+    normalizeAfterHoursCallingMode(existing?.afterHoursCallingMode) ??
+    (aiInboundEnabled ? 'FORWARD_TO_AI' : 'OFF');
+
   const config: VoiceAgentConfig = {
     clinicId,
     // AI calling toggles
     aiInboundEnabled,
+    afterHoursCallingMode,
     aiOutboundEnabled,
     // Agent configurations
     inboundAgentId: body.inboundAgentId || existing?.inboundAgentId || '',
@@ -372,6 +552,9 @@ async function updateConfig(
     }
     if (typeof body.aiOutboundEnabled === 'boolean') {
       changes.push(`AI outbound calling ${body.aiOutboundEnabled ? 'ENABLED' : 'DISABLED'}`);
+    }
+    if (typeof body.afterHoursCallingMode === 'string') {
+      changes.push(`After-hours calling mode set to ${afterHoursCallingMode}`);
     }
     message = changes.join(', ');
   }
@@ -600,6 +783,37 @@ export async function isAiInboundEnabled(clinicId: string): Promise<boolean> {
 
   // aiInboundEnabled is true but no agent = try fallback
   return config.aiInboundEnabled === true;
+}
+
+/**
+ * Get after-hours routing mode for clinic main-line inbound calls.
+ *
+ * Backwards compatibility:
+ * - If `afterHoursCallingMode` is missing, derive:
+ *   - aiInboundEnabled === false -> OFF
+ *   - aiInboundEnabled === true OR inboundAgentId set -> FORWARD_TO_AI
+ *   - else -> OFF
+ * - If NO config exists at all, default to FORWARD_TO_AI (matches legacy `isAiInboundEnabled()` behavior)
+ */
+export async function getAfterHoursCallingMode(clinicId: string): Promise<AfterHoursCallingMode> {
+  const response = await docClient.send(new GetCommand({
+    TableName: VOICE_CONFIG_TABLE,
+    Key: { clinicId },
+  }));
+
+  const config = response.Item as VoiceAgentConfig | undefined;
+
+  // Explicit mode wins
+  const explicit = normalizeAfterHoursCallingMode(config?.afterHoursCallingMode);
+  if (explicit) return explicit;
+
+  // Legacy default: no config -> allow after-hours AI forwarding
+  if (!config) return 'FORWARD_TO_AI';
+
+  if (config.aiInboundEnabled === false) return 'OFF';
+  if (config.aiInboundEnabled === true || !!config.inboundAgentId) return 'FORWARD_TO_AI';
+
+  return 'OFF';
 }
 
 /**
