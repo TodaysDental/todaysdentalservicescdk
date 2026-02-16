@@ -78,10 +78,45 @@ const LAMBDA_TIMEOUT_BUFFER_MS = 4.5 * 60 * 1000;
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
- * Check if error is retryable (rate limiting, network issues)
+ * Extract a meaningful error message from Google Ads API / gRPC errors.
+ * gRPC errors don't always have .message — they may use .errors[], .details, or toString().
+ */
+function extractErrorMessage(error: any): string {
+  // Standard Error.message
+  if (error.message && typeof error.message === 'string' && error.message !== 'undefined') {
+    return error.message;
+  }
+
+  // Google Ads API error shape: { errors: [{ message, error_code, ... }] }
+  if (error.errors && Array.isArray(error.errors) && error.errors.length > 0) {
+    return error.errors.map((e: any) => e.message || JSON.stringify(e.error_code) || 'Unknown API error').join('; ');
+  }
+
+  // gRPC .details field
+  if (error.details && typeof error.details === 'string') {
+    return error.details;
+  }
+
+  // gRPC status code
+  if (error.code !== undefined && error.code !== null) {
+    return `gRPC error code ${error.code}: ${error.details || error.metadata?.toString() || 'Unknown gRPC error'}`;
+  }
+
+  // Fallback: stringify the entire error
+  try {
+    const str = String(error);
+    if (str && str !== '[object Object]') return str;
+    return JSON.stringify(error).slice(0, 500);
+  } catch {
+    return 'Unknown error (could not extract message)';
+  }
+}
+
+/**
+ * Check if error is retryable (rate limiting, network issues, gRPC metadata failures)
  */
 function isRetryableError(error: any): boolean {
-  const message = error.message?.toLowerCase() || '';
+  const message = extractErrorMessage(error).toLowerCase();
   return (
     message.includes('rate limit') ||
     message.includes('too many requests') ||
@@ -90,7 +125,12 @@ function isRetryableError(error: any): boolean {
     message.includes('timeout') ||
     message.includes('network') ||
     message.includes('econnreset') ||
-    message.includes('socket hang up')
+    message.includes('socket hang up') ||
+    message.includes('all promises were rejected') ||
+    message.includes('metadata') ||
+    message.includes('dns') ||
+    message.includes('unavailable') ||
+    message.includes('deadline exceeded')
   );
 }
 
@@ -696,7 +736,10 @@ async function bulkPublishCampaigns(
         message: `Campaign "${campaignName}" created${adGroupResourceName ? ' with ad group' : ''}${adCreated ? ' and ad' : ''}${keywordsAdded > 0 ? ` (${keywordsAdded} keywords)` : ''}`,
       });
     } catch (error: any) {
-      console.error(`[GoogleAdsBulk] Error for account ${customerId}:`, error.message);
+      const errorMsg = extractErrorMessage(error);
+      console.error(`[GoogleAdsBulk] Error for account ${customerId}:`, errorMsg);
+      // Log full error object for debugging (gRPC errors have nested structure)
+      console.error(`[GoogleAdsBulk] Full error details:`, JSON.stringify(error, Object.getOwnPropertyNames(error)).slice(0, 2000));
 
       // CLEANUP: Remove orphaned budget if campaign creation failed
       if (budgetResourceName && !campaignResourceName && client) {
@@ -705,8 +748,7 @@ async function bulkPublishCampaigns(
           await client.campaignBudgets.remove([budgetResourceName]);
           console.log(`[GoogleAdsBulk] Cleaned up orphaned budget: ${budgetResourceName}`);
         } catch (cleanupError: any) {
-          // ORPHAN TRACKING: Log for CloudWatch alerting and manual remediation
-          console.error(`[GoogleAdsBulk] ORPHAN_RESOURCE: Budget cleanup failed - ${budgetResourceName} for customer ${customerId} may need manual removal. Error: ${cleanupError.message}`);
+          console.error(`[GoogleAdsBulk] ORPHAN_RESOURCE: Budget cleanup failed - ${budgetResourceName} for customer ${customerId} may need manual removal. Error: ${extractErrorMessage(cleanupError)}`);
         }
       }
 
@@ -724,21 +766,20 @@ async function bulkPublishCampaigns(
           await client.campaigns.update([removeOperation]);
           console.log(`[GoogleAdsBulk] Cleaned up orphaned campaign: ${campaignResourceName}`);
         } catch (cleanupError: any) {
-          // ORPHAN TRACKING: Log for CloudWatch alerting and manual remediation
-          console.error(`[GoogleAdsBulk] ORPHAN_RESOURCE: Campaign cleanup failed - ${campaignResourceName} for customer ${customerId} may need manual removal. Error: ${cleanupError.message}`);
+          console.error(`[GoogleAdsBulk] ORPHAN_RESOURCE: Campaign cleanup failed - ${campaignResourceName} for customer ${customerId} may need manual removal. Error: ${extractErrorMessage(cleanupError)}`);
         }
       }
 
       // Retry if we have retries left and it's a potentially transient error
       if (retries < MAX_RETRIES && isRetryableError(error)) {
         console.log(`[GoogleAdsBulk] Retrying account ${customerId} (attempt ${retries + 1}/${MAX_RETRIES})`);
-        await delay(RETRY_DELAY_MS);
+        await delay(RETRY_DELAY_MS * (retries + 1)); // Exponential backoff
         return processAccountWithRetry(customerId, retries + 1);
       }
 
       result.failed.push({
         customerId,
-        error: error.message,
+        error: errorMsg,
       });
     }
   }
@@ -894,18 +935,19 @@ async function bulkAddKeywords(
         message: `Added ${keywords.length} keywords successfully`,
       });
     } catch (error: any) {
-      console.error(`[GoogleAdsBulk] Error for account ${customerId}:`, error.message);
+      const errorMsg = extractErrorMessage(error);
+      console.error(`[GoogleAdsBulk] Error for account ${customerId}:`, errorMsg);
 
       // Retry if we have retries left and it's a potentially transient error
       if (retries < MAX_RETRIES && isRetryableError(error)) {
         console.log(`[GoogleAdsBulk] Retrying keywords for ${customerId} (attempt ${retries + 1}/${MAX_RETRIES})`);
-        await delay(RETRY_DELAY_MS);
+        await delay(RETRY_DELAY_MS * (retries + 1));
         return addKeywordsWithRetry(customerId, retries + 1);
       }
 
       result.failed.push({
         customerId,
-        error: error.message,
+        error: errorMsg,
       });
     }
   }
