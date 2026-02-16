@@ -345,9 +345,12 @@ export class AccountingStack extends Stack {
     // ---- INVOICES ROUTES ----
     const invoicesRes = this.api.root.addResource('invoices');
     invoicesRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
-    
+
     const invoicesUploadRes = invoicesRes.addResource('upload');
     invoicesUploadRes.addMethod('POST', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
+
+    const invoicesSyncOdooRes = invoicesRes.addResource('sync-odoo');
+    invoicesSyncOdooRes.addMethod('POST', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
 
     const invoiceIdRes = invoicesRes.addResource('{invoiceId}');
     invoiceIdRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
@@ -368,7 +371,7 @@ export class AccountingStack extends Stack {
     // Bank file upload
     const bankFileRes = brsRes.addResource('bank-file');
     bankFileRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
-    
+
     const bankFileUploadRes = bankFileRes.addResource('upload');
     bankFileUploadRes.addMethod('POST', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
 
