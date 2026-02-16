@@ -1173,9 +1173,12 @@ async function updateModuleAssignee(event: APIGatewayProxyEvent, module: string)
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
     const method = event.httpMethod;
-    const path = event.path?.replace(/\/+$/, '') || '';
+    // Strip the /it-ticket base path prefix (added by API Gateway custom domain base path mapping)
+    // event.path arrives as "/it-ticket/tickets/..." but our routes expect "/tickets/..."
+    const rawPath = event.path?.replace(/\/+$/, '') || '';
+    const path = rawPath.replace(/^\/it-ticket/, '') || '/';
 
-    console.log(`[ITTicket] ${method} ${path}`);
+    console.log(`[ITTicket] ${method} ${path} (raw: ${rawPath})`);
 
     try {
         // --- Ticket CRUD ---
