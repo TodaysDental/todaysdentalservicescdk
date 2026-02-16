@@ -11,7 +11,9 @@ import {
 } from '../../shared/utils/permissions-helper';
 
 const client = new DynamoDBClient({});
-const docClient = DynamoDBDocumentClient.from(client);
+const docClient = DynamoDBDocumentClient.from(client, {
+  marshallOptions: { removeUndefinedValues: true },
+});
 
 // The table name is passed from the stack's environment variables
 const TABLE_NAME = process.env.TABLE_NAME || 'ConsentFormData';
@@ -119,7 +121,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return await deleteConsentForm(event, userPerms, consentFormId);
       }
     }
-    
+
     // If no route matches
     return {
       statusCode: 404,
@@ -161,11 +163,11 @@ async function listConsentForms(event: APIGatewayProxyEvent, userPerms: UserPerm
     ...(includeElements
       ? {}
       : {
-          // Summary list (used by dropdowns/managers) does not need the full `elements` payload.
-          // Use a projection to reduce DynamoDB read + response size.
-          ProjectionExpression: 'consent_form_id, templateName, #lang, modified_at, modified_by',
-          ExpressionAttributeNames: { '#lang': 'language' },
-        }),
+        // Summary list (used by dropdowns/managers) does not need the full `elements` payload.
+        // Use a projection to reduce DynamoDB read + response size.
+        ProjectionExpression: 'consent_form_id, templateName, #lang, modified_at, modified_by',
+        ExpressionAttributeNames: { '#lang': 'language' },
+      }),
   });
 
   const response = await docClient.send(command);
@@ -181,9 +183,9 @@ async function listConsentForms(event: APIGatewayProxyEvent, userPerms: UserPerm
   const responseItems = includeElements
     ? consentForms
     : consentForms.map((i: any) => {
-        const { elements, ...rest } = i || {};
-        return rest;
-      });
+      const { elements, ...rest } = i || {};
+      return rest;
+    });
 
   return {
     statusCode: 200,

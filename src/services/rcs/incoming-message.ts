@@ -7,13 +7,17 @@
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import crypto from 'crypto';
 import { getTwilioCredentials } from '../../shared/utils/secrets-helper';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const lambdaClient = new LambdaClient({});
 
 const RCS_MESSAGES_TABLE = process.env.RCS_MESSAGES_TABLE!;
+const RCS_AUTO_REPLY_FUNCTION_ARN = process.env.RCS_AUTO_REPLY_FUNCTION_ARN || '';
+const ENABLE_RCS_AUTO_REPLY = (process.env.ENABLE_RCS_AUTO_REPLY || 'true').toLowerCase() !== 'false';
 
 // Twilio auth token cache (fetched from DynamoDB GlobalSecrets table)
 let twilioAuthTokenCache: string | null = null;
@@ -122,6 +126,47 @@ function generateTestMessageSid(): string {
   return `TEST_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
 }
 
+/**
+ * Idempotency: Twilio may retry webhooks on timeout/network issues.
+ * We create a stable record keyed by MessageSid to prevent double-processing.
+ */
+async function markInboundIdempotency(clinicId: string, messageSid: string): Promise<boolean> {
+  try {
+    await ddb.send(new PutCommand({
+      TableName: RCS_MESSAGES_TABLE,
+      Item: {
+        pk: `CLINIC#${clinicId}`,
+        sk: `INBOUND_SID#${messageSid}`,
+        clinicId,
+        messageSid,
+        createdAt: new Date().toISOString(),
+        ttl: Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60, // 7 days
+      },
+      ConditionExpression: 'attribute_not_exists(pk)',
+    }));
+    return true;
+  } catch (err: any) {
+    if (err?.name === 'ConditionalCheckFailedException') {
+      return false;
+    }
+    throw err;
+  }
+}
+
+async function releaseInboundIdempotency(clinicId: string, messageSid: string): Promise<void> {
+  try {
+    await ddb.send(new DeleteCommand({
+      TableName: RCS_MESSAGES_TABLE,
+      Key: {
+        pk: `CLINIC#${clinicId}`,
+        sk: `INBOUND_SID#${messageSid}`,
+      },
+    }));
+  } catch (err) {
+    console.error('Failed to release inbound idempotency record (non-fatal):', err);
+  }
+}
+
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   console.log('RCS Incoming Message Event:', JSON.stringify(event, null, 2));
 
@@ -170,6 +215,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Generate a test message SID if not provided (for testing)
     const messageSid = params.MessageSid || params.messageSid || generateTestMessageSid();
 
+    // Idempotency guard - if we've already seen this MessageSid, just ACK
+    const firstTime = await markInboundIdempotency(clinicId, messageSid);
+    if (!firstTime) {
+      console.log(`Duplicate Twilio inbound messageSid ${messageSid} for clinic ${clinicId} - ignoring`);
+      return {
+        statusCode: 200,
+        headers: {
+          'Content-Type': 'text/xml',
+        },
+        body: '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+      };
+    }
+
     const message: TwilioRcsIncomingMessage = {
       MessageSid: messageSid,
       AccountSid: params.AccountSid || params.accountSid || 'TEST_ACCOUNT',
@@ -213,18 +271,42 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (message.RcsSenderId) item.rcsSenderId = message.RcsSenderId;
     if (message.ProfileName) item.profileName = message.ProfileName;
 
-    await ddb.send(new PutCommand({
-      TableName: RCS_MESSAGES_TABLE,
-      Item: item,
-    }));
+    try {
+      await ddb.send(new PutCommand({
+        TableName: RCS_MESSAGES_TABLE,
+        Item: item,
+      }));
+    } catch (storeErr) {
+      // If we fail to store the message, release the idempotency lock so Twilio retries can succeed.
+      await releaseInboundIdempotency(clinicId, messageSid);
+      throw storeErr;
+    }
 
     console.log(`RCS message stored for clinic ${clinicId}:`, message.MessageSid);
 
-    // TODO: Implement additional logic such as:
-    // - Auto-reply based on message content
-    // - Forward to chatbot for AI processing
-    // - Notify staff via WebSocket
-    // - Integration with patient records
+    // Trigger async AI auto-reply (if configured)
+    if (ENABLE_RCS_AUTO_REPLY && RCS_AUTO_REPLY_FUNCTION_ARN && message.Body?.trim()) {
+      try {
+        const payload = {
+          clinicId,
+          messageSid: message.MessageSid,
+          from: message.From,
+          to: message.To,
+          body: message.Body,
+          timestamp,
+          profileName: message.ProfileName,
+          rcsSenderId: message.RcsSenderId,
+        };
+
+        await lambdaClient.send(new InvokeCommand({
+          FunctionName: RCS_AUTO_REPLY_FUNCTION_ARN,
+          InvocationType: 'Event', // async
+          Payload: Buffer.from(JSON.stringify(payload)),
+        }));
+      } catch (invokeErr) {
+        console.error('Failed to invoke RCS auto-reply function (non-fatal):', invokeErr);
+      }
+    }
 
     // Return TwiML response (empty for RCS, just acknowledge receipt)
     return {

@@ -158,13 +158,16 @@ function buildOutboundFlowContent(params: {
             ActionMetadata: {
                 'set-recording': { position: { x: 20, y: 20 } },
                 'set-outbound-attrs': { position: { x: 160, y: 20 } },
-                'speak-greeting': { position: { x: 360, y: 20 } },
-                'set-disconnect-flow': { position: { x: 560, y: 20 } },
-                'lex-asr': { position: { x: 760, y: 20 } },
-                'typing-once': { position: { x: 960, y: 20 } },
-                'invoke-ai': { position: { x: 1160, y: 20 } },
-                'speak-ai': { position: { x: 1360, y: 20 } },
-                'disconnect-action': { position: { x: 1560, y: 20 } },
+                'invoke-voice-config': { position: { x: 360, y: 20 } },
+                'set-tts-voice': { position: { x: 560, y: 20 } },
+                'store-clinic-id': { position: { x: 760, y: 20 } },
+                'speak-greeting': { position: { x: 960, y: 20 } },
+                'set-disconnect-flow': { position: { x: 1160, y: 20 } },
+                'lex-asr': { position: { x: 1360, y: 20 } },
+                'typing-once': { position: { x: 1560, y: 20 } },
+                'invoke-ai': { position: { x: 1760, y: 20 } },
+                'speak-ai': { position: { x: 1960, y: 20 } },
+                'disconnect-action': { position: { x: 2160, y: 20 } },
             },
         },
         Actions: [
@@ -193,6 +196,64 @@ function buildOutboundFlowContent(params: {
                         callDirection: 'outbound',
                         callerNumber: '$.SystemEndpoint.Address',   // outbound: System = source
                         dialedNumber: '$.CustomerEndpoint.Address',  // outbound: Customer = destination
+                        // Safe defaults so SSML <prosody> never renders invalid attributes.
+                        // These get overwritten by per-clinic values when voiceConfig succeeds.
+                        ttsSpeakingRate: 'medium',
+                        ttsPitch: 'medium',
+                        ttsVolume: 'medium',
+                    },
+                },
+                Transitions: {
+                    NextAction: 'invoke-voice-config',
+                    Errors: [{ NextAction: 'invoke-voice-config', ErrorType: 'NoMatchingError' }],
+                },
+            },
+
+            // 3) Look up per-clinic voice settings via Lambda
+            {
+                Identifier: 'invoke-voice-config',
+                Type: 'InvokeLambdaFunction',
+                Parameters: {
+                    LambdaFunctionARN: lambdaFunctionArn,
+                    InvocationTimeLimitSeconds: '8',
+                    LambdaInvocationAttributes: {
+                        requestType: 'voiceConfig',
+                        callerNumber: '$.Attributes.callerNumber',
+                        dialedNumber: '$.Attributes.dialedNumber',
+                        clinicId: '$.Attributes.clinicId',
+                    },
+                },
+                Transitions: {
+                    NextAction: 'set-tts-voice',
+                    // Avoid overwriting default prosody attrs with empty $.External.* on Lambda failure.
+                    Errors: [{ NextAction: 'speak-greeting', ErrorType: 'NoMatchingError' }],
+                },
+            },
+
+            // 4) Apply the chosen Polly voice for all subsequent TTS prompts in this contact
+            {
+                Identifier: 'set-tts-voice',
+                Type: 'UpdateContactTextToSpeechVoice',
+                Parameters: {
+                    TextToSpeechVoice: '$.External.TextToSpeechVoice',
+                    TextToSpeechEngine: '$.External.TextToSpeechEngine',
+                },
+                Transitions: {
+                    NextAction: 'store-clinic-id',
+                    Errors: [{ NextAction: 'store-clinic-id', ErrorType: 'NoMatchingError' }],
+                },
+            },
+
+            // 5) Persist clinicId on the contact for downstream Lambda/Lex reads
+            {
+                Identifier: 'store-clinic-id',
+                Type: 'UpdateContactAttributes',
+                Parameters: {
+                    Attributes: {
+                        clinicId: '$.External.clinicId',
+                        ttsSpeakingRate: '$.External.speakingRate',
+                        ttsPitch: '$.External.pitch',
+                        ttsVolume: '$.External.volume',
                     },
                 },
                 Transitions: {
@@ -201,7 +262,7 @@ function buildOutboundFlowContent(params: {
                 },
             },
 
-            // 3) Speak the AI voice prompt (dynamic, from StartOutboundVoiceContact Attributes)
+            // 6) Speak the AI voice prompt (dynamic, from StartOutboundVoiceContact Attributes)
             {
                 Identifier: 'speak-greeting',
                 Type: 'MessageParticipant',
@@ -214,7 +275,7 @@ function buildOutboundFlowContent(params: {
                 },
             },
 
-            // 4) Set disconnect flow for post-call analytics
+            // 7) Set disconnect flow for post-call analytics
             {
                 Identifier: 'set-disconnect-flow',
                 Type: 'UpdateContactEventHooks',
@@ -229,7 +290,7 @@ function buildOutboundFlowContent(params: {
                 },
             },
 
-            // 5) Lex ASR (captures customer speech, code hook stores transcript in session attrs)
+            // 8) Lex ASR (captures customer speech, code hook stores transcript in session attrs)
             {
                 Identifier: 'lex-asr',
                 Type: 'ConnectParticipantWithLexBot',
@@ -241,18 +302,21 @@ function buildOutboundFlowContent(params: {
                     LexSessionAttributes: {
                         callerNumber: '$.Attributes.callerNumber',
                         dialedNumber: '$.Attributes.dialedNumber',
+                        clinicId: '$.Attributes.clinicId',
                     },
                 },
                 Transitions: {
                     NextAction: 'typing-once',
                     Errors: [
+                        // Fail open on timeouts/errors: downstream Lambda will ask to repeat on empty input.
+                        { NextAction: 'typing-once', ErrorType: 'InputTimeLimitExceeded' },
                         { NextAction: 'typing-once', ErrorType: 'NoMatchingCondition' },
-                        { NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' },
+                        { NextAction: 'typing-once', ErrorType: 'NoMatchingError' },
                     ],
                 },
             },
 
-            // 6) Play keyboard typing sound (thinking indicator)
+            // 9) Play keyboard typing sound (thinking indicator)
             {
                 Identifier: 'typing-once',
                 Type: 'MessageParticipant',
@@ -265,7 +329,7 @@ function buildOutboundFlowContent(params: {
                 },
             },
 
-            // 7) Invoke Bedrock Lambda with transcript + context
+            // 10) Invoke Bedrock Lambda with transcript + context
             {
                 Identifier: 'invoke-ai',
                 Type: 'InvokeLambdaFunction',
@@ -287,12 +351,12 @@ function buildOutboundFlowContent(params: {
                 },
             },
 
-            // 8) Speak AI response
+            // 11) Speak AI response
             {
                 Identifier: 'speak-ai',
                 Type: 'MessageParticipant',
                 Parameters: {
-                    Text: '$.External.aiResponse',
+                    SSML: '$.External.ssmlResponse',
                 },
                 Transitions: {
                     NextAction: 'lex-asr', // loop for next turn
@@ -300,7 +364,7 @@ function buildOutboundFlowContent(params: {
                 },
             },
 
-            // 9) Disconnect
+            // 12) Disconnect
             {
                 Identifier: 'disconnect-action',
                 Type: 'DisconnectParticipant',

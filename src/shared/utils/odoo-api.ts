@@ -412,6 +412,104 @@ export async function searchPartnerByName(
 }
 
 // ========================================
+// INVOICE QUERIES
+// ========================================
+
+export interface OdooInvoice {
+  id: number;
+  name: string;                          // Invoice number (e.g., BILL/2024/0001)
+  ref: string | false;                   // Vendor reference
+  move_type: string;                     // 'in_invoice' for vendor bills
+  partner_id: [number, string] | false;  // Vendor
+  invoice_date: string | false;          // Invoice date
+  invoice_date_due: string | false;      // Due date
+  amount_total: number;                  // Total amount
+  amount_residual: number;               // Amount due (unpaid)
+  state: string;                         // 'draft', 'posted', 'cancel'
+  payment_state: string;                 // 'not_paid', 'partial', 'paid', 'in_payment'
+  company_id: [number, string];
+  currency_id: [number, string];
+  invoice_origin: string | false;        // Source document
+  narration: string | false;             // Internal note
+}
+
+/**
+ * Fetch vendor invoices (bills) from Odoo
+ * Uses the account.move model with move_type = 'in_invoice'
+ *
+ * @param uid - Authenticated user ID
+ * @param config - Odoo configuration
+ * @param options - Query options
+ * @returns Array of invoices
+ */
+export async function fetchInvoices(
+  uid: number,
+  config: OdooConfig,
+  options: {
+    companyId: number;
+    dateStart?: string;
+    dateEnd?: string;
+    state?: string;
+    limit?: number;
+  }
+): Promise<OdooInvoice[]> {
+  console.log(`[Odoo] Fetching vendor invoices for company ${options.companyId}`);
+
+  const domain: any[] = [
+    ['company_id', '=', options.companyId],
+    ['move_type', '=', 'in_invoice'],
+  ];
+
+  if (options.dateStart) {
+    domain.push(['invoice_date', '>=', options.dateStart]);
+  }
+  if (options.dateEnd) {
+    domain.push(['invoice_date', '<=', options.dateEnd]);
+  }
+  if (options.state) {
+    domain.push(['state', '=', options.state]);
+  }
+
+  const fields = [
+    'id',
+    'name',
+    'ref',
+    'move_type',
+    'partner_id',
+    'invoice_date',
+    'invoice_date_due',
+    'amount_total',
+    'amount_residual',
+    'state',
+    'payment_state',
+    'company_id',
+    'currency_id',
+    'invoice_origin',
+    'narration',
+  ];
+
+  const invoices = await makeJsonRpcCall<OdooInvoice[]>(config.url, 'call', {
+    service: 'object',
+    method: 'execute_kw',
+    args: [
+      config.database,
+      uid,
+      config.apiKey,
+      'account.move',
+      'search_read',
+      [domain],
+      {
+        fields,
+        limit: options.limit || 500,
+        order: 'invoice_date desc',
+      },
+    ],
+  });
+
+  console.log(`[Odoo] Found ${invoices.length} vendor invoices`);
+  return invoices;
+}
+// ========================================
 // UTILITY FUNCTIONS
 // ========================================
 
@@ -466,6 +564,17 @@ export class OdooClient {
     return fetchBankTransactions(uid, this.config, options);
   }
 
+  async getInvoices(options: {
+    companyId: number;
+    dateStart?: string;
+    dateEnd?: string;
+    state?: string;
+    limit?: number;
+  }): Promise<OdooInvoice[]> {
+    const uid = await this.authenticate();
+    return fetchInvoices(uid, this.config, options);
+  }
+
   async getCompanies(): Promise<OdooCompany[]> {
     const uid = await this.authenticate();
     return getCompanies(uid, this.config);
@@ -476,3 +585,4 @@ export class OdooClient {
     return getBankJournals(uid, this.config, companyId);
   }
 }
+

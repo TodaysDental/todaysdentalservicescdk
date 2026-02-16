@@ -28,6 +28,7 @@ import { OpenDentalStack } from './stacks/opendental-stack';
 import { NotificationsStack } from './stacks/notifications-stack';
 import { ChimeStack, type VoiceConnectorOriginationRouteConfig } from './stacks/chime-stack';
 import { HrStack } from './stacks/hr-stack';
+import { AttendanceStack } from './stacks/attendance-stack';
 import { PatientPortalApptTypesStack } from './stacks/patient-portal-appttypes-stack';
 import { FluorideAutomationStack } from './stacks/fluoride-automation-stack';
 import { MarketingStack } from './stacks/marketing-stack';
@@ -46,6 +47,7 @@ import { EmailStack } from './stacks/email-stack';
 import { AccountingStack } from './stacks/accounting-stack';
 import { InsuranceAutomationStack } from './stacks/insurance-automation-stack';
 import { SecretsStack } from './stacks/secrets-stack';
+import { ItTicketStack } from './stacks/it-ticket-stack';
 import { PushNotificationsStack } from './stacks/push-notifications-stack';
 import { ConnectLexAiStack } from './stacks/connect-lex-ai-stack';
 import { AnalyticsDashboardStack } from './stacks/analytics-dashboard-stack';
@@ -598,6 +600,22 @@ const hrStack = new HrStack(app, 'TodaysDentalInsightsHrN1', {
 });
 // hrStack.addDependency(coreStack); // Implicit
 
+// Attendance Stack - Staff geofence + WiFi attendance tracking
+const attendanceStack = new AttendanceStack(app, 'TodaysDentalInsightsAttendanceN1', {
+  env,
+  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+  clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
+  shiftsTableName: hrStack.shiftsTable.tableName,
+  // Push Notifications Integration
+  deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
+  deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
+  sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
+});
+attendanceStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+attendanceStack.addDependency(clinicHoursStack); // Explicit - reads clinic hours
+attendanceStack.addDependency(hrStack); // Explicit - reads shifts table
+attendanceStack.addDependency(pushNotificationsStack); // Explicit - push notifications
+
 
 // Credentialing Stack - Provider credentialing and payer enrollment management
 const credentialingStack = new CredentialingStack(app, 'TodaysDentalInsightsCredentialingN1', {
@@ -605,6 +623,17 @@ const credentialingStack = new CredentialingStack(app, 'TodaysDentalInsightsCred
   staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
 });
 credentialingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+
+// ========================================
+// IT TICKET STACK — Bug Reporting & Feature Requests
+// ========================================
+// Self-contained stack: creates its own DynamoDB tables, S3 bucket, Lambda, and API Gateway.
+// Only reads from CoreStack (authorizer + StaffClinicInfo table).
+const ITTicketStack = new ItTicketStack(app, 'TodaysDentalInsightsItTicketN1', {
+  env,
+  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+});
+ITTicketStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn + StaffClinicInfo
 
 
 // Schedules service (depends on other services for cross-table access)
@@ -801,6 +830,12 @@ const connectLexAiStack = new ConnectLexAiStack(app, 'TodaysDentalInsightsConnec
   // Sessions table for session management (from AiAgentsStack)
   sessionsTableName: aiAgentsStack.sessionsTable.tableName,
   sessionsTableArn: aiAgentsStack.sessionsTable.tableArn,
+  // Voice agent config table (per-clinic voice + greetings)
+  voiceConfigTableName: aiAgentsStack.voiceConfigTable.tableName,
+  voiceConfigTableArn: aiAgentsStack.voiceConfigTable.tableArn,
+  // Scheduled calls table (AI outbound status tracking)
+  scheduledCallsTableName: aiAgentsStack.scheduledCallsTable.tableName,
+  scheduledCallsTableArn: aiAgentsStack.scheduledCallsTable.tableArn,
   // Shared analytics tables from AnalyticsStack
   callAnalyticsTableName: ANALYTICS_TABLE_NAME,
   callAnalyticsTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/${ANALYTICS_TABLE_NAME}`,
@@ -834,8 +869,14 @@ const rcsStack = new RcsStack(app, 'TodaysDentalInsightsRcsN1', {
   clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  // AI Agents integration for auto-replies
+  aiAgentsTableName: aiAgentsStack.agentsTable.tableName,
+  aiAgentsTableArn: aiAgentsStack.agentsTable.tableArn,
+  aiAgentConversationsTableName: aiAgentsStack.conversationsTable.tableName,
+  aiAgentConversationsTableArn: aiAgentsStack.conversationsTable.tableArn,
 });
 rcsStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for Twilio credentials
+rcsStack.addDependency(aiAgentsStack); // Explicit - reads agents table + writes conversation logs
 
 // Dental Software Stack - RDS MySQL database and S3 for clinic management
 // const dentalSoftwareStack = new DentalSoftwareStack(app, 'TodaysDentalInsightsDentalSoftwareN1', {

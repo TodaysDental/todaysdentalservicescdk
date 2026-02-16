@@ -27,9 +27,10 @@ import {
   FetchPaymentsRequest,
   GenerateReconciliationRequest,
 } from './types';
-import { getClinicConfig } from '../../shared/utils/secrets-helper';
-import { 
-  getUserPermissions, 
+import { getClinicConfig, getOdooConfig } from '../../shared/utils/secrets-helper';
+import { OdooClient } from '../../shared/utils/odoo-api';
+import {
+  getUserPermissions,
   getAllowedClinicIds as getAllowedClinicIdsHelper,
   hasClinicAccess as hasClinicAccessHelper,
   isAdminUser,
@@ -120,7 +121,7 @@ export async function handler(event: any) {
   const pathParams = event.pathParameters || {};
   const queryParams = event.queryStringParameters || {};
   let body: any = {};
-  
+
   try {
     if (event.body) {
       body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
@@ -142,6 +143,16 @@ export async function handler(event: any) {
         return httpErr(403, 'Forbidden: no access to this clinic');
       }
       return await listInvoices(clinicId);
+    }
+
+    // POST /invoices/sync-odoo - Fetch invoices from Odoo and sync to DynamoDB
+    if (method === 'POST' && path.match(/^\/invoices\/sync-odoo\/?$/)) {
+      const { clinicId } = body;
+      if (!clinicId) return httpErr(400, 'clinicId is required');
+      if (!hasClinicAccess(allowedClinics, clinicId)) {
+        return httpErr(403, 'Forbidden: no access to this clinic');
+      }
+      return await syncOdooInvoices(clinicId);
     }
 
     // POST /invoices/upload - Get presigned URL for invoice upload
@@ -424,6 +435,131 @@ async function deleteInvoice(invoiceId: string, allowedClinics: Set<string>) {
   return httpOk({ message: 'Invoice deleted successfully' });
 }
 
+/**
+ * Sync invoices from Odoo into DynamoDB
+ * Fetches vendor bills (account.move with move_type='in_invoice') from Odoo
+ * and upserts them into the Invoices table
+ */
+async function syncOdooInvoices(clinicId: string) {
+  // Get clinic config to find Odoo company ID
+  const clinicConfig = await getClinicConfig(clinicId);
+  if (!clinicConfig) {
+    return httpErr(404, `Clinic config not found for ${clinicId}`);
+  }
+
+  const odooCompanyId = clinicConfig.odooCompanyId;
+  if (!odooCompanyId) {
+    return httpErr(400, `Odoo company ID not configured for clinic ${clinicId}`);
+  }
+
+  try {
+    // Retrieve Odoo credentials
+    const odooConfig = await getOdooConfig();
+    if (!odooConfig) {
+      return httpErr(500, 'Odoo credentials not configured.');
+    }
+
+    const odooClient = new OdooClient(odooConfig);
+
+    console.log(`[Accounting] Syncing Odoo invoices for clinic ${clinicId}, company ${odooCompanyId}`);
+
+    // Fetch vendor invoices from Odoo
+    const odooInvoices = await odooClient.getInvoices({
+      companyId: Number(odooCompanyId),
+    });
+
+    console.log(`[Accounting] Fetched ${odooInvoices.length} invoices from Odoo`);
+
+    // Get existing Odoo-sourced invoices from DynamoDB to avoid duplicates
+    const { Items: existingInvoices } = await ddb.send(new QueryCommand({
+      TableName: INVOICES_TABLE,
+      IndexName: 'byClinic',
+      KeyConditionExpression: 'clinicId = :clinicId',
+      ExpressionAttributeValues: { ':clinicId': clinicId },
+    }));
+
+    const existingOdooIds = new Set(
+      (existingInvoices || [])
+        .filter((inv: any) => inv.odooId)
+        .map((inv: any) => inv.odooId)
+    );
+
+    // Map Odoo invoice state to our InvoiceStatus
+    const mapOdooStatus = (state: string, paymentState: string): InvoiceStatus => {
+      if (state === 'cancel') return 'ERROR';
+      if (paymentState === 'paid') return 'READY_FOR_AP';
+      if (state === 'posted') return 'DUE_DATE_EXTRACTED';
+      return 'VENDOR_IDENTIFIED';
+    };
+
+    let synced = 0;
+    let skipped = 0;
+    const now = new Date().toISOString();
+
+    for (const odooInv of odooInvoices) {
+      // Skip if already synced
+      if (existingOdooIds.has(odooInv.id)) {
+        skipped++;
+        continue;
+      }
+
+      const vendorName = odooInv.partner_id ? odooInv.partner_id[1] : undefined;
+      const vendorId = odooInv.partner_id ? String(odooInv.partner_id[0]) : undefined;
+      const dueDate = odooInv.invoice_date_due
+        ? String(odooInv.invoice_date_due)
+        : undefined;
+
+      const invoice: Invoice = {
+        invoiceId: uuidv4(),
+        clinicId,
+        source: 'ODOO',
+        vendorId,
+        vendorName,
+        dueDate,
+        amount: odooInv.amount_total,
+        status: mapOdooStatus(odooInv.state, odooInv.payment_state),
+        fileUrl: '',  // No file URL for Odoo-sourced invoices
+        s3Key: '',    // No S3 key for Odoo-sourced invoices
+        odooId: odooInv.id,
+        odooRef: odooInv.name,
+        createdAt: odooInv.invoice_date
+          ? new Date(String(odooInv.invoice_date)).toISOString()
+          : now,
+      };
+
+      await ddb.send(new PutCommand({
+        TableName: INVOICES_TABLE,
+        Item: invoice,
+      }));
+
+      synced++;
+    }
+
+    console.log(`[Accounting] Odoo sync complete: ${synced} synced, ${skipped} skipped (already exist)`);
+
+    // Return updated invoice list
+    const { Items } = await ddb.send(new QueryCommand({
+      TableName: INVOICES_TABLE,
+      IndexName: 'byClinic',
+      KeyConditionExpression: 'clinicId = :clinicId',
+      ExpressionAttributeValues: { ':clinicId': clinicId },
+      ScanIndexForward: false,
+    }));
+
+    return httpOk({
+      invoices: Items || [],
+      syncResult: {
+        totalFromOdoo: odooInvoices.length,
+        newlySynced: synced,
+        alreadyExisted: skipped,
+      },
+    });
+  } catch (error: any) {
+    console.error('[Accounting] Error syncing Odoo invoices:', error);
+    return httpErr(500, `Failed to sync Odoo invoices: ${error.message}`);
+  }
+}
+
 // ========================================
 // BRS BUSINESS LOGIC
 // ========================================
@@ -469,15 +605,38 @@ async function fetchOdooBankTransactions(clinicId: string, dateStart: string, da
     return httpErr(400, `Odoo company ID not configured for clinic ${clinicId}`);
   }
 
-  // TODO: Implement actual Odoo API call using odoo-api utility
-  // For now, return placeholder
-  return httpOk({
-    clinicId,
-    odooCompanyId,
-    dateStart,
-    dateEnd,
-    transactions: [],
-  });
+  try {
+    // Retrieve Odoo credentials from GlobalSecrets table using convenience helper
+    const odooConfig = await getOdooConfig();
+
+    if (!odooConfig) {
+      console.error('[Accounting] Missing Odoo credentials in GlobalSecrets');
+      return httpErr(500, 'Odoo credentials not configured. Please set odoo/config and odoo/api_key in GlobalSecrets.');
+    }
+
+    const odooClient = new OdooClient(odooConfig);
+
+    console.log(`[Accounting] Fetching Odoo bank transactions for clinic ${clinicId}, company ${odooCompanyId}, range ${dateStart} to ${dateEnd}`);
+
+    const transactions = await odooClient.getBankTransactions({
+      companyId: Number(odooCompanyId),
+      dateStart,
+      dateEnd,
+    });
+
+    console.log(`[Accounting] Fetched ${transactions.length} transactions from Odoo`);
+
+    return httpOk({
+      clinicId,
+      odooCompanyId,
+      dateStart,
+      dateEnd,
+      transactions,
+    });
+  } catch (error: any) {
+    console.error('[Accounting] Error fetching Odoo bank transactions:', error);
+    return httpErr(500, `Failed to fetch Odoo bank transactions: ${error.message}`);
+  }
 }
 
 async function createBankFileUploadUrl(

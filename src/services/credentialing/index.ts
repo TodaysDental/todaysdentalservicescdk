@@ -17,6 +17,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { v4 as uuidv4 } from 'uuid';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { ClinicRoleMap } from '../../shared/utils/jwt';
 import {
   getUserPermissions,
   hasModulePermission,
@@ -47,12 +48,16 @@ import {
 // Environment Variables
 const PROVIDERS_TABLE = process.env.PROVIDERS_TABLE!;
 const PROVIDER_CREDENTIALS_TABLE = process.env.PROVIDER_CREDENTIALS_TABLE!;
+const PROVIDER_STAFF_LINK_TABLE = process.env.PROVIDER_STAFF_LINK_TABLE!; // Legacy
+const CREDENTIALING_USERS_TABLE = process.env.CREDENTIALING_USERS_TABLE!;
+const PROVIDER_USER_LINK_TABLE = process.env.PROVIDER_USER_LINK_TABLE!;
 const PAYER_ENROLLMENTS_TABLE = process.env.PAYER_ENROLLMENTS_TABLE!;
 const TASKS_TABLE = process.env.TASKS_TABLE!;
 const DOCUMENTS_TABLE = process.env.DOCUMENTS_TABLE!;
 const DOCUMENTS_BUCKET = process.env.DOCUMENTS_BUCKET!;
 const STAFF_INFO_TABLE = process.env.STAFF_CLINIC_INFO_TABLE!;
 const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE!;
+const CREDENTIALING_MODE = process.env.CREDENTIALING_MODE || 'internal';
 
 // SES Environment Variables
 const APP_NAME = process.env.APP_NAME || 'TodaysDentalInsights';
@@ -79,7 +84,7 @@ type EnrollmentStatus = 'not-started' | 'in-progress' | 'approved' | 'rejected' 
 type TaskStatus = 'pending' | 'in-progress' | 'completed' | 'overdue';
 type TaskPriority = 'high' | 'medium' | 'low';
 type TaskCategory = 'verification' | 'documentation' | 'enrollment' | 'follow-up';
-type CredentialType = 'identity' | 'education' | 'license' | 'workHistory' | 'insurance' | 'sanctions';
+type CredentialType = 'identity' | 'education' | 'license' | 'workHistory' | 'insurance' | 'sanctions' | 'clinicInfo';
 
 // Available Payers
 const AVAILABLE_PAYERS = [
@@ -323,6 +328,76 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return runStateBoardCheck(JSON.parse(event.body), allowedClinics);
     }
 
+    // Provider Self-Service (MY endpoints - requires clinical role)
+    const hasProviderRole = isProviderUser(userPerms.clinicRoles);
+    
+    if (path.startsWith('/me')) {
+      if (!hasProviderRole) {
+        return httpErr(403, 'Provider role required to access this endpoint');
+      }
+
+      if (method === 'GET' && path === '/me') {
+        return getMyProviderProfile(userPerms);
+      }
+      if (method === 'POST' && path === '/me/profile') {
+        if (!event.body) return httpErr(400, 'Missing request body');
+        return createMyProviderProfile(userPerms, JSON.parse(event.body));
+      }
+      if (method === 'GET' && path === '/me/credentials') {
+        return getMyCredentials(userPerms);
+      }
+      if (method === 'POST' && path === '/me/credentials') {
+        if (!event.body) return httpErr(400, 'Missing request body');
+        return updateMyCredentials(userPerms, JSON.parse(event.body));
+      }
+      if (method === 'GET' && path === '/me/documents') {
+        return getMyDocuments(userPerms);
+      }
+    }
+
+    // Credentialing Users CRUD
+    if (method === 'GET' && path === '/users') {
+      return listCredentialingUsers(queryParams);
+    }
+    if (method === 'POST' && path === '/users') {
+      if (!event.body) return httpErr(400, 'Missing request body');
+      return createCredentialingUser(JSON.parse(event.body), userPerms);
+    }
+    if (method === 'GET' && path.match(/^\/users\/[^\/]+$/)) {
+      const userId = path.split('/')[2];
+      return getCredentialingUser(userId);
+    }
+    if (method === 'PUT' && path.match(/^\/users\/[^\/]+$/)) {
+      const userId = path.split('/')[2];
+      if (!event.body) return httpErr(400, 'Missing request body');
+      return updateCredentialingUser(userId, JSON.parse(event.body));
+    }
+    if (method === 'DELETE' && path.match(/^\/users\/[^\/]+$/)) {
+      const userId = path.split('/')[2];
+      return deleteCredentialingUser(userId);
+    }
+    // TDI Staff sync (internal mode only)
+    if (method === 'POST' && path === '/users/sync-staff') {
+      if (!event.body) return httpErr(400, 'Missing request body');
+      return syncStaffUsers(JSON.parse(event.body), userPerms);
+    }
+
+    // Provider-User Linking
+    if (method === 'GET' && path.match(/^\/providers\/[^\/]+\/linked-users$/)) {
+      const providerId = path.split('/')[2];
+      return getLinkedUsers(providerId, allowedClinics);
+    }
+    if (method === 'POST' && path.match(/^\/providers\/[^\/]+\/linked-users$/)) {
+      const providerId = path.split('/')[2];
+      if (!event.body) return httpErr(400, 'Missing request body');
+      return linkUserToProvider(providerId, JSON.parse(event.body), userPerms, allowedClinics);
+    }
+    if (method === 'DELETE' && path.match(/^\/providers\/[^\/]+\/linked-users\/[^\/]+$/)) {
+      const providerId = path.split('/')[2];
+      const userId = path.split('/')[4];
+      return unlinkUserFromProvider(providerId, userId, allowedClinics);
+    }
+
     // Analytics
     if (method === 'GET' && path === '/analytics') {
       return getAnalytics(queryParams, allowedClinics);
@@ -516,7 +591,7 @@ async function listProviders(queryParams: any, allowedClinics: Set<string>) {
 }
 
 async function createProvider(body: any, userPerms: UserPermissions, allowedClinics: Set<string>) {
-  const { name, npi, specialty, clinicIds, email, tempProviderId } = body;
+  const { name, npi, specialty, clinicIds, email, tempProviderId, linkedStaffEmail } = body;
 
   if (!name || !npi || !specialty) {
     return httpErr(400, 'name, npi, and specialty are required');
@@ -571,6 +646,78 @@ async function createProvider(body: any, userPerms: UserPermissions, allowedClin
   };
 
   await ddb.send(new PutCommand({ TableName: PROVIDERS_TABLE, Item: provider }));
+
+  // Create user link if linkedStaffEmail is provided
+  if (linkedStaffEmail) {
+    try {
+      // Resolve or create a credentialing user for this email
+      const { Items: existingUsers } = await ddb.send(new QueryCommand({
+        TableName: CREDENTIALING_USERS_TABLE,
+        IndexName: 'byEmail',
+        KeyConditionExpression: 'email = :email',
+        ExpressionAttributeValues: { ':email': linkedStaffEmail.toLowerCase() },
+      }));
+
+      let userId: string;
+      if (existingUsers && existingUsers.length > 0) {
+        userId = existingUsers[0].userId;
+      } else {
+        // Auto-create credentialing user from staff email
+        userId = uuidv4();
+        await ddb.send(new PutCommand({
+          TableName: CREDENTIALING_USERS_TABLE,
+          Item: {
+            userId,
+            email: linkedStaffEmail.toLowerCase(),
+            name: linkedStaffEmail.split('@')[0],
+            role: 'provider',
+            source: 'tdi-staff',
+            externalRef: linkedStaffEmail.toLowerCase(),
+            orgId: 'default',
+            isActive: true,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }));
+      }
+
+      // Write to new ProviderUserLinkTable
+      await ddb.send(new PutCommand({
+        TableName: PROVIDER_USER_LINK_TABLE,
+        Item: {
+          providerId,
+          userId,
+          relationshipType: 'owner',
+          linkedAt: now,
+          linkedBy: userPerms.email,
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+      }));
+
+      // Also write to legacy table for backward compat
+      await ddb.send(new PutCommand({
+        TableName: PROVIDER_STAFF_LINK_TABLE,
+        Item: {
+          providerId,
+          staffUserId: linkedStaffEmail.toLowerCase(),
+          staffEmail: linkedStaffEmail.toLowerCase(),
+          relationshipType: 'owner',
+          linkedAt: now,
+          linkedBy: userPerms.email,
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+      }));
+      
+      console.log(`Created user link: ${providerId} -> userId=${userId}, email=${linkedStaffEmail}`);
+    } catch (err) {
+      console.error('Error creating user link:', err);
+      // Don't fail provider creation if link creation fails
+    }
+  }
 
   // If a tempProviderId was provided, link any documents uploaded during wizard flow
   let linkedDocuments = 0;
@@ -762,7 +909,7 @@ async function upsertProviderCredential(providerId: string, body: any, allowedCl
     return httpErr(400, 'credentialType is required');
   }
 
-  const validTypes: CredentialType[] = ['identity', 'education', 'license', 'workHistory', 'insurance', 'sanctions'];
+  const validTypes: CredentialType[] = ['identity', 'education', 'license', 'workHistory', 'insurance', 'sanctions', 'clinicInfo'];
   if (!validTypes.includes(credentialType)) {
     return httpErr(400, `Invalid credentialType. Must be one of: ${validTypes.join(', ')}`);
   }
@@ -1973,5 +2120,506 @@ async function getAnalytics(queryParams: any, allowedClinics: Set<string>) {
       // In a real implementation, this would include historical data
       message: 'Historical trend data would be included here',
     },
+  });
+}
+
+// ========================================
+// CREDENTIALING USERS CRUD
+// ========================================
+
+async function listCredentialingUsers(queryParams: Record<string, string | undefined>) {
+  const { orgId } = queryParams;
+  
+  if (orgId) {
+    const { Items: users } = await ddb.send(new QueryCommand({
+      TableName: CREDENTIALING_USERS_TABLE,
+      IndexName: 'byOrgId',
+      KeyConditionExpression: 'orgId = :orgId',
+      ExpressionAttributeValues: { ':orgId': orgId },
+    }));
+    return httpOk({ users: users || [] });
+  }
+
+  const { Items: users } = await ddb.send(new ScanCommand({
+    TableName: CREDENTIALING_USERS_TABLE,
+  }));
+  return httpOk({ users: users || [] });
+}
+
+async function createCredentialingUser(body: any, userPerms: UserPermissions) {
+  const { email, name, role, orgId, source, externalRef } = body;
+  if (!email || !name) {
+    return httpErr(400, 'email and name are required');
+  }
+
+  // Check for duplicate email
+  const { Items: existing } = await ddb.send(new QueryCommand({
+    TableName: CREDENTIALING_USERS_TABLE,
+    IndexName: 'byEmail',
+    KeyConditionExpression: 'email = :email',
+    ExpressionAttributeValues: { ':email': email.toLowerCase() },
+  }));
+  if (existing && existing.length > 0) {
+    return httpErr(400, 'A user with this email already exists');
+  }
+
+  const userId = uuidv4();
+  const now = new Date().toISOString();
+  const user = {
+    userId,
+    email: email.toLowerCase(),
+    name,
+    role: role || 'provider',
+    orgId: orgId || 'default',
+    source: source || 'manual',
+    externalRef: externalRef || null,
+    isActive: true,
+    createdAt: now,
+    createdBy: userPerms.email,
+    updatedAt: now,
+  };
+
+  await ddb.send(new PutCommand({ TableName: CREDENTIALING_USERS_TABLE, Item: user }));
+  return httpCreated({ userId, user, message: 'Credentialing user created' });
+}
+
+async function getCredentialingUser(userId: string) {
+  const { Item: user } = await ddb.send(new GetCommand({
+    TableName: CREDENTIALING_USERS_TABLE,
+    Key: { userId },
+  }));
+  if (!user) return httpErr(404, 'User not found');
+  return httpOk({ user });
+}
+
+async function updateCredentialingUser(userId: string, body: any) {
+  const { Item: existing } = await ddb.send(new GetCommand({
+    TableName: CREDENTIALING_USERS_TABLE,
+    Key: { userId },
+  }));
+  if (!existing) return httpErr(404, 'User not found');
+
+  const now = new Date().toISOString();
+  const updatedUser = { ...existing, ...body, userId, updatedAt: now };
+  await ddb.send(new PutCommand({ TableName: CREDENTIALING_USERS_TABLE, Item: updatedUser }));
+  return httpOk({ user: updatedUser, message: 'User updated' });
+}
+
+async function deleteCredentialingUser(userId: string) {
+  // Soft-delete
+  const { Item: existing } = await ddb.send(new GetCommand({
+    TableName: CREDENTIALING_USERS_TABLE,
+    Key: { userId },
+  }));
+  if (!existing) return httpErr(404, 'User not found');
+
+  await ddb.send(new UpdateCommand({
+    TableName: CREDENTIALING_USERS_TABLE,
+    Key: { userId },
+    UpdateExpression: 'SET isActive = :f, updatedAt = :now',
+    ExpressionAttributeValues: { ':f': false, ':now': new Date().toISOString() },
+  }));
+  return httpOk({ message: 'User deactivated' });
+}
+
+/**
+ * POST /users/sync-staff — Bulk import TDI staff into CredentialingUsersTable (internal mode only)
+ */
+async function syncStaffUsers(body: any, userPerms: UserPermissions) {
+  if (CREDENTIALING_MODE !== 'internal') {
+    return httpErr(403, 'Staff sync is only available in internal mode');
+  }
+
+  const { staffUsers } = body;
+  if (!Array.isArray(staffUsers) || staffUsers.length === 0) {
+    return httpErr(400, 'staffUsers array is required');
+  }
+
+  let created = 0;
+  let skipped = 0;
+  const now = new Date().toISOString();
+
+  for (const staff of staffUsers) {
+    if (!staff.email) { skipped++; continue; }
+
+    // Skip if already exists
+    const { Items: existing } = await ddb.send(new QueryCommand({
+      TableName: CREDENTIALING_USERS_TABLE,
+      IndexName: 'byEmail',
+      KeyConditionExpression: 'email = :email',
+      ExpressionAttributeValues: { ':email': staff.email.toLowerCase() },
+    }));
+    if (existing && existing.length > 0) { skipped++; continue; }
+
+    await ddb.send(new PutCommand({
+      TableName: CREDENTIALING_USERS_TABLE,
+      Item: {
+        userId: uuidv4(),
+        email: staff.email.toLowerCase(),
+        name: staff.name || staff.email.split('@')[0],
+        role: staff.role || 'provider',
+        orgId: staff.orgId || 'default',
+        source: 'tdi-staff',
+        externalRef: staff.username || staff.email.toLowerCase(),
+        isActive: true,
+        createdAt: now,
+        createdBy: userPerms.email,
+        updatedAt: now,
+      },
+    }));
+    created++;
+  }
+
+  return httpOk({ created, skipped, message: `Synced ${created} staff users, ${skipped} skipped` });
+}
+
+// ========================================
+// PROVIDER-USER LINKING
+// ========================================
+
+async function getLinkedUsers(providerId: string, allowedClinics: Set<string>) {
+  // Verify provider access
+  const { Item: provider } = await ddb.send(new GetCommand({
+    TableName: PROVIDERS_TABLE,
+    Key: { providerId },
+  }));
+  if (!provider) return httpErr(404, 'Provider not found');
+  if (!provider.clinicIds?.some((cid: string) => allowedClinics.has('*') || allowedClinics.has(cid))) {
+    return httpErr(403, 'No access to this provider');
+  }
+
+  const { Items: links } = await ddb.send(new QueryCommand({
+    TableName: PROVIDER_USER_LINK_TABLE,
+    KeyConditionExpression: 'providerId = :pid',
+    ExpressionAttributeValues: { ':pid': providerId },
+  }));
+
+  // Enrich with user details
+  const enrichedLinks = [];
+  for (const link of links || []) {
+    const { Item: user } = await ddb.send(new GetCommand({
+      TableName: CREDENTIALING_USERS_TABLE,
+      Key: { userId: link.userId },
+    }));
+    enrichedLinks.push({ ...link, user: user || null });
+  }
+
+  return httpOk({ providerId, linkedUsers: enrichedLinks });
+}
+
+async function linkUserToProvider(providerId: string, body: any, userPerms: UserPermissions, allowedClinics: Set<string>) {
+  const { userId, relationshipType } = body;
+  if (!userId) return httpErr(400, 'userId is required');
+
+  // Verify provider access
+  const { Item: provider } = await ddb.send(new GetCommand({
+    TableName: PROVIDERS_TABLE,
+    Key: { providerId },
+  }));
+  if (!provider) return httpErr(404, 'Provider not found');
+  if (!provider.clinicIds?.some((cid: string) => allowedClinics.has('*') || allowedClinics.has(cid))) {
+    return httpErr(403, 'No access to this provider');
+  }
+
+  // Verify user exists
+  const { Item: user } = await ddb.send(new GetCommand({
+    TableName: CREDENTIALING_USERS_TABLE,
+    Key: { userId },
+  }));
+  if (!user) return httpErr(404, 'Credentialing user not found');
+
+  const now = new Date().toISOString();
+  const link = {
+    providerId,
+    userId,
+    relationshipType: relationshipType || 'viewer',
+    linkedAt: now,
+    linkedBy: userPerms.email,
+    isActive: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await ddb.send(new PutCommand({ TableName: PROVIDER_USER_LINK_TABLE, Item: link }));
+  return httpCreated({ link, message: 'User linked to provider' });
+}
+
+async function unlinkUserFromProvider(providerId: string, userId: string, allowedClinics: Set<string>) {
+  // Verify provider access
+  const { Item: provider } = await ddb.send(new GetCommand({
+    TableName: PROVIDERS_TABLE,
+    Key: { providerId },
+  }));
+  if (!provider) return httpErr(404, 'Provider not found');
+  if (!provider.clinicIds?.some((cid: string) => allowedClinics.has('*') || allowedClinics.has(cid))) {
+    return httpErr(403, 'No access to this provider');
+  }
+
+  await ddb.send(new DeleteCommand({
+    TableName: PROVIDER_USER_LINK_TABLE,
+    Key: { providerId, userId },
+  }));
+  return httpOk({ message: 'User unlinked from provider' });
+}
+
+// ========================================
+// PROVIDER SELF-SERVICE (PORTAL ACCESS)
+// ========================================
+
+/**
+ * Check if user has a provider/clinical role
+ */
+function isProviderUser(clinicRoles: ClinicRoleMap[]): boolean {
+  const CLINICAL_ROLES = [
+    'Dentist',
+    'Dental Hygienist',
+    'Dental Assistant',
+    'DOCTOR',
+    'HYGIENIST',
+    'DENTAL_ASSISTANT',
+    'PROVIDER'
+  ];
+  
+  return clinicRoles.some(cr => CLINICAL_ROLES.includes(cr.role));
+}
+
+/**
+ * Helper: Resolve logged-in user's email → providerId via CredentialingUsersTable → ProviderUserLinkTable
+ */
+async function resolveMyProviderId(email: string): Promise<{ providerId: string; userId: string } | null> {
+  // Step 1: email → userId
+  const { Items: users } = await ddb.send(new QueryCommand({
+    TableName: CREDENTIALING_USERS_TABLE,
+    IndexName: 'byEmail',
+    KeyConditionExpression: 'email = :email',
+    ExpressionAttributeValues: { ':email': email.toLowerCase() },
+  }));
+  if (!users || users.length === 0) return null;
+  const userId = users[0].userId;
+
+  // Step 2: userId → providerId
+  const { Items: links } = await ddb.send(new QueryCommand({
+    TableName: PROVIDER_USER_LINK_TABLE,
+    IndexName: 'byUserId',
+    KeyConditionExpression: 'userId = :uid',
+    ExpressionAttributeValues: { ':uid': userId },
+  }));
+  if (!links || links.length === 0) return null;
+
+  return { providerId: links[0].providerId, userId };
+}
+
+/**
+ * GET /me - Get my provider profile
+ */
+async function getMyProviderProfile(userPerms: UserPermissions) {
+  const resolved = await resolveMyProviderId(userPerms.email);
+  if (!resolved) {
+    return httpErr(404, 'No provider profile linked to your account');
+  }
+
+  const { Item: provider } = await ddb.send(new GetCommand({
+    TableName: PROVIDERS_TABLE,
+    Key: { providerId: resolved.providerId },
+  }));
+
+  if (!provider) {
+    return httpErr(404, 'Provider profile not found');
+  }
+
+  return httpOk({ 
+    provider,
+    link: {
+      userId: resolved.userId,
+      providerId: resolved.providerId,
+    }
+  });
+}
+
+/**
+ * POST /me/profile - Create my provider profile (self-service)
+ */
+async function createMyProviderProfile(userPerms: UserPermissions, body: any) {
+  const { name, npi, specialty, email, clinicIds } = body;
+
+  if (!npi || !specialty) {
+    return httpErr(400, 'npi and specialty are required');
+  }
+
+  // Check if user already linked
+  const existing = await resolveMyProviderId(userPerms.email);
+  if (existing) {
+    return httpErr(400, 'You already have a provider profile');
+  }
+
+  // Derive clinic IDs from user's roles if not provided
+  const providerClinicIds = clinicIds || userPerms.clinicRoles.map(cr => cr.clinicId).filter(Boolean);
+  
+  // Check for duplicate NPI
+  const { Items: existingNpi } = await ddb.send(new QueryCommand({
+    TableName: PROVIDERS_TABLE,
+    IndexName: 'byNpi',
+    KeyConditionExpression: 'npi = :npi',
+    ExpressionAttributeValues: { ':npi': npi },
+  }));
+
+  if (existingNpi && existingNpi.length > 0) {
+    for (const existingProvider of existingNpi) {
+      const existingClinicIds = existingProvider.clinicIds || [];
+      const overlappingClinics = providerClinicIds.filter((cid: string) => existingClinicIds.includes(cid));
+      if (overlappingClinics.length > 0) {
+        return httpErr(400, `A provider with this NPI already exists for clinic(s): ${overlappingClinics.join(', ')}`);
+      }
+    }
+  }
+
+  const providerId = uuidv4();
+  const now = new Date().toISOString();
+  const providerName = name || `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || 'Provider';
+
+  const provider = {
+    providerId,
+    name: providerName,
+    npi,
+    specialty,
+    status: 'draft' as ProviderStatus,
+    credentialingProgress: 0,
+    enrollmentProgress: 0,
+    clinicIds: providerClinicIds,
+    primaryClinicId: providerClinicIds[0] || null,
+    email: email || userPerms.email,
+    createdAt: now,
+    createdBy: 'SELF_CREATED',
+    updatedAt: now,
+  };
+
+  await ddb.send(new PutCommand({ TableName: PROVIDERS_TABLE, Item: provider }));
+
+  // Resolve or create credentialing user, then link
+  let userId: string;
+  const { Items: existingUsers } = await ddb.send(new QueryCommand({
+    TableName: CREDENTIALING_USERS_TABLE,
+    IndexName: 'byEmail',
+    KeyConditionExpression: 'email = :email',
+    ExpressionAttributeValues: { ':email': userPerms.email.toLowerCase() },
+  }));
+  if (existingUsers && existingUsers.length > 0) {
+    userId = existingUsers[0].userId;
+  } else {
+    userId = uuidv4();
+    await ddb.send(new PutCommand({
+      TableName: CREDENTIALING_USERS_TABLE,
+      Item: {
+        userId,
+        email: userPerms.email.toLowerCase(),
+        name: providerName,
+        role: 'provider',
+        source: CREDENTIALING_MODE === 'internal' ? 'tdi-staff' : 'manual',
+        externalRef: userPerms.email.toLowerCase(),
+        orgId: 'default',
+        isActive: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+    }));
+  }
+
+  await ddb.send(new PutCommand({
+    TableName: PROVIDER_USER_LINK_TABLE,
+    Item: {
+      providerId,
+      userId,
+      relationshipType: 'owner',
+      linkedAt: now,
+      linkedBy: 'SELF',
+      isActive: true,
+      createdAt: now,
+      updatedAt: now,
+    },
+  }));
+
+  return httpCreated({
+    providerId,
+    message: 'Provider profile created successfully',
+    provider,
+  });
+}
+
+/**
+ * GET /me/credentials - Get my credentials
+ */
+async function getMyCredentials(userPerms: UserPermissions) {
+  const resolved = await resolveMyProviderId(userPerms.email);
+  if (!resolved) {
+    return httpErr(404, 'No provider profile linked to your account');
+  }
+
+  const { Items: credentials } = await ddb.send(new QueryCommand({
+    TableName: PROVIDER_CREDENTIALS_TABLE,
+    KeyConditionExpression: 'providerId = :pid',
+    ExpressionAttributeValues: { ':pid': resolved.providerId },
+  }));
+
+  return httpOk({
+    providerId: resolved.providerId,
+    credentials: credentials || [],
+  });
+}
+
+/**
+ * POST /me/credentials - Update my credentials
+ */
+async function updateMyCredentials(userPerms: UserPermissions, body: any) {
+  const resolved = await resolveMyProviderId(userPerms.email);
+  if (!resolved) {
+    return httpErr(404, 'No provider profile linked to your account');
+  }
+
+  const { credentialType, ...data } = body;
+  if (!credentialType) {
+    return httpErr(400, 'credentialType is required');
+  }
+
+  const now = new Date().toISOString();
+  const credential = {
+    providerId: resolved.providerId,
+    credentialType,
+    ...data,
+    updatedAt: now,
+    updatedBy: userPerms.email,
+  };
+
+  await ddb.send(new PutCommand({
+    TableName: PROVIDER_CREDENTIALS_TABLE,
+    Item: credential,
+  }));
+
+  await updateCredentialingProgress(resolved.providerId);
+
+  return httpOk({
+    message: 'Credential updated successfully',
+    credential,
+  });
+}
+
+/**
+ * GET /me/documents - Get my documents
+ */
+async function getMyDocuments(userPerms: UserPermissions) {
+  const resolved = await resolveMyProviderId(userPerms.email);
+  if (!resolved) {
+    return httpErr(404, 'No provider profile linked to your account');
+  }
+
+  const { Items: documents } = await ddb.send(new QueryCommand({
+    TableName: DOCUMENTS_TABLE,
+    IndexName: 'byProvider',
+    KeyConditionExpression: 'providerId = :pid',
+    ExpressionAttributeValues: { ':pid': resolved.providerId },
+  }));
+
+  return httpOk({
+    providerId: resolved.providerId,
+    documents: documents || [],
   });
 }

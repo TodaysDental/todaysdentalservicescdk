@@ -222,7 +222,8 @@ export async function sendIncomingCallNotification(
             title: `${callTypeEmoji} Incoming ${callPayload.callType} call`,
             body: `${callPayload.callerName} is calling you`,
             type: 'incoming_call',
-            sound: 'ringtone.caf',
+            // Use system default sound across platforms (iOS app does not bundle ringtone.caf).
+            sound: 'default',
             category: 'INCOMING_CALL',
             idempotencyKey,
             data: {

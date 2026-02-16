@@ -224,7 +224,8 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
   const notificationTypes = Array.isArray(body.notificationTypes) ? body.notificationTypes : ['EMAIL'];
   const fname = String(body.FName || '').trim();
   const lname = String(body.LName || '').trim();
-  const email = String(body.email || body.toEmail || body.Email || '').trim();
+  let email = String(body.email || body.toEmail || body.Email || '').trim();
+  let phone = String(body.toPhone || body.phone || body.phoneNumber || body.SMS || '').trim();
 
   // Custom content fields (when not using a template)
   const customEmailSubject = String(body.customEmailSubject || '').trim();
@@ -234,6 +235,19 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
 
   // Validate required fields
   if (!patNum) return http(400, { error: 'PatNum is required' }, event);
+
+  // Best-effort: if email or phone is missing, try to fetch from OpenDental patient record
+  const needEmail = notificationTypes.includes('EMAIL') && (!email || !email.includes('@'));
+  const needPhone = notificationTypes.includes('SMS') && !phone;
+  if (needEmail || needPhone) {
+    try {
+      const contact = await fetchPatientContact(clinicId, patNum);
+      if (needEmail && contact.email) email = contact.email;
+      if (needPhone && contact.phone) phone = contact.phone;
+    } catch (lookupErr) {
+      console.warn('[Notify] Best-effort patient contact lookup failed (non-fatal):', lookupErr);
+    }
+  }
 
   if (notificationTypes.includes('EMAIL') && (!email || !email.includes('@'))) {
     return http(400, { error: 'Valid email is required for EMAIL notification type' }, event);
@@ -369,8 +383,7 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
   }
 
   if (notificationTypes.includes('SMS')) {
-    const phoneRaw = String(body.toPhone || body.phone || body.phoneNumber || body.SMS || '').trim();
-    const normalizedPhone = normalizePhone(phoneRaw);
+    const normalizedPhone = normalizePhone(phone);
     if (!normalizedPhone) return http(400, { error: 'No phone provided for SMS' }, event);
 
     // Check if recipient has unsubscribed from SMS
@@ -623,6 +636,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const isClinicNotification = path.match(/\/clinic\/([^\/]+)\/notification$/);
   if (event.httpMethod === 'POST' && isClinicNotification) {
     return await handleSendNotification(event, userPerms, allowedClinics);
+  }
+
+  // SMS Analytics routes
+  const isSmsDashboard = path.endsWith('/sms-analytics/dashboard');
+  if (event.httpMethod === 'GET' && isSmsDashboard) {
+    return await handleGetSmsAnalytics(event, allowedClinics, isAdmin);
+  }
+
+  const isSmsMessages = path.endsWith('/sms-analytics/messages');
+  if (event.httpMethod === 'GET' && isSmsMessages) {
+    return await handleGetSmsMessages(event, allowedClinics, isAdmin);
   }
 
   return http(405, { error: 'Method Not Allowed' }, event);
@@ -967,7 +991,9 @@ async function createEmailTrackingRecord(record: {
 
 async function sendSms({ clinicId, to, body }: { clinicId: string; to: string; body: string; }) {
   const originationArn = await getClinicSmsOriginationArn(clinicId);
-  if (!originationArn) return;
+  if (!originationArn) {
+    throw new Error(`No SMS origination identity configured for clinic ${clinicId}`);
+  }
   const cmd = new SendTextMessageCommand({
     DestinationPhoneNumber: to,
     MessageBody: body,
@@ -1039,7 +1065,6 @@ async function getNotificationsForPatient(patNum: string, email?: string, clinic
 
       const res = await ddb.send(new QueryCommand(queryParams));
       items = res.Items || [];
-      items = res.Items || [];
     } else {
       // For super admins or when querying all clinics, use ScanCommand
       const res = await ddb.send(new ScanCommand({
@@ -1062,4 +1087,191 @@ async function getNotificationsForPatient(patNum: string, email?: string, clinic
   }
 }
 
+// ========================================
+// SMS ANALYTICS HANDLERS
+// ========================================
+
+/**
+ * Query SMS notifications for a clinic using the clinicId-sentAt-index GSI.
+ * Handles pagination automatically to get all records within the date range.
+ */
+async function querySmsNotificationsByClinic(
+  clinicId: string,
+  startDate?: string,
+  endDate?: string,
+  statusFilter?: string,
+  limit?: number
+): Promise<any[]> {
+  const items: any[] = [];
+  let lastEvaluatedKey: any = undefined;
+  const maxItems = limit || 10000;
+
+  const expressionValues: Record<string, any> = {
+    ':clinicId': clinicId,
+    ':smsType': 'SMS',
+  };
+
+  let keyCondition = 'clinicId = :clinicId';
+  if (startDate && endDate) {
+    keyCondition += ' AND sentAt BETWEEN :startDate AND :endDate';
+    expressionValues[':startDate'] = startDate;
+    expressionValues[':endDate'] = endDate;
+  } else if (startDate) {
+    keyCondition += ' AND sentAt >= :startDate';
+    expressionValues[':startDate'] = startDate;
+  }
+
+  let filterExpr = '#notifType = :smsType';
+  const expressionNames: Record<string, string> = { '#notifType': 'type' };
+
+  if (statusFilter) {
+    filterExpr += ' AND #st = :statusFilter';
+    expressionNames['#st'] = 'status';
+    expressionValues[':statusFilter'] = statusFilter.toUpperCase();
+  }
+
+  do {
+    const params: any = {
+      TableName: ENV_VARS.NOTIFICATIONS_TABLE,
+      IndexName: 'clinicId-sentAt-index',
+      KeyConditionExpression: keyCondition,
+      FilterExpression: filterExpr,
+      ExpressionAttributeValues: expressionValues,
+      ExpressionAttributeNames: expressionNames,
+      ScanIndexForward: false, // newest first
+      ExclusiveStartKey: lastEvaluatedKey,
+    };
+
+    const res = await ddb.send(new QueryCommand(params));
+    items.push(...(res.Items || []));
+    lastEvaluatedKey = res.LastEvaluatedKey;
+
+    if (items.length >= maxItems) break;
+  } while (lastEvaluatedKey);
+
+  return items.slice(0, maxItems);
+}
+
+/**
+ * GET /sms-analytics/dashboard
+ * Returns aggregated SMS analytics for the requested clinic and period.
+ */
+async function handleGetSmsAnalytics(
+  event: APIGatewayProxyEvent,
+  allowedClinics: Set<string>,
+  isAdmin: boolean
+): Promise<APIGatewayProxyResult> {
+  const query = event.queryStringParameters || {};
+  const clinicId = String(query.clinicId || '').trim();
+  const period = String(query.period || '30d').trim();
+
+  if (!clinicId) {
+    return http(400, { error: 'clinicId query parameter is required' }, event);
+  }
+
+  if (!isAdmin && !hasClinicAccess(allowedClinics, clinicId)) {
+    return http(403, { error: 'Forbidden: not authorized for this clinic' }, event);
+  }
+
+  // Calculate date range from period
+  const now = new Date();
+  const periodDays = period === '7d' ? 7 : period === '90d' ? 90 : 30;
+  const startDate = new Date(now.getTime() - periodDays * 86400000).toISOString();
+  const endDate = now.toISOString();
+
+  try {
+    const smsNotifications = await querySmsNotificationsByClinic(clinicId, startDate, endDate);
+
+    // Aggregate by status (case-insensitive upper)
+    let totalSent = 0;
+    let totalFailed = 0;
+    let totalSkipped = 0;
+
+    for (const n of smsNotifications) {
+      const status = String(n.status || '').toUpperCase();
+      if (status === 'SENT') {
+        totalSent++;
+      } else if (status === 'FAILED') {
+        totalFailed++;
+      } else if (status === 'SKIPPED_UNSUBSCRIBED') {
+        totalSkipped++;
+      }
+    }
+
+    // Total attempted = all records (SENT + FAILED + SKIPPED)
+    const totalAttempted = smsNotifications.length;
+    // Delivery rate: ratio of successful sends to total attempted (excluding skipped)
+    const deliverable = totalSent + totalFailed;
+    const deliveryRate = deliverable > 0 ? Math.round((totalSent / deliverable) * 100) : 0;
+
+    return http(200, {
+      clinicId,
+      period,
+      totalSent,
+      totalDelivered: totalSent, // In Pinpoint SMS, successful send = delivered (no carrier receipt)
+      totalFailed,
+      totalPending: 0, // SMS is synchronous — no pending state
+      totalSkipped,
+      totalAttempted,
+      deliveryRate,
+      periodStart: startDate,
+      periodEnd: endDate,
+    }, event);
+  } catch (err) {
+    console.error('[handleGetSmsAnalytics] Error:', err);
+    return http(500, { error: 'Failed to fetch SMS analytics' }, event);
+  }
+}
+
+/**
+ * GET /sms-analytics/messages
+ * Returns SMS notification records for the inbox view.
+ */
+async function handleGetSmsMessages(
+  event: APIGatewayProxyEvent,
+  allowedClinics: Set<string>,
+  isAdmin: boolean
+): Promise<APIGatewayProxyResult> {
+  const query = event.queryStringParameters || {};
+  const clinicId = String(query.clinicId || '').trim();
+  const statusFilter = String(query.status || '').trim();
+  const limit = Math.min(parseInt(query.limit || '200', 10) || 200, 1000);
+
+  if (!clinicId) {
+    return http(400, { error: 'clinicId query parameter is required' }, event);
+  }
+
+  if (!isAdmin && !hasClinicAccess(allowedClinics, clinicId)) {
+    return http(403, { error: 'Forbidden: not authorized for this clinic' }, event);
+  }
+
+  try {
+    const smsNotifications = await querySmsNotificationsByClinic(
+      clinicId,
+      undefined, // no start date — get all
+      undefined,
+      statusFilter || undefined,
+      limit
+    );
+
+    // Map to inbox-friendly shape
+    const messages = smsNotifications.map((n: any) => ({
+      notificationId: n.notificationId,
+      clinicId: n.clinicId,
+      patNum: n.PatNum,
+      recipientPhone: n.phone,
+      recipientName: n.recipientName || (n.FName ? `${n.FName} ${n.LName || ''}`.trim() : undefined),
+      message: n.message,
+      templateName: n.templateName,
+      status: String(n.status || '').toLowerCase(),
+      sentAt: n.sentAt,
+      sentBy: n.sentBy,
+    }));
+
+    return http(200, { messages, total: messages.length }, event);
+  } catch (err) {
+    console.error('[handleGetSmsMessages] Error:', err);
+    return http(500, { error: 'Failed to fetch SMS messages' }, event);
+  }
+}
 

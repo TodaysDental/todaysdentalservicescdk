@@ -513,9 +513,9 @@ export async function getOdooApiKey(): Promise<string | null> {
 }
 
 /**
- * Get Odoo configuration (URL + database)
+ * Get Odoo configuration (URL + database + username)
  */
-export async function getOdooConfig(): Promise<{ url: string; database: string; apiKey: string } | null> {
+export async function getOdooConfig(): Promise<{ url: string; database: string; apiKey: string; username?: string } | null> {
   const [configEntry, apiKey] = await Promise.all([
     getGlobalSecretEntry('odoo', 'config'),
     getGlobalSecret('odoo', 'api_key'),
@@ -529,6 +529,7 @@ export async function getOdooConfig(): Promise<{ url: string; database: string; 
     url: configEntry.value,
     database: configEntry.metadata?.database || 'todays-dental-services',
     apiKey,
+    username: configEntry.metadata?.username,  // Odoo login email (e.g., admin@company.com)
   };
 }
 

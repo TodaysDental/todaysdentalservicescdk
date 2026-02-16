@@ -9,7 +9,9 @@ import { getGlobalSecret } from '../../shared/utils/secrets-helper';
 import { renderConsentFormElements } from '../../shared/utils/consent-form-renderer';
 
 const client = new DynamoDBClient({});
-const docClient = DynamoDBDocumentClient.from(client);
+const docClient = DynamoDBDocumentClient.from(client, {
+  marshallOptions: { removeUndefinedValues: true },
+});
 const s3 = new S3Client({});
 
 const INSTANCES_TABLE_NAME = process.env.INSTANCES_TABLE_NAME || '';
@@ -149,7 +151,47 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (httpMethod === 'GET' && !isSubmit) {
       const instance = await getInstanceByToken(token);
       if (!instance) return err(event, 404, 'Consent form link not found');
-      if (isExpired(instance)) return err(event, 410, 'Consent form link expired');
+
+      // If the instance is expired, persist the 'expired' status and clear TTL so the
+      // record is retained for analytics (instead of relying on DynamoDB TTL deletion).
+      if (isExpired(instance)) {
+        if (String(instance.status || '').toLowerCase() !== 'expired') {
+          try {
+            await docClient.send(new UpdateCommand({
+              TableName: INSTANCES_TABLE_NAME,
+              Key: { instance_id: instance.instance_id },
+              UpdateExpression: 'SET #status = :expired, expired_at = :now REMOVE expires_at',
+              ExpressionAttributeNames: { '#status': 'status' },
+              ExpressionAttributeValues: {
+                ':expired': 'expired',
+                ':now': new Date().toISOString(),
+              },
+            }));
+          } catch (e) {
+            console.warn('[ConsentFormPublic] Failed to persist expired status:', e);
+          }
+        }
+        return err(event, 410, 'Consent form link expired');
+      }
+
+      // Track first-view timestamp for analytics
+      if (!instance.viewed_at) {
+        try {
+          await docClient.send(new UpdateCommand({
+            TableName: INSTANCES_TABLE_NAME,
+            Key: { instance_id: instance.instance_id },
+            UpdateExpression: 'SET viewed_at = :now, #status = if_not_exists(#status, :sent)',
+            ConditionExpression: 'attribute_not_exists(viewed_at)',
+            ExpressionAttributeNames: { '#status': 'status' },
+            ExpressionAttributeValues: {
+              ':now': new Date().toISOString(),
+              ':sent': 'sent',
+            },
+          }));
+        } catch {
+          // ConditionalCheckFailed is expected on concurrent/repeat views; ignore.
+        }
+      }
 
       const hasRendered =
         !!instance?.rendered_at &&
@@ -299,11 +341,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const signedAt = new Date().toISOString();
 
       // Mark instance signed (best-effort idempotency)
+      // Also REMOVE expires_at so DynamoDB TTL will never auto-delete signed records.
       await docClient.send(new UpdateCommand({
         TableName: INSTANCES_TABLE_NAME,
         Key: { instance_id: instance.instance_id },
         ConditionExpression: 'attribute_not_exists(#status) OR #status <> :signed',
-        UpdateExpression: 'SET #status = :signed, signed_at = :signedAt, opendental_doc_num = :docNum',
+        UpdateExpression: 'SET #status = :signed, signed_at = :signedAt, opendental_doc_num = :docNum REMOVE expires_at',
         ExpressionAttributeNames: { '#status': 'status' },
         ExpressionAttributeValues: {
           ':signed': 'signed',

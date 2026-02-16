@@ -350,7 +350,13 @@ function getFieldsForDocumentType(documentType: DocumentType): string[] {
         cprCertification: ['cprCertDate', 'cprExpiry', 'cprProvider'],
         aclsCertification: ['aclsCertDate', 'aclsExpiry'],
         w9: ['firstName', 'lastName', 'taxId', 'taxIdType', 'practiceAddress1', 'practiceCity', 'practiceState', 'practiceZip'],
-        cv: ['firstName', 'lastName', 'primarySpecialty', 'dentalSchoolName', 'graduationYear', 'residencyProgram'],
+        cv: [
+            'firstName', 'lastName', 'primarySpecialty',
+            'dentalSchoolName', 'degreeType', 'graduationYear', 'residencyProgram',
+            'currentEmployer', 'currentEmployerAddress', 'currentEmployerPhone', 'currentEmployerStartDate',
+            'previousEmployer1', 'previousEmployer1Address', 'previousEmployer1Dates', 'previousEmployer1Reason',
+            'previousEmployer2', 'previousEmployer2Address', 'previousEmployer2Dates', 'previousEmployer2Reason',
+        ],
         photoId: ['firstName', 'lastName', 'dateOfBirth'],
     };
 

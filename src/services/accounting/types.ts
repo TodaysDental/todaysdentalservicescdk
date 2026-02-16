@@ -4,7 +4,7 @@
 // INVOICE TYPES
 // ========================================
 
-export type InvoiceSource = 'WHATSAPP' | 'EMAIL' | 'MANUAL';
+export type InvoiceSource = 'WHATSAPP' | 'EMAIL' | 'MANUAL' | 'ODOO';
 export type InvoiceStatus = 'SCANNED' | 'VENDOR_IDENTIFIED' | 'DUE_DATE_EXTRACTED' | 'READY_FOR_AP' | 'ERROR';
 
 export interface Invoice {
@@ -19,6 +19,8 @@ export interface Invoice {
   fileUrl: string;
   s3Key: string;
   rawText?: string;
+  odooId?: number;          // Odoo account.move ID (for invoices synced from Odoo)
+  odooRef?: string;         // Odoo invoice number (e.g., BILL/2024/0001)
   createdAt: string;
   updatedAt?: string;
 }
@@ -27,7 +29,7 @@ export interface Invoice {
 // BANK STATEMENT TYPES
 // ========================================
 
-export type PaymentMode = 
+export type PaymentMode =
   | 'EFT'
   | 'CHEQUE'
   | 'CREDIT_CARD'

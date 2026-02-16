@@ -289,7 +289,8 @@ export async function sendIncomingCallNotification(
         title: 'Incoming Call',
         body: `${callerDisplay} calling ${notification.clinicName}${queueInfo}`,
         type: 'incoming_call',
-        sound: 'ringtone.caf',
+        // Use system default sound across platforms (iOS app does not bundle ringtone.caf).
+        sound: 'default',
         idempotencyKey,
         data: {
           callId: notification.callId,
@@ -355,7 +356,8 @@ export async function sendIncomingCallToAgents(
       title: 'Incoming Call',
       body: `${callerDisplay} calling ${notification.clinicName}`,
       type: 'incoming_call',
-      sound: 'ringtone.caf',
+      // Use system default sound across platforms (iOS app does not bundle ringtone.caf).
+      sound: 'default',
       idempotencyKey,
       data: {
         callId: notification.callId,

@@ -534,6 +534,158 @@ async function createPayment(paymentData: PaymentData, clinicConfig: ClinicConfi
     }
 }
 
+// Receipt data interfaces
+interface ReceiptItem {
+    date: string;
+    provider: string;
+    code: string;
+    tooth: string;
+    description: string;
+    paid: number;
+}
+
+interface ReceiptData {
+    payNum: number;
+    paymentDate: string;
+    transactionId?: string;
+    patientName: string;
+    totalPaid: number;
+    items: ReceiptItem[];
+}
+
+// Get receipt data for a specific payment
+async function getReceiptData(payNum: number, patientName: string, transactionId: string | undefined, clinicConfig: ClinicConfig): Promise<ReceiptData> {
+    const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
+    const headers = { 'Authorization': AUTH_HEADER };
+    
+    try {
+        // Step 1: Get paysplits for this payment
+        console.log(`Fetching paysplits for PayNum=${payNum}`);
+        const splitsResponse = await axios.get(`${API_BASE_URL}/paysplits?PayNum=${payNum}`, { 
+            headers,
+            timeout: 10000 // 10 second timeout
+        });
+        const splits = splitsResponse.data || [];
+        console.log(`Found ${splits.length} paysplits for PayNum=${payNum}`);
+        
+        // Step 2: For each split with a ProcNum, get procedure and provider details
+        const items: ReceiptItem[] = [];
+        const providerCache: Record<number, string> = {};
+        const codeCache: Record<number, { ProcCode: string; Descript: string }> = {};
+        
+        for (const split of splits) {
+            if (split.ProcNum && split.ProcNum > 0) {
+                try {
+                    // Get procedure details
+                    const procResponse = await axios.get(`${API_BASE_URL}/procedurelogs/${split.ProcNum}`, { 
+                        headers,
+                        timeout: 10000
+                    });
+                    const proc = procResponse.data;
+                    
+                    // Get provider name (with caching)
+                    let providerName = 'Unknown';
+                    if (proc.ProvNum && proc.ProvNum > 0) {
+                        if (providerCache[proc.ProvNum]) {
+                            providerName = providerCache[proc.ProvNum];
+                        } else {
+                            try {
+                                const provResponse = await axios.get(`${API_BASE_URL}/providers/${proc.ProvNum}`, { 
+                                    headers,
+                                    timeout: 10000
+                                });
+                                const prov = provResponse.data;
+                                providerName = `${prov.FName || ''} ${prov.LName || ''}`.trim() || prov.Abbr || 'Unknown';
+                                providerCache[proc.ProvNum] = providerName;
+                            } catch (provErr) {
+                                console.error(`Error fetching provider ${proc.ProvNum}:`, provErr);
+                            }
+                        }
+                    }
+                    
+                    // Look up procedure code details (ProcCode like D0120, and description)
+                    let procCode = proc.ProcCode || '-';
+                    let procDescript = proc.Descript || 'Procedure';
+                    
+                    if (proc.CodeNum && proc.CodeNum > 0) {
+                        if (codeCache[proc.CodeNum]) {
+                            procCode = codeCache[proc.CodeNum].ProcCode;
+                            procDescript = codeCache[proc.CodeNum].Descript;
+                        } else {
+                            try {
+                                const codeResponse = await axios.get(
+                                    `${API_BASE_URL}/procedurecodes/${proc.CodeNum}`,
+                                    { headers, timeout: 10000 }
+                                );
+                                const codeData = codeResponse.data;
+                                procCode = codeData.ProcCode || procCode;
+                                procDescript = codeData.Descript || procDescript;
+                                codeCache[proc.CodeNum] = { ProcCode: procCode, Descript: procDescript };
+                            } catch (codeErr) {
+                                console.error(`Error fetching procedure code ${proc.CodeNum}:`, codeErr);
+                            }
+                        }
+                    }
+                    
+                    items.push({
+                        date: proc.ProcDate || new Date().toISOString().split('T')[0],
+                        provider: providerName,
+                        code: procCode,
+                        tooth: proc.ToothNum || '-',
+                        description: procDescript,
+                        paid: parseFloat(split.SplitAmt) || 0
+                    });
+                } catch (procErr) {
+                    console.error(`Error fetching procedure ${split.ProcNum}:`, procErr);
+                    // Add a generic item if we can't fetch procedure details
+                    items.push({
+                        date: new Date().toISOString().split('T')[0],
+                        provider: 'Unknown',
+                        code: '-',
+                        tooth: '-',
+                        description: 'Payment applied',
+                        paid: parseFloat(split.SplitAmt) || 0
+                    });
+                }
+            } else if (split.SplitAmt && parseFloat(split.SplitAmt) > 0) {
+                // Unallocated payment split (prepayment or general payment)
+                items.push({
+                    date: new Date().toISOString().split('T')[0],
+                    provider: '-',
+                    code: '-',
+                    tooth: '-',
+                    description: 'Unallocated payment',
+                    paid: parseFloat(split.SplitAmt) || 0
+                });
+            }
+        }
+        
+        const totalPaid = items.reduce((sum, item) => sum + item.paid, 0);
+        
+        return {
+            payNum,
+            paymentDate: new Date().toISOString().split('T')[0],
+            transactionId,
+            patientName,
+            totalPaid: parseFloat(totalPaid.toFixed(2)),
+            items
+        };
+    } catch (error: any) {
+        console.error('Error fetching receipt data:', error);
+        console.error('Error details:', {
+            payNum,
+            status: error.response?.status,
+            statusText: error.response?.statusText,
+            data: error.response?.data,
+            message: error.message
+        });
+        throw {
+            status: error.response?.status || 500,
+            message: error.response?.data?.message || error.message || 'Error fetching receipt data'
+        };
+    }
+}
+
 async function getAppointmentById(aptNum: number, patNum: number, clinicConfig: ClinicConfig) {
     const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
     const url = `${API_BASE_URL}/appointments?PatNum=${patNum}`;
@@ -1932,6 +2084,139 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 } catch (err) {
                     await recordPortalMetric(clinicId, 'paymentFailures');
                     throw err;
+                }
+                break;
+            }
+            case normalizedResource === '/receipt' && httpMethod === 'GET': {
+                patient = await validateSession(event, clinicId);
+                const payNum = queryParams.PayNum;
+                if (!payNum || Number.isNaN(Number(payNum))) {
+                    throw { status: 400, message: 'Valid PayNum must be provided as query parameter.' };
+                }
+                
+                const patientName = `${patient.FName || ''} ${patient.LName || ''}`.trim();
+                const transactionId = queryParams.transactionId;
+                
+                response = await getReceiptData(Number(payNum), patientName, transactionId, clinicConfig);
+                break;
+            }
+            case normalizedResource === '/unpaid-procedures' && httpMethod === 'GET': {
+                patient = await validateSession(event, clinicId);
+                const patNum = queryParams.PatNum || patient.PatNum;
+                if (!patNum || Number.isNaN(Number(patNum))) {
+                    throw { status: 400, message: 'Valid PatNum must be provided.' };
+                }
+                
+                const AUTH_HEADER = `ODFHIR ${clinicConfig.developerKey}/${clinicConfig.customerKey}`;
+                const headers = { 'Authorization': AUTH_HEADER };
+                
+                try {
+                    // Get all procedures for patient
+                    const procLogsResponse = await axios.get(
+                        `${API_BASE_URL}/procedurelogs?PatNum=${patNum}`,
+                        { headers }
+                    );
+                    
+                    const procedures = procLogsResponse.data || [];
+                    console.log(`Found ${procedures.length} total procedures for PatNum ${patNum}`);
+                    
+                    // Get all payments for patient
+                    const paysplitsResponse = await axios.get(
+                        `${API_BASE_URL}/paysplits?PatNum=${patNum}`,
+                        { headers }
+                    );
+                    
+                    const paysplits = paysplitsResponse.data || [];
+                    console.log(`Found ${paysplits.length} payment splits for PatNum ${patNum}`);
+                    
+                    // Calculate paid amount for each procedure
+                    const paidAmounts: Record<number, number> = {};
+                    for (const split of paysplits) {
+                        if (split.ProcNum && split.SplitAmt) {
+                            paidAmounts[split.ProcNum] = (paidAmounts[split.ProcNum] || 0) + parseFloat(split.SplitAmt);
+                        }
+                    }
+                    
+                    const providerCache: Record<number, string> = {};
+                    const codeCache: Record<number, { ProcCode: string; Descript: string }> = {};
+                    const unpaidItems = [];
+                    
+                    // Find unpaid procedures (only completed ones)
+                    for (const proc of procedures) {
+                        const procFee = parseFloat(proc.ProcFee || '0');
+                        const paidAmount = paidAmounts[proc.ProcNum] || 0;
+                        const remaining = procFee - paidAmount;
+                        
+                        // ProcStatus "C" = Complete, "TP" = Treatment Plan
+                        // Only include completed procedures with outstanding balance
+                        if (remaining > 0.01 && (proc.ProcStatus === 'C' || proc.ProcStatus === 2)) {
+                            let providerName = '-';
+                            
+                            if (proc.ProvNum && proc.ProvNum > 0) {
+                                if (providerCache[proc.ProvNum]) {
+                                    providerName = providerCache[proc.ProvNum];
+                                } else {
+                                    try {
+                                        const provResponse = await axios.get(
+                                            `${API_BASE_URL}/providers/${proc.ProvNum}`,
+                                            { headers }
+                                        );
+                                        const prov = provResponse.data;
+                                        providerName = `${prov.FName || ''} ${prov.LName || ''}`.trim() || prov.Abbr || '-';
+                                        providerCache[proc.ProvNum] = providerName;
+                                    } catch (err) {
+                                        console.error(`Error fetching provider ${proc.ProvNum}:`, err);
+                                    }
+                                }
+                            }
+                            
+                            // Look up procedure code details (ProcCode like D0120, and description)
+                            let procCode = proc.ProcCode || '-';
+                            let procDescript = proc.Descript || 'Procedure';
+                            
+                            if (proc.CodeNum && proc.CodeNum > 0) {
+                                if (codeCache[proc.CodeNum]) {
+                                    procCode = codeCache[proc.CodeNum].ProcCode;
+                                    procDescript = codeCache[proc.CodeNum].Descript;
+                                } else {
+                                    try {
+                                        const codeResponse = await axios.get(
+                                            `${API_BASE_URL}/procedurecodes/${proc.CodeNum}`,
+                                            { headers }
+                                        );
+                                        const codeData = codeResponse.data;
+                                        procCode = codeData.ProcCode || procCode;
+                                        procDescript = codeData.Descript || procDescript;
+                                        codeCache[proc.CodeNum] = { ProcCode: procCode, Descript: procDescript };
+                                    } catch (err) {
+                                        console.error(`Error fetching procedure code ${proc.CodeNum}:`, err);
+                                    }
+                                }
+                            }
+                            
+                            unpaidItems.push({
+                                date: proc.ProcDate || '-',
+                                provider: providerName,
+                                code: procCode,
+                                tooth: proc.ToothNum || '-',
+                                description: procDescript,
+                                amount: remaining
+                            });
+                        }
+                    }
+                    
+                    console.log(`Returning ${unpaidItems.length} unpaid procedures`);
+                    
+                    response = {
+                        items: unpaidItems,
+                        totalDue: unpaidItems.reduce((sum, item) => sum + item.amount, 0)
+                    };
+                } catch (error: any) {
+                    console.error('Error fetching unpaid procedures:', error);
+                    throw {
+                        status: error.response?.status || 500,
+                        message: error.response?.data?.message || 'Error fetching unpaid procedures'
+                    };
                 }
                 break;
             }

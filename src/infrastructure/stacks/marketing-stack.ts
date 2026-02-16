@@ -121,6 +121,22 @@ export class MarketingStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
+    // Table 6: DesignTemplates - Saved design editor templates
+    const designTemplatesTable = new dynamodb.Table(this, 'DesignTemplatesTable', {
+      tableName: 'DesignTemplates',
+      partitionKey: { name: 'templateId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    // GSI: ByCreator - Query templates by creator
+    designTemplatesTable.addGlobalSecondaryIndex({
+      indexName: 'ByCreator',
+      partitionKey: { name: 'createdBy', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // ============================================
     // 1b. Meta Ads DynamoDB Tables
     // ============================================
@@ -159,14 +175,15 @@ export class MarketingStack extends Stack {
         {
           allowedMethods: [
             s3.HttpMethods.GET,
+            s3.HttpMethods.HEAD,
             s3.HttpMethods.PUT,
             s3.HttpMethods.POST,
             s3.HttpMethods.DELETE,
           ],
-          allowedOrigins: ALLOWED_ORIGINS_LIST,
+          allowedOrigins: ['*'], // S3 CORS must match the browser Origin header exactly; use '*' to prevent mismatches with clinic domains
           allowedHeaders: ['*'],
-          exposedHeaders: ['ETag'],
-          maxAge: 3000,
+          exposedHeaders: ['ETag', 'Content-Length', 'Content-Type'],
+          maxAge: 86400,
         },
       ],
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ACLS,
@@ -278,7 +295,7 @@ export class MarketingStack extends Stack {
     // ============================================
     // 5. Environment Variables
     // ============================================
-    
+
     // Ayrshare credentials are now stored in GlobalSecrets DynamoDB table
     // Lambda functions will retrieve them at runtime using secrets-helper utility
     // This removes hardcoded secrets from the codebase
@@ -290,6 +307,14 @@ export class MarketingStack extends Stack {
       MARKETING_MEDIA_TABLE: this.marketingMediaTable.tableName,
       MARKETING_ANALYTICS_TABLE: this.marketingAnalyticsTable.tableName,
       MEDIA_BUCKET: this.mediaBucket.bucketName,
+      // Keep external API calls bounded so API Gateway doesn't 504.
+      AYRSHARE_HTTP_TIMEOUT_MS: '12000',
+      // Ayrshare posting can be slower. With parallel per-platform splitting,
+      // each platform gets its own call, so 27s keeps total under API Gateway's ~29s cap.
+      AYRSHARE_POST_TIMEOUT_MS: '27000',
+      // API Gateway REST APIs have ~29s max integration timeout; keep publishes small per request.
+      // Enforce 1 clinic per publish request to prevent 504s/timeouts.
+      PUBLISHER_MAX_SYNC_CLINICS: '1',
       // Secrets tables for dynamic credential retrieval
       GLOBAL_SECRETS_TABLE: props.globalSecretsTableName,
       CLINIC_SECRETS_TABLE: props.clinicSecretsTableName,
@@ -410,6 +435,19 @@ export class MarketingStack extends Stack {
       environment: envVars,
     });
 
+    // Templates Lambda (Design Editor template CRUD)
+    const templatesFn = new lambdaNode.NodejsFunction(this, 'MarketingTemplatesFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'templates.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      memorySize: 256,
+      environment: {
+        ...envVars,
+        DESIGN_TEMPLATES_TABLE: designTemplatesTable.tableName,
+      },
+    });
+
     // Meta Ads environment variables
     const metaAdsEnvVars = {
       ...envVars,
@@ -462,18 +500,35 @@ export class MarketingStack extends Stack {
       IMAGE_GENERATOR_FUNCTION: '', // Will be set after image generator is created
     };
 
+    // NOTE: We intentionally set an explicit function name so we can grant the
+    // function permission to invoke itself without creating a CloudFormation
+    // circular dependency (IAM policy -> Lambda ARN, Lambda -> IAM policy).
+    const publisherFunctionName = `${this.stackName}-PublisherFn`;
+
     const publisherFn = new lambdaNode.NodejsFunction(this, 'PublisherFn', {
+      functionName: publisherFunctionName,
       entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'publisher.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(120), // Longer timeout for multi-clinic publishing
+      timeout: Duration.seconds(120), // Async worker mode needs generous timeout for slow Ayrshare calls
       memorySize: 256,
       environment: publisherEnvVars,
     });
-    
+
     // Update publisher with image generator function name and grant invoke permission
     publisherFn.addEnvironment('IMAGE_GENERATOR_FUNCTION', imageGeneratorFn.functionName);
     imageGeneratorFn.grantInvoke(publisherFn);
+
+    // Publisher invokes itself asynchronously for fire-and-forget publishing.
+    // IMPORTANT: Don't use publisherFn.grantInvoke(publisherFn) here — it creates a CFN circular dependency
+    // because the generated IAM policy references the Lambda ARN while the Lambda resource depends on the policy.
+    publisherFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['lambda:InvokeFunction'],
+      resources: [
+        `arn:${Stack.of(this).partition}:lambda:${this.region}:${this.account}:function:${publisherFunctionName}`,
+        `arn:${Stack.of(this).partition}:lambda:${this.region}:${this.account}:function:${publisherFunctionName}:*`,
+      ],
+    }));
 
     // ============================================
     // EventBridge Rule for Analytics Sync (runs every 6 hours)
@@ -542,6 +597,10 @@ export class MarketingStack extends Stack {
     // Validate Lambda permissions (only needs profiles for API key)
     this.marketingProfilesTable.grantReadData(validateFn);
 
+    // Templates Lambda permissions
+    designTemplatesTable.grantReadWriteData(templatesFn);
+    this.mediaBucket.grantReadWrite(templatesFn);
+
     // Ads Lambda permissions
     this.marketingProfilesTable.grantReadData(adsFn);
     this.marketingPostsTable.grantReadData(adsFn);
@@ -557,7 +616,7 @@ export class MarketingStack extends Stack {
 
     // Image Generator Lambda permissions
     this.mediaBucket.grantReadWrite(imageGeneratorFn);
-    
+
     // Grant access to Images Stack bucket if specified
     if (props.imagesBucketName) {
       const imagesBucket = s3.Bucket.fromBucketName(this, 'ImagesBucket', props.imagesBucketName);
@@ -575,14 +634,14 @@ export class MarketingStack extends Stack {
     // NOTE: Google Ads Lambdas have been moved to GoogleAdsStack
     const allLambdas = [
       profilesFn, postsFn, commentsFn, analyticsFn, mediaFn, webhooksFn,
-      analyticsSyncFn, autoScheduleFn, hashtagsFn, historyFn, messagesFn, validateFn, adsFn,
+      analyticsSyncFn, autoScheduleFn, hashtagsFn, historyFn, messagesFn, validateFn, templatesFn, adsFn,
       imageGeneratorFn, publisherFn,
     ];
 
     // IAM policy for reading from secrets tables
     // Note: Scan is required for /profiles/sync which calls getAllClinicConfigs() and getAllClinicSecrets()
     const secretsReadPolicy = new iam.PolicyStatement({
-      actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
+      actions: ['dynamodb:GetItem', 'dynamodb:BatchGetItem', 'dynamodb:Query', 'dynamodb:Scan'],
       resources: [
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName}`,
@@ -817,6 +876,22 @@ export class MarketingStack extends Stack {
     validateContentModerationRes.addMethod('POST', new apigw.LambdaIntegration(validateFn), { authorizer });
 
     // -----------------------------------------
+    // Design Template Routes (/templates)
+    // -----------------------------------------
+    const templatesRes = root.addResource('templates');
+
+    // POST /templates - Save/create a design template
+    // GET  /templates - List all templates
+    templatesRes.addMethod('POST', new apigw.LambdaIntegration(templatesFn), { authorizer });
+    templatesRes.addMethod('GET', new apigw.LambdaIntegration(templatesFn), { authorizer });
+
+    // GET    /templates/{templateId} - Get full template data
+    // DELETE /templates/{templateId} - Delete template
+    const templateByIdRes = templatesRes.addResource('{templateId}');
+    templateByIdRes.addMethod('GET', new apigw.LambdaIntegration(templatesFn), { authorizer });
+    templateByIdRes.addMethod('DELETE', new apigw.LambdaIntegration(templatesFn), { authorizer });
+
+    // -----------------------------------------
     // Webhook Routes (/webhooks)
     // -----------------------------------------
     const webhooksRes = root.addResource('webhooks');
@@ -839,7 +914,7 @@ export class MarketingStack extends Stack {
     // -----------------------------------------
     const imagesGenRes = root.addResource('images');
     const generateRes = imagesGenRes.addResource('generate');
-    
+
     // POST /images/generate - Generate personalized images for multiple clinics
     generateRes.addMethod('POST', new apigw.LambdaIntegration(imageGeneratorFn), { authorizer });
 
@@ -887,6 +962,49 @@ export class MarketingStack extends Stack {
     const publisherScheduledRes = publisherRes.addResource('scheduled');
     publisherScheduledRes.addMethod('GET', new apigw.LambdaIntegration(publisherFn), { authorizer });
 
+    // POST /publisher/post/validate - Pre-publish validation
+    const publisherPostValidateRes = publisherPostRes.addResource('validate');
+    publisherPostValidateRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/hashtags - Auto-generate hashtags
+    const publisherHashtagsRes = publisherRes.addResource('hashtags');
+    publisherHashtagsRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/hashtags/recommend - Recommend hashtags by keyword
+    const publisherHashtagsRecommendRes = publisherHashtagsRes.addResource('recommend');
+    publisherHashtagsRecommendRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/hashtags/search - Search hashtags on a platform
+    const publisherHashtagsSearchRes = publisherHashtagsRes.addResource('search');
+    publisherHashtagsSearchRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/hashtags/banned - Check if hashtags are banned
+    const publisherHashtagsBannedRes = publisherHashtagsRes.addResource('banned');
+    publisherHashtagsBannedRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/moderate - AI content moderation
+    const publisherModerateRes = publisherRes.addResource('moderate');
+    publisherModerateRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // Publisher media sub-routes (/publisher/media/...)
+    const publisherMediaRes = publisherRes.addResource('media');
+
+    // POST /publisher/media/resize - Resize images for platform
+    const publisherMediaResizeRes = publisherMediaRes.addResource('resize');
+    publisherMediaResizeRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/media/validate - Validate media for platform compatibility
+    const publisherMediaValidateRes = publisherMediaRes.addResource('validate');
+    publisherMediaValidateRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // POST /publisher/media/verify - Verify media URL is accessible
+    const publisherMediaVerifyRes = publisherMediaRes.addResource('verify');
+    publisherMediaVerifyRes.addMethod('POST', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
+    // GET /publisher/analytics/links - Link click analytics
+    const publisherAnalyticsLinksRes = publisherAnalyticsRes.addResource('links');
+    publisherAnalyticsLinksRes.addMethod('GET', new apigw.LambdaIntegration(publisherFn), { authorizer });
+
     // -----------------------------------------
     // Ads Routes (/ads) - Meta Ads via Ayrshare
     // -----------------------------------------
@@ -926,7 +1044,7 @@ export class MarketingStack extends Stack {
     // The adsFn Lambda handles all path-based routing internally
     // -----------------------------------------
     const metaRes = root.addResource('meta');
-    
+
     // Catch-all proxy: /meta/{proxy+} handles all Meta Ads routes
     // Including: /meta/ads/drafts, /meta/ads/bulk/jobs, /meta/ads/scheduled, 
     //           /meta/ads/{clinicId}/lead-forms, /meta/ads/{clinicId}/leads, etc.

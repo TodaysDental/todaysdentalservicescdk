@@ -13,7 +13,7 @@ export interface TransferAuthResponse {
   PublicKeys?: string[];
   Policy?: string;
   // When using AWS_LAMBDA IdP, we can return logical directory mappings so 
-  // "/" resolves to an S3 target. This is required for true root-level writes.
+  // "/" resolves to an S3 target. This is required for true root-level writes.-
   HomeDirectoryDetails?: string; // JSON string per AWS Transfer spec
   HomeDirectoryType?: 'LOGICAL' | 'PATH';
 }
