@@ -47,6 +47,7 @@ import { EmailStack } from './stacks/email-stack';
 import { AccountingStack } from './stacks/accounting-stack';
 import { InsuranceAutomationStack } from './stacks/insurance-automation-stack';
 import { SecretsStack } from './stacks/secrets-stack';
+import { ItTicketStack } from './stacks/it-ticket-stack';
 import { PushNotificationsStack } from './stacks/push-notifications-stack';
 import { ConnectLexAiStack } from './stacks/connect-lex-ai-stack';
 import { AnalyticsDashboardStack } from './stacks/analytics-dashboard-stack';
@@ -622,6 +623,17 @@ const credentialingStack = new CredentialingStack(app, 'TodaysDentalInsightsCred
   staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
 });
 credentialingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+
+// ========================================
+// IT TICKET STACK — Bug Reporting & Feature Requests
+// ========================================
+// Self-contained stack: creates its own DynamoDB tables, S3 bucket, Lambda, and API Gateway.
+// Only reads from CoreStack (authorizer + StaffClinicInfo table).
+const ITTicketStack = new ItTicketStack(app, 'TodaysDentalInsightsItTicketN1', {
+  env,
+  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+});
+ITTicketStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn + StaffClinicInfo
 
 
 // Schedules service (depends on other services for cross-table access)
