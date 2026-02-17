@@ -1,5 +1,5 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import {
   ChimeSDKMeetingsClient,
@@ -142,6 +142,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const nowSeconds = Math.floor(Date.now() / 1000);
     const extendedTTL = nowSeconds + TTL_POLICY.ACTIVE_CALL_SECONDS;
 
+    let transactionSucceeded = false;
     try {
       await ddb.send(new TransactWriteCommand({
         TransactItems: [
@@ -187,16 +188,81 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           },
         ],
       }));
+      transactionSucceeded = true;
     } catch (err: any) {
       if (err?.name === 'TransactionCanceledException') {
-        return http(409, {
-          message: 'Call is no longer available. It may have been accepted by another agent.',
-          callId,
-          agentId,
-          reasons: err.CancellationReasons,
-        }, event);
+        const reasons = err.CancellationReasons || [];
+        const agentActiveConditionFailed =
+          reasons.length >= 2 && reasons[1]?.Code === 'ConditionalCheckFailed';
+        const callConditionFailed =
+          reasons.length >= 1 && reasons[0]?.Code === 'ConditionalCheckFailed';
+
+        // If only the AgentActive condition failed (agent row missing or expired),
+        // recreate the row and retry the transaction once.
+        // This handles the case where the mobile app was offline/killed and the
+        // AgentActive entry was TTL-expired, but the push was sent before expiry.
+        if (agentActiveConditionFailed && !callConditionFailed) {
+          console.warn('[call-accepted-v2] AgentActive row missing/stale — recreating and retrying', {
+            callId, agentId, clinicId,
+          });
+          try {
+            const activeTTL = nowSeconds + TTL_POLICY.SESSION_MAX_SECONDS;
+            await ddb.send(new PutCommand({
+              TableName: AGENT_ACTIVE_TABLE_NAME,
+              Item: { clinicId, agentId, state: 'active', updatedAt: timestamp, ttl: activeTTL },
+            }));
+            // Retry the transaction
+            await ddb.send(new TransactWriteCommand({
+              TransactItems: [
+                {
+                  Update: {
+                    TableName: CALL_QUEUE_TABLE_NAME,
+                    Key: { clinicId, queuePosition },
+                    UpdateExpression:
+                      'SET #status = :accepting, assignedAgentId = :agentId, acceptedAt = :timestamp, #ttl = :ttl, #version = if_not_exists(#version, :zero) + :one',
+                    ConditionExpression:
+                      '#status = :ringing AND (attribute_not_exists(assignedAgentId) OR assignedAgentId = :agentId) AND contains(agentIds, :agentId)',
+                    ExpressionAttributeNames: { '#status': 'status', '#ttl': 'ttl', '#version': 'version' },
+                    ExpressionAttributeValues: {
+                      ':accepting': 'accepting', ':ringing': 'ringing', ':agentId': agentId,
+                      ':timestamp': timestamp, ':ttl': extendedTTL, ':zero': 0, ':one': 1,
+                    },
+                  },
+                },
+                {
+                  Update: {
+                    TableName: AGENT_ACTIVE_TABLE_NAME,
+                    Key: { clinicId, agentId },
+                    UpdateExpression: 'SET #state = :busy, currentCallId = :callId, updatedAt = :ts',
+                    ConditionExpression: 'attribute_exists(clinicId) AND attribute_exists(agentId) AND #state = :active',
+                    ExpressionAttributeNames: { '#state': 'state' },
+                    ExpressionAttributeValues: { ':busy': 'busy', ':active': 'active', ':callId': callId, ':ts': timestamp },
+                  },
+                },
+              ],
+            }));
+            transactionSucceeded = true;
+            console.log('[call-accepted-v2] Retry succeeded after recreating AgentActive row', { callId, agentId });
+          } catch (retryErr: any) {
+            console.error('[call-accepted-v2] Retry also failed:', { message: retryErr?.message, name: retryErr?.name });
+            return http(409, {
+              message: 'Call is no longer available. It may have been accepted by another agent.',
+              callId, agentId, reasons: retryErr?.CancellationReasons || reasons,
+            }, event);
+          }
+        } else {
+          return http(409, {
+            message: 'Call is no longer available. It may have been accepted by another agent.',
+            callId, agentId, reasons,
+          }, event);
+        }
+      } else {
+        throw err;
       }
-      throw err;
+    }
+
+    if (!transactionSucceeded) {
+      return http(409, { message: 'Call is no longer available', callId, agentId }, event);
     }
 
     // 8) Ensure per-call meeting + customer attendee exist (create if missing)

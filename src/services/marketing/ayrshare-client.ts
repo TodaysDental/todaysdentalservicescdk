@@ -11,11 +11,12 @@ const AYRSHARE_HTTP_TIMEOUT_MS = (() => {
 })();
 
 // Posting can take longer than other validate/analytics calls, especially with media.
-// Keep safely below API Gateway's ~29s max integration timeout.
+// With parallel per-platform splitting (see ayrsharePost), total Lambda time ≈
+// max(individual platform time) + overhead, so each platform can safely use up to
+// ~27 s and still stay under API Gateway's ~29 s integration limit.
 const AYRSHARE_POST_TIMEOUT_MS = (() => {
-  const raw = Number.parseInt(process.env.AYRSHARE_POST_TIMEOUT_MS || '25000', 10);
-  const parsed = Number.isFinite(raw) && raw > 0 ? raw : 25000;
-  return Math.min(parsed, 25000);
+  const raw = Number.parseInt(process.env.AYRSHARE_POST_TIMEOUT_MS || '27000', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 27000;
 })();
 
 // Dedicated HTTP client for Ayrshare (avoid mutating global axios defaults).
@@ -169,13 +170,20 @@ export async function ayrshareGenerateJWT(
 // POSTING & SCHEDULING
 // ============================================
 
-export async function ayrsharePost(apiKey: string, profileKey: string, postData: any) {
+/**
+ * Raw single-call to the Ayrshare POST /post endpoint.
+ * Posts to whatever platforms are listed in postData.platforms.
+ * @param timeoutMs Optional override for the HTTP timeout (used by async worker with longer budget).
+ */
+async function ayrsharePostSingle(apiKey: string, profileKey: string, postData: any, timeoutMs?: number) {
+  const effectiveTimeout = timeoutMs || AYRSHARE_POST_TIMEOUT_MS;
   try {
     console.log('[ayrsharePost] Posting to Ayrshare:', {
       profileKey: profileKey.substring(0, 10) + '...',
       platforms: postData.platforms,
       hasPost: !!postData.post,
-      hasMediaUrls: !!(postData.mediaUrls?.length)
+      hasMediaUrls: !!(postData.mediaUrls?.length),
+      timeoutMs: effectiveTimeout,
     });
 
     const res = await ayrshareHttp.post(`${AYRSHARE_URL}/post`,
@@ -185,7 +193,7 @@ export async function ayrsharePost(apiKey: string, profileKey: string, postData:
           'Authorization': `Bearer ${apiKey}`,
           'Profile-Key': profileKey
         },
-        timeout: AYRSHARE_POST_TIMEOUT_MS,
+        timeout: effectiveTimeout,
       }
     );
     console.log('[ayrsharePost] Success:', res.data?.id || res.data?.status);
@@ -198,7 +206,7 @@ export async function ayrsharePost(apiKey: string, profileKey: string, postData:
     const isTimeout = err?.code === 'ECONNABORTED' || String(err?.message || '').toLowerCase().includes('timeout');
     if (isTimeout) {
       throw new Error(
-        `Ayrshare request timed out after ${AYRSHARE_POST_TIMEOUT_MS}ms. ` +
+        `Ayrshare request timed out after ${effectiveTimeout}ms. ` +
         `The post may still have been processed—check History before retrying.`
       );
     }
@@ -210,6 +218,104 @@ export async function ayrsharePost(apiKey: string, profileKey: string, postData:
       'Failed to post';
     throw new Error(errorMessage);
   }
+}
+
+/**
+ * Post to Ayrshare with automatic platform splitting.
+ *
+ * When multiple platforms are requested (e.g. facebook + instagram), each
+ * platform is posted **in parallel** via separate API calls. This prevents
+ * timeouts that occur when Ayrshare takes >25 s to process a combined
+ * multi-platform post with media, which would exceed the API Gateway ~29 s
+ * integration limit.
+ *
+ * If some platforms succeed and others fail, the call still returns success
+ * with `platformErrors` describing which platforms failed (instead of failing
+ * the entire request).
+ */
+export async function ayrsharePost(apiKey: string, profileKey: string, postData: any, timeoutMs?: number) {
+  const platforms: string[] = postData.platforms || [];
+
+  // Single platform (or none): post directly in one call — no overhead.
+  if (platforms.length <= 1) {
+    return ayrsharePostSingle(apiKey, profileKey, postData, timeoutMs);
+  }
+
+  // Multiple platforms → fire per-platform calls in parallel to stay under
+  // the Ayrshare timeout.  Each individual platform call typically finishes in
+  // 10–15 s; running in parallel keeps total ≈ max(individual).
+  console.log(
+    `[ayrsharePost] Splitting ${platforms.length} platforms (${platforms.join(', ')}) into parallel requests to avoid timeout`
+  );
+
+  const settled = await Promise.allSettled(
+    platforms.map(platform =>
+      ayrsharePostSingle(apiKey, profileKey, {
+        ...postData,
+        platforms: [platform],
+      }, timeoutMs).then(data => ({ platform, data }))
+    )
+  );
+
+  const successes: Array<{ platform: string; data: any }> = [];
+  const failures: Array<{ platform: string; error: string }> = [];
+
+  for (const result of settled) {
+    if (result.status === 'fulfilled') {
+      successes.push(result.value);
+    } else {
+      // Extract platform name from the rejected promise's error
+      const errMsg = result.reason?.message || String(result.reason);
+      // We can't directly get the platform from a rejected promise, so track
+      // which platforms aren't in `successes`.
+      failures.push({ platform: '', error: errMsg });
+    }
+  }
+
+  // Fix up failure platform names (Promise.allSettled doesn't carry metadata on rejection).
+  const succeededPlatforms = new Set(successes.map(s => s.platform));
+  let failIdx = 0;
+  for (const platform of platforms) {
+    if (!succeededPlatforms.has(platform) && failIdx < failures.length) {
+      failures[failIdx].platform = platform;
+      failIdx++;
+    }
+  }
+
+  // All platforms failed → throw combined error
+  if (successes.length === 0) {
+    throw new Error(
+      failures.map(f => `${f.platform || 'unknown'}: ${f.error}`).join(' | ')
+    );
+  }
+
+  const firstSuccess = successes[0].data;
+
+  if (failures.length > 0) {
+    console.warn(
+      `[ayrsharePost] Partial success: ${successes.length}/${platforms.length} platforms succeeded.`,
+      `Failed: ${failures.map(f => f.platform).join(', ')}`
+    );
+  }
+
+  return {
+    ...firstSuccess,
+    id: firstSuccess.id,
+    refId: firstSuccess.refId,
+    status: failures.length > 0 ? 'partial' : (firstSuccess.status || 'success'),
+    platformResults: successes.map(s => ({
+      platform: s.platform,
+      id: s.data?.id,
+      status: 'success',
+    })),
+    ...(failures.length > 0 ? {
+      platformErrors: failures,
+      partialFailureMessage:
+        `Posted to ${successes.map(s => s.platform).join(', ')} ` +
+        `but failed on ${failures.map(f => f.platform).join(', ')}: ` +
+        failures.map(f => f.error).join('; '),
+    } : {}),
+  };
 }
 
 export async function ayrshareDeletePost(apiKey: string, profileKey: string, postId: string) {

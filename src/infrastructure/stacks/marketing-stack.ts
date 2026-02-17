@@ -175,14 +175,15 @@ export class MarketingStack extends Stack {
         {
           allowedMethods: [
             s3.HttpMethods.GET,
+            s3.HttpMethods.HEAD,
             s3.HttpMethods.PUT,
             s3.HttpMethods.POST,
             s3.HttpMethods.DELETE,
           ],
-          allowedOrigins: ALLOWED_ORIGINS_LIST,
+          allowedOrigins: ['*'], // S3 CORS must match the browser Origin header exactly; use '*' to prevent mismatches with clinic domains
           allowedHeaders: ['*'],
-          exposedHeaders: ['ETag'],
-          maxAge: 3000,
+          exposedHeaders: ['ETag', 'Content-Length', 'Content-Type'],
+          maxAge: 86400,
         },
       ],
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ACLS,
@@ -308,8 +309,9 @@ export class MarketingStack extends Stack {
       MEDIA_BUCKET: this.mediaBucket.bucketName,
       // Keep external API calls bounded so API Gateway doesn't 504.
       AYRSHARE_HTTP_TIMEOUT_MS: '12000',
-      // Ayrshare posting can be slower; keep below API Gateway's ~29s cap.
-      AYRSHARE_POST_TIMEOUT_MS: '25000',
+      // Ayrshare posting can be slower. With parallel per-platform splitting,
+      // each platform gets its own call, so 27s keeps total under API Gateway's ~29s cap.
+      AYRSHARE_POST_TIMEOUT_MS: '27000',
       // API Gateway REST APIs have ~29s max integration timeout; keep publishes small per request.
       // Enforce 1 clinic per publish request to prevent 504s/timeouts.
       PUBLISHER_MAX_SYNC_CLINICS: '1',
@@ -498,11 +500,17 @@ export class MarketingStack extends Stack {
       IMAGE_GENERATOR_FUNCTION: '', // Will be set after image generator is created
     };
 
+    // NOTE: We intentionally set an explicit function name so we can grant the
+    // function permission to invoke itself without creating a CloudFormation
+    // circular dependency (IAM policy -> Lambda ARN, Lambda -> IAM policy).
+    const publisherFunctionName = `${this.stackName}-PublisherFn`;
+
     const publisherFn = new lambdaNode.NodejsFunction(this, 'PublisherFn', {
+      functionName: publisherFunctionName,
       entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'publisher.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(120), // Longer timeout for multi-clinic publishing
+      timeout: Duration.seconds(120), // Async worker mode needs generous timeout for slow Ayrshare calls
       memorySize: 256,
       environment: publisherEnvVars,
     });
@@ -510,6 +518,17 @@ export class MarketingStack extends Stack {
     // Update publisher with image generator function name and grant invoke permission
     publisherFn.addEnvironment('IMAGE_GENERATOR_FUNCTION', imageGeneratorFn.functionName);
     imageGeneratorFn.grantInvoke(publisherFn);
+
+    // Publisher invokes itself asynchronously for fire-and-forget publishing.
+    // IMPORTANT: Don't use publisherFn.grantInvoke(publisherFn) here — it creates a CFN circular dependency
+    // because the generated IAM policy references the Lambda ARN while the Lambda resource depends on the policy.
+    publisherFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['lambda:InvokeFunction'],
+      resources: [
+        `arn:${Stack.of(this).partition}:lambda:${this.region}:${this.account}:function:${publisherFunctionName}`,
+        `arn:${Stack.of(this).partition}:lambda:${this.region}:${this.account}:function:${publisherFunctionName}:*`,
+      ],
+    }));
 
     // ============================================
     // EventBridge Rule for Analytics Sync (runs every 6 hours)

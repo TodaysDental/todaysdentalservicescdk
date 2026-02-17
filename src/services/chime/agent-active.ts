@@ -6,6 +6,7 @@ import { verifyIdToken } from '../../shared/utils/auth-helper';
 import { getUserIdFromJwt, checkClinicAuthorization } from '../../shared/utils/permissions-helper';
 import { DistributedLock } from './utils/distributed-lock';
 import { isPushNotificationsEnabled, sendIncomingCallToAgents } from './utils/push-notifications';
+import { TTL_POLICY } from './config/ttl-policy';
 
 const ddb = getDynamoDBClient();
 
@@ -204,6 +205,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 
   const updatedAt = new Date().toISOString();
+  // Add TTL so stale entries auto-expire if the agent never calls agent/inactive
+  // (e.g. app killed, network loss, phone turned off). Uses SESSION_MAX_SECONDS
+  // so the entry lives as long as the maximum shift duration.
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const ttl = nowSeconds + TTL_POLICY.SESSION_MAX_SECONDS;
+
   await Promise.allSettled(cleanedClinicIds.map(async (clinicId: string) => {
     await ddb.send(new PutCommand({
       TableName: AGENT_ACTIVE_TABLE_NAME,
@@ -212,6 +219,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         agentId,
         state: 'active',
         updatedAt,
+        ttl,
       },
     }));
   }));

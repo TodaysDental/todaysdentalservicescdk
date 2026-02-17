@@ -31,6 +31,8 @@ interface ContactFlowEvent {
     FlowType: string;
     Description: string;
     LexBotAliasArn: string;
+    // Used only for per-clinic voice selection via UpdateContactTextToSpeechVoice
+    VoiceConfigLambdaArn: string;
     AsyncLambdaArn: string;
     KeyboardPromptId: string;
     DisconnectFlowArn: string;
@@ -89,6 +91,7 @@ export const handler = async (event: ContactFlowEvent): Promise<any> => {
     // Build the async contact flow content
     const flowContent = buildAsyncContactFlowContent({
       lexBotAliasArn: props.LexBotAliasArn,
+      voiceConfigLambdaArn: props.VoiceConfigLambdaArn,
       asyncLambdaArn: props.AsyncLambdaArn,
       keyboardPromptId: props.KeyboardPromptId,
       disconnectFlowArn: props.DisconnectFlowArn,
@@ -187,12 +190,13 @@ export const handler = async (event: ContactFlowEvent): Promise<any> => {
  */
 function buildAsyncContactFlowContent(params: {
   lexBotAliasArn: string;
+  voiceConfigLambdaArn: string;
   asyncLambdaArn: string;
   keyboardPromptId: string;
   disconnectFlowArn: string;
   maxPollLoops: number;
 }): any {
-  const { lexBotAliasArn, asyncLambdaArn, keyboardPromptId, disconnectFlowArn, maxPollLoops } = params;
+  const { lexBotAliasArn, voiceConfigLambdaArn, asyncLambdaArn, keyboardPromptId, disconnectFlowArn, maxPollLoops } = params;
 
   return {
     Version: '2019-10-30',
@@ -200,36 +204,26 @@ function buildAsyncContactFlowContent(params: {
     Metadata: {
       entryPointPosition: { x: 20, y: 20 },
       ActionMetadata: {
-        'welcome-message': { position: { x: 160, y: 20 } },
-        'set-recording': { position: { x: 260, y: 20 } },
+        'set-recording': { position: { x: 160, y: 20 } },
         'set-contact-attrs': { position: { x: 360, y: 20 } },
-        'set-disconnect-flow': { position: { x: 560, y: 20 } },
-        'lex-asr': { position: { x: 760, y: 20 } },
-        'start-async': { position: { x: 960, y: 20 } },
-        'store-request-id': { position: { x: 1160, y: 20 } },
-        'typing-sound': { position: { x: 1360, y: 20 } },
-        'poll-result': { position: { x: 1560, y: 20 } },
-        'check-status': { position: { x: 1760, y: 20 } },
-        'speak-ai': { position: { x: 1960, y: 20 } },
-        'timeout-message': { position: { x: 1560, y: 160 } },
-        'disconnect-action': { position: { x: 2160, y: 20 } },
+        'invoke-voice-config': { position: { x: 560, y: 20 } },
+        'set-tts-voice': { position: { x: 760, y: 20 } },
+        'store-clinic-id': { position: { x: 960, y: 20 } },
+        'welcome-message': { position: { x: 1160, y: 20 } },
+        'set-disconnect-flow': { position: { x: 1360, y: 20 } },
+        'lex-asr': { position: { x: 1560, y: 20 } },
+        'start-async': { position: { x: 1760, y: 20 } },
+        'store-request-id': { position: { x: 1960, y: 20 } },
+        'typing-sound': { position: { x: 2160, y: 20 } },
+        'poll-result': { position: { x: 2360, y: 20 } },
+        'check-status': { position: { x: 2560, y: 20 } },
+        'speak-ai': { position: { x: 2760, y: 20 } },
+        'timeout-message': { position: { x: 2360, y: 160 } },
+        'disconnect-action': { position: { x: 2960, y: 20 } },
       },
     },
     Actions: [
-      // 1) Welcome message
-      {
-        Identifier: 'welcome-message',
-        Type: 'MessageParticipant',
-        Parameters: {
-          Text: 'Hello! Thank you for calling. How can I help you today?',
-        },
-        Transitions: {
-          NextAction: 'set-contact-attrs',
-          Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
-        },
-      },
-
-      // 2) Enable call recording (captures both sides of the automated interaction)
+      // 1) Enable call recording (captures both sides of the automated interaction)
       // Requires the Connect instance to have CALL_RECORDINGS storage configured.
       {
         Identifier: 'set-recording',
@@ -241,7 +235,7 @@ function buildAsyncContactFlowContent(params: {
           },
         },
         Transitions: {
-          NextAction: 'welcome-message',
+          NextAction: 'set-contact-attrs',
           // This action does not define error branches in flow language; keep empty arrays (matches Connect sample flows).
           Errors: [],
           Conditions: [],
@@ -256,15 +250,90 @@ function buildAsyncContactFlowContent(params: {
           Attributes: {
             callerNumber: '$.CustomerEndpoint.Address',
             dialedNumber: '$.SystemEndpoint.Address',
+            // Safe defaults so SSML <prosody> never renders invalid attributes.
+            // These get overwritten by per-clinic values when voiceConfig succeeds.
+            ttsSpeakingRate: 'medium',
+            ttsPitch: 'medium',
+            ttsVolume: 'medium',
           },
         },
         Transitions: {
-          NextAction: 'set-disconnect-flow',
+          NextAction: 'invoke-voice-config',
           Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
         },
       },
 
-      // 3) Set disconnect flow (CustomerRemaining hook) so Connect runs our finalizer flow
+      // 3) Look up per-clinic voice settings via Lambda (uses dialedNumber -> clinicId mapping)
+      {
+        Identifier: 'invoke-voice-config',
+        Type: 'InvokeLambdaFunction',
+        Parameters: {
+          LambdaFunctionARN: voiceConfigLambdaArn,
+          InvocationTimeLimitSeconds: '8',
+          LambdaInvocationAttributes: {
+            requestType: 'voiceConfig',
+            callerNumber: '$.Attributes.callerNumber',
+            dialedNumber: '$.Attributes.dialedNumber',
+            clinicId: '$.Attributes.clinicId',
+          },
+        },
+        Transitions: {
+          NextAction: 'set-tts-voice',
+          // Avoid overwriting default prosody attrs with empty $.External.* on Lambda failure.
+          Errors: [{ NextAction: 'welcome-message', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 4) Apply the chosen Polly voice for all subsequent TTS prompts in this contact
+      {
+        Identifier: 'set-tts-voice',
+        Type: 'UpdateContactTextToSpeechVoice',
+        Parameters: {
+          TextToSpeechVoice: '$.External.TextToSpeechVoice',
+          TextToSpeechEngine: '$.External.TextToSpeechEngine',
+        },
+        Transitions: {
+          NextAction: 'store-clinic-id',
+          Errors: [{ NextAction: 'store-clinic-id', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 5) Persist clinicId on the contact for downstream Lambda/Lex reads
+      {
+        Identifier: 'store-clinic-id',
+        Type: 'UpdateContactAttributes',
+        Parameters: {
+          Attributes: {
+            clinicId: '$.External.clinicId',
+            ttsSpeakingRate: '$.External.speakingRate',
+            ttsPitch: '$.External.pitch',
+            ttsVolume: '$.External.volume',
+          },
+        },
+        Transitions: {
+          NextAction: 'welcome-message',
+          Errors: [{ NextAction: 'welcome-message', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 6) Welcome message (now uses per-clinic Polly voice)
+      {
+        Identifier: 'welcome-message',
+        Type: 'MessageParticipant',
+        Parameters: {
+          // IMPORTANT: Keep this greeting static and SSML-safe.
+          // Embedded JSONPath inside SSML tag attributes is not reliably substituted
+          // by Connect, and can produce invalid SSML that disconnects the caller.
+          Text: 'Hello! Thank you for calling. How can I help you today?',
+        },
+        Transitions: {
+          NextAction: 'set-disconnect-flow',
+          // Fail open: don't disconnect if greeting playback fails.
+          Errors: [{ NextAction: 'set-disconnect-flow', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 7) Set disconnect flow (CustomerRemaining hook) so Connect runs our finalizer flow
       // when the disconnect event occurs (e.g., for post-contact processing).
       {
         Identifier: 'set-disconnect-flow',
@@ -280,7 +349,7 @@ function buildAsyncContactFlowContent(params: {
         },
       },
 
-      // 4) Lex ASR: captures speech, stores in session attributes
+      // 8) Lex ASR: captures speech, stores in session attributes
       {
         Identifier: 'lex-asr',
         Type: 'ConnectParticipantWithLexBot',
@@ -292,13 +361,16 @@ function buildAsyncContactFlowContent(params: {
           LexSessionAttributes: {
             callerNumber: '$.Attributes.callerNumber',
             dialedNumber: '$.Attributes.dialedNumber',
+            clinicId: '$.Attributes.clinicId',
           },
         },
         Transitions: {
           NextAction: 'start-async',
           Errors: [
+            // If the caller doesn't respond or Lex errors, prompt and try again.
+            { NextAction: 'timeout-message', ErrorType: 'InputTimeLimitExceeded' },
             { NextAction: 'start-async', ErrorType: 'NoMatchingCondition' },
-            { NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' },
+            { NextAction: 'timeout-message', ErrorType: 'NoMatchingError' },
           ],
         },
       },
@@ -401,11 +473,12 @@ function buildAsyncContactFlowContent(params: {
         Identifier: 'speak-ai',
         Type: 'MessageParticipant',
         Parameters: {
-          Text: '$.External.aiResponse',
+          SSML: '$.External.ssmlResponse',
         },
         Transitions: {
           NextAction: 'lex-asr', // Conversation turn complete
-          Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
+          // Never disconnect the caller due to a bad/empty SSML response. Fail open and retry.
+          Errors: [{ NextAction: 'timeout-message', ErrorType: 'NoMatchingError' }],
         },
       },
 
@@ -414,11 +487,13 @@ function buildAsyncContactFlowContent(params: {
         Identifier: 'timeout-message',
         Type: 'MessageParticipant',
         Parameters: {
+          // Keep error prompt static and SSML-safe.
           Text: "I'm sorry, I'm having trouble right now. Please try again.",
         },
         Transitions: {
           NextAction: 'lex-asr', // Try again with next utterance
-          Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
+          // Fail open: if prompt playback fails, still try to continue the loop.
+          Errors: [{ NextAction: 'lex-asr', ErrorType: 'NoMatchingError' }],
         },
       },
 

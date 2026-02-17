@@ -462,6 +462,35 @@ export class ChimeStack extends Stack {
     });
     applyTags(this.locksTable, { Table: 'locks' });
 
+    // Call Audit table (HIPAA compliance)
+    // Stores immutable audit events using pk/sk + GSIs as defined in utils/call-audit-logger.ts
+    const callAuditTable = new dynamodb.Table(this, 'CallAuditTable', {
+      tableName: `${this.stackName}-CallAudit`,
+      partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN, // Compliance data should be retained by default
+      pointInTimeRecovery: true,
+      timeToLiveAttribute: 'ttl',
+    });
+    applyTags(callAuditTable, { Table: 'call-audit' });
+
+    // Query by event type
+    callAuditTable.addGlobalSecondaryIndex({
+      indexName: 'gsi1',
+      partitionKey: { name: 'gsi1pk', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'gsi1sk', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Query by callId (audit trail per call)
+    callAuditTable.addGlobalSecondaryIndex({
+      indexName: 'gsi2',
+      partitionKey: { name: 'gsi2pk', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'gsi2sk', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // Agent Performance table - tracks agent metrics and performance
     this.agentPerformanceTable = new dynamodb.Table(this, 'AgentPerformanceTable', {
       tableName: `${this.stackName}-AgentPerformance`,
@@ -506,6 +535,7 @@ export class ChimeStack extends Stack {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
         AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        CALL_AUDIT_TABLE_NAME: callAuditTable.tableName,
         LOCKS_TABLE_NAME: this.locksTable.tableName,
         HOLD_MUSIC_BUCKET: '', // Will be updated after bucket creation
         CHIME_MEDIA_REGION: chimeMediaRegion,
@@ -526,6 +556,7 @@ export class ChimeStack extends Stack {
     this.agentPresenceTable.grantReadWriteData(smaHandler);
     this.agentActiveTable.grantReadWriteData(smaHandler);
     this.callQueueTable.grantReadWriteData(smaHandler);
+    callAuditTable.grantWriteData(smaHandler);
     this.locksTable.grantReadWriteData(smaHandler);
 
     // Marketing voice call analytics table (in NotificationsStack)
@@ -575,6 +606,13 @@ export class ChimeStack extends Stack {
         resources: [props.sendPushFunctionArn],
       }));
     }
+
+    // Allow publishing custom CloudWatch metrics (used by utils/cloudwatch-metrics.ts)
+    smaHandler.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['cloudwatch:PutMetricData'],
+      resources: ['*'],
+    }));
 
     // Grant Chime SDK permissions
     smaHandler.addToRolePolicy(new iam.PolicyStatement({
@@ -2855,6 +2893,8 @@ export class ChimeStack extends Stack {
           CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
           AGENT_PERFORMANCE_TABLE_NAME: this.agentPerformanceTable.tableName,
           RECORDINGS_BUCKET_NAME: recordingsBucket.bucketName,
+          // Pass CallAnalytics table so transcription processor can update sentiment/transcript
+          CALL_ANALYTICS_TABLE_NAME: props.analyticsTableName || '',
         },
       });
 
@@ -2862,6 +2902,16 @@ export class ChimeStack extends Stack {
       recordingMetadataTable.grantReadWriteData(transcriptionCompleteFn);
       this.callQueueTable.grantReadWriteData(transcriptionCompleteFn);
       this.agentPerformanceTable.grantReadWriteData(transcriptionCompleteFn);
+
+      // Grant read/write to CallAnalytics table for sentiment/transcript updates
+      if (props.analyticsTableName) {
+        transcriptionCompleteFn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['dynamodb:Query', 'dynamodb:UpdateItem'],
+          resources: [
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.analyticsTableName}`,
+          ],
+        }));
+      }
       // Only grant KMS permissions if using own bucket
       if (recordingsKey) {
         recordingsKey.grantDecrypt(transcriptionCompleteFn);

@@ -60,6 +60,7 @@ const AGENTS_TABLE = process.env.AGENTS_TABLE || 'AiAgents';
 const CALL_ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE || '';
 const TRANSCRIPT_BUFFER_TABLE = process.env.TRANSCRIPT_BUFFER_TABLE_NAME || '';
 const SESSIONS_TABLE = process.env.SESSIONS_TABLE || 'AiAgentSessions';
+const VOICE_CONFIG_TABLE = process.env.VOICE_CONFIG_TABLE || '';
 
 // NOTE: Thinking audio is now handled by the Connect contact flow.
 // The flow plays a short keyboard typing WAV prompt after Lex completes
@@ -184,93 +185,292 @@ interface LexV2Response {
 }
 
 // ========================================================================
-// AGENT LOOKUP (with caching for performance)
+// AGENT LOOKUP (supports explicit outbound agent selection)
 // ========================================================================
 
-interface AgentInfo {
-  agentId: string;
-  aliasId: string;
-  agentName?: string;
+type CallDirection = 'inbound' | 'outbound';
+
+interface ResolvedAgent {
+  // Internal agentId (PK in AiAgents DynamoDB table)
+  internalAgentId: string;
+  internalAgentName?: string;
+  // Bedrock identifiers used for InvokeAgent
+  bedrockAgentId: string;
+  bedrockAgentAliasId: string;
+  // Metadata
+  isPublic?: boolean;
 }
 
-// PERFORMANCE: Cache agent lookups to avoid repeated DynamoDB queries
-// Agents rarely change, so a 5-minute cache significantly reduces latency
-const agentCache = new Map<string, { agent: AgentInfo | null; timestamp: number }>();
+// PERFORMANCE: Cache resolved agents (per clinic + direction) to avoid repeated DynamoDB queries.
+// Agents/config rarely change, so a short cache significantly reduces latency.
+const agentCache = new Map<string, { agent: ResolvedAgent | null; timestamp: number }>();
 const AGENT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const getAgentCacheKey = (clinicId: string, direction: CallDirection) => `${clinicId}:${direction}`;
 
-async function getAgentForClinic(clinicId: string): Promise<AgentInfo | null> {
-  // Check cache first
-  const cached = agentCache.get(clinicId);
+function isCallableAgentRecord(agent: any, clinicId: string): boolean {
+  if (!agent) return false;
+  const belongsToClinic = agent.clinicId === clinicId || agent.isPublic === true;
+  return (
+    belongsToClinic &&
+    agent.isActive === true &&
+    agent.isVoiceEnabled === true &&
+    agent.bedrockAgentStatus === 'PREPARED' &&
+    typeof agent.bedrockAgentId === 'string' &&
+    agent.bedrockAgentId.trim().length > 0 &&
+    typeof agent.bedrockAgentAliasId === 'string' &&
+    agent.bedrockAgentAliasId.trim().length > 0
+  );
+}
+
+function toResolvedAgent(agent: any): ResolvedAgent | null {
+  const internalAgentId = typeof agent?.agentId === 'string' ? agent.agentId.trim() : '';
+  const bedrockAgentId = typeof agent?.bedrockAgentId === 'string' ? agent.bedrockAgentId.trim() : '';
+  const bedrockAgentAliasId = typeof agent?.bedrockAgentAliasId === 'string' ? agent.bedrockAgentAliasId.trim() : '';
+
+  if (!internalAgentId || !bedrockAgentId || !bedrockAgentAliasId) return null;
+
+  return {
+    internalAgentId,
+    internalAgentName: (agent.agentName || agent.name || '').toString(),
+    bedrockAgentId,
+    bedrockAgentAliasId,
+    isPublic: agent.isPublic === true,
+  };
+}
+
+async function getAgentRecordById(agentId: string): Promise<any | null> {
+  const id = typeof agentId === 'string' ? agentId.trim() : '';
+  if (!id) return null;
+
+  try {
+    const resp = await docClient.send(new GetCommand({
+      TableName: AGENTS_TABLE,
+      Key: { agentId: id },
+    }));
+    return resp.Item || null;
+  } catch (error: any) {
+    console.warn('[LexBedrockHook] Error getting agent by id', {
+      agentId: id,
+      error: error?.message || String(error),
+    });
+    return null;
+  }
+}
+
+async function getConfiguredAgentIdFromVoiceConfig(clinicId: string, direction: CallDirection): Promise<string | null> {
+  const effectiveClinicId = clinicId || DEFAULT_CLINIC_ID;
+  if (!VOICE_CONFIG_TABLE) return null;
+
+  try {
+    const resp = await docClient.send(new GetCommand({
+      TableName: VOICE_CONFIG_TABLE,
+      Key: { clinicId: effectiveClinicId },
+      ProjectionExpression: 'inboundAgentId, outboundAgentId, aiInboundEnabled, aiOutboundEnabled',
+    }));
+
+    const cfg = resp.Item as any;
+    if (!cfg) return null;
+
+    const enabled = direction === 'outbound'
+      ? cfg.aiOutboundEnabled !== false
+      : cfg.aiInboundEnabled !== false;
+    if (!enabled) return null;
+
+    const id = direction === 'outbound'
+      ? (typeof cfg.outboundAgentId === 'string' ? cfg.outboundAgentId.trim() : '')
+      : (typeof cfg.inboundAgentId === 'string' ? cfg.inboundAgentId.trim() : '');
+
+    return id || null;
+  } catch (error: any) {
+    console.warn('[LexBedrockHook] Failed to load configured agent from voice config', {
+      clinicId: effectiveClinicId,
+      direction,
+      error: error?.message || String(error),
+    });
+    return null;
+  }
+}
+
+async function resolveAgentForCall(params: {
+  clinicId: string;
+  direction: CallDirection;
+  explicitAgentId?: string;
+}): Promise<ResolvedAgent | null> {
+  const clinicId = params.clinicId || DEFAULT_CLINIC_ID;
+  const direction = params.direction;
+  const explicitAgentId = typeof params.explicitAgentId === 'string' ? params.explicitAgentId.trim() : '';
+
+  // 1) Explicit agent (used by Connect-based outbound scheduler)
+  if (explicitAgentId) {
+    const record = await getAgentRecordById(explicitAgentId);
+    if (isCallableAgentRecord(record, clinicId)) {
+      const resolved = toResolvedAgent(record);
+      if (resolved) return resolved;
+    }
+    console.warn('[LexBedrockHook] Explicit agent not callable; falling back', {
+      clinicId,
+      direction,
+      explicitAgentId,
+    });
+  }
+
+  // 2) Configured agent from VoiceAgentConfig table (inbound/outbound)
+  const configuredId = await getConfiguredAgentIdFromVoiceConfig(clinicId, direction);
+  if (configuredId) {
+    const record = await getAgentRecordById(configuredId);
+    if (isCallableAgentRecord(record, clinicId)) {
+      const resolved = toResolvedAgent(record);
+      if (resolved) {
+        agentCache.set(getAgentCacheKey(clinicId, direction), { agent: resolved, timestamp: Date.now() });
+        return resolved;
+      }
+    }
+    console.warn('[LexBedrockHook] Configured agent not callable; falling back', {
+      clinicId,
+      direction,
+      configuredId,
+    });
+  }
+
+  // 3) Cached fallback
+  const cacheKey = getAgentCacheKey(clinicId, direction);
+  const cached = agentCache.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < AGENT_CACHE_TTL_MS) {
     return cached.agent;
   }
 
+  // 4) Fallback: choose best callable voice agent for the clinic
   try {
-    // PERFORMANCE: Single query with broader filter, then prioritize in-memory
-    // This reduces 2-3 DynamoDB calls to just 1
     const allAgents = await docClient.send(new QueryCommand({
       TableName: AGENTS_TABLE,
       IndexName: 'ClinicIndex',
       KeyConditionExpression: 'clinicId = :clinicId',
-      ExpressionAttributeValues: {
-        ':clinicId': clinicId,
-      },
-      Limit: 20,
-      ScanIndexForward: false, // Most recent first
+      ExpressionAttributeValues: { ':clinicId': clinicId },
+      Limit: 50,
+      ScanIndexForward: false,
     }));
 
-    if (!allAgents.Items || allAgents.Items.length === 0) {
-      agentCache.set(clinicId, { agent: null, timestamp: Date.now() });
+    const items = (allAgents.Items || []) as any[];
+    if (items.length === 0) {
+      agentCache.set(cacheKey, { agent: null, timestamp: Date.now() });
       return null;
     }
 
-    // Prioritize: 1) default voice agent, 2) any voice-enabled, 3) any agent
-    let selectedAgent: any = null;
+    const callable = items.filter((a) => isCallableAgentRecord(a, clinicId));
+    if (callable.length === 0) {
+      agentCache.set(cacheKey, { agent: null, timestamp: Date.now() });
+      return null;
+    }
 
-    // Look for default voice agent first
-    const defaultVoice = allAgents.Items.find(
-      (a: any) => a.isDefaultVoiceAgent === true && a.isVoiceEnabled === true
-    );
-    if (defaultVoice) {
-      selectedAgent = defaultVoice;
-      console.log('[LexBedrockHook] Selected default voice agent:', {
+    const selected = callable.find((a) => a.isDefaultVoiceAgent === true) || callable[0];
+    const resolved = toResolvedAgent(selected);
+    agentCache.set(cacheKey, { agent: resolved, timestamp: Date.now() });
+
+    if (resolved) {
+      console.log('[LexBedrockHook] Resolved fallback agent:', {
         clinicId,
-        agentId: selectedAgent.agentId,
-        agentName: selectedAgent.agentName || selectedAgent.name,
+        direction,
+        agentId: resolved.internalAgentId,
+        agentName: resolved.internalAgentName,
       });
     }
 
-    // Fall back to any voice-enabled agent
-    if (!selectedAgent) {
-      const voiceEnabled = allAgents.Items.find((a: any) => a.isVoiceEnabled === true);
-      if (voiceEnabled) {
-        selectedAgent = voiceEnabled;
-        console.log('[LexBedrockHook] Selected voice-enabled agent:', {
-          clinicId,
-          agentId: selectedAgent.agentId,
-          agentName: selectedAgent.agentName || selectedAgent.name,
-        });
-      }
-    }
-
-    // Final fallback: any agent
-    if (!selectedAgent) {
-      selectedAgent = allAgents.Items[0];
-      console.log('[LexBedrockHook] Using fallback agent (any type):', selectedAgent.agentId || selectedAgent.agentName);
-    }
-
-    const agentInfo: AgentInfo = {
-      agentId: selectedAgent.bedrockAgentId,
-      aliasId: selectedAgent.bedrockAliasId || 'TSTALIASID',
-      agentName: selectedAgent.agentName || selectedAgent.name,
-    };
-
-    // Cache the result
-    agentCache.set(clinicId, { agent: agentInfo, timestamp: Date.now() });
-    return agentInfo;
+    return resolved;
   } catch (error) {
-    console.error('[LexBedrockHook] Error looking up agent:', error);
+    console.error('[LexBedrockHook] Error resolving agent:', error);
+    agentCache.set(getAgentCacheKey(clinicId, direction), { agent: null, timestamp: Date.now() });
     return null;
+  }
+}
+
+// ========================================================================
+// VOICE SETTINGS (per-clinic, from VoiceAgentConfig table)
+// ========================================================================
+
+interface ClinicVoiceSettings {
+  voiceId: string;
+  engine: 'standard' | 'neural' | 'generative' | 'long-form';
+  speakingRate: 'x-slow' | 'slow' | 'medium' | 'fast' | 'x-fast';
+  pitch: 'x-low' | 'low' | 'medium' | 'high' | 'x-high';
+  volume: 'silent' | 'x-soft' | 'soft' | 'medium' | 'loud' | 'x-loud';
+}
+
+const DEFAULT_TTS_VOICE: ClinicVoiceSettings = {
+  voiceId: 'Joanna',
+  engine: 'neural',
+  speakingRate: 'medium',
+  pitch: 'medium',
+  volume: 'medium',
+};
+
+const ALLOWED_SPEAKING_RATES = new Set<ClinicVoiceSettings['speakingRate']>([
+  'x-slow',
+  'slow',
+  'medium',
+  'fast',
+  'x-fast',
+]);
+const ALLOWED_PITCH = new Set<ClinicVoiceSettings['pitch']>([
+  'x-low',
+  'low',
+  'medium',
+  'high',
+  'x-high',
+]);
+const ALLOWED_VOLUME = new Set<ClinicVoiceSettings['volume']>([
+  'silent',
+  'x-soft',
+  'soft',
+  'medium',
+  'loud',
+  'x-loud',
+]);
+
+function normalizeProsody<T extends string>(value: unknown, allowed: Set<T>, fallback: T): T {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  return (raw && allowed.has(raw as T)) ? (raw as T) : fallback;
+}
+
+function normalizeEngine(value: unknown): ClinicVoiceSettings['engine'] {
+  const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (raw === 'standard' || raw === 'neural' || raw === 'generative' || raw === 'long-form') {
+    return raw;
+  }
+  return DEFAULT_TTS_VOICE.engine;
+}
+
+async function getVoiceSettingsForClinic(clinicId: string): Promise<ClinicVoiceSettings> {
+  const effectiveClinicId = clinicId || DEFAULT_CLINIC_ID;
+
+  // If the table isn't configured, fall back to defaults (Connect will use Joanna otherwise).
+  if (!VOICE_CONFIG_TABLE) {
+    return { ...DEFAULT_TTS_VOICE };
+  }
+
+  try {
+    const resp = await docClient.send(new GetCommand({
+      TableName: VOICE_CONFIG_TABLE,
+      Key: { clinicId: effectiveClinicId },
+      ProjectionExpression: 'voiceSettings',
+    }));
+
+    const voiceSettings = (resp.Item as any)?.voiceSettings || {};
+    const rawVoiceId = typeof voiceSettings.voiceId === 'string' ? voiceSettings.voiceId.trim() : '';
+
+    const voice: ClinicVoiceSettings = {
+      voiceId: rawVoiceId || DEFAULT_TTS_VOICE.voiceId,
+      engine: normalizeEngine(voiceSettings.engine),
+      speakingRate: normalizeProsody(voiceSettings.speakingRate, ALLOWED_SPEAKING_RATES, DEFAULT_TTS_VOICE.speakingRate),
+      pitch: normalizeProsody(voiceSettings.pitch, ALLOWED_PITCH, DEFAULT_TTS_VOICE.pitch),
+      volume: normalizeProsody(voiceSettings.volume, ALLOWED_VOLUME, DEFAULT_TTS_VOICE.volume),
+    };
+    return voice;
+  } catch (error: any) {
+    console.warn('[LexBedrockHook] Failed to load voice settings, using defaults', {
+      clinicId: effectiveClinicId,
+      error: error?.message || String(error),
+    });
+    return { ...DEFAULT_TTS_VOICE };
   }
 }
 
@@ -282,11 +482,16 @@ interface ConnectCallAnalytics {
   callId: string;             // PK: connect-${contactId}
   timestamp: number;          // SK: call start time in ms
   clinicId: string;
-  callCategory: 'ai_voice';
-  callType: 'inbound';
+  callCategory: 'ai_voice' | 'ai_outbound';
+  callType: 'inbound' | 'outbound';
   callStatus: 'active' | 'completed' | 'error';
   outcome?: 'answered' | 'completed' | 'error';
   callerNumber?: string;
+  dialedNumber?: string;
+  callDirection?: CallDirection;
+  scheduledCallId?: string;
+  purpose?: string;
+  patientName?: string;
   aiAgentId: string;
   agentId: string;            // Alias for dashboards that use agentId
   aiAgentName?: string;
@@ -308,46 +513,74 @@ async function ensureAnalyticsRecord(params: {
   callId: string;
   contactId: string;
   clinicId: string;
+  callStartMs: number;
   callerNumber?: string;
+  dialedNumber?: string;
+  callDirection: CallDirection;
+  scheduledCallId?: string;
+  purpose?: string;
+  patientName?: string;
   aiAgentId: string;
   aiAgentName?: string;
 }): Promise<{ callId: string; timestamp: number }> {
   if (!CALL_ANALYTICS_TABLE) {
     console.warn('[LexBedrockHook] CALL_ANALYTICS_TABLE not configured, skipping analytics');
-    return { callId: params.callId, timestamp: Date.now() };
+    const ts = Number.isFinite(params.callStartMs) ? Math.floor(params.callStartMs) : Date.now();
+    return { callId: params.callId, timestamp: ts };
   }
 
-  const { callId, contactId, clinicId, callerNumber, aiAgentId, aiAgentName } = params;
-  const now = Date.now();
-  const ttl = Math.floor(now / 1000) + (CONFIG.ANALYTICS_TTL_DAYS * 24 * 60 * 60);
+  const {
+    callId,
+    contactId,
+    clinicId,
+    callStartMs,
+    callerNumber,
+    dialedNumber,
+    callDirection,
+    scheduledCallId,
+    purpose,
+    patientName,
+    aiAgentId,
+    aiAgentName,
+  } = params;
+  const timestamp = Number.isFinite(callStartMs) ? Math.floor(callStartMs) : Date.now();
+  const ttl = Math.floor(timestamp / 1000) + (CONFIG.ANALYTICS_TTL_DAYS * 24 * 60 * 60);
 
   // Check if record already exists
   try {
     const existing = await docClient.send(new QueryCommand({
       TableName: CALL_ANALYTICS_TABLE,
-      KeyConditionExpression: 'callId = :callId',
-      ExpressionAttributeValues: { ':callId': callId },
+      KeyConditionExpression: 'callId = :callId AND #ts = :ts',
+      ExpressionAttributeNames: { '#ts': 'timestamp' },
+      ExpressionAttributeValues: { ':callId': callId, ':ts': timestamp },
       Limit: 1,
+      ConsistentRead: true,
     }));
 
     if (existing.Items && existing.Items.length > 0) {
-      // Record exists, return its timestamp
-      return { callId, timestamp: existing.Items[0].timestamp };
+      return { callId, timestamp };
     }
   } catch (error) {
     console.warn('[LexBedrockHook] Error checking existing analytics:', error);
   }
 
   // Create new record
+  const callCategory: ConnectCallAnalytics['callCategory'] = callDirection === 'outbound' ? 'ai_outbound' : 'ai_voice';
+  const callType: ConnectCallAnalytics['callType'] = callDirection === 'outbound' ? 'outbound' : 'inbound';
   const analytics: ConnectCallAnalytics = {
     callId,
-    timestamp: now,
+    timestamp,
     clinicId,
-    callCategory: 'ai_voice',
-    callType: 'inbound',
+    callCategory,
+    callType,
     callStatus: 'active',
     outcome: 'answered',
     callerNumber,
+    dialedNumber,
+    callDirection,
+    scheduledCallId,
+    purpose,
+    patientName,
     aiAgentId,
     agentId: aiAgentId, // Alias for existing dashboards
     aiAgentName,
@@ -355,7 +588,7 @@ async function ensureAnalyticsRecord(params: {
     contactId,
     turnCount: 0,
     transcriptCount: 0,
-    lastActivityTime: new Date(now).toISOString(),
+    lastActivityTime: new Date(timestamp).toISOString(),
     toolsUsed: [],
     ttl,
   };
@@ -369,21 +602,13 @@ async function ensureAnalyticsRecord(params: {
     console.log('[LexBedrockHook] Created analytics record:', { callId, clinicId });
   } catch (error: any) {
     if (error.name === 'ConditionalCheckFailedException') {
-      // Record was created by another invocation, get the timestamp
-      const result = await docClient.send(new QueryCommand({
-        TableName: CALL_ANALYTICS_TABLE,
-        KeyConditionExpression: 'callId = :callId',
-        ExpressionAttributeValues: { ':callId': callId },
-        Limit: 1,
-      }));
-      if (result.Items && result.Items.length > 0) {
-        return { callId, timestamp: result.Items[0].timestamp };
-      }
+      // Record was created by another invocation; treat as success.
+      return { callId, timestamp };
     }
     console.error('[LexBedrockHook] Error creating analytics record:', error);
   }
 
-  return { callId, timestamp: now };
+  return { callId, timestamp };
 }
 
 /**
@@ -502,23 +727,40 @@ interface ConnectLexSession {
   sessionId: string;        // PK: Lex sessionId (equals Connect ContactId)
   callId: string;           // connect-${contactId}
   clinicId: string;
+  // Internal agentId (AiAgents table PK) for analytics + debugging
   aiAgentId: string;
   aiAgentName?: string;
+  // Bedrock identifiers for InvokeAgent (resolved at call start; stable for the session)
+  bedrockAgentId?: string;
+  bedrockAgentAliasId?: string;
   bedrockSessionId: string; // Session ID for Bedrock Agent
   callStartMs: number;
   turnCount: number;
   createdAt: string;
   lastActivity: string;
   callerNumber?: string;
+  // Optional call context (primarily for outbound)
+  callDirection?: CallDirection;
+  scheduledCallId?: string;
+  purpose?: string;
+  patientName?: string;
   ttl: number;
 }
 
 async function getOrCreateSession(
   lexSessionId: string,
   clinicId: string,
-  callerNumber?: string
+  callerNumber?: string,
+  options?: {
+    callDirection?: CallDirection;
+    explicitAgentId?: string;
+    scheduledCallId?: string;
+    purpose?: string;
+    patientName?: string;
+  }
 ): Promise<ConnectLexSession> {
   const sessionKey = `lex-${lexSessionId}`;
+  const direction: CallDirection = options?.callDirection === 'outbound' ? 'outbound' : 'inbound';
 
   // Try to get existing session
   try {
@@ -547,10 +789,14 @@ async function getOrCreateSession(
     console.warn('[LexBedrockHook] Error getting session:', error);
   }
 
-  // Look up agent for clinic
-  const agent = await getAgentForClinic(clinicId);
-  if (!agent) {
-    throw new Error(`No Bedrock agent configured for clinic: ${clinicId}`);
+  // Resolve agent for this call (explicit agent for outbound, configured agent for clinic, then fallback)
+  const resolvedAgent = await resolveAgentForCall({
+    clinicId,
+    direction,
+    explicitAgentId: options?.explicitAgentId,
+  });
+  if (!resolvedAgent) {
+    throw new Error(`No voice-capable Bedrock agent available for clinic: ${clinicId}`);
   }
 
   // Create new session
@@ -561,14 +807,20 @@ async function getOrCreateSession(
     sessionId: sessionKey,
     callId: `connect-${lexSessionId}`,
     clinicId,
-    aiAgentId: agent.agentId,
-    aiAgentName: agent.agentName,
+    aiAgentId: resolvedAgent.internalAgentId,
+    aiAgentName: resolvedAgent.internalAgentName,
+    bedrockAgentId: resolvedAgent.bedrockAgentId,
+    bedrockAgentAliasId: resolvedAgent.bedrockAgentAliasId,
     bedrockSessionId: uuidv4(),
     callStartMs: now,
     turnCount: 1,
     createdAt: new Date(now).toISOString(),
     lastActivity: new Date(now).toISOString(),
     callerNumber,
+    callDirection: direction,
+    scheduledCallId: options?.scheduledCallId,
+    purpose: options?.purpose,
+    patientName: options?.patientName,
     ttl,
   };
 
@@ -577,7 +829,13 @@ async function getOrCreateSession(
       TableName: SESSIONS_TABLE,
       Item: session,
     }));
-    console.log('[LexBedrockHook] Created new session:', { sessionId: sessionKey, clinicId, agentId: agent.agentId });
+    console.log('[LexBedrockHook] Created new session:', {
+      sessionId: sessionKey,
+      clinicId,
+      direction,
+      agentId: resolvedAgent.internalAgentId,
+      scheduledCallId: options?.scheduledCallId || undefined,
+    });
   } catch (error) {
     console.error('[LexBedrockHook] Error creating session:', error);
   }
@@ -746,6 +1004,14 @@ interface ConnectLambdaResponse {
   ssmlResponse?: string;
   clinicId?: string;
   turnCount?: string;
+  // Used by Connect UpdateContactTextToSpeechVoice (Set voice block)
+  TextToSpeechVoice?: string;
+  TextToSpeechEngine?: string;
+  TextToSpeechStyle?: string;
+  // Used by SSML <prosody> for Connect prompts/responses
+  speakingRate?: ClinicVoiceSettings['speakingRate'];
+  pitch?: ClinicVoiceSettings['pitch'];
+  volume?: ClinicVoiceSettings['volume'];
 }
 
 /**
@@ -789,6 +1055,52 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
   const dialedNumber = contactData?.SystemEndpoint?.Address || '';
   const contactAttributes = contactData?.Attributes || {};
 
+  // =====================================================================
+  // Voice-config request (used by Connect "Set voice" block)
+  // =====================================================================
+  const requestType = String(params['requestType'] || params['functionType'] || '').trim();
+  if (requestType === 'voiceConfig') {
+    // Determine clinic from explicit attribute first, then dialed number mapping.
+    let voiceClinicId = String(contactAttributes['clinicId'] || params['clinicId'] || '').trim();
+
+    if (!voiceClinicId && dialedNumber) {
+      const normalizedDialed = dialedNumber.replace(/\D/g, '');
+      for (const [phone, clinic] of Object.entries(aiPhoneNumberMap)) {
+        if (phone.replace(/\D/g, '') === normalizedDialed) {
+          voiceClinicId = clinic;
+          break;
+        }
+      }
+    }
+
+    if (!voiceClinicId) {
+      voiceClinicId = DEFAULT_CLINIC_ID;
+    }
+
+    const voice = await getVoiceSettingsForClinic(voiceClinicId);
+    const connectEngine = voice.engine === 'long-form' ? 'neural' : voice.engine;
+
+    console.log('[LexBedrockHook] Voice config resolved:', {
+      clinicId: voiceClinicId,
+      voiceId: voice.voiceId,
+      engine: connectEngine,
+      speakingRate: voice.speakingRate,
+      pitch: voice.pitch,
+      volume: voice.volume,
+    });
+
+    return {
+      // Not used by the flow in this requestType, but Connect expects a JSON object response.
+      aiResponse: '',
+      clinicId: voiceClinicId,
+      TextToSpeechVoice: voice.voiceId,
+      TextToSpeechEngine: connectEngine,
+      speakingRate: voice.speakingRate,
+      pitch: voice.pitch,
+      volume: voice.volume,
+    };
+  }
+
   // Determine clinic from dialed number
   let clinicId = contactAttributes['clinicId'] || '';
   if (!clinicId && dialedNumber) {
@@ -805,34 +1117,67 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
     console.warn('[LexBedrockHook] Connect direct: No clinicId found, using default:', clinicId);
   }
 
+  const prosody = getProsodyFromContactAttributes(contactAttributes);
+  const buildResponse = (text: string): ConnectLambdaResponse => ({
+    aiResponse: text,
+    ssmlResponse: buildProsodySsml(text, prosody),
+    clinicId,
+  });
+
+  // Determine call direction + outbound context from attributes/params
+  const callDirectionRaw = String(params['callDirection'] || contactAttributes['callDirection'] || '').trim().toLowerCase();
+  const callDirection: CallDirection = callDirectionRaw === 'outbound' ? 'outbound' : 'inbound';
+  const explicitAgentId = String(contactAttributes['aiAgentId'] || contactAttributes['agentId'] || '').trim() || undefined;
+  const scheduledCallId = String(contactAttributes['scheduledCallId'] || '').trim() || undefined;
+  const purpose = String(contactAttributes['purpose'] || '').trim() || undefined;
+  const patientName = String(contactAttributes['patientName'] || '').trim() || undefined;
+
   // Get or create session
   let session: ConnectLexSession;
   try {
-    session = await getOrCreateSession(contactId, clinicId, callerNumber);
+    session = await getOrCreateSession(contactId, clinicId, callerNumber, {
+      callDirection,
+      explicitAgentId,
+      scheduledCallId,
+      purpose,
+      patientName,
+    });
   } catch (error) {
     console.error('[LexBedrockHook] Connect direct: Session creation failed:', error);
-    return {
-      aiResponse: "I'm sorry, I'm having trouble setting up our conversation. Please try again.",
-    };
+    return buildResponse("I'm sorry, I'm having trouble setting up our conversation. Please try again.");
   }
 
   // Ensure analytics record exists
-  await ensureAnalyticsRecord({
+  const analyticsInfo = await ensureAnalyticsRecord({
     callId: session.callId,
     contactId,
     clinicId: session.clinicId,
+    callStartMs: session.callStartMs,
     callerNumber: session.callerNumber,
+    dialedNumber,
+    callDirection,
+    scheduledCallId,
+    purpose,
+    patientName,
     aiAgentId: session.aiAgentId,
     aiAgentName: session.aiAgentName,
   });
 
-  // Get agent info
-  const agent = await getAgentForClinic(clinicId);
-  if (!agent) {
-    console.error('[LexBedrockHook] Connect direct: No agent found for clinic:', clinicId);
-    return {
-      aiResponse: "I'm sorry, the AI assistant is not available right now. Please call back during office hours.",
-    };
+  // Resolve Bedrock agent for this session (stored at session creation; backfill if missing)
+  let bedrockAgentId = session.bedrockAgentId;
+  let bedrockAgentAliasId = session.bedrockAgentAliasId;
+  if (!bedrockAgentId || !bedrockAgentAliasId) {
+    const resolved = await resolveAgentForCall({
+      clinicId,
+      direction: callDirection,
+      explicitAgentId,
+    });
+    if (!resolved) {
+      console.error('[LexBedrockHook] Connect direct: No voice-capable agent found for clinic:', clinicId);
+      return buildResponse("I'm sorry, the AI assistant is not available right now. Please call back during office hours.");
+    }
+    bedrockAgentId = resolved.bedrockAgentId;
+    bedrockAgentAliasId = resolved.bedrockAgentAliasId;
   }
 
   // Handle empty/timeout input from Connect
@@ -843,9 +1188,7 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
     normalizedInput === 'no input' ||
     normalizedInput === 'inputtimelimitexceeded';
   if (!trimmedInput || isTimeoutInput) {
-    return {
-      aiResponse: "I'm sorry, I didn't catch that. Could you please repeat what you said?",
-    };
+    return buildResponse("I'm sorry, I didn't catch that. Could you please repeat what you said?");
   }
 
   // If Lex ASR is low-confidence, ask for a repeat instead of risking a wrong Bedrock response.
@@ -855,15 +1198,13 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
       threshold: TRANSCRIPTION_CONFIDENCE_THRESHOLD,
       inputTranscript,
     });
-    return {
-      aiResponse: "I'm sorry, I didn't catch that clearly. Could you please repeat what you said?",
-    };
+    return buildResponse("I'm sorry, I didn't catch that clearly. Could you please repeat what you said?");
   }
 
   // Invoke Bedrock
   const { response: aiResponse, toolsUsed } = await invokeBedrock({
-    agentId: agent.agentId,
-    aliasId: agent.aliasId,
+    agentId: bedrockAgentId,
+    aliasId: bedrockAgentAliasId,
     sessionId: session.bedrockSessionId,
     inputText: trimmedInput,
     clinicId,
@@ -877,7 +1218,7 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
   // The Lambda will continue running after we return the response
   updateAnalyticsTurn({
     callId: session.callId,
-    timestamp: session.callStartMs,
+    timestamp: analyticsInfo.timestamp,
     callerUtterance: trimmedInput,
     aiResponse,
     toolsUsed,
@@ -898,9 +1239,7 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
   });
 
   return {
-    aiResponse,
-    ssmlResponse: `<speak>${escapeSSML(aiResponse)}</speak>`,
-    clinicId,
+    ...buildResponse(aiResponse),
     turnCount: String(session.turnCount),
   };
 }
@@ -942,10 +1281,13 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
     console.warn('[LexBedrockHook] No clinicId found, using default:', clinicId);
   }
 
+  const callDirectionRaw = String(sessionAttributes['callDirection'] || '').trim().toLowerCase();
+  const callDirection: CallDirection = callDirectionRaw === 'outbound' ? 'outbound' : 'inbound';
+
   // Get or create session
   let session: ConnectLexSession;
   try {
-    session = await getOrCreateSession(lexSessionId, clinicId, callerNumber);
+    session = await getOrCreateSession(lexSessionId, clinicId, callerNumber, { callDirection });
   } catch (error) {
     console.error('[LexBedrockHook] Session creation failed:', error);
     return buildErrorResponse(event, "I'm sorry, I'm having trouble setting up our conversation. Please try again.");
@@ -956,20 +1298,29 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
     callId: session.callId,
     contactId: lexSessionId,
     clinicId: session.clinicId,
+    callStartMs: session.callStartMs,
     callerNumber: session.callerNumber,
+    dialedNumber,
+    callDirection,
     aiAgentId: session.aiAgentId,
     aiAgentName: session.aiAgentName,
   });
 
-  // Get the agent info
-  const agent = await getAgentForClinic(clinicId);
-  if (!agent) {
-    console.error('[LexBedrockHook] No agent found for clinic:', clinicId, {
-      dialedNumber,
-      defaultClinicId: DEFAULT_CLINIC_ID,
-      hasPhoneMap: Object.keys(aiPhoneNumberMap || {}).length > 0,
-    });
-    return buildErrorResponse(event, "I'm sorry, the AI assistant is not available right now. Please call back during office hours.");
+  // Resolve Bedrock agent for this session (stored at session creation; backfill if missing)
+  let bedrockAgentId = session.bedrockAgentId;
+  let bedrockAgentAliasId = session.bedrockAgentAliasId;
+  if (!bedrockAgentId || !bedrockAgentAliasId) {
+    const resolved = await resolveAgentForCall({ clinicId, direction: callDirection });
+    if (!resolved) {
+      console.error('[LexBedrockHook] No voice-capable agent found for clinic:', clinicId, {
+        dialedNumber,
+        defaultClinicId: DEFAULT_CLINIC_ID,
+        hasPhoneMap: Object.keys(aiPhoneNumberMap || {}).length > 0,
+      });
+      return buildErrorResponse(event, "I'm sorry, the AI assistant is not available right now. Please call back during office hours.");
+    }
+    bedrockAgentId = resolved.bedrockAgentId;
+    bedrockAgentAliasId = resolved.bedrockAgentAliasId;
   }
 
   // Handle empty input (silence or no transcription)
@@ -1030,8 +1381,8 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
 
   // Invoke Bedrock - pass inputMode so agent uses voice-optimized responses
   const { response: aiResponse, toolsUsed } = await invokeBedrock({
-    agentId: agent.agentId,
-    aliasId: agent.aliasId,
+    agentId: bedrockAgentId,
+    aliasId: bedrockAgentAliasId,
     sessionId: session.bedrockSessionId,
     inputText: trimmedInput,
     clinicId,
@@ -1115,6 +1466,24 @@ function escapeSSML(text: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+function getProsodyFromContactAttributes(
+  attrs: Record<string, string>
+): Pick<ClinicVoiceSettings, 'speakingRate' | 'pitch' | 'volume'> {
+  return {
+    speakingRate: normalizeProsody(attrs['ttsSpeakingRate'], ALLOWED_SPEAKING_RATES, DEFAULT_TTS_VOICE.speakingRate),
+    pitch: normalizeProsody(attrs['ttsPitch'], ALLOWED_PITCH, DEFAULT_TTS_VOICE.pitch),
+    volume: normalizeProsody(attrs['ttsVolume'], ALLOWED_VOLUME, DEFAULT_TTS_VOICE.volume),
+  };
+}
+
+function buildProsodySsml(
+  text: string,
+  prosody: Pick<ClinicVoiceSettings, 'speakingRate' | 'pitch' | 'volume'>
+): string {
+  const escaped = escapeSSML(text || '');
+  return `<speak><prosody rate="${prosody.speakingRate}" pitch="${prosody.pitch}" volume="${prosody.volume}">${escaped}</prosody></speak>`;
 }
 
 /**

@@ -379,7 +379,8 @@ export function buildIncomingCallNotification(
     title: 'Incoming Call',
     body: `${callerInfo} calling ${clinicName}`,
     type: 'incoming_call',
-    sound: 'ringtone.caf', // iOS custom ringtone
+    // Use system default sound (iOS app does not bundle ringtone.caf).
+    sound: 'default',
     data: {
       callId,
       action: 'answer_call',

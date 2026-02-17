@@ -1,0 +1,81 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "f73663b724d5545e7bd37c399e9d1ff71f17d7510807117e395e18022038fd5f": {
+      "displayName": "InsuranceAuditSyncFn/Code",
+      "source": {
+        "path": "asset.f73663b724d5545e7bd37c399e9d1ff71f17d7510807117e395e18022038fd5f",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-b312c164": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "f73663b724d5545e7bd37c399e9d1ff71f17d7510807117e395e18022038fd5f.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "07ece5a02629b99edc4b5319ac4c66f1f80579d4b2040dd3d1323b916817622d": {
+      "displayName": "InsuranceDocProcessorFn/Code",
+      "source": {
+        "path": "asset.07ece5a02629b99edc4b5319ac4c66f1f80579d4b2040dd3d1323b916817622d",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-a5397d28": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "07ece5a02629b99edc4b5319ac4c66f1f80579d4b2040dd3d1323b916817622d.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "c185591d97ff0e541f528c9ae553de170dc0e83c785ec0e1ac5f3c519973ef65": {
+      "displayName": "InsuranceNoteCopierFn/Code",
+      "source": {
+        "path": "asset.c185591d97ff0e541f528c9ae553de170dc0e83c785ec0e1ac5f3c519973ef65",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-bdc2a042": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "c185591d97ff0e541f528c9ae553de170dc0e83c785ec0e1ac5f3c519973ef65.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "4759eceb80cce9a0e60edfbb3e366e44b9e398fe99674a3f5584f350b5e4bba5": {
+      "displayName": "InsuranceCommissionApiFn/Code",
+      "source": {
+        "path": "asset.4759eceb80cce9a0e60edfbb3e366e44b9e398fe99674a3f5584f350b5e4bba5",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "851620242036-us-east-1-cfa27cd9": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "4759eceb80cce9a0e60edfbb3e366e44b9e398fe99674a3f5584f350b5e4bba5.zip",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    },
+    "b0fbee5b5cf794fc9f15fa425ba7034a466154b165af21cc76d0a5b694a6f30f": {
+      "displayName": "TodaysDentalInsightsInsuranceAutomationN1 Template",
+      "source": {
+        "path": "TodaysDentalInsightsInsuranceAutomationN1.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "851620242036-us-east-1-58a475bf": {
+          "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
+          "objectKey": "b0fbee5b5cf794fc9f15fa425ba7034a466154b165af21cc76d0a5b694a6f30f.json",
+          "region": "us-east-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

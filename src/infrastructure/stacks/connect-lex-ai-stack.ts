@@ -63,6 +63,22 @@ export interface ConnectLexAiStackProps extends StackProps {
   sessionsTableArn: string;
 
   /**
+   * Voice agent configuration table name (per-clinic voice settings, greetings, etc.).
+   * Created by AiAgentsStack as `${stackName}-VoiceAgentConfig`.
+   */
+  voiceConfigTableName: string;
+  voiceConfigTableArn: string;
+
+  /**
+   * Scheduled calls table (AI outbound tracking).
+   * Created by AiAgentsStack as `${stackName}-ScheduledCalls`.
+   *
+   * Used by the Connect disconnect finalizer to mark scheduled calls as completed/failed.
+   */
+  scheduledCallsTableName: string;
+  scheduledCallsTableArn: string;
+
+  /**
    * Shared CallAnalytics table from AnalyticsStack.
    */
   callAnalyticsTableName: string;
@@ -225,6 +241,7 @@ export class ConnectLexAiStack extends Stack {
       environment: {
         AGENTS_TABLE: props.agentsTableName,
         SESSIONS_TABLE: props.sessionsTableName,
+        VOICE_CONFIG_TABLE: props.voiceConfigTableName,
         CALL_ANALYTICS_TABLE: props.callAnalyticsTableName,
         TRANSCRIPT_BUFFER_TABLE_NAME: props.transcriptBufferTableName,
         AI_PHONE_NUMBERS_JSON: props.aiPhoneNumbersJson || '{}',
@@ -260,6 +277,13 @@ export class ConnectLexAiStack extends Stack {
       effect: iam.Effect.ALLOW,
       actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem'],
       resources: [props.sessionsTableArn],
+    }));
+
+    // Voice config table (per-clinic Polly voice settings)
+    this.lexBedrockHookFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['dynamodb:GetItem'],
+      resources: [props.voiceConfigTableArn],
     }));
 
     this.lexBedrockHookFn.addToRolePolicy(new iam.PolicyStatement({
@@ -427,6 +451,7 @@ export class ConnectLexAiStack extends Stack {
         SESSIONS_TABLE: props.sessionsTableName,
         CALL_ANALYTICS_TABLE: props.callAnalyticsTableName,
         TRANSCRIPT_BUFFER_TABLE_NAME: props.transcriptBufferTableName,
+        SCHEDULED_CALLS_TABLE: props.scheduledCallsTableName,
       },
       logRetention: logs.RetentionDays.ONE_WEEK,
     });
@@ -452,6 +477,13 @@ export class ConnectLexAiStack extends Stack {
       effect: iam.Effect.ALLOW,
       actions: ['dynamodb:UpdateItem'],
       resources: [props.transcriptBufferTableArn],
+    }));
+
+    // Allow finalizer to update ScheduledCalls for outbound AI tracking
+    this.connectFinalizerFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['dynamodb:UpdateItem'],
+      resources: [props.scheduledCallsTableArn],
     }));
 
     // Grant Connect permission to invoke finalizer Lambda
@@ -948,6 +980,10 @@ export class ConnectLexAiStack extends Stack {
           Parameters: {
             LambdaFunctionARN: this.connectFinalizerFn.functionArn,
             InvocationTimeLimitSeconds: '8',
+            // Pass disconnect reason explicitly so Lambda can map outcomes (busy/no_answer/etc).
+            LambdaInvocationAttributes: {
+              disconnectReason: '$.DisconnectReason',
+            },
           },
           Transitions: {
             NextAction: 'disconnect-action',
@@ -1027,7 +1063,7 @@ export class ConnectLexAiStack extends Stack {
         DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
         // Force update ONLY when dependencies actually change
         // Bump version when contact flow logic changes (forces custom resource update)
-        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v8`,
+        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v11`,
       },
     });
     inboundFlow.node.addDependency(disconnectFlow);
@@ -1084,16 +1120,19 @@ export class ConnectLexAiStack extends Stack {
           FlowType: 'CONTACT_FLOW',
           Description: 'AI voice assistant with async pattern - continuous keyboard sounds during processing',
           LexBotAliasArn: lexBotAliasArn,
+          // Used only for per-clinic voice selection via UpdateContactTextToSpeechVoice
+          VoiceConfigLambdaArn: this.lexBedrockHookFn.functionArn,
           AsyncLambdaArn: asyncBedrockLambda.functionArn,
           KeyboardPromptId: keyboardPromptId,
           DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
           MaxPollLoops: String(props.asyncMaxPollLoops || 20),
           // Bump version when contact flow logic changes (forces custom resource update)
-          UpdateTrigger: `${lexBotAliasArn}|${asyncBedrockLambda.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|${props.asyncMaxPollLoops || 20}|v3`,
+          UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${asyncBedrockLambda.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|${props.asyncMaxPollLoops || 20}|v7`,
         },
       });
       asyncInboundFlow.node.addDependency(disconnectFlow);
       asyncInboundFlow.node.addDependency(lexIntegration);
+      asyncInboundFlow.node.addDependency(lexHookIntegration);
       asyncInboundFlow.node.addDependency(asyncLambdaIntegration!);
       asyncInboundFlow.node.addDependency(keyboardSoundPrompt);
 
@@ -1195,7 +1234,7 @@ export class ConnectLexAiStack extends Stack {
         LambdaFunctionArn: this.lexBedrockHookFn.functionArn,
         KeyboardPromptId: keyboardPromptId,
         DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
-        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v1`,
+        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v4`,
       },
     });
     outboundFlow.node.addDependency(disconnectFlow);

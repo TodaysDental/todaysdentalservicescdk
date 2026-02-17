@@ -492,16 +492,17 @@ async function createCampaign(
       };
     }
 
-    // Create budget first
-    const budgetOperation = {
-      create: {
-        name: `Budget - ${name} - ${Date.now()}`,
-        amount_micros: dollarsToMicros(dailyBudget),
-        delivery_method: 'STANDARD',
-      },
+    // Create budget first — must set explicitly_shared to false for campaign-specific budgets
+    // NOTE: The google-ads-api library's create() expects resource objects directly,
+    // NOT wrapped in { create: { ... } } operation objects.
+    const budgetResource = {
+      name: `Budget - ${name} - ${Date.now()}`,
+      amount_micros: dollarsToMicros(dailyBudget),
+      delivery_method: 'STANDARD',
+      explicitly_shared: false,
     };
 
-    const budgetResponse = await (client as any).campaignBudgets.create([budgetOperation]);
+    const budgetResponse = await (client as any).campaignBudgets.create([budgetResource]);
     budgetResourceName = budgetResponse.results[0].resource_name;
 
     // Build bidding strategy configuration
@@ -533,18 +534,16 @@ async function createCampaign(
     } : undefined;
 
     // Create campaign
-    const campaignOperation = {
-      create: {
-        name,
-        status,
-        advertising_channel_type: type,
-        campaign_budget: budgetResourceName,
-        ...biddingConfig,
-        network_settings: networkSettings,
-      },
+    const campaignResource = {
+      name,
+      status,
+      advertising_channel_type: type,
+      campaign_budget: budgetResourceName,
+      ...biddingConfig,
+      network_settings: networkSettings,
     };
 
-    const campaignResponse = await (client as any).campaigns.create([campaignOperation]);
+    const campaignResponse = await (client as any).campaigns.create([campaignResource]);
     campaignResourceName = campaignResponse.results[0].resource_name;
     const googleCampaignId = campaignResourceName!.split('/').pop()!;
 
@@ -571,16 +570,14 @@ async function createCampaign(
       // Get proper ad group type based on campaign type
       const adGroupType = CAMPAIGN_TYPE_TO_AD_GROUP_TYPE[type] || 'SEARCH_STANDARD';
 
-      const adGroupOperation = {
-        create: {
-          name: adGroup.name || `${name} - Ad Group`,
-          campaign: campaignResourceName!,
-          status: 'ENABLED',
-          type: adGroupType,
-          cpc_bid_micros: adGroup.cpcBidMicros,
-        },
+      const adGroupResource = {
+        name: adGroup.name || `${name} - Ad Group`,
+        campaign: campaignResourceName!,
+        status: 'ENABLED',
+        type: adGroupType,
+        cpc_bid_micros: adGroup.cpcBidMicros,
       };
-      const adGroupResponse = await (client as any).adGroups.create([adGroupOperation]);
+      const adGroupResponse = await (client as any).adGroups.create([adGroupResource]);
       adGroupResourceName = adGroupResponse.results[0].resource_name;
       console.log(`[GoogleAds] Created ad group: ${adGroupResourceName}`);
 
@@ -611,23 +608,21 @@ async function createCampaign(
             console.warn(`[GoogleAds] Ad text validation warnings: ${warnings.join('; ')}`);
           }
 
-          const adOperation = {
-            create: {
-              ad_group: adGroupResourceName,
-              status: 'ENABLED',
-              ad: {
-                responsive_search_ad: {
-                  headlines: validHeadlines.slice(0, 15).map((text) => ({ text })),
-                  descriptions: validDescriptions.slice(0, 4).map(text => ({ text })),
-                  path1: ad.path1,
-                  path2: ad.path2,
-                },
-                final_urls: [ad.finalUrl],
+          const adResource = {
+            ad_group: adGroupResourceName,
+            status: 'ENABLED',
+            ad: {
+              responsive_search_ad: {
+                headlines: validHeadlines.slice(0, 15).map((text) => ({ text })),
+                descriptions: validDescriptions.slice(0, 4).map(text => ({ text })),
+                path1: ad.path1,
+                path2: ad.path2,
               },
+              final_urls: [ad.finalUrl],
             },
           };
 
-          const adResponse = await (client as any).adGroupAds.create([adOperation]);
+          const adResponse = await (client as any).adGroupAds.create([adResource]);
           adResourceName = adResponse.results[0].resource_name;
           console.log(`[GoogleAds] Created responsive search ad: ${adResourceName}`);
         }

@@ -482,6 +482,8 @@ export class AdminStack extends Stack {
           STAFF_USER_TABLE: props.staffUserTableName || '',
           // Optional: allow /analytics/call/{callId} to hydrate transcripts from TranscriptBuffersV2
           TRANSCRIPT_BUFFER_TABLE_NAME: props.transcriptBufferTableName || '',
+          // Optional: allow /analytics/call/{callId} to hydrate transcripts & sentiment from RecordingMetadata
+          RECORDING_METADATA_TABLE_NAME: props.recordingMetadataTableName || '',
           AWS_REGION_OVERRIDE: Stack.of(this).region,
         },
       });
@@ -534,6 +536,17 @@ export class AdminStack extends Stack {
           actions: ['dynamodb:GetItem'],
           resources: [
             `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.transcriptBufferTableName}`,
+          ],
+        }));
+      }
+
+      // Grant read permission to RecordingMetadata table (for transcript & sentiment hydration)
+      if (props.recordingMetadataTableName) {
+        this.getAnalyticsFn.addToRolePolicy(new iam.PolicyStatement({
+          actions: ['dynamodb:Query', 'dynamodb:GetItem'],
+          resources: [
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.recordingMetadataTableName}`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.recordingMetadataTableName}/index/*`,
           ],
         }));
       }

@@ -195,32 +195,22 @@ function buildContactFlowContent(params: {
     Metadata: {
       entryPointPosition: { x: 20, y: 20 },
       ActionMetadata: {
-        'welcome-message': { position: { x: 160, y: 20 } },
-        'set-recording': { position: { x: 260, y: 20 } },
+        'set-recording': { position: { x: 160, y: 20 } },
         'set-contact-attrs': { position: { x: 360, y: 20 } },
-        'set-disconnect-flow': { position: { x: 560, y: 20 } },
-        'lex-asr': { position: { x: 760, y: 20 } },
-        'typing-once': { position: { x: 960, y: 20 } },
-        'invoke-ai': { position: { x: 1160, y: 20 } },
-        'speak-ai': { position: { x: 1360, y: 20 } },
-        'disconnect-action': { position: { x: 1560, y: 20 } },
+        'invoke-voice-config': { position: { x: 560, y: 20 } },
+        'set-tts-voice': { position: { x: 760, y: 20 } },
+        'store-clinic-id': { position: { x: 960, y: 20 } },
+        'welcome-message': { position: { x: 1160, y: 20 } },
+        'set-disconnect-flow': { position: { x: 1360, y: 20 } },
+        'lex-asr': { position: { x: 1560, y: 20 } },
+        'typing-once': { position: { x: 1760, y: 20 } },
+        'invoke-ai': { position: { x: 1960, y: 20 } },
+        'speak-ai': { position: { x: 2160, y: 20 } },
+        'disconnect-action': { position: { x: 2360, y: 20 } },
       },
     },
     Actions: [
-      // 1) Welcome message
-      {
-        Identifier: 'welcome-message',
-        Type: 'MessageParticipant',
-        Parameters: {
-          Text: 'Hello! Thank you for calling. How can I help you today?',
-        },
-        Transitions: {
-          NextAction: 'set-contact-attrs',
-          Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
-        },
-      },
-
-      // 2) Enable call recording (captures both sides of the automated interaction)
+      // 1) Enable call recording (captures both sides of the automated interaction)
       // Requires the Connect instance to have CALL_RECORDINGS storage configured.
       {
         Identifier: 'set-recording',
@@ -232,14 +222,14 @@ function buildContactFlowContent(params: {
           },
         },
         Transitions: {
-          NextAction: 'welcome-message',
+          NextAction: 'set-contact-attrs',
           // This action does not define error branches in flow language; keep empty arrays (matches Connect sample flows).
           Errors: [],
           Conditions: [],
         },
       },
 
-      // 2) Set contact attributes (caller/dialed numbers for Lex session)
+      // 2) Set contact attributes (caller/dialed numbers)
       {
         Identifier: 'set-contact-attrs',
         Type: 'UpdateContactAttributes',
@@ -247,15 +237,95 @@ function buildContactFlowContent(params: {
           Attributes: {
             callerNumber: '$.CustomerEndpoint.Address',
             dialedNumber: '$.SystemEndpoint.Address',
+            // Safe defaults so SSML <prosody> never renders invalid attributes.
+            // These get overwritten by per-clinic values when voiceConfig succeeds.
+            ttsSpeakingRate: 'medium',
+            ttsPitch: 'medium',
+            ttsVolume: 'medium',
           },
         },
         Transitions: {
-          NextAction: 'set-disconnect-flow',
+          NextAction: 'invoke-voice-config',
           Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
         },
       },
 
-      // 3) Set disconnect flow (CustomerRemaining hook) so Connect runs our finalizer flow
+      // 3) Look up per-clinic voice settings via Lambda (uses dialedNumber -> clinicId mapping)
+      {
+        Identifier: 'invoke-voice-config',
+        Type: 'InvokeLambdaFunction',
+        Parameters: {
+          LambdaFunctionARN: lambdaFunctionArn,
+          InvocationTimeLimitSeconds: '8',
+          LambdaInvocationAttributes: {
+            requestType: 'voiceConfig',
+            callerNumber: '$.Attributes.callerNumber',
+            dialedNumber: '$.Attributes.dialedNumber',
+            // For outbound flows, clinicId is often provided as a pre-set contact attribute.
+            clinicId: '$.Attributes.clinicId',
+          },
+        },
+        Transitions: {
+          // Fail open: if voice config fails, use Connect default voice (Joanna) and continue.
+          NextAction: 'set-tts-voice',
+          // Avoid overwriting default prosody attrs with empty $.External.* on Lambda failure.
+          Errors: [{ NextAction: 'welcome-message', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 4) Apply the chosen Polly voice for all subsequent TTS prompts in this contact
+      {
+        Identifier: 'set-tts-voice',
+        Type: 'UpdateContactTextToSpeechVoice',
+        Parameters: {
+          TextToSpeechVoice: '$.External.TextToSpeechVoice',
+          TextToSpeechEngine: '$.External.TextToSpeechEngine',
+        },
+        Transitions: {
+          // Fail open: proceed even if voice/engine was invalid; Connect will fall back to default voice.
+          NextAction: 'store-clinic-id',
+          Errors: [{ NextAction: 'store-clinic-id', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 5) Persist clinicId on the contact for downstream Lambda/Lex reads
+      {
+        Identifier: 'store-clinic-id',
+        Type: 'UpdateContactAttributes',
+        Parameters: {
+          Attributes: {
+            clinicId: '$.External.clinicId',
+            ttsSpeakingRate: '$.External.speakingRate',
+            ttsPitch: '$.External.pitch',
+            ttsVolume: '$.External.volume',
+          },
+        },
+        Transitions: {
+          NextAction: 'welcome-message',
+          Errors: [{ NextAction: 'welcome-message', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 6) Welcome message (now uses per-clinic Polly voice)
+      {
+        Identifier: 'welcome-message',
+        Type: 'MessageParticipant',
+        Parameters: {
+          // IMPORTANT: Keep this greeting static and SSML-safe.
+          // Amazon Connect reliably supports dynamic JSONPath values when the *entire*
+          // parameter is a JSONPath (e.g. `$.Attributes.foo`), but does not reliably
+          // substitute JSONPath references embedded *inside* SSML tag attributes.
+          // A malformed SSML greeting can cause the contact to error out and disconnect.
+          Text: 'Hello! Thank you for calling. How can I help you today?',
+        },
+        Transitions: {
+          NextAction: 'set-disconnect-flow',
+          // Fail open: don't disconnect if greeting playback fails for any reason.
+          Errors: [{ NextAction: 'set-disconnect-flow', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 7) Set disconnect flow (CustomerRemaining hook) so Connect runs our finalizer flow
       // when the disconnect event occurs (e.g., post-contact processing).
       {
         Identifier: 'set-disconnect-flow',
@@ -271,7 +341,7 @@ function buildContactFlowContent(params: {
         },
       },
 
-      // 4) Lex ASR (single turn): Lex code hook stores transcript in session attrs
+      // 8) Lex ASR (single turn): Lex code hook stores transcript in session attrs
       {
         Identifier: 'lex-asr',
         Type: 'ConnectParticipantWithLexBot',
@@ -285,21 +355,23 @@ function buildContactFlowContent(params: {
           LexSessionAttributes: {
             callerNumber: '$.Attributes.callerNumber',
             dialedNumber: '$.Attributes.dialedNumber',
+            clinicId: '$.Attributes.clinicId',
           },
         },
         Transitions: {
           NextAction: 'typing-once',
           // Connect requires NoMatchingCondition for this action type
           Errors: [
-            // In practice Connect can emit NoMatchingCondition even when we always want to proceed,
-            // so route it to the same next step to avoid an infinite Lex loop.
+            // If Lex times out or errors, fail open and continue the flow.
+            // The downstream Lambda handles empty/no-input transcripts by asking the caller to repeat.
+            { NextAction: 'typing-once', ErrorType: 'InputTimeLimitExceeded' },
             { NextAction: 'typing-once', ErrorType: 'NoMatchingCondition' },
-            { NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' },
+            { NextAction: 'typing-once', ErrorType: 'NoMatchingError' },
           ],
         },
       },
 
-      // 4) Play a SHORT typing sound once (WAV prompt, ~0.8-2.0s)
+      // 9) Play a SHORT typing sound once (WAV prompt, ~0.8-2.0s)
       {
         Identifier: 'typing-once',
         Type: 'MessageParticipant',
@@ -312,7 +384,7 @@ function buildContactFlowContent(params: {
         },
       },
 
-      // 5) Invoke Lambda directly from Connect with the transcript
+      // 10) Invoke Lambda directly from Connect with the transcript
       {
         Identifier: 'invoke-ai',
         Type: 'InvokeLambdaFunction',
@@ -332,12 +404,12 @@ function buildContactFlowContent(params: {
         },
       },
 
-      // 6) Speak the AI response returned by Lambda
+      // 11) Speak the AI response returned by Lambda
       {
         Identifier: 'speak-ai',
         Type: 'MessageParticipant',
         Parameters: {
-          Text: '$.External.aiResponse',
+          SSML: '$.External.ssmlResponse',
         },
         Transitions: {
           NextAction: 'lex-asr', // loop for next user turn
@@ -345,7 +417,7 @@ function buildContactFlowContent(params: {
         },
       },
 
-      // 7) Disconnect
+      // 12) Disconnect
       {
         Identifier: 'disconnect-action',
         Type: 'DisconnectParticipant',
