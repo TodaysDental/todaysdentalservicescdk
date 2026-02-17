@@ -83,7 +83,7 @@ export interface Ticket {
     assigneeId: string;
     assigneeName: string;
     assigneeEmail?: string;
-    clinicId: string;
+    clinicId?: string;
     mediaFiles?: MediaFile[];
     resolution?: string;
     resolvedAt?: string;
@@ -124,7 +124,12 @@ export interface CreateTicketRequest {
     description: string;
     module: string;
     priority?: TicketPriority;
-    clinicId: string;
+    clinicId?: string;
+    // Optional reporter details — frontend can supply from localStorage
+    // Falls back to JWT authorizer context if not provided
+    reporterName?: string;
+    reporterEmail?: string;
+    reporterId?: string;
 }
 
 export interface UpdateTicketRequest {
@@ -178,7 +183,6 @@ export interface TicketFilters {
     module?: string[];
     ticketType?: TicketType;
     priority?: string[];
-    clinicId?: string;
     assigneeId?: string;
     reporterId?: string;
     search?: string;
