@@ -15,7 +15,7 @@ import {
     QueryCommand,
     ScanCommand,
 } from '@aws-sdk/lib-dynamodb';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'crypto';
 import { buildCorsHeadersAsync } from '../../shared/utils/cors';
@@ -131,7 +131,6 @@ function parseFilters(params: Record<string, string | undefined>): TicketFilters
         }
     }
 
-    if (params.clinicId) filters.clinicId = params.clinicId;
     if (params.assigneeId) filters.assigneeId = params.assigneeId;
     if (params.reporterId) filters.reporterId = params.reporterId;
     if (params.search) filters.search = params.search.trim();
@@ -199,11 +198,6 @@ function buildTicketQuery(filters: TicketFilters) {
         indexName = 'byAssignee';
         expressionAttrNames['#pk'] = 'assigneeId';
         expressionAttrValues[':pkVal'] = filters.assigneeId;
-        keyCondExpression = '#pk = :pkVal';
-    } else if (filters.clinicId) {
-        indexName = 'byClinic';
-        expressionAttrNames['#pk'] = 'clinicId';
-        expressionAttrValues[':pkVal'] = filters.clinicId;
         keyCondExpression = '#pk = :pkVal';
     } else if (filters.status && filters.status.length === 1) {
         indexName = 'byStatus';
@@ -308,13 +302,6 @@ function buildTicketQuery(filters: TicketFilters) {
         }
     }
 
-    // clinicId filter (when not used as GSI)
-    if (filters.clinicId && indexName !== 'byClinic') {
-        expressionAttrNames['#clinicId'] = 'clinicId';
-        expressionAttrValues[':clinicId'] = filters.clinicId;
-        filterParts.push('#clinicId = :clinicId');
-    }
-
     // assigneeId filter (when not used as GSI)
     if (filters.assigneeId && indexName !== 'byAssignee') {
         expressionAttrNames['#assigneeId'] = 'assigneeId';
@@ -410,7 +397,7 @@ async function createTicket(event: APIGatewayProxyEvent): Promise<APIGatewayProx
     const body = parseBody<CreateTicketRequest>(event);
     if (!body) return httpErr(event, 400, 'Invalid JSON body');
 
-    const { ticketType, title, description, module, priority, clinicId } = body;
+    const { ticketType, title, description, module, priority } = body;
 
     // Validation
     if (!ticketType || !Object.values(TicketType).includes(ticketType)) {
@@ -425,14 +412,16 @@ async function createTicket(event: APIGatewayProxyEvent): Promise<APIGatewayProx
     if (!module) {
         return httpErr(event, 400, 'module is required');
     }
-    if (!clinicId) {
-        return httpErr(event, 400, 'clinicId is required');
-    }
     if (priority && !Object.values(TicketPriority).includes(priority)) {
         return httpErr(event, 400, `Invalid priority. Valid: ${Object.values(TicketPriority).join(', ')}`);
     }
 
     const user = getUserContext(event);
+
+    // Reporter details: prefer body (from localStorage) → fall back to JWT context
+    const reporterId = body.reporterId || user.staffId;
+    const reporterName = body.reporterName || user.staffName;
+    const reporterEmail = body.reporterEmail || user.email;
 
     // Auto-assignment: look up module assignee
     let assigneeId = '';
@@ -479,13 +468,13 @@ async function createTicket(event: APIGatewayProxyEvent): Promise<APIGatewayProx
         module,
         status: TicketStatus.OPEN,
         priority: priority || TicketPriority.MEDIUM,
-        reporterId: user.staffId,
-        reporterName: user.staffName,
-        reporterEmail: user.email,
+        reporterId,
+        reporterName,
+        reporterEmail,
         assigneeId,
         assigneeName,
         assigneeEmail,
-        clinicId,
+        clinicId: body.clinicId || '',
         createdAt: now,
         updatedAt: now,
     };
@@ -775,7 +764,7 @@ async function requestMediaUpload(event: APIGatewayProxyEvent, ticketId: string)
         return httpErr(event, 400, `File too large. Max: 50 MB`);
     }
 
-    // Check ticket exists and get clinicId
+    // Check ticket exists
     const { Item: ticket } = await ddb.send(new GetCommand({
         TableName: TICKETS_TABLE,
         Key: { ticketId },
@@ -789,7 +778,7 @@ async function requestMediaUpload(event: APIGatewayProxyEvent, ticketId: string)
     }
 
     const fileId = `file-${randomUUID()}`;
-    const s3Key = `${ticket.clinicId}/${ticketId}/${fileId}-${fileName}`;
+    const s3Key = `${ticketId}/${fileId}-${fileName}`;
 
     const presignedUrl = await getSignedUrl(
         s3,
@@ -848,6 +837,40 @@ async function confirmMediaUpload(event: APIGatewayProxyEvent, ticketId: string)
     }));
 
     return httpOk(event, { success: true, message: 'Media file confirmed', data: result.Attributes });
+}
+
+/** GET /tickets/:ticketId/media/:fileId — presigned download URL */
+async function getMediaDownloadUrl(event: APIGatewayProxyEvent, ticketId: string, fileId: string): Promise<APIGatewayProxyResult> {
+    // Look up the ticket to find the file's s3Key
+    const { Item: ticket } = await ddb.send(new GetCommand({
+        TableName: TICKETS_TABLE,
+        Key: { ticketId },
+    }));
+    if (!ticket) return httpErr(event, 404, 'Ticket not found');
+
+    const mediaFiles = ticket.mediaFiles || [];
+    const file = mediaFiles.find((f: any) => f.fileId === fileId);
+    if (!file) return httpErr(event, 404, 'File not found');
+
+    const presignedUrl = await getSignedUrl(
+        s3,
+        new GetObjectCommand({
+            Bucket: MEDIA_BUCKET,
+            Key: file.s3Key,
+        }),
+        { expiresIn: PRESIGNED_URL_EXPIRY }
+    );
+
+    return httpOk(event, {
+        success: true,
+        data: {
+            fileId: file.fileId,
+            fileName: file.fileName,
+            contentType: file.contentType,
+            downloadUrl: presignedUrl,
+            expiresIn: PRESIGNED_URL_EXPIRY,
+        },
+    });
 }
 
 /** GET /dashboard (assignee dashboard) */
@@ -916,11 +939,6 @@ async function assigneeDashboard(event: APIGatewayProxyEvent): Promise<APIGatewa
             filterParts.push(`#priority IN (${ph.join(', ')})`);
         }
     }
-    if (params.clinicId) {
-        queryInput.ExpressionAttributeNames['#clinicId'] = 'clinicId';
-        queryInput.ExpressionAttributeValues[':clinicId'] = params.clinicId;
-        filterParts.push('#clinicId = :clinicId');
-    }
 
     if (filterParts.length > 0) {
         queryInput.FilterExpression = filterParts.join(' AND ');
@@ -980,11 +998,6 @@ async function dashboardStats(event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     const filterParts: string[] = [];
 
-    if (params.clinicId) {
-        scanInput.ExpressionAttributeNames['#clinicId'] = 'clinicId';
-        scanInput.ExpressionAttributeValues[':clinicId'] = params.clinicId;
-        filterParts.push('#clinicId = :clinicId');
-    }
     if (params.ticketType) {
         scanInput.ExpressionAttributeNames['#ticketType'] = 'ticketType';
         scanInput.ExpressionAttributeValues[':ticketType'] = params.ticketType;
@@ -1234,6 +1247,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         if (method === 'POST' && /^\/tickets\/[^/]+\/media\/confirm$/.test(path)) {
             const ticketId = path.split('/')[2];
             return confirmMediaUpload(event, ticketId);
+        }
+
+        // GET /tickets/:ticketId/media/:fileId (presigned download URL)
+        if (method === 'GET' && /^\/tickets\/[^/]+\/media\/[^/]+$/.test(path)) {
+            const parts = path.split('/');
+            const ticketId = parts[2];
+            const fileId = parts[4];
+            return getMediaDownloadUrl(event, ticketId, fileId);
         }
 
         // --- Dashboard ---

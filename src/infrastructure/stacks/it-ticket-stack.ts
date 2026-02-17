@@ -140,13 +140,6 @@ export class ItTicketStack extends Stack {
             sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
         });
 
-        // GSI: byClinic — Admin view: all tickets per clinic
-        this.ticketsTable.addGlobalSecondaryIndex({
-            indexName: 'byClinic',
-            partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
-            sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
-        });
-
         // Table 2: TicketComments
         this.ticketCommentsTable = new dynamodb.Table(this, 'TicketCommentsTable', {
             tableName: `${this.stackName}-TicketComments`,
