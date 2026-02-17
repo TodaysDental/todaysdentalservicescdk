@@ -16,6 +16,27 @@
  */
 
 import { GoogleAdsApi, Customer } from 'google-ads-api';
+
+// Google Ads API enum values (numeric protobuf values)
+// Defined locally to avoid TS resolution issues — google-ads-api is only available at Lambda runtime
+export const enums = {
+  AdvertisingChannelType: {
+    SEARCH: 2,
+    DISPLAY: 3,
+    SHOPPING: 4,
+    VIDEO: 6,
+    PERFORMANCE_MAX: 13,
+  },
+  CampaignStatus: {
+    ENABLED: 2,
+    PAUSED: 3,
+    REMOVED: 4,
+  },
+  BudgetDeliveryMethod: {
+    STANDARD: 2,
+    ACCELERATED: 3,
+  },
+} as const;
 import {
   getGlobalSecret,
   getAllClinicConfigs,

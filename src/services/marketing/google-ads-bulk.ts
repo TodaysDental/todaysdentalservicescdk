@@ -34,6 +34,7 @@ import {
   MAX_TARGET_ROAS_PERCENT,
   validateTargetRoas,
   sanitizeAdTextValue,
+  enums,
 } from '../../shared/utils/google-ads-client';
 import {
   getAllowedClinicIds,
@@ -110,6 +111,54 @@ function extractErrorMessage(error: any): string {
   } catch {
     return 'Unknown error (could not extract message)';
   }
+}
+
+/**
+ * Deep-extract Google Ads API error details from protobuf objects.
+ * Protobuf objects don't serialize with JSON.stringify (shows {}), so we manually extract fields.
+ */
+function extractDetailedErrors(error: any): string {
+  const details: string[] = [];
+
+  if (error.errors && Array.isArray(error.errors)) {
+    error.errors.forEach((e: any, i: number) => {
+      const parts: string[] = [`Error ${i + 1}:`];
+
+      // Try to access common protobuf fields
+      if (e.message) parts.push(`message=${e.message}`);
+      if (e.error_code) {
+        // error_code is an object like { campaign_error: 9 } or { request_error: 3 }
+        try {
+          const codeKeys = Object.keys(e.error_code);
+          if (codeKeys.length > 0) {
+            parts.push(`error_code={${codeKeys.map(k => `${k}: ${e.error_code[k]}`).join(', ')}}`);
+          } else {
+            // Try to get it via JSON or toString
+            parts.push(`error_code=${String(e.error_code)}`);
+          }
+        } catch { parts.push('error_code=(unreadable)'); }
+      }
+      if (e.trigger) {
+        try {
+          parts.push(`trigger=${e.trigger.string_value || JSON.stringify(e.trigger)}`);
+        } catch { /* skip */ }
+      }
+      if (e.location) {
+        try {
+          const fieldPaths = e.location?.field_path_elements?.map((fp: any) =>
+            fp.field_name + (fp.index !== undefined ? `[${fp.index}]` : '')
+          );
+          if (fieldPaths?.length) parts.push(`field_path=${fieldPaths.join('.')}`);
+        } catch { /* skip */ }
+      }
+
+      details.push(parts.join(' '));
+    });
+  }
+
+  if (error.request_id) details.push(`request_id=${error.request_id}`);
+
+  return details.length > 0 ? details.join(' | ') : 'No detailed error info available';
 }
 
 /**
@@ -517,26 +566,25 @@ async function bulkPublishCampaigns(
       const campaignName = replacePlaceholders(campaignTemplate.name, clinic);
 
       // Create budget first — must set explicitly_shared to false for campaign-specific budgets
-      // NOTE: The google-ads-api library's create() expects resource objects directly,
-      // NOT wrapped in { create: { ... } } operation objects.
       const budgetResource = {
         name: `Budget - ${campaignName} - ${Date.now()}`,
         amount_micros: dollarsToMicros(campaignTemplate.dailyBudget),
-        delivery_method: 'STANDARD',
+        delivery_method: enums.BudgetDeliveryMethod.STANDARD,
         explicitly_shared: false,
       };
 
+      console.log(`[GoogleAdsBulk] Budget resource:`, JSON.stringify(budgetResource));
       const budgetResponse = await (client as any).campaignBudgets.create([budgetResource]);
       budgetResourceName = budgetResponse.results[0].resource_name;
+      console.log(`[GoogleAdsBulk] Budget created: ${budgetResourceName}`);
 
       // Build bidding configuration
       const biddingConfig: any = {};
       switch (campaignTemplate.biddingStrategy || 'MANUAL_CPC') {
         case 'MANUAL_CPC':
-          biddingConfig.manual_cpc = { enhanced_cpc_enabled: true };
+          biddingConfig.manual_cpc = {};
           break;
         case 'TARGET_CPA':
-          // No fallback - validation above ensures targetCpa is present
           biddingConfig.target_cpa = { target_cpa_micros: dollarsToMicros(campaignTemplate.targetCpa!) };
           break;
         case 'MAXIMIZE_CONVERSIONS':
@@ -546,29 +594,45 @@ async function bulkPublishCampaigns(
           biddingConfig.maximize_clicks = {};
           break;
         case 'TARGET_ROAS':
-          // No fallback - validation above ensures targetRoas is present
-          biddingConfig.target_roas = { target_roas: campaignTemplate.targetRoas! / 100 }; // Convert percentage to decimal
+          biddingConfig.target_roas = { target_roas: campaignTemplate.targetRoas! / 100 };
           break;
       }
 
+      // Map campaign type string to enum value
+      const campaignTypeStr = campaignTemplate.type || 'SEARCH';
+      const channelTypeEnum = campaignTypeStr === 'SEARCH'
+        ? enums.AdvertisingChannelType.SEARCH
+        : campaignTypeStr === 'DISPLAY'
+          ? enums.AdvertisingChannelType.DISPLAY
+          : campaignTypeStr === 'VIDEO'
+            ? enums.AdvertisingChannelType.VIDEO
+            : enums.AdvertisingChannelType.SEARCH;
+
+      // Map status string to enum value
+      const statusStr = campaignTemplate.status || 'PAUSED';
+      const statusEnum = statusStr === 'ENABLED'
+        ? enums.CampaignStatus.ENABLED
+        : enums.CampaignStatus.PAUSED;
+
       // Build network settings based on campaign type
-      const campaignType = campaignTemplate.type || 'SEARCH';
-      const networkSettings = campaignType === 'SEARCH' ? {
+      const networkSettings = campaignTypeStr === 'SEARCH' ? {
         target_google_search: true,
         target_search_network: true,
-      } : campaignType === 'VIDEO' ? {
+      } : campaignTypeStr === 'VIDEO' ? {
         target_youtube: true,
       } : undefined;
 
-      // Create campaign
+      // Create campaign with proper enum values
       const campaignResource = {
         name: campaignName,
-        status: campaignTemplate.status || 'PAUSED',
-        advertising_channel_type: campaignType,
+        status: statusEnum,
+        advertising_channel_type: channelTypeEnum,
         campaign_budget: budgetResourceName,
         ...biddingConfig,
-        network_settings: networkSettings,
+        ...(networkSettings ? { network_settings: networkSettings } : {}),
       };
+
+      console.log(`[GoogleAdsBulk] Campaign resource:`, JSON.stringify(campaignResource));
 
       // Note: campaignResourceName is declared outside try block for cleanup access
       let googleCampaignId: string | undefined;
@@ -733,8 +797,20 @@ async function bulkPublishCampaigns(
     } catch (error: any) {
       const errorMsg = extractErrorMessage(error);
       console.error(`[GoogleAdsBulk] Error for account ${customerId}:`, errorMsg);
-      // Log full error object for debugging (gRPC errors have nested structure)
-      console.error(`[GoogleAdsBulk] Full error details:`, JSON.stringify(error, Object.getOwnPropertyNames(error)).slice(0, 2000));
+      // Log detailed error info (protobuf objects don't serialize well with JSON.stringify)
+      console.error(`[GoogleAdsBulk] Detailed errors:`, extractDetailedErrors(error));
+      // Also try to log all own property names for deep debugging
+      try {
+        const errKeys = Object.getOwnPropertyNames(error);
+        console.error(`[GoogleAdsBulk] Error keys: [${errKeys.join(', ')}]`);
+        if (error.errors && Array.isArray(error.errors)) {
+          error.errors.forEach((e: any, i: number) => {
+            const eKeys = Object.getOwnPropertyNames(e);
+            console.error(`[GoogleAdsBulk] errors[${i}] keys: [${eKeys.join(', ')}], values:`,
+              eKeys.reduce((acc: any, k: string) => { acc[k] = e[k]; return acc; }, {}));
+          });
+        }
+      } catch { /* best-effort logging */ }
 
       // CLEANUP: Remove orphaned budget if campaign creation failed
       if (budgetResourceName && !campaignResourceName && client) {

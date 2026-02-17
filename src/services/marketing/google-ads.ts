@@ -43,6 +43,7 @@ import {
   MAX_TARGET_ROAS_PERCENT,
   PERFORMANCE_THRESHOLDS,
   validateTargetRoas,
+  enums,
 } from '../../shared/utils/google-ads-client';
 import {
   getAllowedClinicIds,
@@ -493,12 +494,10 @@ async function createCampaign(
     }
 
     // Create budget first — must set explicitly_shared to false for campaign-specific budgets
-    // NOTE: The google-ads-api library's create() expects resource objects directly,
-    // NOT wrapped in { create: { ... } } operation objects.
     const budgetResource = {
       name: `Budget - ${name} - ${Date.now()}`,
       amount_micros: dollarsToMicros(dailyBudget),
-      delivery_method: 'STANDARD',
+      delivery_method: enums.BudgetDeliveryMethod.STANDARD,
       explicitly_shared: false,
     };
 
@@ -509,7 +508,7 @@ async function createCampaign(
     const biddingConfig: any = {};
     switch (biddingStrategy) {
       case 'MANUAL_CPC':
-        biddingConfig.manual_cpc = { enhanced_cpc_enabled: true };
+        biddingConfig.manual_cpc = {};
         break;
       case 'TARGET_CPA':
         biddingConfig.target_cpa = { target_cpa_micros: dollarsToMicros(targetCpa!) };
@@ -521,9 +520,22 @@ async function createCampaign(
         biddingConfig.maximize_clicks = {};
         break;
       case 'TARGET_ROAS':
-        biddingConfig.target_roas = { target_roas: targetRoas! / 100 }; // Convert percentage to decimal
+        biddingConfig.target_roas = { target_roas: targetRoas! / 100 };
         break;
     }
+
+    // Map campaign type and status to enum values
+    const channelTypeEnum = type === 'SEARCH'
+      ? enums.AdvertisingChannelType.SEARCH
+      : type === 'DISPLAY'
+        ? enums.AdvertisingChannelType.DISPLAY
+        : type === 'VIDEO'
+          ? enums.AdvertisingChannelType.VIDEO
+          : enums.AdvertisingChannelType.SEARCH;
+
+    const statusEnum = status === 'ENABLED'
+      ? enums.CampaignStatus.ENABLED
+      : enums.CampaignStatus.PAUSED;
 
     // Build network settings based on campaign type
     const networkSettings = type === 'SEARCH' ? {
@@ -533,14 +545,14 @@ async function createCampaign(
       target_youtube: true,
     } : undefined;
 
-    // Create campaign
+    // Create campaign with proper enum values
     const campaignResource = {
       name,
-      status,
-      advertising_channel_type: type,
+      status: statusEnum,
+      advertising_channel_type: channelTypeEnum,
       campaign_budget: budgetResourceName,
       ...biddingConfig,
-      network_settings: networkSettings,
+      ...(networkSettings ? { network_settings: networkSettings } : {}),
     };
 
     const campaignResponse = await (client as any).campaigns.create([campaignResource]);
