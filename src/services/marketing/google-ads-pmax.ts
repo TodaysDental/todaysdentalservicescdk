@@ -28,6 +28,7 @@ import {
   getGoogleAdsClient,
   microsToDollars,
   dollarsToMicros,
+  enums,
 } from '../../shared/utils/google-ads-client';
 
 // Module permission configuration
@@ -264,8 +265,6 @@ async function createPMaxCampaign(
     const client = await getGoogleAdsClient(customerId);
 
     // Step 1: Create budget — must set explicitly_shared to false for campaign-specific budgets
-    // NOTE: The google-ads-api library's create() expects resource objects directly,
-    // NOT wrapped in { create: { ... } } operation objects. The library handles wrapping internally.
     const budgetResource = {
       name: `PMax Budget - ${name} - ${Date.now()}`,
       amount_micros: dollarsToMicros(dailyBudget),
@@ -277,22 +276,30 @@ async function createPMaxCampaign(
     const budgetResourceName = budgetResponse.results[0].resource_name;
     console.log(`[GoogleAdsPMax] Budget created: ${budgetResourceName}`);
 
-    // Step 2: Create Performance Max campaign
+    // Step 2: Create Performance Max campaign with proper enum values
+    const statusEnum = status === 'ENABLED'
+      ? enums.CampaignStatus.ENABLED
+      : enums.CampaignStatus.PAUSED;
+
     const campaignResource: any = {
       name,
       campaign_budget: budgetResourceName,
-      advertising_channel_type: 'PERFORMANCE_MAX',
-      status,
+      advertising_channel_type: enums.AdvertisingChannelType.PERFORMANCE_MAX,
+      status: statusEnum,
       // Bidding strategy
+      // IMPORTANT: Google Ads API protobuf oneofs reject empty objects {}.
+      // Each bidding strategy MUST have at least one concrete field value.
       ...(targetRoas ? {
         maximize_conversion_value: {
           target_roas: targetRoas,
         },
       } : {
         maximize_conversions: {
-          ...(targetCpa ? { target_cpa_micros: dollarsToMicros(targetCpa) } : {}),
+          target_cpa_micros: targetCpa ? dollarsToMicros(targetCpa) : 0,
         },
       }),
+      // EU Political Advertising compliance — required field since Google Ads API v15+
+      contains_eu_political_advertising: false,
     };
 
     console.log('[GoogleAdsPMax] Creating campaign:', JSON.stringify(campaignResource));
