@@ -264,41 +264,39 @@ async function createPMaxCampaign(
     const client = await getGoogleAdsClient(customerId);
 
     // Step 1: Create budget — must set explicitly_shared to false for campaign-specific budgets
-    const budgetOperation = {
-      create: {
-        name: `PMax Budget - ${name} - ${Date.now()}`,
-        amount_micros: dollarsToMicros(dailyBudget),
-        explicitly_shared: false,
-      },
+    // NOTE: The google-ads-api library's create() expects resource objects directly,
+    // NOT wrapped in { create: { ... } } operation objects. The library handles wrapping internally.
+    const budgetResource = {
+      name: `PMax Budget - ${name} - ${Date.now()}`,
+      amount_micros: dollarsToMicros(dailyBudget),
+      explicitly_shared: false,
     };
 
-    console.log('[GoogleAdsPMax] Creating budget:', JSON.stringify(budgetOperation));
-    const budgetResponse = await (client as any).campaignBudgets.create([budgetOperation]);
+    console.log('[GoogleAdsPMax] Creating budget:', JSON.stringify(budgetResource));
+    const budgetResponse = await (client as any).campaignBudgets.create([budgetResource]);
     const budgetResourceName = budgetResponse.results[0].resource_name;
     console.log(`[GoogleAdsPMax] Budget created: ${budgetResourceName}`);
 
     // Step 2: Create Performance Max campaign
-    const campaignOperation: any = {
-      create: {
-        name,
-        campaign_budget: budgetResourceName,
-        advertising_channel_type: 'PERFORMANCE_MAX',
-        status,
-        // Bidding strategy
-        ...(targetRoas ? {
-          maximize_conversion_value: {
-            target_roas: targetRoas,
-          },
-        } : {
-          maximize_conversions: {
-            ...(targetCpa ? { target_cpa_micros: dollarsToMicros(targetCpa) } : {}),
-          },
-        }),
-      },
+    const campaignResource: any = {
+      name,
+      campaign_budget: budgetResourceName,
+      advertising_channel_type: 'PERFORMANCE_MAX',
+      status,
+      // Bidding strategy
+      ...(targetRoas ? {
+        maximize_conversion_value: {
+          target_roas: targetRoas,
+        },
+      } : {
+        maximize_conversions: {
+          ...(targetCpa ? { target_cpa_micros: dollarsToMicros(targetCpa) } : {}),
+        },
+      }),
     };
 
-    console.log('[GoogleAdsPMax] Creating campaign:', JSON.stringify(campaignOperation));
-    const campaignResponse = await (client as any).campaigns.create([campaignOperation]);
+    console.log('[GoogleAdsPMax] Creating campaign:', JSON.stringify(campaignResource));
+    const campaignResponse = await (client as any).campaigns.create([campaignResource]);
     const campaignResourceName = campaignResponse.results[0].resource_name;
     const campaignId = campaignResourceName.split('/').pop();
 
@@ -311,18 +309,16 @@ async function createPMaxCampaign(
         console.log('[GoogleAdsPMax] Creating inline asset group...');
 
         // Create asset group
-        const assetGroupOp = {
-          create: {
-            name: assetGroup.name,
-            campaign: campaignResourceName,
-            status: 'ENABLED',
-            final_urls: [finalUrl],
-            path1: assetGroup.path1 || '',
-            path2: assetGroup.path2 || '',
-          },
+        const assetGroupResource = {
+          name: assetGroup.name,
+          campaign: campaignResourceName,
+          status: 'ENABLED',
+          final_urls: [finalUrl],
+          path1: assetGroup.path1 || '',
+          path2: assetGroup.path2 || '',
         };
 
-        const agResponse = await (client as any).assetGroups.create([assetGroupOp]);
+        const agResponse = await (client as any).assetGroups.create([assetGroupResource]);
         const agResourceName = agResponse.results[0].resource_name;
         console.log(`[GoogleAdsPMax] Asset group created: ${agResourceName}`);
 
@@ -331,34 +327,34 @@ async function createPMaxCampaign(
 
         // Headlines
         for (const text of assetGroup.headlines) {
-          const assetRes = await (client as any).assets.create([{ create: { text_asset: { text } } }]);
+          const assetRes = await (client as any).assets.create([{ text_asset: { text } }]);
           assetGroupAssetOps.push({
-            create: { asset_group: agResourceName, asset: assetRes.results[0].resource_name, field_type: 'HEADLINE' },
+            asset_group: agResourceName, asset: assetRes.results[0].resource_name, field_type: 'HEADLINE',
           });
         }
 
         // Long headlines
         if (assetGroup.longHeadlines?.length) {
           for (const text of assetGroup.longHeadlines) {
-            const assetRes = await (client as any).assets.create([{ create: { text_asset: { text } } }]);
+            const assetRes = await (client as any).assets.create([{ text_asset: { text } }]);
             assetGroupAssetOps.push({
-              create: { asset_group: agResourceName, asset: assetRes.results[0].resource_name, field_type: 'LONG_HEADLINE' },
+              asset_group: agResourceName, asset: assetRes.results[0].resource_name, field_type: 'LONG_HEADLINE',
             });
           }
         }
 
         // Descriptions
         for (const text of assetGroup.descriptions) {
-          const assetRes = await (client as any).assets.create([{ create: { text_asset: { text } } }]);
+          const assetRes = await (client as any).assets.create([{ text_asset: { text } }]);
           assetGroupAssetOps.push({
-            create: { asset_group: agResourceName, asset: assetRes.results[0].resource_name, field_type: 'DESCRIPTION' },
+            asset_group: agResourceName, asset: assetRes.results[0].resource_name, field_type: 'DESCRIPTION',
           });
         }
 
         // Business name
-        const bnRes = await (client as any).assets.create([{ create: { text_asset: { text: assetGroup.businessName } } }]);
+        const bnRes = await (client as any).assets.create([{ text_asset: { text: assetGroup.businessName } }]);
         assetGroupAssetOps.push({
-          create: { asset_group: agResourceName, asset: bnRes.results[0].resource_name, field_type: 'BUSINESS_NAME' },
+          asset_group: agResourceName, asset: bnRes.results[0].resource_name, field_type: 'BUSINESS_NAME',
         });
 
         // Link all assets to asset group
@@ -535,40 +531,34 @@ async function createAssetGroup(
     const client = await getGoogleAdsClient(customerId);
 
     // Create asset group
-    const assetGroupOperation = {
-      create: {
-        name,
-        campaign: campaignResourceName,
-        status,
-        final_urls: [finalUrl],
-        final_mobile_urls: finalMobileUrl ? [finalMobileUrl] : undefined,
-        path1: path1 || '',
-        path2: path2 || '',
-      },
+    const assetGroupResource = {
+      name,
+      campaign: campaignResourceName,
+      status,
+      final_urls: [finalUrl],
+      final_mobile_urls: finalMobileUrl ? [finalMobileUrl] : undefined,
+      path1: path1 || '',
+      path2: path2 || '',
     };
 
-    const assetGroupResponse = await (client as any).assetGroups.create([assetGroupOperation]);
+    const assetGroupResponse = await (client as any).assetGroups.create([assetGroupResource]);
     const assetGroupResourceName = assetGroupResponse.results[0].resource_name;
 
     console.log(`[GoogleAdsPMax] Created asset group: ${assetGroupResourceName}`);
 
     // Create headline assets
-    const headlineOperations = headlines.map(text => ({
-      create: {
-        text_asset: { text },
-      },
+    const headlineResources = headlines.map(text => ({
+      text_asset: { text },
     }));
 
-    const headlineResponse = await (client as any).assets.create(headlineOperations);
+    const headlineResponse = await (client as any).assets.create(headlineResources);
 
     // Create description assets
-    const descriptionOperations = descriptions.map(text => ({
-      create: {
-        text_asset: { text },
-      },
+    const descriptionResources = descriptions.map(text => ({
+      text_asset: { text },
     }));
 
-    const descriptionResponse = await (client as any).assets.create(descriptionOperations);
+    const descriptionResponse = await (client as any).assets.create(descriptionResources);
 
     // Link assets to asset group
     const assetGroupAssetOperations: any[] = [];
@@ -576,38 +566,30 @@ async function createAssetGroup(
     // Link headlines
     headlineResponse.results.forEach((result: any) => {
       assetGroupAssetOperations.push({
-        create: {
-          asset_group: assetGroupResourceName,
-          asset: result.resource_name,
-          field_type: 'HEADLINE',
-        },
+        asset_group: assetGroupResourceName,
+        asset: result.resource_name,
+        field_type: 'HEADLINE',
       });
     });
 
     // Link descriptions
     descriptionResponse.results.forEach((result: any) => {
       assetGroupAssetOperations.push({
-        create: {
-          asset_group: assetGroupResourceName,
-          asset: result.resource_name,
-          field_type: 'DESCRIPTION',
-        },
+        asset_group: assetGroupResourceName,
+        asset: result.resource_name,
+        field_type: 'DESCRIPTION',
       });
     });
 
     // Create and link business name
     const businessNameAsset = await (client as any).assets.create([{
-      create: {
-        text_asset: { text: businessName },
-      },
+      text_asset: { text: businessName },
     }]);
 
     assetGroupAssetOperations.push({
-      create: {
-        asset_group: assetGroupResourceName,
-        asset: businessNameAsset.results[0].resource_name,
-        field_type: 'BUSINESS_NAME',
-      },
+      asset_group: assetGroupResourceName,
+      asset: businessNameAsset.results[0].resource_name,
+      field_type: 'BUSINESS_NAME',
     });
 
     await (client as any).assetGroupAssets.create(assetGroupAssetOperations);

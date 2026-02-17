@@ -516,16 +516,17 @@ async function bulkPublishCampaigns(
       client = await getGoogleAdsClient(customerId);
       const campaignName = replacePlaceholders(campaignTemplate.name, clinic);
 
-      // Create budget first
-      const budgetOperation = {
-        create: {
-          name: `Budget - ${campaignName} - ${Date.now()}`,
-          amount_micros: dollarsToMicros(campaignTemplate.dailyBudget),
-          delivery_method: 'STANDARD',
-        },
+      // Create budget first — must set explicitly_shared to false for campaign-specific budgets
+      // NOTE: The google-ads-api library's create() expects resource objects directly,
+      // NOT wrapped in { create: { ... } } operation objects.
+      const budgetResource = {
+        name: `Budget - ${campaignName} - ${Date.now()}`,
+        amount_micros: dollarsToMicros(campaignTemplate.dailyBudget),
+        delivery_method: 'STANDARD',
+        explicitly_shared: false,
       };
 
-      const budgetResponse = await (client as any).campaignBudgets.create([budgetOperation]);
+      const budgetResponse = await (client as any).campaignBudgets.create([budgetResource]);
       budgetResourceName = budgetResponse.results[0].resource_name;
 
       // Build bidding configuration
@@ -560,21 +561,19 @@ async function bulkPublishCampaigns(
       } : undefined;
 
       // Create campaign
-      const campaignOperation = {
-        create: {
-          name: campaignName,
-          status: campaignTemplate.status || 'PAUSED',
-          advertising_channel_type: campaignType,
-          campaign_budget: budgetResourceName,
-          ...biddingConfig,
-          network_settings: networkSettings,
-        },
+      const campaignResource = {
+        name: campaignName,
+        status: campaignTemplate.status || 'PAUSED',
+        advertising_channel_type: campaignType,
+        campaign_budget: budgetResourceName,
+        ...biddingConfig,
+        network_settings: networkSettings,
       };
 
       // Note: campaignResourceName is declared outside try block for cleanup access
       let googleCampaignId: string | undefined;
 
-      const campaignResponse = await (client as any).campaigns.create([campaignOperation]);
+      const campaignResponse = await (client as any).campaigns.create([campaignResource]);
       campaignResourceName = campaignResponse.results[0].resource_name;
       googleCampaignId = campaignResourceName?.split('/').pop();
 
@@ -595,17 +594,15 @@ async function bulkPublishCampaigns(
         // Get proper ad group type based on campaign type
         const adGroupType = CAMPAIGN_TYPE_TO_AD_GROUP_TYPE[campaignTemplate.type || 'SEARCH'] || 'SEARCH_STANDARD';
 
-        const adGroupOperation = {
-          create: {
-            name: adGroupName,
-            campaign: campaignResourceName,
-            status: 'ENABLED',
-            type: adGroupType,
-            cpc_bid_micros: dollarsToMicros(adGroupTemplate.cpcBid),
-          },
+        const adGroupResource = {
+          name: adGroupName,
+          campaign: campaignResourceName,
+          status: 'ENABLED',
+          type: adGroupType,
+          cpc_bid_micros: dollarsToMicros(adGroupTemplate.cpcBid),
         };
 
-        const adGroupResponse = await (client as any).adGroups.create([adGroupOperation]);
+        const adGroupResponse = await (client as any).adGroups.create([adGroupResource]);
         adGroupResourceName = adGroupResponse.results[0].resource_name;
         console.log(`[GoogleAdsBulk] Created ad group for ${customerId}: ${adGroupResourceName}`);
 
@@ -637,23 +634,21 @@ async function bulkPublishCampaigns(
           }
 
           if (validHeadlines.length >= 3 && validDescriptions.length >= 2) {
-            const adOperation = {
-              create: {
-                ad_group: adGroupResourceName,
-                status: 'ENABLED',
-                ad: {
-                  responsive_search_ad: {
-                    headlines: validHeadlines.slice(0, 15).map(text => ({ text })),
-                    descriptions: validDescriptions.slice(0, 4).map(text => ({ text })),
-                    path1,
-                    path2,
-                  },
-                  final_urls: [finalUrl],
+            const adResource = {
+              ad_group: adGroupResourceName,
+              status: 'ENABLED',
+              ad: {
+                responsive_search_ad: {
+                  headlines: validHeadlines.slice(0, 15).map(text => ({ text })),
+                  descriptions: validDescriptions.slice(0, 4).map(text => ({ text })),
+                  path1,
+                  path2,
                 },
+                final_urls: [finalUrl],
               },
             };
 
-            await (client as any).adGroupAds.create([adOperation]);
+            await (client as any).adGroupAds.create([adResource]);
             adCreated = true;
             console.log(`[GoogleAdsBulk] Created ad for ${customerId}`);
           } else {
