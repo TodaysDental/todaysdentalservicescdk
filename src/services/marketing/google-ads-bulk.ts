@@ -34,6 +34,7 @@ import {
   MAX_TARGET_ROAS_PERCENT,
   validateTargetRoas,
   sanitizeAdTextValue,
+  enums,
 } from '../../shared/utils/google-ads-client';
 import {
   getAllowedClinicIds,
@@ -78,10 +79,93 @@ const LAMBDA_TIMEOUT_BUFFER_MS = 4.5 * 60 * 1000;
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
- * Check if error is retryable (rate limiting, network issues)
+ * Extract a meaningful error message from Google Ads API / gRPC errors.
+ * gRPC errors don't always have .message — they may use .errors[], .details, or toString().
+ */
+function extractErrorMessage(error: any): string {
+  // Standard Error.message
+  if (error.message && typeof error.message === 'string' && error.message !== 'undefined') {
+    return error.message;
+  }
+
+  // Google Ads API error shape: { errors: [{ message, error_code, ... }] }
+  if (error.errors && Array.isArray(error.errors) && error.errors.length > 0) {
+    return error.errors.map((e: any) => e.message || JSON.stringify(e.error_code) || 'Unknown API error').join('; ');
+  }
+
+  // gRPC .details field
+  if (error.details && typeof error.details === 'string') {
+    return error.details;
+  }
+
+  // gRPC status code
+  if (error.code !== undefined && error.code !== null) {
+    return `gRPC error code ${error.code}: ${error.details || error.metadata?.toString() || 'Unknown gRPC error'}`;
+  }
+
+  // Fallback: stringify the entire error
+  try {
+    const str = String(error);
+    if (str && str !== '[object Object]') return str;
+    return JSON.stringify(error).slice(0, 500);
+  } catch {
+    return 'Unknown error (could not extract message)';
+  }
+}
+
+/**
+ * Deep-extract Google Ads API error details from protobuf objects.
+ * Protobuf objects don't serialize with JSON.stringify (shows {}), so we manually extract fields.
+ */
+function extractDetailedErrors(error: any): string {
+  const details: string[] = [];
+
+  if (error.errors && Array.isArray(error.errors)) {
+    error.errors.forEach((e: any, i: number) => {
+      const parts: string[] = [`Error ${i + 1}:`];
+
+      // Try to access common protobuf fields
+      if (e.message) parts.push(`message=${e.message}`);
+      if (e.error_code) {
+        // error_code is an object like { campaign_error: 9 } or { request_error: 3 }
+        try {
+          const codeKeys = Object.keys(e.error_code);
+          if (codeKeys.length > 0) {
+            parts.push(`error_code={${codeKeys.map(k => `${k}: ${e.error_code[k]}`).join(', ')}}`);
+          } else {
+            // Try to get it via JSON or toString
+            parts.push(`error_code=${String(e.error_code)}`);
+          }
+        } catch { parts.push('error_code=(unreadable)'); }
+      }
+      if (e.trigger) {
+        try {
+          parts.push(`trigger=${e.trigger.string_value || JSON.stringify(e.trigger)}`);
+        } catch { /* skip */ }
+      }
+      if (e.location) {
+        try {
+          const fieldPaths = e.location?.field_path_elements?.map((fp: any) =>
+            fp.field_name + (fp.index !== undefined ? `[${fp.index}]` : '')
+          );
+          if (fieldPaths?.length) parts.push(`field_path=${fieldPaths.join('.')}`);
+        } catch { /* skip */ }
+      }
+
+      details.push(parts.join(' '));
+    });
+  }
+
+  if (error.request_id) details.push(`request_id=${error.request_id}`);
+
+  return details.length > 0 ? details.join(' | ') : 'No detailed error info available';
+}
+
+/**
+ * Check if error is retryable (rate limiting, network issues, gRPC metadata failures)
  */
 function isRetryableError(error: any): boolean {
-  const message = error.message?.toLowerCase() || '';
+  const message = extractErrorMessage(error).toLowerCase();
   return (
     message.includes('rate limit') ||
     message.includes('too many requests') ||
@@ -90,7 +174,12 @@ function isRetryableError(error: any): boolean {
     message.includes('timeout') ||
     message.includes('network') ||
     message.includes('econnreset') ||
-    message.includes('socket hang up')
+    message.includes('socket hang up') ||
+    message.includes('all promises were rejected') ||
+    message.includes('metadata') ||
+    message.includes('dns') ||
+    message.includes('unavailable') ||
+    message.includes('deadline exceeded')
   );
 }
 
@@ -476,65 +565,111 @@ async function bulkPublishCampaigns(
       client = await getGoogleAdsClient(customerId);
       const campaignName = replacePlaceholders(campaignTemplate.name, clinic);
 
-      // Create budget first
-      const budgetOperation = {
-        create: {
-          name: `Budget - ${campaignName} - ${Date.now()}`,
-          amount_micros: dollarsToMicros(campaignTemplate.dailyBudget),
-          delivery_method: 'STANDARD',
-        },
+      // Create budget first — must set explicitly_shared to false for campaign-specific budgets
+      const budgetResource = {
+        name: `Budget - ${campaignName} - ${Date.now()}`,
+        amount_micros: dollarsToMicros(campaignTemplate.dailyBudget),
+        delivery_method: enums.BudgetDeliveryMethod.STANDARD,
+        explicitly_shared: false,
       };
 
-      const budgetResponse = await (client as any).campaignBudgets.create([budgetOperation]);
+      console.log(`[GoogleAdsBulk] Budget resource:`, JSON.stringify(budgetResource));
+      const budgetResponse = await (client as any).campaignBudgets.create([budgetResource]);
       budgetResourceName = budgetResponse.results[0].resource_name;
+      console.log(`[GoogleAdsBulk] Budget created: ${budgetResourceName}`);
 
       // Build bidding configuration
+      // IMPORTANT: Google Ads API uses protobuf `oneof` for campaign_bidding_strategy.
+      // Empty objects like `maximize_clicks: {}` serialize as null in protobuf,
+      // causing "The required field was not present" error on campaign_bidding_strategy.
+      // Each bidding strategy object MUST have at least one concrete field value.
+      //
+      // NOTE: TARGET_CPA, MAXIMIZE_CONVERSIONS, and TARGET_ROAS require conversion tracking
+      // to be set up on the account first. If no conversion actions exist, the API returns:
+      //   "The operation is not allowed for the given context" (context_error: 2)
+      // We fall back to MAXIMIZE_CLICKS for safety during bulk operations.
+      let effectiveStrategy = campaignTemplate.biddingStrategy || 'MAXIMIZE_CLICKS';
+      const conversionRequiredStrategies = ['TARGET_CPA', 'MAXIMIZE_CONVERSIONS', 'TARGET_ROAS'];
+
+      // For conversion-dependent strategies, verify conversion tracking exists
+      if (conversionRequiredStrategies.includes(effectiveStrategy)) {
+        try {
+          const convQuery = `SELECT conversion_action.id FROM conversion_action WHERE conversion_action.status = 'ENABLED' LIMIT 1`;
+          const convResults = await (client as any).query(convQuery);
+          if (!convResults || convResults.length === 0) {
+            console.warn(`[GoogleAdsBulk] Account ${customerId} has no conversion actions. Falling back from ${effectiveStrategy} to MAXIMIZE_CLICKS.`);
+            allWarnings.push(`${clinic.clinicName}: ${effectiveStrategy} requires conversion tracking — fell back to MAXIMIZE_CLICKS`);
+            effectiveStrategy = 'MAXIMIZE_CLICKS';
+          }
+        } catch (convCheckError: any) {
+          console.warn(`[GoogleAdsBulk] Could not verify conversion tracking for ${customerId}: ${convCheckError.message}. Falling back to MAXIMIZE_CLICKS.`);
+          allWarnings.push(`${clinic.clinicName}: Could not verify conversion tracking — fell back to MAXIMIZE_CLICKS`);
+          effectiveStrategy = 'MAXIMIZE_CLICKS';
+        }
+      }
+
       const biddingConfig: any = {};
-      switch (campaignTemplate.biddingStrategy || 'MANUAL_CPC') {
+      switch (effectiveStrategy) {
         case 'MANUAL_CPC':
-          biddingConfig.manual_cpc = { enhanced_cpc_enabled: true };
+          biddingConfig.manual_cpc = { enhanced_cpc_enabled: false };
           break;
         case 'TARGET_CPA':
-          // No fallback - validation above ensures targetCpa is present
           biddingConfig.target_cpa = { target_cpa_micros: dollarsToMicros(campaignTemplate.targetCpa!) };
           break;
         case 'MAXIMIZE_CONVERSIONS':
-          biddingConfig.maximize_conversions = {};
+          biddingConfig.maximize_conversions = { target_cpa_micros: 0 };
           break;
         case 'MAXIMIZE_CLICKS':
-          biddingConfig.maximize_clicks = {};
+          biddingConfig.maximize_clicks = { cpc_bid_ceiling_micros: 0 };
           break;
         case 'TARGET_ROAS':
-          // No fallback - validation above ensures targetRoas is present
-          biddingConfig.target_roas = { target_roas: campaignTemplate.targetRoas! / 100 }; // Convert percentage to decimal
+          biddingConfig.target_roas = { target_roas: campaignTemplate.targetRoas! / 100 };
           break;
       }
 
+      // Map campaign type string to enum value
+      const campaignTypeStr = campaignTemplate.type || 'SEARCH';
+      const channelTypeEnum = campaignTypeStr === 'SEARCH'
+        ? enums.AdvertisingChannelType.SEARCH
+        : campaignTypeStr === 'DISPLAY'
+          ? enums.AdvertisingChannelType.DISPLAY
+          : campaignTypeStr === 'VIDEO'
+            ? enums.AdvertisingChannelType.VIDEO
+            : enums.AdvertisingChannelType.SEARCH;
+
+      // Map status string to enum value
+      const statusStr = campaignTemplate.status || 'PAUSED';
+      const statusEnum = statusStr === 'ENABLED'
+        ? enums.CampaignStatus.ENABLED
+        : enums.CampaignStatus.PAUSED;
+
       // Build network settings based on campaign type
-      const campaignType = campaignTemplate.type || 'SEARCH';
-      const networkSettings = campaignType === 'SEARCH' ? {
+      const networkSettings = campaignTypeStr === 'SEARCH' ? {
         target_google_search: true,
         target_search_network: true,
-      } : campaignType === 'VIDEO' ? {
+      } : campaignTypeStr === 'VIDEO' ? {
         target_youtube: true,
       } : undefined;
 
-      // Create campaign
-      const campaignOperation = {
-        create: {
-          name: campaignName,
-          status: campaignTemplate.status || 'PAUSED',
-          advertising_channel_type: campaignType,
-          campaign_budget: budgetResourceName,
-          ...biddingConfig,
-          network_settings: networkSettings,
-        },
+      // Create campaign with proper enum values
+      // REQUIRED: contains_eu_political_advertising must be set on all campaigns (Google Ads API mandate)
+      const campaignResource = {
+        name: campaignName,
+        status: statusEnum,
+        advertising_channel_type: channelTypeEnum,
+        campaign_budget: budgetResourceName,
+        ...biddingConfig,
+        ...(networkSettings ? { network_settings: networkSettings } : {}),
+        // EU Political Advertising compliance — required field since Google Ads API v15+
+        contains_eu_political_advertising: false,
       };
+
+      console.log(`[GoogleAdsBulk] Campaign resource:`, JSON.stringify(campaignResource));
 
       // Note: campaignResourceName is declared outside try block for cleanup access
       let googleCampaignId: string | undefined;
 
-      const campaignResponse = await (client as any).campaigns.create([campaignOperation]);
+      const campaignResponse = await (client as any).campaigns.create([campaignResource]);
       campaignResourceName = campaignResponse.results[0].resource_name;
       googleCampaignId = campaignResourceName?.split('/').pop();
 
@@ -555,17 +690,15 @@ async function bulkPublishCampaigns(
         // Get proper ad group type based on campaign type
         const adGroupType = CAMPAIGN_TYPE_TO_AD_GROUP_TYPE[campaignTemplate.type || 'SEARCH'] || 'SEARCH_STANDARD';
 
-        const adGroupOperation = {
-          create: {
-            name: adGroupName,
-            campaign: campaignResourceName,
-            status: 'ENABLED',
-            type: adGroupType,
-            cpc_bid_micros: dollarsToMicros(adGroupTemplate.cpcBid),
-          },
+        const adGroupResource = {
+          name: adGroupName,
+          campaign: campaignResourceName,
+          status: 'ENABLED',
+          type: adGroupType,
+          cpc_bid_micros: dollarsToMicros(adGroupTemplate.cpcBid),
         };
 
-        const adGroupResponse = await (client as any).adGroups.create([adGroupOperation]);
+        const adGroupResponse = await (client as any).adGroups.create([adGroupResource]);
         adGroupResourceName = adGroupResponse.results[0].resource_name;
         console.log(`[GoogleAdsBulk] Created ad group for ${customerId}: ${adGroupResourceName}`);
 
@@ -597,23 +730,21 @@ async function bulkPublishCampaigns(
           }
 
           if (validHeadlines.length >= 3 && validDescriptions.length >= 2) {
-            const adOperation = {
-              create: {
-                ad_group: adGroupResourceName,
-                status: 'ENABLED',
-                ad: {
-                  responsive_search_ad: {
-                    headlines: validHeadlines.slice(0, 15).map(text => ({ text })),
-                    descriptions: validDescriptions.slice(0, 4).map(text => ({ text })),
-                    path1,
-                    path2,
-                  },
-                  final_urls: [finalUrl],
+            const adResource = {
+              ad_group: adGroupResourceName,
+              status: 'ENABLED',
+              ad: {
+                responsive_search_ad: {
+                  headlines: validHeadlines.slice(0, 15).map(text => ({ text })),
+                  descriptions: validDescriptions.slice(0, 4).map(text => ({ text })),
+                  path1,
+                  path2,
                 },
+                final_urls: [finalUrl],
               },
             };
 
-            await (client as any).adGroupAds.create([adOperation]);
+            await (client as any).adGroupAds.create([adResource]);
             adCreated = true;
             console.log(`[GoogleAdsBulk] Created ad for ${customerId}`);
           } else {
@@ -696,7 +827,22 @@ async function bulkPublishCampaigns(
         message: `Campaign "${campaignName}" created${adGroupResourceName ? ' with ad group' : ''}${adCreated ? ' and ad' : ''}${keywordsAdded > 0 ? ` (${keywordsAdded} keywords)` : ''}`,
       });
     } catch (error: any) {
-      console.error(`[GoogleAdsBulk] Error for account ${customerId}:`, error.message);
+      const errorMsg = extractErrorMessage(error);
+      console.error(`[GoogleAdsBulk] Error for account ${customerId}:`, errorMsg);
+      // Log detailed error info (protobuf objects don't serialize well with JSON.stringify)
+      console.error(`[GoogleAdsBulk] Detailed errors:`, extractDetailedErrors(error));
+      // Also try to log all own property names for deep debugging
+      try {
+        const errKeys = Object.getOwnPropertyNames(error);
+        console.error(`[GoogleAdsBulk] Error keys: [${errKeys.join(', ')}]`);
+        if (error.errors && Array.isArray(error.errors)) {
+          error.errors.forEach((e: any, i: number) => {
+            const eKeys = Object.getOwnPropertyNames(e);
+            console.error(`[GoogleAdsBulk] errors[${i}] keys: [${eKeys.join(', ')}], values:`,
+              eKeys.reduce((acc: any, k: string) => { acc[k] = e[k]; return acc; }, {}));
+          });
+        }
+      } catch { /* best-effort logging */ }
 
       // CLEANUP: Remove orphaned budget if campaign creation failed
       if (budgetResourceName && !campaignResourceName && client) {
@@ -705,8 +851,7 @@ async function bulkPublishCampaigns(
           await client.campaignBudgets.remove([budgetResourceName]);
           console.log(`[GoogleAdsBulk] Cleaned up orphaned budget: ${budgetResourceName}`);
         } catch (cleanupError: any) {
-          // ORPHAN TRACKING: Log for CloudWatch alerting and manual remediation
-          console.error(`[GoogleAdsBulk] ORPHAN_RESOURCE: Budget cleanup failed - ${budgetResourceName} for customer ${customerId} may need manual removal. Error: ${cleanupError.message}`);
+          console.error(`[GoogleAdsBulk] ORPHAN_RESOURCE: Budget cleanup failed - ${budgetResourceName} for customer ${customerId} may need manual removal. Error: ${extractErrorMessage(cleanupError)}`);
         }
       }
 
@@ -724,21 +869,20 @@ async function bulkPublishCampaigns(
           await client.campaigns.update([removeOperation]);
           console.log(`[GoogleAdsBulk] Cleaned up orphaned campaign: ${campaignResourceName}`);
         } catch (cleanupError: any) {
-          // ORPHAN TRACKING: Log for CloudWatch alerting and manual remediation
-          console.error(`[GoogleAdsBulk] ORPHAN_RESOURCE: Campaign cleanup failed - ${campaignResourceName} for customer ${customerId} may need manual removal. Error: ${cleanupError.message}`);
+          console.error(`[GoogleAdsBulk] ORPHAN_RESOURCE: Campaign cleanup failed - ${campaignResourceName} for customer ${customerId} may need manual removal. Error: ${extractErrorMessage(cleanupError)}`);
         }
       }
 
       // Retry if we have retries left and it's a potentially transient error
       if (retries < MAX_RETRIES && isRetryableError(error)) {
         console.log(`[GoogleAdsBulk] Retrying account ${customerId} (attempt ${retries + 1}/${MAX_RETRIES})`);
-        await delay(RETRY_DELAY_MS);
+        await delay(RETRY_DELAY_MS * (retries + 1)); // Exponential backoff
         return processAccountWithRetry(customerId, retries + 1);
       }
 
       result.failed.push({
         customerId,
-        error: error.message,
+        error: errorMsg,
       });
     }
   }
@@ -894,18 +1038,19 @@ async function bulkAddKeywords(
         message: `Added ${keywords.length} keywords successfully`,
       });
     } catch (error: any) {
-      console.error(`[GoogleAdsBulk] Error for account ${customerId}:`, error.message);
+      const errorMsg = extractErrorMessage(error);
+      console.error(`[GoogleAdsBulk] Error for account ${customerId}:`, errorMsg);
 
       // Retry if we have retries left and it's a potentially transient error
       if (retries < MAX_RETRIES && isRetryableError(error)) {
         console.log(`[GoogleAdsBulk] Retrying keywords for ${customerId} (attempt ${retries + 1}/${MAX_RETRIES})`);
-        await delay(RETRY_DELAY_MS);
+        await delay(RETRY_DELAY_MS * (retries + 1));
         return addKeywordsWithRetry(customerId, retries + 1);
       }
 
       result.failed.push({
         customerId,
-        error: error.message,
+        error: errorMsg,
       });
     }
   }

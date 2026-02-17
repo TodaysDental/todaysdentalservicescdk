@@ -18,6 +18,8 @@ export interface AccountingStackProps extends StackProps {
   globalSecretsTableName: string;
   /** ClinicConfig DynamoDB table name for clinic configuration */
   clinicConfigTableName: string;
+  /** ClinicSecrets DynamoDB table name for per-clinic API credentials (e.g., OpenDental keys) */
+  clinicSecretsTableName: string;
   /** KMS key ARN for decrypting secrets */
   secretsEncryptionKeyArn: string;
 }
@@ -262,9 +264,10 @@ export class AccountingStack extends Stack {
         STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName,
         STAFF_USER_TABLE: staffUserTableName,
         // Secrets tables for dynamic credential retrieval
-        // Odoo credentials are now stored in GlobalSecrets table
         GLOBAL_SECRETS_TABLE: props.globalSecretsTableName,
         CLINIC_CONFIG_TABLE: props.clinicConfigTableName,
+        // ClinicSecrets table for OpenDental API credentials
+        CLINIC_SECRETS_TABLE: props.clinicSecretsTableName,
       },
     });
     applyTags(this.accountingFn, { Function: 'accounting' });
@@ -307,12 +310,13 @@ export class AccountingStack extends Stack {
       resources: ['*'],
     }));
 
-    // Grant read access to secrets tables for dynamic Odoo credential retrieval
+    // Grant read access to secrets tables for Odoo + OpenDental credential retrieval
     this.accountingFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['dynamodb:GetItem', 'dynamodb:Query'],
       resources: [
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName}`,
       ],
     }));
 

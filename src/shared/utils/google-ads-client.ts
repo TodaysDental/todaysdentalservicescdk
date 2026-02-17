@@ -16,6 +16,73 @@
  */
 
 import { GoogleAdsApi, Customer } from 'google-ads-api';
+
+// Google Ads API enum values (numeric protobuf values)
+// Defined locally to avoid TS resolution issues — google-ads-api is only available at Lambda runtime
+export const enums = {
+  AdvertisingChannelType: {
+    SEARCH: 2,
+    DISPLAY: 3,
+    SHOPPING: 4,
+    VIDEO: 6,
+    PERFORMANCE_MAX: 13,
+  },
+  CampaignStatus: {
+    ENABLED: 2,
+    PAUSED: 3,
+    REMOVED: 4,
+  },
+  BudgetDeliveryMethod: {
+    STANDARD: 2,
+    ACCELERATED: 3,
+  },
+  ConversionActionCategory: {
+    DEFAULT: 0,
+    PAGE_VIEW: 2,
+    PURCHASE: 3,
+    SIGNUP: 4,
+    LEAD: 5,
+    DOWNLOAD: 6,
+    ADD_TO_CART: 7,
+    BEGIN_CHECKOUT: 8,
+    SUBSCRIBE_PAID: 9,
+    PHONE_CALL_LEAD: 10,
+    IMPORTED_LEAD: 11,
+    SUBMIT_LEAD_FORM: 12,
+    BOOK_APPOINTMENT: 13,
+    REQUEST_QUOTE: 14,
+    GET_DIRECTIONS: 15,
+    OUTBOUND_CLICK: 16,
+    CONTACT: 17,
+    ENGAGEMENT: 18,
+    STORE_VISIT: 19,
+    STORE_SALE: 20,
+    QUALIFIED_LEAD: 21,
+    CONVERTED_LEAD: 22,
+  },
+  ConversionActionType: {
+    AD_CALL: 2,
+    CLICK_TO_CALL: 3,
+    GOOGLE_PLAY_DOWNLOAD: 4,
+    GOOGLE_PLAY_IN_APP_PURCHASE: 5,
+    UPLOAD_CALLS: 6,
+    UPLOAD_CLICKS: 7,
+    WEBPAGE: 8,
+    WEBSITE_CALL: 9,
+    STORE_SALES_DIRECT_UPLOAD: 10,
+    STORE_SALES: 11,
+    // Add others if needed
+  },
+  ConversionActionStatus: {
+    ENABLED: 2,
+    REMOVED: 3,
+    HIDDEN: 4,
+  },
+  ConversionActionCountingType: {
+    ONE_PER_CLICK: 2,
+    MANY_PER_CLICK: 3,
+  },
+} as const;
 import {
   getGlobalSecret,
   getAllClinicConfigs,

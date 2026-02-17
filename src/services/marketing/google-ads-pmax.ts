@@ -28,6 +28,7 @@ import {
   getGoogleAdsClient,
   microsToDollars,
   dollarsToMicros,
+  enums,
 } from '../../shared/utils/google-ads-client';
 
 // Module permission configuration
@@ -212,8 +213,8 @@ async function listPMaxCampaigns(
       channelType: row.campaign.advertising_channel_type,
       budget: microsToDollars(row.campaign_budget?.amount_micros || 0),
       targetRoas: row.campaign.maximize_conversion_value?.target_roas,
-      targetCpa: row.campaign.maximize_conversions?.target_cpa_micros 
-        ? microsToDollars(row.campaign.maximize_conversions.target_cpa_micros) 
+      targetCpa: row.campaign.maximize_conversions?.target_cpa_micros
+        ? microsToDollars(row.campaign.maximize_conversions.target_cpa_micros)
         : null,
       metrics: {
         impressions: row.metrics?.impressions || 0,
@@ -247,8 +248,8 @@ async function createPMaxCampaign(
   event: APIGatewayProxyEvent,
   corsHeaders: Record<string, string>
 ): Promise<APIGatewayProxyResult> {
-  const body: CreatePMaxCampaignRequest = JSON.parse(event.body || '{}');
-  const { customerId, name, dailyBudget, targetRoas, targetCpa, status = 'PAUSED', finalUrl } = body;
+  const body = JSON.parse(event.body || '{}');
+  const { customerId, name, dailyBudget, targetRoas, targetCpa, status = 'PAUSED', finalUrl, assetGroup, languageTargets } = body;
 
   if (!customerId || !name || !dailyBudget || !finalUrl) {
     return {
@@ -263,46 +264,122 @@ async function createPMaxCampaign(
   try {
     const client = await getGoogleAdsClient(customerId);
 
-    // Step 1: Create budget
-    const budgetOperation = {
-      create: {
-        name: `Budget for ${name}`,
-        amount_micros: dollarsToMicros(dailyBudget),
-        delivery_method: 'STANDARD',
-      },
+    // Step 1: Create budget — must set explicitly_shared to false for campaign-specific budgets
+    const budgetResource = {
+      name: `PMax Budget - ${name} - ${Date.now()}`,
+      amount_micros: dollarsToMicros(dailyBudget),
+      explicitly_shared: false,
     };
 
-    const budgetResponse = await (client as any).campaignBudgets.create([budgetOperation]);
+    console.log('[GoogleAdsPMax] Creating budget:', JSON.stringify(budgetResource));
+    const budgetResponse = await (client as any).campaignBudgets.create([budgetResource]);
     const budgetResourceName = budgetResponse.results[0].resource_name;
+    console.log(`[GoogleAdsPMax] Budget created: ${budgetResourceName}`);
 
-    // Step 2: Create Performance Max campaign
-    const campaignOperation: any = {
-      create: {
-        name,
-        campaign_budget: budgetResourceName,
-        advertising_channel_type: 'PERFORMANCE_MAX',
-        status,
-        // Bidding strategy
-        ...(targetRoas ? {
-          maximize_conversion_value: {
-            target_roas: targetRoas,
-          },
-        } : {
-          maximize_conversions: {
-            target_cpa_micros: targetCpa ? dollarsToMicros(targetCpa) : undefined,
-          },
-        }),
-        // URL settings
-        url_expansion_opt_out: false,
-        final_url_suffix: '',
-      },
+    // Step 2: Create Performance Max campaign with proper enum values
+    const statusEnum = status === 'ENABLED'
+      ? enums.CampaignStatus.ENABLED
+      : enums.CampaignStatus.PAUSED;
+
+    const campaignResource: any = {
+      name,
+      campaign_budget: budgetResourceName,
+      advertising_channel_type: enums.AdvertisingChannelType.PERFORMANCE_MAX,
+      status: statusEnum,
+      // Bidding strategy
+      // IMPORTANT: Google Ads API protobuf oneofs reject empty objects {}.
+      // Each bidding strategy MUST have at least one concrete field value.
+      ...(targetRoas ? {
+        maximize_conversion_value: {
+          target_roas: targetRoas,
+        },
+      } : {
+        maximize_conversions: {
+          target_cpa_micros: targetCpa ? dollarsToMicros(targetCpa) : 0,
+        },
+      }),
+      // EU Political Advertising compliance — required field since Google Ads API v15+
+      contains_eu_political_advertising: false,
     };
 
-    const campaignResponse = await (client as any).campaigns.create([campaignOperation]);
+    console.log('[GoogleAdsPMax] Creating campaign:', JSON.stringify(campaignResource));
+    const campaignResponse = await (client as any).campaigns.create([campaignResource]);
     const campaignResourceName = campaignResponse.results[0].resource_name;
     const campaignId = campaignResourceName.split('/').pop();
 
     console.log(`[GoogleAdsPMax] Created Performance Max campaign: ${campaignResourceName}`);
+
+    // Step 3: If assetGroup data is included, create asset group + assets inline
+    let assetGroupResult: any = null;
+    if (assetGroup && assetGroup.name && assetGroup.headlines?.length && assetGroup.descriptions?.length && assetGroup.businessName) {
+      try {
+        console.log('[GoogleAdsPMax] Creating inline asset group...');
+
+        // Create asset group
+        const assetGroupResource = {
+          name: assetGroup.name,
+          campaign: campaignResourceName,
+          status: 'ENABLED',
+          final_urls: [finalUrl],
+          path1: assetGroup.path1 || '',
+          path2: assetGroup.path2 || '',
+        };
+
+        const agResponse = await (client as any).assetGroups.create([assetGroupResource]);
+        const agResourceName = agResponse.results[0].resource_name;
+        console.log(`[GoogleAdsPMax] Asset group created: ${agResourceName}`);
+
+        // Create and link text assets
+        const assetGroupAssetOps: any[] = [];
+
+        // Headlines
+        for (const text of assetGroup.headlines) {
+          const assetRes = await (client as any).assets.create([{ text_asset: { text } }]);
+          assetGroupAssetOps.push({
+            asset_group: agResourceName, asset: assetRes.results[0].resource_name, field_type: 'HEADLINE',
+          });
+        }
+
+        // Long headlines
+        if (assetGroup.longHeadlines?.length) {
+          for (const text of assetGroup.longHeadlines) {
+            const assetRes = await (client as any).assets.create([{ text_asset: { text } }]);
+            assetGroupAssetOps.push({
+              asset_group: agResourceName, asset: assetRes.results[0].resource_name, field_type: 'LONG_HEADLINE',
+            });
+          }
+        }
+
+        // Descriptions
+        for (const text of assetGroup.descriptions) {
+          const assetRes = await (client as any).assets.create([{ text_asset: { text } }]);
+          assetGroupAssetOps.push({
+            asset_group: agResourceName, asset: assetRes.results[0].resource_name, field_type: 'DESCRIPTION',
+          });
+        }
+
+        // Business name
+        const bnRes = await (client as any).assets.create([{ text_asset: { text: assetGroup.businessName } }]);
+        assetGroupAssetOps.push({
+          asset_group: agResourceName, asset: bnRes.results[0].resource_name, field_type: 'BUSINESS_NAME',
+        });
+
+        // Link all assets to asset group
+        if (assetGroupAssetOps.length > 0) {
+          await (client as any).assetGroupAssets.create(assetGroupAssetOps);
+          console.log(`[GoogleAdsPMax] Linked ${assetGroupAssetOps.length} assets to asset group`);
+        }
+
+        assetGroupResult = {
+          resourceName: agResourceName,
+          name: assetGroup.name,
+          assetsLinked: assetGroupAssetOps.length,
+        };
+      } catch (agError: any) {
+        console.error('[GoogleAdsPMax] Asset group creation failed (campaign still created):', agError);
+        assetGroupResult = { error: extractPMaxErrorMessage(agError) };
+      }
+    }
 
     return {
       statusCode: 201,
@@ -316,18 +393,40 @@ async function createPMaxCampaign(
           status,
           budget: dailyBudget,
         },
-        message: 'Performance Max campaign created successfully. Add asset groups to start serving.',
+        assetGroup: assetGroupResult,
+        message: `Performance Max campaign created successfully${assetGroupResult && !assetGroupResult.error ? ' with asset group' : ''}.`,
       }),
     };
   } catch (error: any) {
-    console.error('[GoogleAdsPMax] Error creating PMax campaign:', error);
+    const errorMsg = extractPMaxErrorMessage(error);
+    console.error('[GoogleAdsPMax] Error creating PMax campaign:', errorMsg);
+    console.error('[GoogleAdsPMax] Full error:', JSON.stringify(error, Object.getOwnPropertyNames(error)).slice(0, 2000));
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ error: error.message }),
+      body: JSON.stringify({ error: errorMsg }),
     };
   }
 }
+
+/**
+ * Extract meaningful error message from Google Ads gRPC errors
+ */
+function extractPMaxErrorMessage(error: any): string {
+  if (error.errors && Array.isArray(error.errors) && error.errors.length > 0) {
+    return error.errors.map((e: any) => e.message || JSON.stringify(e.error_code) || 'Unknown API error').join('; ');
+  }
+  if (error.message && typeof error.message === 'string') return error.message;
+  if (error.details && typeof error.details === 'string') return error.details;
+  try {
+    const str = String(error);
+    if (str && str !== '[object Object]') return str;
+    return JSON.stringify(error).slice(0, 500);
+  } catch {
+    return 'Unknown error';
+  }
+}
+
 
 // ============================================
 // ASSET GROUP HANDLERS
@@ -410,19 +509,19 @@ async function createAssetGroup(
   corsHeaders: Record<string, string>
 ): Promise<APIGatewayProxyResult> {
   const body: CreateAssetGroupRequest = JSON.parse(event.body || '{}');
-  const { 
-    customerId, 
-    campaignResourceName, 
-    name, 
-    finalUrl, 
+  const {
+    customerId,
+    campaignResourceName,
+    name,
+    finalUrl,
     finalMobileUrl,
-    headlines, 
-    descriptions, 
+    headlines,
+    descriptions,
     longHeadlines,
     businessName,
     path1,
     path2,
-    status = 'ENABLED' 
+    status = 'ENABLED'
   } = body;
 
   if (!customerId || !campaignResourceName || !name || !finalUrl || !headlines?.length || !descriptions?.length || !businessName) {
@@ -439,40 +538,34 @@ async function createAssetGroup(
     const client = await getGoogleAdsClient(customerId);
 
     // Create asset group
-    const assetGroupOperation = {
-      create: {
-        name,
-        campaign: campaignResourceName,
-        status,
-        final_urls: [finalUrl],
-        final_mobile_urls: finalMobileUrl ? [finalMobileUrl] : undefined,
-        path1: path1 || '',
-        path2: path2 || '',
-      },
+    const assetGroupResource = {
+      name,
+      campaign: campaignResourceName,
+      status,
+      final_urls: [finalUrl],
+      final_mobile_urls: finalMobileUrl ? [finalMobileUrl] : undefined,
+      path1: path1 || '',
+      path2: path2 || '',
     };
 
-    const assetGroupResponse = await (client as any).assetGroups.create([assetGroupOperation]);
+    const assetGroupResponse = await (client as any).assetGroups.create([assetGroupResource]);
     const assetGroupResourceName = assetGroupResponse.results[0].resource_name;
 
     console.log(`[GoogleAdsPMax] Created asset group: ${assetGroupResourceName}`);
 
     // Create headline assets
-    const headlineOperations = headlines.map(text => ({
-      create: {
-        text_asset: { text },
-      },
+    const headlineResources = headlines.map(text => ({
+      text_asset: { text },
     }));
 
-    const headlineResponse = await (client as any).assets.create(headlineOperations);
+    const headlineResponse = await (client as any).assets.create(headlineResources);
 
     // Create description assets
-    const descriptionOperations = descriptions.map(text => ({
-      create: {
-        text_asset: { text },
-      },
+    const descriptionResources = descriptions.map(text => ({
+      text_asset: { text },
     }));
 
-    const descriptionResponse = await (client as any).assets.create(descriptionOperations);
+    const descriptionResponse = await (client as any).assets.create(descriptionResources);
 
     // Link assets to asset group
     const assetGroupAssetOperations: any[] = [];
@@ -480,38 +573,30 @@ async function createAssetGroup(
     // Link headlines
     headlineResponse.results.forEach((result: any) => {
       assetGroupAssetOperations.push({
-        create: {
-          asset_group: assetGroupResourceName,
-          asset: result.resource_name,
-          field_type: 'HEADLINE',
-        },
+        asset_group: assetGroupResourceName,
+        asset: result.resource_name,
+        field_type: 'HEADLINE',
       });
     });
 
     // Link descriptions
     descriptionResponse.results.forEach((result: any) => {
       assetGroupAssetOperations.push({
-        create: {
-          asset_group: assetGroupResourceName,
-          asset: result.resource_name,
-          field_type: 'DESCRIPTION',
-        },
+        asset_group: assetGroupResourceName,
+        asset: result.resource_name,
+        field_type: 'DESCRIPTION',
       });
     });
 
     // Create and link business name
     const businessNameAsset = await (client as any).assets.create([{
-      create: {
-        text_asset: { text: businessName },
-      },
+      text_asset: { text: businessName },
     }]);
 
     assetGroupAssetOperations.push({
-      create: {
-        asset_group: assetGroupResourceName,
-        asset: businessNameAsset.results[0].resource_name,
-        field_type: 'BUSINESS_NAME',
-      },
+      asset_group: assetGroupResourceName,
+      asset: businessNameAsset.results[0].resource_name,
+      field_type: 'BUSINESS_NAME',
     });
 
     await (client as any).assetGroupAssets.create(assetGroupAssetOperations);

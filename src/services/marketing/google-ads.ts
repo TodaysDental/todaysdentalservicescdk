@@ -43,6 +43,7 @@ import {
   MAX_TARGET_ROAS_PERCENT,
   PERFORMANCE_THRESHOLDS,
   validateTargetRoas,
+  enums,
 } from '../../shared/utils/google-ads-client';
 import {
   getAllowedClinicIds,
@@ -492,37 +493,79 @@ async function createCampaign(
       };
     }
 
-    // Create budget first
-    const budgetOperation = {
-      create: {
-        name: `Budget - ${name} - ${Date.now()}`,
-        amount_micros: dollarsToMicros(dailyBudget),
-        delivery_method: 'STANDARD',
-      },
+    // Create budget first — must set explicitly_shared to false for campaign-specific budgets
+    const budgetResource = {
+      name: `Budget - ${name} - ${Date.now()}`,
+      amount_micros: dollarsToMicros(dailyBudget),
+      delivery_method: enums.BudgetDeliveryMethod.STANDARD,
+      explicitly_shared: false,
     };
 
-    const budgetResponse = await (client as any).campaignBudgets.create([budgetOperation]);
+    const budgetResponse = await (client as any).campaignBudgets.create([budgetResource]);
     budgetResourceName = budgetResponse.results[0].resource_name;
 
+    // Validate conversion tracking for strategies that require it
+    // TARGET_CPA, MAXIMIZE_CONVERSIONS, and TARGET_ROAS all require at least one
+    // enabled conversion action on the account, otherwise the API returns:
+    //   "The operation is not allowed for the given context" (context_error: 2)
+    const conversionRequiredStrategies = ['TARGET_CPA', 'MAXIMIZE_CONVERSIONS', 'TARGET_ROAS'];
+    if (conversionRequiredStrategies.includes(biddingStrategy)) {
+      try {
+        const convQuery = `SELECT conversion_action.id FROM conversion_action WHERE conversion_action.status = 'ENABLED' LIMIT 1`;
+        const convResults = await (client as any).query(convQuery);
+        if (!convResults || convResults.length === 0) {
+          return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({
+              success: false,
+              error: `${biddingStrategy} bidding strategy requires conversion tracking to be set up on this Google Ads account. ` +
+                `Please create at least one conversion action first, or use MANUAL_CPC or MAXIMIZE_CLICKS instead.`,
+            }),
+          };
+        }
+      } catch (convCheckError: any) {
+        console.warn(`[GoogleAds] Could not verify conversion tracking for ${customerId}: ${convCheckError.message}`);
+        // Proceed anyway — the API will return a descriptive error if tracking is truly missing
+      }
+    }
+
     // Build bidding strategy configuration
+    // IMPORTANT: Google Ads API uses protobuf `oneof` for campaign_bidding_strategy.
+    // Empty objects like `maximize_clicks: {}` serialize as null in protobuf,
+    // causing "The required field was not present" error on campaign_bidding_strategy.
+    // Each bidding strategy object MUST have at least one concrete field value.
     const biddingConfig: any = {};
     switch (biddingStrategy) {
       case 'MANUAL_CPC':
-        biddingConfig.manual_cpc = { enhanced_cpc_enabled: true };
+        biddingConfig.manual_cpc = { enhanced_cpc_enabled: false };
         break;
       case 'TARGET_CPA':
         biddingConfig.target_cpa = { target_cpa_micros: dollarsToMicros(targetCpa!) };
         break;
       case 'MAXIMIZE_CONVERSIONS':
-        biddingConfig.maximize_conversions = {};
+        biddingConfig.maximize_conversions = { target_cpa_micros: 0 };
         break;
       case 'MAXIMIZE_CLICKS':
-        biddingConfig.maximize_clicks = {};
+        biddingConfig.maximize_clicks = { cpc_bid_ceiling_micros: 0 };
         break;
       case 'TARGET_ROAS':
-        biddingConfig.target_roas = { target_roas: targetRoas! / 100 }; // Convert percentage to decimal
+        biddingConfig.target_roas = { target_roas: targetRoas! / 100 };
         break;
     }
+
+    // Map campaign type and status to enum values
+    const channelTypeEnum = type === 'SEARCH'
+      ? enums.AdvertisingChannelType.SEARCH
+      : type === 'DISPLAY'
+        ? enums.AdvertisingChannelType.DISPLAY
+        : type === 'VIDEO'
+          ? enums.AdvertisingChannelType.VIDEO
+          : enums.AdvertisingChannelType.SEARCH;
+
+    const statusEnum = status === 'ENABLED'
+      ? enums.CampaignStatus.ENABLED
+      : enums.CampaignStatus.PAUSED;
 
     // Build network settings based on campaign type
     const networkSettings = type === 'SEARCH' ? {
@@ -532,19 +575,20 @@ async function createCampaign(
       target_youtube: true,
     } : undefined;
 
-    // Create campaign
-    const campaignOperation = {
-      create: {
-        name,
-        status,
-        advertising_channel_type: type,
-        campaign_budget: budgetResourceName,
-        ...biddingConfig,
-        network_settings: networkSettings,
-      },
+    // Create campaign with proper enum values
+    // REQUIRED: contains_eu_political_advertising must be set on all campaigns (Google Ads API mandate)
+    const campaignResource = {
+      name,
+      status: statusEnum,
+      advertising_channel_type: channelTypeEnum,
+      campaign_budget: budgetResourceName,
+      ...biddingConfig,
+      ...(networkSettings ? { network_settings: networkSettings } : {}),
+      // EU Political Advertising compliance — required field since Google Ads API v15+
+      contains_eu_political_advertising: false,
     };
 
-    const campaignResponse = await (client as any).campaigns.create([campaignOperation]);
+    const campaignResponse = await (client as any).campaigns.create([campaignResource]);
     campaignResourceName = campaignResponse.results[0].resource_name;
     const googleCampaignId = campaignResourceName!.split('/').pop()!;
 
@@ -571,16 +615,14 @@ async function createCampaign(
       // Get proper ad group type based on campaign type
       const adGroupType = CAMPAIGN_TYPE_TO_AD_GROUP_TYPE[type] || 'SEARCH_STANDARD';
 
-      const adGroupOperation = {
-        create: {
-          name: adGroup.name || `${name} - Ad Group`,
-          campaign: campaignResourceName!,
-          status: 'ENABLED',
-          type: adGroupType,
-          cpc_bid_micros: adGroup.cpcBidMicros,
-        },
+      const adGroupResource = {
+        name: adGroup.name || `${name} - Ad Group`,
+        campaign: campaignResourceName!,
+        status: 'ENABLED',
+        type: adGroupType,
+        cpc_bid_micros: adGroup.cpcBidMicros,
       };
-      const adGroupResponse = await (client as any).adGroups.create([adGroupOperation]);
+      const adGroupResponse = await (client as any).adGroups.create([adGroupResource]);
       adGroupResourceName = adGroupResponse.results[0].resource_name;
       console.log(`[GoogleAds] Created ad group: ${adGroupResourceName}`);
 
@@ -611,23 +653,21 @@ async function createCampaign(
             console.warn(`[GoogleAds] Ad text validation warnings: ${warnings.join('; ')}`);
           }
 
-          const adOperation = {
-            create: {
-              ad_group: adGroupResourceName,
-              status: 'ENABLED',
-              ad: {
-                responsive_search_ad: {
-                  headlines: validHeadlines.slice(0, 15).map((text) => ({ text })),
-                  descriptions: validDescriptions.slice(0, 4).map(text => ({ text })),
-                  path1: ad.path1,
-                  path2: ad.path2,
-                },
-                final_urls: [ad.finalUrl],
+          const adResource = {
+            ad_group: adGroupResourceName,
+            status: 'ENABLED',
+            ad: {
+              responsive_search_ad: {
+                headlines: validHeadlines.slice(0, 15).map((text) => ({ text })),
+                descriptions: validDescriptions.slice(0, 4).map(text => ({ text })),
+                path1: ad.path1,
+                path2: ad.path2,
               },
+              final_urls: [ad.finalUrl],
             },
           };
 
-          const adResponse = await (client as any).adGroupAds.create([adOperation]);
+          const adResponse = await (client as any).adGroupAds.create([adResource]);
           adResourceName = adResponse.results[0].resource_name;
           console.log(`[GoogleAds] Created responsive search ad: ${adResourceName}`);
         }
