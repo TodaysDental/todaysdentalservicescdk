@@ -390,11 +390,8 @@ async function removeLocationTargeting(
     const client = await getGoogleAdsClient(customerId);
     const resourceName = `customers/${customerId}/campaignCriteria/${campaignId}~${criterionId}`;
 
-    const removeOperation = {
-      remove: resourceName,
-    };
-
-    await (client as any).campaignCriteria.remove([removeOperation]);
+    // The library's remove() expects resource name strings directly
+    await (client as any).campaignCriteria.remove([resourceName]);
 
     console.log(`[GoogleAdsTargeting] Removed location target: ${resourceName}`);
 
@@ -503,17 +500,16 @@ async function addAudienceTargeting(
   try {
     const client = await getGoogleAdsClient(customerId);
 
-    const operation = {
-      create: {
-        ad_group: adGroupResourceName,
-        user_list: {
-          user_list: `customers/${customerId}/userLists/${userListId}`,
-        },
-        bid_modifier: bidModifier || 1.0,
+    // The library's create() expects resource objects directly, NOT wrapped in { create: { ... } }
+    const resource = {
+      ad_group: adGroupResourceName,
+      user_list: {
+        user_list: `customers/${customerId}/userLists/${userListId}`,
       },
+      bid_modifier: bidModifier || 1.0,
     };
 
-    const response = await (client as any).adGroupCriteria.create([operation]);
+    const response = await (client as any).adGroupCriteria.create([resource]);
 
     console.log(`[GoogleAdsTargeting] Added audience targeting`);
 
@@ -652,19 +648,18 @@ async function updateDemographicTargeting(
 
   try {
     const client = await getGoogleAdsClient(customerId);
-    const operations: any[] = [];
+    const resources: any[] = [];
 
+    // The library's create() expects resource objects directly, NOT wrapped in { create: { ... } }
     // Add age range criteria
     if (ageRanges?.length) {
       ageRanges.forEach(ar => {
-        operations.push({
-          create: {
-            ad_group: adGroupResourceName,
-            age_range: {
-              type: ar.range,
-            },
-            bid_modifier: ar.bidModifier || 1.0,
+        resources.push({
+          ad_group: adGroupResourceName,
+          age_range: {
+            type: ar.range,
           },
+          bid_modifier: ar.bidModifier || 1.0,
         });
       });
     }
@@ -672,19 +667,17 @@ async function updateDemographicTargeting(
     // Add gender criteria
     if (genders?.length) {
       genders.forEach(g => {
-        operations.push({
-          create: {
-            ad_group: adGroupResourceName,
-            gender: {
-              type: g.gender,
-            },
-            bid_modifier: g.bidModifier || 1.0,
+        resources.push({
+          ad_group: adGroupResourceName,
+          gender: {
+            type: g.gender,
           },
+          bid_modifier: g.bidModifier || 1.0,
         });
       });
     }
 
-    if (operations.length === 0) {
+    if (resources.length === 0) {
       return {
         statusCode: 400,
         headers: corsHeaders,
@@ -692,16 +685,16 @@ async function updateDemographicTargeting(
       };
     }
 
-    const response = await (client as any).adGroupCriteria.create(operations);
+    const response = await (client as any).adGroupCriteria.create(resources);
 
-    console.log(`[GoogleAdsTargeting] Updated ${operations.length} demographic targets`);
+    console.log(`[GoogleAdsTargeting] Updated ${resources.length} demographic targets`);
 
     return {
       statusCode: 200,
       headers: corsHeaders,
       body: JSON.stringify({
         success: true,
-        updatedCount: response.results?.length || operations.length,
+        updatedCount: response.results?.length || resources.length,
         message: 'Demographic targeting updated',
       }),
     };
@@ -939,21 +932,20 @@ async function updateAdSchedule(
   try {
     const client = await getGoogleAdsClient(customerId);
 
-    const operations = schedules.map(s => ({
-      create: {
-        campaign: campaignResourceName,
-        ad_schedule: {
-          day_of_week: s.dayOfWeek,
-          start_hour: s.startHour,
-          start_minute: s.startMinute === 0 ? 'ZERO' : s.startMinute === 15 ? 'FIFTEEN' : s.startMinute === 30 ? 'THIRTY' : 'FORTY_FIVE',
-          end_hour: s.endHour,
-          end_minute: s.endMinute === 0 ? 'ZERO' : s.endMinute === 15 ? 'FIFTEEN' : s.endMinute === 30 ? 'THIRTY' : 'FORTY_FIVE',
-        },
-        bid_modifier: s.bidModifier || 1.0,
+    // The library's create() expects resource objects directly, NOT wrapped in { create: { ... } }
+    const resources = schedules.map(s => ({
+      campaign: campaignResourceName,
+      ad_schedule: {
+        day_of_week: s.dayOfWeek,
+        start_hour: s.startHour,
+        start_minute: s.startMinute === 0 ? 'ZERO' : s.startMinute === 15 ? 'FIFTEEN' : s.startMinute === 30 ? 'THIRTY' : 'FORTY_FIVE',
+        end_hour: s.endHour,
+        end_minute: s.endMinute === 0 ? 'ZERO' : s.endMinute === 15 ? 'FIFTEEN' : s.endMinute === 30 ? 'THIRTY' : 'FORTY_FIVE',
       },
+      bid_modifier: s.bidModifier || 1.0,
     }));
 
-    const response = await (client as any).campaignCriteria.create(operations);
+    const response = await (client as any).campaignCriteria.create(resources);
 
     console.log(`[GoogleAdsTargeting] Added ${schedules.length} ad schedule entries`);
 
