@@ -1006,6 +1006,8 @@ const accountingStack = new AccountingStack(app, 'TodaysDentalInsightsAccounting
   // Pass secrets table names for dynamic secret retrieval
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  // ClinicSecrets table for per-clinic OpenDental API credentials
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
 accountingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn

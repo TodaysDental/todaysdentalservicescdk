@@ -570,27 +570,171 @@ async function fetchOpenDentalPayments(
   dateStart: string,
   dateEnd: string
 ) {
-  // For now, return placeholder - will be implemented with actual OpenDental API calls
-  // This will use the opendental-api utility to fetch payments
   const reportId = uuidv4();
   const now = new Date().toISOString();
 
-  const report: OpenDentalReport = {
-    reportId,
-    clinicId,
-    paymentMode,
-    reportDate: now,
-    dateStart,
-    dateEnd,
-    rows: [],
-    createdAt: now,
+  try {
+    // 1. Get OpenDental API credentials from ClinicSecrets table
+    const { getClinicSecrets } = await import('../../shared/utils/secrets-helper');
+    const secrets = await getClinicSecrets(clinicId);
+    if (!secrets || !secrets.openDentalDeveloperKey || !secrets.openDentalCustomerKey) {
+      console.error(`[Accounting] No OpenDental credentials found for clinic: ${clinicId}`);
+      return httpErr(400, `No OpenDental credentials configured for clinic ${clinicId}`);
+    }
+
+    const authHeader = `ODFHIR ${secrets.openDentalDeveloperKey}/${secrets.openDentalCustomerKey}`;
+
+    // 2. Call OpenDental API to fetch payments
+    //    The API supports DateEntry (on or after date) - we'll filter by dateEnd client-side
+    console.log(`[Accounting] Fetching OpenDental payments for clinic=${clinicId}, mode=${paymentMode}, range=${dateStart} to ${dateEnd}`);
+
+    const odPayments = await callOpenDentalApi(
+      'GET',
+      `/payments?DateEntry=${dateStart}`,
+      authHeader
+    );
+
+    if (!Array.isArray(odPayments)) {
+      console.warn('[Accounting] OpenDental payments response is not an array:', typeof odPayments);
+      // Return empty report if no data
+      const report: OpenDentalReport = {
+        reportId, clinicId, paymentMode, reportDate: now, dateStart, dateEnd, rows: [], createdAt: now,
+      };
+      return httpOk({ report });
+    }
+
+    console.log(`[Accounting] OpenDental returned ${odPayments.length} total payments since ${dateStart}`);
+
+    // 3. Filter payments by end date (API only supports "on or after")
+    const filteredPayments = odPayments.filter((p: any) => {
+      const payDate = p.PayDate || p.payDate || '';
+      // PayDate format from OD API: "yyyy-MM-dd" or ISO string
+      const normalizedDate = payDate.substring(0, 10); // Take just YYYY-MM-DD
+      return normalizedDate <= dateEnd;
+    });
+
+    console.log(`[Accounting] ${filteredPayments.length} payments within date range ${dateStart} to ${dateEnd}`);
+
+    // 4. Fetch patient names for unique PatNums (in batches to avoid overwhelming the API)
+    const uniquePatNums = [...new Set(filteredPayments.map((p: any) => p.PatNum || p.patNum).filter(Boolean))];
+    const patientNameCache = new Map<number, string>();
+
+    // Fetch patient names in batches of 10
+    const BATCH_SIZE = 10;
+    for (let i = 0; i < uniquePatNums.length; i += BATCH_SIZE) {
+      const batch = uniquePatNums.slice(i, i + BATCH_SIZE);
+      const patientPromises = batch.map(async (patNum: number) => {
+        try {
+          const patient = await callOpenDentalApi('GET', `/patients/${patNum}`, authHeader);
+          // OpenDental patient response: { PatNum, LName, FName, ... } or { patNum, lName, fName, ... }
+          const fName = patient?.FName || patient?.fName || '';
+          const lName = patient?.LName || patient?.lName || '';
+          patientNameCache.set(patNum, `${lName}, ${fName}`.trim());
+        } catch (err) {
+          console.warn(`[Accounting] Failed to fetch patient ${patNum}:`, err);
+          patientNameCache.set(patNum, `Patient #${patNum}`);
+        }
+      });
+      await Promise.all(patientPromises);
+    }
+
+    // 5. Map payments to OpenDentalPaymentRow format
+    const rows = filteredPayments.map((p: any) => {
+      const patNum = p.PatNum || p.patNum || 0;
+      const payAmt = p.PayAmt || p.payAmt || 0;
+      const payDate = (p.PayDate || p.payDate || '').substring(0, 10);
+      const payNum = p.PayNum || p.payNum || 0;
+      const payType = p.PayType || p.payType || 0;
+      const payNote = p.PayNote || p.payNote || '';
+
+      return {
+        rowId: `od-${payNum}`,
+        patNum,
+        patientName: patientNameCache.get(patNum) || `Patient #${patNum}`,
+        paymentDate: payDate,
+        expectedAmount: Number(payAmt),
+        paymentMode,
+        referenceId: payNote || `PAY-${payNum}`,
+        sourceType: 'PATIENT' as const,
+        payType,
+      };
+    });
+
+    console.log(`[Accounting] Mapped ${rows.length} OpenDental payment rows`);
+
+    const report: OpenDentalReport = {
+      reportId,
+      clinicId,
+      paymentMode,
+      reportDate: now,
+      dateStart,
+      dateEnd,
+      rows,
+      createdAt: now,
+    };
+
+    // 6. Cache the report in DynamoDB for future reference
+    try {
+      await ddb.send(new PutCommand({
+        TableName: OPENDENTAL_REPORTS_TABLE,
+        Item: report,
+      }));
+    } catch (cacheErr) {
+      console.warn('[Accounting] Failed to cache OpenDental report:', cacheErr);
+      // Non-fatal - still return the data
+    }
+
+    return httpOk({ report });
+  } catch (error: any) {
+    console.error('[Accounting] Error fetching OpenDental payments:', error);
+    return httpErr(500, `Failed to fetch OpenDental payments: ${error.message}`);
+  }
+}
+
+/**
+ * Make an HTTPS request to the OpenDental API (api.opendental.com).
+ * Follows the same pattern as the OpenDental proxy.
+ */
+async function callOpenDentalApi(
+  method: string,
+  apiPath: string,
+  authorizationHeader: string,
+  body?: string
+): Promise<any> {
+  const https = await import('https');
+  const API_HOST = 'api.opendental.com';
+  const API_BASE = '/api/v1';
+  const fullPath = `${API_BASE}${apiPath}`;
+
+  const headers: Record<string, string> = {
+    'Authorization': authorizationHeader,
+    'Content-Type': 'application/json',
   };
+  if (body) {
+    headers['Content-Length'] = Buffer.byteLength(body).toString();
+  }
 
-  // TODO: Call OpenDental API to fetch actual payments
-  // const clinicConfig = getClinicConfig(clinicId);
-  // const payments = await getPatientPayments(clinicId, { dateStart, dateEnd, payType });
-
-  return httpOk({ report });
+  return new Promise<any>((resolve, reject) => {
+    const options = { hostname: API_HOST, path: fullPath, method, headers };
+    const req = https.request(options, (res: any) => {
+      let data = '';
+      res.on('data', (chunk: any) => { data += chunk; });
+      res.on('end', () => {
+        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            resolve(JSON.parse(data));
+          } catch {
+            resolve(data);
+          }
+        } else {
+          reject(new Error(`OpenDental API returned ${res.statusCode}: ${data.substring(0, 500)}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
 }
 
 async function fetchOdooBankTransactions(clinicId: string, dateStart: string, dateEnd: string) {
