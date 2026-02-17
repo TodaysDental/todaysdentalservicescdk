@@ -579,19 +579,48 @@ async function bulkPublishCampaigns(
       console.log(`[GoogleAdsBulk] Budget created: ${budgetResourceName}`);
 
       // Build bidding configuration
+      // IMPORTANT: Google Ads API uses protobuf `oneof` for campaign_bidding_strategy.
+      // Empty objects like `maximize_clicks: {}` serialize as null in protobuf,
+      // causing "The required field was not present" error on campaign_bidding_strategy.
+      // Each bidding strategy object MUST have at least one concrete field value.
+      //
+      // NOTE: TARGET_CPA, MAXIMIZE_CONVERSIONS, and TARGET_ROAS require conversion tracking
+      // to be set up on the account first. If no conversion actions exist, the API returns:
+      //   "The operation is not allowed for the given context" (context_error: 2)
+      // We fall back to MAXIMIZE_CLICKS for safety during bulk operations.
+      let effectiveStrategy = campaignTemplate.biddingStrategy || 'MAXIMIZE_CLICKS';
+      const conversionRequiredStrategies = ['TARGET_CPA', 'MAXIMIZE_CONVERSIONS', 'TARGET_ROAS'];
+
+      // For conversion-dependent strategies, verify conversion tracking exists
+      if (conversionRequiredStrategies.includes(effectiveStrategy)) {
+        try {
+          const convQuery = `SELECT conversion_action.id FROM conversion_action WHERE conversion_action.status = 'ENABLED' LIMIT 1`;
+          const convResults = await (client as any).query(convQuery);
+          if (!convResults || convResults.length === 0) {
+            console.warn(`[GoogleAdsBulk] Account ${customerId} has no conversion actions. Falling back from ${effectiveStrategy} to MAXIMIZE_CLICKS.`);
+            allWarnings.push(`${clinic.clinicName}: ${effectiveStrategy} requires conversion tracking — fell back to MAXIMIZE_CLICKS`);
+            effectiveStrategy = 'MAXIMIZE_CLICKS';
+          }
+        } catch (convCheckError: any) {
+          console.warn(`[GoogleAdsBulk] Could not verify conversion tracking for ${customerId}: ${convCheckError.message}. Falling back to MAXIMIZE_CLICKS.`);
+          allWarnings.push(`${clinic.clinicName}: Could not verify conversion tracking — fell back to MAXIMIZE_CLICKS`);
+          effectiveStrategy = 'MAXIMIZE_CLICKS';
+        }
+      }
+
       const biddingConfig: any = {};
-      switch (campaignTemplate.biddingStrategy || 'MANUAL_CPC') {
+      switch (effectiveStrategy) {
         case 'MANUAL_CPC':
-          biddingConfig.manual_cpc = {};
+          biddingConfig.manual_cpc = { enhanced_cpc_enabled: false };
           break;
         case 'TARGET_CPA':
           biddingConfig.target_cpa = { target_cpa_micros: dollarsToMicros(campaignTemplate.targetCpa!) };
           break;
         case 'MAXIMIZE_CONVERSIONS':
-          biddingConfig.maximize_conversions = {};
+          biddingConfig.maximize_conversions = { target_cpa_micros: 0 };
           break;
         case 'MAXIMIZE_CLICKS':
-          biddingConfig.maximize_clicks = {};
+          biddingConfig.maximize_clicks = { cpc_bid_ceiling_micros: 0 };
           break;
         case 'TARGET_ROAS':
           biddingConfig.target_roas = { target_roas: campaignTemplate.targetRoas! / 100 };
@@ -623,6 +652,7 @@ async function bulkPublishCampaigns(
       } : undefined;
 
       // Create campaign with proper enum values
+      // REQUIRED: contains_eu_political_advertising must be set on all campaigns (Google Ads API mandate)
       const campaignResource = {
         name: campaignName,
         status: statusEnum,
@@ -630,6 +660,8 @@ async function bulkPublishCampaigns(
         campaign_budget: budgetResourceName,
         ...biddingConfig,
         ...(networkSettings ? { network_settings: networkSettings } : {}),
+        // EU Political Advertising compliance — required field since Google Ads API v15+
+        contains_eu_political_advertising: false,
       };
 
       console.log(`[GoogleAdsBulk] Campaign resource:`, JSON.stringify(campaignResource));

@@ -26,6 +26,7 @@ import {
   getGoogleAdsClient,
   microsToDollars,
   dollarsToMicros,
+  enums,
 } from '../../shared/utils/google-ads-client';
 
 // Module permission configuration
@@ -68,72 +69,107 @@ interface OfflineConversionUpload {
 // ============================================
 
 export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
-  const corsHeaders = buildCorsHeaders({}, event.headers?.origin || event.headers?.Origin);
-  const method = event.httpMethod;
-  const path = event.path;
-  const pathParts = path.split('/').filter(Boolean);
+  console.log('[GoogleAdsConversions] Handler started');
 
-  console.log(`[GoogleAdsConversions] ${method} ${path}`);
-
-  // Handle OPTIONS for CORS
-  if (method === 'OPTIONS') {
-    return { statusCode: 200, headers: corsHeaders, body: '' };
-  }
-
-  // Permission check
-  const userPerms = getUserPermissions(event);
-  if (!userPerms) {
-    return { statusCode: 401, headers: corsHeaders, body: JSON.stringify({ success: false, error: 'Unauthorized' }) };
-  }
-  const requiredPermission: PermissionType = METHOD_PERMISSIONS[method] || 'read';
-  if (!hasModulePermission(userPerms.clinicRoles, MODULE_NAME, requiredPermission, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin)) {
-    return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ success: false, error: `Access denied: requires ${MODULE_NAME} module access` }) };
-  }
+  // Default fallback headers in case buildCorsHeaders fails or isn't reached
+  const fallbackHeaders = {
+    'Access-Control-Allow-Origin': event.headers?.origin || event.headers?.Origin || '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Referer, X-Clinic-Id',
+    'Access-Control-Allow-Credentials': 'true',
+  };
 
   try {
-    // Route: GET /google-ads/conversions - List conversion actions
-    if (method === 'GET' && path.endsWith('/conversions')) {
-      return await listConversionActions(event, corsHeaders);
+    const corsHeaders = buildCorsHeaders({}, event.headers?.origin || event.headers?.Origin);
+    const method = event.httpMethod;
+    const path = event.path;
+    const pathParts = path.split('/').filter(Boolean);
+
+    console.log(`[GoogleAdsConversions] ${method} ${path}`);
+
+    // Handle OPTIONS for CORS
+    if (method === 'OPTIONS') {
+      return { statusCode: 200, headers: corsHeaders, body: '' };
     }
 
-    // Route: POST /google-ads/conversions - Create conversion action
-    if (method === 'POST' && path.endsWith('/conversions')) {
-      return await createConversionAction(event, corsHeaders);
+    // Permission check
+    console.log('[GoogleAdsConversions] Checking permissions...');
+    const userPerms = getUserPermissions(event);
+    if (!userPerms) {
+      console.warn('[GoogleAdsConversions] No user permissions found');
+      return { statusCode: 401, headers: corsHeaders, body: JSON.stringify({ success: false, error: 'Unauthorized' }) };
+    }
+    const requiredPermission: PermissionType = METHOD_PERMISSIONS[method] || 'read';
+    if (!hasModulePermission(userPerms.clinicRoles, MODULE_NAME, requiredPermission, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin)) {
+      console.warn(`[GoogleAdsConversions] Access denied for ${MODULE_NAME} ${requiredPermission}`);
+      return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ success: false, error: `Access denied: requires ${MODULE_NAME} module access` }) };
     }
 
-    // Route: GET /google-ads/conversions/{id}
-    if (method === 'GET' && pathParts.includes('conversions') && pathParts.length > pathParts.indexOf('conversions') + 1 && !path.includes('/upload') && !path.includes('/tag')) {
-      return await getConversionAction(event, corsHeaders);
-    }
+    try {
+      // Route: GET /google-ads/conversions - List conversion actions
+      if (method === 'GET' && path.endsWith('/conversions')) {
+        console.log('[GoogleAdsConversions] Routing to listConversionActions');
+        return await listConversionActions(event, corsHeaders);
+      }
 
-    // Route: PUT /google-ads/conversions/{id}
-    if (method === 'PUT' && pathParts.includes('conversions')) {
-      return await updateConversionAction(event, corsHeaders);
-    }
+      // Route: POST /google-ads/conversions - Create conversion action
+      if (method === 'POST' && path.endsWith('/conversions')) {
+        console.log('[GoogleAdsConversions] Routing to createConversionAction');
+        return await createConversionAction(event, corsHeaders);
+      }
 
-    // Route: POST /google-ads/conversions/upload - Upload offline conversions
-    if (method === 'POST' && path.includes('/conversions/upload')) {
-      return await uploadOfflineConversions(event, corsHeaders);
-    }
+      // Route: GET /google-ads/conversions/{id}
+      if (method === 'GET' && pathParts.includes('conversions') && pathParts.length > pathParts.indexOf('conversions') + 1 && !path.includes('/upload') && !path.includes('/tag')) {
+        return await getConversionAction(event, corsHeaders);
+      }
 
-    // Route: GET /google-ads/conversions/tag - Get conversion tracking tag
-    if (method === 'GET' && path.includes('/conversions/tag')) {
-      return await getConversionTag(event, corsHeaders);
-    }
+      // Route: PUT /google-ads/conversions/{id}
+      if (method === 'PUT' && pathParts.includes('conversions')) {
+        return await updateConversionAction(event, corsHeaders);
+      }
 
-    return {
-      statusCode: 404,
-      headers: corsHeaders,
-      body: JSON.stringify({ error: 'Not found' }),
-    };
-  } catch (error: any) {
-    console.error('[GoogleAdsConversions] Error:', error);
+      // Route: POST /google-ads/conversions/upload - Upload offline conversions
+      if (method === 'POST' && path.includes('/conversions/upload')) {
+        return await uploadOfflineConversions(event, corsHeaders);
+      }
+
+      // Route: GET /google-ads/conversions/tag - Get conversion tracking tag
+      if (method === 'GET' && path.includes('/conversions/tag')) {
+        return await getConversionTag(event, corsHeaders);
+      }
+
+      return {
+        statusCode: 404,
+        headers: corsHeaders,
+        body: JSON.stringify({ error: 'Not found' }),
+      };
+    } catch (error: any) {
+      console.error('[GoogleAdsConversions] Error in route handler:', error);
+      // Log stack trace if available
+      if (error.stack) {
+        console.error('[GoogleAdsConversions] Stack trace:', error.stack);
+      }
+      return {
+        statusCode: 500,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          success: false,
+          error: error.message || 'Internal server error',
+        }),
+      };
+    }
+  } catch (criticalError: any) {
+    console.error('[GoogleAdsConversions] Critical handler failure (top-level):', criticalError);
+    if (criticalError.stack) {
+      console.error('[GoogleAdsConversions] Top-level Stack trace:', criticalError.stack);
+    }
     return {
       statusCode: 500,
-      headers: corsHeaders,
+      headers: fallbackHeaders,
       body: JSON.stringify({
         success: false,
-        error: error.message || 'Internal server error',
+        error: 'Critical internal server error',
+        details: criticalError.message,
       }),
     };
   }
@@ -234,22 +270,34 @@ async function createConversionAction(
   try {
     const client = await getGoogleAdsClient(customerId);
 
-    const conversionActionOperation = {
-      create: {
-        name,
-        category,
-        type,
-        counting_type: countingType,
-        status,
-        value_settings: defaultValue ? {
-          default_value: defaultValue,
-          always_use_default_value: false,
-        } : undefined,
-      },
+    // Map string enums to numeric values
+    const categoryEnum = enums.ConversionActionCategory[category as keyof typeof enums.ConversionActionCategory];
+    const typeEnum = enums.ConversionActionType[type as keyof typeof enums.ConversionActionType];
+    const statusEnum = enums.ConversionActionStatus[status as keyof typeof enums.ConversionActionStatus];
+    const countingTypeEnum = enums.ConversionActionCountingType[countingType as keyof typeof enums.ConversionActionCountingType];
+
+    // NOTE: The google-ads-api library's .create() expects raw resource objects directly,
+    // NOT wrapped in { create: { ... } } operation objects. The library handles operation types internally.
+    const conversionActionResource = {
+      name,
+      category: categoryEnum,
+      type: typeEnum,
+      counting_type: countingTypeEnum,
+      status: statusEnum,
+      value_settings: defaultValue ? {
+        default_value: defaultValue,
+        always_use_default_value: false,
+      } : undefined,
     };
 
-    const response = await (client as any).conversionActions.create([conversionActionOperation]);
-    const resourceName = response.results[0].resource_name;
+    console.log(`[GoogleAdsConversions] Creating conversion action payload:`, JSON.stringify(conversionActionResource));
+
+    const response = await (client as any).conversionActions.create([conversionActionResource]);
+    console.log(`[GoogleAdsConversions] Create response:`, JSON.stringify(response));
+
+    const results = response?.results || response;
+    const firstResult = Array.isArray(results) ? results[0] : results;
+    const resourceName = firstResult?.resource_name || '';
     const actionId = resourceName.split('/').pop();
 
     console.log(`[GoogleAdsConversions] Created conversion action: ${resourceName}`);

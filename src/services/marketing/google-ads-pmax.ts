@@ -287,15 +287,19 @@ async function createPMaxCampaign(
       advertising_channel_type: enums.AdvertisingChannelType.PERFORMANCE_MAX,
       status: statusEnum,
       // Bidding strategy
+      // IMPORTANT: Google Ads API protobuf oneofs reject empty objects {}.
+      // Each bidding strategy MUST have at least one concrete field value.
       ...(targetRoas ? {
         maximize_conversion_value: {
           target_roas: targetRoas,
         },
       } : {
         maximize_conversions: {
-          ...(targetCpa ? { target_cpa_micros: dollarsToMicros(targetCpa) } : {}),
+          target_cpa_micros: targetCpa ? dollarsToMicros(targetCpa) : 0,
         },
       }),
+      // EU Political Advertising compliance — required field since Google Ads API v15+
+      contains_eu_political_advertising: false,
     };
 
     console.log('[GoogleAdsPMax] Creating campaign:', JSON.stringify(campaignResource));
