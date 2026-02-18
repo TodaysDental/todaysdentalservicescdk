@@ -6,6 +6,7 @@
 
 export type InvoiceSource = 'WHATSAPP' | 'EMAIL' | 'MANUAL' | 'ODOO';
 export type InvoiceStatus = 'SCANNED' | 'VENDOR_IDENTIFIED' | 'DUE_DATE_EXTRACTED' | 'READY_FOR_AP' | 'ERROR';
+export type InvoiceType = 'VENDOR_BILL' | 'VENDOR_CREDIT_NOTE' | 'CUSTOMER_INVOICE' | 'CUSTOMER_CREDIT_NOTE' | 'JOURNAL_ENTRY' | 'OTHER';
 
 export interface Invoice {
   invoiceId: string;
@@ -19,8 +20,10 @@ export interface Invoice {
   fileUrl: string;
   s3Key: string;
   rawText?: string;
+  invoiceType?: InvoiceType; // Type of invoice (vendor bill, customer invoice, etc.)
   odooId?: number;          // Odoo account.move ID (for invoices synced from Odoo)
   odooRef?: string;         // Odoo invoice number (e.g., BILL/2024/0001)
+  odooMoveType?: string;    // Raw Odoo move_type (in_invoice, out_invoice, etc.)
   createdAt: string;
   updatedAt?: string;
 }
