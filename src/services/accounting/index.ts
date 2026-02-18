@@ -17,6 +17,7 @@ import {
   Invoice,
   InvoiceSource,
   InvoiceStatus,
+  InvoiceType,
   BankStatement,
   PaymentMode,
   OpenDentalReport,
@@ -26,6 +27,8 @@ import {
   UploadInvoiceRequest,
   FetchPaymentsRequest,
   GenerateReconciliationRequest,
+  OpenDentalPaymentRow,
+  BankStatementRow,
 } from './types';
 import { getClinicConfig, getOdooConfig } from '../../shared/utils/secrets-helper';
 import { OdooClient } from '../../shared/utils/odoo-api';
@@ -437,8 +440,8 @@ async function deleteInvoice(invoiceId: string, allowedClinics: Set<string>) {
 
 /**
  * Sync invoices from Odoo into DynamoDB
- * Fetches vendor bills (account.move with move_type='in_invoice') from Odoo
- * and upserts them into the Invoices table
+ * Fetches all invoice types (vendor bills, customer invoices/insurance,
+ * credit notes, journal entries) from Odoo and upserts them into the Invoices table
  */
 async function syncOdooInvoices(clinicId: string) {
   // Get clinic config to find Odoo company ID
@@ -492,6 +495,18 @@ async function syncOdooInvoices(clinicId: string) {
       return 'VENDOR_IDENTIFIED';
     };
 
+    // Map Odoo move_type to our InvoiceType
+    const mapMoveType = (moveType: string): InvoiceType => {
+      switch (moveType) {
+        case 'in_invoice': return 'VENDOR_BILL';
+        case 'in_refund': return 'VENDOR_CREDIT_NOTE';
+        case 'out_invoice': return 'CUSTOMER_INVOICE';
+        case 'out_refund': return 'CUSTOMER_CREDIT_NOTE';
+        case 'entry': return 'JOURNAL_ENTRY';
+        default: return 'OTHER';
+      }
+    };
+
     let synced = 0;
     let skipped = 0;
     const now = new Date().toISOString();
@@ -518,10 +533,12 @@ async function syncOdooInvoices(clinicId: string) {
         dueDate,
         amount: odooInv.amount_total,
         status: mapOdooStatus(odooInv.state, odooInv.payment_state),
+        invoiceType: mapMoveType(odooInv.move_type),
         fileUrl: '',  // No file URL for Odoo-sourced invoices
         s3Key: '',    // No S3 key for Odoo-sourced invoices
         odooId: odooInv.id,
         odooRef: odooInv.name,
+        odooMoveType: odooInv.move_type,
         createdAt: odooInv.invoice_date
           ? new Date(String(odooInv.invoice_date)).toISOString()
           : now,
@@ -847,12 +864,136 @@ async function generateReconciliation(
   const reconciliationId = uuidv4();
   const now = new Date().toISOString();
 
-  // TODO: Implement actual reconciliation logic
-  // 1. Fetch OpenDental payments for the date range
-  // 2. Fetch bank transactions (from Odoo or uploaded file)
-  // 3. Match using the appropriate strategy for paymentMode
-  // 4. Generate reconciliation rows
+  // Import matching strategy
+  const { runReconciliation } = await import('./matching');
 
+  // 1. Fetch OpenDental payments for the date range
+  let openDentalRows: OpenDentalPaymentRow[] = [];
+  try {
+    const { getClinicSecrets } = await import('../../shared/utils/secrets-helper');
+    const secrets = await getClinicSecrets(clinicId);
+    if (secrets?.openDentalDeveloperKey && secrets?.openDentalCustomerKey) {
+      const authHeader = `ODFHIR ${secrets.openDentalDeveloperKey}/${secrets.openDentalCustomerKey}`;
+
+      console.log(`[Reconciliation] Fetching OpenDental payments for ${clinicId}, mode=${paymentMode}, range=${dateStart} to ${dateEnd}`);
+
+      const odPayments = await callOpenDentalApi(
+        'GET',
+        `/payments?DateEntry=${dateStart}`,
+        authHeader
+      );
+
+      if (Array.isArray(odPayments)) {
+        // Filter by end date
+        const filteredPayments = odPayments.filter((p: any) => {
+          const payDate = (p.PayDate || p.payDate || '').substring(0, 10);
+          return payDate <= dateEnd;
+        });
+
+        // Fetch patient names
+        const uniquePatNums = [...new Set(filteredPayments.map((p: any) => p.PatNum || p.patNum).filter(Boolean))];
+        const patientNameCache = new Map<number, string>();
+        const BATCH_SIZE = 10;
+        for (let i = 0; i < uniquePatNums.length; i += BATCH_SIZE) {
+          const batch = uniquePatNums.slice(i, i + BATCH_SIZE);
+          await Promise.all(batch.map(async (patNum: number) => {
+            try {
+              const patient = await callOpenDentalApi('GET', `/patients/${patNum}`, authHeader);
+              const fName = patient?.FName || patient?.fName || '';
+              const lName = patient?.LName || patient?.lName || '';
+              patientNameCache.set(patNum, `${lName}, ${fName}`.trim());
+            } catch {
+              patientNameCache.set(patNum, `Patient #${patNum}`);
+            }
+          }));
+        }
+
+        openDentalRows = filteredPayments.map((p: any) => {
+          const patNum = p.PatNum || p.patNum || 0;
+          const payAmt = p.PayAmt || p.payAmt || 0;
+          const payDate = (p.PayDate || p.payDate || '').substring(0, 10);
+          const payNum = p.PayNum || p.payNum || 0;
+          const payNote = p.PayNote || p.payNote || '';
+
+          return {
+            rowId: `od-${payNum}`,
+            patNum,
+            patientName: patientNameCache.get(patNum) || `Patient #${patNum}`,
+            paymentDate: payDate,
+            expectedAmount: Number(payAmt),
+            paymentMode,
+            referenceId: payNote || `PAY-${payNum}`,
+            sourceType: 'PATIENT' as const,
+          };
+        });
+
+        console.log(`[Reconciliation] Got ${openDentalRows.length} OpenDental payment rows`);
+      }
+    } else {
+      console.warn(`[Reconciliation] No OpenDental credentials for clinic ${clinicId}`);
+    }
+  } catch (err: any) {
+    console.error('[Reconciliation] Error fetching OpenDental payments:', err.message);
+  }
+
+  // 2. Fetch bank transactions from Odoo (or uploaded bank file)
+  let bankRows: BankStatementRow[] = [];
+
+  if (bankStatementId) {
+    // Use uploaded bank file
+    try {
+      const { Item } = await ddb.send(new GetCommand({
+        TableName: BANK_STATEMENTS_TABLE,
+        Key: { bankStatementId },
+      }));
+      if (Item?.parsedRows) {
+        bankRows = Item.parsedRows as BankStatementRow[];
+        console.log(`[Reconciliation] Got ${bankRows.length} rows from uploaded bank file`);
+      }
+    } catch (err: any) {
+      console.error('[Reconciliation] Error loading bank file:', err.message);
+    }
+  } else {
+    // Fetch from Odoo
+    try {
+      const clinicConfig = await getClinicConfig(clinicId);
+      const odooCompanyId = clinicConfig?.odooCompanyId;
+      if (odooCompanyId) {
+        const odooConfig = await getOdooConfig();
+        if (odooConfig) {
+          const odooClient = new OdooClient(odooConfig);
+          const transactions = await odooClient.getBankTransactions({
+            companyId: Number(odooCompanyId),
+            dateStart,
+            dateEnd,
+          });
+
+          console.log(`[Reconciliation] Got ${transactions.length} Odoo bank transactions`);
+
+          // Map Odoo transactions to BankStatementRow format
+          bankRows = transactions.map((txn: any, idx: number) => ({
+            rowId: `odoo-${txn.id || idx}`,
+            date: txn.date || '',
+            reference: txn.payment_ref || txn.ref || '',
+            description: txn.payment_ref || txn.ref || '',
+            amount: Math.abs(txn.amount || 0),
+            type: (txn.amount || 0) >= 0 ? 'CREDIT' as const : 'DEBIT' as const,
+          }));
+        }
+      }
+    } catch (err: any) {
+      console.error('[Reconciliation] Error fetching Odoo transactions:', err.message);
+    }
+  }
+
+  // 3. Run matching strategy
+  console.log(`[Reconciliation] Running ${paymentMode} matching: ${openDentalRows.length} OD rows vs ${bankRows.length} bank rows`);
+  const matchResults = runReconciliation(paymentMode, openDentalRows, bankRows);
+  const reconRows: ReconciliationRow[] = matchResults.map(r => r.row);
+
+  console.log(`[Reconciliation] Matching complete: ${reconRows.length} result rows`);
+
+  // 4. Build and store reconciliation
   const reconciliation: Reconciliation = {
     reconciliationId,
     clinicId,
@@ -860,7 +1001,7 @@ async function generateReconciliation(
     status: 'DRAFT',
     dateStart,
     dateEnd,
-    rows: [],
+    rows: reconRows,
     createdAt: now,
   };
 
