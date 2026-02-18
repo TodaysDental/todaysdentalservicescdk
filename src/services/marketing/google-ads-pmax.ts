@@ -29,6 +29,8 @@ import {
   microsToDollars,
   dollarsToMicros,
   enums,
+  createCampaignViaRest,
+  createBudgetViaRest,
 } from '../../shared/utils/google-ads-client';
 
 // Module permission configuration
@@ -264,45 +266,37 @@ async function createPMaxCampaign(
   try {
     const client = await getGoogleAdsClient(customerId);
 
-    // Step 1: Create budget — must set explicitly_shared to false for campaign-specific budgets
+    // Step 1: Create budget via REST API (bypass gRPC proto limitation)
     const budgetResource = {
       name: `PMax Budget - ${name} - ${Date.now()}`,
       amount_micros: dollarsToMicros(dailyBudget),
+      delivery_method: enums.BudgetDeliveryMethod.STANDARD,
       explicitly_shared: false,
     };
 
-    console.log('[GoogleAdsPMax] Creating budget:', JSON.stringify(budgetResource));
-    const budgetResponse = await (client as any).campaignBudgets.create([budgetResource]);
-    const budgetResourceName = budgetResponse.results[0].resource_name;
+    console.log('[GoogleAdsPMax] Creating budget via REST');
+    const budgetResourceName = await createBudgetViaRest(customerId, budgetResource);
     console.log(`[GoogleAdsPMax] Budget created: ${budgetResourceName}`);
 
-    // Step 2: Create Performance Max campaign with proper enum values
+    // Step 2: Create Performance Max campaign via REST API
     const statusEnum = status === 'ENABLED'
       ? enums.CampaignStatus.ENABLED
       : enums.CampaignStatus.PAUSED;
 
-    const campaignResource: any = {
-      name,
-      campaign_budget: budgetResourceName,
-      advertising_channel_type: enums.AdvertisingChannelType.PERFORMANCE_MAX,
-      status: statusEnum,
-      // Bidding strategy
-      // IMPORTANT: Google Ads API protobuf oneofs reject empty objects {}.
-      // Each bidding strategy MUST have at least one concrete field value.
-      ...(targetRoas ? {
-        maximize_conversion_value: {
-          target_roas: targetRoas,
-        },
-      } : {
-        maximize_conversions: {
-          target_cpa_micros: targetCpa ? dollarsToMicros(targetCpa) : 1,
-        },
-      }),
-    };
+    // For PMax, determine bidding strategy
+    const biddingStrategy = targetRoas ? 'TARGET_ROAS' : 'MAXIMIZE_CONVERSIONS';
+    const targetCpaMicros = targetCpa ? dollarsToMicros(targetCpa) : undefined;
 
-    console.log('[GoogleAdsPMax] Creating campaign:', JSON.stringify(campaignResource));
-    const campaignResponse = await (client as any).campaigns.create([campaignResource]);
-    const campaignResourceName = campaignResponse.results[0].resource_name;
+    console.log('[GoogleAdsPMax] Creating PMax campaign via REST');
+    const campaignResourceName = await createCampaignViaRest(customerId, {
+      name,
+      status: statusEnum,
+      advertisingChannelType: enums.AdvertisingChannelType.PERFORMANCE_MAX,
+      campaignBudget: budgetResourceName,
+      biddingStrategy,
+      targetCpaMicros,
+      targetRoas: targetRoas,
+    });
     const campaignId = campaignResourceName.split('/').pop();
 
     console.log(`[GoogleAdsPMax] Created Performance Max campaign: ${campaignResourceName}`);

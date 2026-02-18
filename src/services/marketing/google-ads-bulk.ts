@@ -35,6 +35,9 @@ import {
   validateTargetRoas,
   sanitizeAdTextValue,
   enums,
+  createCampaignViaRest,
+  createBudgetViaRest,
+  removeBudgetViaRest,
 } from '../../shared/utils/google-ads-client';
 import {
   getAllowedClinicIds,
@@ -565,7 +568,7 @@ async function bulkPublishCampaigns(
       client = await getGoogleAdsClient(customerId);
       const campaignName = replacePlaceholders(campaignTemplate.name, clinic);
 
-      // Create budget first — must set explicitly_shared to false for campaign-specific budgets
+      // Create budget first via REST API (bypass gRPC proto limitation)
       const budgetResource = {
         name: `Budget - ${campaignName} - ${Date.now()}`,
         amount_micros: dollarsToMicros(campaignTemplate.dailyBudget),
@@ -573,9 +576,8 @@ async function bulkPublishCampaigns(
         explicitly_shared: false,
       };
 
-      console.log(`[GoogleAdsBulk] Budget resource:`, JSON.stringify(budgetResource));
-      const budgetResponse = await (client as any).campaignBudgets.create([budgetResource]);
-      budgetResourceName = budgetResponse.results[0].resource_name;
+      console.log(`[GoogleAdsBulk] Creating budget via REST for ${customerId}`);
+      budgetResourceName = await createBudgetViaRest(customerId, budgetResource);
       console.log(`[GoogleAdsBulk] Budget created: ${budgetResourceName}`);
 
       // Build bidding configuration
@@ -608,25 +610,6 @@ async function bulkPublishCampaigns(
         }
       }
 
-      const biddingConfig: any = {};
-      switch (effectiveStrategy) {
-        case 'MANUAL_CPC':
-          biddingConfig.manual_cpc = { enhanced_cpc_enabled: true };
-          break;
-        case 'TARGET_CPA':
-          biddingConfig.target_cpa = { target_cpa_micros: dollarsToMicros(campaignTemplate.targetCpa!) };
-          break;
-        case 'MAXIMIZE_CONVERSIONS':
-          biddingConfig.maximize_conversions = { target_cpa_micros: 1 };
-          break;
-        case 'MAXIMIZE_CLICKS':
-          biddingConfig.maximize_clicks = { cpc_bid_ceiling_micros: 10000000000 };
-          break;
-        case 'TARGET_ROAS':
-          biddingConfig.target_roas = { target_roas: campaignTemplate.targetRoas! / 100 };
-          break;
-      }
-
       // Map campaign type string to enum value
       const campaignTypeStr = campaignTemplate.type || 'SEARCH';
       const channelTypeEnum = campaignTypeStr === 'SEARCH'
@@ -645,32 +628,27 @@ async function bulkPublishCampaigns(
 
       // Build network settings based on campaign type
       const networkSettings = campaignTypeStr === 'SEARCH' ? {
-        target_google_search: true,
-        target_search_network: true,
-      } : campaignTypeStr === 'VIDEO' ? {
-        target_youtube: true,
+        targetGoogleSearch: true,
+        targetSearchNetwork: true,
       } : undefined;
 
-      // Create campaign with proper enum values
-      // REQUIRED: contains_eu_political_advertising must be set on all campaigns (Google Ads API mandate)
-      const campaignResource = {
-        name: campaignName,
-        status: statusEnum,
-        advertising_channel_type: channelTypeEnum,
-        campaign_budget: budgetResourceName,
-        ...biddingConfig,
-        ...(networkSettings ? { network_settings: networkSettings } : {}),
-        // EU Political Advertising compliance — required field since Google Ads API v15+
-        contains_eu_political_advertising: false,
-      };
-
-      console.log(`[GoogleAdsBulk] Campaign resource:`, JSON.stringify(campaignResource));
+      // Create campaign via REST API (bypasses gRPC proto3 serialization issues)
+      // This properly sends contains_eu_political_advertising and bidding strategy
+      console.log(`[GoogleAdsBulk] Creating campaign via REST for ${customerId}`);
 
       // Note: campaignResourceName is declared outside try block for cleanup access
       let googleCampaignId: string | undefined;
 
-      const campaignResponse = await (client as any).campaigns.create([campaignResource]);
-      campaignResourceName = campaignResponse.results[0].resource_name;
+      campaignResourceName = await createCampaignViaRest(customerId, {
+        name: campaignName,
+        status: statusEnum,
+        advertisingChannelType: channelTypeEnum,
+        campaignBudget: budgetResourceName!,
+        biddingStrategy: effectiveStrategy,
+        targetCpaMicros: campaignTemplate.targetCpa ? dollarsToMicros(campaignTemplate.targetCpa) : undefined,
+        targetRoas: campaignTemplate.targetRoas ? campaignTemplate.targetRoas / 100 : undefined,
+        networkSettings,
+      });
       googleCampaignId = campaignResourceName?.split('/').pop();
 
       let adGroupResourceName: string | undefined;
@@ -845,14 +823,9 @@ async function bulkPublishCampaigns(
       } catch { /* best-effort logging */ }
 
       // CLEANUP: Remove orphaned budget if campaign creation failed
-      if (budgetResourceName && !campaignResourceName && client) {
+      if (budgetResourceName && !campaignResourceName) {
         console.warn(`[GoogleAdsBulk] Cleaning up orphaned budget ${budgetResourceName} due to campaign creation failure`);
-        try {
-          await client.campaignBudgets.remove([budgetResourceName]);
-          console.log(`[GoogleAdsBulk] Cleaned up orphaned budget: ${budgetResourceName}`);
-        } catch (cleanupError: any) {
-          console.error(`[GoogleAdsBulk] ORPHAN_RESOURCE: Budget cleanup failed - ${budgetResourceName} for customer ${customerId} may need manual removal. Error: ${extractErrorMessage(cleanupError)}`);
-        }
+        await removeBudgetViaRest(customerId, budgetResourceName);
       }
 
       // CLEANUP: If campaign was created but subsequent steps failed, mark it as REMOVED
