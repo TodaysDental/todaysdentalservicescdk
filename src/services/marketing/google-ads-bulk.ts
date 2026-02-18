@@ -611,16 +611,16 @@ async function bulkPublishCampaigns(
       const biddingConfig: any = {};
       switch (effectiveStrategy) {
         case 'MANUAL_CPC':
-          biddingConfig.manual_cpc = { enhanced_cpc_enabled: false };
+          biddingConfig.manual_cpc = { enhanced_cpc_enabled: true };
           break;
         case 'TARGET_CPA':
           biddingConfig.target_cpa = { target_cpa_micros: dollarsToMicros(campaignTemplate.targetCpa!) };
           break;
         case 'MAXIMIZE_CONVERSIONS':
-          biddingConfig.maximize_conversions = { target_cpa_micros: 0 };
+          biddingConfig.maximize_conversions = { target_cpa_micros: 1 };
           break;
         case 'MAXIMIZE_CLICKS':
-          biddingConfig.maximize_clicks = { cpc_bid_ceiling_micros: 0 };
+          biddingConfig.maximize_clicks = { cpc_bid_ceiling_micros: 10000000000 };
           break;
         case 'TARGET_ROAS':
           biddingConfig.target_roas = { target_roas: campaignTemplate.targetRoas! / 100 };

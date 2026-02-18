@@ -295,11 +295,9 @@ async function createPMaxCampaign(
         },
       } : {
         maximize_conversions: {
-          target_cpa_micros: targetCpa ? dollarsToMicros(targetCpa) : 0,
+          target_cpa_micros: targetCpa ? dollarsToMicros(targetCpa) : 1,
         },
       }),
-      // EU Political Advertising compliance — required field since Google Ads API v15+
-      contains_eu_political_advertising: false,
     };
 
     console.log('[GoogleAdsPMax] Creating campaign:', JSON.stringify(campaignResource));
