@@ -15,7 +15,7 @@ import {
     QueryCommand,
     ScanCommand,
 } from '@aws-sdk/lib-dynamodb';
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'crypto';
 import { buildCorsHeadersAsync } from '../../shared/utils/cors';
@@ -678,6 +678,16 @@ async function updateTicket(event: APIGatewayProxyEvent, ticketId: string): Prom
         names['#assigneeEmail'] = 'assigneeEmail';
         values[':assigneeEmail'] = (body as any).assigneeEmail;
     }
+    if ((body as any).assignmentType !== undefined) {
+        updates.push('#assignmentType = :assignmentType');
+        names['#assignmentType'] = 'assignmentType';
+        values[':assignmentType'] = (body as any).assignmentType;
+    }
+    if ((body as any).groupDetails !== undefined) {
+        updates.push('#groupDetails = :groupDetails');
+        names['#groupDetails'] = 'groupDetails';
+        values[':groupDetails'] = (body as any).groupDetails;
+    }
     if (body.deadline !== undefined) {
         updates.push('#deadline = :deadline');
         names['#deadline'] = 'deadline';
@@ -730,13 +740,15 @@ async function resolveTicket(event: APIGatewayProxyEvent, ticketId: string): Pro
 
     const now = new Date().toISOString();
 
-    // Auto-assign to resolver if ticket has no assignee
-    let updateExpression = 'SET #status = :status, #resolution = :resolution, #resolvedAt = :resolvedAt, #resolvedBy = :resolvedBy, #updatedAt = :updatedAt';
+    // Build update expression with all resolver details
+    let updateExpression = 'SET #status = :status, #resolution = :resolution, #resolvedAt = :resolvedAt, #resolvedBy = :resolvedBy, #resolvedByName = :resolvedByName, #resolvedByEmail = :resolvedByEmail, #updatedAt = :updatedAt';
     const exprNames: Record<string, string> = {
         '#status': 'status',
         '#resolution': 'resolution',
         '#resolvedAt': 'resolvedAt',
         '#resolvedBy': 'resolvedBy',
+        '#resolvedByName': 'resolvedByName',
+        '#resolvedByEmail': 'resolvedByEmail',
         '#updatedAt': 'updatedAt',
     };
     const exprValues: Record<string, any> = {
@@ -744,15 +756,36 @@ async function resolveTicket(event: APIGatewayProxyEvent, ticketId: string): Pro
         ':resolution': body.resolution.trim(),
         ':resolvedAt': now,
         ':resolvedBy': user.staffId,
+        ':resolvedByName': body.resolvedByName || user.staffName,
+        ':resolvedByEmail': body.resolvedByEmail || user.staffId,
         ':updatedAt': now,
     };
 
+    // Store assignment type (single or group)
+    if (body.assignmentType) {
+        updateExpression += ', #assignmentType = :assignmentType';
+        exprNames['#assignmentType'] = 'assignmentType';
+        exprValues[':assignmentType'] = body.assignmentType;
+    }
+
+    // Store group details if it was a group assignment
+    if (body.assignmentType === 'group' && body.groupDetails) {
+        updateExpression += ', #groupDetails = :groupDetails';
+        exprNames['#groupDetails'] = 'groupDetails';
+        exprValues[':groupDetails'] = {
+            groupId: body.groupDetails.groupId,
+            groupName: body.groupDetails.groupName,
+            members: body.groupDetails.members || [],
+        };
+    }
+
+    // Auto-assign to resolver if ticket has no assignee
     if (!existing.assigneeId || existing.assigneeId === 'unassigned') {
         updateExpression += ', #assigneeId = :assigneeId, #assigneeName = :assigneeName';
         exprNames['#assigneeId'] = 'assigneeId';
         exprNames['#assigneeName'] = 'assigneeName';
         exprValues[':assigneeId'] = user.staffId;
-        exprValues[':assigneeName'] = user.staffName;
+        exprValues[':assigneeName'] = body.resolvedByName || user.staffName;
     }
 
     const result = await ddb.send(new UpdateCommand({
@@ -834,6 +867,101 @@ async function listComments(event: APIGatewayProxyEvent, ticketId: string): Prom
         data: result.Items || [],
         count: result.Count || 0,
     });
+}
+
+/** PUT /tickets/:ticketId/reopen */
+async function reopenTicket(event: APIGatewayProxyEvent, ticketId: string): Promise<APIGatewayProxyResult> {
+    const { Item: ticket } = await ddb.send(new GetCommand({
+        TableName: TICKETS_TABLE,
+        Key: { ticketId },
+    }));
+    if (!ticket) return httpErr(event, 404, 'Ticket not found');
+
+    if (ticket.status !== TicketStatus.RESOLVED && ticket.status !== TicketStatus.CLOSED) {
+        return httpErr(event, 400, 'Only resolved or closed tickets can be reopened');
+    }
+
+    const now = new Date().toISOString();
+    await ddb.send(new UpdateCommand({
+        TableName: TICKETS_TABLE,
+        Key: { ticketId },
+        UpdateExpression: 'SET #status = :status, updatedAt = :now REMOVE resolution, resolvedAt, resolvedBy, resolvedByName, resolvedByEmail, assignmentType, groupDetails',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+            ':status': TicketStatus.REOPENED,
+            ':now': now,
+        },
+    }));
+
+    const updated: any = { ...ticket, status: TicketStatus.REOPENED, updatedAt: now };
+    delete updated.resolution;
+    delete updated.resolvedAt;
+    delete updated.resolvedBy;
+    delete updated.resolvedByName;
+    delete updated.resolvedByEmail;
+    delete updated.assignmentType;
+    delete updated.groupDetails;
+
+    return httpOk(event, { success: true, message: 'Ticket reopened', data: updated });
+}
+
+/** PUT /tickets/:ticketId/comments/:commentId */
+async function updateComment(event: APIGatewayProxyEvent, ticketId: string, commentId: string): Promise<APIGatewayProxyResult> {
+    const body = parseBody<{ content: string }>(event);
+    if (!body?.content || !body.content.trim()) {
+        return httpErr(event, 400, 'content is required');
+    }
+
+    // Verify comment exists
+    const { Item: comment } = await ddb.send(new GetCommand({
+        TableName: COMMENTS_TABLE,
+        Key: { ticketId, commentId },
+    }));
+    if (!comment) return httpErr(event, 404, 'Comment not found');
+
+    const user = getUserContext(event);
+    if (comment.authorId !== user.staffId && !user.isSuperAdmin) {
+        return httpErr(event, 403, 'You can only edit your own comments');
+    }
+
+    const now = new Date().toISOString();
+    await ddb.send(new UpdateCommand({
+        TableName: COMMENTS_TABLE,
+        Key: { ticketId, commentId },
+        UpdateExpression: 'SET content = :content, updatedAt = :now, edited = :edited',
+        ExpressionAttributeValues: {
+            ':content': body.content.trim(),
+            ':now': now,
+            ':edited': true,
+        },
+    }));
+
+    return httpOk(event, {
+        success: true,
+        message: 'Comment updated',
+        data: { ...comment, content: body.content.trim(), updatedAt: now, edited: true },
+    });
+}
+
+/** DELETE /tickets/:ticketId/comments/:commentId */
+async function deleteComment(event: APIGatewayProxyEvent, ticketId: string, commentId: string): Promise<APIGatewayProxyResult> {
+    const { Item: comment } = await ddb.send(new GetCommand({
+        TableName: COMMENTS_TABLE,
+        Key: { ticketId, commentId },
+    }));
+    if (!comment) return httpErr(event, 404, 'Comment not found');
+
+    const user = getUserContext(event);
+    if (comment.authorId !== user.staffId && !user.isSuperAdmin) {
+        return httpErr(event, 403, 'You can only delete your own comments');
+    }
+
+    await ddb.send(new DeleteCommand({
+        TableName: COMMENTS_TABLE,
+        Key: { ticketId, commentId },
+    }));
+
+    return httpOk(event, { success: true, message: 'Comment deleted' });
 }
 
 /** POST /tickets/:ticketId/media/upload */
@@ -957,6 +1085,88 @@ async function getMediaDownloadUrl(event: APIGatewayProxyEvent, ticketId: string
             downloadUrl: presignedUrl,
             expiresIn: PRESIGNED_URL_EXPIRY,
         },
+    });
+}
+
+/** DELETE /tickets/:ticketId/media/:fileId — remove a media file */
+async function deleteMediaFile(event: APIGatewayProxyEvent, ticketId: string, fileId: string): Promise<APIGatewayProxyResult> {
+    const { Item: ticket } = await ddb.send(new GetCommand({
+        TableName: TICKETS_TABLE,
+        Key: { ticketId },
+    }));
+    if (!ticket) return httpErr(event, 404, 'Ticket not found');
+
+    const mediaFiles: any[] = ticket.mediaFiles || [];
+    const fileIndex = mediaFiles.findIndex((f: any) => f.fileId === fileId);
+    if (fileIndex === -1) return httpErr(event, 404, 'File not found');
+
+    const file = mediaFiles[fileIndex];
+
+    // Delete from S3
+    try {
+        await s3.send(new DeleteObjectCommand({
+            Bucket: MEDIA_BUCKET,
+            Key: file.s3Key,
+        }));
+    } catch (err) {
+        console.warn(`[ITTicket] Failed to delete S3 object ${file.s3Key}:`, err);
+        // Continue — still remove from DynamoDB
+    }
+
+    // Remove from mediaFiles array in DynamoDB
+    const updatedFiles = mediaFiles.filter((_: any, i: number) => i !== fileIndex);
+    await ddb.send(new UpdateCommand({
+        TableName: TICKETS_TABLE,
+        Key: { ticketId },
+        UpdateExpression: 'SET mediaFiles = :files, updatedAt = :now',
+        ExpressionAttributeValues: {
+            ':files': updatedFiles,
+            ':now': new Date().toISOString(),
+        },
+    }));
+
+    return httpOk(event, {
+        success: true,
+        message: `File "${file.fileName}" deleted successfully`,
+    });
+}
+
+/** PUT /tickets/:ticketId/media/:fileId — rename a media file */
+async function renameMediaFile(event: APIGatewayProxyEvent, ticketId: string, fileId: string): Promise<APIGatewayProxyResult> {
+    const body = parseBody<{ fileName: string }>(event);
+    if (!body?.fileName || !body.fileName.trim()) {
+        return httpErr(event, 400, 'fileName is required');
+    }
+
+    const newName = body.fileName.trim();
+
+    const { Item: ticket } = await ddb.send(new GetCommand({
+        TableName: TICKETS_TABLE,
+        Key: { ticketId },
+    }));
+    if (!ticket) return httpErr(event, 404, 'Ticket not found');
+
+    const mediaFiles: any[] = ticket.mediaFiles || [];
+    const fileIndex = mediaFiles.findIndex((f: any) => f.fileId === fileId);
+    if (fileIndex === -1) return httpErr(event, 404, 'File not found');
+
+    // Update the file name
+    mediaFiles[fileIndex].fileName = newName;
+
+    await ddb.send(new UpdateCommand({
+        TableName: TICKETS_TABLE,
+        Key: { ticketId },
+        UpdateExpression: 'SET mediaFiles = :files, updatedAt = :now',
+        ExpressionAttributeValues: {
+            ':files': mediaFiles,
+            ':now': new Date().toISOString(),
+        },
+    }));
+
+    return httpOk(event, {
+        success: true,
+        message: `File renamed to "${newName}"`,
+        data: mediaFiles[fileIndex],
     });
 }
 
@@ -1402,7 +1612,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
 
         // PUT /tickets/:ticketId
-        if (method === 'PUT' && /^\/tickets\/[^/]+$/.test(path) && !path.endsWith('/resolve')) {
+        if (method === 'PUT' && /^\/tickets\/[^/]+$/.test(path) && !path.endsWith('/resolve') && !path.endsWith('/reopen')) {
             const ticketId = path.split('/')[2];
             return updateTicket(event, ticketId);
         }
@@ -1411,6 +1621,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         if (method === 'PUT' && /^\/tickets\/[^/]+\/resolve$/.test(path)) {
             const ticketId = path.split('/')[2];
             return resolveTicket(event, ticketId);
+        }
+
+        // PUT /tickets/:ticketId/reopen
+        if (method === 'PUT' && /^\/tickets\/[^/]+\/reopen$/.test(path)) {
+            const ticketId = path.split('/')[2];
+            return reopenTicket(event, ticketId);
         }
 
         // DELETE /tickets/:ticketId
@@ -1432,6 +1648,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             return listComments(event, ticketId);
         }
 
+        // PUT /tickets/:ticketId/comments/:commentId
+        if (method === 'PUT' && /^\/tickets\/[^/]+\/comments\/[^/]+$/.test(path)) {
+            const parts = path.split('/');
+            const ticketId = parts[2];
+            const commentId = parts[4];
+            return updateComment(event, ticketId, commentId);
+        }
+
+        // DELETE /tickets/:ticketId/comments/:commentId
+        if (method === 'DELETE' && /^\/tickets\/[^/]+\/comments\/[^/]+$/.test(path)) {
+            const parts = path.split('/');
+            const ticketId = parts[2];
+            const commentId = parts[4];
+            return deleteComment(event, ticketId, commentId);
+        }
+
         // --- Media ---
         // POST /tickets/:ticketId/media/upload
         if (method === 'POST' && /^\/tickets\/[^/]+\/media\/upload$/.test(path)) {
@@ -1451,6 +1683,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             const ticketId = parts[2];
             const fileId = parts[4];
             return getMediaDownloadUrl(event, ticketId, fileId);
+        }
+
+        // DELETE /tickets/:ticketId/media/:fileId
+        if (method === 'DELETE' && /^\/tickets\/[^/]+\/media\/[^/]+$/.test(path)) {
+            const parts = path.split('/');
+            const ticketId = parts[2];
+            const fileId = parts[4];
+            return deleteMediaFile(event, ticketId, fileId);
+        }
+
+        // PUT /tickets/:ticketId/media/:fileId (rename)
+        if (method === 'PUT' && /^\/tickets\/[^/]+\/media\/[^/]+$/.test(path)) {
+            const parts = path.split('/');
+            const ticketId = parts[2];
+            const fileId = parts[4];
+            return renameMediaFile(event, ticketId, fileId);
         }
 
         // --- Dashboard ---

@@ -89,6 +89,14 @@ export interface Ticket {
     resolution?: string;
     resolvedAt?: string;
     resolvedBy?: string;
+    resolvedByName?: string;
+    resolvedByEmail?: string;
+    assignmentType?: 'single' | 'group'; // Whether task was assigned to individual or group
+    groupDetails?: {
+        groupId: string;
+        groupName: string;
+        members: string[]; // list of member names or IDs
+    };
     createdAt: string;
     updatedAt: string;
 }
@@ -148,6 +156,16 @@ export interface UpdateTicketRequest {
 
 export interface ResolveTicketRequest {
     resolution: string;
+    // Optional: resolver details from frontend (overrides JWT context if provided)
+    resolvedByName?: string;
+    resolvedByEmail?: string;
+    // Optional: assignment/group context
+    assignmentType?: 'single' | 'group';
+    groupDetails?: {
+        groupId: string;
+        groupName: string;
+        members: string[];
+    };
 }
 
 export interface AddCommentRequest {

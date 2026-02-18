@@ -20,6 +20,15 @@ export async function sendResolutionEmail(ticket: Ticket): Promise<boolean> {
 
   const subject = `✅ Your ${ticket.ticketType === 'BUG' ? 'Bug Report' : 'Feature Request'} has been resolved — ${ticket.title}`;
 
+  const priorityLabel = ticket.priority || 'MEDIUM';
+  const typeLabel = ticket.ticketType === 'BUG' ? 'Bug Report' : 'Feature Request';
+  const resolvedDate = ticket.resolvedAt
+    ? new Date(ticket.resolvedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : '—';
+  const createdDate = ticket.createdAt
+    ? new Date(ticket.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : '—';
+
   const htmlBody = `
 <!DOCTYPE html>
 <html lang="en">
@@ -30,146 +39,222 @@ export async function sendResolutionEmail(ticket: Ticket): Promise<boolean> {
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       margin: 0;
-      padding: 40px 16px;
-      background-color: #f4f4f5;
-      color: #18181b;
+      padding: 0;
+      background: #0a0a0a;
+      color: #ffffff;
       -webkit-font-smoothing: antialiased;
     }
+    .outer {
+      padding: 40px 16px;
+      background: linear-gradient(145deg, #0a0a0a 0%, #1a1a1a 50%, #0f0f0f 100%);
+      min-height: 100%;
+    }
     .wrapper {
-      max-width: 520px;
+      max-width: 560px;
       margin: 0 auto;
-      background: #ffffff;
-      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 20px;
       overflow: hidden;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
     }
+
+    /* ── Top accent bar ── */
     .top-bar {
-      height: 4px;
-      background: #18181b;
+      height: 3px;
+      background: linear-gradient(90deg, #ffffff 0%, rgba(255,255,255,0.3) 100%);
     }
-    .content {
-      padding: 44px 40px 36px;
+
+    /* ── Header ── */
+    .header {
+      padding: 36px 40px 0;
     }
     .badge {
       display: inline-block;
-      background: #f0fdf4;
-      color: #16a34a;
-      font-size: 11px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #ffffff;
+      font-size: 10px;
       font-weight: 700;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
-      padding: 5px 12px;
+      padding: 5px 14px;
       border-radius: 20px;
-      margin-bottom: 20px;
+      margin-bottom: 16px;
     }
-    .content h1 {
-      margin: 0 0 8px;
-      font-size: 24px;
-      font-weight: 700;
-      color: #18181b;
-      letter-spacing: -0.02em;
+    .header h1 {
+      margin: 0 0 6px;
+      font-size: 26px;
+      font-weight: 800;
+      color: #ffffff;
+      letter-spacing: -0.03em;
     }
     .subtitle {
-      font-size: 15px;
-      color: #71717a;
-      margin: 0 0 32px;
-      line-height: 1.5;
+      font-size: 14px;
+      color: rgba(255, 255, 255, 0.5);
+      margin: 0 0 28px;
+      line-height: 1.6;
     }
+    .subtitle strong {
+      color: #ffffff;
+    }
+
+    /* ── Glass divider ── */
     .divider {
       border: none;
-      border-top: 1px solid #f0f0f0;
-      margin: 0 0 24px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      margin: 0;
     }
-    .info-row {
+
+    /* ── Two-column data grid ── */
+    .data-grid {
+      padding: 28px 40px;
+    }
+    .data-row {
       display: flex;
-      justify-content: space-between;
-      padding: 10px 0;
-      border-bottom: 1px solid #fafafa;
+      margin-bottom: 4px;
     }
-    .info-row:last-of-type {
-      border-bottom: none;
+    .data-row:last-child {
+      margin-bottom: 0;
     }
-    .info-label {
-      font-size: 13px;
-      color: #a1a1aa;
-      font-weight: 500;
+    .data-cell {
+      flex: 1;
+      padding: 12px 16px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.05);
     }
-    .info-value {
-      font-size: 13px;
-      color: #18181b;
+    .data-row:first-child .data-cell:first-child { border-radius: 12px 0 0 0; }
+    .data-row:first-child .data-cell:last-child  { border-radius: 0 12px 0 0; }
+    .data-row:last-child .data-cell:first-child   { border-radius: 0 0 0 12px; }
+    .data-row:last-child .data-cell:last-child    { border-radius: 0 0 12px 0; }
+    .data-label {
+      display: block;
+      font-size: 10px;
       font-weight: 600;
-      text-align: right;
-    }
-    .resolution {
-      margin: 28px 0 0;
-      padding: 20px 24px;
-      background: #fafafa;
-      border-radius: 12px;
-      border-left: 3px solid #18181b;
-    }
-    .resolution-title {
-      font-size: 11px;
-      font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.06em;
-      color: #a1a1aa;
+      color: rgba(255, 255, 255, 0.35);
+      margin-bottom: 4px;
+    }
+    .data-value {
+      display: block;
+      font-size: 14px;
+      font-weight: 700;
+      color: #ffffff;
+    }
+
+    /* ── Resolution block ── */
+    .resolution-wrap {
+      padding: 0 40px 32px;
+    }
+    .resolution {
+      padding: 20px 24px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 14px;
+      border-left: 3px solid #ffffff;
+    }
+    .resolution-title {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: rgba(255, 255, 255, 0.4);
       margin: 0 0 8px;
     }
     .resolution-text {
       font-size: 14px;
-      color: #3f3f46;
+      color: rgba(255, 255, 255, 0.75);
       line-height: 1.7;
       margin: 0;
     }
+
+    /* ── Footer ── */
     .footer {
-      padding: 24px 40px;
-      background: #fafafa;
+      padding: 20px 40px;
+      background: rgba(0, 0, 0, 0.3);
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
       text-align: center;
-      border-top: 1px solid #f0f0f0;
     }
     .footer p {
       margin: 0;
       font-size: 11px;
-      color: #a1a1aa;
+      color: rgba(255, 255, 255, 0.25);
       line-height: 1.6;
     }
   </style>
 </head>
 <body>
-  <div class="wrapper">
-    <div class="content">
-      <h1>Ticket Resolved</h1>
-      <p class="subtitle">Hi ${ticket.reporterName}, your request <strong>${ticket.title}</strong> has been resolved by our team.</p>
+  <div class="outer">
+    <div class="wrapper">
+      <div class="top-bar"></div>
+
+      <!-- Header -->
+      <div class="header">
+        <div class="badge">✓ Resolved</div>
+        <h1>${ticket.title}</h1>
+        <p class="subtitle">Hi <strong>${ticket.reporterName}</strong>, your ${typeLabel.toLowerCase()} has been resolved by our team.</p>
+      </div>
 
       <hr class="divider" />
 
-      <div class="info-row">
-        <span class="info-label">Reference</span>
-        <span class="info-value">#${ticket.ticketId.slice(-8).toUpperCase()}</span>
-      </div>
-      <div class="info-row">
-        <span class="info-label">Module</span>
-        <span class="info-value">${ticket.module}</span>
-      </div>
-      <div class="info-row">
-        <span class="info-label">Handled by</span>
-        <span class="info-value">${ticket.assigneeName || 'IT Team'}</span>
-      </div>
-      <div class="info-row">
-        <span class="info-label">Resolved on</span>
-        <span class="info-value">${ticket.resolvedAt ? new Date(ticket.resolvedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}</span>
+      <!-- Two-column data grid -->
+      <div class="data-grid">
+        <div class="data-row">
+          <div class="data-cell">
+            <span class="data-label">Reference</span>
+            <span class="data-value">#${ticket.ticketId.slice(-8).toUpperCase()}</span>
+          </div>
+          <div class="data-cell">
+            <span class="data-label">Type</span>
+            <span class="data-value">${typeLabel}</span>
+          </div>
+        </div>
+        <div class="data-row">
+          <div class="data-cell">
+            <span class="data-label">Module</span>
+            <span class="data-value">${ticket.module}</span>
+          </div>
+          <div class="data-cell">
+            <span class="data-label">Priority</span>
+            <span class="data-value">${priorityLabel}</span>
+          </div>
+        </div>
+        <div class="data-row">
+          <div class="data-cell">
+            <span class="data-label">Handled by</span>
+            <span class="data-value">${ticket.assigneeName || 'IT Team'}</span>
+          </div>
+          <div class="data-cell">
+            <span class="data-label">Resolved on</span>
+            <span class="data-value">${resolvedDate}</span>
+          </div>
+        </div>
+        <div class="data-row">
+          <div class="data-cell">
+            <span class="data-label">Reported by</span>
+            <span class="data-value">${ticket.reporterName}</span>
+          </div>
+          <div class="data-cell">
+            <span class="data-label">Created on</span>
+            <span class="data-value">${createdDate}</span>
+          </div>
+        </div>
       </div>
 
       ${ticket.resolution ? `
-      <div class="resolution">
-        <p class="resolution-title">Resolution Note</p>
-        <p class="resolution-text">${ticket.resolution.replace(/\\n/g, '<br/>')}</p>
+      <!-- Resolution Note -->
+      <div class="resolution-wrap">
+        <div class="resolution">
+          <p class="resolution-title">Resolution Note</p>
+          <p class="resolution-text">${ticket.resolution.replace(/\\n/g, '<br/>')}</p>
+        </div>
       </div>
       ` : ''}
-    </div>
 
-    <div class="footer">
-      <p>&copy; 2026 Today's Dental Technologies<br/>System-generated notification</p>
+      <div class="footer">
+        <p>&copy; 2026 Today's Dental Technologies<br/>System-generated notification</p>
+      </div>
     </div>
   </div>
 </body>
