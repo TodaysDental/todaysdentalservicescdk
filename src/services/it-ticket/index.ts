@@ -343,15 +343,8 @@ function buildTicketQuery(filters: TicketFilters) {
         }
     }
 
-    // search (case-insensitive via contains — note: DynamoDB contains is case-sensitive,
-    // so the Lambda lowercases stored fields at query time for matching)
-    // For simplicity, we use contains on the original fields.
-    if (filters.search) {
-        expressionAttrNames['#title'] = 'title';
-        expressionAttrNames['#desc'] = 'description';
-        expressionAttrValues[':search'] = filters.search.toLowerCase();
-        filterParts.push('(contains(#title, :search) OR contains(#desc, :search))');
-    }
+    // search — handled post-query in listTickets for case-insensitive matching
+    // (DynamoDB contains() is case-sensitive, so we filter in JavaScript instead)
 
     const filterExpression = filterParts.length > 0 ? filterParts.join(' AND ') : undefined;
 
@@ -557,6 +550,15 @@ async function listTickets(event: APIGatewayProxyEvent): Promise<APIGatewayProxy
     // Post-query sort if sortBy is not createdAt (GSI sort key)
     if (filters.sortBy && filters.sortBy !== 'createdAt') {
         items = sortTickets(items, filters.sortBy, filters.sortOrder || 'desc');
+    }
+
+    // Post-query search filter (case-insensitive includes on title & description)
+    if (filters.search) {
+        const searchLower = filters.search.toLowerCase();
+        items = items.filter(t =>
+            (t.title && t.title.toLowerCase().includes(searchLower)) ||
+            (t.description && t.description.toLowerCase().includes(searchLower))
+        );
     }
 
     const nextKey = lastEvaluatedKey
@@ -833,8 +835,8 @@ async function addComment(event: APIGatewayProxyEvent, ticketId: string): Promis
     const comment: TicketComment = {
         ticketId,
         commentId: `cmt-${randomUUID()}`,
-        authorId: user.staffId,
-        authorName: user.staffName,
+        authorId: body.authorId || user.staffId,
+        authorName: body.authorName || user.staffName,
         content: body.content.trim(),
         isInternal: body.isInternal || false,
         createdAt: new Date().toISOString(),

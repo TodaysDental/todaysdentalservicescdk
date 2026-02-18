@@ -171,6 +171,8 @@ export interface ResolveTicketRequest {
 export interface AddCommentRequest {
     content: string;
     isInternal?: boolean;
+    authorName?: string;
+    authorId?: string;
 }
 
 export interface MediaUploadRequest {
