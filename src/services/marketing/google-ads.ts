@@ -532,22 +532,25 @@ async function createCampaign(
 
     // Build bidding strategy configuration
     // IMPORTANT: Google Ads API uses protobuf `oneof` for campaign_bidding_strategy.
-    // Empty objects like `maximize_clicks: {}` serialize as null in protobuf,
-    // causing "The required field was not present" error on campaign_bidding_strategy.
-    // Each bidding strategy object MUST have at least one concrete field value.
+    // Proto3 strips fields set to their default values (0 for int64, false for bool).
+    // This means `maximize_clicks: { cpc_bid_ceiling_micros: 0 }` serializes as
+    // `maximize_clicks: {}` → null → "The required field was not present" error.
+    // SOLUTION: Omit optional inner fields entirely instead of setting them to 0/false.
+    // The library will serialize the outer key (e.g. `maximize_clicks: {}`) as a valid
+    // empty message only if we don't set any default-valued fields inside.
     const biddingConfig: any = {};
     switch (biddingStrategy) {
       case 'MANUAL_CPC':
-        biddingConfig.manual_cpc = { enhanced_cpc_enabled: false };
+        biddingConfig.manual_cpc = { enhanced_cpc_enabled: true };
         break;
       case 'TARGET_CPA':
         biddingConfig.target_cpa = { target_cpa_micros: dollarsToMicros(targetCpa!) };
         break;
       case 'MAXIMIZE_CONVERSIONS':
-        biddingConfig.maximize_conversions = { target_cpa_micros: 0 };
+        biddingConfig.maximize_conversions = { target_cpa_micros: 1 };
         break;
       case 'MAXIMIZE_CLICKS':
-        biddingConfig.maximize_clicks = { cpc_bid_ceiling_micros: 0 };
+        biddingConfig.maximize_clicks = { cpc_bid_ceiling_micros: 10000000000 };
         break;
       case 'TARGET_ROAS':
         biddingConfig.target_roas = { target_roas: targetRoas! / 100 };
@@ -577,16 +580,18 @@ async function createCampaign(
 
     // Create campaign with proper enum values
     // REQUIRED: contains_eu_political_advertising must be set on all campaigns (Google Ads API mandate)
-    const campaignResource = {
+    const campaignResource: any = {
       name,
       status: statusEnum,
       advertising_channel_type: channelTypeEnum,
       campaign_budget: budgetResourceName,
       ...biddingConfig,
       ...(networkSettings ? { network_settings: networkSettings } : {}),
-      // EU Political Advertising compliance — required field since Google Ads API v15+
-      contains_eu_political_advertising: false,
     };
+
+    // DEBUG: Log the exact campaign resource before creation
+    console.log('[GoogleAds] Campaign resource to create:', JSON.stringify(campaignResource, null, 2));
+    console.log('[GoogleAds] Bidding config:', JSON.stringify(biddingConfig, null, 2));
 
     const campaignResponse = await (client as any).campaigns.create([campaignResource]);
     campaignResourceName = campaignResponse.results[0].resource_name;
@@ -803,6 +808,18 @@ async function createCampaign(
     };
   } catch (error: any) {
     console.error('[GoogleAds] Error creating campaign:', error);
+    // Extract detailed error info from Google Ads API errors
+    if (error.errors) {
+      error.errors.forEach((e: any, i: number) => {
+        console.error(`[GoogleAds] Error detail [${i}]:`, JSON.stringify({
+          message: e.message,
+          error_code: e.error_code,
+          location: e.location,
+          fieldPathElements: e.location?.field_path_elements || e.location?.fieldPathElements,
+          trigger: e.trigger,
+        }, null, 2));
+      });
+    }
 
     // CLEANUP: Remove orphaned budget if campaign creation failed
     if (budgetResourceName && !campaignResourceName && client) {

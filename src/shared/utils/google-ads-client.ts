@@ -786,25 +786,26 @@ export async function addRadiusTarget(
 
   const client = await getGoogleAdsClient(customerId);
 
-  // Google Ads API uses proximity targeting for radius-based geotargeting
-  const operation = {
-    create: {
-      campaign: campaignResourceName,
-      proximity: {
-        geo_point: {
-          latitude_in_micro_degrees: Math.round(options.latitude * 1000000),
-          longitude_in_micro_degrees: Math.round(options.longitude * 1000000),
-        },
-        radius: options.radius,
-        radius_units: options.units,
+  // NOTE: The google-ads-api library's create() method expects an array of
+  // resource objects directly (ICampaignCriterion), NOT wrapped in operation
+  // objects like { create: { ... } }. The library handles operation types internally.
+  const resource = {
+    campaign: campaignResourceName,
+    proximity: {
+      geo_point: {
+        latitude_in_micro_degrees: Math.round(options.latitude * 1000000),
+        longitude_in_micro_degrees: Math.round(options.longitude * 1000000),
       },
-      bid_modifier: options.bidModifier || 1.0,
+      radius: options.radius,
+      radius_units: options.units,
     },
+    bid_modifier: options.bidModifier || 1.0,
   };
 
   console.log(`[GoogleAdsClient] Adding radius target: ${options.radius} ${options.units} around (${options.latitude}, ${options.longitude})`);
+  console.log('[GoogleAdsClient] Radius resource:', JSON.stringify(resource, null, 2));
 
-  return (client as any).campaignCriteria.create([operation]);
+  return (client as any).campaignCriteria.create([resource]);
 }
 
 /**
@@ -827,19 +828,21 @@ export async function addLocationTargets(
 
   const client = await getGoogleAdsClient(customerId);
 
-  const operations = locations.map(loc => ({
-    create: {
-      campaign: campaignResourceName,
-      location: {
-        geo_target_constant: loc.geoTargetConstant,
-      },
-      negative: options?.negative || false,
+  // NOTE: The google-ads-api library's create() method expects an array of
+  // resource objects directly (ICampaignCriterion), NOT wrapped in operation
+  // objects like { create: { ... } }. The library handles operation types internally.
+  const resources = locations.map(loc => ({
+    campaign: campaignResourceName,
+    location: {
+      geo_target_constant: loc.geoTargetConstant,
     },
+    negative: options?.negative || false,
   }));
 
   console.log(`[GoogleAdsClient] Adding ${locations.length} location targets to campaign`);
+  console.log('[GoogleAdsClient] Location resources:', JSON.stringify(resources, null, 2));
 
-  return (client as any).campaignCriteria.create(operations);
+  return (client as any).campaignCriteria.create(resources);
 }
 
 /**
@@ -851,11 +854,8 @@ export async function removeCampaignCriterion(
 ): Promise<any> {
   const client = await getGoogleAdsClient(customerId);
 
-  const operation = {
-    remove: criterionResourceName,
-  };
-
-  return (client as any).campaignCriteria.remove([operation]);
+  // The library's remove() expects resource name strings directly
+  return (client as any).campaignCriteria.remove([criterionResourceName]);
 }
 
 // ========================================
