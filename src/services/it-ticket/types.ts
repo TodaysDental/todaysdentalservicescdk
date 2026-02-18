@@ -138,6 +138,9 @@ export interface UpdateTicketRequest {
     module?: string;
     priority?: TicketPriority;
     status?: TicketStatus;
+    assigneeId?: string;
+    assigneeName?: string;
+    assigneeEmail?: string;
 }
 
 export interface ResolveTicketRequest {

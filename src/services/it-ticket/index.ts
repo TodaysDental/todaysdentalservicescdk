@@ -616,6 +616,28 @@ async function updateTicket(event: APIGatewayProxyEvent, ticketId: string): Prom
         names['#status'] = 'status';
         values[':status'] = body.status;
     }
+    if ((body as any).assigneeId !== undefined) {
+        updates.push('#assigneeId = :assigneeId');
+        names['#assigneeId'] = 'assigneeId';
+        values[':assigneeId'] = (body as any).assigneeId;
+    }
+    if ((body as any).assigneeName !== undefined) {
+        updates.push('#assigneeName = :assigneeName');
+        names['#assigneeName'] = 'assigneeName';
+        values[':assigneeName'] = (body as any).assigneeName;
+    }
+    if ((body as any).assigneeEmail !== undefined) {
+        updates.push('#assigneeEmail = :assigneeEmail');
+        names['#assigneeEmail'] = 'assigneeEmail';
+        values[':assigneeEmail'] = (body as any).assigneeEmail;
+    }
+
+    // Auto-set status to IN_PROGRESS when assigning someone to an OPEN ticket
+    if ((body as any).assigneeId && existing.status === TicketStatus.OPEN && body.status === undefined) {
+        updates.push('#status = :status');
+        names['#status'] = 'status';
+        values[':status'] = TicketStatus.IN_PROGRESS;
+    }
 
     if (updates.length === 0) return httpErr(event, 400, 'No fields to update');
 
@@ -656,24 +678,37 @@ async function resolveTicket(event: APIGatewayProxyEvent, ticketId: string): Pro
 
     const now = new Date().toISOString();
 
+    // Auto-assign to resolver if ticket has no assignee
+    let updateExpression = 'SET #status = :status, #resolution = :resolution, #resolvedAt = :resolvedAt, #resolvedBy = :resolvedBy, #updatedAt = :updatedAt';
+    const exprNames: Record<string, string> = {
+        '#status': 'status',
+        '#resolution': 'resolution',
+        '#resolvedAt': 'resolvedAt',
+        '#resolvedBy': 'resolvedBy',
+        '#updatedAt': 'updatedAt',
+    };
+    const exprValues: Record<string, any> = {
+        ':status': TicketStatus.RESOLVED,
+        ':resolution': body.resolution.trim(),
+        ':resolvedAt': now,
+        ':resolvedBy': user.staffId,
+        ':updatedAt': now,
+    };
+
+    if (!existing.assigneeId || existing.assigneeId === 'unassigned') {
+        updateExpression += ', #assigneeId = :assigneeId, #assigneeName = :assigneeName';
+        exprNames['#assigneeId'] = 'assigneeId';
+        exprNames['#assigneeName'] = 'assigneeName';
+        exprValues[':assigneeId'] = user.staffId;
+        exprValues[':assigneeName'] = user.staffName;
+    }
+
     const result = await ddb.send(new UpdateCommand({
         TableName: TICKETS_TABLE,
         Key: { ticketId },
-        UpdateExpression: 'SET #status = :status, #resolution = :resolution, #resolvedAt = :resolvedAt, #resolvedBy = :resolvedBy, #updatedAt = :updatedAt',
-        ExpressionAttributeNames: {
-            '#status': 'status',
-            '#resolution': 'resolution',
-            '#resolvedAt': 'resolvedAt',
-            '#resolvedBy': 'resolvedBy',
-            '#updatedAt': 'updatedAt',
-        },
-        ExpressionAttributeValues: {
-            ':status': TicketStatus.RESOLVED,
-            ':resolution': body.resolution.trim(),
-            ':resolvedAt': now,
-            ':resolvedBy': user.staffId,
-            ':updatedAt': now,
-        },
+        UpdateExpression: updateExpression,
+        ExpressionAttributeNames: exprNames,
+        ExpressionAttributeValues: exprValues,
         ReturnValues: 'ALL_NEW',
     }));
 
@@ -1054,8 +1089,9 @@ async function dashboardStats(event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     const now = Date.now();
     const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const fifteenDaysAgo = new Date(now - 15 * 24 * 60 * 60 * 1000).toISOString();
     const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
-    let created7 = 0, resolved7 = 0, created30 = 0, resolved30 = 0;
+    let created7 = 0, resolved7 = 0, created15 = 0, resolved15 = 0, created30 = 0, resolved30 = 0;
 
     for (const t of allTickets) {
         // By module
@@ -1088,8 +1124,10 @@ async function dashboardStats(event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         // Trends
         if (t.createdAt >= sevenDaysAgo) created7++;
+        if (t.createdAt >= fifteenDaysAgo) created15++;
         if (t.createdAt >= thirtyDaysAgo) created30++;
         if (t.resolvedAt && t.resolvedAt >= sevenDaysAgo) resolved7++;
+        if (t.resolvedAt && t.resolvedAt >= fifteenDaysAgo) resolved15++;
         if (t.resolvedAt && t.resolvedAt >= thirtyDaysAgo) resolved30++;
     }
 
@@ -1112,6 +1150,7 @@ async function dashboardStats(event: APIGatewayProxyEvent): Promise<APIGatewayPr
             },
             trend: {
                 last7Days: { created: created7, resolved: resolved7 },
+                last15Days: { created: created15, resolved: resolved15 },
                 last30Days: { created: created30, resolved: resolved30 },
             },
             filters: {
