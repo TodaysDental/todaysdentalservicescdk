@@ -1662,6 +1662,137 @@ async function startFavorRequest(
         recipients = [receiverID as string];
     }
 
+    // ──────────────────────────────────────────────────────────────
+    // DEDUPLICATION: Check for an existing conversation before creating a new one.
+    // For 1-to-1 chats: look for a conversation between senderID ↔ receiverID.
+    // For group chats: look for an existing conversation for the same teamID.
+    // ──────────────────────────────────────────────────────────────
+    let existingFavor: FavorRequest | undefined;
+
+    if (isGroupRequest) {
+        // Query TeamIndex for existing group conversations
+        const existingConvos = await ddb.send(new QueryCommand({
+            TableName: FAVORS_TABLE,
+            IndexName: 'TeamIndex',
+            KeyConditionExpression: 'teamID = :teamID',
+            ExpressionAttributeValues: { ':teamID': teamID },
+            ScanIndexForward: false,
+        }));
+        const convos = (existingConvos.Items || []) as FavorRequest[];
+        // Prefer the main group chat, fallback to any active conversation
+        existingFavor = convos.find(c => (c as any).isMainGroupChat === true)
+            || convos.find(c => c.status !== 'completed' && c.status !== 'rejected')
+            || convos[0];
+    } else {
+        // 1-to-1: Query both directions (A→B and B→A)
+        const [sentResult, recvResult] = await Promise.all([
+            ddb.send(new QueryCommand({
+                TableName: FAVORS_TABLE,
+                IndexName: 'SenderIndex',
+                KeyConditionExpression: 'senderID = :sid',
+                ExpressionAttributeValues: { ':sid': senderID },
+                ScanIndexForward: false,
+            })),
+            ddb.send(new QueryCommand({
+                TableName: FAVORS_TABLE,
+                IndexName: 'SenderIndex',
+                KeyConditionExpression: 'senderID = :sid',
+                ExpressionAttributeValues: { ':sid': receiverID },
+                ScanIndexForward: false,
+            })),
+        ]);
+
+        const allConvos = [
+            ...(sentResult.Items || []),
+            ...(recvResult.Items || []),
+        ] as FavorRequest[];
+
+        // Find an existing active conversation between these two users (either direction)
+        existingFavor = allConvos.find(c =>
+            c.status !== 'completed' && c.status !== 'rejected' &&
+            ((c.senderID === senderID && c.receiverID === receiverID) ||
+                (c.senderID === receiverID && c.receiverID === senderID))
+        );
+    }
+
+    // If an existing conversation was found, send the message there instead of creating a new one
+    if (existingFavor) {
+        const existingID = existingFavor.favorRequestID;
+        const timestamp = Date.now();
+        console.log(`♻️ Reusing existing conversation ${existingID} instead of creating a new one.`);
+
+        // Update conversation metadata (deadline, priority, title) if task fields provided
+        const updateExprParts: string[] = ['updatedAt = :ua'];
+        const exprValues: Record<string, any> = { ':ua': new Date().toISOString() };
+        const exprNames: Record<string, string> = {};
+
+        if (deadline) { updateExprParts.push('deadline = :dl'); exprValues[':dl'] = String(deadline); }
+        if (priority && priority !== 'Medium') { updateExprParts.push('priority = :pri'); exprValues[':pri'] = priority; }
+
+        // Increment unread count
+        updateExprParts.push('unreadCount = if_not_exists(unreadCount, :zero) + :incr');
+        exprValues[':incr'] = recipients.length;
+        exprValues[':zero'] = 0;
+
+        const updateResult = await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID: existingID },
+            UpdateExpression: `SET ${updateExprParts.join(', ')}`,
+            ExpressionAttributeValues: exprValues,
+            ...(Object.keys(exprNames).length > 0 ? { ExpressionAttributeNames: exprNames } : {}),
+            ReturnValues: 'ALL_NEW',
+        }));
+
+        const updatedFavor = updateResult.Attributes as FavorRequest;
+
+        // Save the task message into the existing conversation
+        const messageData: MessageData = {
+            favorRequestID: existingID,
+            senderID,
+            content: initialMessage,
+            timestamp,
+            type: 'text',
+        };
+        await _saveAndBroadcastMessage(messageData, apiGwManagement, isGroupRequest ? recipients : undefined);
+
+        // Broadcast the updated favor to all participants
+        const allParticipants = [...recipients, senderID];
+        await sendToAll(apiGwManagement, allParticipants, {
+            type: 'favorRequestUpdated',
+            favor: updatedFavor,
+        }, { notifyOffline: false });
+
+        // Push notification for new task in existing conversation
+        const senderDetails = await getUserDetails(senderID);
+        await sendTaskPushNotification(
+            recipients,
+            'task_assigned',
+            title || initialMessage.substring(0, 50),
+            senderDetails.fullName,
+            existingID,
+            { priority: priority as TaskPriority, category: category as SystemModule }
+        );
+
+        // Confirm to sender — use same type so frontend handles it consistently
+        await sendToClient(apiGwManagement, senderConnectionId, {
+            type: 'favorRequestStarted',
+            favorRequestID: existingID,
+            favor: updatedFavor,
+            receiverID,
+            teamID,
+            requestType,
+            deadline,
+            title: updatedFavor.title,
+            priority: updatedFavor.priority,
+            category: updatedFavor.category,
+            reusedExisting: true,
+        });
+        return; // ← Done, skip new-creation path below
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // No existing conversation found — create a brand-new one (original path)
+    // ──────────────────────────────────────────────────────────────
     const favorRequestID = uuidv4();
     const timestamp = Date.now();
     const nowIso = new Date().toISOString();
