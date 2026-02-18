@@ -2479,7 +2479,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "1f0b94a53e9f193d9664b28af6bb6d5c944813b33e1c6b4482de90a50978e48f.zip"
+     "S3Key": "02027c880a81753bed60c99d1669c32bfe473b21eb251d350fdef263f62d8568.zip"
     },
     "Environment": {
      "Variables": {
@@ -2533,7 +2533,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsClinicImagesN1/ImagesFn/Resource",
-    "aws:asset:path": "asset.1f0b94a53e9f193d9664b28af6bb6d5c944813b33e1c6b4482de90a50978e48f",
+    "aws:asset:path": "asset.02027c880a81753bed60c99d1669c32bfe473b21eb251d350fdef263f62d8568",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }

@@ -339,7 +339,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "460341937840831ffe9d59e81686d227e8553a8247affbad616e50bdb2be4d9f.zip"
+     "S3Key": "a1da9f05c20cb6adff7a44e39c043157cfab7854fe666e48dcca7767bf54bc3b.zip"
     },
     "Environment": {
      "Variables": {
@@ -405,7 +405,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsFeeScheduleSyncN1/FeeScheduleSyncFn/Resource",
-    "aws:asset:path": "asset.460341937840831ffe9d59e81686d227e8553a8247affbad616e50bdb2be4d9f",
+    "aws:asset:path": "asset.a1da9f05c20cb6adff7a44e39c043157cfab7854fe666e48dcca7767bf54bc3b",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }

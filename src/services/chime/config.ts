@@ -48,6 +48,61 @@ export const CHIME_CONFIG = {
 
     /** Maximum connected call duration before auto-hangup (minutes) */
     MAX_CONNECTED_CALL_MINUTES: parseInt(process.env.CHIME_MAX_CONNECTED_CALL_MINUTES || '60', 10),
+
+    /**
+     * Wrap-up period after a call ends (seconds).
+     * Delays the next queue check to give agents time for note-taking.
+     * Set to 0 to disable (immediate re-dispatch).
+     * @default 0
+     */
+    WRAP_UP_SECONDS: parseInt(process.env.CHIME_WRAP_UP_SECONDS || '0', 10),
+  },
+
+  /**
+   * Dispatch Configuration
+   * Controls how the fair-share dispatcher allocates agents to queued calls.
+   */
+  DISPATCH: {
+    /** Maximum calls that can ring simultaneously per clinic (static limit) */
+    MAX_SIMUL_RING_CALLS: parseInt(process.env.CHIME_MAX_SIMUL_RING_CALLS || '10', 10),
+
+    /**
+     * Enable dynamic scaling of MAX_SIMUL_RING_CALLS based on available agents.
+     * Formula: min(max(10, ceil(idleAgents / 2)), DYNAMIC_SIMUL_RING_MAX)
+     * @default true
+     */
+    DYNAMIC_SIMUL_RING: process.env.CHIME_DYNAMIC_SIMUL_RING !== 'false',
+
+    /** Upper bound for dynamic simultaneous ring calls */
+    DYNAMIC_SIMUL_RING_MAX: parseInt(process.env.CHIME_DYNAMIC_SIMUL_RING_MAX || '50', 10),
+
+    /**
+     * Enable priority-weighted agent allocation.
+     * Higher-priority calls get proportionally more agents instead of even distribution.
+     * @default true
+     */
+    PRIORITY_WEIGHTED_ALLOCATION: process.env.CHIME_PRIORITY_WEIGHTED_ALLOCATION !== 'false',
+
+    /**
+     * Enable parallel clinic dispatch.
+     * Dispatches to all clinics concurrently instead of sequentially.
+     * Safe because each clinic uses its own distributed lock.
+     * @default true
+     */
+    PARALLEL_CLINIC_DISPATCH: process.env.CHIME_PARALLEL_CLINIC_DISPATCH !== 'false',
+
+    /**
+     * Enable ring timeout escalation.
+     * After each ring timeout, escalate the routing strategy:
+     * Attempt 1: re-ring with different agents
+     * Attempt 2: trigger overflow routing
+     * Attempt 3+: offer voicemail/AI fallback
+     * @default true
+     */
+    RING_TIMEOUT_ESCALATION: process.env.CHIME_RING_TIMEOUT_ESCALATION !== 'false',
+
+    /** Maximum ring attempts before final fallback */
+    RING_ESCALATION_MAX_ATTEMPTS: parseInt(process.env.CHIME_RING_ESCALATION_MAX_ATTEMPTS || '3', 10),
   },
 
   /**

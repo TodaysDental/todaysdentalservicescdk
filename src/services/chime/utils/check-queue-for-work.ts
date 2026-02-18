@@ -42,7 +42,6 @@ interface AgentInfo extends Record<string, any> {
 }
 
 const MAX_RING_AGENTS = Math.max(1, Number.parseInt(process.env.MAX_RING_AGENTS || '25', 10));
-const MAX_SIMUL_RING_CALLS = Math.max(1, Number.parseInt(process.env.MAX_SIMUL_RING_CALLS || '10', 10));
 const LOCKS_TABLE_NAME = process.env.LOCKS_TABLE_NAME;
 
 /**
@@ -251,12 +250,15 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
 
         if (uniqueAgentIds.length === 0) return;
 
+        // #9: Track ring attempt count for escalation
+        const currentAttempt = (call.ringAttemptCount || 0) + 1;
+
         // 1) Transition call queued -> ringing (first answer wins; do NOT set assignedAgentId)
         try {
             await ddb.send(new UpdateCommand({
                 TableName: callQueueTableName,
                 Key: { clinicId: call.clinicId, queuePosition: call.queuePosition },
-                UpdateExpression: 'SET #status = :ringing, agentIds = :agentIds, ringStartTimeIso = :ts, ringStartTime = :now, lastStateChange = :ts, updatedAt = :ts',
+                UpdateExpression: 'SET #status = :ringing, agentIds = :agentIds, ringStartTimeIso = :ts, ringStartTime = :now, lastStateChange = :ts, updatedAt = :ts, ringAttemptCount = :attemptCount',
                 ConditionExpression: '#status = :queued',
                 ExpressionAttributeNames: { '#status': 'status' },
                 ExpressionAttributeValues: {
@@ -265,6 +267,7 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
                     ':agentIds': uniqueAgentIds,
                     ':ts': ringAttemptTimestamp,
                     ':now': Date.now(),
+                    ':attemptCount': currentAttempt,
                 }
             }));
         } catch (err: any) {
@@ -368,6 +371,7 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
         console.log(`[checkQueueForWork] Ringing started for queued call ${call.callId}`, {
             clinicId: call.clinicId,
             ringingAgents: ringingAgentIds.length,
+            ringAttempt: currentAttempt,
         });
     }
 
@@ -401,7 +405,8 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
             }
 
             // Fetch idle agents for this clinic (Online, has meetingInfo, not ringing, not on call)
-            const targetAgentCount = Math.min(MAX_RING_AGENTS * MAX_SIMUL_RING_CALLS, 250);
+            const staticMax = CHIME_CONFIG.DISPATCH.MAX_SIMUL_RING_CALLS;
+            const targetAgentCount = Math.min(MAX_RING_AGENTS * staticMax, 250);
             const idleAgents = await fetchIdleAgentsForClinic(clinicId, targetAgentCount);
             if (idleAgents.length === 0) {
                 // Queue backup alert: calls waiting but no agents available
@@ -431,22 +436,62 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
                 return aTs - bTs;
             });
 
-            const callsToRingCount = Math.min(rankedCalls.length, sortedAgents.length, MAX_SIMUL_RING_CALLS);
+            // #1: Dynamic MAX_SIMUL_RING_CALLS — scale with agent pool size
+            let effectiveMaxSimulRing = staticMax;
+            if (CHIME_CONFIG.DISPATCH.DYNAMIC_SIMUL_RING) {
+                effectiveMaxSimulRing = Math.min(
+                    Math.max(staticMax, Math.ceil(sortedAgents.length / 2)),
+                    CHIME_CONFIG.DISPATCH.DYNAMIC_SIMUL_RING_MAX
+                );
+                if (effectiveMaxSimulRing !== staticMax) {
+                    console.log(`[checkQueueForWork] Dynamic ring: ${staticMax} → ${effectiveMaxSimulRing} (${sortedAgents.length} agents)`);
+                }
+            }
+
+            const callsToRingCount = Math.min(rankedCalls.length, sortedAgents.length, effectiveMaxSimulRing);
             const callsToRing = rankedCalls.slice(0, callsToRingCount);
 
-            // Compute fair per-call target counts (at least 1 agent/call when possible)
+            // #6: Priority-weighted agent allocation
             const totalAgents = sortedAgents.length;
-            const basePerCall = Math.max(1, Math.floor(totalAgents / callsToRing.length));
-            let remainder = totalAgents % callsToRing.length;
-
             const allocations: Map<string, { call: QueuedCall; agentIds: string[] }> = new Map();
             let remainingPool: SelectionAgentInfo[] = sortedAgents;
 
+            // Compute per-call agent targets
+            let perCallTargets: number[];
+            if (CHIME_CONFIG.DISPATCH.PRIORITY_WEIGHTED_ALLOCATION && callsToRing.length > 1) {
+                // Higher-priority calls get proportionally more agents
+                const totalScore = callsToRing.reduce((sum, c) => sum + Math.max(1, c.priorityScore || 1), 0);
+                const rawTargets = callsToRing.map(c => {
+                    const share = Math.max(1, c.priorityScore || 1) / totalScore;
+                    return Math.max(1, Math.round(totalAgents * share));
+                });
+                // Clamp to MAX_RING_AGENTS and ensure total doesn't exceed available
+                const clamped = rawTargets.map(t => Math.min(t, MAX_RING_AGENTS));
+                const overallTotal = clamped.reduce((a, b) => a + b, 0);
+                if (overallTotal > totalAgents) {
+                    // Scale down proportionally
+                    const scaleFactor = totalAgents / overallTotal;
+                    perCallTargets = clamped.map(t => Math.max(1, Math.floor(t * scaleFactor)));
+                } else {
+                    perCallTargets = clamped;
+                }
+                console.log('[checkQueueForWork] Priority-weighted allocation:', callsToRing.map((c, i) => ({
+                    callId: c.callId, score: c.priorityScore, agents: perCallTargets[i]
+                })));
+            } else {
+                // Even distribution (original logic)
+                const basePerCall = Math.max(1, Math.floor(totalAgents / callsToRing.length));
+                let remainder = totalAgents % callsToRing.length;
+                perCallTargets = callsToRing.map(() => {
+                    const target = basePerCall + (remainder > 0 ? 1 : 0);
+                    if (remainder > 0) remainder--;
+                    return Math.min(MAX_RING_AGENTS, target);
+                });
+            }
+
             for (let i = 0; i < callsToRing.length; i++) {
                 const call = callsToRing[i];
-                let desired = basePerCall + (remainder > 0 ? 1 : 0);
-                if (remainder > 0) remainder--;
-                desired = Math.min(MAX_RING_AGENTS, desired);
+                let desired = perCallTargets[i];
 
                 const callPhone = typeof call.phoneNumber === 'string' && call.phoneNumber.length > 0 ? call.phoneNumber : 'Unknown';
                 const callContext: CallContext = {
@@ -548,11 +593,24 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
         const activeClinicIds: string[] = agentInfo.activeClinicIds;
         console.log(`[checkQueueForWork] Agent ${agentId} triggering fair-share dispatch for:`, activeClinicIds);
 
-        for (const clinicId of activeClinicIds) {
-            try {
-                await dispatchForClinic(clinicId);
-            } catch (err: any) {
-                console.error(`[checkQueueForWork] Error dispatching for clinic ${clinicId}:`, err);
+        // #5: Parallel clinic dispatch — each clinic uses its own distributed lock, so concurrent dispatch is safe
+        if (CHIME_CONFIG.DISPATCH.PARALLEL_CLINIC_DISPATCH && activeClinicIds.length > 1) {
+            const results = await Promise.allSettled(
+                activeClinicIds.map(clinicId => dispatchForClinic(clinicId))
+            );
+            for (let i = 0; i < results.length; i++) {
+                if (results[i].status === 'rejected') {
+                    console.error(`[checkQueueForWork] Error dispatching for clinic ${activeClinicIds[i]}:`, (results[i] as PromiseRejectedResult).reason);
+                }
+            }
+        } else {
+            // Sequential fallback
+            for (const clinicId of activeClinicIds) {
+                try {
+                    await dispatchForClinic(clinicId);
+                } catch (err: any) {
+                    console.error(`[checkQueueForWork] Error dispatching for clinic ${clinicId}:`, err);
+                }
             }
         }
     };

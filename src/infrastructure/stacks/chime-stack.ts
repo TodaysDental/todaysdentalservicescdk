@@ -2328,6 +2328,81 @@ export class ChimeStack extends Stack {
     queueMonitorRule.addTarget(new targets.LambdaFunction(queueMonitorFn));
 
     // ========================================
+    // 3c-2. QUEUE POLLER (Improvement #2)
+    // Periodic safety-net that rescues orphaned queued calls by
+    // re-triggering the standard fair-share dispatcher.
+    // ========================================
+    const queuePollerFn = new lambdaNode.NodejsFunction(this, 'QueuePollerFn', {
+      functionName: `${this.stackName}-QueuePoller`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'queue-poller.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      memorySize: 256,
+      environment: {
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        CLINICS_TABLE_NAME: this.clinicsTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
+        CHIME_MEDIA_REGION: chimeMediaRegion,
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
+        // Pass device tokens table so push-notifications utility can query it
+        DEVICE_TOKENS_TABLE: props.deviceTokensTableName || '',
+      },
+    });
+    this.callQueueTable.grantReadWriteData(queuePollerFn);
+    this.agentPresenceTable.grantReadWriteData(queuePollerFn);
+    this.clinicsTable.grantReadData(queuePollerFn);
+    this.locksTable.grantReadWriteData(queuePollerFn);
+
+    // Chime SDK permissions for assigning queued calls
+    queuePollerFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'chime:UpdateSipMediaApplicationCall',
+        'chime-sdk-voice:UpdateSipMediaApplicationCall',
+        'chime:CreateMeeting',
+        'chime:CreateAttendee',
+        'chime-sdk-meetings:CreateMeeting',
+        'chime-sdk-meetings:CreateAttendee',
+      ],
+      resources: ['*'],
+    }));
+
+    // Push notifications permissions
+    if (props.sendPushFunctionArn) {
+      queuePollerFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
+    if (props.deviceTokensTableArn) {
+      queuePollerFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['dynamodb:Query', 'dynamodb:GetItem'],
+        resources: [
+          props.deviceTokensTableArn,
+          `${props.deviceTokensTableArn}/index/*`,
+        ],
+      }));
+    }
+
+    // CloudWatch metrics
+    queuePollerFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['cloudwatch:PutMetricData'],
+      resources: ['*'],
+    }));
+
+    // EventBridge rule: fire every 1 minute (safety-net for orphaned queued calls)
+    const queuePollerRule = new events.Rule(this, 'QueuePollerRule', {
+      schedule: events.Schedule.rate(Duration.minutes(1)),
+      description: 'Safety-net: rescue orphaned queued calls by re-triggering fair-share dispatch',
+    });
+    queuePollerRule.addTarget(new targets.LambdaFunction(queuePollerFn));
+
+    // ========================================
     // 3d. VOICEMAIL INFRASTRUCTURE
     // ========================================
 

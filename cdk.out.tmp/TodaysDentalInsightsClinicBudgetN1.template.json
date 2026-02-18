@@ -977,7 +977,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "57f6397217e5e71b1eca866a640c3b30ab49e5b03a844ff00e29b32c15e94e26.zip"
+     "S3Key": "6bedfbcccd5bbd68fe45bd61a32467d1fef5b7c5eec0806ad9cee0425ae78a23.zip"
     },
     "Environment": {
      "Variables": {
@@ -1021,7 +1021,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsClinicBudgetN1/ClinicBudgetCrudFn/Resource",
-    "aws:asset:path": "asset.57f6397217e5e71b1eca866a640c3b30ab49e5b03a844ff00e29b32c15e94e26",
+    "aws:asset:path": "asset.6bedfbcccd5bbd68fe45bd61a32467d1fef5b7c5eec0806ad9cee0425ae78a23",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }

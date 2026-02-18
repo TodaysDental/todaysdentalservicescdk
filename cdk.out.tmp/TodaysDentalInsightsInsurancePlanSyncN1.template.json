@@ -295,7 +295,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "ca51304ecdd6e9b5ae45acf09b4af402fd57bf905ec3919ce1d56c917d03c96e.zip"
+     "S3Key": "d7e50904512e76a017bb5dbd70f609c493cbd755c30d613bb56926bdb3632e26.zip"
     },
     "Environment": {
      "Variables": {
@@ -361,7 +361,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsInsurancePlanSyncN1/InsurancePlanSyncFn/Resource",
-    "aws:asset:path": "asset.ca51304ecdd6e9b5ae45acf09b4af402fd57bf905ec3919ce1d56c917d03c96e",
+    "aws:asset:path": "asset.d7e50904512e76a017bb5dbd70f609c493cbd755c30d613bb56926bdb3632e26",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }

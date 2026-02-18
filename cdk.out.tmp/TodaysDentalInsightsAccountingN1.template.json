@@ -471,7 +471,7 @@
     "aws:cdk:path": "TodaysDentalInsightsAccountingN1/AccountingApi/Account"
    }
   },
-  "AccountingApiDeployment6492789140a655dc6d87b2f3bb2f3a823dd4093b": {
+  "AccountingApiDeployment6492789158cacf254a68d001e1a690c92dbd55c8": {
    "Type": "AWS::ApiGateway::Deployment",
    "Properties": {
     "Description": "Accounting Module API (Invoices, Bank Reconciliation)",
@@ -517,6 +517,9 @@
     "AccountingApiinvoicesGET11B6BFD3",
     "AccountingApiinvoicesOPTIONSF5CBE580",
     "AccountingApiinvoicesCAE97955",
+    "AccountingApiinvoicessyncodooOPTIONS608D4B89",
+    "AccountingApiinvoicessyncodooPOSTB8894540",
+    "AccountingApiinvoicessyncodooE34E73F0",
     "AccountingApiinvoicesuploadOPTIONSD5EC97ED",
     "AccountingApiinvoicesuploadPOST5C40B47D",
     "AccountingApiinvoicesupload6E42B4D3",
@@ -535,7 +538,7 @@
    "Type": "AWS::ApiGateway::Stage",
    "Properties": {
     "DeploymentId": {
-     "Ref": "AccountingApiDeployment6492789140a655dc6d87b2f3bb2f3a823dd4093b"
+     "Ref": "AccountingApiDeployment6492789158cacf254a68d001e1a690c92dbd55c8"
     },
     "MethodSettings": [
      {
@@ -1022,6 +1025,205 @@
    },
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsAccountingN1/AccountingApi/Default/invoices/upload/POST/Resource"
+   }
+  },
+  "AccountingApiinvoicessyncodooE34E73F0": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "AccountingApiinvoicesCAE97955"
+    },
+    "PathPart": "sync-odoo",
+    "RestApiId": {
+     "Ref": "AccountingApi888C4DF4"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAccountingN1/AccountingApi/Default/invoices/sync-odoo/Resource"
+   }
+  },
+  "AccountingApiinvoicessyncodooOPTIONS608D4B89": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "AccountingApiinvoicessyncodooE34E73F0"
+    },
+    "RestApiId": {
+     "Ref": "AccountingApi888C4DF4"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAccountingN1/AccountingApi/Default/invoices/sync-odoo/OPTIONS/Resource"
+   }
+  },
+  "AccountingApiinvoicessyncodooPOSTApiPermissionTodaysDentalInsightsAccountingN1AccountingApi9A864BFCPOSTinvoicessyncodoo39FE9203": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AccountingFn8E356779",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "AccountingApi888C4DF4"
+       },
+       "/",
+       {
+        "Ref": "AccountingApiDeploymentStageprodAEC69595"
+       },
+       "/POST/invoices/sync-odoo"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAccountingN1/AccountingApi/Default/invoices/sync-odoo/POST/ApiPermission.TodaysDentalInsightsAccountingN1AccountingApi9A864BFC.POST..invoices.sync-odoo"
+   }
+  },
+  "AccountingApiinvoicessyncodooPOSTApiPermissionTestTodaysDentalInsightsAccountingN1AccountingApi9A864BFCPOSTinvoicessyncodoo19A3B7BD": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "AccountingFn8E356779",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "AccountingApi888C4DF4"
+       },
+       "/test-invoke-stage/POST/invoices/sync-odoo"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAccountingN1/AccountingApi/Default/invoices/sync-odoo/POST/ApiPermission.Test.TodaysDentalInsightsAccountingN1AccountingApi9A864BFC.POST..invoices.sync-odoo"
+   }
+  },
+  "AccountingApiinvoicessyncodooPOSTB8894540": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "AccountingAuthorizer65DD64E3"
+    },
+    "HttpMethod": "POST",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "AccountingFn8E356779",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     },
+     {
+      "StatusCode": "201"
+     },
+     {
+      "StatusCode": "204"
+     },
+     {
+      "StatusCode": "400"
+     },
+     {
+      "StatusCode": "401"
+     },
+     {
+      "StatusCode": "403"
+     },
+     {
+      "StatusCode": "404"
+     },
+     {
+      "StatusCode": "500"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "AccountingApiinvoicessyncodooE34E73F0"
+    },
+    "RestApiId": {
+     "Ref": "AccountingApi888C4DF4"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAccountingN1/AccountingApi/Default/invoices/sync-odoo/POST/Resource"
    }
   },
   "AccountingApiinvoicesinvoiceIdE3F5AE4D": {
@@ -3868,6 +4070,17 @@
            }
           ]
          ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:aws:dynamodb:us-east-1:851620242036:table/",
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicSecretsTableCB051D787FA92820"
+           }
+          ]
+         ]
         }
        ]
       },
@@ -3900,7 +4113,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "a7dec10d7f22614d62a6cba21061bc9262e1b20f7c699a835fed3a06c7892352.zip"
+     "S3Key": "979e83b9419ec49facc0dd2e5f4aee008cc5a7650b0d1cb42726aadf5c5d84e8.zip"
     },
     "Environment": {
      "Variables": {
@@ -3933,6 +4146,9 @@
       },
       "CLINIC_CONFIG_TABLE": {
        "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
+      },
+      "CLINIC_SECRETS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicSecretsTableCB051D787FA92820"
       }
      }
     },
@@ -3971,7 +4187,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsAccountingN1/AccountingFn/Resource",
-    "aws:asset:path": "asset.a7dec10d7f22614d62a6cba21061bc9262e1b20f7c699a835fed3a06c7892352",
+    "aws:asset:path": "asset.979e83b9419ec49facc0dd2e5f4aee008cc5a7650b0d1cb42726aadf5c5d84e8",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
