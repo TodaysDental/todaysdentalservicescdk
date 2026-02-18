@@ -1417,7 +1417,11 @@ export class ChimeStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'chime', 'agent-active.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(10),
+      // This endpoint may be called with many clinicIds (e.g. Global Super Admins),
+      // and performs best-effort queue dispatch checks per clinic.
+      // Keep under API Gateway's 29s hard limit, but allow enough headroom.
+      memorySize: 256,
+      timeout: Duration.seconds(20),
       environment: {
         AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
