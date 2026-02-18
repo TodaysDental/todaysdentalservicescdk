@@ -44,6 +44,9 @@ import {
   PERFORMANCE_THRESHOLDS,
   validateTargetRoas,
   enums,
+  createCampaignViaRest,
+  createBudgetViaRest,
+  removeBudgetViaRest,
 } from '../../shared/utils/google-ads-client';
 import {
   getAllowedClinicIds,
@@ -493,7 +496,7 @@ async function createCampaign(
       };
     }
 
-    // Create budget first — must set explicitly_shared to false for campaign-specific budgets
+    // Create budget first via REST API (bypass gRPC proto limitation)
     const budgetResource = {
       name: `Budget - ${name} - ${Date.now()}`,
       amount_micros: dollarsToMicros(dailyBudget),
@@ -501,8 +504,7 @@ async function createCampaign(
       explicitly_shared: false,
     };
 
-    const budgetResponse = await (client as any).campaignBudgets.create([budgetResource]);
-    budgetResourceName = budgetResponse.results[0].resource_name;
+    budgetResourceName = await createBudgetViaRest(customerId, budgetResource);
 
     // Validate conversion tracking for strategies that require it
     // TARGET_CPA, MAXIMIZE_CONVERSIONS, and TARGET_ROAS all require at least one
@@ -530,33 +532,6 @@ async function createCampaign(
       }
     }
 
-    // Build bidding strategy configuration
-    // IMPORTANT: Google Ads API uses protobuf `oneof` for campaign_bidding_strategy.
-    // Proto3 strips fields set to their default values (0 for int64, false for bool).
-    // This means `maximize_clicks: { cpc_bid_ceiling_micros: 0 }` serializes as
-    // `maximize_clicks: {}` → null → "The required field was not present" error.
-    // SOLUTION: Omit optional inner fields entirely instead of setting them to 0/false.
-    // The library will serialize the outer key (e.g. `maximize_clicks: {}`) as a valid
-    // empty message only if we don't set any default-valued fields inside.
-    const biddingConfig: any = {};
-    switch (biddingStrategy) {
-      case 'MANUAL_CPC':
-        biddingConfig.manual_cpc = { enhanced_cpc_enabled: true };
-        break;
-      case 'TARGET_CPA':
-        biddingConfig.target_cpa = { target_cpa_micros: dollarsToMicros(targetCpa!) };
-        break;
-      case 'MAXIMIZE_CONVERSIONS':
-        biddingConfig.maximize_conversions = { target_cpa_micros: 1 };
-        break;
-      case 'MAXIMIZE_CLICKS':
-        biddingConfig.maximize_clicks = { cpc_bid_ceiling_micros: 10000000000 };
-        break;
-      case 'TARGET_ROAS':
-        biddingConfig.target_roas = { target_roas: targetRoas! / 100 };
-        break;
-    }
-
     // Map campaign type and status to enum values
     const channelTypeEnum = type === 'SEARCH'
       ? enums.AdvertisingChannelType.SEARCH
@@ -572,29 +547,25 @@ async function createCampaign(
 
     // Build network settings based on campaign type
     const networkSettings = type === 'SEARCH' ? {
-      target_google_search: true,
-      target_search_network: true,
-    } : type === 'VIDEO' ? {
-      target_youtube: true,
+      targetGoogleSearch: true,
+      targetSearchNetwork: true,
     } : undefined;
 
-    // Create campaign with proper enum values
-    // REQUIRED: contains_eu_political_advertising must be set on all campaigns (Google Ads API mandate)
-    const campaignResource: any = {
+    // Create campaign via REST API (bypasses gRPC proto3 serialization issues)
+    // This properly sends contains_eu_political_advertising and bidding strategy
+    console.log('[GoogleAds] Creating campaign via REST API...');
+    console.log('[GoogleAds] Bidding strategy:', biddingStrategy, 'Target CPA:', targetCpa, 'Target ROAS:', targetRoas);
+
+    campaignResourceName = await createCampaignViaRest(customerId, {
       name,
       status: statusEnum,
-      advertising_channel_type: channelTypeEnum,
-      campaign_budget: budgetResourceName,
-      ...biddingConfig,
-      ...(networkSettings ? { network_settings: networkSettings } : {}),
-    };
-
-    // DEBUG: Log the exact campaign resource before creation
-    console.log('[GoogleAds] Campaign resource to create:', JSON.stringify(campaignResource, null, 2));
-    console.log('[GoogleAds] Bidding config:', JSON.stringify(biddingConfig, null, 2));
-
-    const campaignResponse = await (client as any).campaigns.create([campaignResource]);
-    campaignResourceName = campaignResponse.results[0].resource_name;
+      advertisingChannelType: channelTypeEnum,
+      campaignBudget: budgetResourceName!,
+      biddingStrategy,
+      targetCpaMicros: targetCpa ? dollarsToMicros(targetCpa) : undefined,
+      targetRoas: targetRoas ? targetRoas / 100 : undefined,
+      networkSettings,
+    });
     const googleCampaignId = campaignResourceName!.split('/').pop()!;
 
     let adGroupResourceName: string | undefined;
@@ -822,15 +793,9 @@ async function createCampaign(
     }
 
     // CLEANUP: Remove orphaned budget if campaign creation failed
-    if (budgetResourceName && !campaignResourceName && client) {
+    if (budgetResourceName && !campaignResourceName) {
       console.warn(`[GoogleAds] Cleaning up orphaned budget ${budgetResourceName} due to campaign creation failure`);
-      try {
-        await (client as any).campaignBudgets.remove([budgetResourceName]);
-        console.log(`[GoogleAds] Successfully cleaned up orphaned budget: ${budgetResourceName}`);
-      } catch (cleanupError: any) {
-        // ORPHAN TRACKING: Log for manual remediation via CloudWatch alerts/metrics
-        console.error(`[GoogleAds] ORPHAN_RESOURCE: Budget cleanup failed - ${budgetResourceName} may need manual removal. Error: ${cleanupError.message}`);
-      }
+      await removeBudgetViaRest(customerId, budgetResourceName);
     }
 
     // CLEANUP: Mark orphaned campaign as REMOVED if ad group/ad creation failed
