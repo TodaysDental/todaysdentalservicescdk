@@ -1,4 +1,5 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+import { isPushNotificationsEnabled, sendCallCancelledToAgents } from './utils/push-notifications';
 import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
 import {
@@ -356,7 +357,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             },
           },
         ],
-      })).catch(() => {});
+      })).catch(() => { });
 
       return http(500, { message: 'Failed to create agent meeting credentials', error: (attendeeErr as any)?.message || 'attendee_create_failed' }, event);
     }
@@ -374,7 +375,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         ':agentAttendee': agentAttendee,
         ':ts': new Date().toISOString(),
       },
-    })).catch(() => {});
+    })).catch(() => { });
 
     // 10) Notify SMA to bridge the waiting customer PSTN leg into the meeting
     const smaId = getSmaIdForClinic(clinicId);
@@ -383,7 +384,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       await chime.send(new DeleteAttendeeCommand({
         MeetingId: meetingId!,
         AttendeeId: agentAttendee.AttendeeId!,
-      })).catch(() => {});
+      })).catch(() => { });
 
       // Roll back state
       await ddb.send(new TransactWriteCommand({
@@ -418,7 +419,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             },
           },
         ],
-      })).catch(() => {});
+      })).catch(() => { });
 
       return http(500, { message: 'SIP configuration not found for this clinic' }, event);
     }
@@ -439,7 +440,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       await chime.send(new DeleteAttendeeCommand({
         MeetingId: meetingId!,
         AttendeeId: agentAttendee.AttendeeId!,
-      })).catch(() => {});
+      })).catch(() => { });
 
       // Roll back call + agent state (so call can be retried)
       await ddb.send(new TransactWriteCommand({
@@ -474,7 +475,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             },
           },
         ],
-      })).catch(() => {});
+      })).catch(() => { });
 
       return http(500, { message: 'Failed to bridge call. Please try again.', error: 'SMA_BRIDGE_FAILED' }, event);
     }
@@ -492,9 +493,26 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         ':agentId': agentId,
         ':ts': new Date().toISOString(),
       },
-    })).catch(() => {});
+    })).catch(() => { });
 
-    // 12) Return meeting credentials to agent client
+    // 12) Push: Cancel ringing on all OTHER agents' devices (best-effort)
+    // The ringList was captured at step 6 before the call was claimed.
+    // Send a silent data-only push so mobile clients dismiss the incoming-call UI.
+    if (isPushNotificationsEnabled() && ringList.length > 1) {
+      try {
+        await sendCallCancelledToAgents(ringList, agentId, {
+          callId,
+          clinicId,
+          clinicName: (freshCall as any).clinicName || clinicId,
+          callerPhoneNumber: (freshCall as any).phoneNumber || '',
+          timestamp: new Date().toISOString(),
+        });
+      } catch (pushErr) {
+        console.warn('[call-accepted-v2] Failed to send call_cancelled push (non-fatal):', pushErr);
+      }
+    }
+
+    // 13) Return meeting credentials to agent client
     return http(200, {
       message: 'Call accepted',
       callId,
@@ -512,7 +530,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     });
     return http(500, { message: 'Internal server error', error: error?.message }, event);
   } finally {
-    await lock.release().catch(() => {});
+    await lock.release().catch(() => { });
   }
 };
 

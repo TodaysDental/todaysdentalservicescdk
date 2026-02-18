@@ -8,6 +8,7 @@
  * - State machine enforcement
  */
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+import { isPushNotificationsEnabled, sendClinicAlert } from './utils/push-notifications';
 import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 // TransactWriteCommand is used for atomic updates in attemptDirectStateRecovery
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
@@ -43,7 +44,7 @@ const COMPENSATING_ACTIONS_QUEUE_URL = process.env.COMPENSATING_ACTIONS_QUEUE_UR
  */
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
     console.log('Hold call event:', JSON.stringify(event, null, 2));
-    
+
     const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] }, event.headers?.origin);
 
     try {
@@ -58,10 +59,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const requestingAgentId = getUserIdFromJwt(verifyResult.payload!);
 
         if (!event.body) {
-            return { 
-                statusCode: 400, 
-                headers: corsHeaders, 
-                body: JSON.stringify({ message: 'Missing request body' }) 
+            return {
+                statusCode: 400,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Missing request body' })
             };
         }
 
@@ -69,10 +70,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const { callId, agentId } = body;
 
         if (!callId || !agentId) {
-            return { 
-                statusCode: 400, 
-                headers: corsHeaders, 
-                body: JSON.stringify({ message: 'Missing required parameters: callId, agentId' }) 
+            return {
+                statusCode: 400,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Missing required parameters: callId, agentId' })
             };
         }
 
@@ -114,342 +115,356 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 body: JSON.stringify({ message: 'Hold operation already in progress. Please wait.' })
             };
         }
-        
+
         const fencingToken = lockResult.fencingToken;
         console.log('[hold-call] Lock acquired with fencing token', { callId, agentId, fencingToken });
 
         try {
-        // Update the call status in the database
-        // 1. Find the call record in the queue table (now inside lock to prevent TOCTOU)
-        const { Items: callRecords } = await ddb.send(new QueryCommand({
-            TableName: CALL_QUEUE_TABLE_NAME,
-            IndexName: 'callId-index',
-            KeyConditionExpression: 'callId = :callId',
-            ExpressionAttributeValues: {
-                ':callId': callId
-            }
-        }));
-
-        if (!callRecords || callRecords.length === 0) {
-            return {
-                statusCode: 404,
-                headers: corsHeaders,
-                body: JSON.stringify({ message: 'Call not found' })
-            };
-        }
-
-        const callRecord = callRecords[0];
-        const { clinicId, queuePosition } = callRecord;
-        
-        // FIX #2: Validate state transition before attempting hold
-        try {
-            validateStateTransition(callRecord.status, 'on_hold', CALL_STATE_MACHINE, 'call');
-        } catch (err: any) {
-            console.warn('[hold-call] Invalid state transition:', err.message);
-            return {
-                statusCode: 409,
-                headers: corsHeaders,
-                body: JSON.stringify({ 
-                    message: err.message,
-                    currentStatus: callRecord.status
-                })
-            };
-        }
-        
-        // Check clinic authorization
-        const authzCheck = checkClinicAuthorization(verifyResult.payload! as any, clinicId);
-        if (!authzCheck.authorized) {
-            console.warn('[hold-call] Authorization failed', {
-                agentId: requestingAgentId,
-                clinicId,
-                reason: authzCheck.reason
-            });
-            return {
-                statusCode: 403,
-                headers: corsHeaders,
-                body: JSON.stringify({ message: authzCheck.reason })
-            };
-        }
-        
-        if (callRecord.assignedAgentId && callRecord.assignedAgentId !== agentId) {
-            console.warn('[hold-call] Agent attempting to hold call they are not assigned to', { agentId, assignedAgentId: callRecord.assignedAgentId });
-            return {
-                statusCode: 403,
-                headers: corsHeaders,
-                body: JSON.stringify({ message: 'You are not assigned to this call' })
-            };
-        }
-
-        const smaId = getSmaIdForClinic(clinicId);
-        if (!smaId) {
-            console.error('[hold-call] Missing SMA mapping for clinic', { clinicId });
-            return {
-                statusCode: 500,
-                headers: corsHeaders,
-                body: JSON.stringify({ message: 'Hold is not configured for this clinic' })
-            };
-        }
-
-        // Fetch agent presence record and ensure they are on this call
-        const { Item: agentRecord } = await ddb.send(new GetCommand({
-            TableName: AGENT_PRESENCE_TABLE_NAME,
-            Key: { agentId }
-        }));
-
-        if (!agentRecord) {
-            return {
-                statusCode: 404,
-                headers: corsHeaders,
-                body: JSON.stringify({ message: 'Agent presence not found' })
-            };
-        }
-
-        const isOnCall = agentRecord.currentCallId === callId || agentRecord.ringingCallId === callId;
-        if (!isOnCall) {
-            console.warn('[hold-call] Agent not actively on this call', { agentId, callId });
-            return {
-                statusCode: 409,
-                headers: corsHeaders,
-                body: JSON.stringify({ message: 'You are not actively connected to this call' })
-            };
-        }
-
-        // FIX #15: CRITICAL - Validate meeting exists before hold operations
-        let meetingId = null;
-        let agentAttendeeId = null;
-        
-        if (!callRecord.meetingInfo?.MeetingId) {
-            console.error(`[hold-call] No active meeting for call ${callId}`);
-            return {
-                statusCode: 409,
-                headers: corsHeaders,
-                body: JSON.stringify({ 
-                    message: 'Cannot hold call - no active meeting',
-                    error: 'NO_ACTIVE_MEETING'
-                })
-            };
-        }
-        
-        meetingId = callRecord.meetingInfo.MeetingId;
-        console.log(`[hold-call] Found active meeting ${meetingId} for call ${callId}`);
-        
-        // FIX #15: Validate meeting actually exists in Chime
-        const meetingExists = await validateMeetingExists(meetingId);
-        if (!meetingExists) {
-            console.error(`[hold-call] Meeting ${meetingId} not found in Chime`);
-            
-            // Clean up stale meeting reference
-            await ddb.send(new UpdateCommand({
+            // Update the call status in the database
+            // 1. Find the call record in the queue table (now inside lock to prevent TOCTOU)
+            const { Items: callRecords } = await ddb.send(new QueryCommand({
                 TableName: CALL_QUEUE_TABLE_NAME,
-                Key: { clinicId, queuePosition },
-                UpdateExpression: 'REMOVE meetingInfo, customerAttendeeInfo, agentAttendeeInfo ' +
-                                 'SET meetingError = :error',
+                IndexName: 'callId-index',
+                KeyConditionExpression: 'callId = :callId',
                 ExpressionAttributeValues: {
-                    ':error': 'Meeting not found in Chime SDK'
+                    ':callId': callId
                 }
             }));
-            
-            return {
-                statusCode: 409,
-                headers: corsHeaders,
-                body: JSON.stringify({
-                    message: 'Cannot hold call - meeting no longer exists',
-                    error: 'MEETING_NOT_FOUND'
-                })
-            };
-        }
-        
-        // Check for attendee ID in various fields
-        if (agentRecord?.currentMeetingAttendeeId) {
-            agentAttendeeId = agentRecord.currentMeetingAttendeeId;
-            console.log(`[hold-call] Found agent attendee ID in currentMeetingAttendeeId: ${agentAttendeeId}`);
-        } else if (agentRecord?.inboundAttendeeInfo?.AttendeeId) {
-            agentAttendeeId = agentRecord.inboundAttendeeInfo.AttendeeId;
-            console.log(`[hold-call] Found agent attendee ID in inboundAttendeeInfo: ${agentAttendeeId}`);
-        } else if (agentRecord?.attendeeInfo?.AttendeeId) {
-            agentAttendeeId = agentRecord.attendeeInfo.AttendeeId;
-            console.log(`[hold-call] Found agent attendee ID in attendeeInfo: ${agentAttendeeId}`);
-        }
-        
-        // FIX #15: Validate agent is in the meeting
-        if (!agentAttendeeId) {
-            return {
-                statusCode: 409,
-                headers: corsHeaders,
-                body: JSON.stringify({
-                    message: 'Cannot hold call - agent not in meeting',
-                    error: 'AGENT_NOT_IN_MEETING'
-                })
-            };
-        }
-        
-        // CRITICAL FIX #5: Make hold operation as atomic as possible
-        // CRITICAL FIX #4: Comprehensive error handling for each step
-        // Log operation ID for debugging and potential retry
-        const holdOperationId = randomUUID();
-        console.log('[hold-call] Starting hold operation', { holdOperationId, callId, agentId, fencingToken });
-        
-        // FIX #3: Validate fencing token is still valid before critical SMA operation
-        const tokenValid = await lock.validateFencingToken();
-        if (!tokenValid) {
-            console.warn('[hold-call] Fencing token invalidated - another process took over', { callId, agentId, fencingToken });
-            return {
-                statusCode: 409,
-                headers: corsHeaders,
-                body: JSON.stringify({ message: 'Operation was superseded. Please try again.' })
-            };
-        }
-        
-        // Step 1: Send the hold command to the SMA
-        try {
-            await chimeVoice.send(new UpdateSipMediaApplicationCallCommand({
-                SipMediaApplicationId: smaId,
-                TransactionId: callId,
-                Arguments: {
-                    action: 'HOLD_CALL',
-                    agentId,
-                    meetingId,
-                    agentAttendeeId: agentAttendeeId || '',
-                    removeAgent: 'true',
-                    holdOperationId // Include for idempotency
-                }
-            }));
-            console.log(`[hold-call] SMA hold command successful (${holdOperationId})`);
-        } catch (smaErr: any) {
-            console.error(`[hold-call] STEP 1 FAILED - SMA hold command failed (${holdOperationId}):`, smaErr);
-            return {
-                statusCode: 503,
-                headers: corsHeaders,
-                body: JSON.stringify({ 
-                    message: 'SMA service unavailable. Please try again.',
-                    error: 'SMA_COMMAND_FAILED',
-                    holdOperationId
-                })
-            };
-        }
-        
-        // Step 2: Verify attendee removal (if applicable)
-        if (agentAttendeeId && meetingId) {
-            try {
-                await chimeClient.send(new DeleteAttendeeCommand({
-                    MeetingId: meetingId,
-                    AttendeeId: agentAttendeeId
-                }));
-                console.log(`[hold-call] Agent attendee removed from meeting (${holdOperationId})`);
-            } catch (deleteErr: any) {
-                if (deleteErr.name === 'NotFoundException') {
-                    console.log(`[hold-call] Agent attendee already removed (${holdOperationId})`);
-                } else {
-                    console.warn(`[hold-call] STEP 2 WARNING - Could not verify attendee removal (${holdOperationId}):`, deleteErr);
-                    // Non-fatal - continue with hold operation (SMA already on hold)
-                }
-            }
-        }
-        
-        // Step 3: Update both records atomically in a transaction
-        const timestamp = new Date().toISOString();
-        try {
-            await ddb.send(new TransactWriteCommand({
-                TransactItems: [
-                    {
-                        Update: {
-                            TableName: CALL_QUEUE_TABLE_NAME,
-                            Key: { clinicId, queuePosition },
-                            UpdateExpression: 'SET #status = :status, callStatus = :status, holdStartTime = :time, heldByAgentId = :agentId, holdOperationId = :operationId',
-                            ConditionExpression: '#status = :connectedStatus AND assignedAgentId = :agentId',
-                            ExpressionAttributeNames: { '#status': 'status' },
-                            ExpressionAttributeValues: {
-                                ':status': 'on_hold',
-                                ':time': timestamp,
-                                ':connectedStatus': 'connected',
-                                ':agentId': agentId,
-                                ':operationId': holdOperationId
-                            }
-                        }
-                    },
-                    {
-                        Update: {
-                            TableName: AGENT_PRESENCE_TABLE_NAME,
-                            Key: { agentId },
-                            // CRITICAL FIX #9: Don't store heldCallAttendeeId - always create new attendee on resume
-                            // FIX #7: REMOVE currentCallId to indicate agent is not actively on a call
-                            // FIX #5: Use 'OnHold' status instead of 'Online' to prevent new call assignment
-                            // Agent with held call should NOT receive new calls from queue
-                            UpdateExpression: 'SET #agentStatus = :onHoldStatus, callStatus = :status, lastActivityAt = :timestamp, ' +
-                                             'heldCallMeetingId = :meetingId, heldCallId = :callId ' +
-                                             'REMOVE currentCallId',
-                            ConditionExpression: 'currentCallId = :callId',
-                            ExpressionAttributeNames: {
-                                '#agentStatus': 'status'
-                            },
-                            ExpressionAttributeValues: {
-                                ':onHoldStatus': 'OnHold',
-                                ':status': 'on_hold',
-                                ':timestamp': timestamp,
-                                ':meetingId': meetingId || null,
-                                ':callId': callId
-                            }
-                        }
-                    }
-                ]
-            }));
-            
-            console.log(`[hold-call] Database updated successfully (${holdOperationId})`);
 
-            return {
-                statusCode: 200,
-                headers: corsHeaders,
-                body: JSON.stringify({ 
-                    message: 'Call placed on hold',
-                    callId,
-                    status: 'on_hold',
-                    holdOperationId
-                })
-            };
-        } catch (dbErr: any) {
-            console.error(`[hold-call] STEP 3 FAILED - Database transaction failed (${holdOperationId}):`, dbErr);
-            
-            // FIX #2: CRITICAL - SMA is on hold but DB not updated - schedule compensating action
-            // CRITICAL FIX: Use explicit intent field instead of relying on reason string parsing
-            // FIX #11: CompensatingIntent is now statically imported at top of file
-            await scheduleCompensatingAction({
-                action: 'RESUME_HELD_CALL',
-                callId,
-                agentId,
-                clinicId,
-                queuePosition,
-                smaId,
-                holdOperationId,
-                meetingId: meetingId || undefined,
-                reason: 'DB_UPDATE_FAILED',
-                intent: CompensatingIntent.INTENDED_HOLD, // Explicit intent: the hold was intended
-                timestamp: new Date().toISOString()
-            });
-            
-            if (dbErr.name === 'TransactionCanceledException') {
-                console.error(`[hold-call] INCONSISTENT STATE - SMA on hold but DB update failed due to condition check (${holdOperationId})`);
+            if (!callRecords || callRecords.length === 0) {
+                return {
+                    statusCode: 404,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ message: 'Call not found' })
+                };
+            }
+
+            const callRecord = callRecords[0];
+            const { clinicId, queuePosition } = callRecord;
+
+            // FIX #2: Validate state transition before attempting hold
+            try {
+                validateStateTransition(callRecord.status, 'on_hold', CALL_STATE_MACHINE, 'call');
+            } catch (err: any) {
+                console.warn('[hold-call] Invalid state transition:', err.message);
                 return {
                     statusCode: 409,
                     headers: corsHeaders,
-                    body: JSON.stringify({ 
-                        message: 'Call state changed during hold operation. Call may be on hold - please check status.',
-                        error: 'STATE_CHANGED',
+                    body: JSON.stringify({
+                        message: err.message,
+                        currentStatus: callRecord.status
+                    })
+                };
+            }
+
+            // Check clinic authorization
+            const authzCheck = checkClinicAuthorization(verifyResult.payload! as any, clinicId);
+            if (!authzCheck.authorized) {
+                console.warn('[hold-call] Authorization failed', {
+                    agentId: requestingAgentId,
+                    clinicId,
+                    reason: authzCheck.reason
+                });
+                return {
+                    statusCode: 403,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ message: authzCheck.reason })
+                };
+            }
+
+            if (callRecord.assignedAgentId && callRecord.assignedAgentId !== agentId) {
+                console.warn('[hold-call] Agent attempting to hold call they are not assigned to', { agentId, assignedAgentId: callRecord.assignedAgentId });
+                return {
+                    statusCode: 403,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ message: 'You are not assigned to this call' })
+                };
+            }
+
+            const smaId = getSmaIdForClinic(clinicId);
+            if (!smaId) {
+                console.error('[hold-call] Missing SMA mapping for clinic', { clinicId });
+                return {
+                    statusCode: 500,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ message: 'Hold is not configured for this clinic' })
+                };
+            }
+
+            // Fetch agent presence record and ensure they are on this call
+            const { Item: agentRecord } = await ddb.send(new GetCommand({
+                TableName: AGENT_PRESENCE_TABLE_NAME,
+                Key: { agentId }
+            }));
+
+            if (!agentRecord) {
+                return {
+                    statusCode: 404,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ message: 'Agent presence not found' })
+                };
+            }
+
+            const isOnCall = agentRecord.currentCallId === callId || agentRecord.ringingCallId === callId;
+            if (!isOnCall) {
+                console.warn('[hold-call] Agent not actively on this call', { agentId, callId });
+                return {
+                    statusCode: 409,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ message: 'You are not actively connected to this call' })
+                };
+            }
+
+            // FIX #15: CRITICAL - Validate meeting exists before hold operations
+            let meetingId = null;
+            let agentAttendeeId = null;
+
+            if (!callRecord.meetingInfo?.MeetingId) {
+                console.error(`[hold-call] No active meeting for call ${callId}`);
+                return {
+                    statusCode: 409,
+                    headers: corsHeaders,
+                    body: JSON.stringify({
+                        message: 'Cannot hold call - no active meeting',
+                        error: 'NO_ACTIVE_MEETING'
+                    })
+                };
+            }
+
+            meetingId = callRecord.meetingInfo.MeetingId;
+            console.log(`[hold-call] Found active meeting ${meetingId} for call ${callId}`);
+
+            // FIX #15: Validate meeting actually exists in Chime
+            const meetingExists = await validateMeetingExists(meetingId);
+            if (!meetingExists) {
+                console.error(`[hold-call] Meeting ${meetingId} not found in Chime`);
+
+                // Clean up stale meeting reference
+                await ddb.send(new UpdateCommand({
+                    TableName: CALL_QUEUE_TABLE_NAME,
+                    Key: { clinicId, queuePosition },
+                    UpdateExpression: 'REMOVE meetingInfo, customerAttendeeInfo, agentAttendeeInfo ' +
+                        'SET meetingError = :error',
+                    ExpressionAttributeValues: {
+                        ':error': 'Meeting not found in Chime SDK'
+                    }
+                }));
+
+                return {
+                    statusCode: 409,
+                    headers: corsHeaders,
+                    body: JSON.stringify({
+                        message: 'Cannot hold call - meeting no longer exists',
+                        error: 'MEETING_NOT_FOUND'
+                    })
+                };
+            }
+
+            // Check for attendee ID in various fields
+            if (agentRecord?.currentMeetingAttendeeId) {
+                agentAttendeeId = agentRecord.currentMeetingAttendeeId;
+                console.log(`[hold-call] Found agent attendee ID in currentMeetingAttendeeId: ${agentAttendeeId}`);
+            } else if (agentRecord?.inboundAttendeeInfo?.AttendeeId) {
+                agentAttendeeId = agentRecord.inboundAttendeeInfo.AttendeeId;
+                console.log(`[hold-call] Found agent attendee ID in inboundAttendeeInfo: ${agentAttendeeId}`);
+            } else if (agentRecord?.attendeeInfo?.AttendeeId) {
+                agentAttendeeId = agentRecord.attendeeInfo.AttendeeId;
+                console.log(`[hold-call] Found agent attendee ID in attendeeInfo: ${agentAttendeeId}`);
+            }
+
+            // FIX #15: Validate agent is in the meeting
+            if (!agentAttendeeId) {
+                return {
+                    statusCode: 409,
+                    headers: corsHeaders,
+                    body: JSON.stringify({
+                        message: 'Cannot hold call - agent not in meeting',
+                        error: 'AGENT_NOT_IN_MEETING'
+                    })
+                };
+            }
+
+            // CRITICAL FIX #5: Make hold operation as atomic as possible
+            // CRITICAL FIX #4: Comprehensive error handling for each step
+            // Log operation ID for debugging and potential retry
+            const holdOperationId = randomUUID();
+            console.log('[hold-call] Starting hold operation', { holdOperationId, callId, agentId, fencingToken });
+
+            // FIX #3: Validate fencing token is still valid before critical SMA operation
+            const tokenValid = await lock.validateFencingToken();
+            if (!tokenValid) {
+                console.warn('[hold-call] Fencing token invalidated - another process took over', { callId, agentId, fencingToken });
+                return {
+                    statusCode: 409,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ message: 'Operation was superseded. Please try again.' })
+                };
+            }
+
+            // Step 1: Send the hold command to the SMA
+            try {
+                await chimeVoice.send(new UpdateSipMediaApplicationCallCommand({
+                    SipMediaApplicationId: smaId,
+                    TransactionId: callId,
+                    Arguments: {
+                        action: 'HOLD_CALL',
+                        agentId,
+                        meetingId,
+                        agentAttendeeId: agentAttendeeId || '',
+                        removeAgent: 'true',
+                        holdOperationId // Include for idempotency
+                    }
+                }));
+                console.log(`[hold-call] SMA hold command successful (${holdOperationId})`);
+            } catch (smaErr: any) {
+                console.error(`[hold-call] STEP 1 FAILED - SMA hold command failed (${holdOperationId}):`, smaErr);
+                return {
+                    statusCode: 503,
+                    headers: corsHeaders,
+                    body: JSON.stringify({
+                        message: 'SMA service unavailable. Please try again.',
+                        error: 'SMA_COMMAND_FAILED',
                         holdOperationId
                     })
                 };
             }
-            
-            console.error(`[hold-call] INCONSISTENT STATE - SMA on hold but DB update failed (${holdOperationId})`);
-            return {
-                statusCode: 500,
-                headers: corsHeaders,
-                body: JSON.stringify({ 
-                    message: 'Database update failed. Call may be on hold - please check status.',
-                    error: 'DB_UPDATE_FAILED',
-                    holdOperationId
-                })
-            };
-        }
+
+            // Step 2: Verify attendee removal (if applicable)
+            if (agentAttendeeId && meetingId) {
+                try {
+                    await chimeClient.send(new DeleteAttendeeCommand({
+                        MeetingId: meetingId,
+                        AttendeeId: agentAttendeeId
+                    }));
+                    console.log(`[hold-call] Agent attendee removed from meeting (${holdOperationId})`);
+                } catch (deleteErr: any) {
+                    if (deleteErr.name === 'NotFoundException') {
+                        console.log(`[hold-call] Agent attendee already removed (${holdOperationId})`);
+                    } else {
+                        console.warn(`[hold-call] STEP 2 WARNING - Could not verify attendee removal (${holdOperationId}):`, deleteErr);
+                        // Non-fatal - continue with hold operation (SMA already on hold)
+                    }
+                }
+            }
+
+            // Step 3: Update both records atomically in a transaction
+            const timestamp = new Date().toISOString();
+            try {
+                await ddb.send(new TransactWriteCommand({
+                    TransactItems: [
+                        {
+                            Update: {
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                Key: { clinicId, queuePosition },
+                                UpdateExpression: 'SET #status = :status, callStatus = :status, holdStartTime = :time, heldByAgentId = :agentId, holdOperationId = :operationId',
+                                ConditionExpression: '#status = :connectedStatus AND assignedAgentId = :agentId',
+                                ExpressionAttributeNames: { '#status': 'status' },
+                                ExpressionAttributeValues: {
+                                    ':status': 'on_hold',
+                                    ':time': timestamp,
+                                    ':connectedStatus': 'connected',
+                                    ':agentId': agentId,
+                                    ':operationId': holdOperationId
+                                }
+                            }
+                        },
+                        {
+                            Update: {
+                                TableName: AGENT_PRESENCE_TABLE_NAME,
+                                Key: { agentId },
+                                // CRITICAL FIX #9: Don't store heldCallAttendeeId - always create new attendee on resume
+                                // FIX #7: REMOVE currentCallId to indicate agent is not actively on a call
+                                // FIX #5: Use 'OnHold' status instead of 'Online' to prevent new call assignment
+                                // Agent with held call should NOT receive new calls from queue
+                                UpdateExpression: 'SET #agentStatus = :onHoldStatus, callStatus = :status, lastActivityAt = :timestamp, ' +
+                                    'heldCallMeetingId = :meetingId, heldCallId = :callId ' +
+                                    'REMOVE currentCallId',
+                                ConditionExpression: 'currentCallId = :callId',
+                                ExpressionAttributeNames: {
+                                    '#agentStatus': 'status'
+                                },
+                                ExpressionAttributeValues: {
+                                    ':onHoldStatus': 'OnHold',
+                                    ':status': 'on_hold',
+                                    ':timestamp': timestamp,
+                                    ':meetingId': meetingId || null,
+                                    ':callId': callId
+                                }
+                            }
+                        }
+                    ]
+                }));
+
+                console.log(`[hold-call] Database updated successfully (${holdOperationId})`);
+
+                // Push: Notify clinic supervisors that a call was placed on hold (best-effort)
+                if (isPushNotificationsEnabled()) {
+                    try {
+                        await sendClinicAlert(
+                            clinicId,
+                            'Call On Hold',
+                            `Agent placed a call on hold`,
+                            { callId, agentId, holdOperationId, alertType: 'call_on_hold' },
+                        );
+                    } catch (pushErr) {
+                        console.warn('[hold-call] Failed to send hold notification (non-fatal):', pushErr);
+                    }
+                }
+
+                return {
+                    statusCode: 200,
+                    headers: corsHeaders,
+                    body: JSON.stringify({
+                        message: 'Call placed on hold',
+                        callId,
+                        status: 'on_hold',
+                        holdOperationId
+                    })
+                };
+            } catch (dbErr: any) {
+                console.error(`[hold-call] STEP 3 FAILED - Database transaction failed (${holdOperationId}):`, dbErr);
+
+                // FIX #2: CRITICAL - SMA is on hold but DB not updated - schedule compensating action
+                // CRITICAL FIX: Use explicit intent field instead of relying on reason string parsing
+                // FIX #11: CompensatingIntent is now statically imported at top of file
+                await scheduleCompensatingAction({
+                    action: 'RESUME_HELD_CALL',
+                    callId,
+                    agentId,
+                    clinicId,
+                    queuePosition,
+                    smaId,
+                    holdOperationId,
+                    meetingId: meetingId || undefined,
+                    reason: 'DB_UPDATE_FAILED',
+                    intent: CompensatingIntent.INTENDED_HOLD, // Explicit intent: the hold was intended
+                    timestamp: new Date().toISOString()
+                });
+
+                if (dbErr.name === 'TransactionCanceledException') {
+                    console.error(`[hold-call] INCONSISTENT STATE - SMA on hold but DB update failed due to condition check (${holdOperationId})`);
+                    return {
+                        statusCode: 409,
+                        headers: corsHeaders,
+                        body: JSON.stringify({
+                            message: 'Call state changed during hold operation. Call may be on hold - please check status.',
+                            error: 'STATE_CHANGED',
+                            holdOperationId
+                        })
+                    };
+                }
+
+                console.error(`[hold-call] INCONSISTENT STATE - SMA on hold but DB update failed (${holdOperationId})`);
+                return {
+                    statusCode: 500,
+                    headers: corsHeaders,
+                    body: JSON.stringify({
+                        message: 'Database update failed. Call may be on hold - please check status.',
+                        error: 'DB_UPDATE_FAILED',
+                        holdOperationId
+                    })
+                };
+            }
         } finally {
             // FIX #1: Always release lock after all operations complete
             await lock.release();
@@ -511,7 +526,7 @@ async function scheduleCompensatingAction(action: any): Promise<void> {
             _metric: 'CompensatingActionFailed',
             _severity: 'CRITICAL'
         });
-        
+
         // Attempt direct recovery as fallback
         await attemptDirectStateRecovery(action);
     }
@@ -524,7 +539,7 @@ async function scheduleCompensatingAction(action: any): Promise<void> {
  */
 async function attemptDirectStateRecovery(action: any): Promise<void> {
     const { callId, agentId, clinicId, queuePosition, intent, meetingId } = action;
-    
+
     if (!clinicId || queuePosition === undefined) {
         console.error('[hold-call] Cannot attempt direct recovery - missing clinicId or queuePosition', { action });
         return;
@@ -532,7 +547,7 @@ async function attemptDirectStateRecovery(action: any): Promise<void> {
 
     try {
         const timestamp = new Date().toISOString();
-        
+
         // If the intent was to hold, update DB to on_hold
         if (intent === CompensatingIntent.INTENDED_HOLD) {
             // FIX: Use TransactWriteCommand to update BOTH tables atomically
@@ -562,8 +577,8 @@ async function attemptDirectStateRecovery(action: any): Promise<void> {
                             TableName: AGENT_PRESENCE_TABLE_NAME,
                             Key: { agentId },
                             UpdateExpression: 'SET #agentStatus = :onHoldStatus, callStatus = :onhold, lastActivityAt = :timestamp, ' +
-                                             'heldCallMeetingId = :meetingId, heldCallId = :callId, directRecoveryApplied = :true ' +
-                                             'REMOVE currentCallId',
+                                'heldCallMeetingId = :meetingId, heldCallId = :callId, directRecoveryApplied = :true ' +
+                                'REMOVE currentCallId',
                             ExpressionAttributeNames: {
                                 '#agentStatus': 'status'
                             },
@@ -579,7 +594,7 @@ async function attemptDirectStateRecovery(action: any): Promise<void> {
                     }
                 ]
             }));
-            
+
             console.log('[hold-call] Direct recovery successful - both tables updated to on_hold', { callId, agentId });
         }
     } catch (recoveryErr: any) {

@@ -555,6 +555,7 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
   leaveCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-LeaveCallArn`),
   heartbeatFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-HeartbeatArn`),
   agentPresenceTableName: cdk.Fn.importValue(`${chimeStack.stackName}-AgentPresenceTableName`),
+  agentActiveTableName: chimeStack.agentActiveTable.tableName,
   holdCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-HoldCallArn`),
   resumeCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-ResumeCallArn`),
   // New features: Add Call, DTMF, Notes, Conference

@@ -2,9 +2,10 @@ import { DynamoDBDocumentClient, QueryCommand, UpdateCommand } from '@aws-sdk/li
 import { ChimeSDKMeetingsClient } from '@aws-sdk/client-chime-sdk-meetings';
 import { ChimeSDKVoiceClient } from '@aws-sdk/client-chime-sdk-voice';
 import { selectBestAgents, type AgentInfo as SelectionAgentInfo, type CallContext } from './agent-selection';
-import { isPushNotificationsEnabled, sendIncomingCallToAgents } from './push-notifications';
+import { isPushNotificationsEnabled, sendIncomingCallToAgents, sendClinicAlert } from './push-notifications';
 import { defaultRejectionTracker } from './rejection-tracker';
 import { DistributedLock } from './distributed-lock';
+import { CHIME_CONFIG } from '../config';
 
 interface CheckQueueForWorkDeps {
     ddb: DynamoDBDocumentClient;
@@ -122,7 +123,7 @@ function calculatePriorityScore(entry: QueuedCall, nowSeconds: number): number {
     // Max total wait bonus: 180 points (60 + 120)
     const queueEntryTime = entry.queueEntryTime ?? nowSeconds;
     const waitMinutes = Math.max(0, (nowSeconds - queueEntryTime) / 60);
-    
+
     if (waitMinutes <= 30) {
         // First 30 minutes: 2x multiplier for urgent escalation
         score += waitMinutes * 2;
@@ -403,6 +404,23 @@ export function createCheckQueueForWork(deps: CheckQueueForWorkDeps) {
             const targetAgentCount = Math.min(MAX_RING_AGENTS * MAX_SIMUL_RING_CALLS, 250);
             const idleAgents = await fetchIdleAgentsForClinic(clinicId, targetAgentCount);
             if (idleAgents.length === 0) {
+                // Queue backup alert: calls waiting but no agents available
+                if (isPushNotificationsEnabled() && rankedCalls.length >= CHIME_CONFIG.PUSH.QUEUE_BACKUP_ALERT_THRESHOLD) {
+                    try {
+                        await sendClinicAlert(
+                            clinicId,
+                            'Queue Backup',
+                            `${rankedCalls.length} calls waiting — no agents available`,
+                            {
+                                queueDepth: rankedCalls.length,
+                                clinicId,
+                                alertType: 'queue_backup',
+                            }
+                        );
+                    } catch (alertErr) {
+                        console.warn('[checkQueueForWork] Queue backup alert failed (non-fatal):', alertErr);
+                    }
+                }
                 return;
             }
 

@@ -16,6 +16,7 @@ const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 const CALL_ANALYTICS_TABLE_NAME = process.env.CALL_ANALYTICS_TABLE_NAME;
 const AGENT_PERFORMANCE_TABLE_NAME = process.env.AGENT_PERFORMANCE_TABLE_NAME;
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
+const AGENT_ACTIVE_TABLE_NAME = process.env.AGENT_ACTIVE_TABLE_NAME;
 
 // Validate required environment variables
 if (!CALL_QUEUE_TABLE_NAME) {
@@ -97,7 +98,7 @@ export interface CallCenterDashboardResponse {
   clinicId: string;
   generatedAt: string;
   timezone?: string;
-  
+
   // Legacy fields for backward compatibility
   // TODO: Remove after mobile app migration
   liveStatus?: {
@@ -164,7 +165,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           message: 'clinicId query parameter is required',
           error: 'MISSING_CLINIC_ID'
         })
@@ -176,7 +177,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return {
         statusCode: 401,
         headers: corsHeaders,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           message: 'Unable to retrieve user permissions',
           error: 'INVALID_PERMISSIONS'
         })
@@ -184,11 +185,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const allowedClinics = getAllowedClinicIds(
-      userPerms.clinicRoles, 
-      userPerms.isSuperAdmin, 
+      userPerms.clinicRoles,
+      userPerms.isSuperAdmin,
       userPerms.isGlobalSuperAdmin
     );
-    
+
     if (!hasClinicAccess(allowedClinics, clinicId)) {
       return {
         statusCode: 403,
@@ -220,7 +221,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const agentsOnCall = liveStatusResult.activeCalls;
     const agentsOnline = agentPresenceResult.onlineAgents;
     const agentsAvailable = Math.max(0, agentsOnline - agentsOnCall);
-    
+
     // Calculate service level (calls answered within 30 seconds threshold)
     // Using a simple proxy: if there are no waiting calls, service level is 100%
     // Otherwise, use ratio of answered calls to total calls
@@ -230,7 +231,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // Generate alerts based on current metrics
     const alerts: CallCenterDashboardResponse['alerts'] = [];
-    
+
     if (liveStatusResult.avgWaitTime > 60) {
       alerts.push({
         type: 'high_wait_time',
@@ -240,7 +241,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         threshold: 60
       });
     }
-    
+
     if (liveStatusResult.waitingCalls > 5) {
       alerts.push({
         type: 'high_queue_volume',
@@ -303,7 +304,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       clinicId,
       generatedAt: new Date().toISOString(),
       timezone,
-      
+
       // Legacy fields for backward compatibility with existing clients
       liveStatus: {
         activeCalls: liveStatusResult.activeCalls,
@@ -357,13 +358,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 /**
  * Get today's date range in the specified timezone
  */
-function getTodayRange(timezone: string): { 
-  startOfDay: Date; 
-  endOfDay: Date; 
-  todayDate: string; 
+function getTodayRange(timezone: string): {
+  startOfDay: Date;
+  endOfDay: Date;
+  todayDate: string;
 } {
   const now = new Date();
-  
+
   // Get the current time in the target timezone
   const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone: timezone,
@@ -378,7 +379,7 @@ function getTodayRange(timezone: string): {
 
   const parts = formatter.formatToParts(now);
   const getPart = (type: string) => parts.find(p => p.type === type)?.value || '00';
-  
+
   const year = parseInt(getPart('year'));
   const month = parseInt(getPart('month')) - 1;
   const day = parseInt(getPart('day'));
@@ -411,7 +412,7 @@ function getTimezoneOffset(timezone: string, date: Date): number {
  */
 function formatDuration(seconds: number): string {
   if (!seconds || seconds < 0) return '0:00';
-  
+
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = Math.floor(seconds % 60);
@@ -473,10 +474,10 @@ async function getLiveCallStatus(clinicId: string): Promise<{
         case 'queued':
           waitingCalls++;
           // Calculate wait time
-          const queueEntryTime = call.queueEntryTime 
+          const queueEntryTime = call.queueEntryTime
             ? (typeof call.queueEntryTime === 'number' ? call.queueEntryTime * 1000 : new Date(call.queueEntryTime).getTime())
-            : call.queueEntryTimeIso 
-              ? new Date(call.queueEntryTimeIso).getTime() 
+            : call.queueEntryTimeIso
+              ? new Date(call.queueEntryTimeIso).getTime()
               : now;
           const waitTime = Math.max(0, (now - queueEntryTime) / 1000);
           totalWaitTime += waitTime;
@@ -543,8 +544,8 @@ interface TodaysAnalyticsResult {
  * Get today's call analytics from Analytics table
  */
 async function getTodaysAnalytics(
-  clinicId: string, 
-  startTimestamp: number, 
+  clinicId: string,
+  startTimestamp: number,
   endTimestamp: number
 ): Promise<TodaysAnalyticsResult> {
   const emptyResult: TodaysAnalyticsResult = {
@@ -620,7 +621,7 @@ async function getTodaysAnalytics(
     let sentimentCount = 0;
 
     // Call volume by hour with wait time tracking
-    const volumeByHour: Array<{ count: number; totalWait: number; waitCount: number }> = 
+    const volumeByHour: Array<{ count: number; totalWait: number; waitCount: number }> =
       new Array(24).fill(null).map(() => ({ count: 0, totalWait: 0, waitCount: 0 }));
 
     for (const call of allAnalytics) {
@@ -713,20 +714,20 @@ async function getTodaysAnalytics(
     const avgTalkTime = talkTimeCount > 0 ? Math.round(totalTalkTime / talkTimeCount) : 0;
     const avgWaitTime = waitTimeCount > 0 ? Math.round(totalWaitTime / waitTimeCount) : 0;
     const totalSentimentCalls = positiveCount + negativeCount + neutralCount + mixedCount;
-    
+
     // CSAT proxy: (positive + 0.5*neutral) / total * 100
     const satisfactionRate = totalSentimentCalls > 0
       ? Math.round(((positiveCount + neutralCount * 0.5) / totalSentimentCalls) * 100)
       : 0;
 
-    const positiveCallsPercent = totalSentimentCalls > 0 
-      ? Math.round((positiveCount / totalSentimentCalls) * 100) 
+    const positiveCallsPercent = totalSentimentCalls > 0
+      ? Math.round((positiveCount / totalSentimentCalls) * 100)
       : 0;
-    const negativeCallsPercent = totalSentimentCalls > 0 
-      ? Math.round((negativeCount / totalSentimentCalls) * 100) 
+    const negativeCallsPercent = totalSentimentCalls > 0
+      ? Math.round((negativeCount / totalSentimentCalls) * 100)
       : 0;
-    const avgSentimentScore = sentimentCount > 0 
-      ? Math.round(sentimentTotal / sentimentCount) 
+    const avgSentimentScore = sentimentCount > 0
+      ? Math.round(sentimentTotal / sentimentCount)
       : 50;
 
     return {
@@ -760,9 +761,34 @@ async function getTodaysAnalytics(
 }
 
 /**
- * Get count of online agents for this clinic
+ * Get count of active agents for this clinic from the AgentActive table.
+ * This returns agents who have toggled themselves active, regardless of
+ * whether they are currently online in the AgentPresence table.
  */
 async function getOnlineAgentsCount(clinicId: string): Promise<{ onlineAgents: number }> {
+  // Prefer AgentActive table as the source of truth for availability
+  if (AGENT_ACTIVE_TABLE_NAME) {
+    try {
+      const { Items: agents } = await ddb.send(new QueryCommand({
+        TableName: AGENT_ACTIVE_TABLE_NAME,
+        KeyConditionExpression: 'clinicId = :clinicId',
+        FilterExpression: '#state = :active',
+        ExpressionAttributeNames: { '#state': 'state' },
+        ExpressionAttributeValues: {
+          ':clinicId': clinicId,
+          ':active': 'active'
+        },
+        ProjectionExpression: 'agentId'
+      }));
+
+      return { onlineAgents: agents?.length || 0 };
+    } catch (error: any) {
+      console.error('[getOnlineAgentsCount] Error querying AgentActive table:', error.message);
+      return { onlineAgents: 0 };
+    }
+  }
+
+  // Fallback to AgentPresence if AgentActive table is not configured
   if (!AGENT_PRESENCE_TABLE_NAME) {
     return { onlineAgents: 0 };
   }

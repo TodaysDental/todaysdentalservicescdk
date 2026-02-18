@@ -8,6 +8,8 @@ import { verifyIdToken } from '../../shared/utils/auth-helper';
 import { getUserIdFromJwt, checkClinicAuthorization } from '../../shared/utils/permissions-helper';
 import { getSmaIdForClinic } from './utils/sma-map';
 import { DistributedLock } from './utils/distributed-lock';
+import { isPushNotificationsEnabled, sendCallCancelledToAgents } from './utils/push-notifications';
+import { CHIME_CONFIG } from './config';
 
 const ddb = getDynamoDBClient();
 const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
@@ -42,17 +44,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
     const verifyResult = await verifyIdToken(authz);
     if (!verifyResult.ok) {
-      console.warn('[join-queued-call] Auth verification failed', { 
-        code: verifyResult.code, 
-        message: verifyResult.message 
+      console.warn('[join-queued-call] Auth verification failed', {
+        code: verifyResult.code,
+        message: verifyResult.message
       });
-      return { 
-        statusCode: verifyResult.code || 401, 
-        headers: corsHeaders, 
-        body: JSON.stringify({ message: verifyResult.message }) 
+      return {
+        statusCode: verifyResult.code || 401,
+        headers: corsHeaders,
+        body: JSON.stringify({ message: verifyResult.message })
       };
     }
-    
+
     const agentId = getUserIdFromJwt(verifyResult.payload!);
     if (!agentId) {
       return {
@@ -154,8 +156,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 400,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            message: `Call is not in queue. Current status: ${callRecord.status}` 
+          body: JSON.stringify({
+            message: `Call is not in queue. Current status: ${callRecord.status}`
           })
         };
       }
@@ -174,24 +176,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         };
       }
 
-      // CRITICAL FIX #3: Use 'Online' status (not 'idle') - consistent with rest of codebase
-      if (agentPresence.status !== 'Online') {
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ 
-            message: `You must be available to pick up a call. Current status: ${agentPresence.status}`,
-            currentStatus: agentPresence.status
-          })
-        };
-      }
+      // NOTE: Agent status check removed — agents can join queued calls regardless
+      // of online/offline status. They will be notified via push notification.
 
       // FIX: Check if agent already has a call
       if (agentPresence.currentCallId || agentPresence.ringingCallId) {
         return {
           statusCode: 409,
           headers: corsHeaders,
-          body: JSON.stringify({ 
+          body: JSON.stringify({
             message: 'You are already on a call or have a call ringing',
             currentCallId: agentPresence.currentCallId,
             ringingCallId: agentPresence.ringingCallId
@@ -252,7 +245,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       // This prevents race conditions where one update succeeds but the other fails
       const now = Date.now();
       const timestamp = new Date().toISOString();
-      
+
       try {
         await ddb.send(new TransactWriteCommand({
           TransactItems: [
@@ -289,6 +282,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
               }
             },
             // Item 2: Update agent presence - mark as ringing
+            // NOTE: No ConditionExpression on status — agents can join regardless of status
             {
               Update: {
                 TableName: AGENT_PRESENCE_TABLE_NAME,
@@ -302,13 +296,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                       inboundMeetingInfo = :meetingInfo,
                       inboundAttendeeInfo = :attendeeInfo
                 `,
-                ConditionExpression: '#status = :online AND attribute_not_exists(ringingCallId) AND attribute_not_exists(currentCallId)',
+                ConditionExpression: 'attribute_not_exists(ringingCallId) AND attribute_not_exists(currentCallId)',
                 ExpressionAttributeNames: {
                   '#status': 'status'
                 },
                 ExpressionAttributeValues: {
                   ':ringing': 'Ringing',
-                  ':online': 'Online',
                   ':callId': callId,
                   ':clinicId': clinicId,
                   ':timestamp': timestamp,
@@ -319,13 +312,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             }
           ]
         }));
-        
+
         console.log('[join-queued-call] Transaction completed - call and agent updated atomically');
       } catch (txnErr: any) {
         if (txnErr.name === 'TransactionCanceledException') {
           const reasons = txnErr.CancellationReasons || [];
           console.warn('[join-queued-call] Transaction failed', { reasons });
-          
+
           // Cleanup orphaned attendee
           try {
             await chime.send(new DeleteAttendeeCommand({
@@ -335,7 +328,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           } catch (deleteErr) {
             console.warn('[join-queued-call] Failed to cleanup attendee:', deleteErr);
           }
-          
+
           // Determine which condition failed
           if (reasons[0]?.Code === 'ConditionalCheckFailed') {
             return {
@@ -350,7 +343,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
               body: JSON.stringify({ message: 'Your status changed during the operation. You may already be on a call.' })
             };
           }
-          
+
           return {
             statusCode: 409,
             headers: corsHeaders,
@@ -382,7 +375,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }));
       } catch (bridgeError) {
         console.error('[join-queued-call] Failed to bridge customer:', bridgeError);
-        
+
         // Cleanup orphaned attendee
         try {
           await chime.send(new DeleteAttendeeCommand({
@@ -392,7 +385,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         } catch (deleteErr) {
           console.warn('[join-queued-call] Failed to cleanup attendee:', deleteErr);
         }
-        
+
         // FIX: Roll back using TransactWriteCommand for atomicity
         try {
           await ddb.send(new TransactWriteCommand({
@@ -404,7 +397,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                   UpdateExpression: 'SET #status = :queued REMOVE assignedAgentId, ringStartTime, manualPickup, agentAttendeeInfo',
                   ConditionExpression: '#status = :ringing AND assignedAgentId = :agentId',
                   ExpressionAttributeNames: { '#status': 'status' },
-                  ExpressionAttributeValues: { 
+                  ExpressionAttributeValues: {
                     ':queued': 'queued',
                     ':ringing': 'ringing',
                     ':agentId': agentId
@@ -418,7 +411,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                   UpdateExpression: 'SET #status = :online REMOVE ringingCallId, ringingCallClinicId, ringingCallTime, inboundMeetingInfo, inboundAttendeeInfo',
                   ConditionExpression: 'ringingCallId = :callId',
                   ExpressionAttributeNames: { '#status': 'status' },
-                  ExpressionAttributeValues: { 
+                  ExpressionAttributeValues: {
                     ':online': 'Online',
                     ':callId': callId
                   }
@@ -439,6 +432,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         agentId,
         meetingId
       });
+
+      // Push notification: send call_cancelled to all agents who were ringing for this call
+      // This stops phantom ringing on other agents' devices after a manual queue pickup
+      if (isPushNotificationsEnabled() && CHIME_CONFIG.PUSH.ENABLE_QUEUE_PICKUP_CANCEL_PUSH) {
+        const ringingAgentIds = callRecord.ringingAgentIds as string[] | undefined;
+        if (ringingAgentIds && ringingAgentIds.length > 0) {
+          sendCallCancelledToAgents(ringingAgentIds, agentId, {
+            callId,
+            clinicId,
+            clinicName: callRecord.clinicName || clinicId,
+            timestamp: new Date().toISOString(),
+          }).catch(err => console.warn('[join-queued-call] call_cancelled push failed (non-fatal):', err.message));
+        }
+      }
 
       return {
         statusCode: 200,

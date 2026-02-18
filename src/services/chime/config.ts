@@ -117,6 +117,36 @@ export const CHIME_CONFIG = {
   },
 
   /**
+   * Push Notification Configuration
+   * Controls when push notifications are sent for call-lifecycle events
+   */
+  PUSH: {
+    /** Number of queued calls before sending a backup alert to all active agents */
+    QUEUE_BACKUP_ALERT_THRESHOLD: parseInt(process.env.CHIME_QUEUE_BACKUP_ALERT_THRESHOLD || '3', 10),
+
+    /** Enable push notifications when a call is transferred to an agent */
+    ENABLE_TRANSFER_PUSH: process.env.CHIME_ENABLE_TRANSFER_PUSH !== 'false',
+
+    /** Enable push notification when an outbound call is initiated (mobile state sync) */
+    ENABLE_OUTBOUND_CALL_PUSH: process.env.CHIME_ENABLE_OUTBOUND_CALL_PUSH !== 'false',
+
+    /** Enable push notification when an agent is added to a conference */
+    ENABLE_CONFERENCE_JOIN_PUSH: process.env.CHIME_ENABLE_CONFERENCE_JOIN_PUSH !== 'false',
+
+    /** Enable push notification on hold/resume (mobile state sync) */
+    ENABLE_HOLD_RESUME_PUSH: process.env.CHIME_ENABLE_HOLD_RESUME_PUSH !== 'false',
+
+    /** Enable push alert to supervisors when an agent goes offline (opt-in, can be noisy) */
+    ENABLE_SESSION_OFFLINE_ALERT: process.env.CHIME_ENABLE_SESSION_OFFLINE_ALERT === 'true',
+
+    /** Enable call_cancelled push when a queued call is manually picked up (stops phantom ringing) */
+    ENABLE_QUEUE_PICKUP_CANCEL_PUSH: process.env.CHIME_ENABLE_QUEUE_PICKUP_CANCEL_PUSH !== 'false',
+
+    /** Enable push notification when agent leaves a call (mobile state sync) */
+    ENABLE_LEAVE_CALL_PUSH: process.env.CHIME_ENABLE_LEAVE_CALL_PUSH !== 'false',
+  },
+
+  /**
    * Overflow Routing Configuration
    * Routes calls to sister clinics when primary clinic agents unavailable
    */

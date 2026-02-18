@@ -202,9 +202,11 @@ export class ChimeStack extends Stack {
   public readonly callQueueTable: dynamodb.Table;
   public readonly locksTable: dynamodb.Table;
   public readonly agentPerformanceTable: dynamodb.Table;
+  public readonly supervisorSessionsTable: dynamodb.Table;
   public readonly recordingMetadataTable?: dynamodb.Table;
   public readonly recordingsBucket?: s3.IBucket;
   public readonly holdMusicBucket?: s3.IBucket;
+  public readonly voicemailBucket?: s3.Bucket;
 
   constructor(scope: Construct, id: string, props: ChimeStackProps) {
     super(scope, id, props);
@@ -1391,6 +1393,8 @@ export class ChimeStack extends Stack {
         CHIME_MEDIA_REGION: chimeMediaRegion,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+        // Push Notifications Integration (for agent offline supervisor alerts)
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
       },
     });
     stopSessionFn.addToRolePolicy(chimeSdkPolicy);
@@ -1409,6 +1413,14 @@ export class ChimeStack extends Stack {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
+    // Push notifications permissions for stop-session (agent offline alerts)
+    if (props.sendPushFunctionArn) {
+      stopSessionFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
 
     // Lambda for POST /chime/agent/active
     // Push-first availability toggle (writes AgentActive table; may also ring queued calls).
@@ -1486,6 +1498,8 @@ export class ChimeStack extends Stack {
         JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+        // Push Notifications Integration (for future outbound call status pushes)
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
       },
     });
     outboundCallFn.addToRolePolicy(chimeSdkPolicy);
@@ -1506,6 +1520,14 @@ export class ChimeStack extends Stack {
       ],
       resources: [`arn:aws:chime:${this.region}:${this.account}:sma/*`],
     }));
+    // Push notifications permissions for outbound-call
+    if (props.sendPushFunctionArn) {
+      outboundCallFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
 
     // Lambda for POST /chime/transfer-call
     const transferCallFn = new lambdaNode.NodejsFunction(this, 'TransferCallFn', {
@@ -1516,6 +1538,7 @@ export class ChimeStack extends Stack {
       timeout: Duration.seconds(10),
       environment: {
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         LOCKS_TABLE_NAME: this.locksTable.tableName,
         SMA_ID_MAP: smaIdMapJson,
@@ -1523,9 +1546,12 @@ export class ChimeStack extends Stack {
         JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+        // Push Notifications Integration (for transfer incoming-call push)
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
       },
     });
     this.agentPresenceTable.grantReadWriteData(transferCallFn);
+    this.agentActiveTable.grantReadData(transferCallFn);
     this.callQueueTable.grantReadWriteData(transferCallFn);
     this.locksTable.grantReadWriteData(transferCallFn);
     transferCallFn.addToRolePolicy(chimeSdkPolicy);
@@ -1540,6 +1566,14 @@ export class ChimeStack extends Stack {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
+    // Push notifications permissions for transfer-call (incoming transfer push)
+    if (props.sendPushFunctionArn) {
+      transferCallFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
 
     // Lambda for POST /chime/call-accepted
     const callAcceptedFn = new lambdaNode.NodejsFunction(this, 'CallAcceptedFn', {
@@ -1592,6 +1626,8 @@ export class ChimeStack extends Stack {
         JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+        // Push Notifications Integration (for call_cancelled push to stop phantom ringing)
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
       },
     });
     applyTags(callAcceptedV2Fn, { Function: 'call-accepted-v2' });
@@ -1610,6 +1646,20 @@ export class ChimeStack extends Stack {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
+    // Push notifications permissions for call-accepted-v2 (call_cancelled push)
+    if (props.sendPushFunctionArn) {
+      callAcceptedV2Fn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
+    // CloudWatch metrics for push delivery tracking
+    callAcceptedV2Fn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['cloudwatch:PutMetricData'],
+      resources: ['*'],
+    }));
 
     // Lambda for POST /chime/call-rejected-v2
     // Push-first meeting-per-call rejection: remove agent from ring list and re-offer to other active agents.
@@ -1662,6 +1712,8 @@ export class ChimeStack extends Stack {
         JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+        // Push Notifications Integration (for call-ended push)
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
       },
     });
     applyTags(callHungupV2Fn, { Function: 'call-hungup-v2' });
@@ -1680,6 +1732,14 @@ export class ChimeStack extends Stack {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
+    // Push notifications permissions for call-hungup-v2 (call-ended push)
+    if (props.sendPushFunctionArn) {
+      callHungupV2Fn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
 
     // Lambda for POST /chime/call-rejected
     const callRejectedFn = new lambdaNode.NodejsFunction(this, 'CallRejectedFn', {
@@ -1786,6 +1846,8 @@ export class ChimeStack extends Stack {
         JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+        // Push Notifications Integration (for call-ended state sync push)
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
       },
     });
     this.agentPresenceTable.grantReadWriteData(leaveCallFn);
@@ -1797,6 +1859,14 @@ export class ChimeStack extends Stack {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
+    // Push notifications permissions for leave-call (call-ended state sync push)
+    if (props.sendPushFunctionArn) {
+      leaveCallFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
 
     // Lambda for POST /chime/hold-call
     // NOTE: COMPENSATING_ACTIONS_QUEUE_URL is added after the queue is created (see below)
@@ -1816,6 +1886,8 @@ export class ChimeStack extends Stack {
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
         // COMPENSATING_ACTIONS_QUEUE_URL added after queue creation below
+        // Push Notifications Integration (for call-on-hold alerts)
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
       },
     });
     this.agentPresenceTable.grantReadWriteData(holdCallFn);
@@ -1832,6 +1904,14 @@ export class ChimeStack extends Stack {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
+    // Push notifications permissions for hold-call (call-on-hold alerts)
+    if (props.sendPushFunctionArn) {
+      holdCallFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
 
     // Lambda for POST /chime/resume-call
     const resumeCallFn = new lambdaNode.NodejsFunction(this, 'ResumeCallFn', {
@@ -1849,6 +1929,8 @@ export class ChimeStack extends Stack {
         JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+        // Push Notifications Integration (for call-resumed state sync push)
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
       },
     });
     this.agentPresenceTable.grantReadWriteData(resumeCallFn);
@@ -1866,6 +1948,14 @@ export class ChimeStack extends Stack {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
+    // Push notifications permissions for resume-call (call-resumed state sync push)
+    if (props.sendPushFunctionArn) {
+      resumeCallFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
 
     // Lambda for POST /chime/add-call
     const addCallFn = new lambdaNode.NodejsFunction(this, 'AddCallFn', {
@@ -1970,6 +2060,8 @@ export class ChimeStack extends Stack {
         JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+        // Push Notifications Integration (for conference participant alerts)
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
       },
     });
     conferenceCallFn.addToRolePolicy(chimeSdkPolicy);
@@ -1986,6 +2078,14 @@ export class ChimeStack extends Stack {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
+    // Push notifications permissions for conference-call (participant added alerts)
+    if (props.sendPushFunctionArn) {
+      conferenceCallFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
 
     // Lambda for POST /call-center/join-queued-call
     const joinQueuedCallFn = new lambdaNode.NodejsFunction(this, 'JoinQueuedCallFn', {
@@ -1997,16 +2097,22 @@ export class ChimeStack extends Stack {
       environment: {
         CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
         AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
+        LOCKS_TABLE_NAME: this.locksTable.tableName,
         CLINICS_TABLE_NAME: this.clinicsTable.tableName,
         CHIME_MEDIA_REGION: chimeMediaRegion,
         JWT_SECRET: jwtSecretValue,
         AWS_XRAY_TRACING_ENABLED: 'true',
         AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+        // Push Notifications Integration (for call_cancelled to stop phantom ringing)
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
       },
     });
     joinQueuedCallFn.addToRolePolicy(chimeSdkPolicy);
     this.callQueueTable.grantReadWriteData(joinQueuedCallFn);
     this.agentPresenceTable.grantReadWriteData(joinQueuedCallFn);
+    this.agentActiveTable.grantReadData(joinQueuedCallFn);
+    this.locksTable.grantReadWriteData(joinQueuedCallFn);
     this.clinicsTable.grantReadData(joinQueuedCallFn);
     joinQueuedCallFn.addToRolePolicy(new iam.PolicyStatement({
       actions: [
@@ -2019,6 +2125,14 @@ export class ChimeStack extends Stack {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
+    // Push notifications permissions for join-queued-call (call_cancelled to stop phantom ringing)
+    if (props.sendPushFunctionArn) {
+      joinQueuedCallFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
 
     // Lambda for POST /call-center/join-active-call
     const joinActiveCallFn = new lambdaNode.NodejsFunction(this, 'JoinActiveCallFn', {
@@ -2069,6 +2183,207 @@ export class ChimeStack extends Stack {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
+
+    // ========================================
+    // 3b. SUPERVISOR TOOLS
+    // ========================================
+
+    // Supervisor Sessions DynamoDB table
+    this.supervisorSessionsTable = new dynamodb.Table(this, 'SupervisorSessionsTable', {
+      tableName: `${this.stackName}-SupervisorSessions`,
+      partitionKey: { name: 'sessionId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+      timeToLiveAttribute: 'ttl',
+    });
+    applyTags(this.supervisorSessionsTable, { Table: 'supervisor-sessions' });
+
+    // GSI for querying sessions by supervisor
+    this.supervisorSessionsTable.addGlobalSecondaryIndex({
+      indexName: 'supervisorId-index',
+      partitionKey: { name: 'supervisorId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'startedAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Lambda for GET /call-center/supervisor/live-calls
+    const supervisorLiveCallsFn = new lambdaNode.NodejsFunction(this, 'SupervisorLiveCallsFn', {
+      functionName: `${this.stackName}-SupervisorLiveCalls`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'supervisor-live-calls.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(15),
+      environment: {
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        JWT_SECRET: jwtSecretValue,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    this.callQueueTable.grantReadData(supervisorLiveCallsFn);
+    this.agentPresenceTable.grantReadData(supervisorLiveCallsFn);
+    supervisorLiveCallsFn.addPermission('AdminApiInvokeSupervisorLiveCalls', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`,
+    });
+
+    // Lambda for POST/PUT/DELETE /call-center/supervisor/monitor
+    const supervisorMonitorFn = new lambdaNode.NodejsFunction(this, 'SupervisorMonitorFn', {
+      functionName: `${this.stackName}-SupervisorMonitor`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'supervisor-monitor.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(15),
+      environment: {
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        SUPERVISOR_SESSIONS_TABLE_NAME: this.supervisorSessionsTable.tableName,
+        CHIME_MEDIA_REGION: chimeMediaRegion,
+        JWT_SECRET: jwtSecretValue,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    this.callQueueTable.grantReadWriteData(supervisorMonitorFn);
+    this.supervisorSessionsTable.grantReadWriteData(supervisorMonitorFn);
+    supervisorMonitorFn.addToRolePolicy(chimeSdkPolicy);
+    supervisorMonitorFn.addPermission('AdminApiInvokeSupervisorMonitor', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`,
+    });
+
+    // Lambda for POST/GET/PUT /call-center/supervisor/whisper
+    const supervisorWhisperFn = new lambdaNode.NodejsFunction(this, 'SupervisorWhisperFn', {
+      functionName: `${this.stackName}-SupervisorWhisper`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'supervisor-whisper.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
+        JWT_SECRET: jwtSecretValue,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    this.agentPresenceTable.grantReadWriteData(supervisorWhisperFn);
+    supervisorWhisperFn.addPermission('AdminApiInvokeSupervisorWhisper', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`,
+    });
+
+    // ========================================
+    // 3c. QUEUE MONITOR (Scheduled)
+    // ========================================
+
+    const queueMonitorFn = new lambdaNode.NodejsFunction(this, 'QueueMonitorFn', {
+      functionName: `${this.stackName}-QueueMonitor`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'queue-monitor.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(30),
+      memorySize: 256,
+      environment: {
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        CLINICS_TABLE_NAME: this.clinicsTable.tableName,
+        CHIME_MEDIA_REGION: chimeMediaRegion,
+        SMA_ID_MAP: smaIdMapJson,
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+        // Push Notifications Integration (for queue-backup alerts)
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
+      },
+    });
+    this.callQueueTable.grantReadWriteData(queueMonitorFn);
+    this.clinicsTable.grantReadData(queueMonitorFn);
+    queueMonitorFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'chime:UpdateSipMediaApplicationCall',
+        'chime-sdk-voice:UpdateSipMediaApplicationCall',
+      ],
+      resources: ['*'],
+    }));
+    // Push notifications permissions for queue-monitor (queue-backup alerts)
+    if (props.sendPushFunctionArn) {
+      queueMonitorFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
+    // CloudWatch metrics for push delivery tracking
+    queueMonitorFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['cloudwatch:PutMetricData'],
+      resources: ['*'],
+    }));
+
+    // EventBridge rule: fire every 2 minutes
+    const queueMonitorRule = new events.Rule(this, 'QueueMonitorRule', {
+      schedule: events.Schedule.rate(Duration.minutes(2)),
+      description: 'Scan call queue for proactive customer notifications (wait time, timeout, callback offers)',
+    });
+    queueMonitorRule.addTarget(new targets.LambdaFunction(queueMonitorFn));
+
+    // ========================================
+    // 3d. VOICEMAIL INFRASTRUCTURE
+    // ========================================
+
+    this.voicemailBucket = new s3.Bucket(this, 'VoicemailBucket', {
+      bucketName: `${this.stackName.toLowerCase()}-voicemails`,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy: RemovalPolicy.RETAIN,
+      lifecycleRules: [
+        {
+          id: 'ExpireVoicemails',
+          expiration: Duration.days(90),
+          transitions: [
+            { storageClass: s3.StorageClass.INFREQUENT_ACCESS, transitionAfter: Duration.days(30) },
+          ],
+        },
+      ],
+    });
+    applyTags(this.voicemailBucket, { Bucket: 'voicemails' });
+
+    // Pass voicemail bucket to SMA handler so it can record voicemails
+    smaHandler.addEnvironment('VOICEMAIL_BUCKET', this.voicemailBucket.bucketName);
+    this.voicemailBucket.grantReadWrite(smaHandler);
+
+    // Process Voicemail Lambda (S3 triggered)
+    const processVoicemailFn = new lambdaNode.NodejsFunction(this, 'ProcessVoicemailFn', {
+      functionName: `${this.stackName}-ProcessVoicemail`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'process-voicemail.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: Duration.seconds(15),
+      environment: {
+        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
+        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
+        AWS_XRAY_TRACING_ENABLED: 'true',
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
+      },
+    });
+    this.callQueueTable.grantReadWriteData(processVoicemailFn);
+    this.voicemailBucket.grantRead(processVoicemailFn);
+
+    // Push notification permissions for voicemail alerts
+    if (props.sendPushFunctionArn) {
+      processVoicemailFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['lambda:InvokeFunction'],
+        resources: [props.sendPushFunctionArn],
+      }));
+    }
+
+    // Trigger on new voicemail uploads
+    this.voicemailBucket.addEventNotification(
+      s3.EventType.OBJECT_CREATED,
+      new s3n.LambdaDestination(processVoicemailFn),
+      { prefix: 'voicemails/' },
+    );
 
     // ========================================
     // 4. API Gateway Routes
@@ -2230,6 +2545,28 @@ export class ChimeStack extends Stack {
       value: getJoinableCallsFn.functionArn,
       exportName: `${this.stackName}-GetJoinableCallsArn`,
     });
+
+    // Supervisor Tools ARNs
+    new CfnOutput(this, 'SupervisorLiveCallsFnArn', {
+      value: supervisorLiveCallsFn.functionArn,
+      exportName: `${this.stackName}-SupervisorLiveCallsArn`,
+    });
+    new CfnOutput(this, 'SupervisorMonitorFnArn', {
+      value: supervisorMonitorFn.functionArn,
+      exportName: `${this.stackName}-SupervisorMonitorArn`,
+    });
+    new CfnOutput(this, 'SupervisorWhisperFnArn', {
+      value: supervisorWhisperFn.functionArn,
+      exportName: `${this.stackName}-SupervisorWhisperArn`,
+    });
+
+    // Voicemail Bucket
+    new CfnOutput(this, 'VoicemailBucketName', {
+      value: this.voicemailBucket.bucketName,
+      description: 'S3 bucket for call voicemails',
+      exportName: `${this.stackName}-VoicemailBucketName`,
+    });
+
     // NOTE: AgentPresenceTableName export is already defined above (see AgentPresenceTableName CfnOutput)
     new CfnOutput(this, 'HoldMusicBucketName', {
       value: holdMusicBucket.bucketName,
