@@ -434,8 +434,13 @@ export interface OdooInvoice {
 }
 
 /**
- * Fetch vendor invoices (bills) from Odoo
- * Uses the account.move model with move_type = 'in_invoice'
+ * Fetch invoices from Odoo
+ * Uses the account.move model - supports all move types:
+ *   - in_invoice (Vendor Bills)
+ *   - in_refund (Vendor Credit Notes)
+ *   - out_invoice (Customer Invoices / Insurance)
+ *   - out_refund (Customer Credit Notes)
+ *   - entry (Journal Entries)
  *
  * @param uid - Authenticated user ID
  * @param config - Odoo configuration
@@ -447,17 +452,26 @@ export async function fetchInvoices(
   config: OdooConfig,
   options: {
     companyId: number;
+    moveTypes?: string[];
     dateStart?: string;
     dateEnd?: string;
     state?: string;
     limit?: number;
   }
 ): Promise<OdooInvoice[]> {
-  console.log(`[Odoo] Fetching vendor invoices for company ${options.companyId}`);
+  const types = options.moveTypes || [
+    'in_invoice',
+    'in_refund',
+    'out_invoice',
+    'out_refund',
+    'entry',
+  ];
+
+  console.log(`[Odoo] Fetching invoices for company ${options.companyId}, types: ${types.join(', ')}`);
 
   const domain: any[] = [
     ['company_id', '=', options.companyId],
-    ['move_type', '=', 'in_invoice'],
+    ['move_type', 'in', types],
   ];
 
   if (options.dateStart) {
@@ -500,13 +514,13 @@ export async function fetchInvoices(
       [domain],
       {
         fields,
-        limit: options.limit || 500,
+        limit: options.limit || 5000,
         order: 'invoice_date desc',
       },
     ],
   });
 
-  console.log(`[Odoo] Found ${invoices.length} vendor invoices`);
+  console.log(`[Odoo] Found ${invoices.length} invoices`);
   return invoices;
 }
 // ========================================
@@ -566,6 +580,7 @@ export class OdooClient {
 
   async getInvoices(options: {
     companyId: number;
+    moveTypes?: string[];
     dateStart?: string;
     dateEnd?: string;
     state?: string;
