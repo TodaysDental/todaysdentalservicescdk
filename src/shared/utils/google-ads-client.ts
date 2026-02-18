@@ -1050,9 +1050,9 @@ export async function createBudgetViaRest(
     operations: [{
       create: {
         name: budgetResource.name,
-        amountMicros: String(budgetResource.amount_micros),
-        deliveryMethod: deliveryMethodMap[budgetResource.delivery_method] || 'STANDARD',
-        explicitlyShared: budgetResource.explicitly_shared ?? false,
+        amount_micros: String(budgetResource.amount_micros),
+        delivery_method: deliveryMethodMap[budgetResource.delivery_method] || 'STANDARD',
+        explicitly_shared: budgetResource.explicitly_shared ?? false,
       },
     }],
   };
@@ -1061,7 +1061,8 @@ export async function createBudgetViaRest(
 
   const response = await googleAdsRestCall(cleanCustomerId, 'campaignBudgets:mutate', body);
 
-  const budgetResourceName = response?.results?.[0]?.resourceName;
+  const budgetResourceName = response?.results?.[0]?.resourceName
+    || response?.results?.[0]?.resource_name;
   if (!budgetResourceName) {
     throw new Error(`Budget creation returned no resource name: ${JSON.stringify(response)}`);
   }
@@ -1075,6 +1076,8 @@ export async function createBudgetViaRest(
  * This bypasses the gRPC library's protobuf serialization which silently
  * drops the `contains_eu_political_advertising` field.
  * Returns the campaign resource name.
+ * 
+ * IMPORTANT: Google Ads REST API uses snake_case field names, NOT camelCase.
  */
 export async function createCampaignViaRest(
   customerId: string,
@@ -1108,46 +1111,45 @@ export async function createCampaignViaRest(
     13: 'PERFORMANCE_MAX',
   };
 
-  // Build REST campaign object
+  // Build REST campaign object — ALL fields must use snake_case
   const campaign: any = {
     name: campaignResource.name,
     status: statusMap[campaignResource.status] || 'PAUSED',
-    advertisingChannelType: channelTypeMap[campaignResource.advertisingChannelType] || 'SEARCH',
-    campaignBudget: campaignResource.campaignBudget,
+    advertising_channel_type: channelTypeMap[campaignResource.advertisingChannelType] || 'SEARCH',
+    campaign_budget: campaignResource.campaignBudget,
     // CRITICAL: This field is REQUIRED since Google Ads API v22 (Sept 3, 2025)
-    // The gRPC library silently drops this because its protobuf defs are outdated
-    containsEuPoliticalAdvertising: false,
+    // It's an ENUM, not a boolean. The gRPC library's proto defs don't include this enum.
+    contains_eu_political_advertising: 'DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING',
   };
 
-  // Add network settings
+  // Add network settings (snake_case)
   if (campaignResource.networkSettings) {
-    campaign.networkSettings = {
-      targetGoogleSearch: campaignResource.networkSettings.targetGoogleSearch ?? true,
-      targetSearchNetwork: campaignResource.networkSettings.targetSearchNetwork ?? true,
+    campaign.network_settings = {
+      target_google_search: campaignResource.networkSettings.targetGoogleSearch ?? true,
+      target_search_network: campaignResource.networkSettings.targetSearchNetwork ?? true,
     };
   }
 
-  // Build bidding strategy
+  // Build bidding strategy (snake_case field names)
   // NOTE: Enhanced CPC (enhanced_cpc_enabled) is DEPRECATED by Google (context_error: 2)
-  // Use manual_cpc without it — REST API handles empty message types correctly
   switch (campaignResource.biddingStrategy) {
     case 'MANUAL_CPC':
-      campaign.manualCpc = {};
+      campaign.manual_cpc = {};
       break;
     case 'TARGET_CPA':
-      campaign.targetCpa = {
-        targetCpaMicros: String(campaignResource.targetCpaMicros || 0),
+      campaign.target_cpa = {
+        target_cpa_micros: String(campaignResource.targetCpaMicros || 0),
       };
       break;
     case 'MAXIMIZE_CONVERSIONS':
-      campaign.maximizeConversions = {};
+      campaign.maximize_conversions = {};
       break;
     case 'MAXIMIZE_CLICKS':
-      campaign.maximizeClicks = {};
+      campaign.maximize_clicks = {};
       break;
     case 'TARGET_ROAS':
-      campaign.targetRoas = {
-        targetRoas: campaignResource.targetRoas || 0,
+      campaign.target_roas = {
+        target_roas: campaignResource.targetRoas || 0,
       };
       break;
   }
@@ -1162,7 +1164,8 @@ export async function createCampaignViaRest(
 
   const response = await googleAdsRestCall(cleanCustomerId, 'campaigns:mutate', body);
 
-  const campaignResourceName = response?.results?.[0]?.resourceName;
+  const campaignResourceName = response?.results?.[0]?.resourceName
+    || response?.results?.[0]?.resource_name;
   if (!campaignResourceName) {
     throw new Error(`Campaign creation returned no resource name: ${JSON.stringify(response)}`);
   }
