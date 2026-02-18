@@ -84,6 +84,7 @@ export interface Ticket {
     assigneeName: string;
     assigneeEmail?: string;
     clinicId?: string;
+    deadline?: string; // ISO date string (YYYY-MM-DD) — required for BUG, optional for FEATURE
     mediaFiles?: MediaFile[];
     resolution?: string;
     resolvedAt?: string;
@@ -125,6 +126,7 @@ export interface CreateTicketRequest {
     module: string;
     priority?: TicketPriority;
     clinicId?: string;
+    deadline?: string; // ISO date (YYYY-MM-DD) — required for BUG, optional for FEATURE
     // Optional reporter details — frontend can supply from localStorage
     // Falls back to JWT authorizer context if not provided
     reporterName?: string;
@@ -138,6 +140,7 @@ export interface UpdateTicketRequest {
     module?: string;
     priority?: TicketPriority;
     status?: TicketStatus;
+    deadline?: string;
     assigneeId?: string;
     assigneeName?: string;
     assigneeEmail?: string;

@@ -416,6 +416,14 @@ async function createTicket(event: APIGatewayProxyEvent): Promise<APIGatewayProx
         return httpErr(event, 400, `Invalid priority. Valid: ${Object.values(TicketPriority).join(', ')}`);
     }
 
+    // Deadline validation: mandatory for BUG, optional for FEATURE
+    if (ticketType === TicketType.BUG && (!body.deadline || !/^\d{4}-\d{2}-\d{2}/.test(body.deadline))) {
+        return httpErr(event, 400, 'Deadline is required for bug reports (YYYY-MM-DD format)');
+    }
+    if (body.deadline && !/^\d{4}-\d{2}-\d{2}/.test(body.deadline)) {
+        return httpErr(event, 400, 'Deadline must be in YYYY-MM-DD format');
+    }
+
     const user = getUserContext(event);
 
     // Reporter details: prefer body (from localStorage) → fall back to JWT context
@@ -475,6 +483,7 @@ async function createTicket(event: APIGatewayProxyEvent): Promise<APIGatewayProx
         assigneeName,
         assigneeEmail,
         clinicId: body.clinicId || '',
+        ...(body.deadline && { deadline: body.deadline }),
         createdAt: now,
         updatedAt: now,
     };
@@ -569,6 +578,44 @@ async function listTickets(event: APIGatewayProxyEvent): Promise<APIGatewayProxy
     });
 }
 
+/** DELETE /tickets/:ticketId */
+async function deleteTicket(event: APIGatewayProxyEvent, ticketId: string): Promise<APIGatewayProxyResult> {
+    // Check ticket exists
+    const { Item: existing } = await ddb.send(new GetCommand({
+        TableName: TICKETS_TABLE,
+        Key: { ticketId },
+    }));
+    if (!existing) return httpErr(event, 404, 'Ticket not found');
+
+    // Delete the ticket
+    await ddb.send(new DeleteCommand({
+        TableName: TICKETS_TABLE,
+        Key: { ticketId },
+    }));
+
+    // Also clean up any comments for this ticket
+    try {
+        const commentsResult = await ddb.send(new QueryCommand({
+            TableName: COMMENTS_TABLE,
+            KeyConditionExpression: 'ticketId = :tid',
+            ExpressionAttributeValues: { ':tid': ticketId },
+        }));
+        if (commentsResult.Items && commentsResult.Items.length > 0) {
+            for (const comment of commentsResult.Items) {
+                await ddb.send(new DeleteCommand({
+                    TableName: COMMENTS_TABLE,
+                    Key: { ticketId: comment.ticketId, commentId: comment.commentId },
+                }));
+            }
+        }
+    } catch (err) {
+        console.warn(`[ITTicket] Failed to clean up comments for ticket ${ticketId}:`, err);
+    }
+
+    console.log(`[ITTicket] Ticket deleted: ${ticketId}`);
+    return httpOk(event, { success: true, message: 'Ticket deleted successfully' });
+}
+
 /** PUT /tickets/:ticketId */
 async function updateTicket(event: APIGatewayProxyEvent, ticketId: string): Promise<APIGatewayProxyResult> {
     const body = parseBody<UpdateTicketRequest>(event);
@@ -630,6 +677,11 @@ async function updateTicket(event: APIGatewayProxyEvent, ticketId: string): Prom
         updates.push('#assigneeEmail = :assigneeEmail');
         names['#assigneeEmail'] = 'assigneeEmail';
         values[':assigneeEmail'] = (body as any).assigneeEmail;
+    }
+    if (body.deadline !== undefined) {
+        updates.push('#deadline = :deadline');
+        names['#deadline'] = 'deadline';
+        values[':deadline'] = body.deadline;
     }
 
     // Auto-set status to IN_PROGRESS when assigning someone to an OPEN ticket
@@ -1082,16 +1134,36 @@ async function dashboardStats(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const byModule: Record<string, { open: number; inProgress: number; resolved: number; total: number }> = {};
     const byType: Record<string, number> = {};
     const byPriority: Record<string, number> = {};
-    const byAssignee: Record<string, { name: string; open: number; resolved: number; total: number }> = {};
+    const byStatus: Record<string, number> = {};
+    const byAssignee: Record<string, { name: string; open: number; inProgress: number; resolved: number; total: number }> = {};
 
     let totalResolutionMs = 0;
     let resolvedCount = 0;
+    const resolutionTimes: number[] = []; // collect all resolution hours for median
 
     const now = Date.now();
     const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
     const fifteenDaysAgo = new Date(now - 15 * 24 * 60 * 60 * 1000).toISOString();
     const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
     let created7 = 0, resolved7 = 0, created15 = 0, resolved15 = 0, created30 = 0, resolved30 = 0;
+
+    // Overdue tracking
+    let overdueCount = 0;
+    const overdueTickets: Array<{ ticketId: string; title: string; deadline: string; priority: string; assigneeName: string }> = [];
+
+
+
+    // Recent activity timeline
+    interface ActivityItem {
+        ticketId: string;
+        title: string;
+        type: 'created' | 'resolved' | 'updated';
+        timestamp: string;
+        actor: string;
+        status: string;
+        priority: string;
+    }
+    const activities: ActivityItem[] = [];
 
     for (const t of allTickets) {
         // By module
@@ -1107,10 +1179,14 @@ async function dashboardStats(event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // By priority
         byPriority[t.priority] = (byPriority[t.priority] || 0) + 1;
 
+        // By status
+        byStatus[t.status] = (byStatus[t.status] || 0) + 1;
+
         // By assignee
-        if (!byAssignee[t.assigneeId]) byAssignee[t.assigneeId] = { name: t.assigneeName, open: 0, resolved: 0, total: 0 };
+        if (!byAssignee[t.assigneeId]) byAssignee[t.assigneeId] = { name: t.assigneeName, open: 0, inProgress: 0, resolved: 0, total: 0 };
         byAssignee[t.assigneeId].total++;
-        if (t.status === TicketStatus.OPEN || t.status === TicketStatus.IN_PROGRESS) byAssignee[t.assigneeId].open++;
+        if (t.status === TicketStatus.OPEN) byAssignee[t.assigneeId].open++;
+        else if (t.status === TicketStatus.IN_PROGRESS) byAssignee[t.assigneeId].inProgress++;
         if (t.status === TicketStatus.RESOLVED || t.status === TicketStatus.CLOSED) byAssignee[t.assigneeId].resolved++;
 
         // Avg resolution time
@@ -1119,6 +1195,7 @@ async function dashboardStats(event: APIGatewayProxyEvent): Promise<APIGatewayPr
             if (ms > 0) {
                 totalResolutionMs += ms;
                 resolvedCount++;
+                resolutionTimes.push(ms / 3600000); // hours
             }
         }
 
@@ -1129,9 +1206,73 @@ async function dashboardStats(event: APIGatewayProxyEvent): Promise<APIGatewayPr
         if (t.resolvedAt && t.resolvedAt >= sevenDaysAgo) resolved7++;
         if (t.resolvedAt && t.resolvedAt >= fifteenDaysAgo) resolved15++;
         if (t.resolvedAt && t.resolvedAt >= thirtyDaysAgo) resolved30++;
+
+        // Overdue tracking — only check explicit deadline input
+        const isActive = t.status !== TicketStatus.RESOLVED && t.status !== TicketStatus.CLOSED;
+        const deadlineField = (t as any).deadline;
+        if (isActive && deadlineField) {
+            const deadlineEnd = new Date(deadlineField + 'T23:59:59').getTime();
+            if (now > deadlineEnd) {
+                overdueCount++;
+                overdueTickets.push({
+                    ticketId: t.ticketId,
+                    title: t.title,
+                    deadline: deadlineField,
+                    priority: t.priority,
+                    assigneeName: t.assigneeName,
+                });
+            }
+        }
+
+        // Recent activity — collect events
+        if (t.createdAt >= thirtyDaysAgo) {
+            activities.push({
+                ticketId: t.ticketId,
+                title: t.title,
+                type: 'created',
+                timestamp: t.createdAt,
+                actor: t.reporterName,
+                status: t.status,
+                priority: t.priority,
+            });
+        }
+        if (t.resolvedAt && t.resolvedAt >= thirtyDaysAgo) {
+            activities.push({
+                ticketId: t.ticketId,
+                title: t.title,
+                type: 'resolved',
+                timestamp: t.resolvedAt,
+                actor: (t as any).resolvedBy || t.assigneeName,
+                status: 'RESOLVED',
+                priority: t.priority,
+            });
+        }
+        if (t.updatedAt && t.updatedAt !== t.createdAt && t.updatedAt >= thirtyDaysAgo && !t.resolvedAt) {
+            activities.push({
+                ticketId: t.ticketId,
+                title: t.title,
+                type: 'updated',
+                timestamp: t.updatedAt,
+                actor: t.assigneeName,
+                status: t.status,
+                priority: t.priority,
+            });
+        }
     }
 
     const avgResolutionHours = resolvedCount > 0 ? Math.round((totalResolutionMs / resolvedCount / 3600000) * 10) / 10 : 0;
+
+    // Compute median resolution time
+    resolutionTimes.sort((a, b) => a - b);
+    const medianResolutionHours = resolutionTimes.length > 0
+        ? Math.round(resolutionTimes[Math.floor(resolutionTimes.length / 2)] * 10) / 10
+        : 0;
+    const minResolutionHours = resolutionTimes.length > 0 ? Math.round(resolutionTimes[0] * 10) / 10 : 0;
+    const maxResolutionHours = resolutionTimes.length > 0 ? Math.round(resolutionTimes[resolutionTimes.length - 1] * 10) / 10 : 0;
+
+    // Sort activities by timestamp descending and take latest 20
+    activities.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    const recentActivity = activities.slice(0, 20);
 
     return httpOk(event, {
         success: true,
@@ -1139,6 +1280,7 @@ async function dashboardStats(event: APIGatewayProxyEvent): Promise<APIGatewayPr
             byModule,
             byType,
             byPriority,
+            byStatus,
             byAssignee,
             overall: {
                 total: allTickets.length,
@@ -1147,12 +1289,21 @@ async function dashboardStats(event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 resolved: allTickets.filter(t => t.status === TicketStatus.RESOLVED).length,
                 closed: allTickets.filter(t => t.status === TicketStatus.CLOSED).length,
                 avgResolutionHours,
+                medianResolutionHours,
+                minResolutionHours,
+                maxResolutionHours,
+                overdueCount,
+            },
+            overdue: {
+                count: overdueCount,
+                tickets: overdueTickets.slice(0, 10), // top 10 overdue
             },
             trend: {
                 last7Days: { created: created7, resolved: resolved7 },
                 last15Days: { created: created15, resolved: resolved15 },
                 last30Days: { created: created30, resolved: resolved30 },
             },
+            recentActivity,
             filters: {
                 applied: params,
             },
@@ -1260,6 +1411,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         if (method === 'PUT' && /^\/tickets\/[^/]+\/resolve$/.test(path)) {
             const ticketId = path.split('/')[2];
             return resolveTicket(event, ticketId);
+        }
+
+        // DELETE /tickets/:ticketId
+        if (method === 'DELETE' && /^\/tickets\/[^/]+$/.test(path)) {
+            const ticketId = path.split('/')[2];
+            return deleteTicket(event, ticketId);
         }
 
         // --- Comments ---
