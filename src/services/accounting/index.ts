@@ -583,6 +583,49 @@ async function syncOdooInvoices(clinicId: string) {
 // BRS BUSINESS LOGIC
 // ========================================
 
+/**
+ * Map our PaymentMode to OpenDental PayType IDs.
+ * OpenDental uses numeric PayType IDs configured per clinic.
+ * We fetch definitions (Category=12 = PaymentTypes) and match by name keywords.
+ */
+const PAYMENT_MODE_KEYWORDS: Record<PaymentMode, string[]> = {
+  EFT: ['eft', 'electronic', 'wire', 'ach', 'bank transfer', 'neft', 'rtgs', 'imps'],
+  CHEQUE: ['check', 'cheque', 'chq', 'chk'],
+  CREDIT_CARD: ['credit card', 'cc', 'visa', 'master', 'amex', 'discover'],
+  PAYCONNECT: ['payconnect', 'pay connect'],
+  SUNBIT: ['sunbit'],
+  AUTHORIZE_NET: ['authorize', 'auth.net', 'authorizenet'],
+  CHERRY: ['cherry'],
+  CARE_CREDIT: ['care credit', 'carecredit'],
+};
+
+async function getPayTypeIdsForMode(
+  authHeader: string,
+  paymentMode: PaymentMode
+): Promise<number[]> {
+  try {
+    const definitions = await callOpenDentalApi('GET', '/definitions?Category=12', authHeader);
+    if (!Array.isArray(definitions)) return [];
+
+    const keywords = PAYMENT_MODE_KEYWORDS[paymentMode] || [];
+    const matchingIds: number[] = [];
+
+    for (const def of definitions) {
+      const name = (def.ItemName || def.itemName || '').toLowerCase();
+      const defNum = def.DefNum || def.defNum;
+      if (defNum && keywords.some(kw => name.includes(kw))) {
+        matchingIds.push(Number(defNum));
+      }
+    }
+
+    console.log(`[Accounting] PayType IDs for ${paymentMode}: [${matchingIds.join(', ')}] (from ${definitions.length} definitions)`);
+    return matchingIds;
+  } catch (err: any) {
+    console.warn(`[Accounting] Failed to fetch PayType definitions: ${err.message}`);
+    return [];
+  }
+}
+
 async function fetchOpenDentalPayments(
   clinicId: string,
   paymentMode: PaymentMode,
@@ -625,7 +668,7 @@ async function fetchOpenDentalPayments(
     console.log(`[Accounting] OpenDental returned ${odPayments.length} total payments since ${dateStart}`);
 
     // 3. Filter payments by end date (API only supports "on or after")
-    const filteredPayments = odPayments.filter((p: any) => {
+    let filteredPayments = odPayments.filter((p: any) => {
       const payDate = p.PayDate || p.payDate || '';
       // PayDate format from OD API: "yyyy-MM-dd" or ISO string
       const normalizedDate = payDate.substring(0, 10); // Take just YYYY-MM-DD
@@ -633,6 +676,18 @@ async function fetchOpenDentalPayments(
     });
 
     console.log(`[Accounting] ${filteredPayments.length} payments within date range ${dateStart} to ${dateEnd}`);
+
+    // 3b. Filter by PayType for the selected payment mode
+    const payTypeIds = await getPayTypeIdsForMode(authHeader, paymentMode);
+    if (payTypeIds.length > 0) {
+      filteredPayments = filteredPayments.filter((p: any) => {
+        const pt = Number(p.PayType || p.payType || 0);
+        return payTypeIds.includes(pt);
+      });
+      console.log(`[Accounting] ${filteredPayments.length} payments after PayType filter (IDs: ${payTypeIds.join(', ')})`);
+    } else {
+      console.warn(`[Accounting] No PayType mapping found for mode ${paymentMode} — showing all payments`);
+    }
 
     // 4. Skip individual patient name API calls to avoid Lambda timeout
     //    OpenDental /payments endpoint doesn't include patient names, and
@@ -869,10 +924,22 @@ async function generateReconciliation(
 
       if (Array.isArray(odPayments)) {
         // Filter by end date
-        const filteredPayments = odPayments.filter((p: any) => {
+        let filteredPayments = odPayments.filter((p: any) => {
           const payDate = (p.PayDate || p.payDate || '').substring(0, 10);
           return payDate <= dateEnd;
         });
+
+        // Filter by PayType for the selected payment mode
+        const payTypeIds = await getPayTypeIdsForMode(authHeader, paymentMode);
+        if (payTypeIds.length > 0) {
+          filteredPayments = filteredPayments.filter((p: any) => {
+            const pt = Number(p.PayType || p.payType || 0);
+            return payTypeIds.includes(pt);
+          });
+          console.log(`[Reconciliation] ${filteredPayments.length} payments after PayType filter for ${paymentMode}`);
+        } else {
+          console.warn(`[Reconciliation] No PayType mapping found for ${paymentMode} — using all payments`);
+        }
 
         // Map payments to rows (skip patient name lookups to avoid timeout)
         openDentalRows = filteredPayments.map((p: any) => {
