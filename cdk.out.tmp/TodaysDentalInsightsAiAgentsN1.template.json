@@ -1684,7 +1684,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "f0ba8f20d3a6a62af2ba5fdf3befaed7d0dbea5d2dba42fab8170371bd4cbd2f.zip"
+     "S3Key": "1427db4fe8018ab79132c5672261606d119a16608cc973d4f2bc9a3e38015434.zip"
     },
     "Environment": {
      "Variables": {
@@ -1731,7 +1731,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/InsuranceTextractFn/Resource",
-    "aws:asset:path": "asset.f0ba8f20d3a6a62af2ba5fdf3befaed7d0dbea5d2dba42fab8170371bd4cbd2f",
+    "aws:asset:path": "asset.1427db4fe8018ab79132c5672261606d119a16608cc973d4f2bc9a3e38015434",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -1829,7 +1829,7 @@
     "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/AiAgentsApi/Account"
    }
   },
-  "AiAgentsApiDeployment707BAA6Ada8a644419b124f0c2b09169fb6b3c77": {
+  "AiAgentsApiDeployment707BAA6A46b44c3d7798c5d725c6a7cc01121964": {
    "Type": "AWS::ApiGateway::Deployment",
    "Properties": {
     "Description": "AI Agents service API - Bedrock Agents with Action Groups",
@@ -1937,6 +1937,9 @@
     "AiAgentsApivoiceconfigclinicIdD6247206",
     "AiAgentsApivoiceconfigOPTIONS85164F79",
     "AiAgentsApivoiceconfig8E1F5F37",
+    "AiAgentsApivoicesGETDA6FF2CB",
+    "AiAgentsApivoicesOPTIONS5BC4CA5D",
+    "AiAgentsApivoices8A42D6A2",
     "GatewayResponseDefault4XXC22BF2A7",
     "GatewayResponseDefault5XX28177100",
     "GatewayResponseUnauthorized78FCB15B"
@@ -1950,7 +1953,7 @@
    "Type": "AWS::ApiGateway::Stage",
    "Properties": {
     "DeploymentId": {
-     "Ref": "AiAgentsApiDeployment707BAA6Ada8a644419b124f0c2b09169fb6b3c77"
+     "Ref": "AiAgentsApiDeployment707BAA6A46b44c3d7798c5d725c6a7cc01121964"
     },
     "MethodSettings": [
      {
@@ -4803,6 +4806,182 @@
     "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/AiAgentsApi/Default/voice-config/{clinicId}/PUT/Resource"
    }
   },
+  "AiAgentsApivoices8A42D6A2": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Fn::GetAtt": [
+      "AiAgentsApiC761181A",
+      "RootResourceId"
+     ]
+    },
+    "PathPart": "voices",
+    "RestApiId": {
+     "Ref": "AiAgentsApiC761181A"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/AiAgentsApi/Default/voices/Resource"
+   }
+  },
+  "AiAgentsApivoicesOPTIONS5BC4CA5D": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "AiAgentsApivoices8A42D6A2"
+    },
+    "RestApiId": {
+     "Ref": "AiAgentsApiC761181A"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/AiAgentsApi/Default/voices/OPTIONS/Resource"
+   }
+  },
+  "AiAgentsApivoicesGETApiPermissionTodaysDentalInsightsAiAgentsN1AiAgentsApi9A8A79CAGETvoices75BE6F7C": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "VoiceConfigFnE274BBFF",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "AiAgentsApiC761181A"
+       },
+       "/",
+       {
+        "Ref": "AiAgentsApiDeploymentStageprod51DD82D4"
+       },
+       "/GET/voices"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/AiAgentsApi/Default/voices/GET/ApiPermission.TodaysDentalInsightsAiAgentsN1AiAgentsApi9A8A79CA.GET..voices"
+   }
+  },
+  "AiAgentsApivoicesGETApiPermissionTestTodaysDentalInsightsAiAgentsN1AiAgentsApi9A8A79CAGETvoices99BCD3D9": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "VoiceConfigFnE274BBFF",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "AiAgentsApiC761181A"
+       },
+       "/test-invoke-stage/GET/voices"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/AiAgentsApi/Default/voices/GET/ApiPermission.Test.TodaysDentalInsightsAiAgentsN1AiAgentsApi9A8A79CA.GET..voices"
+   }
+  },
+  "AiAgentsApivoicesGETDA6FF2CB": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "AiAgentsAuthorizerDA4628F5"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "VoiceConfigFnE274BBFF",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "ResourceId": {
+     "Ref": "AiAgentsApivoices8A42D6A2"
+    },
+    "RestApiId": {
+     "Ref": "AiAgentsApiC761181A"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/AiAgentsApi/Default/voices/GET/Resource"
+   }
+  },
   "AiAgentsApischeduledcalls160F91A3": {
    "Type": "AWS::ApiGateway::Resource",
    "Properties": {
@@ -7641,7 +7820,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "81e3b04bde9f2a30d945b7fe99c70c8bff20fbd957307573e314084bc8e59bde.zip"
+     "S3Key": "fdfabc9a8f7155f65dd3e516ee9eb8877b2e5240c7b6eb4c746f6c64545da9cd.zip"
     },
     "Environment": {
      "Variables": {
@@ -7698,7 +7877,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/AiAgentsFn/Resource",
-    "aws:asset:path": "asset.81e3b04bde9f2a30d945b7fe99c70c8bff20fbd957307573e314084bc8e59bde",
+    "aws:asset:path": "asset.fdfabc9a8f7155f65dd3e516ee9eb8877b2e5240c7b6eb4c746f6c64545da9cd",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -7898,7 +8077,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "b14f2b8769525079a1b9867422f3c2d7dc64e522c2668a91183a72e5634d43eb.zip"
+     "S3Key": "e3b3f921de52a57ea15735bc5a1e9668f776ac32c4ed64eeef9c2e9cee631d54.zip"
     },
     "Environment": {
      "Variables": {
@@ -7948,7 +8127,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/InvokeAgentFn/Resource",
-    "aws:asset:path": "asset.b14f2b8769525079a1b9867422f3c2d7dc64e522c2668a91183a72e5634d43eb",
+    "aws:asset:path": "asset.e3b3f921de52a57ea15735bc5a1e9668f776ac32c4ed64eeef9c2e9cee631d54",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -8245,7 +8424,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "9bb131e10e8bb88a1b47a665c5fdc6b88789f886242dc22b3bf6c6e61bdb35b5.zip"
+     "S3Key": "7b98f3a446bca5691482a6ab27bc1beb8f4101ed8a4eb69a4bcd30da3b5872ab.zip"
     },
     "Environment": {
      "Variables": {
@@ -8332,7 +8511,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/VoiceAiFn/Resource",
-    "aws:asset:path": "asset.9bb131e10e8bb88a1b47a665c5fdc6b88789f886242dc22b3bf6c6e61bdb35b5",
+    "aws:asset:path": "asset.7b98f3a446bca5691482a6ab27bc1beb8f4101ed8a4eb69a4bcd30da3b5872ab",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -8481,6 +8660,11 @@
          "Ref": "AWS::NoValue"
         }
        ]
+      },
+      {
+       "Action": "polly:DescribeVoices",
+       "Effect": "Allow",
+       "Resource": "*"
       }
      ],
      "Version": "2012-10-17"
@@ -8501,7 +8685,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "b587f011ed7f48951c1abe779817a657e10964b3e6611167acd3361b27091085.zip"
+     "S3Key": "7fd80c6f74583879b60b290131ebdf43cced0709bf7a80821ac47e512cb976af.zip"
     },
     "Environment": {
      "Variables": {
@@ -8571,7 +8755,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/VoiceConfigFn/Resource",
-    "aws:asset:path": "asset.b587f011ed7f48951c1abe779817a657e10964b3e6611167acd3361b27091085",
+    "aws:asset:path": "asset.7fd80c6f74583879b60b290131ebdf43cced0709bf7a80821ac47e512cb976af",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -8761,7 +8945,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "0d0bc847f5387bcafb520b91e522def23a1476ea7cbcb097378196937def5db3.zip"
+     "S3Key": "015641e666f38633e46fddeab1745baf4c03f1365879d2c4c085924f5fcdd99f.zip"
     },
     "Environment": {
      "Variables": {
@@ -8811,7 +8995,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/ConversationHistoryFn/Resource",
-    "aws:asset:path": "asset.0d0bc847f5387bcafb520b91e522def23a1476ea7cbcb097378196937def5db3",
+    "aws:asset:path": "asset.015641e666f38633e46fddeab1745baf4c03f1365879d2c4c085924f5fcdd99f",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -9539,7 +9723,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "bfb4828bd163a705757379fda1e47f8d940979c4cc8b8e4790606b2837f798c8.zip"
+     "S3Key": "50621ec3f5bb196fd1c335b58d37d77310d63ca0cbd3a4fcf35f21c09d1c4a49.zip"
     },
     "Environment": {
      "Variables": {
@@ -9590,7 +9774,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/MeetingJoinFn/Resource",
-    "aws:asset:path": "asset.bfb4828bd163a705757379fda1e47f8d940979c4cc8b8e4790606b2837f798c8",
+    "aws:asset:path": "asset.50621ec3f5bb196fd1c335b58d37d77310d63ca0cbd3a4fcf35f21c09d1c4a49",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -9826,7 +10010,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "4274571db60fc90b16d433258c23f0e1adbe3fda347528d08e5ce89cefcad3b0.zip"
+     "S3Key": "63a9849c28f8ce66943c43c809cdd27d07e57269a841c424c3d0e5b796ea510b.zip"
     },
     "Environment": {
      "Variables": {
@@ -9882,7 +10066,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/OutboundExecutorFn/Resource",
-    "aws:asset:path": "asset.4274571db60fc90b16d433258c23f0e1adbe3fda347528d08e5ce89cefcad3b0",
+    "aws:asset:path": "asset.63a9849c28f8ce66943c43c809cdd27d07e57269a841c424c3d0e5b796ea510b",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -10115,7 +10299,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "4274571db60fc90b16d433258c23f0e1adbe3fda347528d08e5ce89cefcad3b0.zip"
+     "S3Key": "63a9849c28f8ce66943c43c809cdd27d07e57269a841c424c3d0e5b796ea510b.zip"
     },
     "Environment": {
      "Variables": {
@@ -10188,7 +10372,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/OutboundSchedulerFn/Resource",
-    "aws:asset:path": "asset.4274571db60fc90b16d433258c23f0e1adbe3fda347528d08e5ce89cefcad3b0",
+    "aws:asset:path": "asset.63a9849c28f8ce66943c43c809cdd27d07e57269a841c424c3d0e5b796ea510b",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -10662,7 +10846,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "667974aaaa8e3f43e3b0b4b31c6b2ebbced4db654ce7ce61a845b8a371112cf7.zip"
+     "S3Key": "c3b3fa207ff691059add4b7be975314c60be6e35a74b440a42eca6c0a85f2727.zip"
     },
     "Environment": {
      "Variables": {
@@ -10709,7 +10893,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsAiAgentsN1/WsConnectFn/Resource",
-    "aws:asset:path": "asset.667974aaaa8e3f43e3b0b4b31c6b2ebbced4db654ce7ce61a845b8a371112cf7",
+    "aws:asset:path": "asset.c3b3fa207ff691059add4b7be975314c60be6e35a74b440a42eca6c0a85f2727",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -13639,6 +13823,17 @@
     "Name": "TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttAiAgentSessionsTableFD40A5D8Arn3D9C5E3C"
    }
   },
+  "ExportsOutputFnGetAttVoiceAgentConfigTable219D9D06ArnCD546AF3": {
+   "Value": {
+    "Fn::GetAtt": [
+     "VoiceAgentConfigTable219D9D06",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttVoiceAgentConfigTable219D9D06ArnCD546AF3"
+   }
+  },
   "ExportsOutputRefAiAgentTable08A482D1F1FC100B": {
    "Value": {
     "Ref": "AiAgentTable08A482D1"
@@ -13653,6 +13848,52 @@
    },
    "Export": {
     "Name": "TodaysDentalInsightsAiAgentsN1:ExportsOutputRefAiAgentSessionsTableFD40A5D862A0DEC9"
+   }
+  },
+  "ExportsOutputRefVoiceAgentConfigTable219D9D0641F83326": {
+   "Value": {
+    "Ref": "VoiceAgentConfigTable219D9D06"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsAiAgentsN1:ExportsOutputRefVoiceAgentConfigTable219D9D0641F83326"
+   }
+  },
+  "ExportsOutputFnGetAttScheduledCallsTable4DB0837CArn8EA796E1": {
+   "Value": {
+    "Fn::GetAtt": [
+     "ScheduledCallsTable4DB0837C",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttScheduledCallsTable4DB0837CArn8EA796E1"
+   }
+  },
+  "ExportsOutputRefScheduledCallsTable4DB0837CDA091291": {
+   "Value": {
+    "Ref": "ScheduledCallsTable4DB0837C"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsAiAgentsN1:ExportsOutputRefScheduledCallsTable4DB0837CDA091291"
+   }
+  },
+  "ExportsOutputFnGetAttAiAgentConversationsTable58FB754EArn22C3E499": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AiAgentConversationsTable58FB754E",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttAiAgentConversationsTable58FB754EArn22C3E499"
+   }
+  },
+  "ExportsOutputRefAiAgentConversationsTable58FB754E0E6F55F5": {
+   "Value": {
+    "Ref": "AiAgentConversationsTable58FB754E"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsAiAgentsN1:ExportsOutputRefAiAgentConversationsTable58FB754E0E6F55F5"
    }
   }
  },

@@ -91,16 +91,19 @@ async function ringQueuedCallForClinic(clinicId: string): Promise<{ ringedCallId
     return { skipped: 'CALL_QUEUE_TABLE_NAME_not_configured' };
   }
 
-  const agentIds = await listActiveAgentsForClinic(clinicId);
-  if (agentIds.length === 0) {
-    return { skipped: 'no_active_agents' };
+  // Fast-path: avoid acquiring a distributed lock (and querying AgentActive)
+  // when there is no queued work for this clinic.
+  const preCheckQueuedCall = await findNextQueuedCallForClinic(clinicId);
+  if (!preCheckQueuedCall) {
+    return { skipped: 'no_queued_calls' };
   }
 
   const lock = new DistributedLock(ddb, {
     tableName: LOCKS_TABLE_NAME,
     lockKey: `clinic-dispatch-${clinicId}`,
     ttlSeconds: 10,
-    maxRetries: 3,
+    // Best-effort: if another dispatcher holds the lock, skip quickly.
+    maxRetries: 1,
     retryDelayMs: 100,
   });
 
@@ -112,6 +115,11 @@ async function ringQueuedCallForClinic(clinicId: string): Promise<{ ringedCallId
   try {
     const call = await findNextQueuedCallForClinic(clinicId);
     if (!call) return { skipped: 'no_queued_calls' };
+
+    const agentIds = await listActiveAgentsForClinic(clinicId);
+    if (agentIds.length === 0) {
+      return { skipped: 'no_active_agents' };
+    }
 
     const ringAttemptTimestamp = new Date().toISOString();
     const nowMs = Date.now();

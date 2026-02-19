@@ -1340,6 +1340,112 @@ export const handler = async (event: any): Promise<any> => {
                     return buildActions(actions);
                 }
 
+                // ========================================
+                // OVERFLOW ROUTING — No Primary Agents
+                // ========================================
+                // Before falling back to a generic queue message, try to route to sister clinics.
+                if (CHIME_CONFIG.OVERFLOW.ENABLED) {
+                    console.log(`[NEW_INBOUND_CALL] No active agents for clinic ${clinicId}. Attempting overflow routing.`);
+                    try {
+                        const overflowResult = await attemptOverflowRouting(
+                            ddb,
+                            callContext as any,
+                            0, // queueWaitSeconds — just entered queue
+                            0, // primaryAgentCount is 0
+                            AGENT_ACTIVE_TABLE_NAME || AGENT_PRESENCE_TABLE_NAME,
+                            CLINICS_TABLE_NAME,
+                        );
+
+                        if (overflowResult.triggered && overflowResult.agents && overflowResult.agents.length > 0) {
+                            const overflowAgentIds = overflowResult.agents.map((a: any) => a.agentId || a);
+                            console.log(`[NEW_INBOUND_CALL] Overflow routing found ${overflowAgentIds.length} agents`, {
+                                callId, clinicId, overflowAgentIds, sourceClinicIds: overflowResult.sourceClinicIds,
+                            });
+
+                            // Ring overflow agents (same pattern as primary agents)
+                            try {
+                                const ringTs = new Date().toISOString();
+                                await ddb.send(new UpdateCommand({
+                                    TableName: CALL_QUEUE_TABLE_NAME,
+                                    Key: { clinicId, queuePosition: queueEntry.queuePosition },
+                                    UpdateExpression:
+                                        'SET #status = :ringing, agentIds = :agentIds, ringStartTimeIso = :ts, ringStartTime = :now, lastStateChange = :ts, updatedAt = :ts, overflowRouted = :true',
+                                    ConditionExpression: '#status = :queued',
+                                    ExpressionAttributeNames: { '#status': 'status' },
+                                    ExpressionAttributeValues: {
+                                        ':ringing': 'ringing',
+                                        ':queued': 'queued',
+                                        ':agentIds': overflowAgentIds,
+                                        ':ts': ringTs,
+                                        ':now': Date.now(),
+                                        ':true': true,
+                                    },
+                                }));
+
+                                if (isPushNotificationsEnabled()) {
+                                    await sendIncomingCallToAgents(overflowAgentIds, {
+                                        callId,
+                                        clinicId,
+                                        clinicName: String(clinic.clinicName || clinicId) + ' (overflow)',
+                                        callerPhoneNumber: fromPhoneNumber,
+                                        timestamp: ringTs,
+                                    }).catch(pushErr => console.warn('[NEW_INBOUND_CALL] Overflow push failed (non-fatal):', pushErr));
+                                }
+
+                                return buildActions([
+                                    buildSpeakAction(
+                                        callContext.isVip
+                                            ? 'Thank you for calling. This call may be recorded for quality assurance. We are connecting you with the next available specialist.'
+                                            : 'Thank you for calling. This call may be recorded for quality and training purposes. All local agents are busy. We are connecting you with another team member. Please hold.',
+                                    ),
+                                    buildPauseAction(500),
+                                    buildPlayAudioAction('hold-music.wav', 999),
+                                ]);
+                            } catch (overflowRingErr) {
+                                console.warn('[NEW_INBOUND_CALL] Overflow ring failed (non-fatal). Falling back to queue.', overflowRingErr);
+                            }
+                        } else {
+                            console.log(`[NEW_INBOUND_CALL] Overflow routing returned no agents`, {
+                                callId, clinicId, overflowResult,
+                            });
+                        }
+                    } catch (overflowErr) {
+                        console.warn('[NEW_INBOUND_CALL] Overflow routing error (non-fatal):', overflowErr);
+                    }
+                }
+
+                // ========================================
+                // VOICEMAIL FALLBACK — If configured
+                // ========================================
+                const voicemailBucket = process.env.VOICEMAIL_BUCKET;
+                if (CHIME_CONFIG.OVERFLOW.FALLBACK_ACTION === 'voicemail' && voicemailBucket && pstnLegCallId) {
+                    console.log(`[NEW_INBOUND_CALL] No agents available and overflow fallback is voicemail. Offering voicemail.`, { callId, clinicId });
+
+                    return buildActions([
+                        buildSpeakAction(
+                            'All agents are currently unavailable. Please leave a message after the tone and we will return your call as soon as possible.',
+                        ),
+                        buildPauseAction(500),
+                        {
+                            Type: 'RecordAudio',
+                            Parameters: {
+                                CallId: pstnLegCallId,
+                                DurationInSeconds: 120,
+                                SilenceDurationInSeconds: 5,
+                                SilenceThreshold: 100,
+                                RecordingTerminators: ['#'],
+                                RecordingDestination: {
+                                    Type: 'S3',
+                                    BucketName: voicemailBucket,
+                                    Prefix: `voicemails/${clinicId}/${callId}`,
+                                },
+                            },
+                        },
+                        buildSpeakAction('Thank you for your message. Goodbye.'),
+                        buildHangupAction(),
+                    ]);
+                }
+
                 console.log(`[NEW_INBOUND_CALL] No active agents for clinic ${clinicId}. Keeping caller in queue.`);
 
                 // Standard queue handling
@@ -1412,6 +1518,7 @@ export const handler = async (event: any): Promise<any> => {
                 }
 
             }
+
 
             // Case 2: A new call *from* our system (agent outbound call OR AI outbound call)
             // This is triggered by outbound-call.ts (human agent) or outbound-call-scheduler.ts (AI)
@@ -2317,21 +2424,21 @@ export const handler = async (event: any): Promise<any> => {
                                         didWarnMissingAuditTable = true;
                                     }
                                 } else {
-                                const auditEvent = createAuditEvent(
-                                    AuditEventType.CALL_ENDED,
-                                    { type: 'agent', id: assignedAgentId || 'system', name: undefined },
-                                    { type: 'call', id: callId },
-                                    clinicId,
-                                    {
-                                        finalStatus,
-                                        callDuration,
-                                        callEndReason,
-                                        sipResponseCode,
-                                        direction: direction || 'inbound',
-                                    },
-                                    { callId }
-                                );
-                                await logAuditEvent(ddb, auditEvent, CALL_AUDIT_TABLE_NAME).catch(() => { });
+                                    const auditEvent = createAuditEvent(
+                                        AuditEventType.CALL_ENDED,
+                                        { type: 'agent', id: assignedAgentId || 'system', name: undefined },
+                                        { type: 'call', id: callId },
+                                        clinicId,
+                                        {
+                                            finalStatus,
+                                            callDuration,
+                                            callEndReason,
+                                            sipResponseCode,
+                                            direction: direction || 'inbound',
+                                        },
+                                        { callId }
+                                    );
+                                    await logAuditEvent(ddb, auditEvent, CALL_AUDIT_TABLE_NAME).catch(() => { });
                                 }
                             } catch (auditErr) {
                                 console.warn(`[${eventType}] Audit logging failed (non-fatal):`, auditErr);

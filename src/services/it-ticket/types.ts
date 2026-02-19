@@ -84,10 +84,19 @@ export interface Ticket {
     assigneeName: string;
     assigneeEmail?: string;
     clinicId?: string;
+    deadline?: string; // ISO date string (YYYY-MM-DD) — required for BUG, optional for FEATURE
     mediaFiles?: MediaFile[];
     resolution?: string;
     resolvedAt?: string;
     resolvedBy?: string;
+    resolvedByName?: string;
+    resolvedByEmail?: string;
+    assignmentType?: 'single' | 'group'; // Whether task was assigned to individual or group
+    groupDetails?: {
+        groupId: string;
+        groupName: string;
+        members: string[]; // list of member names or IDs
+    };
     createdAt: string;
     updatedAt: string;
 }
@@ -125,6 +134,7 @@ export interface CreateTicketRequest {
     module: string;
     priority?: TicketPriority;
     clinicId?: string;
+    deadline?: string; // ISO date (YYYY-MM-DD) — required for BUG, optional for FEATURE
     // Optional reporter details — frontend can supply from localStorage
     // Falls back to JWT authorizer context if not provided
     reporterName?: string;
@@ -138,6 +148,7 @@ export interface UpdateTicketRequest {
     module?: string;
     priority?: TicketPriority;
     status?: TicketStatus;
+    deadline?: string;
     assigneeId?: string;
     assigneeName?: string;
     assigneeEmail?: string;
@@ -145,11 +156,23 @@ export interface UpdateTicketRequest {
 
 export interface ResolveTicketRequest {
     resolution: string;
+    // Optional: resolver details from frontend (overrides JWT context if provided)
+    resolvedByName?: string;
+    resolvedByEmail?: string;
+    // Optional: assignment/group context
+    assignmentType?: 'single' | 'group';
+    groupDetails?: {
+        groupId: string;
+        groupName: string;
+        members: string[];
+    };
 }
 
 export interface AddCommentRequest {
     content: string;
     isInternal?: boolean;
+    authorName?: string;
+    authorId?: string;
 }
 
 export interface MediaUploadRequest {

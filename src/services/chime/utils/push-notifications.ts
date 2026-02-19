@@ -18,6 +18,8 @@
 
 import { LambdaClient, InvokeCommand, InvocationType } from '@aws-sdk/client-lambda';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { CloudWatchClient, PutMetricDataCommand } from '@aws-sdk/client-cloudwatch';
+import { CHIME_CONFIG } from '../config';
 
 // Environment variables
 const SEND_PUSH_FUNCTION_ARN = process.env.SEND_PUSH_FUNCTION_ARN || '';
@@ -25,14 +27,22 @@ const SEND_PUSH_FUNCTION_ARN = process.env.SEND_PUSH_FUNCTION_ARN || '';
 // This utility only invokes the Lambda, so we only need the ARN
 const PUSH_NOTIFICATIONS_ENABLED = !!SEND_PUSH_FUNCTION_ARN;
 
-// Initialize Lambda client (reused across invocations)
+// Initialize clients (reused across invocations)
 let lambdaClient: LambdaClient | null = null;
+let cwClient: CloudWatchClient | null = null;
 
 function getLambdaClient(): LambdaClient {
   if (!lambdaClient) {
     lambdaClient = new LambdaClient({ region: process.env.AWS_REGION || 'us-east-1' });
   }
   return lambdaClient;
+}
+
+function getCloudWatchClient(): CloudWatchClient {
+  if (!cwClient) {
+    cwClient = new CloudWatchClient({ region: process.env.AWS_REGION || 'us-east-1' });
+  }
+  return cwClient;
 }
 
 // ========================================
@@ -210,6 +220,38 @@ async function invokeSendPushLambdaWithRetry(
   return { success: false, error: lastError || 'Max retries exceeded' };
 }
 
+// ========================================
+// CLOUDWATCH DELIVERY METRICS
+// ========================================
+
+/**
+ * Emit push notification delivery metrics to CloudWatch.
+ * Best-effort — failures are logged but never propagated.
+ */
+async function emitPushMetric(
+  metricName: 'PushDelivered' | 'PushFailed',
+  dimensions: { notificationType: string },
+  value: number = 1
+): Promise<void> {
+  if (!CHIME_CONFIG.METRICS.ENABLED) return;
+  try {
+    await getCloudWatchClient().send(new PutMetricDataCommand({
+      Namespace: CHIME_CONFIG.METRICS.NAMESPACE,
+      MetricData: [{
+        MetricName: metricName,
+        Dimensions: [
+          { Name: 'NotificationType', Value: dimensions.notificationType },
+        ],
+        Value: value,
+        Unit: 'Count',
+        Timestamp: new Date(),
+      }],
+    }));
+  } catch (err: any) {
+    console.warn(`[ChimePush] Failed to emit ${metricName} metric:`, err.message);
+  }
+}
+
 /**
  * Format phone number for display
  */
@@ -312,11 +354,14 @@ export async function sendIncomingCallNotification(
 
     if (result.success) {
       console.log(`[ChimePush] Sent incoming call notification to ${agentUserIds.length} agents (${result.sent} delivered)`);
+      emitPushMetric('PushDelivered', { notificationType: 'incoming_call' }, result.sent || agentUserIds.length);
     } else {
       console.error(`[ChimePush] Failed to send incoming call notification: ${result.error}`);
+      emitPushMetric('PushFailed', { notificationType: 'incoming_call' });
     }
   } catch (error: any) {
     console.error('[ChimePush] Failed to send incoming call notification:', error.message);
+    emitPushMetric('PushFailed', { notificationType: 'incoming_call' });
   }
 }
 
@@ -382,6 +427,7 @@ export async function sendIncomingCallToAgents(
       agents: agentUserIds,
       response: `sent=${result.sent ?? '?'}, failed=${result.failed ?? '?'}`,
     });
+    emitPushMetric('PushDelivered', { notificationType: 'incoming_call' }, result.sent || agentUserIds.length);
   } else {
     console.error(`[ChimePush] ❌ Failed to push incoming call notification`, {
       callId: notification.callId,
@@ -389,6 +435,69 @@ export async function sendIncomingCallToAgents(
       agents: agentUserIds,
       clinicId: notification.clinicId,
     });
+    emitPushMetric('PushFailed', { notificationType: 'incoming_call' });
+  }
+}
+
+// ========================================
+// CALL CANCELLED NOTIFICATIONS (Batch)
+// ========================================
+
+/**
+ * Send call_cancelled push to all agents who were ringing for a call,
+ * EXCEPT the agent who accepted it. This stops phantom ringing on
+ * other agents' devices.
+ *
+ * Sent as data-only (silent) so background handlers fire without
+ * showing a visible notification banner.
+ */
+export async function sendCallCancelledToAgents(
+  agentUserIds: string[],
+  excludeAgentId: string,
+  notification: CallNotificationData
+): Promise<void> {
+  const targetIds = agentUserIds.filter(id => id !== excludeAgentId);
+  if (!PUSH_NOTIFICATIONS_ENABLED || targetIds.length === 0) return;
+
+  const idempotencyKey = `call_cancelled:${notification.callId}:${notification.timestamp}`;
+
+  console.log('[ChimePush] 🔕 Sending call_cancelled push to stop ringing', {
+    callId: notification.callId,
+    excludedAgent: excludeAgentId,
+    targetAgentCount: targetIds.length,
+    targetAgents: targetIds,
+  });
+
+  const result = await invokeSendPushLambdaWithRetry({
+    userIds: targetIds,
+    notification: {
+      // Data-only (silent push) — no title/body to avoid banner spam
+      type: 'call_cancelled',
+      contentAvailable: true,
+      idempotencyKey,
+      data: {
+        callId: notification.callId,
+        clinicId: notification.clinicId,
+        clinicName: notification.clinicName,
+        reason: 'accepted_by_other_agent',
+        acceptedBy: excludeAgentId,
+        action: 'call_cancelled',
+        timestamp: notification.timestamp,
+      },
+      category: 'CALL_CANCELLED',
+    },
+  }, {
+    sync: false,
+    skipPreferenceCheck: true,
+    maxRetries: 1,
+  });
+
+  if (result.success) {
+    console.log(`[ChimePush] ✅ Call cancelled push sent to ${targetIds.length} agents`);
+    emitPushMetric('PushDelivered', { notificationType: 'call_cancelled' }, targetIds.length);
+  } else {
+    console.error(`[ChimePush] ❌ Failed to send call_cancelled push:`, result.error);
+    emitPushMetric('PushFailed', { notificationType: 'call_cancelled' });
   }
 }
 
@@ -719,9 +828,9 @@ export async function sendCallEndedToAgent(
   const result = await invokeSendPushLambdaWithRetry({
     userId: notification.agentId,
     notification: {
-      title: 'Call Ended',
-      body: `${callerDisplay}${notification.message ? ` — ${notification.message}` : ''}`,
+      // Data-only (silent push) for state-sync — no visible banner
       type: notificationType,
+      contentAvailable: true,
       idempotencyKey,
       data: {
         callId: notification.callId,
@@ -743,8 +852,10 @@ export async function sendCallEndedToAgent(
 
   if (result.success) {
     console.log(`[ChimePush] ✅ Call-ended push sent to agent ${notification.agentId}`);
+    emitPushMetric('PushDelivered', { notificationType });
   } else {
     console.error(`[ChimePush] ❌ Failed to send call-ended push to agent ${notification.agentId}:`, result.error);
+    emitPushMetric('PushFailed', { notificationType });
   }
 }
 
@@ -778,9 +889,9 @@ export async function sendCallAnsweredToAgent(
   const result = await invokeSendPushLambdaWithRetry({
     userId: notification.agentId,
     notification: {
-      title: 'Call Connected',
-      body: `${callerDisplay} answered`,
+      // Data-only (silent push) for state-sync — no visible banner
       type: 'call_answered',
+      contentAvailable: true,
       idempotencyKey,
       data: {
         callId: notification.callId,
@@ -803,7 +914,9 @@ export async function sendCallAnsweredToAgent(
 
   if (result.success) {
     console.log(`[ChimePush] ✅ Call-answered push sent to agent ${notification.agentId}`);
+    emitPushMetric('PushDelivered', { notificationType: 'call_answered' });
   } else {
     console.error(`[ChimePush] ❌ Failed to send call-answered push to agent ${notification.agentId}:`, result.error);
+    emitPushMetric('PushFailed', { notificationType: 'call_answered' });
   }
 }

@@ -1170,7 +1170,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "cccb37ff30d9a6a79e2042bd4072069a39b42c44d79c9f7e83e2750208bf593e.zip"
+     "S3Key": "aac122c226f02804c839507150ebf891bf5bb5014f2c6debc4d1b4064d635a6b.zip"
     },
     "Environment": {
      "Variables": {
@@ -1241,7 +1241,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsAnalyticsDashboardN1/AnalyticsDashboardFunction/Resource",
-    "aws:asset:path": "asset.cccb37ff30d9a6a79e2042bd4072069a39b42c44d79c9f7e83e2750208bf593e",
+    "aws:asset:path": "asset.aac122c226f02804c839507150ebf891bf5bb5014f2c6debc4d1b4064d635a6b",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }

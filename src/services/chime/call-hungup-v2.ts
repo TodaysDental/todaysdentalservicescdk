@@ -7,6 +7,7 @@ import { verifyIdToken } from '../../shared/utils/auth-helper';
 import { checkClinicAuthorization, getUserIdFromJwt } from '../../shared/utils/permissions-helper';
 import { getSmaIdForClinic } from './utils/sma-map';
 import { DistributedLock } from './utils/distributed-lock';
+import { sendCallEndedToAgent, isPushNotificationsEnabled } from './utils/push-notifications';
 
 const ddb = getDynamoDBClient();
 
@@ -158,6 +159,24 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       } catch (agentErr: any) {
         if (agentErr?.name !== 'ConditionalCheckFailedException') {
           console.warn('[call-hungup-v2] Failed to reset AgentActive state (non-fatal):', agentErr);
+        }
+      }
+
+      // 9) Push call-ended notification so mobile/web clients exit "In Call" UI
+      if (isPushNotificationsEnabled()) {
+        try {
+          await sendCallEndedToAgent({
+            callId,
+            clinicId,
+            clinicName: clinicId,
+            agentId: assignedAgentId,
+            reason: 'hangup',
+            message: 'Call ended by agent',
+            direction: String(callRecord.direction || 'inbound'),
+            timestamp: new Date().toISOString(),
+          });
+        } catch (pushErr) {
+          console.warn('[call-hungup-v2] Call-ended push failed (non-fatal):', pushErr);
         }
       }
     }

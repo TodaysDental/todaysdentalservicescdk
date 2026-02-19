@@ -977,7 +977,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "ec3a40734288a1139e0d9a93abe97a8ea7b77effcad0b121ecaeb9071127c89d.zip"
+     "S3Key": "cc8dcc240f2e2d5862fe0616a0144d38029039559dc7093219a9fb9adb249c1a.zip"
     },
     "Environment": {
      "Variables": {
@@ -1021,7 +1021,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsClinicCostN1/ClinicCostCrudFn/Resource",
-    "aws:asset:path": "asset.ec3a40734288a1139e0d9a93abe97a8ea7b77effcad0b121ecaeb9071127c89d",
+    "aws:asset:path": "asset.cc8dcc240f2e2d5862fe0616a0144d38029039559dc7093219a9fb9adb249c1a",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }

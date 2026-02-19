@@ -1099,7 +1099,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "12bbec492aa8b8fca3b6f714dc9cbbaba669a99c99a0948d746e510f1a91714f.zip"
+     "S3Key": "9a854e81ec47a9ddfb90526afaed2079128464b2df90b4142dbb1f49df8557d0.zip"
     },
     "Environment": {
      "Variables": {
@@ -1143,7 +1143,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsTemplatesN1/TemplatesFn/Resource",
-    "aws:asset:path": "asset.12bbec492aa8b8fca3b6f714dc9cbbaba669a99c99a0948d746e510f1a91714f",
+    "aws:asset:path": "asset.9a854e81ec47a9ddfb90526afaed2079128464b2df90b4142dbb1f49df8557d0",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }

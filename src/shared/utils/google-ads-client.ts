@@ -902,3 +902,297 @@ export function clearGoogleAdsApiCache(): void {
   globalLoginCustomerId = null;
   console.log('[GoogleAdsClient] API cache cleared');
 }
+
+// ========================================
+// REST API CAMPAIGN CREATION (Bypass gRPC proto limitation)
+// ========================================
+
+/**
+ * Get an OAuth2 access token for REST API calls.
+ * Uses the same credentials as the gRPC client.
+ */
+async function getAccessToken(): Promise<string> {
+  const credentials = await getGoogleAdsCredentials();
+  if (!credentials) {
+    throw new Error('Google Ads credentials not found');
+  }
+
+  // Exchange refresh token for access token using Google's token endpoint
+  const https = await import('https');
+  const querystring = await import('querystring');
+
+  const postData = querystring.stringify({
+    client_id: credentials.clientId,
+    client_secret: credentials.clientSecret,
+    refresh_token: credentials.refreshToken,
+    grant_type: 'refresh_token',
+  });
+
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: 'oauth2.googleapis.com',
+      path: '/token',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(postData),
+      },
+    }, (res: any) => {
+      let data = '';
+      res.on('data', (chunk: string) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.access_token) {
+            resolve(parsed.access_token);
+          } else {
+            reject(new Error(`Failed to get access token: ${data}`));
+          }
+        } catch (e) {
+          reject(new Error(`Failed to parse token response: ${data}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.write(postData);
+    req.end();
+  });
+}
+
+/**
+ * Make a REST API call to Google Ads API v22.
+ * Bypasses the gRPC protobuf serialization which silently drops
+ * fields not in its proto definitions (e.g. contains_eu_political_advertising).
+ */
+async function googleAdsRestCall(
+  customerId: string,
+  endpoint: string,
+  body: any
+): Promise<any> {
+  const credentials = await getGoogleAdsCredentials();
+  if (!credentials) {
+    throw new Error('Google Ads credentials not found');
+  }
+
+  const accessToken = await getAccessToken();
+  const https = await import('https');
+
+  const cleanCustomerId = customerId.replace(/-/g, '');
+  const postData = JSON.stringify(body);
+
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: 'googleads.googleapis.com',
+      path: `/v22/customers/${cleanCustomerId}/${endpoint}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`,
+        'developer-token': credentials.developerToken,
+        'login-customer-id': credentials.loginCustomerId.replace(/-/g, ''),
+        'Content-Length': Buffer.byteLength(postData),
+      },
+    }, (res: any) => {
+      let data = '';
+      res.on('data', (chunk: string) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            resolve(parsed);
+          } else {
+            // Extract detailed error messages from Google Ads API error response
+            const errors = parsed?.error?.details
+              ?.filter((d: any) => d.errors)
+              ?.flatMap((d: any) => d.errors)
+              ?.map((e: any) => `${e.message} (field: ${e.location?.fieldPathElements?.map((f: any) => f.fieldName).join('.')})`)
+              ?.join('; ');
+
+            const errorMessage = errors || parsed?.error?.message || JSON.stringify(parsed);
+            const error: any = new Error(errorMessage);
+            error.statusCode = res.statusCode;
+            error.details = parsed;
+            reject(error);
+          }
+        } catch (e) {
+          reject(new Error(`Failed to parse response (status ${res.statusCode}): ${data}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.write(postData);
+    req.end();
+  });
+}
+
+/**
+ * Create a campaign budget via REST API.
+ * Returns the budget resource name.
+ */
+export async function createBudgetViaRest(
+  customerId: string,
+  budgetResource: {
+    name: string;
+    amount_micros: number;
+    delivery_method: number;
+    explicitly_shared?: boolean;
+  }
+): Promise<string> {
+  const cleanCustomerId = customerId.replace(/-/g, '');
+
+  // Map numeric enum to string enum for REST API
+  const deliveryMethodMap: Record<number, string> = {
+    2: 'STANDARD',
+    3: 'ACCELERATED',
+  };
+
+  const body = {
+    operations: [{
+      create: {
+        name: budgetResource.name,
+        amount_micros: String(budgetResource.amount_micros),
+        delivery_method: deliveryMethodMap[budgetResource.delivery_method] || 'STANDARD',
+        explicitly_shared: budgetResource.explicitly_shared ?? false,
+      },
+    }],
+  };
+
+  console.log(`[GoogleAdsClient] Creating budget via REST for ${cleanCustomerId}:`, JSON.stringify(body, null, 2));
+
+  const response = await googleAdsRestCall(cleanCustomerId, 'campaignBudgets:mutate', body);
+
+  const budgetResourceName = response?.results?.[0]?.resourceName
+    || response?.results?.[0]?.resource_name;
+  if (!budgetResourceName) {
+    throw new Error(`Budget creation returned no resource name: ${JSON.stringify(response)}`);
+  }
+
+  console.log(`[GoogleAdsClient] Budget created via REST: ${budgetResourceName}`);
+  return budgetResourceName;
+}
+
+/**
+ * Create a campaign via REST API.
+ * This bypasses the gRPC library's protobuf serialization which silently
+ * drops the `contains_eu_political_advertising` field.
+ * Returns the campaign resource name.
+ * 
+ * IMPORTANT: Google Ads REST API uses snake_case field names, NOT camelCase.
+ */
+export async function createCampaignViaRest(
+  customerId: string,
+  campaignResource: {
+    name: string;
+    status: number;
+    advertisingChannelType: number;
+    campaignBudget: string;
+    biddingStrategy: string;
+    targetCpaMicros?: number;
+    targetRoas?: number;
+    networkSettings?: {
+      targetGoogleSearch?: boolean;
+      targetSearchNetwork?: boolean;
+    };
+  }
+): Promise<string> {
+  const cleanCustomerId = customerId.replace(/-/g, '');
+
+  // Map numeric enums to string enums for REST API
+  const statusMap: Record<number, string> = {
+    2: 'ENABLED',
+    3: 'PAUSED',
+    4: 'REMOVED',
+  };
+  const channelTypeMap: Record<number, string> = {
+    2: 'SEARCH',
+    3: 'DISPLAY',
+    4: 'SHOPPING',
+    6: 'VIDEO',
+    13: 'PERFORMANCE_MAX',
+  };
+
+  // Build REST campaign object — ALL fields must use snake_case
+  const campaign: any = {
+    name: campaignResource.name,
+    status: statusMap[campaignResource.status] || 'PAUSED',
+    advertising_channel_type: channelTypeMap[campaignResource.advertisingChannelType] || 'SEARCH',
+    campaign_budget: campaignResource.campaignBudget,
+    // CRITICAL: This field is REQUIRED since Google Ads API v22 (Sept 3, 2025)
+    // It's an ENUM, not a boolean. The gRPC library's proto defs don't include this enum.
+    contains_eu_political_advertising: 'DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING',
+  };
+
+  // Add network settings (snake_case)
+  if (campaignResource.networkSettings) {
+    campaign.network_settings = {
+      target_google_search: campaignResource.networkSettings.targetGoogleSearch ?? true,
+      target_search_network: campaignResource.networkSettings.targetSearchNetwork ?? true,
+    };
+  }
+
+  // Build bidding strategy (snake_case field names)
+  // NOTE: Enhanced CPC (enhanced_cpc_enabled) is DEPRECATED by Google (context_error: 2)
+  switch (campaignResource.biddingStrategy) {
+    case 'MANUAL_CPC':
+      campaign.manual_cpc = {};
+      break;
+    case 'TARGET_CPA':
+      campaign.target_cpa = {
+        target_cpa_micros: String(campaignResource.targetCpaMicros || 0),
+      };
+      break;
+    case 'MAXIMIZE_CONVERSIONS':
+      campaign.maximize_conversions = {};
+      break;
+    case 'MAXIMIZE_CLICKS':
+      campaign.maximize_clicks = {};
+      break;
+    case 'TARGET_ROAS':
+      campaign.target_roas = {
+        target_roas: campaignResource.targetRoas || 0,
+      };
+      break;
+  }
+
+  const body = {
+    operations: [{
+      create: campaign,
+    }],
+  };
+
+  console.log(`[GoogleAdsClient] Creating campaign via REST for ${cleanCustomerId}:`, JSON.stringify(body, null, 2));
+
+  const response = await googleAdsRestCall(cleanCustomerId, 'campaigns:mutate', body);
+
+  const campaignResourceName = response?.results?.[0]?.resourceName
+    || response?.results?.[0]?.resource_name;
+  if (!campaignResourceName) {
+    throw new Error(`Campaign creation returned no resource name: ${JSON.stringify(response)}`);
+  }
+
+  console.log(`[GoogleAdsClient] Campaign created via REST: ${campaignResourceName}`);
+  return campaignResourceName;
+}
+
+/**
+ * Remove a campaign budget via REST API (for cleanup on failure).
+ */
+export async function removeBudgetViaRest(
+  customerId: string,
+  budgetResourceName: string
+): Promise<void> {
+  const cleanCustomerId = customerId.replace(/-/g, '');
+
+  const body = {
+    operations: [{
+      remove: budgetResourceName,
+    }],
+  };
+
+  try {
+    await googleAdsRestCall(cleanCustomerId, 'campaignBudgets:mutate', body);
+    console.log(`[GoogleAdsClient] Cleaned up budget via REST: ${budgetResourceName}`);
+  } catch (error: any) {
+    console.error(`[GoogleAdsClient] Failed to cleanup budget ${budgetResourceName}: ${error.message}`);
+  }
+}
