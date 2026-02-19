@@ -483,11 +483,13 @@ async function syncOdooInvoices(clinicId: string) {
       ExpressionAttributeValues: { ':clinicId': clinicId },
     }));
 
-    const existingOdooIds = new Set(
-      (existingInvoices || [])
-        .filter((inv: any) => inv.odooId)
-        .map((inv: any) => inv.odooId)
-    );
+    // Build a map of existing DynamoDB invoices by their odooId for quick lookup
+    const existingByOdooId = new Map<number, any>();
+    for (const inv of (existingInvoices || [])) {
+      if (inv.odooId) {
+        existingByOdooId.set(inv.odooId, inv);
+      }
+    }
 
     // Map Odoo invoice state to our InvoiceStatus
     const mapOdooStatus = (state: string, paymentState: string): InvoiceStatus => {
@@ -510,51 +512,81 @@ async function syncOdooInvoices(clinicId: string) {
     };
 
     let synced = 0;
-    let skipped = 0;
+    let updated = 0;
+    let unchanged = 0;
     const now = new Date().toISOString();
 
     for (const odooInv of odooInvoices) {
-      // Skip if already synced
-      if (existingOdooIds.has(odooInv.id)) {
-        skipped++;
-        continue;
-      }
-
-      const vendorName = odooInv.partner_id ? odooInv.partner_id[1] : undefined;
+      const vendorName = odooInv.partner_id ? String(odooInv.partner_id[1]) : undefined;
       const vendorId = odooInv.partner_id ? String(odooInv.partner_id[0]) : undefined;
       const dueDate = odooInv.invoice_date_due
         ? String(odooInv.invoice_date_due)
         : undefined;
+      const newStatus = mapOdooStatus(odooInv.state, odooInv.payment_state);
 
-      const invoice: Invoice = {
-        invoiceId: uuidv4(),
-        clinicId,
-        source: 'ODOO',
-        vendorId,
-        vendorName,
-        dueDate,
-        amount: odooInv.amount_total,
-        status: mapOdooStatus(odooInv.state, odooInv.payment_state),
-        invoiceType: mapMoveType(odooInv.move_type),
-        fileUrl: '',  // No file URL for Odoo-sourced invoices
-        s3Key: '',    // No S3 key for Odoo-sourced invoices
-        odooId: odooInv.id,
-        odooRef: odooInv.name,
-        odooMoveType: odooInv.move_type,
-        createdAt: odooInv.invoice_date
-          ? new Date(String(odooInv.invoice_date)).toISOString()
-          : now,
-      };
+      const existing = existingByOdooId.get(odooInv.id);
 
-      await ddb.send(new PutCommand({
-        TableName: INVOICES_TABLE,
-        Item: invoice,
-      }));
+      if (existing) {
+        // UPDATE existing invoice with latest data from Odoo
+        // (fixes missing vendorName/vendorId, and keeps status/amount in sync)
+        const needsUpdate =
+          existing.vendorName !== vendorName ||
+          existing.vendorId !== vendorId ||
+          existing.status !== newStatus ||
+          existing.amount !== odooInv.amount_total ||
+          existing.dueDate !== dueDate;
 
-      synced++;
+        if (needsUpdate) {
+          await ddb.send(new UpdateCommand({
+            TableName: INVOICES_TABLE,
+            Key: { invoiceId: existing.invoiceId },
+            UpdateExpression: 'SET vendorName = :vn, vendorId = :vi, #st = :st, amount = :amt, dueDate = :dd, updatedAt = :ua',
+            ExpressionAttributeNames: { '#st': 'status' },
+            ExpressionAttributeValues: {
+              ':vn': vendorName || existing.vendorName || null,
+              ':vi': vendorId || existing.vendorId || null,
+              ':st': newStatus,
+              ':amt': odooInv.amount_total,
+              ':dd': dueDate || existing.dueDate || null,
+              ':ua': now,
+            },
+          }));
+          updated++;
+        } else {
+          unchanged++;
+        }
+      } else {
+        // INSERT new invoice
+        const invoice: Invoice = {
+          invoiceId: uuidv4(),
+          clinicId,
+          source: 'ODOO',
+          vendorId,
+          vendorName,
+          dueDate,
+          amount: odooInv.amount_total,
+          status: newStatus,
+          invoiceType: mapMoveType(odooInv.move_type),
+          fileUrl: '',
+          s3Key: '',
+          odooId: odooInv.id,
+          odooRef: odooInv.name,
+          odooMoveType: odooInv.move_type,
+          createdAt: odooInv.invoice_date
+            ? new Date(String(odooInv.invoice_date)).toISOString()
+            : now,
+        };
+
+        await ddb.send(new PutCommand({
+          TableName: INVOICES_TABLE,
+          Item: invoice,
+        }));
+
+        synced++;
+      }
     }
 
-    console.log(`[Accounting] Odoo sync complete: ${synced} synced, ${skipped} skipped (already exist)`);
+    console.log(`[Accounting] Odoo sync complete: ${synced} new, ${updated} updated, ${unchanged} unchanged`);
 
     // Return updated invoice list
     const { Items } = await ddb.send(new QueryCommand({
@@ -570,7 +602,8 @@ async function syncOdooInvoices(clinicId: string) {
       syncResult: {
         totalFromOdoo: odooInvoices.length,
         newlySynced: synced,
-        alreadyExisted: skipped,
+        updated,
+        unchanged,
       },
     });
   } catch (error: any) {
