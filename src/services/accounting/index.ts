@@ -634,37 +634,10 @@ async function fetchOpenDentalPayments(
 
     console.log(`[Accounting] ${filteredPayments.length} payments within date range ${dateStart} to ${dateEnd}`);
 
-    // 4. Fetch patient names - try bulk first, skip if too slow
-    const uniquePatNums = [...new Set(filteredPayments.map((p: any) => p.PatNum || p.patNum).filter(Boolean))];
-    const patientNameCache = new Map<number, string>();
-
-    // Try fetching patients in one bulk call (OpenDental supports comma-separated PatNums)
-    if (uniquePatNums.length > 0) {
-      try {
-        // Attempt bulk fetch - if this fails or takes too long, fall back to patient numbers
-        const BULK_BATCH_SIZE = 50;
-        for (let i = 0; i < uniquePatNums.length; i += BULK_BATCH_SIZE) {
-          const batchNums = uniquePatNums.slice(i, i + BULK_BATCH_SIZE);
-          const patients = await callOpenDentalApi(
-            'GET',
-            `/patients?PatNums=${batchNums.join(',')}`,
-            authHeader
-          );
-          if (Array.isArray(patients)) {
-            for (const patient of patients) {
-              const pn = patient.PatNum || patient.patNum;
-              const fName = patient?.FName || patient?.fName || '';
-              const lName = patient?.LName || patient?.lName || '';
-              if (pn) patientNameCache.set(pn, `${lName}, ${fName}`.trim());
-            }
-          }
-        }
-        console.log(`[Accounting] Fetched ${patientNameCache.size} patient names`);
-      } catch (err) {
-        console.warn('[Accounting] Bulk patient fetch failed, using patient numbers:', err);
-        // Fall through - will use "Patient #X" for any missing names
-      }
-    }
+    // 4. Skip individual patient name API calls to avoid Lambda timeout
+    //    OpenDental /payments endpoint doesn't include patient names, and
+    //    fetching them individually would cause N additional API calls.
+    //    Use "Patient #PatNum" as fallback - names can be enriched later if needed.
 
     // 5. Map payments to OpenDentalPaymentRow format
     const rows = filteredPayments.map((p: any) => {
@@ -678,7 +651,7 @@ async function fetchOpenDentalPayments(
       return {
         rowId: `od-${payNum}`,
         patNum,
-        patientName: patientNameCache.get(patNum) || `Patient #${patNum}`,
+        patientName: `Patient #${patNum}`,
         paymentDate: payDate,
         expectedAmount: Number(payAmt),
         paymentMode,
